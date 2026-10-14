@@ -11501,7 +11501,7 @@
           "Agent files"
         ],
         "summary": "Delete an agent file",
-        "description": "As ADF Studio deletes: an agent running in this daemon is stopped first (unregistered from the mesh, lease released), then the file and its -wal/-shm sidecars are deleted. A file that is already gone is not an error. 409 `file_busy` when another process holds the file open.",
+        "description": "As ADF Studio deletes: an agent running in this daemon is stopped first (unregistered from the mesh, lease released; 409 `stop_timeout` when it does not stop within 15 s, the file is then kept), then the file and its -wal/-shm sidecars are deleted. A file that is already gone is not an error. 409 `agent_leased` while another runtime runs it, `file_busy` when another process holds the file open; 400 `path_not_canonical` for a path through a link or alias. Agent file paths are canonicalized; the path must name an `.adf` before and after links and short names are resolved. Refused (400): alternate data streams, device paths, reserved device names, UNC paths outside the tracked folders (`bad_path`, `unc_not_allowed`, `not_an_adf`).",
         "operationId": "deleteAgentFile",
         "parameters": [
           {
@@ -11561,7 +11561,7 @@
           "Agent files"
         ],
         "summary": "Rename an agent file",
-        "description": "A stopped agent's file is renamed now (WAL folded in first) and its config name set to match; `file_renamed` is pushed. A running agent keeps running under its file, lease and mesh registration: its name changes now and the file moves when it stops (`renameDeferred: true`), as in ADF Studio. 400 `invalid_name`, 409 `name_taken`, 409 `file_busy`.",
+        "description": "A stopped agent's file is renamed now (WAL folded in first) and its config name set to match; `file_renamed` is pushed. A running agent keeps running under its file, lease and mesh registration: its name changes now and the file moves when it stops (`renameDeferred: true`), as in ADF Studio. 400 `invalid_name`, 409 `name_taken`, 409 `file_busy`. 409 `agent_leased` while another runtime runs it; 400 `path_not_canonical` for a path through a link or alias. The move does not autostart the agent.",
         "operationId": "renameAgentFileOnDisk",
         "requestBody": {
           "required": true,
@@ -11661,7 +11661,7 @@
           "Agent files"
         ],
         "summary": "Move an accepted agent file into the agents folder",
-        "description": "The accept step for a file outside every tracked folder (a temp attachment, Downloads): it moves into the agents folder, which is tracked, and `file_renamed` is pushed. A failed move never fails: the file's own folder is tracked instead, except an OS temp folder (`moveError`). A file inside a tracked folder stays (`{}`). The caller releases its handles on the file first.",
+        "description": "The accept step for a file outside every tracked folder (a temp attachment, Downloads): it moves into the agents folder, which is tracked, and `file_renamed` is pushed. A failed move never fails: the file's own folder is tracked instead, except an OS temp folder (`moveError`). A file inside a tracked folder stays (`{}`). The caller releases its handles on the file first. A file another runtime runs is not moved.",
         "operationId": "relocateAgentFile",
         "requestBody": {
           "required": true,
@@ -11708,7 +11708,7 @@
           "Agent files"
         ],
         "summary": "Write a snapshot of an agent file to another path",
-        "description": "Built on a .partial and moved into place. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite`, `agent_running` when the destination is a running agent.",
+        "description": "Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent.",
         "operationId": "saveAgentFileAs",
         "requestBody": {
           "required": true,
@@ -11880,7 +11880,7 @@
           "Agent files"
         ],
         "summary": "Upload an .adf into a tracked folder",
-        "description": "The body is the file (`application/octet-stream`, up to 1 GiB; ADF_DAEMON_IMPORT_BODY_LIMIT_MB). It lands in `directory`, which must be a tracked folder or inside one, or the agents folder (the default; tracked then). The file is not marked reviewed. 400 `not_an_adf`, `invalid_name`; 403 `outside_tracked`; 409 `name_taken` (send `unique=true` for \"name (2).adf\"); 413 `too_large`; 415 for another content type.",
+        "description": "The body is the file (`application/octet-stream`, up to 1 GiB; ADF_DAEMON_IMPORT_BODY_LIMIT_MB). It lands in `directory`, which must be a tracked folder or inside one, or the agents folder (the default; tracked then). The file is never treated as reviewed: an upload carrying a config id reviewed here gets a fresh id (`idReassigned`), and the watcher does not autostart it. 400 `not_an_adf`, `invalid_name`; 403 `outside_tracked`; 409 `name_taken` (send `unique=true` for \"name (2).adf\"); 413 `too_large`; 415 for another content type.",
         "operationId": "importAgentFile",
         "parameters": [
           {
@@ -12306,7 +12306,7 @@
           "Agent files"
         ],
         "summary": "Tables of an agent file with row counts",
-        "description": "Every table without the shadow tables of virtual (full-text) tables: the clone dialog's list.",
+        "description": "Every table without the shadow tables of virtual (full-text) tables: the clone dialog's list. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
         "operationId": "listAgentFileTables",
         "parameters": [
           {
@@ -12355,7 +12355,7 @@
           "Agent files"
         ],
         "summary": "Set the model of a stopped agent file",
-        "description": "The provider must be configured in settings (400 `provider_unknown`). A loaded agent is refused (409 `agent_running`): save its config with PUT /agents/{id}/config.",
+        "description": "The provider must be configured in settings (400 `provider_unknown`). A loaded agent is refused (409 `agent_running`): save its config with PUT /agents/{id}/config. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
         "operationId": "setAgentFileModel",
         "parameters": [
           {
@@ -12417,7 +12417,7 @@
           "Agent files"
         ],
         "summary": "Store a provider API key in an agent file",
-        "description": "PUT /agents/{id}/providers/{providerId}/credential by file path; works on a file that is not loaded. Same locked-envelope rules (409 `credentials_locked`, `replace: true`).",
+        "description": "PUT /agents/{id}/providers/{providerId}/credential by file path; works on a file that is not loaded. Same locked-envelope rules (409 `credentials_locked`, `replace: true`). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
         "operationId": "setAgentFileProviderCredential",
         "parameters": [
           {
@@ -12489,7 +12489,7 @@
           "Agent files"
         ],
         "summary": "Provider credential metadata of an agent file",
-        "description": "Metadata only, never the value.",
+        "description": "Metadata only, never the value. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
         "operationId": "getAgentFileProviderCredentials",
         "parameters": [
           {
@@ -12601,10 +12601,14 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
       }
     },
     "/files/agent/providers/{providerId}": {
@@ -12613,7 +12617,7 @@
           "Agent files"
         ],
         "summary": "Detach a provider from an agent file",
-        "description": "Also deletes its stored credentials.",
+        "description": "Also deletes its stored credentials. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
         "operationId": "detachAgentFileProvider",
         "parameters": [
           {
@@ -12660,6 +12664,9 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
@@ -12672,7 +12679,7 @@
           "Agent files"
         ],
         "summary": "Store an MCP credential in an agent file",
-        "description": "PUT /agents/{id}/mcp/credentials by file path; works on a file that is not loaded.",
+        "description": "PUT /agents/{id}/mcp/credentials by file path; works on a file that is not loaded. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
         "operationId": "setAgentFileMcpCredential",
         "parameters": [
           {
@@ -12739,7 +12746,7 @@
           "Agent files"
         ],
         "summary": "MCP credential metadata of an agent file",
-        "description": "Metadata only, never the value.",
+        "description": "Metadata only, never the value. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
         "operationId": "getAgentFileMcpCredentials",
         "parameters": [
           {
@@ -12856,10 +12863,14 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
       }
     },
     "/files/agent/mcp/servers/{serverName}": {
@@ -12868,7 +12879,7 @@
           "Agent files"
         ],
         "summary": "Detach an MCP server from an agent file",
-        "description": "Also deletes its credentials (`mcp:{credentialNamespace}:*`, default the server name).",
+        "description": "Also deletes its credentials (`mcp:{credentialNamespace}:*`, default the server name). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. Credentials are matched by exact prefix.",
         "operationId": "detachAgentFileMcpServer",
         "parameters": [
           {
@@ -12922,6 +12933,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -12994,14 +13008,15 @@
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
       },
       "get": {
         "tags": [
           "Agent files"
         ],
         "summary": "Adapter credential metadata of an agent file",
-        "description": "Metadata only, never the value.",
+        "description": "Metadata only, never the value. A file that is not loaded is read through one readonly connection (nothing written; sealed values read as locked).",
         "operationId": "getAgentFileAdapterCredentials",
         "parameters": [
           {
@@ -13118,10 +13133,14 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
-        }
+        },
+        "description": "A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it."
       }
     },
     "/files/agent/adapters/{adapterType}": {
@@ -13130,7 +13149,7 @@
           "Agent files"
         ],
         "summary": "Detach a channel adapter from an agent file",
-        "description": "Also deletes its credentials.",
+        "description": "Also deletes its credentials. A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it.",
         "operationId": "detachAgentFileAdapter",
         "parameters": [
           {
@@ -13176,6 +13195,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -24914,11 +24936,10 @@
           "mode": {
             "type": "string",
             "enum": [
-              "share",
-              "export"
+              "share"
             ],
             "default": "share",
-            "description": "`share`: identity-free copy (signing keys, attestations and DID removed; credentials kept only behind a share password). `export`: the whole file."
+            "description": "Only `share`: the identity-free copy (signing keys, attestations and DID removed; credentials kept only behind a share password). A full copy would keep the agent's config.id and DID and pass review as the original; download one with GET /agents/{id}/export instead."
           },
           "overwrite": {
             "type": "boolean",
@@ -24972,10 +24993,23 @@
           },
           "reviewed": {
             "type": "boolean",
-            "description": "False: review it (POST /agents/review/accept) before it runs"
+            "const": false,
+            "description": "Always false: review it (POST /agents/review/accept) before it runs"
           },
           "size": {
             "type": "integer"
+          },
+          "idReassigned": {
+            "type": "object",
+            "required": [
+              "previousId"
+            ],
+            "properties": {
+              "previousId": {
+                "type": "string"
+              }
+            },
+            "description": "The upload carried a config id this daemon has reviewed (review is keyed on the id); it got a fresh id so that review does not carry over"
           }
         }
       },

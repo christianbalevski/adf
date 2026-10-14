@@ -20,14 +20,15 @@
  * W2-A/W2-B land, holds the file as a document.
  */
 
-import { createReadStream, createWriteStream, existsSync, type ReadStream } from 'node:fs'
-import { copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises'
+import { constants as fsConstants, createReadStream, createWriteStream, existsSync, type Dirent, type ReadStream } from 'node:fs'
+import { copyFile, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { Transform, type Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
+import type { Readable } from 'node:stream'
+import Database from 'better-sqlite3'
+import { nanoid } from 'nanoid'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { cloneAdfFile } from '../adf/clone-fixup'
@@ -35,6 +36,16 @@ import { isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { ensureWorkspaceIdentity } from '../runtime/identity-provisioner'
 import { canonicalizePath, containsPath, isSameOrSubPath } from '../utils/tracked-paths'
 import type { RuntimeAgentSummary, RuntimeLiveAgent, RuntimeService } from '../runtime/runtime-service'
+import {
+  AGENT_LEASED_CODE,
+  agentLeasedMessage,
+  canonicalLeasePath,
+  holderLiveness,
+  leaseKeyForCanonicalPath,
+  processAgentLeases,
+  type AgentLeaseRecord,
+  type AgentLeaseRegistry,
+} from '../runtime/agent-lease'
 import type { DaemonIdentity } from './daemon-identity'
 import type { TrackedDirWatcher } from './dir-watcher'
 import { forgetTrackedFile, maxDepthOf, peekBootStatusCached, storedDirs, type TrackedDirsSettings } from './tracked-dirs'
@@ -81,7 +92,11 @@ export interface FileOpsDeps {
   /** Owner identity: clone provisions a fresh agent identity with it. Absent: the workspace identity hooks. */
   identity?: Pick<DaemonIdentity, 'isReady' | 'status' | 'service'>
   /** Push source (tracked_dirs, file_renamed) and the tracked-roots view. */
-  events: Pick<TrackedDirWatcher, 'sync' | 'notifyPathChanged' | 'notifyRenamed'>
+  events: Pick<TrackedDirWatcher, 'sync' | 'notifyPathChanged' | 'notifyRenamed' | 'expectFile'>
+  /** Agent leases (W0-C) checked before writing, moving or deleting a file. Default: the process registry; null disables the check. */
+  leases?: AgentLeaseRegistry | null
+  /** DELETE: how long to wait for a running agent to stop (default 15 s). */
+  unloadDeadlineMs?: number
   /** The agents folder (default: resolveAgentsFolder over settings). Tests inject one outside the user's Documents. */
   agentsFolder?: () => Promise<string>
 }
@@ -96,22 +111,103 @@ export function isValidAgentFileName(name: string): boolean {
     !name.endsWith('.') && !name.endsWith(' ') && name !== '.' && name !== '..'
 }
 
-/** An absolute `.adf` path from caller input, canonicalized; 400/404 otherwise. */
-export async function requireAdfPath(input: unknown, opts: { mustExist?: boolean; field?: string } = {}): Promise<string> {
+export interface AdfPathOptions {
+  mustExist?: boolean
+  field?: string
+  /**
+   * Delete, rename, move, overwrite: the path must already be canonical (no
+   * symlink, junction, 8.3 short name or other alias anywhere in it), so the
+   * operation acts on exactly the file the caller named.
+   */
+  destructive?: boolean
+  /** Folders a UNC path may point into (the tracked folders). */
+  uncRoots?: string[]
+}
+
+/** Windows reserved device names (with any extension). */
+const RESERVED_NAME = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i
+const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin'
+const BACKSLASH = '\\'
+const UNC_PREFIX = BACKSLASH + BACKSLASH
+const LONG_PREFIX = UNC_PREFIX + '?' + BACKSLASH
+const DEVICE_PREFIX = UNC_PREFIX + '.' + BACKSLASH
+
+function badPath(field: string, why: string, code = 'bad_path'): FileOpError {
+  return new FileOpError(`${field} ${why}`, 400, code)
+}
+
+function samePathSpelling(a: string, b: string): boolean {
+  return CASE_INSENSITIVE_FS ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
+function stripLongPathPrefix(p: string): string {
+  if (process.platform !== 'win32') return p
+  if (p.startsWith(LONG_PREFIX + 'UNC' + BACKSLASH)) return UNC_PREFIX + p.slice(8)
+  if (p.startsWith(LONG_PREFIX)) return p.slice(4)
+  return p
+}
+
+/** Absolute form of `raw` with its existing part resolved through the filesystem (links, short names). */
+async function canonicalOf(raw: string): Promise<string> {
+  const abs = resolve(raw)
+  try {
+    return stripLongPathPrefix(await realpath(abs))
+  } catch {
+    const parent = dirname(abs)
+    if (parent === abs) return abs
+    return join(await canonicalOf(parent), basename(abs))
+  }
+}
+
+/**
+ * An agent file path from caller input: absolute, naming an `.adf` both as
+ * given and after every link, short name and alias is resolved (so an 8.3
+ * name cannot reach a `.adfx` file, and an `.adf` link to a `.txt` is
+ * refused). Refused on Windows: alternate data streams, device paths
+ * (`\\?\`, `\\.\`), reserved device names, and UNC paths outside the
+ * tracked folders. Returns the canonical path.
+ */
+export async function requireAdfPath(input: unknown, opts: AdfPathOptions = {}): Promise<string> {
   const field = opts.field ?? 'path'
   if (typeof input !== 'string' || input.trim() === '') throw new FileOpError(`${field} is required`, 400, 'bad_request')
   const raw = input.trim()
-  if (raw.includes('\0')) throw new FileOpError(`${field} is not a valid path`, 400, 'bad_request')
+  if (raw.includes('\0')) throw badPath(field, 'is not a valid path')
+  if (process.platform === 'win32') {
+    const slashed = raw.split('/').join(BACKSLASH)
+    if (slashed.startsWith(LONG_PREFIX) || slashed.startsWith(DEVICE_PREFIX)) throw badPath(field, 'must not be a device path')
+    // A drive letter is the only colon a file path has; any other names an alternate data stream.
+    const colon = slashed.indexOf(':')
+    if (colon !== -1 && (colon !== 1 || slashed.indexOf(':', 2) !== -1)) throw badPath(field, 'must not name an alternate data stream')
+    for (const segment of slashed.split(BACKSLASH)) {
+      const stem = segment.split('.')[0].trim()
+      if (stem && RESERVED_NAME.test(stem)) throw badPath(field, `uses the reserved device name "${segment}"`)
+    }
+    if (slashed.startsWith(UNC_PREFIX)) {
+      const roots = opts.uncRoots ?? []
+      if (!roots.some(root => containsPath(resolve(root), resolve(raw)))) {
+        throw new FileOpError(`${field} is a network (UNC) path outside the tracked folders`, 400, 'unc_not_allowed')
+      }
+    }
+  }
   if (!isAbsolute(raw)) throw new FileOpError(`${field} must be an absolute path`, 400, 'bad_request')
   if (!raw.toLowerCase().endsWith('.adf')) throw new FileOpError(`${field} must name an .adf file`, 400, 'not_an_adf')
+  const canonical = await canonicalOf(raw)
+  if (!canonical.toLowerCase().endsWith('.adf')) {
+    throw new FileOpError(`${field} resolves to ${canonical}, which is not an .adf file`, 400, 'not_an_adf')
+  }
+  let linked = false
+  try { linked = (await lstat(raw)).isSymbolicLink() } catch { /* missing */ }
+  if (opts.destructive && (linked || !samePathSpelling(canonical, resolve(raw)))) {
+    throw new FileOpError(`${field} goes through a link or an alias (it resolves to ${canonical}); name the file by that path`, 400, 'path_not_canonical', { canonical })
+  }
   let st: Awaited<ReturnType<typeof stat>> | null = null
-  try { st = await stat(raw) } catch { st = null }
+  try { st = await stat(canonical) } catch { st = null }
   if (!st) {
-    if (opts.mustExist === false) return resolve(raw)
+    if (opts.mustExist === false) return canonical
     throw new FileOpError(`No such agent file: ${raw}`, 404, 'not_found')
   }
   if (!st.isFile()) throw new FileOpError(`Not a file: ${raw}`, 400, 'not_an_adf')
-  try { return canonicalizePath(raw) } catch { return resolve(raw) }
+  return canonical
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -186,8 +282,14 @@ async function moveFileWithFallback(src: string, dest: string): Promise<'moved' 
   }
 }
 
-function sameFile(a: string, b: string): boolean {
-  try { return canonicalizePath(a) === canonicalizePath(b) } catch { return resolve(a) === resolve(b) }
+/** The same file on disk (device + inode), whatever the spelling; false when either is missing. */
+async function sameFile(a: string, b: string): Promise<boolean> {
+  try {
+    const [x, y] = await Promise.all([stat(a, { bigint: true }), stat(b, { bigint: true })])
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
 }
 
 function isTempLocation(p: string): boolean {
@@ -199,6 +301,7 @@ function isTempLocation(p: string): boolean {
 // --- Agents folder ---------------------------------------------------------------
 
 let documentsDirCache: Promise<string> | null = null
+let documentsDirResolved: string | null = null
 
 /**
  * The user's Documents folder as Electron's app.getPath('documents') finds it:
@@ -207,8 +310,15 @@ let documentsDirCache: Promise<string> | null = null
  * elsewhere and as the fallback. Cached for the process.
  */
 export function documentsDir(): Promise<string> {
-  documentsDirCache ??= findDocumentsDir()
+  documentsDirCache ??= findDocumentsDir().then(dir => { documentsDirResolved = dir; return dir })
   return documentsDirCache
+}
+
+/** documentsDir() for synchronous callers: the resolved folder, or ~/Documents until the lookup (started here) finishes. */
+export function documentsDirSync(): string {
+  if (documentsDirResolved) return documentsDirResolved
+  void documentsDir()
+  return join(homedir(), 'Documents')
 }
 
 async function findDocumentsDir(): Promise<string> {
@@ -246,6 +356,7 @@ async function findDocumentsDir(): Promise<string> {
 /** Test hook. */
 export function resetDocumentsDirCache(): void {
   documentsDirCache = null
+  documentsDirResolved = null
 }
 
 /**
@@ -254,13 +365,22 @@ export function resetDocumentsDirCache(): void {
  * Studio), else <Documents>/adf-agents. Never created here.
  */
 export async function resolveAgentsFolder(settings?: TrackedDirsSettings): Promise<{ path: string; source: 'setting' | 'default' }> {
+  return configuredAgentsFolder(settings) ?? { path: join(await documentsDir(), 'adf-agents'), source: 'default' }
+}
+
+/** resolveAgentsFolder for synchronous callers (DaemonAgentFactory.defaultDirectory); see documentsDirSync. */
+export function resolveAgentsFolderSync(settings?: TrackedDirsSettings): { path: string; source: 'setting' | 'default' } {
+  return configuredAgentsFolder(settings) ?? { path: join(documentsDirSync(), 'adf-agents'), source: 'default' }
+}
+
+function configuredAgentsFolder(settings?: TrackedDirsSettings): { path: string; source: 'setting' } | null {
   const configured = settings?.get('agentsFolder')
   if (typeof configured === 'string' && configured.trim() !== '') {
     const candidate = resolve(configured.trim())
     if (!isTempLocation(candidate)) return { path: candidate, source: 'setting' }
     console.warn(`[FileOps] agentsFolder setting points into the OS temp dir; ignoring it: ${candidate}`)
   }
-  return { path: join(await documentsDir(), 'adf-agents'), source: 'default' }
+  return null
 }
 
 // --- Browse ----------------------------------------------------------------------
@@ -434,66 +554,160 @@ export function streamSnapshot(snapshot: TempSnapshot): ReadStream {
 
 // --- Byte-capped bodies ------------------------------------------------------------
 
+function tooLarge(maxBytes: number): FileOpError {
+  return new FileOpError(`The body is larger than the ${Math.round(maxBytes / (1024 * 1024))} MiB this route accepts`, 413, 'too_large', { maxBytes })
+}
+
+function isReadable(value: unknown): value is Readable {
+  return !!value && typeof (value as Readable).on === 'function' && typeof (value as Readable).pause === 'function'
+}
+
+function notOctetStream(): FileOpError {
+  return new FileOpError('Send the file as the request body (Content-Type: application/octet-stream)', 415, 'unsupported_media_type')
+}
+
+/**
+ * Read `body` chunk by chunk, handing each to `sink`. Past `maxBytes` the
+ * stream is paused and left unread, and 413 too_large is thrown: the route
+ * answers with Connection: close and destroys the request once the answer
+ * is out (closeAfterResponse), so an oversized upload is never drained.
+ */
+function consumeCapped(body: Readable, maxBytes: number, sink: (chunk: Buffer) => boolean | void, onDrainNeeded?: (resume: () => void) => void): Promise<number> {
+  return new Promise<number>((resolvePromise, reject) => {
+    let total = 0
+    const cleanup = () => {
+      body.off('data', onData)
+      body.off('end', onEnd)
+      body.off('error', onError)
+    }
+    const onData = (chunk: Buffer | Uint8Array | string) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+      total += buf.length
+      if (total > maxBytes) {
+        cleanup()
+        body.pause()
+        reject(tooLarge(maxBytes))
+        return
+      }
+      if (sink(buf) === false && onDrainNeeded) {
+        body.pause()
+        onDrainNeeded(() => body.resume())
+      }
+    }
+    const onEnd = () => { cleanup(); resolvePromise(total) }
+    const onError = (err: unknown) => { cleanup(); reject(err) }
+    body.on('data', onData)
+    body.once('end', onEnd)
+    body.once('error', onError)
+    body.resume()
+  })
+}
+
 /** Collect a request body into memory, refusing more than `maxBytes` (413 too_large). */
 export async function readCapped(body: unknown, maxBytes: number): Promise<Buffer> {
   if (Buffer.isBuffer(body)) {
     if (body.length > maxBytes) throw tooLarge(maxBytes)
     return body
   }
-  if (!isReadable(body)) throw new FileOpError('Send the file as the request body (Content-Type: application/octet-stream)', 415, 'unsupported_media_type')
+  if (!isReadable(body)) throw notOctetStream()
   const chunks: Buffer[] = []
-  let total = 0
-  let over = false
-  for await (const chunk of body) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
-    total += buf.length
-    // Past the cap: keep draining (so the 413 reaches the client) but keep nothing.
-    if (total > maxBytes) { over = true; chunks.length = 0; continue }
-    chunks.push(buf)
-  }
-  if (over) throw tooLarge(maxBytes)
+  const total = await consumeCapped(body, maxBytes, chunk => { chunks.push(chunk) })
   return Buffer.concat(chunks, total)
 }
 
-function tooLarge(maxBytes: number): FileOpError {
-  return new FileOpError(`The body is larger than the ${Math.round(maxBytes / (1024 * 1024))} MiB this route accepts`, 413, 'too_large', { maxBytes })
-}
-
-function isReadable(value: unknown): value is Readable {
-  return !!value && typeof (value as Readable).pipe === 'function' && typeof (value as Readable)[Symbol.asyncIterator] === 'function'
-}
-
-/** Write a request body to `dest`, refusing more than `maxBytes`. Removes `dest` on any failure. */
+/** Write a request body to a new file `dest`, refusing more than `maxBytes`. Removes `dest` on any failure. */
 async function writeCapped(body: unknown, dest: string, maxBytes: number): Promise<number> {
   if (Buffer.isBuffer(body)) {
     if (body.length > maxBytes) throw tooLarge(maxBytes)
-  } else if (!isReadable(body)) {
-    throw new FileOpError('Send the file as the request body (Content-Type: application/octet-stream)', 415, 'unsupported_media_type')
+    await writeFile(dest, body, { flag: 'wx' })
+    return body.length
   }
-  let total = 0
-  let over = false
-  const counter = new Transform({
-    transform(chunk: Buffer, _enc, done) {
-      total += chunk.length
-      if (total > maxBytes) { over = true; done(); return } // drain, write nothing more
-      done(null, chunk)
-    },
-  })
-  const source = Buffer.isBuffer(body) ? (async function* () { yield body })() : body as Readable
+  if (!isReadable(body)) throw notOctetStream()
+  const out = createWriteStream(dest, { flags: 'wx' })
+  const opened = new Promise<void>((ok, fail) => { out.once('open', () => ok()); out.once('error', fail) })
   try {
-    await pipeline(source, counter, createWriteStream(dest, { flags: 'wx' }))
+    await opened
+    let writeError: unknown = null
+    out.on('error', err => { writeError = err })
+    const total = await consumeCapped(body, maxBytes, chunk => out.write(chunk), resume => out.once('drain', resume))
+    await new Promise<void>((ok, fail) => out.end((err?: Error | null) => (err ? fail(err) : ok())))
+    if (writeError) throw writeError
+    return total
   } catch (err) {
+    out.destroy()
+    await new Promise(r => out.once('close', r)).catch(() => {})
     try { await unlink(dest) } catch { /* not created */ }
     throw err
   }
-  if (over) {
-    try { await unlink(dest) } catch { /* ignore */ }
-    throw tooLarge(maxBytes)
+}
+
+/**
+ * Move `src` to `dest` only if `dest` does not exist, atomically: a hard
+ * link fails with EEXIST instead of replacing a file that appeared in the
+ * meantime (a check-then-rename would overwrite it). Volumes without hard
+ * links fall back to an exclusive copy (COPYFILE_EXCL).
+ */
+async function moveNoClobber(src: string, dest: string, what: string): Promise<void> {
+  try {
+    await link(src, dest)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') throw new FileOpError(`${what} already exists`, 409, 'name_taken')
+    if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EXDEV' && code !== 'ENOSYS') throw err
+    try {
+      await copyFile(src, dest, fsConstants.COPYFILE_EXCL)
+    } catch (copyErr) {
+      if ((copyErr as NodeJS.ErrnoException).code === 'EEXIST') throw new FileOpError(`${what} already exists`, 409, 'name_taken')
+      throw copyErr
+    }
   }
-  return total
+  try { await unlink(src) } catch (err) { console.warn(`[FileOps] Work file ${basename(src)} was not removed:`, err) }
 }
 
 const SQLITE_MAGIC = Buffer.from('SQLite format 3\0', 'latin1')
+
+/** The .adf files under `dirs` (autostart scan rules), read asynchronously. */
+async function scanAdfFilesAsync(dirs: string[], maxDepth: number): Promise<string[]> {
+  const out: string[] = []
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > maxDepth) return
+    let entries: Dirent[]
+    try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith('.adf')) out.push(join(dir, e.name))
+      else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') await walk(join(dir, e.name), depth + 1)
+    }
+  }
+  for (const dir of dirs) await walk(dir, 0)
+  return out
+}
+
+const yieldToLoop = () => new Promise<void>(r => setImmediate(r))
+
+// --- Leases ------------------------------------------------------------------------
+
+/**
+ * The sentence naming the live runtime that holds `filePath`'s agent lease
+ * (W0-C), or null when nobody else does. A file another runtime runs must not
+ * be written, moved or deleted from here.
+ */
+export async function leaseHolderElsewhere(leases: AgentLeaseRegistry | null, filePath: string): Promise<string | null> {
+  if (!leases) return null
+  try {
+    if (await leases.isHeld(filePath)) return null
+    const canonical = await canonicalLeasePath(filePath)
+    let raw: string
+    try { raw = await readFile(join(leases.dir, `${leaseKeyForCanonicalPath(canonical)}.json`), 'utf-8') } catch { return null }
+    const record = JSON.parse(raw) as AgentLeaseRecord
+    if (record?.v !== 1 || typeof record.holder?.pid !== 'number' || typeof record.holder.runtimeId !== 'string') return null
+    if (record.holder.runtimeId === leases.runtimeId) return null
+    const liveness = await holderLiveness(record.holder, leases.dir)
+    return liveness.alive ? agentLeasedMessage(record, undefined, liveness.otherMachine) : null
+  } catch (err) {
+    console.warn(`[FileOps] Lease check of ${basename(filePath)} failed:`, err)
+    return null
+  }
+}
 
 // --- Operations ---------------------------------------------------------------------
 
@@ -534,8 +748,10 @@ export interface ImportResult {
   filePath: string
   name: string
   agentId: string
-  /** Reviewed here already (same config id and content as a reviewed file); otherwise it needs review before it runs. */
-  reviewed: boolean
+  /** Always false: an imported file runs only after the owner reviews it here. */
+  reviewed: false
+  /** The upload carried a config id this daemon has reviewed; it got a fresh id so that review does not carry over. */
+  idReassigned?: { previousId: string }
   size: number
 }
 
@@ -553,6 +769,9 @@ export interface PathAgentInfo {
   error?: string
 }
 
+/** How long DELETE waits for a running agent to stop before it gives up (the stop goes on). */
+const DELETE_UNLOAD_DEADLINE_MS = 15_000
+
 export class AgentFileOps {
   /** Canonical path → the name the file takes when its agent stops. */
   private readonly pendingRenames = new Map<string, string>()
@@ -561,8 +780,23 @@ export class AgentFileOps {
 
   private get runtime(): FileOpsRuntime { return this.deps.runtime }
 
+  private get leases(): AgentLeaseRegistry | null {
+    return this.deps.leases === undefined ? processAgentLeases() : this.deps.leases
+  }
+
   private async agentsFolder(): Promise<string> {
     return this.deps.agentsFolder ? this.deps.agentsFolder() : (await resolveAgentsFolder(this.deps.settings)).path
+  }
+
+  /** requireAdfPath with the tracked folders as the allowed UNC roots. */
+  adfPath(input: unknown, opts: Omit<AdfPathOptions, 'uncRoots'> = {}): Promise<string> {
+    return requireAdfPath(input, { ...opts, uncRoots: storedDirs(this.deps.settings ?? { get: () => undefined }) })
+  }
+
+  /** 409 agent_leased when another runtime runs the agent of `filePath`. */
+  async assertNotLeasedElsewhere(filePath: string): Promise<void> {
+    const message = await leaseHolderElsewhere(this.leases, filePath)
+    if (message) throw new FileOpError(message, 409, AGENT_LEASED_CODE)
   }
 
   pendingName(filePath: string): string | undefined {
@@ -582,7 +816,7 @@ export class AgentFileOps {
 
   /** GET /files/agent: the path → id rule. */
   async describe(input: unknown): Promise<PathAgentInfo> {
-    const filePath = await requireAdfPath(input)
+    const filePath = await this.adfPath(input)
     const loaded = this.loadedAt(filePath)
     const tracked = this.isTracked(filePath)
     const pendingName = this.pendingName(filePath)
@@ -608,16 +842,29 @@ export class AgentFileOps {
    * FILE_DELETE, as Studio does it: an agent running here is stopped first
    * (unloadAgent; the daemon's unload listener unregisters it from the
    * mesh and the lease is released), then the file and its sidecars go.
-   * A file that is already gone is not an error.
+   * A file that is already gone is not an error. A file another runtime
+   * runs is refused (409 agent_leased); so is a path through a link.
    */
   async delete(input: unknown): Promise<DeleteResult> {
-    const filePath = await requireAdfPath(input, { mustExist: false })
-    // Before the unload: the unload listener must not apply a pending rename to a file being deleted.
-    this.pendingRenames.delete(keyOf(filePath))
+    const filePath = await this.adfPath(input, { mustExist: false, destructive: true })
     const loaded = this.loadedAt(filePath)
+    if (!loaded) await this.assertNotLeasedElsewhere(filePath)
+    // Before the unload: the unload listener must not apply a pending rename to a file being deleted.
+    const pending = this.pendingRenames.get(keyOf(filePath))
+    this.pendingRenames.delete(keyOf(filePath))
     if (loaded) {
       console.log(`[FileOps] Stopping ${loaded.name} before deleting ${filePath}`)
-      await this.runtime.unloadAgent(loaded.id)
+      const deadlineMs = this.deps.unloadDeadlineMs ?? DELETE_UNLOAD_DEADLINE_MS
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const stopped = await Promise.race([
+        this.runtime.unloadAgent(loaded.id).then(() => true),
+        new Promise<false>(r => { timer = setTimeout(() => r(false), deadlineMs) }),
+      ]).finally(() => clearTimeout(timer))
+      if (!stopped) {
+        if (pending) this.pendingRenames.set(keyOf(filePath), pending)
+        console.warn(`[FileOps] ${loaded.name} did not stop within ${deadlineMs / 1000}s; ${filePath} was not deleted`)
+        throw new FileOpError(`${loaded.name} did not stop within ${deadlineMs / 1000} s, so its file was not deleted. It is still stopping; try again.`, 409, 'stop_timeout')
+      }
     }
     await removeAdfFiles(filePath)
     forgetTrackedFile(filePath)
@@ -634,13 +881,13 @@ export class AgentFileOps {
    * files cannot move under an open handle on Windows).
    */
   async rename(input: unknown, newNameInput: unknown): Promise<RenameResult> {
-    const filePath = await requireAdfPath(input)
+    const filePath = await this.adfPath(input, { destructive: true })
     const newName = typeof newNameInput === 'string' ? newNameInput.trim() : ''
     if (!isValidAgentFileName(newName)) {
       throw new FileOpError('Name contains characters not allowed in file names.', 400, 'invalid_name')
     }
     const newPath = join(dirname(filePath), `${newName}.adf`)
-    if (!sameFile(newPath, filePath) && await pathExists(newPath)) {
+    if (newPath !== filePath && await pathExists(newPath) && !(await sameFile(newPath, filePath))) {
       throw new FileOpError(`A file named "${newName}.adf" already exists.`, 409, 'name_taken')
     }
     const loaded = this.loadedAt(filePath)
@@ -656,6 +903,7 @@ export class AgentFileOps {
       this.deps.events.notifyPathChanged(filePath)
       return { success: true, filePath, renameDeferred: true, agentId: loaded.id }
     }
+    await this.assertNotLeasedElsewhere(filePath)
     return this.performRename(filePath, newName)
   }
 
@@ -678,12 +926,14 @@ export class AgentFileOps {
     const newPath = join(dirname(filePath), `${newName}.adf`)
     const moves = newPath !== filePath
     if (moves) {
-      if (!sameFile(newPath, filePath) && await pathExists(newPath)) {
+      if (await pathExists(newPath) && !(await sameFile(newPath, filePath))) {
         throw new FileOpError(`A file named "${newName}.adf" already exists.`, 409, 'name_taken')
       }
       if (!checkpointBeforeMove(filePath)) {
         throw new FileOpError('WAL sidecars could not be checkpointed (another process has the file open); rename aborted to avoid losing unflushed data.', 409, 'file_busy')
       }
+      // The move is the owner's, not a new agent: the watcher must not autostart it.
+      this.deps.events.expectFile(newPath)
       try {
         await rename(filePath, newPath)
       } catch (err) {
@@ -733,7 +983,7 @@ export class AgentFileOps {
    * reviewed (the owner made it); the folder is tracked if it was not.
    */
   async clone(input: unknown, selectedTables: unknown): Promise<CloneResult> {
-    const filePath = await requireAdfPath(input)
+    const filePath = await this.adfPath(input)
     if (!Array.isArray(selectedTables) || !selectedTables.every(t => typeof t === 'string')) {
       throw new FileOpError('selectedTables must be an array of table names', 400, 'bad_request')
     }
@@ -774,14 +1024,17 @@ export class AgentFileOps {
   }
 
   /**
-   * Write a snapshot of an agent file to another path on this host (Studio's
-   * "Save a copy…" with mode share, or a full export). Built on a .partial
-   * so a failure never leaves a half-written .adf.
+   * Studio's "Save a copy…" on this host: the identity-free share snapshot
+   * (AdfDatabase.snapshotForSend), never a full copy. A full copy keeps the
+   * agent's config.id and DID, so in a tracked folder it would pass review
+   * as the original and could autostart as its twin. Built on a .partial;
+   * without `overwrite` an existing destination is never replaced, even one
+   * that appears while the copy is written.
    */
-  async saveAs(input: unknown, destInput: unknown, mode: SnapshotMode, overwrite: boolean): Promise<{ success: true; filePath: string; size: number }> {
-    const filePath = await requireAdfPath(input)
-    const dest = await requireAdfPath(destInput, { mustExist: false, field: 'destPath' })
-    if (sameFile(dest, filePath)) {
+  async saveAs(input: unknown, destInput: unknown, overwrite: boolean): Promise<{ success: true; filePath: string; size: number }> {
+    const filePath = await this.adfPath(input)
+    const dest = await this.adfPath(destInput, { mustExist: false, field: 'destPath', destructive: true })
+    if (await sameFile(dest, filePath)) {
       throw new FileOpError('Choose a different file: a copy cannot overwrite the agent it came from', 409, 'same_file')
     }
     try {
@@ -789,27 +1042,35 @@ export class AgentFileOps {
     } catch {
       throw new FileOpError(`The folder does not exist: ${dirname(dest)}`, 400, 'bad_request')
     }
-    if (!overwrite && await pathExists(dest)) throw new FileOpError(`${basename(dest)} already exists`, 409, 'name_taken')
-    if (this.loadedAt(dest)) throw new FileOpError(`${basename(dest)} is a running agent`, 409, 'agent_running')
+    const exists = await pathExists(dest)
+    if (exists && !overwrite) throw new FileOpError(`${basename(dest)} already exists`, 409, 'name_taken')
+    if (exists) {
+      if (this.loadedAt(dest)) throw new FileOpError(`${basename(dest)} is a running agent`, 409, 'agent_running')
+      await this.assertNotLeasedElsewhere(dest)
+    }
     const partial = `${dest}.${randomUUID().slice(0, 8)}.partial`
+    this.deps.events.expectFile(dest)
     try {
-      if (mode === 'share') await AdfDatabase.snapshotForSend(filePath, partial)
-      else await AdfDatabase.snapshotTo(filePath, partial)
-      if (overwrite) await removeAdfFiles(dest)
-      await rename(partial, dest)
+      await AdfDatabase.snapshotForSend(filePath, partial)
+      if (overwrite) {
+        for (const side of ['-wal', '-shm']) { try { await unlink(`${dest}${side}`) } catch { /* none */ } }
+        await rename(partial, dest)
+      } else {
+        await moveNoClobber(partial, dest, basename(dest))
+      }
     } catch (err) {
       for (const suffix of ['', '-wal', '-shm', '-journal']) {
         try { await unlink(`${partial}${suffix}`) } catch { /* none */ }
       }
       throw err
     }
-    console.log(`[FileOps] Saved a ${mode === 'share' ? 'shareable copy' : 'copy'} of ${filePath} to ${dest}`)
+    console.log(`[FileOps] Saved a shareable copy of ${filePath} to ${dest}`)
     this.deps.events.notifyPathChanged(dest)
     return { success: true, filePath: dest, size: (await stat(dest)).size }
   }
 
-  /** GET /agents/:id/export: the file of a loaded agent, else of a tracked file with that config id. */
-  resolveAgentFile(agentId: string): string {
+  /** GET /agents/:id/export: the file of a loaded agent, else of a tracked file with that config id (async scan). */
+  async resolveAgentFile(agentId: string): Promise<string> {
     const ref = this.runtime.getAgent(agentId)
     if (ref) {
       if (!ref.filePath) throw new FileOpError(`Agent "${agentId}" has no file (in-memory agent)`, 409, 'not_file_backed')
@@ -817,8 +1078,9 @@ export class AgentFileOps {
     }
     const settings = this.deps.settings
     if (settings) {
-      for (const file of this.runtime.scanAdfFiles(storedDirs(settings), maxDepthOf(settings))) {
+      for (const file of await scanAdfFilesAsync(storedDirs(settings), maxDepthOf(settings))) {
         if (peekBootStatusCached(file).status?.agentId === agentId) return file
+        await yieldToLoop()
       }
     }
     throw new FileOpError(`Unknown agent "${agentId}"`, 404, 'not_found')
@@ -826,13 +1088,19 @@ export class AgentFileOps {
 
   /**
    * POST /files/import: an .adf sent from another machine lands in a tracked
-   * folder (or the agents folder, which is then tracked). It is not marked
-   * reviewed: it runs only after the owner reviews it, as any received file.
+   * folder (or the agents folder, which is then tracked). It is never treated
+   * as reviewed: review is keyed on config.id alone, so a file carrying an id
+   * this daemon has reviewed gets a fresh id first (reported as
+   * idReassigned), and the watcher does not autostart it. It runs only after
+   * the owner reviews it here.
    */
   async import(body: unknown, opts: { directory?: unknown; name?: unknown; unique?: boolean; maxBytes: number }): Promise<ImportResult> {
     const directory = await this.importDirectory(opts.directory)
     const rawName = typeof opts.name === 'string' ? opts.name.trim().replace(/\.adf$/i, '') : ''
     if (!isValidAgentFileName(rawName)) throw new FileOpError('name must be a file name (no path separators)', 400, 'invalid_name')
+    if (process.platform === 'win32' && RESERVED_NAME.test(rawName.split('.')[0].trim())) {
+      throw new FileOpError(`"${rawName}" is a reserved device name`, 400, 'invalid_name')
+    }
     let target = join(directory, `${rawName}.adf`)
     if (await pathExists(target)) {
       if (!opts.unique) throw new FileOpError(`An agent named "${rawName}" already exists in ${directory}.`, 409, 'name_taken')
@@ -847,7 +1115,7 @@ export class AgentFileOps {
       }
     }
     let agentId: string
-    let reviewed: boolean
+    let idReassigned: ImportResult['idReassigned']
     try {
       const head = Buffer.alloc(SQLITE_MAGIC.length)
       const fh = await open(partial, 'r')
@@ -858,16 +1126,22 @@ export class AgentFileOps {
         throw new FileOpError(`The upload is not a readable .adf: ${peek.error ?? 'no agent config'}`, 400, 'not_an_adf')
       }
       agentId = peek.status.agentId
-      reviewed = isConfigReviewed(this.deps.settings?.get('reviewedAgents'), peek.config)
-      if (await pathExists(target)) throw new FileOpError(`${basename(target)} appeared while uploading`, 409, 'name_taken')
-      await rename(partial, target)
+      if (isConfigReviewed(this.deps.settings?.get('reviewedAgents'), peek.config)) {
+        const fresh = nanoid(12)
+        reassignConfigId(partial, fresh)
+        idReassigned = { previousId: agentId }
+        console.warn(`[FileOps] Import of ${rawName}: config id ${agentId} is reviewed here; the upload gets id ${fresh} and needs its own review`)
+        agentId = fresh
+      }
+      this.deps.events.expectFile(target)
+      await moveNoClobber(partial, target, basename(target))
     } catch (err) {
       await discard()
       throw err
     }
-    console.log(`[FileOps] Imported ${basename(target)} (${size} bytes) into ${directory}${reviewed ? '' : '; it needs review before it runs'}`)
+    console.log(`[FileOps] Imported ${basename(target)} (${size} bytes) into ${directory}; it needs review before it runs`)
     this.fileCreated(target)
-    return { success: true, filePath: target, name: basename(target, '.adf'), agentId, reviewed, size }
+    return { success: true, filePath: target, name: basename(target, '.adf'), agentId, reviewed: false, ...(idReassigned ? { idReassigned } : {}), size }
   }
 
   private async importDirectory(input: unknown): Promise<string> {
@@ -884,7 +1158,7 @@ export class AgentFileOps {
     }
     let real: string
     try {
-      real = await realpath(dir)
+      real = stripLongPathPrefix(await realpath(dir))
       if (!(await stat(real)).isDirectory()) throw new Error('not a folder')
     } catch {
       throw new FileOpError(`The folder does not exist: ${dir}`, 400, 'bad_request')
@@ -905,7 +1179,7 @@ export class AgentFileOps {
    * every handle on the file (open document) first.
    */
   async relocate(input: unknown): Promise<RelocateResult> {
-    const filePath = await requireAdfPath(input)
+    const filePath = await this.adfPath(input, { destructive: true })
     if (this.isTracked(filePath)) return {}
     const inTemp = isTempLocation(dirname(filePath))
     const fallback = (err: unknown): RelocateResult => {
@@ -917,6 +1191,8 @@ export class AgentFileOps {
       return {}
     }
     if (this.loadedAt(filePath)) return fallback(new Error('agent is running'))
+    const holder = await leaseHolderElsewhere(this.leases, filePath)
+    if (holder) return fallback(new Error(holder))
     let dest: string
     try {
       const folder = await this.agentsFolder()
@@ -929,6 +1205,7 @@ export class AgentFileOps {
       return fallback(new Error('WAL sidecars could not be checkpointed; move aborted to avoid losing unflushed data'))
     }
     let outcome: 'moved' | 'copied-source-remains'
+    this.deps.events.expectFile(dest)
     try {
       outcome = await moveFileWithFallback(filePath, dest)
     } catch (err) {
@@ -951,12 +1228,14 @@ export class AgentFileOps {
   }
 
   /**
-   * A new agent file exists (clone, import, relocate): track its folder when
-   * no tracked folder covers it (Studio's notifyAdfFileCreated), which
-   * re-syncs the watcher, tells the mesh and pushes `tracked_dirs`; else push
-   * `tracked_dirs` for the covering root.
+   * A new agent file exists (clone, import, relocate): the watcher does not
+   * autostart it (the owner placed it; it starts when they start it); its
+   * folder is tracked when no tracked folder covers it (Studio's
+   * notifyAdfFileCreated), which re-syncs the watcher, tells the mesh and
+   * pushes `tracked_dirs`; else `tracked_dirs` is pushed for the covering root.
    */
   fileCreated(filePath: string): void {
+    this.deps.events.expectFile(filePath)
     const settings = this.deps.settings
     const dir = dirname(canonicalizePath(filePath))
     const existing = settings ? storedDirs(settings) : []
@@ -974,6 +1253,18 @@ export class AgentFileOps {
     const settings = this.deps.settings
     if (!settings?.set) return
     settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))
+  }
+}
+
+/** Give a closed .adf a new config.id in place (one plain connection, no migration). */
+function reassignConfigId(filePath: string, id: string): void {
+  const db = new Database(filePath, { fileMustExist: true })
+  try {
+    db.pragma('busy_timeout = 5000')
+    db.prepare("UPDATE adf_config SET config_json = json_set(config_json, '$.id', ?) WHERE id = 1").run(id)
+    try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* best effort */ }
+  } finally {
+    try { db.close() } catch { /* ignore */ }
   }
 }
 

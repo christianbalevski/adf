@@ -80,6 +80,12 @@ const DEFAULT_DEBOUNCE_MS = 250
 const DEFAULT_STABILITY_MS = 500
 const DEFAULT_QUEUE_LIMIT = 100
 const DEFAULT_CONCURRENCY = 2
+const EXPECTED_FILE_MIN_TTL_MS = 5_000
+
+function pathKey(p: string): string {
+  const abs = resolve(p)
+  return process.platform === 'win32' || process.platform === 'darwin' ? abs.toLowerCase() : abs
+}
 
 export class TrackedDirWatcher extends EventEmitter {
   private readonly opts: TrackedDirWatcherOptions
@@ -87,6 +93,10 @@ export class TrackedDirWatcher extends EventEmitter {
   /** Tracked roots, as stored, with their canonical form. */
   private roots: Array<{ stored: string; canonical: string }> = []
   private rootsKey = ''
+  /** The stored list and depth last synced, compared before any filesystem call. */
+  private storedKey: string | null = null
+  /** Files the daemon itself just placed (rename, clone, import, relocate) → until when autostart ignores them. */
+  private readonly expected = new Map<string, number>()
   private watchedDepth = -1
   /** Re-watches closing the old watch or opening the new one. */
   private watchPending = 0
@@ -129,13 +139,19 @@ export class TrackedDirWatcher extends EventEmitter {
    */
   sync(opts: { announce?: boolean } = {}): string[] {
     const dirs = storedDirs(this.opts.settings)
+    const depth = maxDepthOf(this.opts.settings)
+    const idle = () => !!this.watcher || this.watchPending > 0 || this.opts.watch === false || dirs.length === 0 || this.closed
+    // Cheap path (every write request re-syncs): the same stored list and
+    // depth needs no filesystem call.
+    const storedKey = `${depth}\0${dirs.join('\0')}`
+    if (storedKey === this.storedKey && idle()) return dirs
+    this.storedKey = storedKey
     const roots = dirs.map(stored => {
       let canonical = resolve(stored)
       try { canonical = canonicalizePath(stored) } catch { /* keep resolved */ }
       return { stored, canonical }
     })
     const key = roots.map(r => r.canonical).join('\0')
-    const depth = maxDepthOf(this.opts.settings)
     if (key === this.rootsKey && depth === this.watchedDepth && (this.watcher || this.watchPending > 0 || this.opts.watch === false || roots.length === 0 || this.closed)) {
       return dirs
     }
@@ -163,8 +179,31 @@ export class TrackedDirWatcher extends EventEmitter {
     if (root) this.scheduleRoot(root)
   }
 
+  /**
+   * The daemon is about to place `filePath` itself (a rename, clone, import
+   * or relocate): its `add` event is the owner's own move, not a new agent,
+   * so autostart ignores it until the window passes (longer than the
+   * watcher's write-stability wait). Without this a deferred rename applied
+   * when the owner stops an agent would start it again.
+   */
+  expectFile(filePath: string): void {
+    const ttl = Math.max(EXPECTED_FILE_MIN_TTL_MS, (this.opts.stabilityMs ?? DEFAULT_STABILITY_MS) * 4)
+    const now = Date.now()
+    for (const [key, until] of this.expected) if (until < now) this.expected.delete(key)
+    this.expected.set(pathKey(filePath), now + ttl)
+  }
+
+  private isExpected(filePath: string): boolean {
+    const key = pathKey(filePath)
+    const until = this.expected.get(key)
+    if (until === undefined) return false
+    if (until < Date.now()) { this.expected.delete(key); return false }
+    return true
+  }
+
   /** `file_renamed` push (rename, accept-relocate). */
   notifyRenamed(oldPath: string, newPath: string): void {
+    this.expectFile(newPath)
     this.emit('file_renamed', { oldPath, newPath } satisfies FileRenamedPush)
   }
 
@@ -184,6 +223,7 @@ export class TrackedDirWatcher extends EventEmitter {
     this.watcher = null
     this.watchedDepth = -1
     this.rootsKey = ''
+    this.storedKey = null
     if (watcher) await watcher.close()
   }
 
@@ -324,6 +364,10 @@ export class TrackedDirWatcher extends EventEmitter {
 
   private async autostartOne(filePath: string): Promise<void> {
     if (this.opts.isHeld?.(filePath)) return
+    if (this.isExpected(filePath)) {
+      console.log(`[DirWatcher] ${basename(filePath)} was placed by the daemon (rename, clone, import or move); not autostarted`)
+      return
+    }
     if (RuntimeGate.stopped) {
       console.log(`[DirWatcher] ${basename(filePath)} appeared while the runtime is stopped (emergency stop); not autostarted.`)
       return

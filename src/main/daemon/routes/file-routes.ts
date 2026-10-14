@@ -7,7 +7,7 @@
 //   POST   /files/rename               rename (deferred while the agent runs)
 //   POST   /files/clone                clone with selected tables + clone-fixup
 //   POST   /files/relocate             accept-relocate into the agents folder
-//   POST   /files/save-as              snapshot to another path on this host
+//   POST   /files/save-as              shareable copy to another path on this host
 //   GET    /files/snapshot             snapshot bytes: share (identity-free) or export
 //   POST   /files/import               octet-stream upload of an .adf into a tracked folder
 //   GET    /agents/:id/export          consistent snapshot of an agent's file (SQLite backup API)
@@ -30,7 +30,7 @@ import { AdfWorkspace } from '../../adf/adf-workspace'
 import { withSource } from '../../runtime/execution-context'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentUnloadedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
-import { AgentFileOps, FileOpError, browse, readCapped, requireAdfPath, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
+import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
 import { PathAgentOps } from '../path-agent-ops'
 import { scanTrackedTree, TrackedDirError, type TrackedDirsSettings } from '../tracked-dirs'
 import type { DaemonRouteContext } from './index'
@@ -104,7 +104,11 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     })
   }
 
-  const fail = (reply: FastifyReply, err: unknown) => sendError(reply, err)
+  const fail = (reply: FastifyReply, err: unknown, request?: FastifyRequest) => {
+    // An upload refused past its limit was left unread: close the connection once the answer is out.
+    if (request && err instanceof FileOpError && err.statusCode === 413) closeAfterResponse(request, reply)
+    return sendError(reply, err)
+  }
 
   // --- Path → id, agents folder ------------------------------------------------
 
@@ -145,13 +149,16 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     try { return await files.relocate(request.body?.path) } catch (err) { return fail(reply, err) }
   })
 
+  // Studio's "Save a copy…": the identity-free share snapshot only. A full
+  // copy on this host would be a twin of the agent (same config.id and DID).
   server.post<{ Body: { path?: unknown; destPath?: unknown; mode?: unknown; overwrite?: unknown } | undefined }>('/files/save-as', async (request, reply) => {
     const body = request.body ?? {}
-    const mode = parseMode(body.mode, 'share')
-    if (!mode) return badRequest(reply, 'mode must be share or export')
+    if (body.mode !== undefined && body.mode !== 'share') {
+      return reply.code(400).send({ error: 'save-as writes the shareable copy only (mode share); download a full copy with GET /agents/{id}/export', code: 'export_not_supported' })
+    }
     if (body.overwrite !== undefined && typeof body.overwrite !== 'boolean') return badRequest(reply, 'overwrite must be a boolean')
     try {
-      return await files.saveAs(body.path, body.destPath, mode, body.overwrite === true)
+      return await files.saveAs(body.path, body.destPath, body.overwrite === true)
     } catch (err) {
       return fail(reply, err)
     }
@@ -161,7 +168,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     const mode = parseMode(request.query.mode, 'share')
     if (!mode) return badRequest(reply, 'mode must be share or export')
     try {
-      const filePath = await requireAdfPath(request.query.path)
+      const filePath = await files.adfPath(request.query.path)
       return await sendSnapshot(reply, filePath, mode)
     } catch (err) {
       return fail(reply, err)
@@ -170,7 +177,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
 
   server.get<{ Params: { id: string } }>('/agents/:id/export', async (request, reply) => {
     try {
-      return await sendSnapshot(reply, files.resolveAgentFile(request.params.id), 'export')
+      return await sendSnapshot(reply, await files.resolveAgentFile(request.params.id), 'export')
     } catch (err) {
       return fail(reply, err)
     }
@@ -181,7 +188,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     if (unique === null) return badRequest(reply, 'unique must be true or false')
     if (!isOctetStream(request)) return unsupported(reply)
     const declared = Number(request.headers['content-length'])
-    if (Number.isFinite(declared) && declared > importLimit) return tooLarge(reply, importLimit)
+    if (Number.isFinite(declared) && declared > importLimit) return tooLarge(request, reply, importLimit)
     try {
       return reply.code(201).send(await files.import(request.body, {
         directory: request.query.directory,
@@ -190,7 +197,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
         maxBytes: importLimit,
       }))
     } catch (err) {
-      return fail(reply, err)
+      return fail(reply, err, request)
     }
   })
 
@@ -267,7 +274,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     if (!agent) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isOctetStream(request)) return unsupported(reply)
     const declared = Number(request.headers['content-length'])
-    if (Number.isFinite(declared) && declared > rawLimit) return tooLarge(reply, rawLimit)
+    if (Number.isFinite(declared) && declared > rawLimit) return tooLarge(request, reply, rawLimit)
     try {
       const bytes = await readCapped(request.body, rawLimit)
       const mimeType = request.query.mimeType || AdfWorkspace.mimeTypeForPath(path)
@@ -285,7 +292,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       }
       return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length }
     } catch (err) {
-      return fail(reply, err)
+      return fail(reply, err, request)
     }
   })
 
@@ -395,7 +402,14 @@ function unsupported(reply: FastifyReply) {
   return reply.code(415).send({ error: 'Send the file as the request body with Content-Type: application/octet-stream', code: 'unsupported_media_type' })
 }
 
-function tooLarge(reply: FastifyReply, maxBytes: number) {
+/** Answer, then drop the connection: the rest of the request body is never read. */
+function closeAfterResponse(request: FastifyRequest, reply: FastifyReply): void {
+  reply.header('Connection', 'close')
+  reply.raw.once('finish', () => { request.raw.destroy() })
+}
+
+function tooLarge(request: FastifyRequest, reply: FastifyReply, maxBytes: number) {
+  closeAfterResponse(request, reply)
   return reply.code(413).send({ error: `The body is larger than the ${Math.round(maxBytes / MIB)} MiB this route accepts`, code: 'too_large', maxBytes })
 }
 

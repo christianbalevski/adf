@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { Readable } from 'node:stream'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -32,7 +34,8 @@ import { AgentFileOps } from '../src/main/daemon/file-ops'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
-import { processAgentLeases } from '../src/main/runtime/agent-lease'
+import { AgentLeaseRegistry, processAgentLeases } from '../src/main/runtime/agent-lease'
+import { MeshManager } from '../src/main/runtime/mesh-manager'
 import { setWorkspaceIdentityHooks } from '../src/main/runtime/identity-provisioner'
 
 const MIB = 1024 * 1024
@@ -263,6 +266,16 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
     // Fresh writes sit in the WAL of the running agent.
     runtime.writeAgentFile(ref.id, 'notes/live.txt', { content: 'written while running' })
+    // Proof: the main file alone (no -wal) does not have it yet.
+    const mainOnly = join(tempDir('adf-mainonly-'), 'main.adf')
+    copyFileSync(a.filePath, mainOnly)
+    const before = new Database(mainOnly, { readonly: true })
+    try {
+      expect(before.prepare('SELECT 1 FROM adf_files WHERE path = ?').get('notes/live.txt')).toBeUndefined()
+    } finally {
+      before.close()
+    }
+    for (const side of ['-wal', '-shm']) { try { unlinkSync(mainOnly + side) } catch { /* none */ } }
 
     const res = await server.inject({ method: 'GET', url: `/agents/${ref.id}/export` })
     expect(res.statusCode).toBe(200)
@@ -307,9 +320,18 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
 
     const dest = join(tempDir('adf-saveas-'), 'copy.adf')
     expect((await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: a.filePath } })).json().code).toBe('same_file')
-    const saved = await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: dest, mode: 'export' } })
+    // A full copy on this host would be a twin of the agent (same id and DID): refused.
+    expect((await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: dest, mode: 'export' } })).json().code).toBe('export_not_supported')
+    expect(existsSync(dest)).toBe(false)
+    const saved = await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: dest } })
     expect(saved.json()).toMatchObject({ success: true, filePath: dest })
-    expect(existsSync(dest)).toBe(true)
+    const copy = new Database(dest, { readonly: true })
+    try {
+      expect(copy.prepare("SELECT value FROM adf_meta WHERE key = 'adf_did'").get()).toBeUndefined()
+      expect(copy.prepare("SELECT COUNT(*) AS n FROM adf_identity WHERE purpose LIKE 'crypto:signing:%'").get()).toEqual({ n: 0 })
+    } finally {
+      copy.close()
+    }
     expect((await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: dest } })).json().code).toBe('name_taken')
   })
 
@@ -337,6 +359,23 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     expect(notAdf.json().code).toBe('not_an_adf')
     expect(existsSync(join(root, 'junk.adf'))).toBe(false)
     expect((await server.inject({ method: 'POST', url: `/files/import?directory=${q(root)}&name=x`, payload: { a: 1 } })).statusCode).toBe(415)
+  })
+
+  it('never imports as reviewed: a reviewed id gets a fresh one, and the watcher does not autostart the upload', async () => {
+    const root = tempDir('adf-files-')
+    const source = seedAgent(tempDir('adf-src-'), 'agent-1', { autostart: true })
+    const { server, settings, watcher, runtime } = setup({ trackedDirectories: [root], reviewedAgents: { [source.id]: 'accepted' } })
+    await server.ready()
+    const res = await server.inject({ method: 'POST', url: `/files/import?directory=${q(root)}&name=agent-1`, payload: readFileSync(source.filePath), headers: { 'content-type': 'application/octet-stream' } })
+    expect(res.statusCode).toBe(201)
+    const body = res.json()
+    expect(body).toMatchObject({ reviewed: false, idReassigned: { previousId: source.id } })
+    expect(body.agentId).not.toBe(source.id)
+    expect(Object.keys(settings.data.reviewedAgents as Record<string, unknown>)).toEqual([source.id])
+    const ws = AdfWorkspace.open(body.filePath)
+    try { expect(ws.getAgentConfig().id).toBe(body.agentId) } finally { ws.close() }
+    expect((watcher as unknown as { isExpected(p: string): boolean }).isExpected(body.filePath)).toBe(true)
+    expect(runtime.listAgents()).toEqual([])
   })
 })
 
@@ -385,6 +424,29 @@ describe('daemon file routes: raw internal files', () => {
     expect((await server.inject({ method: 'GET', url: '/agents/agent-9/files/raw?path=a' })).statusCode).toBe(404)
     expect((await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/raw?path=missing.bin` })).statusCode).toBe(404)
     expect((await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/raw` })).statusCode).toBe(400)
+  })
+
+  it('caps a streamed body with no Content-Length and closes the connection', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] }, { rawFileBodyLimit: MIB })
+    const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    let sent = 0
+    const chunk = Buffer.alloc(64 * 1024, 1)
+    const stream = new Readable({
+      read() {
+        // 4 MiB offered, 1 MiB allowed: the route stops reading past the cap.
+        if (sent >= 4 * MIB) { this.push(null); return }
+        sent += chunk.length
+        this.push(chunk)
+      },
+    })
+    const res = await server.inject({ method: 'PUT', url: `/agents/${ref.id}/files/raw?path=big.bin`, payload: stream, headers: { 'content-type': 'application/octet-stream' } })
+    expect(res.statusCode).toBe(413)
+    expect(res.json().code).toBe('too_large')
+    expect(res.headers.connection).toBe('close')
+    expect(sent).toBeLessThan(4 * MIB)
+    expect(runtime.getAgentFile(ref.id, 'big.bin')).toBeNull()
   })
 })
 
@@ -548,5 +610,162 @@ describe('accept-relocate (AgentFileOps.relocate)', () => {
     expect(changes.at(-1)).toEqual([tracked, dirname(dest)])
     expect(renames).toEqual([{ oldPath: a.filePath, newPath: dest }])
     await watcher.close()
+  })
+})
+
+describe('daemon file routes: path safety', () => {
+  const win = process.platform === 'win32'
+
+  it.runIf(win)('refuses device paths, alternate data streams, reserved names and UNC paths outside the tracked folders', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    writeFileSync(join(root, 'victim.txt'), 'keep me')
+    const { server } = setup({ trackedDirectories: [root] })
+    const del = async (p: string) => (await server.inject({ method: 'DELETE', url: `/files?path=${q(p)}` })).json()
+    const BS = '\\'
+    expect((await del(`${BS}${BS}?${BS}${a.filePath}`)).code).toBe('bad_path')
+    expect((await del(`${BS}${BS}.${BS}${a.filePath}`)).code).toBe('bad_path')
+    expect((await del(`${join(root, 'victim.txt')}:evil.adf`)).code).toBe('bad_path')
+    expect((await del(join(root, 'NUL.adf'))).code).toBe('bad_path')
+    expect((await del(join(root, 'con.agent.adf'))).code).toBe('bad_path')
+    const unc = `${BS}${BS}localhost${BS}${a.filePath[0]}$${a.filePath.slice(2)}`
+    expect((await del(unc)).code).toBe('unc_not_allowed')
+    expect(existsSync(a.filePath)).toBe(true)
+    expect(readFileSync(join(root, 'victim.txt'), 'utf-8')).toBe('keep me')
+  })
+
+  it.runIf(win)('checks .adf on the canonical path: an 8.3 short name cannot reach a .adfx file', async () => {
+    const root = tempDir('adf-files-')
+    const precious = join(root, 'precious.adfx')
+    writeFileSync(precious, 'precious')
+    let short = ''
+    try {
+      short = execFileSync('cmd', ['/d', '/s', '/c', `"for %I in ("${precious}") do @echo %~sI"`], { encoding: 'utf-8', windowsHide: true, windowsVerbatimArguments: true }).trim()
+    } catch { /* no cmd */ }
+    if (!short.toLowerCase().endsWith('.adf')) return // 8.3 names are off on this volume
+    expect(short).not.toBe(precious)
+    const { server } = setup({ trackedDirectories: [root] })
+    const res = (await server.inject({ method: 'DELETE', url: `/files?path=${q(short)}` })).json()
+    expect(res.code).toBe('not_an_adf')
+    expect(existsSync(precious)).toBe(true)
+  })
+
+  it('refuses a link named .adf to another file, and destructive ops through links', async () => {
+    const root = tempDir('adf-files-')
+    const outside = tempDir('adf-outside-')
+    const target = seedAgent(outside, 'agent-2')
+    const victim = join(root, 'victim.txt')
+    writeFileSync(victim, 'keep me')
+    const { server } = setup({ trackedDirectories: [root] })
+
+    const evil = join(root, 'evil.adf')
+    let fileLinks = true
+    try { symlinkSync(victim, evil, 'file'); links.push(evil) } catch { fileLinks = false } // needs Developer Mode on Windows
+    if (fileLinks) {
+      expect((await server.inject({ method: 'DELETE', url: `/files?path=${q(evil)}` })).json().code).toBe('not_an_adf')
+      expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(evil)}&mode=export` })).json().code).toBe('not_an_adf')
+      expect(readFileSync(victim, 'utf-8')).toBe('keep me')
+    }
+
+    // A folder link (a junction on Windows) to a real agent: reading is fine, deleting or renaming through it is not.
+    const dirLink = join(root, 'linked')
+    symlinkSync(outside, dirLink, win ? 'junction' : 'dir')
+    links.push(dirLink)
+    const through = join(dirLink, 'agent-2.adf')
+    expect((await server.inject({ method: 'GET', url: `/files/agent?path=${q(through)}` })).json().filePath).toBe(target.filePath)
+    expect((await server.inject({ method: 'DELETE', url: `/files?path=${q(through)}` })).json().code).toBe('path_not_canonical')
+    expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: through, newName: 'x' } })).json().code).toBe('path_not_canonical')
+    expect(existsSync(target.filePath)).toBe(true)
+  })
+
+  it('renames by case only', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server } = setup({ trackedDirectories: [root] })
+    const res = await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'Agent-1' } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().filePath).toBe(join(root, 'Agent-1.adf'))
+  })
+})
+
+describe('daemon file routes: leases and read-only reads', () => {
+  it('refuses to write, move or delete a file another runtime runs (409 agent_leased); reads still work, read-only', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const b = seedAgent(root, 'agent-2')
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(root, 'other-settings.json') })
+    expect((await other.acquire(a.filePath, { agentId: a.id })).ok).toBe(true)
+    try {
+      const { server } = setup({ trackedDirectories: [root], providers: [{ id: 'mock', type: 'openai-compatible', name: 'Mock', baseUrl: 'http://127.0.0.1:1/v1' }] })
+      const p = q(a.filePath)
+      const code = async (method: 'DELETE' | 'POST' | 'PUT', url: string, payload?: object) =>
+        (await server.inject({ method, url, ...(payload ? { payload } : {}) })).json().code
+      expect(await code('DELETE', `/files?path=${p}`)).toBe('agent_leased')
+      expect(await code('POST', '/files/rename', { path: a.filePath, newName: 'agent-3' })).toBe('agent_leased')
+      expect(await code('PUT', `/files/agent/model?path=${p}`, { provider: 'mock', model_id: 'm' })).toBe('agent_leased')
+      expect(await code('POST', `/files/agent/mcp/servers?path=${p}`, { server: { name: 'fs', transport: 'stdio', command: 'node' } })).toBe('agent_leased')
+      expect(await code('POST', '/files/save-as', { path: b.filePath, destPath: a.filePath, overwrite: true })).toBe('agent_leased')
+      const msg = (await server.inject({ method: 'DELETE', url: `/files?path=${p}` })).json().error
+      expect(msg).toMatch(/agent-1 is already running in another ADF Studio/)
+      expect(existsSync(a.filePath)).toBe(true)
+
+      // Reads open the file read-only: nothing written.
+      const mtime = statSync(a.filePath).mtimeMs
+      expect((await server.inject({ method: 'GET', url: `/files/agent/tables?path=${p}` })).statusCode).toBe(200)
+      expect((await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&npmPackage=fs` })).statusCode).toBe(200)
+      expect(statSync(a.filePath).mtimeMs).toBe(mtime)
+    } finally {
+      await other.close()
+    }
+  })
+
+  it('deletes credentials by exact prefix: LIKE wildcards and case never reach other servers', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    const p = q(a.filePath)
+    const put = (npmPackage: string) => server.inject({ method: 'PUT', url: `/files/agent/mcp/credentials?path=${p}`, payload: { npmPackage, envKey: 'KEY', value: 'v' } })
+    for (const pkg of ['a_b', 'aXb', 'A_B', 'a%b']) await put(pkg)
+    const detached = (await server.inject({ method: 'DELETE', url: `/files/agent/mcp/servers/a_b?path=${p}` })).json()
+    expect(detached.deletedCredentials).toBe(1)
+    const left = async (pkg: string) => Object.keys((await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&npmPackage=${encodeURIComponent(pkg)}` })).json().credentials)
+    expect(await left('aXb')).toEqual(['KEY'])
+    expect(await left('A_B')).toEqual(['KEY'])
+    expect(await left('a_b')).toEqual([])
+
+    // Same through a running agent.
+    await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    const live = (await server.inject({ method: 'DELETE', url: `/files/agent/mcp/servers/a%25b?path=${p}` })).json()
+    expect(live).toMatchObject({ loaded: true, deletedCredentials: 1 })
+    expect(await left('aXb')).toEqual(['KEY'])
+  })
+})
+
+describe('daemon file routes: rename keeps the mesh registration', () => {
+  it('a running agent renamed stays registered with the mesh until it stops', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    // The daemon's own wiring (daemon/index.ts): register on load, unregister on unload.
+    const mesh = new MeshManager([root])
+    mesh.enableMesh()
+    runtime.on('agent-loaded', e => {
+      if (!e.filePath) return
+      mesh.registerServableAgent(e.filePath, e.ref.config, e.agent.registry, e.agent.workspace, e.agent.session,
+        e.agent.executor, e.agent.adfCallHandler ?? null, e.agent.codeSandboxService as never, e.agent.triggerEvaluator)
+    })
+    runtime.on('agent-unloaded', e => { if (e.filePath) mesh.unregisterAgent(e.filePath) })
+    try {
+      const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+      const registered = () => mesh.getAgentStatuses().map(s => (s as { filePath?: string }).filePath)
+      expect(registered()).toContain(a.filePath)
+      const res = await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-9' } })
+      expect(res.json().renameDeferred).toBe(true)
+      expect(registered()).toContain(a.filePath)
+      await runtime.unloadAgent(ref.id)
+      expect(registered()).not.toContain(a.filePath)
+    } finally {
+      mesh.disableMesh()
+    }
   })
 })

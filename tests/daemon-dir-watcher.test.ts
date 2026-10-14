@@ -234,3 +234,68 @@ describe('tracked-dir watcher', () => {
     expect(pushes).toContainEqual({ dirPath: root })
   }, 20_000)
 })
+
+describe('tracked-dir watcher: files the daemon placed, and teardown', () => {
+  it('does not restart an agent the owner stopped when its deferred rename lands (file_renamed suppresses autostart)', async () => {
+    const root = tempDir('adf-watch-')
+    const a = seedAgent(root, 'agent-1', true)
+    const settings = memorySettings({ trackedDirectories: [root], reviewedAgents: [a.id] })
+    const runtime = runtimeFor(settings.store)
+    const fake = fakeWatch()
+    const { watcher, notices } = watcherFor(runtime, settings.store, { watchFactory: fake.factory })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    cleanups.push(() => log.mockRestore())
+    watcher.start()
+    await wait(10)
+    // The deferred rename applied on stop: same file under its new name.
+    const renamed = join(root, 'agent-9.adf')
+    copyFileSync(a.filePath, renamed)
+    watcher.notifyRenamed(a.filePath, renamed)
+    fake.fire('add', renamed)
+    // So is a file a clone or import placed (fileCreated → expectFile).
+    const placed = join(root, 'agent-1_clone.adf')
+    copyFileSync(a.filePath, placed)
+    watcher.expectFile(placed)
+    fake.fire('add', placed)
+    await watcher.whenIdle()
+    expect(runtime.listAgents()).toEqual([])
+    expect(notices).toEqual([])
+    expect(log.mock.calls.some(args => String(args[0]).includes('was placed by the daemon'))).toBe(true)
+
+    // Someone else dropping a file in is still autostarted.
+    const dropped = join(root, 'sub-agent.adf')
+    copyFileSync(a.filePath, dropped)
+    fake.fire('add', dropped)
+    await watcher.whenIdle()
+    expect(notices).toEqual([expect.objectContaining({ outcome: 'started', filePath: dropped })])
+  })
+
+  it('closes the watch of a folder that is no longer tracked, and stops watching when none is', async () => {
+    const root = tempDir('adf-watch-')
+    const second = tempDir('adf-watch-2-')
+    const settings = memorySettings({ trackedDirectories: [root, second] })
+    const handles: Array<{ closed: boolean; paths: string[] }> = []
+    const factory = (paths: string[]): DirWatchHandle => {
+      const state = { closed: false, paths }
+      handles.push(state)
+      const emitter = new EventEmitter()
+      return { on: (e: string, l: (...a: any[]) => void) => emitter.on(e, l), close: async () => { state.closed = true } } as DirWatchHandle
+    }
+    const { watcher } = watcherFor(runtimeFor(settings.store), settings.store, { watchFactory: factory })
+    watcher.start()
+    await wait(10)
+    expect(handles.map(h => h.paths)).toEqual([[root, second]])
+    settings.data.trackedDirectories = [root]
+    watcher.sync({ announce: false })
+    await wait(10)
+    expect(handles[0].closed).toBe(true)
+    expect(handles[1]).toEqual({ closed: false, paths: [root] })
+    expect(watcher.isWatching()).toBe(true)
+    settings.data.trackedDirectories = []
+    watcher.sync({ announce: false })
+    await wait(10)
+    expect(handles[1].closed).toBe(true)
+    expect(handles).toHaveLength(2)
+    expect(watcher.isWatching()).toBe(false)
+  })
+})
