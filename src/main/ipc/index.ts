@@ -168,6 +168,8 @@ import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
+import { LeasedStartTracker, processAgentLeases } from '../runtime/agent-lease'
+import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
@@ -762,6 +764,16 @@ let extractedDisplayState: string | null = null
 // Set of filePaths with in-flight AGENT_START so cleanupCurrentFile doesn't close their workspaces
 const startingFilePaths = new Set<string>()
 
+// Agent lease (design §10, runtime/agent-lease.ts): the foreground's share of
+// the agents this process runs is the open file while it has a live handle,
+// plus the files AGENT_START is building.
+const foregroundStarts = new LeasedStartTracker(() => startingFilePaths)
+function foregroundLeasedPaths(): string[] {
+  const paths = foregroundStarts.startingPaths()
+  if (currentFilePath && (currentAssembledAgent || agentExecutor)) paths.push(currentFilePath)
+  return paths
+}
+
 function rememberAdfDirectory(filePath: string): void {
   openedAdfDirs.add(resolve(dirname(filePath)))
 }
@@ -1352,6 +1364,7 @@ async function cleanupCurrentFile(): Promise<void> {
 
   // No transition — the stable handle remains the sole teardown owner.
   if (assembledAgent) await assembledAgent.disposeAsync({ mode: 'immediate' })
+  await processAgentLeases().reconcile()
   currentAdapterManager = null
   currentStreamBindingManager = null
   currentMcpManager = null
@@ -1418,6 +1431,7 @@ async function handleAgentOff(filePath: string): Promise<void> {
       currentAdfCallHandler = null
       if (meshManager) meshManager.removeAdapterManager(filePath)
       if (assembled) await assembled.disposeAsync({ mode: 'owner-off' })
+      await processAgentLeases().reconcile()
       applyPendingRename(filePath)
     } else if (backgroundAgentManager?.hasAgent(filePath)) {
       // Background teardown — stopAgent handles executor abort, MCP, adapters, sandbox.
@@ -1501,6 +1515,8 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
         return { success: false, error: 'WAL sidecars could not be checkpointed — rename aborted to avoid losing unflushed data.' }
       }
       renameSync(filePath, newPath)
+      // No-op unless this process still holds the lease (it never runs the file here).
+      void processAgentLeases().rekey(filePath, newPath)
     }
 
     // Update agent name inside
@@ -1866,6 +1882,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   openFileHook = hooks.openFile ?? null
   settings = new SettingsService()
   initApplicationMenu(settings)
+
+  // This process is a runtime host: register it and the foreground's leases.
+  processAgentLeases().addHostedPathsProbe(foregroundLeasedPaths)
+  void processAgentLeases().configure({
+    kind: 'studio-embedded',
+    settingsPath: join(getUserDataPath(), 'adf-settings.json'),
+    version: app.getVersion(),
+    mode: 'embedded',
+  })
 
   // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
   // on an explicit disable). Persisting means a model fails at most once, ever.
@@ -3675,7 +3700,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- Agent runtime ---
 
-  ipcMain.handle(IPC.AGENT_START, async (_event, args?: { filePath?: string; hasUserMessage?: boolean }) => {
+  ipcMain.handle(IPC.AGENT_START, foregroundStarts.wrap(async (_event: Electron.IpcMainInvokeEvent, args?: { filePath?: string; hasUserMessage?: boolean }) => {
     const t0 = performance.now()
     if (!currentWorkspace || !currentFilePath) {
       return { success: false, error: 'No file open' }
@@ -3896,6 +3921,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Signal that a start is in-flight — prevents cleanupCurrentFile from
     // closing the workspace database while we're still using it.
     startingFilePaths.add(capturedFilePath)
+
+    // Another ADF process on this machine (a daemon) may run this file.
+    const lease = await processAgentLeases().acquire(capturedFilePath, { agentId: config.id })
+    if (!lease.ok) {
+      startingFilePaths.delete(capturedFilePath)
+      console.warn(`[AGENT_START] ${lease.message}`)
+      return { success: false, error: lease.message, code: lease.code }
+    }
 
     // Helper: check if the foreground file has changed during an await
     const fileChanged = () => currentFilePath !== capturedFilePath
@@ -5005,7 +5038,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     startingFilePaths.delete(capturedFilePath)
     perfLog(`[PERF] AGENT_START (fresh): ${(performance.now() - t0).toFixed(1)}ms`)
     return { success: true, sessionId: session.getSessionId(), agentState: initialDisplayState }
-  })
+  }))
 
   ipcMain.handle(IPC.AGENT_STOP, async () => {
     const stoppedFilePath = currentFilePath
@@ -5032,6 +5065,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
     if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
+    await processAgentLeases().reconcile()
     // Teardown drains the executor's pending HIL (which unregisters each row);
     // this is the safety net so a dispose that failed part-way can never leave
     // an approval in the menu that nobody is waiting on.
