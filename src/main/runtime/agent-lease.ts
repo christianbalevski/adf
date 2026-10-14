@@ -144,6 +144,11 @@ export interface AgentLeaseRegistryOptions extends AgentLeaseHostInfo {
   takeoverLockTtlMs?: number
   /** Tests: runs after a taker has read the stale lease under the lock, before it replaces it. */
   beforeTakeoverReplace?: () => Promise<void>
+  /**
+   * Remove dead host records after writing ours (default true). Off for
+   * test registries that model runtimes with made-up pids.
+   */
+  sweepDeadEntries?: boolean
 }
 
 /** Paths a host runs or is starting. Any form: they are canonicalized here. */
@@ -509,6 +514,7 @@ export class AgentLeaseRegistry {
   private readonly machineIdOverride: string | null | undefined
   private readonly takeoverLockTtlMs: number
   private readonly beforeTakeoverReplace?: () => Promise<void>
+  private readonly sweepEntries: boolean
   /** Containers this runtime uses, written into its host record. */
   private containers: string[] = []
   /** The lease dir refused writes: remembered so every start does not stall on it. */
@@ -521,6 +527,7 @@ export class AgentLeaseRegistry {
     this.machineIdOverride = opts.machineId
     this.takeoverLockTtlMs = opts.takeoverLockTtlMs ?? TAKEOVER_LOCK_TTL_MS
     this.beforeTakeoverReplace = opts.beforeTakeoverReplace
+    this.sweepEntries = opts.sweepDeadEntries ?? true
     const kind = opts.kind ?? inferKind()
     this.info = {
       kind,
@@ -1082,7 +1089,7 @@ export class AgentLeaseRegistry {
     await writeAtomic(this.entryFile(), JSON.stringify(entry, null, 2))
     this.hostEntryWritten = true
     this.installExitHook()
-    void sweepDeadEntries(this.dir, this.pid).catch(() => {})
+    if (this.sweepEntries) void sweepDeadEntries(this.dir, this.pid).catch(() => {})
   }
 
   private async removeOwnEntries(): Promise<void> {
