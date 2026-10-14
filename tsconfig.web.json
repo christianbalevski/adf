@@ -18,5 +18,8 @@
     }
   },
   "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/api.ts"],
+  // The daemon client is for Electron main and the terminal app only (design
+  // D1, D8): it type-imports src/main and holds the daemon token. The renderer
+  // MUST NOT import it (doing so fails this project with TS6307).
   "exclude": ["src/shared/daemon-client/**"]
 }
