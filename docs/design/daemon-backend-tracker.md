@@ -51,7 +51,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W0-E | Backend selection at boot, Settings → Backend | 0 | W0-A (merge order) | MERGED c0305508 |
 | W0-F | Parity harness, embedded side | 0 | none | MERGED |
 | W1-A | RuntimeService parity hooks | 1 | W0-C, W0-D | TODO |
-| W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | TODO |
+| W1-B | AgentRuntimeBuilder and mesh parity | 1 | W0-D | MERGED |
 | W1-C | Daemon identity: runtime adoption, unlock cascade, app OAuth store, owner import | 1 | W0-D | MERGED |
 | W1-D | Gap routes: approvals, fleet, dashboard, registries, MCP probes | 1 | W0-D | TODO |
 | W1-E | File-level ops, raw file routes, tracked-dir watcher | 1 | W0-D, W0-C | TODO |
