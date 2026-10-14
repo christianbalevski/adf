@@ -16,6 +16,7 @@ import type { RuntimeService } from '../../runtime/runtime-service'
 import type { DaemonHttpApiOptions } from '../http-api'
 import type { LocalAccessOptions } from '../local-access'
 import { registerMetaRoutes, type DaemonStartedBy } from './meta-routes'
+import { registerIdentityImportRoutes } from './identity-import-routes'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -35,6 +36,7 @@ export type DaemonRouteModule = (server: FastifyInstance, ctx: DaemonRouteContex
 /** Append new modules at the end. */
 export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerMetaRoutes,
+  registerIdentityImportRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

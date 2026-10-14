@@ -15,15 +15,34 @@
  *  - runtime DID / delegation: `daemonRuntimeDid` / `daemonRuntimeDelegation`
  *    in settings — never Studio's `runtimeDid`, which shares the file;
  *  - owner public fields (`ownerDid`, `ownerEncPublicKey`, backup flag): the
- *    shared settings keys, written only for the SAME owner DID.
+ *    shared settings keys, written only for the SAME owner DID (an explicit
+ *    `importOwner` is the one switch).
  *
- * The phrase is returned exactly once (create) and never logged.
+ * Runtime adoption (design daemon-backend.md §5.3, D10): when the keychain
+ * holds a verified `studio-runtime:<scope>` entry (studio-runtime-entry.ts),
+ * the daemon signs, stamps and unlocks with Studio's runtime identity instead
+ * of its own. Studio's values come from the entry; the daemon never writes
+ * `runtimeDid`, `runtimeDelegation` or `runtimeEncPublicKey` into the shared
+ * settings file, and never mints a runtime key while adopted. Unlock then
+ * tries Studio's runtime key, the daemon's own `runtime-enc-key` (files it
+ * created before adoption, trusted-daemon slots), then the owner key.
+ * Without a keychain, or with a missing or invalid entry, the daemon keeps
+ * its own runtime; `status().runtime` says which and why.
+ *
+ * The phrase is returned exactly once (create) and never logged. No key
+ * material appears in logs, statuses or errors.
  */
 
-import { createHash } from 'crypto'
-import { dirname, join, resolve } from 'path'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+import type { AlfAttestation } from '../../shared/types/adf-v02.types'
+import type { AdfWorkspace } from '../adf/adf-workspace'
 import { deriveOwnerIdentity, validateMnemonic } from '../crypto/mnemonic-identity'
-import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, type OwnerIdentitySettings } from '../services/owner-identity.service'
+import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, type OwnerIdentitySettings, type RestampResult } from '../services/owner-identity.service'
+import { DaemonAppOAuthStore, daemonAppOAuthAccount } from '../services/mcp-oauth-store'
+import { settingsScope } from '../services/provider-key-store'
+import type { WorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import {
   FileSecretBackend,
   MIN_PASSPHRASE_LENGTH,
@@ -35,13 +54,47 @@ import {
 import { SecretBackendProviderKeyVault, type ProviderKeyVault } from './provider-key-vault'
 import type { SecretStatus } from '../services/settings.service'
 import type { DaemonEncKey } from './daemon-enc-key'
+import {
+  studioRuntimeAccount,
+  verifyStudioRuntimeEntry,
+  type AdoptedStudioRuntime,
+  type StudioRuntimeRejectReason,
+} from './studio-runtime-entry'
 
 export type DaemonIdentityState = 'none' | 'locked' | 'restore-needed' | 'ready'
+
+/**
+ * Whose runtime identity the daemon uses (design daemon-backend.md §5.3):
+ *  - `adopted`: Studio's, from a verified keychain entry;
+ *  - `absent`: the keychain holds no entry for this settings file;
+ *  - `rejected`: an entry exists but failed verification (`reason`);
+ *  - `unavailable`: no usable OS keychain here (or file storage forced).
+ * In every state but `adopted` the daemon runs as its own runtime, and the
+ * credentials of Studio-made agents unlock through the trusted-daemon slot
+ * for `daemonEncPublicKey` (Studio's `trustedDaemonEncKeys`).
+ */
+export type DaemonRuntimeAdoptionState = 'adopted' | 'absent' | 'rejected' | 'unavailable'
+
+export interface DaemonRuntimeAdoption {
+  state: DaemonRuntimeAdoptionState
+  /** `studio` only when adopted. */
+  source: 'studio' | 'daemon'
+  /** Why a present entry was not used; null otherwise. */
+  reason: StudioRuntimeRejectReason | null
+  /** The daemon's own runtime DID (it stamped the files it created before adoption). */
+  daemonRuntimeDid: string | null
+  /** Public half of the daemon's own runtime-enc-key: what Studio enrolls as a trusted daemon key. */
+  daemonEncPublicKey: string | null
+  /** One sentence for the UI (switch dialog, Settings → Identity). */
+  message: string
+}
 
 export interface DaemonIdentityStatus {
   status: DaemonIdentityState
   ownerDid: string | null
+  /** The runtime DID the daemon signs and stamps with: Studio's when adopted, else its own. */
   runtimeDid: string | null
+  runtime: DaemonRuntimeAdoption
   storage: 'keychain' | 'file'
   /** The user confirmed they wrote the phrase down (shared with Studio). */
   backupConfirmed: boolean
@@ -61,6 +114,7 @@ export type DaemonIdentityErrorCode =
   | 'not_file_storage'
   | 'nothing_to_unlock'
   | 'not_ready'
+  | 'switch_unconfirmed'
 
 export class DaemonIdentityError extends Error {
   constructor(
@@ -85,6 +139,9 @@ const RUNTIME_KEY_MAP: Record<string, string> = {
   legacyRuntimeDids: 'daemonLegacyRuntimeDids',
 }
 
+/** Keys that carry Studio's runtime identity while it is adopted. The daemon never writes them. */
+const ADOPTED_SETTINGS_KEYS = new Set(['runtimeDid', 'runtimeDelegation', 'runtimeEncPublicKey', 'legacyRuntimeDids'])
+
 /**
  * OwnerIdentitySettings for the daemon (see module doc). Keychain reads are
  * cached per process; DaemonIdentity.refresh() drops the cache so a phrase
@@ -92,6 +149,9 @@ const RUNTIME_KEY_MAP: Record<string, string> = {
  */
 export class DaemonIdentitySettings implements OwnerIdentitySettings {
   private readonly cache = new Map<string, string | null>()
+  private adopted: AdoptedStudioRuntime | null = null
+  /** Set only by DaemonIdentity.importOwner: the one deliberate owner switch. */
+  allowOwnerChange = false
 
   constructor(
     private readonly store: IdentitySettingsStore,
@@ -104,15 +164,38 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
     this.cache.clear()
   }
 
+  /** Use Studio's runtime identity (a verified entry), or the daemon's own (null). */
+  setAdopted(runtime: AdoptedStudioRuntime | null): void {
+    this.adopted = runtime
+  }
+
+  isAdopted(): boolean {
+    return this.adopted !== null
+  }
+
   get(key: string): unknown {
+    const adopted = this.adopted
+    if (adopted) {
+      if (key === 'runtimeDid') return adopted.runtimeDid
+      if (key === 'runtimeDelegation') return adopted.runtimeDelegation
+      if (key === 'runtimeEncPublicKey') return adopted.runtimeEncPublicKeyB64
+      // Studio's list, read-only: a restamp treats Studio's retired DIDs as Studio would.
+      if (key === 'legacyRuntimeDids') return this.store.get('legacyRuntimeDids')
+    }
     if (key === 'runtimeEncPublicKey') return this.encKey?.publicKeyB64
     return this.store.get(RUNTIME_KEY_MAP[key] ?? key)
   }
 
   set(key: string, value: unknown): void {
+    if (this.adopted && ADOPTED_SETTINGS_KEYS.has(key)) {
+      // Writing these would change embedded Studio's identity. The adopted
+      // entry is already certified by the owner on record.
+      console.warn(`[ADF Daemon] Not writing ${key}: the daemon uses ADF Studio's runtime identity and never changes it`)
+      return
+    }
     // Fixed by the daemon key file; nothing to store.
     if (key === 'runtimeEncPublicKey') return
-    if (key === 'ownerDid') {
+    if (key === 'ownerDid' && !this.allowOwnerChange) {
       const current = this.store.get('ownerDid')
       if (typeof current === 'string' && current !== '' && current !== value) {
         throw new DaemonIdentityError('owner_mismatch', `Refusing to replace this machine's owner ${current} from the daemon.`, 409)
@@ -128,6 +211,9 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
   }
 
   getSecret(key: string): string | null {
+    const adopted = this.adopted
+    if (adopted && key === 'runtimePrivateKey') return adopted.runtimePrivateKeyB64
+    if (adopted && key === 'runtimeEncPrivateKey') return adopted.runtimeEncPrivateKeyB64
     if (key === 'runtimeEncPrivateKey') return this.encKey ? this.encKey.privateKeyPkcs8.toString('base64') : null
     const account = this.account(key)
     if (!account || !this.backend.isUnlocked()) return null
@@ -138,6 +224,11 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
   }
 
   setSecret(key: string, value: string): void {
+    if (this.adopted && (key === 'runtimePrivateKey' || key === 'runtimeEncPrivateKey')) {
+      // Unreachable through OwnerIdentityService while adopted (secretStatus
+      // is 'ok', so nothing mints); refuse plainly if anything else tries.
+      throw new Error(`Refusing to replace ADF Studio's ${key} from the daemon`)
+    }
     if (key === 'runtimeEncPrivateKey') return // the daemon key file is immutable (daemon-enc-key.ts)
     const account = this.account(key)
     if (!account) throw new Error(`Unknown daemon secret "${key}"`)
@@ -146,6 +237,8 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
   }
 
   secretStatus(key: string): SecretStatus {
+    // Adopted keys exist by construction, so nothing is ever minted over them.
+    if (this.adopted && (key === 'runtimePrivateKey' || key === 'runtimeEncPrivateKey')) return 'ok'
     // A missing/corrupt daemon key file must never be "minted over".
     if (key === 'runtimeEncPrivateKey') return this.encKey ? 'ok' : 'locked'
     if (!this.backend.isUnlocked()) return 'locked'
@@ -166,10 +259,16 @@ export interface DaemonIdentityOptions {
   /** Path of the daemon settings file; the fallback secret file sits next to it. */
   settingsPath: string
   encKey: DaemonEncKey | null
-  /** Test seam: skip keychain detection. */
+  /** Test seam: skip keychain detection (a fake keychain is a backend of kind 'keychain'). */
   backend?: SecretBackend
   /** Passphrase for the file backend (ADF_OWNER_PASSPHRASE[_FILE]). */
   bootPassphrase?: string
+}
+
+export interface DaemonOwnerImportResult {
+  identity: DaemonIdentityStatus
+  previousOwnerDid: string | null
+  restamp: RestampResult
 }
 
 export const SECRET_FILE_NAME = 'owner-secrets.json'
@@ -183,17 +282,28 @@ export class DaemonIdentity {
   private readonly bootPassphrase?: string
   /** API keys of providers added through the daemon (same secret store as the owner phrase). */
   readonly providerKeys: ProviderKeyVault
+  /** App-level MCP OAuth sign-ins (Studio's `mcpOauthCredentials` counterpart), same secret store. */
+  readonly mcpOAuth: DaemonAppOAuthStore
   /** Owner DID the service is active for; null when not ready. */
   private readyOwnerDid: string | null = null
+  private readonly studioRuntimeAccount: string
+  private adoptedRuntime: AdoptedStudioRuntime | null = null
+  private adoption: DaemonRuntimeAdoption
+  /** Last logged adoption outcome, so a status poll does not repeat the line. */
+  private adoptionLogKey: string | null = null
+  /** importOwner runs on the daemon's own runtime; Studio's entry is re-checked after. */
+  private adoptionSuspended = false
 
   constructor(opts: DaemonIdentityOptions) {
     this.store = opts.settings
     this.encKey = opts.encKey
     this.bootPassphrase = opts.bootPassphrase || undefined
     this.backend = opts.backend ?? selectBackend(opts.settingsPath)
-    const scope = createHash('sha256').update(resolve(opts.settingsPath)).digest('hex').slice(0, 12)
+    const scope = settingsScope(opts.settingsPath)
     const runtimeAccount = `daemon-runtime-signing-key:${scope}`
+    this.studioRuntimeAccount = studioRuntimeAccount(scope)
     this.providerKeys = new SecretBackendProviderKeyVault(this.backend, scope)
+    this.mcpOAuth = new DaemonAppOAuthStore(this.backend, daemonAppOAuthAccount(scope))
     this.identitySettings = new DaemonIdentitySettings(this.store, this.backend, this.encKey, runtimeAccount)
     this.service = new OwnerIdentityService(this.identitySettings, { manageTrustedDaemonSlots: false })
 
@@ -204,6 +314,7 @@ export class DaemonIdentity {
         console.error(`[ADF Daemon] Owner identity stays locked: ${err instanceof WrongPassphraseError ? 'wrong passphrase in ADF_OWNER_PASSPHRASE' : err instanceof Error ? err.message : String(err)}`)
       }
     }
+    this.adoption = this.refreshAdoption()
   }
 
   get storage(): 'keychain' | 'file' {
@@ -218,28 +329,43 @@ export class DaemonIdentity {
     return true
   }
 
-  /** Recompute the status and, when ready, make sure the runtime key/stamps exist. */
+  /**
+   * Recompute the status and the runtime adoption and, when ready, make sure
+   * the runtime key/stamps exist.
+   */
   refresh(): DaemonIdentityStatus {
     this.identitySettings.clearCache()
     const status = this.computeStatus()
+    if (status.status === 'ready') {
+      // Adopt a phrase whose owner this settings file has not seen yet.
+      // Before the adoption check: a Studio entry is verified against it.
+      if (!this.store.get('ownerDid')) this.identitySettings.set('ownerDid', status.ownerDid)
+    }
+    const adoptedBefore = this.identitySettings.isAdopted()
+    this.adoption = this.refreshAdoption()
+    const runtimeChanged = adoptedBefore !== this.identitySettings.isAdopted()
     if (status.status !== 'ready') {
       this.readyOwnerDid = null
-      return status
+      return this.withRuntime(status)
     }
     const derived = status.ownerDid!
-    if (this.readyOwnerDid !== derived) {
-      // Adopt a phrase whose owner this settings file has not seen yet.
-      if (!this.store.get('ownerDid')) this.identitySettings.set('ownerDid', derived)
+    if (this.readyOwnerDid !== derived || runtimeChanged) {
       // Tell Studio this owner is seed-derived, so it never treats it as a
       // legacy DID to migrate away from (it restores it instead).
       if (this.store.get(OWNER_SEED_DERIVED_KEY) !== true) this.identitySettings.set(OWNER_SEED_DERIVED_KEY, true)
       // Mnemonic present → no minting of a new owner; backfills the owner
-      // enc public key and this daemon's runtime key + delegation.
+      // enc public key and, on the daemon's own runtime, its runtime key +
+      // delegation. While Studio's runtime is adopted nothing is minted.
       this.service.ensureIdentity()
+      const becameReady = this.readyOwnerDid !== derived
       this.readyOwnerDid = derived
-      this.notifyReady(derived)
+      if (becameReady) this.notifyReady(derived)
     }
-    return { ...status, runtimeDid: this.runtimeDid() }
+    return this.withRuntime(status)
+  }
+
+  private withRuntime(status: DaemonIdentityStatus): DaemonIdentityStatus {
+    return { ...status, runtimeDid: this.runtimeDid(), runtime: this.adoption }
   }
 
   /**
@@ -253,6 +379,17 @@ export class DaemonIdentity {
   }
 
   private readonly readyListeners: Array<(ownerDid: string) => void> = []
+
+  /**
+   * Run `listener` when the daemon starts or stops using Studio's runtime
+   * identity (an entry appeared, changed or became invalid). Deferred a tick,
+   * like onReady. Loaded agents' envelopes are worth re-checking then.
+   */
+  onRuntimeChange(listener: (adoption: DaemonRuntimeAdoption) => void): void {
+    this.runtimeListeners.push(listener)
+  }
+
+  private readonly runtimeListeners: Array<(adoption: DaemonRuntimeAdoption) => void> = []
 
   private notifyReady(ownerDid: string): void {
     if (this.readyListeners.length === 0) return
@@ -268,9 +405,153 @@ export class DaemonIdentity {
     return this.refresh()
   }
 
+  /** The runtime identity the daemon presents (mesh /ping): Studio's when adopted, else its own. */
+  presentedRuntime(): { did: string | null; delegation: AlfAttestation | null } {
+    const delegation = this.identitySettings.get('runtimeDelegation')
+    return {
+      did: this.runtimeDid(),
+      delegation: delegation && typeof delegation === 'object' ? delegation as AlfAttestation : null,
+    }
+  }
+
+  /**
+   * `settings` with `runtimeDid` / `runtimeDelegation` answered by
+   * presentedRuntime(), for consumers that read them from settings (the mesh
+   * server's /ping). The shared file holds Studio's values whether or not the
+   * daemon adopted them, so reading it directly advertises a runtime DID the
+   * daemon may not sign with.
+   */
+  presentedSettings(settings: { get(key: string): unknown }): { get(key: string): unknown } {
+    return {
+      get: (key) => {
+        if (key === 'runtimeDid') return this.presentedRuntime().did ?? undefined
+        if (key === 'runtimeDelegation') return this.presentedRuntime().delegation ?? undefined
+        return settings.get(key)
+      },
+    }
+  }
+
   private runtimeDid(): string | null {
+    const value = this.identitySettings.get('runtimeDid')
+    return typeof value === 'string' && value ? value : null
+  }
+
+  private daemonRuntimeDid(): string | null {
     const value = this.store.get('daemonRuntimeDid')
     return typeof value === 'string' && value ? value : null
+  }
+
+  // ---------------------------------------------------------------------------
+  // Runtime adoption (studio-runtime-entry.ts)
+  // ---------------------------------------------------------------------------
+
+  /** Read and verify Studio's keychain entry; switch the settings adapter to it or away from it. */
+  private refreshAdoption(): DaemonRuntimeAdoption {
+    let next: AdoptedStudioRuntime | null = null
+    let state: DaemonRuntimeAdoptionState
+    let reason: StudioRuntimeRejectReason | null = null
+    let detail = ''
+    if (this.adoptionSuspended) {
+      state = 'absent'
+    } else if (this.backend.kind !== 'keychain') {
+      state = 'unavailable'
+    } else {
+      let raw: string | null = null
+      let readError: string | null = null
+      try {
+        raw = this.backend.get(this.studioRuntimeAccount)
+      } catch (err) {
+        // The binding's message, never the value.
+        readError = err instanceof Error ? err.message : String(err)
+      }
+      if (readError !== null) {
+        state = 'unavailable'
+        detail = `the OS keychain could not be read (${readError})`
+      } else if (raw === null) {
+        state = 'absent'
+      } else {
+        const verified = verifyStudioRuntimeEntry(raw, {
+          ownerDid: this.store.get('ownerDid'),
+          runtimeDid: this.store.get('runtimeDid'),
+          runtimeEncPublicKey: this.store.get('runtimeEncPublicKey'),
+        })
+        if (verified.ok) {
+          state = 'adopted'
+          next = verified.runtime
+        } else {
+          state = 'rejected'
+          reason = verified.reason
+          detail = verified.detail
+        }
+      }
+    }
+
+    const changed = (this.adoptedRuntime?.runtimeDid ?? null) !== (next?.runtimeDid ?? null)
+    this.adoptedRuntime = next
+    this.identitySettings.setAdopted(next)
+
+    const daemonRuntimeDid = this.daemonRuntimeDid()
+    const adoption: DaemonRuntimeAdoption = {
+      state,
+      source: next ? 'studio' : 'daemon',
+      reason,
+      daemonRuntimeDid,
+      daemonEncPublicKey: this.encKey?.publicKeyB64 ?? null,
+      message: adoptionMessage(state, next?.runtimeDid ?? null, detail, this.encKey?.publicKeyB64 ?? null),
+    }
+    if (!this.adoptionSuspended) this.logAdoption(adoption, next?.runtimeDid ?? null)
+    if (changed && !this.adoptionSuspended && this.runtimeListeners.length > 0) {
+      setImmediate(() => {
+        for (const listener of this.runtimeListeners) {
+          try { listener(adoption) } catch (err) { console.error('[ADF Daemon] Runtime-change listener failed:', err) }
+        }
+      })
+    }
+    return adoption
+  }
+
+  private logAdoption(adoption: DaemonRuntimeAdoption, adoptedDid: string | null): void {
+    const key = `${adoption.state}|${adoption.reason ?? ''}|${adoptedDid ?? ''}|${adoption.message}`
+    if (key === this.adoptionLogKey) return
+    this.adoptionLogKey = key
+    const line = `[ADF Daemon] Runtime identity: ${adoption.message}`
+    if (adoption.state === 'rejected') console.warn(line)
+    else console.log(line)
+  }
+
+  /**
+   * Steps 1 and 2 of the daemon's unlock cascade (design §5.3): Studio's
+   * runtime key, then the daemon's own runtime-enc-key. Step 3, owner-key
+   * recovery with a runtime re-wrap, is OwnerIdentityService's. Without
+   * adoption the service's runtime key is the daemon's own, so this is a no-op.
+   */
+  private unlockWithLocalRuntimeKeys(workspace: AdfWorkspace): void {
+    const adopted = this.adoptedRuntime
+    if (!adopted || !workspace.hasEnvelopes()) return
+    workspace.unlockEnvelopes({ runtimeEncPrivateKey: Buffer.from(adopted.runtimeEncPrivateKeyB64, 'base64') })
+    // Already-unlocked envelopes are skipped, so this only tries what step 1 left.
+    if (this.encKey) workspace.unlockEnvelopes({ runtimeEncPrivateKey: this.encKey.privateKeyPkcs8 })
+  }
+
+  /** The full unlock cascade for one workspace: Studio's runtime key → the daemon's → the owner key. */
+  unlockWorkspaceEnvelopes(workspace: AdfWorkspace): void {
+    this.unlockWithLocalRuntimeKeys(workspace)
+    this.service.unlockWorkspaceEnvelopes(workspace)
+  }
+
+  /** The daemon's workspace identity hooks (setWorkspaceIdentityHooks). */
+  workspaceHooks(): WorkspaceIdentityHooks {
+    return {
+      ensureIdentity: (workspace) => {
+        // Decide readiness first: it may refresh the adoption the cascade uses.
+        const ready = this.isReady()
+        this.unlockWithLocalRuntimeKeys(workspace)
+        if (ready) this.service.ensureWorkspaceIdentity(workspace)
+        else this.service.unlockWorkspaceEnvelopes(workspace)
+      },
+      unlockEnvelopes: (workspace) => this.unlockWorkspaceEnvelopes(workspace),
+      canProvision: () => this.isReady(),
+    }
   }
 
   private computeStatus(): DaemonIdentityStatus {
@@ -278,6 +559,7 @@ export class DaemonIdentity {
     const base = {
       storage: this.backend.kind,
       runtimeDid: this.runtimeDid(),
+      runtime: this.adoption,
       backupConfirmed: this.store.get('ownerSeedBackupConfirmed') === true,
       passphraseRequired: this.backend.kind === 'file' && !this.backend.isUnlocked(),
     }
@@ -351,17 +633,14 @@ export class DaemonIdentity {
 
   /** Restore from the 12 words. Must match this machine's owner DID when one is on record. */
   restore(opts: { mnemonic: string; passphrase?: string }): DaemonIdentityStatus {
-    const normalized = typeof opts.mnemonic === 'string' ? opts.mnemonic.trim().toLowerCase().replace(/\s+/g, ' ') : ''
-    if (!normalized || !validateMnemonic(normalized)) {
-      throw new DaemonIdentityError('invalid_mnemonic', 'That is not a valid 12-word seed phrase. Check the words and their order.', 400)
-    }
+    const normalized = normalizeMnemonic(opts.mnemonic)
     const derived = deriveOwnerIdentity(normalized).did
     const settingsOwner = stringOrNull(this.store.get('ownerDid'))
     if (settingsOwner && settingsOwner !== derived) {
       throw new DaemonIdentityError(
         'owner_mismatch',
         `That phrase belongs to ${derived}, but this machine's owner is ${settingsOwner}. Enter the phrase for ${settingsOwner}` +
-          ' (to switch owners, import the new phrase in ADF Studio).',
+          ' (to switch owners, use adf identity import or Import identity in ADF Studio).',
         409,
       )
     }
@@ -371,6 +650,64 @@ export class DaemonIdentity {
     const identity = this.refresh()
     console.log(`[ADF Daemon] Restored owner identity ${identity.ownerDid} (${this.backend.kind} storage)`)
     return identity
+  }
+
+  /**
+   * Check an owner import before anything is unloaded: a valid phrase, and an
+   * explicit `switchOwner` when it belongs to another owner than the one on
+   * record. Returns the DIDs involved (public values).
+   */
+  checkImport(opts: { mnemonic: string; switchOwner?: boolean }): { ownerDid: string; previousOwnerDid: string | null } {
+    const normalized = normalizeMnemonic(opts.mnemonic)
+    const ownerDid = deriveOwnerIdentity(normalized).did
+    const previousOwnerDid = stringOrNull(this.store.get('ownerDid'))
+    if (previousOwnerDid && previousOwnerDid !== ownerDid && opts.switchOwner !== true) {
+      throw new DaemonIdentityError(
+        'switch_unconfirmed',
+        `That phrase belongs to ${ownerDid}, not this machine's owner ${previousOwnerDid}. Importing it makes ${ownerDid} the owner ` +
+          `and restamps the agents of ${previousOwnerDid} in tracked directories. Confirm the switch (switchOwner: true) to go ahead.`,
+        409,
+      )
+    }
+    return { ownerDid, previousOwnerDid }
+  }
+
+  /**
+   * Import an owner phrase (Studio's Import identity): the same owner acts as
+   * a restore; another owner replaces this machine's owner, after
+   * checkImport's confirmation, and restamps local agents
+   * (OwnerIdentityService.importMnemonic). The caller unloads and reloads
+   * loaded agents around it. Runs on the daemon's own runtime: Studio's
+   * runtime entry is certified by the previous owner and is re-checked
+   * afterwards (it no longer verifies after a switch until Studio rewrites it).
+   */
+  importOwner(opts: { mnemonic: string; passphrase?: string; switchOwner?: boolean }): DaemonOwnerImportResult {
+    const { ownerDid, previousOwnerDid } = this.checkImport(opts)
+    this.openFileBackend(opts.passphrase)
+    this.identitySettings.clearCache()
+    this.adoptionSuspended = true
+    this.adoption = this.refreshAdoption()
+    this.identitySettings.allowOwnerChange = true
+    let result: { ownerDid: string } & RestampResult
+    try {
+      result = this.service.importMnemonic(normalizeMnemonic(opts.mnemonic))
+    } finally {
+      this.identitySettings.allowOwnerChange = false
+      this.adoptionSuspended = false
+    }
+    // Force the ready transition so loaded agents re-check their envelopes.
+    this.readyOwnerDid = null
+    const identity = this.refresh()
+    const switched = previousOwnerDid !== null && previousOwnerDid !== ownerDid
+    console.log(
+      `[ADF Daemon] Imported owner identity ${ownerDid}${switched ? ` (replaced ${previousOwnerDid})` : ''}: ` +
+        `restamped ${result.restamped} agent file(s), attested ${result.attested}, ${result.failures.length} failure(s)`,
+    )
+    return {
+      identity,
+      previousOwnerDid,
+      restamp: { restamped: result.restamped, attested: result.attested, failures: result.failures },
+    }
   }
 
   /** File storage only: unlock with the passphrase. */
@@ -404,11 +741,114 @@ export class DaemonIdentity {
   }
 }
 
-/** ADF_SECRET_STORE=file|keychain forces a backend; default: keychain when usable, else the file. */
+function adoptionMessage(state: DaemonRuntimeAdoptionState, adoptedDid: string | null, detail: string, daemonEncPublicKey: string | null): string {
+  const fallback = 'Agents made in ADF Studio show as "recognized" here, and their credentials unlock through this ' +
+    `daemon's trusted key${daemonEncPublicKey ? ` (${daemonEncPublicKey})` : ''} once Studio trusts it.`
+  switch (state) {
+    case 'adopted':
+      return `Using ADF Studio's runtime identity ${adoptedDid} from the OS keychain, so agents open and unlock as they do in Studio.`
+    case 'absent':
+      return `Using the daemon's own runtime identity: ADF Studio has not shared its runtime identity for this settings file. ${fallback}`
+    case 'rejected':
+      return `Using the daemon's own runtime identity: ADF Studio's runtime entry in the OS keychain was not used because ${detail}. ${fallback}`
+    case 'unavailable':
+      return `Using the daemon's own runtime identity: ${detail || 'there is no usable OS keychain here'}, so it cannot use ADF Studio's. ${fallback}`
+  }
+}
+
+function normalizeMnemonic(mnemonic: unknown): string {
+  const normalized = typeof mnemonic === 'string' ? mnemonic.trim().toLowerCase().replace(/\s+/g, ' ') : ''
+  if (!normalized || !validateMnemonic(normalized)) {
+    throw new DaemonIdentityError('invalid_mnemonic', 'That is not a valid 12-word seed phrase. Check the words and their order.', 400)
+  }
+  return normalized
+}
+
+// ---------------------------------------------------------------------------
+// Secret backend selection
+// ---------------------------------------------------------------------------
+
+/** Test seam: path of a plaintext JSON file that stands in for the OS keychain. */
+export const TEST_KEYCHAIN_FILE_ENV = 'ADF_TEST_KEYCHAIN_FILE'
+
+/**
+ * Test seams are honoured only with ADF_TEST_SEAMS=1 and only when this code
+ * does not run from a packaged build (inside app.asar or an installed npm
+ * package). Same convention as the compute seam (W1-G).
+ */
+export function testSeamsAllowed(env: NodeJS.ProcessEnv = process.env, modulePath: string | null = currentModulePath()): boolean {
+  if (env.ADF_TEST_SEAMS !== '1') return false
+  if (!modulePath) return false
+  return !modulePath.includes('app.asar') && !modulePath.split(/[\\/]/).includes('node_modules')
+}
+
+function currentModulePath(): string | null {
+  try {
+    return fileURLToPath(import.meta.url)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A plaintext JSON file posing as the OS keychain (`{ "<account>": "<value>" }`),
+ * for spawned test daemons that must never reach the real keychain. Test
+ * seam only (TEST_KEYCHAIN_FILE_ENV); never selected in a packaged build.
+ */
+export class TestKeychainFileBackend implements SecretBackend {
+  readonly kind = 'keychain' as const
+  constructor(readonly filePath: string) {}
+
+  private read(): Record<string, string> {
+    if (!existsSync(this.filePath)) return {}
+    const parsed = JSON.parse(readFileSync(this.filePath, 'utf-8')) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {}
+  }
+
+  private write(values: Record<string, string>): void {
+    mkdirSync(dirname(this.filePath), { recursive: true })
+    const tmp = `${this.filePath}.tmp`
+    writeFileSync(tmp, JSON.stringify(values, null, 2) + '\n', { mode: 0o600 })
+    renameSync(tmp, this.filePath)
+  }
+
+  isUnlocked(): boolean { return true }
+
+  get(account: string): string | null {
+    return this.read()[account] ?? null
+  }
+
+  set(account: string, value: string): void {
+    this.write({ ...this.read(), [account]: value })
+  }
+
+  delete(account: string): void {
+    const values = this.read()
+    if (!(account in values)) return
+    delete values[account]
+    this.write(values)
+  }
+}
+
+/**
+ * ADF_SECRET_STORE=file|keychain forces a backend; ADF_KEYCHAIN=0 rules the
+ * keychain out; default: keychain when usable, else the file.
+ */
 function selectBackend(settingsPath: string): SecretBackend {
   const forced = process.env.ADF_SECRET_STORE
   const file = () => new FileSecretBackend(join(dirname(settingsPath), SECRET_FILE_NAME))
   if (forced === 'file') return file()
+  if (process.env.ADF_KEYCHAIN === '0' || process.env.ADF_KEYCHAIN === 'off') return file()
+  const fakePath = process.env[TEST_KEYCHAIN_FILE_ENV]
+  if (fakePath) {
+    if (testSeamsAllowed()) {
+      console.warn(`[ADF Daemon] Test seam: ${fakePath} stands in for the OS keychain (ADF_TEST_SEAMS=1)`)
+      return new TestKeychainFileBackend(fakePath)
+    }
+    // Fail closed: never fall through to the real keychain when a test asked not to use it.
+    console.error(`[ADF Daemon] Ignoring ${TEST_KEYCHAIN_FILE_ENV}: test seams need ADF_TEST_SEAMS=1 and an unpackaged build. Using the passphrase file, not the OS keychain.`)
+    return file()
+  }
   const keychain = openKeychainBackend()
   if (keychain) return keychain
   if (forced === 'keychain') console.error('[ADF Daemon] ADF_SECRET_STORE=keychain but no OS keychain is usable — using the passphrase file instead')

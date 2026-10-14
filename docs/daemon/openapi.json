@@ -4139,6 +4139,91 @@
         ]
       }
     },
+    "/identity/import": {
+      "post": {
+        "tags": [
+          "Owner identity"
+        ],
+        "summary": "Import an owner seed phrase, switching owners when confirmed (loopback only)",
+        "description": "Studio's Import identity. The phrase of this machine's owner acts as a restore. The phrase of another owner answers 409 `switch_unconfirmed`, naming both DIDs, unless `switchOwner` is true; then that owner replaces this machine's owner and the agents of the previous owner in tracked directories are restamped. Loaded agents are unloaded before the restamp and loaded again after it; the response lists both. A Studio runtime identity the daemon had adopted is certified by the previous owner, so after a switch `identity.runtime.state` is `rejected` (`owner_mismatch`) until Studio rewrites it. The phrase never appears in a response, log or error. Local callers only (see Local-only routes).",
+        "operationId": "importOwnerIdentity",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityImportBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Imported",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityImportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid phrase, passphrase or field type (`invalid_mnemonic`, `passphrase_required`, `weak_passphrase`, `bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                },
+                "example": {
+                  "error": "That is not a valid 12-word seed phrase. Check the words and their order.",
+                  "code": "invalid_mnemonic"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "409": {
+            "description": "The phrase belongs to another owner and `switchOwner` is not true (`switch_unconfirmed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                },
+                "example": {
+                  "error": "That phrase belongs to did:key:z6MkNew…, not this machine's owner did:key:z6MkOwner…. Importing it makes did:key:z6MkNew… the owner and restamps the agents of did:key:z6MkOwner… in tracked directories. Confirm the switch (switchOwner: true) to go ahead.",
+                  "code": "switch_unconfirmed"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/LocalProofHeader"
+          }
+        ]
+      }
+    },
     "/agents/{id}/providers/{providerId}/credentials": {
       "get": {
         "tags": [
@@ -13118,7 +13203,9 @@
               "not_file_storage",
               "nothing_to_unlock",
               "not_ready",
-              "loopback_only"
+              "loopback_only",
+              "switch_unconfirmed",
+              "bad_request"
             ]
           }
         }
@@ -13289,7 +13376,10 @@
               "string",
               "null"
             ],
-            "description": "This daemon's own runtime DID (never Studio's)"
+            "description": "The runtime DID the daemon signs and stamps with: ADF Studio's when `runtime.state` is `adopted`, else the daemon's own"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/DaemonRuntimeAdoption"
           },
           "storage": {
             "type": "string",
@@ -13314,10 +13404,200 @@
           "status": "ready",
           "ownerDid": "did:key:z6MkOwner…",
           "runtimeDid": "did:key:z6MkRuntime…",
+          "runtime": {
+            "state": "adopted",
+            "source": "studio",
+            "reason": null,
+            "daemonRuntimeDid": null,
+            "daemonEncPublicKey": "q9Jw…=",
+            "message": "Using ADF Studio's runtime identity did:key:z6MkRuntime… from the OS keychain, so agents open and unlock as they do in Studio."
+          },
           "storage": "keychain",
           "backupConfirmed": true,
           "passphraseRequired": false,
           "message": "Owner identity is ready."
+        }
+      },
+      "DaemonRuntimeAdoption": {
+        "type": "object",
+        "description": "Whose runtime identity the daemon uses. `adopted`: ADF Studio's, from a verified OS keychain entry for this settings file. `absent`: no such entry. `rejected`: an entry exists but failed verification (`reason`). `unavailable`: no usable OS keychain. In every state but `adopted` the daemon runs as its own runtime, and Studio-made agents' credentials unlock through the trusted-daemon key `daemonEncPublicKey`.",
+        "required": [
+          "state",
+          "source",
+          "reason",
+          "daemonRuntimeDid",
+          "daemonEncPublicKey",
+          "message"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "adopted",
+              "absent",
+              "rejected",
+              "unavailable"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "studio",
+              "daemon"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "malformed",
+              "unsupported_version",
+              "no_owner",
+              "owner_mismatch",
+              "bad_signing_key",
+              "subject_mismatch",
+              "bad_delegation",
+              "runtime_did_mismatch",
+              "enc_key_mismatch",
+              null
+            ]
+          },
+          "daemonRuntimeDid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The daemon's own runtime DID"
+          },
+          "daemonEncPublicKey": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Base64 raw X25519 public key of the daemon's runtime-enc-key (what Studio lists in trustedDaemonEncKeys)"
+          },
+          "message": {
+            "type": "string",
+            "description": "One sentence for the UI"
+          }
+        }
+      },
+      "IdentityImportBody": {
+        "type": "object",
+        "required": [
+          "mnemonic"
+        ],
+        "properties": {
+          "mnemonic": {
+            "type": "string",
+            "description": "12-word BIP-39 phrase (case/whitespace-insensitive)"
+          },
+          "passphrase": {
+            "type": "string",
+            "description": "File storage only, when it is not unlocked"
+          },
+          "switchOwner": {
+            "type": "boolean",
+            "description": "Required (true) when the phrase belongs to another owner than this machine's"
+          }
+        }
+      },
+      "IdentityImportResponse": {
+        "type": "object",
+        "required": [
+          "identity",
+          "ownerDid",
+          "previousOwnerDid",
+          "switched",
+          "restamp",
+          "reloaded",
+          "reloadFailures"
+        ],
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/IdentityStatus"
+          },
+          "ownerDid": {
+            "type": "string"
+          },
+          "previousOwnerDid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "switched": {
+            "type": "boolean",
+            "description": "The owner changed"
+          },
+          "restamp": {
+            "type": "object",
+            "required": [
+              "restamped",
+              "attested",
+              "failures"
+            ],
+            "properties": {
+              "restamped": {
+                "type": "integer"
+              },
+              "attested": {
+                "type": "integer"
+              },
+              "failures": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "reloaded": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "name",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "reloadFailures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "filePath",
+                "error"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       },
       "IdentityStatusEnvelope": {

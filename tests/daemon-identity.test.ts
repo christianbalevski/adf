@@ -85,14 +85,7 @@ function makeDaemon(opts: { backend?: ConstructorParameters<typeof DaemonIdentit
   const encKey = ensureDaemonEncKey(h.userDataDir)
   const identity = new DaemonIdentity({ settings, settingsPath, encKey, backend: opts.backend ?? fakeKeychain().backend })
   // Same wiring as src/main/daemon/index.ts.
-  setWorkspaceIdentityHooks({
-    ensureIdentity: (ws) => {
-      if (identity.isReady()) identity.service.ensureWorkspaceIdentity(ws)
-      else identity.service.unlockWorkspaceEnvelopes(ws)
-    },
-    unlockEnvelopes: (ws) => identity.service.unlockWorkspaceEnvelopes(ws),
-    canProvision: () => identity.isReady(),
-  })
+  setWorkspaceIdentityHooks(identity.workspaceHooks())
   const runtime = new RuntimeService({ settings, providerFactory: () => new MockLLMProvider() })
   runtimes.push(runtime)
   const agentFactory = new DaemonAgentFactory({ settings, identity, runtime })

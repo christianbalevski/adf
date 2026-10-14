@@ -213,6 +213,47 @@ Mechanism:
 4. Unlock tries Studio's runtime enc key, then the daemon's own `runtime-enc-key` (files it created before adoption, trusted-daemon slots), then the owner key. This cascade lives in daemon code (`daemon/index.ts` identity hooks); `OwnerIdentityService` is unchanged.
 5. `ensureRuntimeKey` MUST NOT mint while the adopted entry is in use.
 
+#### 5.3.1 Keychain entry `studio-runtime:<scope>` (version 1)
+
+Code: `src/main/daemon/studio-runtime-entry.ts` (type `StudioRuntimeEntryV1`, writer `serializeStudioRuntimeEntry`, reader `verifyStudioRuntimeEntry`). Studio main MUST write the entry with `serializeStudioRuntimeEntry` and nothing else.
+
+| Item | Value |
+|---|---|
+| Service | `ADF` (`KEYCHAIN_SERVICE`) |
+| Account | `studio-runtime:` + `settingsScope(settingsPath)`: the first 12 hex characters of `sha256(path.resolve(settingsPath))`. Studio MUST hash the same path string it passes to the daemon in `ADF_DAEMON_SETTINGS`; `resolve` does not fold case on Windows. |
+| Value | JSON object, fields below |
+
+| Field | Type | Content |
+|---|---|---|
+| `v` | number | `1`. A reader MUST reject any other value (`unsupported_version`). |
+| `runtimeDid` | string | Studio's `runtimeDid` |
+| `runtimeDelegation` | object | Studio's `runtimeDelegation` (`AlfAttestation`, role `runtime`) |
+| `runtimePrivateKey` | string | Studio's `runtimePrivateKey` secret: base64 PKCS8 DER, Ed25519 |
+| `runtimeEncPrivateKey` | string | Studio's `runtimeEncPrivateKey` secret: base64 PKCS8 DER, X25519 |
+| `runtimeEncPublicKey` | string | Studio's `runtimeEncPublicKey`: base64, raw 32 bytes |
+| `writtenAt` | string | ISO 8601; diagnostics only |
+
+The daemon adopts the entry only when every check passes; the first failing check is the `reason` in `GET /identity` → `runtime`:
+
+| Check | `reason` on failure |
+|---|---|
+| Valid JSON object with every field typed as above | `malformed` |
+| `v` is 1 | `unsupported_version` |
+| The settings file has an `ownerDid` | `no_owner` |
+| `runtimeDelegation.role` is `runtime` | `bad_delegation` |
+| `runtimeDelegation.issuer` equals `ownerDid` in the settings file | `owner_mismatch` |
+| `runtimePrivateKey` is an Ed25519 PKCS8 key | `bad_signing_key` |
+| The DID of that key equals `runtimeDid` and the delegation subject | `subject_mismatch` |
+| The delegation signature verifies and has not expired | `bad_delegation` |
+| `runtimeDid` equals `runtimeDid` in the settings file | `runtime_did_mismatch` |
+| The public key of `runtimeEncPrivateKey` equals `runtimeEncPublicKey` in the entry and in the settings file | `enc_key_mismatch` |
+
+The entry is re-read at boot, on every identity refresh (`GET /identity`, an owner change, the 60 s re-check while an agent is degraded). Studio MUST rewrite it whenever one of the copied values changes, including after an owner import, which re-signs `runtimeDelegation`; until then the daemon reports `rejected` / `owner_mismatch` and runs as its own runtime. Studio MUST delete it when it rotates its runtime key.
+
+`GET /identity` → `runtime` = `{state: 'adopted' | 'absent' | 'rejected' | 'unavailable', source: 'studio' | 'daemon', reason, daemonRuntimeDid, daemonEncPublicKey, message}`. The switch dialog SHOULD show `message` when `state` is not `adopted`.
+
+Testing: `tests/helpers/studio-runtime-entry.ts` (`writeStudioRuntimeEntry`, `fakeKeychain`). A spawned test daemon reads a plaintext keychain file named by `ADF_TEST_KEYCHAIN_FILE` when `ADF_TEST_SEAMS=1` and the code does not run from `app.asar` or `node_modules`; otherwise that variable makes it use the passphrase file, never the OS keychain. `ADF_KEYCHAIN=0` disables every keychain, including the test file.
+
 Security: writing the keychain entry requires the same OS-user keychain access that already exposes the owner phrase in the same service, so adoption grants nothing a local attacker did not have. The delegation check stops a corrupted or planted entry from changing the signing identity. A token-only attacker (HTTP) gains nothing because no route accepts key material.
 
 Fallback: without a usable keychain (Linux without Secret Service), adoption is not possible. The daemon keeps its own runtime; Studio enrolls the daemon's enc key into `trustedDaemonEncKeys` on switch (Phase C) so credentials unlock. Review then shows `recognized` for files stamped by the other runtime. This difference MUST be stated in the switch dialog.
