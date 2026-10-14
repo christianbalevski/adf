@@ -457,6 +457,10 @@ export class MeshManager extends EventEmitter {
    * Delivery is unchanged by the bus subscription: nothing publishes on the
    * bus (sendMessage delivers locally in-process, the HTTP and WS ingress go
    * through processIngressMessage), so each message still lands once.
+   *
+   * `adapterManager` is stored only when the agent is registered, and dropped
+   * with the registration, so a disabled mesh never holds a manager the
+   * agent's teardown disposes.
    */
   registerServableAgent(
     filePath: string,
@@ -467,7 +471,8 @@ export class MeshManager extends EventEmitter {
     executor: AgentExecutor | null,
     adfCallHandler: AdfCallHandler | null,
     codeSandboxService: CodeSandboxService | null,
-    triggerEvaluator: TriggerEvaluator | null
+    triggerEvaluator: TriggerEvaluator | null,
+    adapterManager: ChannelAdapterManager | null = null
   ): void {
     if (!this.enabled) return
     if (this.registeredAgents.has(filePath)) return
@@ -480,6 +485,7 @@ export class MeshManager extends EventEmitter {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return
 
+    if (adapterManager) this.setAdapterManager(filePath, adapterManager)
     const key = currentAgentDerivedKey(workspace)
     if (key) this.setDerivedKey(filePath, key)
     const unsubscribeSignals = subscribeAgentRuntimeSignals(workspace, {

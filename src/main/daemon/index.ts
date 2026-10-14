@@ -569,10 +569,9 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
     event.agent.adfCallHandler ?? null,
     event.agent.codeSandboxService ?? codeSandboxService,
     event.agent.triggerEvaluator,
+    // Stored only when the agent registered; dropped when it unregisters.
+    event.agent.adapterManager ?? null,
   )
-  if (event.agent.adapterManager) {
-    meshManager.setAdapterManager(event.filePath, event.agent.adapterManager)
-  }
   ensureMeshServer()
 }
 

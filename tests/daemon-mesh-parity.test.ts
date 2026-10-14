@@ -7,6 +7,7 @@ import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { AgentRuntimeBuilder } from '../src/main/runtime/agent-runtime-builder'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import { MeshManager } from '../src/main/runtime/mesh-manager'
+import { ChannelAdapterManager } from '../src/main/services/channel-adapter-manager'
 import { clearAllUmbilicalBuses } from '../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../src/shared/types/adf-event.types'
 import type { AssembledAgent } from '../src/main/runtime/assemble-agent'
@@ -198,6 +199,30 @@ describe('daemon mesh registration', () => {
     const after = { ...next, description: 'after unregister' }
     a1.agent.applyConfigChange(after)
     expect(mesh.getServableAgent('agent-1')).toBeNull()
+  })
+
+  it('holds the adapter manager only while the agent is registered', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-mesh-adapters-'))
+    const mesh = new MeshManager([dir])
+    const adapterManagers = (mesh as unknown as { adapterManagers: Map<string, unknown> }).adapterManagers
+    const a1 = await buildAgent(dir, 'agent-1', new MockLLMProvider(), {})
+    running.push(async () => { mesh.disableMesh(); await a1.agent.disposeAsync() })
+    const manager = new ChannelAdapterManager()
+    const register = () => mesh.registerServableAgent(
+      a1.filePath, a1.config, a1.agent.registry, a1.agent.workspace, a1.agent.session,
+      a1.agent.executor, a1.agent.adfCallHandler, a1.agent.codeSandboxService, a1.agent.triggerEvaluator, manager,
+    )
+
+    // Disabled mesh: not registered, so the manager is not kept either.
+    register()
+    expect(adapterManagers.has(a1.filePath)).toBe(false)
+
+    mesh.enableMesh()
+    register()
+    expect(adapterManagers.get(a1.filePath)).toBe(manager)
+
+    mesh.unregisterAgent(a1.filePath)
+    expect(adapterManagers.has(a1.filePath)).toBe(false)
   })
 
   it('registers nobody while the mesh is disabled (Studio parity)', async () => {
