@@ -9,11 +9,12 @@ import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs'
 import { basename, isAbsolute, join, resolve } from 'path'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AgentTemplatesService, templateFilePath, templatesDir } from '../adf/agent-templates'
-import { autoLockFields, buildConfigSummary, deriveReviewIdentity, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
-import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
+import { autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { canonicalizePath, isSameOrSubPath } from '../utils/tracked-paths'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import type { AgentConfigSummary, AgentTemplateListResult, ProviderConfig } from '../../shared/types/ipc.types'
+import { reviewSummaryFor } from './review-ops'
+import type { RuntimeOpenDocumentInfo } from '../runtime/runtime-service'
 import type { RuntimeService } from '../runtime/runtime-service'
 import { identityDrafts } from '../services/identity-drafts'
 import type { DaemonIdentity, DaemonIdentityStatus } from './daemon-identity'
@@ -27,9 +28,22 @@ export interface CreateAgentInput {
   model?: string
   start?: boolean
   /**
+   * false: create the file and leave it closed, nothing loaded or started
+   * (Studio's FILE_CREATE, FILE_CREATE_QUICK, MESH_FOUND_AGENT). Default true:
+   * the agent is loaded, as before.
+   */
+  load?: boolean
+  /**
+   * With load: false, hold the new file as an open document for this holder
+   * (a client session, W2-B): Studio's created file becomes the open file,
+   * not running.
+   */
+  holder?: string
+  /**
    * An identity draft (POST /identity/drafts): the new agent gets that DID,
    * the one the create screen showed. Consumed here; an unknown or expired
-   * draft falls back to a fresh identity.
+   * draft falls back to a fresh identity, and the answer says so
+   * (`identityDraft`, `warnings`).
    */
   identityDraftId?: string
 }
@@ -39,7 +53,19 @@ export interface CreateAgentResult {
   name: string
   filePath: string
   did: string
+  /** The agent is loaded in the runtime (false with load: false). */
+  loaded: boolean
   started: boolean
+  /** With `holder`: the open document the new file now is. */
+  document?: RuntimeOpenDocumentInfo
+  /**
+   * What became of identityDraftId: adopted (the draft's DID), unknown (no
+   * such draft, or it expired), adopt_failed (the draft could not be used);
+   * the last two mint a fresh DID.
+   */
+  identityDraft?: 'adopted' | 'unknown' | 'adopt_failed'
+  /** Things the caller should show (a draft that was not used). */
+  warnings?: string[]
 }
 
 export type AgentCreateErrorCode =
@@ -127,16 +153,26 @@ export class DaemonAgentFactory {
 
   /**
    * Studio's TEMPLATE_CHECK_REVIEW: the same review summary the agent review
-   * dialog shows, built for a template opened as a temporary workspace.
+   * dialog shows (provider usability through the automatic provider check),
+   * built for a template opened as a temporary workspace. While the owner
+   * identity is not ready the answer is `needsReview: false` with
+   * `identityReady: false`, as embedded Studio answers when it cannot build
+   * the review; accepting and creating from the template still refuse with
+   * identity_not_ready.
    */
-  templateReview(id: string): { needsReview: boolean; reviewed: boolean; summary: AgentConfigSummary } {
-    this.requireIdentity()
+  async templateReview(id: string): Promise<{ needsReview: boolean; reviewed: boolean; summary?: AgentConfigSummary; identityReady?: false; message?: string }> {
     const file = this.existingTemplateFile(id)
     const workspace = AdfWorkspace.open(file)
     try {
       const config = workspace.getAgentConfig()
       const reviewed = isConfigReviewed(this.deps.settings.get('reviewedAgents'), config)
-      return { needsReview: !reviewed, reviewed, summary: this.reviewSummary(workspace) }
+      if (!this.identityReady()) {
+        const identity = this.deps.identity.status()
+        console.warn(`[ADF Daemon] Template ${id}: review not built, the owner identity is not ready (${identity.status})`)
+        return { needsReview: false, reviewed, identityReady: false, message: `Set up the owner identity first. ${identity.message}` }
+      }
+      const summary = await reviewSummaryFor(workspace, file, { settings: this.deps.settings, identity: this.deps.identity }, { relocatable: false })
+      return { needsReview: !reviewed, reviewed, summary }
     } finally {
       try { workspace.close() } catch { /* ignore */ }
     }
@@ -190,49 +226,13 @@ export class DaemonAgentFactory {
     return file
   }
 
-  /** Studio's buildReviewSummaryFor (relocatable: false), provider probe left out. */
-  private reviewSummary(workspace: AdfWorkspace): AgentConfigSummary {
-    const config = workspace.getAgentConfig()
-    const svc = this.deps.identity.service
-    const agentDid = workspace.getDid()
-    const ownerAtt = readAdfAttestations(workspace)
-      .filter((a) => a.role === 'owner')
-      .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
-    const credentialSlots = workspace.readEnvelopeSlots('credentials') ?? []
-    const identity = deriveReviewIdentity({
-      agentDid,
-      fileOwnerDid: ownerAtt?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
-      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
-      localOwnerDid: svc.getOwnerDid(),
-      localRuntimeDid: svc.getRuntimeDid(),
-      identityEnvelope: workspace.getEnvelopeState('identity'),
-      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
-      sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
-      filePasswordProtected: workspace.isPasswordProtected(),
-      ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null,
-    })
-    const appProviders = (this.deps.settings.get('providers') as ProviderConfig[] | undefined) ?? []
-    const embedded = config.providers?.find((p) => p.id === config.model.provider)
-    const localProvider =
-      appProviders.find((p) => p.id === config.model.provider) ??
-      (embedded ? appProviders.find((p) => p.type === embedded.type) : undefined)
-    return {
-      ...buildConfigSummary(config, identity),
-      provider: {
-        configuredId: config.model.provider,
-        configuredType: embedded?.type,
-        modelId: config.model.model_id,
-        // Studio probes credentials here; the daemon only says whether a local provider matches.
-        status: localProvider ? 'unchecked' : 'missing',
-        ...(localProvider ? { resolvedLocalId: localProvider.id } : {}),
-      },
-    }
+  private identityReady(): boolean {
+    return this.deps.identity.isReady() || this.deps.identity.status().status === 'ready'
   }
 
   requireIdentity(): void {
-    if (this.deps.identity.isReady()) return
+    if (this.identityReady()) return
     const identity = this.deps.identity.status()
-    if (identity.status === 'ready') return
     throw new AgentCreateError('identity_not_ready', `Set up the owner identity first. ${identity.message}`, 409, identity)
   }
 
@@ -300,19 +300,28 @@ export class DaemonAgentFactory {
 
     let did: string | null = null
     let config: ReturnType<AdfWorkspace['getAgentConfig']>
+    let identityDraft: CreateAgentResult['identityDraft']
+    const warnings: string[] = []
     try {
       const workspace = AdfWorkspace.open(filePath)
       // Taken (and so consumed) only once the file exists, as in Studio's
       // FILE_CREATE_QUICK (studioCreateDeps).
       const draft = identityDraftId ? identityDrafts.take(identityDraftId) : null
-      if (identityDraftId && !draft) console.warn('[ADF Daemon] Identity draft unknown or expired — minting a fresh identity for the new agent')
+      if (identityDraftId && !draft) {
+        identityDraft = 'unknown'
+        warnings.push('The identity shown on the create screen had expired, so the new agent got a fresh identity (a new DID).')
+        console.warn('[ADF Daemon] Identity draft unknown or expired — minting a fresh identity for the new agent')
+      }
       try {
         const service = this.deps.identity.service
         try {
           service.ensureWorkspaceIdentity(workspace, draft ? { adoptKeys: draft } : {})
+          if (draft) identityDraft = 'adopted'
         } catch (err) {
           if (!draft) throw err
           console.warn('[ADF Daemon] Adopting the identity draft failed, minting a fresh identity:', err)
+          identityDraft = 'adopt_failed'
+          warnings.push(`The identity shown on the create screen could not be used (${err instanceof Error ? err.message : String(err)}), so the new agent got a fresh identity (a new DID).`)
           service.ensureWorkspaceIdentity(workspace)
         }
         did = workspace.getDid()
@@ -337,6 +346,23 @@ export class DaemonAgentFactory {
       this.deps.settings.set('trackedDirectories', [...tracked, canonicalizePath(directory)])
     }
 
+    const extras = {
+      ...(identityDraft ? { identityDraft } : {}),
+      ...(warnings.length ? { warnings } : {}),
+    }
+
+    // --- not loaded: closed, or held as an open document (D4) ---
+    if (input.load === false) {
+      const name = basename(filePath, '.adf')
+      if (input.holder) {
+        const document = await this.deps.runtime.openDocument(filePath, { holder: input.holder })
+        console.log(`[ADF Daemon] Created ${filePath}; open for ${input.holder}, not running`)
+        return { agentId: document.agentId, name: document.name, filePath: document.filePath, did, loaded: false, started: false, document, ...extras }
+      }
+      console.log(`[ADF Daemon] Created ${filePath}; not loaded`)
+      return { agentId: config!.id, name, filePath, did, loaded: false, started: false, ...extras }
+    }
+
     // --- runtime ---
     // The file is made (reviewed, tracked) even when it cannot load yet (e.g. no
     // provider configured): say so, so a retry under the same name isn't a
@@ -353,6 +379,6 @@ export class DaemonAgentFactory {
       await this.deps.runtime.startAgent(ref.id)
       started = true
     }
-    return { agentId: ref.id, name: basename(filePath, '.adf'), filePath, did, started }
+    return { agentId: ref.id, name: basename(filePath, '.adf'), filePath, did, loaded: true, started, ...extras }
   }
 }

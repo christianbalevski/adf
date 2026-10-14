@@ -149,6 +149,18 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     if (body?.start !== undefined && typeof body.start !== 'boolean') {
       return reply.code(400).send({ error: 'start must be a boolean', code: 'bad_request' })
     }
+    if (body?.load !== undefined && typeof body.load !== 'boolean') {
+      return reply.code(400).send({ error: 'load must be a boolean', code: 'bad_request' })
+    }
+    if (body?.holder !== undefined && (typeof body.holder !== 'string' || !body.holder)) {
+      return reply.code(400).send({ error: 'holder must be a non-empty string', code: 'bad_request' })
+    }
+    if (body?.load === false && body.start === true) {
+      return reply.code(400).send({ error: 'start needs the agent loaded: drop load: false, or start it later', code: 'bad_request' })
+    }
+    if (body?.holder !== undefined && body.load !== false) {
+      return reply.code(400).send({ error: 'holder is for load: false (the new file is held open, not running)', code: 'bad_request' })
+    }
     try {
       const created = await deps.agentFactory.create(body ?? {})
       return reply.code(201).send(created)

@@ -70,6 +70,8 @@ export interface FileOpsSettings extends TrackedDirsSettings {
 export type FileOpsRuntime = Pick<RuntimeService,
   | 'listAgents' | 'listLiveAgents' | 'getAgent' | 'getAgentConfig' | 'setAgentConfig' | 'unloadAgent' | 'scanAdfFiles'
   | 'rekeyAgentPath' | 'syncAgentFileToName' | 'getPendingRename' | 'cancelPendingRename'>
+  // Open documents (D4, W2-A): a file open for editing without a runtime.
+  & Partial<Pick<RuntimeService, 'getOpenDocument' | 'getAgentWorkspaceByPath' | 'closeDocument' | 'withDocumentMoved'>>
 
 export interface FileOpsDeps {
   runtime: FileOpsRuntime
@@ -810,9 +812,20 @@ export class AgentFileOps {
     return this.runtime.listAgents().find(a => a.filePath && keyOf(a.filePath) === key)
   }
 
+  /** The agent running from `filePath` here, else the open document of it (D4): its workspace is the one to act on. */
   liveAgent(filePath: string): RuntimeLiveAgent | undefined {
     const key = keyOf(filePath)
-    return this.runtime.listLiveAgents().find(a => keyOf(a.filePath) === key)
+    const live = this.runtime.listLiveAgents().find(a => keyOf(a.filePath) === key)
+    if (live) return live
+    const open = this.runtime.getAgentWorkspaceByPath?.(filePath)
+    if (!open?.filePath) return undefined
+    return { agentId: open.agentId, filePath: open.filePath, executorState: 'stopped', workspace: open.workspace, getContextGauge: () => undefined }
+  }
+
+  /** The open document of `filePath` (D4), running or not. */
+  openDocumentAt(filePath: string): { agentId: string; running: boolean } | undefined {
+    const doc = this.runtime.getOpenDocument?.(filePath)
+    return doc ? { agentId: doc.agentId, running: doc.running } : undefined
   }
 
   /** GET /files/agent: the path → id rule. */
@@ -866,6 +879,8 @@ export class AgentFileOps {
         throw new FileOpError(`${loaded.name} did not stop within ${deadlineMs / 1000} s, so its file was not deleted. It is still stopping; try again.`, 409, 'stop_timeout')
       }
     }
+    // The open document (D4) goes with the file, for every client holding it.
+    if (this.runtime.closeDocument?.(filePath, 'deleted')) console.log(`[FileOps] Closed the open document ${filePath} before deleting it`)
     await removeAdfFiles(filePath)
     forgetTrackedFile(filePath)
     console.log(`[FileOps] Deleted ${filePath}`)
@@ -903,6 +918,18 @@ export class AgentFileOps {
       return { success: true, filePath, renameDeferred: true, agentId: loaded.id }
     }
     await this.assertNotLeasedElsewhere(filePath)
+    const open = this.openDocumentAt(filePath)
+    if (open) {
+      // Open here without a runtime: RuntimeService closes the document's
+      // workspace, moves the file and reopens it, as Studio renames its open
+      // file (performAdfRename); 'agent-file-renamed' feeds file_renamed.
+      this.deps.events.expectFile(newPath)
+      const sync = this.runtime.syncAgentFileToName(filePath, newName)
+      if (sync.error) throw new FileOpError(sync.error, 409, 'conflict')
+      const at = sync.filePath ?? filePath
+      this.deps.events.notifyPathChanged(at)
+      return { success: true, filePath: at, renameDeferred: false, agentId: open.agentId }
+    }
     return this.performRename(filePath, newName)
   }
 
@@ -1199,16 +1226,27 @@ export class AgentFileOps {
     } catch (err) {
       return fallback(err)
     }
-    if (!checkpointBeforeMove(filePath)) {
-      return fallback(new Error('WAL sidecars could not be checkpointed; move aborted to avoid losing unflushed data'))
+    const move = async (): Promise<'moved' | 'copied-source-remains' | { error: unknown }> => {
+      if (!checkpointBeforeMove(filePath)) {
+        return { error: new Error('WAL sidecars could not be checkpointed; move aborted to avoid losing unflushed data') }
+      }
+      this.deps.events.expectFile(dest)
+      try { return await moveFileWithFallback(filePath, dest) } catch (err) { return { error: err } }
     }
-    let outcome: 'moved' | 'copied-source-remains'
-    this.deps.events.expectFile(dest)
+    let result: Awaited<ReturnType<typeof move>>
     try {
-      outcome = await moveFileWithFallback(filePath, dest)
+      // An open document (D4) is closed for the move and reopened where the file went.
+      result = this.runtime.withDocumentMoved
+        ? await this.runtime.withDocumentMoved(filePath, async () => {
+            const r = await move()
+            return { value: r, movedTo: typeof r === 'string' ? dest : null }
+          })
+        : await move()
     } catch (err) {
       return fallback(err)
     }
+    if (typeof result !== 'string') return fallback(result.error)
+    const outcome = result
     await this.rekey(filePath, dest)
     forgetTrackedFile(filePath)
     console.log(`[FileOps] Moved ${filePath} into the agents folder: ${dest}`)

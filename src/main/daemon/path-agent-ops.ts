@@ -48,8 +48,10 @@ export type PathAgentRuntime = Pick<RuntimeService,
 
 interface Target {
   filePath: string
-  /** The loaded agent's id, when the file runs here. */
+  /** The agent's id when the file is open here: running, or an open document (D4). */
   loadedId: string | null
+  /** A runtime runs on it (false for an open document that is not running). */
+  running: boolean
 }
 
 /** A table of an agent file and its row count (FILE_LIST_TABLES). */
@@ -221,9 +223,19 @@ export class PathAgentOps {
     private readonly settings?: TrackedDirsSettings,
   ) {}
 
-  private async target(input: unknown): Promise<Target> {
+  /**
+   * The file and, when it is open here, the id its /agents/:id methods take.
+   * An open document (D4) goes through the same RuntimeService methods as a
+   * running agent (one workspace, its unlocked key); a write to one is
+   * refused while another runtime holds the file's lease, as a closed file's.
+   */
+  private async target(input: unknown, write = false): Promise<Target> {
     const filePath = await this.files.adfPath(input)
-    return { filePath, loadedId: this.files.loadedAt(filePath)?.id ?? null }
+    const running = this.files.loadedAt(filePath)?.id
+    if (running) return { filePath, loadedId: running, running: true }
+    const open = this.files.openDocumentAt(filePath)
+    if (open && write) await this.files.assertNotLeasedElsewhere(filePath)
+    return { filePath, loadedId: open?.agentId ?? null, running: false }
   }
 
   /** Write to a file that is not loaded here: refused (409 agent_leased) while another runtime runs it. */
@@ -260,15 +272,21 @@ export class PathAgentOps {
    * is refused, as in Studio (its config is saved through PUT /agents/:id/config).
    */
   async setModel(input: unknown, body: unknown): Promise<{ success: true; filePath: string; model: AgentConfig['model'] }> {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const model = isRecord(body) ? (isRecord(body.model) ? body.model : body) : null
     if (!model || typeof model.provider !== 'string' || typeof model.model_id !== 'string') {
       throw new FileOpError('provider and model_id are required', 400, 'bad_request')
     }
-    if (t.loadedId) throw new FileOpError('Stop the agent before changing its model', 409, 'agent_running')
+    if (t.running) throw new FileOpError('Stop the agent before changing its model', 409, 'agent_running')
     const providers = (this.settings?.get('providers') as ProviderConfig[] | undefined) ?? []
     if (!providers.some(p => p.id === model.provider)) {
       throw new FileOpError(`Provider "${model.provider}" is not configured in Settings`, 400, 'provider_unknown')
+    }
+    if (t.loadedId) {
+      const { config } = this.runtime.getAgentConfig(t.loadedId)
+      const next = { ...config, model: { ...config.model, provider: model.provider as string, model_id: model.model_id as string } }
+      const saved = await this.runtime.setAgentConfig(t.loadedId, next)
+      return { success: true, filePath: t.filePath, model: saved.config.model }
     }
     const next = await this.writeClosed(t, ws => {
       const config = ws.getAgentConfig()
@@ -282,7 +300,7 @@ export class PathAgentOps {
   // --- providers ---
 
   async setProviderCredential(input: unknown, providerId: string, body: unknown) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const value = isRecord(body) ? body.value : undefined
     if (typeof value !== 'string') throw new FileOpError('value is required', 400, 'bad_request')
     const replace = isRecord(body) && body.replace === true
@@ -309,7 +327,7 @@ export class PathAgentOps {
   }
 
   async attachProvider(input: unknown, body: unknown) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const provider = isRecord(body) ? body.provider : undefined
     if (!isRecord(provider) || typeof provider.id !== 'string') throw new FileOpError('provider with id is required', 400, 'bad_request')
     const entry = provider as unknown as AdfProviderConfig
@@ -328,7 +346,7 @@ export class PathAgentOps {
   }
 
   async detachProvider(input: unknown, providerId: string) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const prefix = `provider:${providerId}:`
     const without = (config: AgentConfig): AgentConfig => {
       const providers = (config.providers ?? []).filter(p => p.id !== providerId)
@@ -349,7 +367,7 @@ export class PathAgentOps {
   // --- MCP ---
 
   async setMcpCredential(input: unknown, body: unknown) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const { npmPackage, envKey, value } = isRecord(body) ? body : {} as Record<string, unknown>
     if (typeof npmPackage !== 'string') throw new FileOpError('npmPackage is required', 400, 'bad_request')
     if (typeof envKey !== 'string') throw new FileOpError('envKey is required', 400, 'bad_request')
@@ -371,7 +389,7 @@ export class PathAgentOps {
   }
 
   async attachMcpServer(input: unknown, body: unknown) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const server = isRecord(body) ? (body.server ?? body.serverConfig) : undefined
     if (!isRecord(server) || typeof server.name !== 'string' || (server.transport !== 'stdio' && server.transport !== 'http')) {
       throw new FileOpError('server with name and transport is required', 400, 'bad_request')
@@ -390,7 +408,7 @@ export class PathAgentOps {
   }
 
   async detachMcpServer(input: unknown, serverName: string, credentialNamespace?: string) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const prefix = `mcp:${credentialNamespace || serverName}:`
     const without = (config: AgentConfig): AgentConfig => ({
       ...config,
@@ -409,7 +427,7 @@ export class PathAgentOps {
   // --- adapters ---
 
   async setAdapterCredential(input: unknown, body: unknown) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const { adapterType, envKey, value } = isRecord(body) ? body : {} as Record<string, unknown>
     if (typeof adapterType !== 'string') throw new FileOpError('adapterType is required', 400, 'bad_request')
     if (typeof envKey !== 'string') throw new FileOpError('envKey is required', 400, 'bad_request')
@@ -431,7 +449,7 @@ export class PathAgentOps {
   }
 
   async attachAdapter(input: unknown, body: unknown) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const adapterType = isRecord(body) ? body.adapterType : undefined
     if (typeof adapterType !== 'string') throw new FileOpError('adapterType is required', 400, 'bad_request')
     const parsed = AdapterInstanceConfigSchema.safeParse(isRecord(body) ? body.config : undefined)
@@ -450,7 +468,7 @@ export class PathAgentOps {
   }
 
   async detachAdapter(input: unknown, adapterType: string) {
-    const t = await this.target(input)
+    const t = await this.target(input, true)
     const prefix = `adapter:${adapterType}:`
     const without = (config: AgentConfig): AgentConfig => {
       const adapters = { ...(config.adapters ?? {}) }
