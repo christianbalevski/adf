@@ -169,6 +169,7 @@ import { encrypt } from '../crypto/identity-crypto'
 import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
+import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
 import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
 import { buildMeshStatus } from '../services/mesh-status'
 
@@ -1463,15 +1464,6 @@ function willRelocateOnAccept(filePath: string): boolean {
 function displayPath(p: string): string {
   const home = app.getPath('home')
   return p === home || p.startsWith(home + sep) ? `~${p.slice(home.length)}` : p
-}
-
-/** First free "name.adf" / "name (2).adf" / … path in dir. */
-function availableAdfPath(dir: string, baseName: string): string {
-  let candidate = join(dir, `${baseName}.adf`)
-  for (let n = 2; existsSync(candidate); n++) {
-    candidate = join(dir, `${baseName} (${n}).adf`)
-  }
-  return candidate
 }
 
 /**
@@ -7083,59 +7075,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // into place at the end; a failure leaves nothing behind.
   ipcMain.handle(IPC.AGENT_REGISTRY_BRING_HOME, async (_event, args: { id: string }) => {
     if (typeof args?.id !== 'string' || args.id === '') return { success: false, error: 'Missing registry id' }
-    let partial: string | null = null
+    const result = await bringRegistryAgentHome(() => getAgentRegistryService().resolveFile(args.id), {
+      agentsFolder: defaultAgentsFolder,
+      providers: (settings.get('providers') as ProviderConfig[]) ?? [],
+      defaultProviderId: settings.get('defaultProviderId') as string | undefined,
+    })
+    if (!result.success) return result
     try {
-      const { path: src, entry } = await getAgentRegistryService().resolveFile(args.id)
-      const dest = availableAdfPath(defaultAgentsFolder(), basename(entry.file, '.adf'))
-      partial = `${dest}.partial`
-      copyFileSync(src, partial)
-      // Defence in depth: a registry entry is fetched from a remote index, so
-      // it may carry whatever its author's install put in it. Strip identity
-      // (signing keys, identity envelope, attestations, DID meta) exactly as
-      // an outgoing copy does, BEFORE anything reads the file — the review
-      // dialog must classify it 'unclaimed' on the merits, not on trust.
-      AdfDatabase.stripIdentity(partial)
-      const ws = AdfWorkspace.open(partial)
-      try {
-        const config = ws.getAgentConfig()
-        config.id = nanoid(12)
-        config.name = basename(dest, '.adf')
-        const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
-        const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-        const patched = applyDefaultProviderToOptions(
-          { name: config.name, model: config.model, providers: config.providers },
-          defaultProvider
-        )
-        const incomingModelId = config.model.model_id
-        config.model = { ...config.model, ...(patched.model as AgentConfig['model']) }
-        // The default provider fills in its own default model. The author's
-        // model_id only means something on the provider the author had, so
-        // it is kept only when the provider we just applied has no default
-        // model of its own to offer (the claim step lets the user change it).
-        if (incomingModelId && !config.model.model_id) config.model.model_id = incomingModelId
-        if (patched.providers) config.providers = patched.providers
-        ws.setAgentConfig(config)
-      } finally {
-        ws.close()
-      }
-      for (const side of ['-wal', '-shm']) {
-        try { unlinkSync(`${partial}${side}`) } catch { /* none */ }
-      }
-      renameSync(partial, dest)
-      partial = null
-      recordRecentFile(dest)
-      notifyAdfFileCreated(dest)
-      return { success: true, filePath: dest }
+      recordRecentFile(result.filePath)
+      notifyAdfFileCreated(result.filePath)
     } catch (error) {
-      if (partial) {
-        // AdfDatabase.open()'s repair path can leave .bak/.corrupt/.repaired
-        // beside the partial — a failed bring-home must leave nothing behind.
-        for (const suffix of ['', '-wal', '-shm', '.bak', '.corrupt', '.repaired']) {
-          try { unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
-        }
-      }
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
+    return result
   })
 
   ipcMain.handle(IPC.AGENT_MODEL_SET_FOR_FILE, async (_event, args: { filePath: string; model: { provider: string; model_id: string } }) => {
