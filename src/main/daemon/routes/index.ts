@@ -17,11 +17,19 @@ import type { DaemonHttpApiOptions } from '../http-api'
 import type { LocalAccessOptions } from '../local-access'
 import { registerMetaRoutes, type DaemonStartedBy } from './meta-routes'
 import { registerIdentityImportRoutes } from './identity-import-routes'
+import { registerFileRoutes } from './file-routes'
+import type { TrackedDirWatcher } from '../dir-watcher'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
   /** GET /version: who launched this daemon run (ADF_DAEMON_STARTED_BY). */
   startedBy?: DaemonStartedBy
+  /** Tracked-folder watcher (dir-watcher.ts): watches, autostarts new files, push source for tracked_dirs and file_renamed. Started and closed with the server. */
+  trackedDirWatcher?: TrackedDirWatcher
+  /** PUT /agents/:id/files/raw byte limit (default 64 MiB, ADF_DAEMON_RAW_BODY_LIMIT_MB). */
+  rawFileBodyLimit?: number
+  /** POST /files/import byte limit (default 1 GiB, ADF_DAEMON_IMPORT_BODY_LIMIT_MB). */
+  importBodyLimit?: number
 }
 
 export interface DaemonRouteContext {
@@ -37,6 +45,7 @@ export type DaemonRouteModule = (server: FastifyInstance, ctx: DaemonRouteContex
 export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerMetaRoutes,
   registerIdentityImportRoutes,
+  registerFileRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
