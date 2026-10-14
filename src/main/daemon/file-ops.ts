@@ -192,7 +192,7 @@ export async function requireAdfPath(input: unknown, opts: AdfPathOptions = {}):
   let linked = false
   try { linked = (await lstat(raw)).isSymbolicLink() } catch { /* missing */ }
   if (opts.destructive && (linked || !samePathSpelling(canonical, resolve(raw)))) {
-    throw new FileOpError(`${field} goes through a link or an alias (it resolves to ${canonical}); name the file by that path`, 400, 'path_not_canonical', { canonical })
+    throw new FileOpError(`${raw} is reached through a link or a short (8.3) name, and the daemon deletes and renames agent files only by their real path. Open ${canonical} instead and try again.`, 400, 'path_not_canonical', { canonical })
   }
   let st: Awaited<ReturnType<typeof stat>> | null = null
   try { st = await stat(canonical) } catch { st = null }
@@ -1003,9 +1003,12 @@ export class AgentFileOps {
       throw new FileOpError('selectedTables must be an array of table names', 400, 'bad_request')
     }
     const identity = this.deps.identity
-    if (identity && !identity.isReady()) {
-      throw new FileOpError(`Set up the owner identity first. ${identity.status().message ?? ''}`.trim(), 409, 'identity_not_ready')
-    }
+    // Without the owner identity the clone is still made, as Studio makes it
+    // (keys not sealed to an owner), said in the log and in `warnings`.
+    const identityMissing = identity && !identity.isReady()
+      ? `The owner identity is not set up yet, so the clone's identity is not sealed to an owner. ${identity.status().message ?? ''}`.trim()
+      : null
+    if (identityMissing) console.warn(`[FileOps] ${identityMissing}`)
     const svc = identity?.service
     const ownerDid = svc?.getOwnerDid() ?? (this.deps.settings?.get('ownerDid') as string | undefined) ?? ''
     // A running source: fold its WAL into the file the clone copies.
@@ -1034,7 +1037,7 @@ export class AgentFileOps {
       name: result.name,
       agentId: result.config.id,
       identity: result.fixup.identity,
-      warnings: result.fixup.warnings,
+      warnings: identityMissing ? [...result.fixup.warnings, identityMissing] : result.fixup.warnings,
     }
   }
 

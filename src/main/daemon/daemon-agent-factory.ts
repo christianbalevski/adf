@@ -34,6 +34,12 @@ export interface CreateAgentInput {
    */
   load?: boolean
   /**
+   * The file at the name already exists and the user chose to replace it
+   * (Studio's FILE_CREATE save dialog asked): the new agent is written over
+   * it, as Studio does. Refused while that file runs or is open here.
+   */
+  replace?: boolean
+  /**
    * With load: false, hold the new file as an open document for this holder
    * (a client session, W2-B): Studio's created file becomes the open file,
    * not running.
@@ -52,7 +58,8 @@ export interface CreateAgentResult {
   agentId: string
   name: string
   filePath: string
-  did: string
+  /** Null when the owner identity was not set up (the agent was made without identity keys; `warnings` says so). */
+  did: string | null
   /** The agent is loaded in the runtime (false with load: false). */
   loaded: boolean
   started: boolean
@@ -282,7 +289,9 @@ export class DaemonAgentFactory {
   }
 
   async create(input: CreateAgentInput): Promise<CreateAgentResult> {
-    this.requireIdentity()
+    // Without the owner identity the agent is still made, as Studio makes it:
+    // without identity keys, said in the log and in `warnings`.
+    const identityReady = this.identityReady()
 
     // --- input ---
     const typedName = typeof input.name === 'string' ? input.name.trim() : ''
@@ -319,7 +328,11 @@ export class DaemonAgentFactory {
     const name = typedName || generateAgentName({ taken: (n) => existsSync(join(directory, `${n}.adf`)) })
     const filePath = join(directory, `${name}.adf`)
     if (existsSync(filePath)) {
-      throw new AgentCreateError('name_taken', `An agent named "${name}" already exists in ${directory}.`, 409)
+      if (input.replace !== true) throw new AgentCreateError('name_taken', `An agent named "${name}" already exists in ${directory}.`, 409)
+      const key = canonicalizePath(filePath)
+      const inUse = this.deps.runtime.listAgents().some((a) => a.filePath && canonicalizePath(a.filePath) === key) || !!this.deps.runtime.getOpenDocument?.(filePath)
+      if (inUse) throw new AgentCreateError('name_taken', `${name}.adf is open or running; close it before replacing it.`, 409)
+      console.log(`[ADF Daemon] Replacing ${filePath} with a new agent (the user confirmed the replace)`)
     }
 
     // --- file: template instance, then identity (Studio's studioCreateDeps) ---
@@ -344,7 +357,15 @@ export class DaemonAgentFactory {
       }
       try {
         const service = this.deps.identity.service
-        try {
+        if (!identityReady) {
+          // Studio's create provisions what it can without an owner and warns on failure, never refuses.
+          const message = `The owner identity is not set up yet, so ${name}'s identity is not sealed to an owner. ${this.deps.identity.status().message ?? ''}`.trim()
+          console.warn(`[ADF Daemon] ${message}`)
+          warnings.push(message)
+          try { service.ensureWorkspaceIdentity(workspace) } catch (err) {
+            console.warn('[ADF Daemon] Identity provisioning on create failed:', err)
+          }
+        } else try {
           service.ensureWorkspaceIdentity(workspace, draft ? { adoptKeys: draft } : {})
           if (draft) identityDraft = 'adopted'
         } catch (err) {
@@ -360,7 +381,7 @@ export class DaemonAgentFactory {
         draft?.privateKey.fill(0)
         workspace.close()
       }
-      if (!did) throw new Error('identity provisioning produced no DID')
+      if (!did && identityReady) throw new Error('identity provisioning produced no DID')
     } catch (err) {
       // An agent without its sealed, attested identity is not what was asked for.
       for (const suffix of ['', '-wal', '-shm']) {

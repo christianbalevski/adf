@@ -127,7 +127,7 @@ function armQuitCleanup(): void {
 
 // --- create (FILE_CREATE, FILE_CREATE_QUICK) -----------------------------------
 
-interface CreateAnswer { agentId: string; name: string; filePath: string; did: string }
+interface CreateAnswer { agentId: string; name: string; filePath: string; did: string; warnings?: string[] }
 
 /**
  * Embedded studioCreateDeps + runFileCreateTransition: the file is written
@@ -155,6 +155,8 @@ async function createAndOpen(ctx: DaemonModeContext, body: Record<string, unknow
     return { ok: false, result: { success: false, error: `${errorMessage(err)}\n\nThe newly created file was preserved at:\n${created.filePath}` } }
   }
   ctx.recordRecentFile(created.filePath)
+  // Embedded logs these (identity provisioning, an expired draft) and goes on.
+  for (const warning of created.warnings ?? []) ctx.log.warn(`[Backend] File create: ${warning}`)
   return { ok: true, created }
 }
 
@@ -212,7 +214,8 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     if (picked.canceled || !picked.filePath) return { success: false, error: 'Cancelled' }
     const filePath = picked.filePath
     const agentName = filePath.replace(/\\/g, '/').split('/').pop()?.replace(/\.adf$/i, '') || args?.name
-    const made = await createAndOpen(ctx, { name: agentName, directory: dirname(filePath) })
+    // The save dialog asked before it returned an existing file: replace it, as embedded writes over it.
+    const made = await createAndOpen(ctx, { name: agentName, directory: dirname(filePath), replace: true })
     if (!made.ok) return made.result
     return { success: true, filePath: made.created.filePath }
   },

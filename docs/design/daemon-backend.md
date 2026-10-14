@@ -220,6 +220,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 | 49e7f043 | MCP stdio servers and auth preflights no longer inherit `ADF_DAEMON_TOKEN` or `ADF_OWNER_PASSPHRASE*`. | An MCP server is third-party code; the daemon token drives every route and the passphrase unlocks the owner identity. |
 | 324378a2 | The MCP registration test takes an optional cancel signal (Studio passes none, so its runs are unchanged). | Lets the daemon run the test as a cancellable job instead of holding a request open for minutes. |
 | e6ed9b06 | `AdfDatabase` identity prefix matches (`deleteIdentityByPrefix`, `listIdentityPurposes(prefix)`, `peekIdentityPurposes`) compare the exact, case-sensitive prefix instead of `LIKE`. Test: `tests/daemon-file-routes.test.ts` "the /agents/:id detach routes delete credentials by exact prefix too". | With `LIKE`, `_` and `%` in a server or adapter name were wildcards and case was ignored, so detaching one MCP server or adapter deleted another's credentials. |
+| W1-E (daemon only) | Delete and rename refuse an agent file named through a symlink or a Windows short (8.3) path with `path_not_canonical`; the sentence names the real path to use. Embedded Studio acts on the link's target. Not a change to embedded code: a daemon-mode difference kept on purpose, listed in the gaps doc's remaining differences. | A link can point a destructive operation at a file the user did not name (another tracked folder, an agent another runtime holds). |
 
 ## 4. Settings model
 

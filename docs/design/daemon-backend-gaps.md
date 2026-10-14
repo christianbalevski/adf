@@ -154,6 +154,7 @@ Remaining differences, each visible:
 | `TRACKED_DIRS_ADD` autostarts the folder's agents and stores the canonical path; embedded only starts its watcher. `TRACKED_DIRS_SCAN` of a folder that is not tracked answers `{files: []}`. | `POST /tracked-dirs`, `GET /tracked-dirs/tree` |
 | The template routes refuse with `identity_not_ready` while the owner identity is not ready; embedded works without one. | `/templates*` |
 | `FILE_CREATE` names follow the daemon's stricter rule (reserved names, 64 characters). | `POST /agents/create` |
+| Deleting or renaming an agent file named through a symlink or a Windows short (8.3) path is refused (`path_not_canonical`, W1-E's deliberate security fix); the sentence names the real path to use instead. Embedded acts on the link's target. | `DELETE /files`, `POST /files/rename` |
 | An agent in `error` or `stopped` state is restarted (stop, then start) where embedded rebuilds it in place and logs `executor_rebuilt`. | `AGENT_START` |
 | A stale approval, ask or suspend answer is a logged success, as embedded's executor ignores it. | `AGENT_*_RESPOND` |
 

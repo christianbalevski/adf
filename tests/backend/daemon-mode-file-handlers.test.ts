@@ -130,7 +130,7 @@ describe('FILE_CREATE_QUICK / FILE_CREATE', () => {
     native.saveDialog = { canceled: false, filePath: made }
     daemon.routes.set('POST /agents/create', () => ({ status: 201, body: { agentId: AGENT_2, name: 'agent-2', filePath: made, did: 'did:key:z6Mk2', loaded: false, started: false } }))
     expect(await call(IPC.FILE_CREATE, { name: 'agent-2' })).toEqual({ success: true, filePath: made })
-    expect(daemon.requests.find((r) => r.path === '/agents/create')?.body).toEqual({ name: 'agent-2', directory: dir, load: false })
+    expect(daemon.requests.find((r) => r.path === '/agents/create')?.body).toEqual({ name: 'agent-2', directory: dir, replace: true, load: false })
   })
 
   it('remote mode refuses the native save dialog with the W4-B hook', async () => {

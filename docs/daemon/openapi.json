@@ -17116,6 +17116,11 @@
             "type": "boolean",
             "default": true,
             "description": "false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document."
+          },
+          "replace": {
+            "type": "boolean",
+            "default": false,
+            "description": "true: a file of that name exists and the user chose to replace it (Studio's save dialog asked): the new agent is written over it. Refused (409 `name_taken`) while that file runs or is open. Without the owner identity the agent is still made, its identity not sealed to an owner; `warnings` says so."
           }
         },
         "example": {

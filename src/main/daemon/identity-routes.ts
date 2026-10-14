@@ -153,6 +153,9 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     if (body?.load !== undefined && typeof body.load !== 'boolean') {
       return reply.code(400).send({ error: 'load must be a boolean', code: 'bad_request' })
     }
+    if (body?.replace !== undefined && typeof body.replace !== 'boolean') {
+      return reply.code(400).send({ error: 'replace must be a boolean', code: 'bad_request' })
+    }
     // The holder is the requesting client session (X-ADF-Client-Session),
     // never a body field: one client cannot pin a file to another's session.
     if (body?.holder !== undefined) {
