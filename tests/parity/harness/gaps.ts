@@ -41,7 +41,9 @@ const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials', 'owner-import', 'owner-sealed-key'] as const
 /** The W3-B scenarios that start agent-1 and leave it running (as chat-tool-call). */
 const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING] as const
+/** W3-C scenarios (tests/parity/mcp): no agent runs, the fixture files are edited closed. */
+const W3C = ['w3c-install-progress', 'w3c-mcp-attach-credentials', 'w3c-adapter-telegram', 'w3c-mcp-connect-test', 'w3c-mcp-oauth-connect'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
 const NOT_RUNNING_AT_DUMP = ['open-agent', 'start-agent'] as const
@@ -545,7 +547,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent', ...W3B_NO_AGENT],
+    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
