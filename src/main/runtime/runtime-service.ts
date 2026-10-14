@@ -66,6 +66,7 @@ import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
 import { issueOwnerAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
 import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/sys-get-config.tool'
+import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -149,6 +150,8 @@ export interface RuntimeServiceOptions {
   agentRuntimeBuilder?: AgentRuntimeBuilder
   /** Defaults to true for opened .adf files. Ephemeral createAgent calls bypass review. */
   enforceReviewGate?: boolean
+  /** Cross-process agent lease (agent-lease.ts). Defaults to the process registry; null disables it. */
+  agentLeases?: AgentLeaseRegistry | null
 }
 
 export interface RuntimeLoadAgentOptions {
@@ -446,12 +449,15 @@ export type RuntimeAutostartSkipReason =
   | 'not_autostart'
   | 'password_protected'
   | 'unreviewed'
+  | 'leased_elsewhere'
 
 export interface RuntimeAutostartSkipped {
   filePath: string
   name: string
   reason: RuntimeAutostartSkipReason
   agentId?: string
+  /** leased_elsewhere: which process runs it and what to do. */
+  message?: string
 }
 
 export interface RuntimeAutostartFailed {
@@ -505,6 +511,7 @@ export class RuntimeService extends EventEmitter {
    * two full agent instances for one file.
    */
   private readonly inFlightLoads = new Map<string, Promise<RuntimeAgentRef>>()
+  private readonly agentLeases: AgentLeaseRegistry | null
 
   constructor(opts: RuntimeServiceOptions = {}) {
     super()
@@ -515,6 +522,8 @@ export class RuntimeService extends EventEmitter {
     this.compactionPrompt = opts.compactionPrompt
     this.agentRuntimeBuilder = opts.agentRuntimeBuilder
     this.enforceReviewGate = opts.enforceReviewGate ?? true
+    this.agentLeases = opts.agentLeases === undefined ? processAgentLeases() : opts.agentLeases
+    this.agentLeases?.addHostedPathsProbe(() => [...this.filePathToAgentId.keys(), ...this.inFlightLoads.keys()])
   }
 
   async loadAgent(filePath: string, opts: RuntimeLoadAgentOptions = {}): Promise<RuntimeAgentRef> {
@@ -533,12 +542,19 @@ export class RuntimeService extends EventEmitter {
       return await load
     } finally {
       this.inFlightLoads.delete(canonicalPath)
+      // Releases the lease when the load failed (the agent is not registered).
+      await this.agentLeases?.reconcile()
     }
   }
 
   private async doLoadAgent(canonicalPath: string, opts: RuntimeLoadAgentOptions): Promise<RuntimeAgentRef> {
     const shouldEnforceReview = opts.enforceReviewGate ?? this.enforceReviewGate
     this.assertReviewGate(canonicalPath, shouldEnforceReview)
+
+    const lease = await this.agentLeases?.acquire(canonicalPath)
+    if (lease && !lease.ok) {
+      throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
+    }
 
     const workspace = AdfWorkspace.open(canonicalPath)
     try {
@@ -560,6 +576,14 @@ export class RuntimeService extends EventEmitter {
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace)
       const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)
       const ref = this.registerAgent(agent, canonicalPath, config)
+      if (lease?.ok && lease.unprotected) {
+        // The lease dir is unusable: the agent runs, and the user is told.
+        const event = { type: 'error' as const, payload: { error: lease.unprotected, code: 'LEASES_UNAVAILABLE' }, timestamp: Date.now() }
+        this.emit('agent-event', { agentId: ref.id, filePath: canonicalPath, event } satisfies RuntimeAgentEvent)
+        withSource('system:lifecycle', ref.id, () => {
+          emitUmbilicalEvent({ event_type: 'agent.error', agentId: ref.id, timestamp: event.timestamp, payload: { filePath: canonicalPath, event } })
+        })
+      }
       if (degradedReason) {
         const managed = this.resolveAgent(ref.id)
         if (managed) managed.degraded = degradedReason
@@ -592,6 +616,11 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
+  /**
+   * No agent lease here: createHeadlessAgent creates a brand-new file (or an
+   * in-memory agent), so no other process can be running it yet; the harness
+   * is the only caller.
+   */
   createAgent(opts: RuntimeCreateAgentOptions): RuntimeAgentRef {
     const agent = createHeadlessAgent({
       ...opts,
@@ -611,6 +640,7 @@ export class RuntimeService extends EventEmitter {
     else managed.agent.dispose()
     this.agents.delete(managed.id)
     if (managed.filePath) this.filePathToAgentId.delete(managed.filePath)
+    await this.agentLeases?.reconcile()
     // Emit only after dispose settles: consumers (e.g. the daemon's sweep
     // skip-set) treat this event as "the workspace is closed" — emitting
     // before dispose let them touch a workspace that was still open.
@@ -938,6 +968,10 @@ export class RuntimeService extends EventEmitter {
       } catch (err) {
         if (err instanceof RuntimeReviewRequiredError) {
           return { kind: 'skipped', entry: { filePath, name, reason: 'unreviewed', agentId: err.agentId } }
+        }
+        if (err instanceof RuntimeLoopError && err.code === AGENT_LEASED_CODE) {
+          console.warn(`[RuntimeService] Autostart skipped: ${err.message}`)
+          return { kind: 'skipped', entry: { filePath, name, reason: 'leased_elsewhere', agentId: boot.agentId, message: err.message } }
         }
         return {
           kind: 'failed',

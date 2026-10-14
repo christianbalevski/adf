@@ -8,29 +8,27 @@
  * (incident 2026-10-14). Now each runtime records the containers it started
  * or uses, and a shutdown leaves alone whatever another live runtime claims.
  *
- * Layout: `<lease dir>/compute/<host>-<pid>.json`, one marker per runtime
- * process: `{v:1, pid, host, kind, startedAt, containers}`. The lease dir is
- * the one `runtime/agent-lease.ts` uses (`<per-user config dir>/adf/leases`,
- * `ADF_LEASE_DIR` for tests), so runtimes on different settings files see
- * each other. This is meant to fold into that module's runtime host
- * registry (`hosts/<pid>.json`) as a `containers` field once it is merged.
+ * Layout: the `containers` field of each runtime's host record,
+ * `<lease dir>/hosts/<pid>.json`, written by `runtime/agent-lease.ts` (one
+ * writer per record). The lease dir is per user and machine, so runtimes on
+ * different settings files see each other.
  *
- * Liveness (markerLiveness, the one function to swap for agent-lease.ts's
- * holderLiveness). A marker counts while its pid is alive AND the marker was
- * touched within STALE_MS: its runtime touches it every HEARTBEAT_MS. The
- * heartbeat is what rejects a reused pid (a runtime killed by a crash or by
- * Defender, its pid later given to another process): the reused pid looks
- * alive, but nobody touches the marker any more. Suspend: the holder checks
- * every HEARTBEAT_TICK_MS whether a touch is due, so it refreshes within
- * seconds of resuming; a reader that finds a stale marker of a running pid
- * waits STALE_RECHECK_MS once (one wait per read, however many markers) and
- * re-checks before voiding it.
+ * Liveness (the injectable `liveness`). By default the record's holder is
+ * judged by agent-lease.ts's holderLiveness: pid plus the runtime's local
+ * endpoint, which rejects a reused pid. A record without a usable endpoint
+ * falls back to a heartbeat: the pid runs AND the record was touched within
+ * STALE_MS (its runtime touches it every HEARTBEAT_MS; a crashed runtime's
+ * reused pid looks alive, but nobody touches the record). Suspend: the holder
+ * checks every HEARTBEAT_TICK_MS whether a touch is due, so it refreshes
+ * within seconds of resuming; a reader that finds a stale record of a running
+ * pid waits STALE_RECHECK_MS once (one wait per read, however many records)
+ * and re-checks before voiding it.
  *
- * Crash safety. A dead marker is ignored and removed by the next reader, so
- * a crashed runtime can neither pin the shared container nor protect its
- * orphans: the next shutdown stops them, as before this registry. Markers
- * from another host (roaming profiles) are ignored: containers are per
- * machine.
+ * Crash safety. A dead record is ignored and removed by the next reader (only
+ * if unchanged since it was judged), so a crashed runtime can neither pin the
+ * shared container nor protect its orphans: the next shutdown stops them, as
+ * before this registry. Records from another machine (a shared network home)
+ * are ignored and never removed: containers are per machine.
  *
  * Failure policy. A marker that cannot be written is logged and retried
  * (next claim/release/read, and a backoff timer); until then compute goes on
@@ -38,21 +36,20 @@
  * read makes the reader stop only its own containers.
  */
 
-import { randomBytes } from 'node:crypto'
-import { promises as fsp, unlinkSync } from 'node:fs'
-import { homedir, hostname as osHostname } from 'node:os'
-import { join, resolve } from 'node:path'
+import { promises as fsp } from 'node:fs'
+import { join } from 'node:path'
+import {
+  AgentLeaseRegistry,
+  fromOtherMachine,
+  holderLiveness,
+  parseHostRecord,
+  pidAlive,
+  processAgentLeases,
+  trustedEndpoint,
+  type RuntimeHostRecord,
+} from '../runtime/agent-lease'
 
 export type ComputeUserKind = 'studio-embedded' | 'daemon'
-
-export interface ComputeUserRecord {
-  v: 1
-  pid: number
-  host: string
-  kind: ComputeUserKind
-  startedAt: string
-  containers: string[]
-}
 
 /** What the other live runtimes on this machine use. */
 export interface OtherComputeUsers {
@@ -86,48 +83,24 @@ export const STALE_RECHECK_MS = 6_000
 const RETRY_BASE_MS = 5_000
 const RETRY_MAX_MS = 60_000
 
-/** `<per-user config dir>/adf/leases`, or ADF_LEASE_DIR (same as runtime/agent-lease.ts). */
-export function leaseDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.ADF_LEASE_DIR) return resolve(env.ADF_LEASE_DIR)
-  let base: string
-  if (process.platform === 'darwin') base = join(homedir(), 'Library', 'Application Support')
-  else if (process.platform === 'win32') base = env.APPDATA ?? join(homedir(), 'AppData', 'Roaming')
-  else base = env.XDG_CONFIG_HOME ?? join(homedir(), '.config')
-  return join(base, 'adf', 'leases')
-}
-
 function errCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | undefined)?.code
-}
-
-/** process.kill(pid, 0), plus the Linux zombie check (same rule as agent-lease.ts). */
-export async function pidAlive(pid: number): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0) } catch (err) { return errCode(err) === 'EPERM' }
-  if (process.platform === 'linux') {
-    try {
-      const stat = await fsp.readFile(`/proc/${pid}/stat`, 'utf-8')
-      if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z')) return false
-    } catch { /* no /proc entry: fall through */ }
-  }
-  return true
 }
 
 /** What a reader knows about another runtime's marker before reading it. */
 export interface ComputeUserMarker {
   pid: number
-  /** Last heartbeat (marker mtime). */
+  /** Last heartbeat (record mtime). */
   mtimeMs: number
+  /** The host record, when it parsed. */
+  record?: RuntimeHostRecord | null
 }
 
 /** `recheck`: not alive now, but may be after a short wait (stale heartbeat
  *  of a running pid, e.g. a holder that is resuming from suspend). */
 export type ComputeUserLiveness = (marker: ComputeUserMarker) => Promise<{ alive: boolean; reason: string; recheck?: boolean }>
 
-/**
- * Interim liveness until W0-C's holderLiveness (agent-lease.ts) replaces it:
- * the pid runs and the marker had a heartbeat within `staleMs`.
- */
+/** Heartbeat liveness: the pid runs and the record had a heartbeat within `staleMs`. */
 export function markerLiveness(opts: {
   isAlive?: (pid: number) => Promise<boolean>
   staleMs?: number
@@ -144,35 +117,39 @@ export function markerLiveness(opts: {
   }
 }
 
-function inferKind(): ComputeUserKind {
-  const electronMain = !!process.versions.electron && process.env.ELECTRON_RUN_AS_NODE !== '1' &&
-    (process as NodeJS.Process & { type?: string }).type === 'browser'
-  return electronMain ? 'studio-embedded' : 'daemon'
-}
-
-function safeHost(host: string): string {
-  return host.replace(/[^a-z0-9_.-]/gi, '_').slice(0, 64) || 'host'
-}
-
-const MARKER_RE = /^(.+)-(\d+)\.json$/
-
-function parseRecord(raw: string): ComputeUserRecord | null {
-  try {
-    const rec = JSON.parse(raw) as ComputeUserRecord
-    if (rec?.v !== 1 || typeof rec.pid !== 'number' || typeof rec.host !== 'string' || !Array.isArray(rec.containers)) return null
-    if (!rec.containers.every((c) => typeof c === 'string')) return null
-    return rec
-  } catch {
-    return null
+/**
+ * Default liveness: a record with this module's local endpoint is judged by
+ * holderLiveness (pid + endpoint: definitive about reused pids); one without
+ * falls back to the heartbeat.
+ */
+export function hostRecordLiveness(dir: string, heartbeat: ComputeUserLiveness = markerLiveness()): ComputeUserLiveness {
+  return async (marker) => {
+    const rec = marker.record
+    if (rec && trustedEndpoint(rec, dir)) {
+      const live = await holderLiveness(rec, dir)
+      return { alive: live.alive, reason: live.reason }
+    }
+    return heartbeat(marker)
   }
 }
 
+const RECORD_RE = /^(\d+)\.json$/
+
 export interface ComputeUserRegistryOptions {
+  /** The lease dir (records in `<dir>/hosts`). */
   dir?: string
   pid?: number
   host?: string
+  /** Recorded machine id (tests model another machine with it). */
+  machineId?: string | null
   kind?: ComputeUserKind
-  /** Injectable for tests; defaults to markerLiveness(). */
+  /**
+   * The registry whose host record carries the claims. Default: this
+   * process's (processAgentLeases), or a dedicated one when dir/pid/host/
+   * machineId are given (tests modelling several runtimes in one process).
+   */
+  leases?: AgentLeaseRegistry
+  /** Injectable for tests; defaults to hostRecordLiveness(). */
   liveness?: ComputeUserLiveness
   heartbeatMs?: number
   /** How often the holder checks whether a heartbeat is due. */
@@ -181,7 +158,7 @@ export interface ComputeUserRegistryOptions {
   recheckMs?: number
   /** First retry delay after a failed marker write (doubles up to 60 s). */
   retryMs?: number
-  /** Remove the marker on process exit (default true). */
+  /** Kept for callers; the host record is removed at exit by agent-lease.ts. */
   exitHook?: boolean
 }
 
@@ -189,8 +166,7 @@ export class ComputeUserRegistry implements ComputeUsers {
   readonly dir: string
   readonly file: string
   private readonly pid: number
-  private readonly host: string
-  private readonly kind: ComputeUserKind
+  private readonly leases: AgentLeaseRegistry
   private readonly liveness: ComputeUserLiveness
   private readonly heartbeatMs: number
   private readonly tickMs: number
@@ -199,7 +175,6 @@ export class ComputeUserRegistry implements ComputeUsers {
   private lastTouch = 0
   private touching = false
   private readonly retryMs: number
-  private readonly startedAt = new Date().toISOString()
   private readonly claimed = new Set<string>()
   /** Serializes marker writes so the file always reflects the latest set. */
   private writeChain: Promise<void> = Promise.resolve()
@@ -208,21 +183,21 @@ export class ComputeUserRegistry implements ComputeUsers {
   private failures = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private heartbeat: ReturnType<typeof setInterval> | null = null
-  private exitHook: boolean
-  private exitHookInstalled = false
 
   constructor(opts: ComputeUserRegistryOptions = {}) {
-    this.dir = opts.dir ?? join(leaseDir(), 'compute')
+    const dedicated = opts.dir !== undefined || opts.pid !== undefined || opts.host !== undefined || opts.machineId !== undefined
+    this.leases = opts.leases ?? (dedicated
+      // Made-up pids: the readers below judge them with the injected liveness.
+      ? new AgentLeaseRegistry({ dir: opts.dir, pid: opts.pid, hostname: opts.host, machineId: opts.machineId, kind: opts.kind, sweepDeadEntries: false })
+      : processAgentLeases())
+    this.dir = this.leases.dir
     this.pid = opts.pid ?? process.pid
-    this.host = opts.host ?? osHostname()
-    this.kind = opts.kind ?? inferKind()
-    this.liveness = opts.liveness ?? markerLiveness()
+    this.liveness = opts.liveness ?? hostRecordLiveness(this.dir)
     this.heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS
     this.tickMs = opts.heartbeatTickMs ?? HEARTBEAT_TICK_MS
     this.recheckMs = opts.recheckMs ?? STALE_RECHECK_MS
     this.retryMs = opts.retryMs ?? RETRY_BASE_MS
-    this.exitHook = opts.exitHook ?? true
-    this.file = join(this.dir, `${safeHost(this.host)}-${this.pid}.json`)
+    this.file = this.leases.hostEntryFile
   }
 
   own(): ReadonlySet<string> {
@@ -244,54 +219,74 @@ export class ComputeUserRegistry implements ComputeUsers {
   async others(): Promise<OtherComputeUsers> {
     if (this.dirty) await this.persist()
     const result: OtherComputeUsers = { claims: new Map(), unreadable: [] }
+    const hostsDir = join(this.dir, 'hosts')
     let names: string[]
     try {
-      names = await fsp.readdir(this.dir)
+      names = await fsp.readdir(hostsDir)
     } catch (err) {
-      if (errCode(err) !== 'ENOENT') console.warn(`[Compute] Could not read the container user registry ${this.dir}:`, err)
+      if (errCode(err) !== 'ENOENT') console.warn(`[Compute] Could not read the runtime host records in ${hostsDir}:`, err)
       return result
     }
-    const markers = names.flatMap((name) => {
-      const m = MARKER_RE.exec(name)
+    const records = names.flatMap((name) => {
+      const m = RECORD_RE.exec(name)
       if (!m) return []
-      const pid = Number(m[2])
-      if (m[1] !== safeHost(this.host) || pid === this.pid) return []
-      return [{ pid, file: join(this.dir, name) }]
+      const pid = Number(m[1])
+      if (pid === this.pid) return []
+      return [{ pid, file: join(hostsDir, name) }]
     })
-    const judge = async ({ pid, file }: { pid: number; file: string }) => {
-      let mtimeMs: number
-      try { mtimeMs = (await fsp.stat(file)).mtimeMs } catch { return null } // released meanwhile
-      return this.liveness({ pid, mtimeMs })
+    type Read = { raw: string; record: RuntimeHostRecord | null; mtimeMs: number }
+    const read = async (file: string): Promise<Read | null> => {
+      try {
+        const [raw, st] = await Promise.all([fsp.readFile(file, 'utf-8'), fsp.stat(file)])
+        return { raw, record: parseHostRecord(raw), mtimeMs: st.mtimeMs }
+      } catch {
+        return null // released between listing and reading
+      }
     }
-    const verdicts = await Promise.all(markers.map(judge))
-    // One shared wait, however many markers are stale: a holder resuming
-    // from suspend touches its marker within HEARTBEAT_TICK_MS.
+    const reads = await Promise.all(records.map(({ file }) => read(file)))
+    const judge = (i: number) => {
+      const r = reads[i]
+      return r ? this.liveness({ pid: records[i].pid, mtimeMs: r.mtimeMs, record: r.record }) : Promise.resolve(null)
+    }
+    // Another machine's record (a shared network home): its containers are
+    // not on this machine, and it is never judged or removed here.
+    const elsewhere = await Promise.all(reads.map(async (r) => !!r?.record && await fromOtherMachine(r.record)))
+    const verdicts = await Promise.all(records.map((_, i) => (elsewhere[i] ? Promise.resolve(null) : judge(i))))
+    // One shared wait, however many records are stale: a holder resuming
+    // from suspend touches its record within HEARTBEAT_TICK_MS.
     if (verdicts.some((v) => v && !v.alive && v.recheck)) {
       await new Promise((r) => setTimeout(r, this.recheckMs))
-      await Promise.all(markers.map(async (mk, i) => {
+      await Promise.all(records.map(async ({ file }, i) => {
         const v = verdicts[i]
-        if (v && !v.alive && v.recheck) verdicts[i] = await judge(mk)
+        if (!v || v.alive || !v.recheck) return
+        reads[i] = await read(file)
+        verdicts[i] = await judge(i)
       }))
     }
-    await Promise.all(markers.map(async ({ pid, file }, i) => {
+    await Promise.all(records.map(async ({ pid, file }, i) => {
       const live = verdicts[i]
-      if (!live) return
+      const r = reads[i]
+      if (!live || !r) return
       if (!live.alive) {
-        // Crashed, killed or reused-pid runtime: its claims are void.
+        // Crashed, killed or reused-pid runtime: its claims are void. The
+        // record is removed only when its pid is gone or its endpoint says so;
+        // a running pid judged by heartbeat alone keeps it (it is also that
+        // runtime's host record, which other checks read).
         console.log(`[Compute] Ignoring container claims of pid ${pid}: ${live.reason}`)
-        await fsp.rm(file, { force: true }).catch(() => {})
+        const endpointVerdict = !!r.record && !!trustedEndpoint(r.record, this.dir)
+        if (!endpointVerdict && await pidAlive(pid)) return
+        try {
+          if ((await fsp.readFile(file, 'utf-8')) === r.raw) await fsp.rm(file, { force: true })
+        } catch { /* gone */ }
         return
       }
-      let rec: ComputeUserRecord | null = null
-      try { rec = parseRecord(await fsp.readFile(file, 'utf-8')) } catch (err) {
-        if (errCode(err) === 'ENOENT') return // released between stat and read
-      }
+      const rec = r.record
       if (!rec || rec.pid !== pid) {
         result.unreadable.push(`pid ${pid}`)
         return
       }
       const holder = `${rec.kind} pid ${pid}`
-      for (const c of rec.containers) {
+      for (const c of rec.containers ?? []) {
         const list = result.claims.get(c) ?? []
         list.push(holder)
         result.claims.set(c, list)
@@ -333,27 +328,13 @@ export class ComputeUserRegistry implements ComputeUsers {
   }
 
   private async writeMarker(): Promise<void> {
+    await this.leases.setContainers([...this.claimed])
     if (this.claimed.size === 0) {
       this.stopHeartbeat()
-      await fsp.rm(this.file, { force: true })
       return
-    }
-    const rec: ComputeUserRecord = {
-      v: 1, pid: this.pid, host: this.host, kind: this.kind, startedAt: this.startedAt,
-      containers: [...this.claimed].sort(),
-    }
-    await fsp.mkdir(this.dir, { recursive: true })
-    const tmp = `${this.file}.${randomBytes(4).toString('hex')}.tmp`
-    await fsp.writeFile(tmp, JSON.stringify(rec))
-    try {
-      await renameWithRetry(tmp, this.file)
-    } catch (err) {
-      await fsp.rm(tmp, { force: true }).catch(() => {})
-      throw err
     }
     this.lastTouch = Date.now()
     this.startHeartbeat()
-    this.installExitHook()
   }
 
   /** Touch the marker so readers can tell this runtime from a reused pid.
@@ -365,7 +346,7 @@ export class ComputeUserRegistry implements ComputeUsers {
       if (this.touching || Date.now() - this.lastTouch <= this.heartbeatMs) return
       this.touching = true
       const now = new Date()
-      fsp.utimes(this.file, now, now).then(() => { this.lastTouch = now.getTime() }, () => {
+      this.leases.touchEntry().then(() => { this.lastTouch = now.getTime() }, () => {
         // Removed by a reader that judged it stale (e.g. after a long
         // suspend), or unwritable: write it again.
         this.dirty = true
@@ -378,26 +359,6 @@ export class ComputeUserRegistry implements ComputeUsers {
   private stopHeartbeat(): void {
     if (this.heartbeat) clearInterval(this.heartbeat)
     this.heartbeat = null
-  }
-
-  private installExitHook(): void {
-    if (!this.exitHook || this.exitHookInstalled) return
-    this.exitHookInstalled = true
-    // Sync on purpose: 'exit' handlers cannot await. Runs once, at exit.
-    process.once('exit', () => { try { unlinkSync(this.file) } catch { /* already gone */ } })
-  }
-}
-
-/** Windows refuses a rename over a file another process has open (a reader). */
-async function renameWithRetry(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await fsp.rename(from, to)
-      return
-    } catch (err) {
-      if (attempt >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(errCode(err) ?? '')) throw err
-      await new Promise((r) => setTimeout(r, 20 * (attempt + 1)))
-    }
   }
 }
 

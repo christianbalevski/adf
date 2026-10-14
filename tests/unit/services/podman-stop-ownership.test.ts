@@ -84,7 +84,7 @@ describe('PodmanService shutdown, single runtime (characterization)', () => {
 // Two runtimes on one machine (W1-G)
 // ---------------------------------------------------------------------------
 
-const { mkdtempSync, existsSync, writeFileSync, readdirSync, utimesSync, statSync, rmSync } = await import('node:fs')
+const { mkdtempSync, mkdirSync, existsSync, writeFileSync, readdirSync, readFileSync, utimesSync, statSync, rmSync } = await import('node:fs')
 const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 const { ComputeUserRegistry, markerLiveness } = await import('../../../src/main/services/compute-users')
@@ -96,6 +96,15 @@ const BOX_1 = isolatedContainerName('agent-1', ID_1)
 const BOX_2 = isolatedContainerName('agent-2', ID_2)
 const PID_A = 41_001
 const PID_B = 41_002
+
+/** The containers each runtime's host record (`<dir>/hosts/<pid>.json`) claims. */
+function claimsOnDisk(dir: string): Record<string, string[]> {
+  const hosts = join(dir, 'hosts')
+  if (!existsSync(hosts)) return {}
+  return Object.fromEntries(readdirSync(hosts).filter((n) => /^\d+\.json$/.test(n)).map((n) => [
+    n.replace('.json', ''), (JSON.parse(readFileSync(join(hosts, n), 'utf-8')) as { containers?: string[] }).containers ?? [],
+  ]))
+}
 
 interface Runtime {
   svc: InstanceType<typeof PodmanService>
@@ -216,7 +225,7 @@ describe('PodmanService shutdown with two runtimes', () => {
 
     await a.svc.stopAll()
 
-    expect(readdirSync(dir)).toEqual([])
+    expect(claimsOnDisk(dir)).toEqual({})
     expect(podman.stopped().sort()).toEqual(['adf-agent-1-11111111', 'adf-mcp'])
   })
 
@@ -232,7 +241,8 @@ describe('PodmanService shutdown with two runtimes', () => {
     await a.svc.stopAll()
 
     expect(podman.running()).toEqual([])
-    expect(readdirSync(dir)).toEqual([])
+    // B's record is swept; A never claimed anything, so wrote none.
+    expect(claimsOnDisk(dir)).toEqual({})
     expect(logs).toContain(`[Compute] Ignoring container claims of pid ${PID_B}: no heartbeat for 600s (pid reused)`)
   })
 
@@ -273,7 +283,7 @@ describe('PodmanService shutdown with two runtimes', () => {
     await a.svc.stopAll()
 
     expect(podman.running()).toEqual([])
-    expect(readdirSync(dir)).toEqual([])
+    expect(claimsOnDisk(dir)).toEqual({ [PID_A]: [] })
   })
 
   it("a dead runtime's marker never protects or exposes a live runtime's containers", async () => {
@@ -294,7 +304,8 @@ describe('PodmanService shutdown with two runtimes', () => {
     const { dir, podman, a } = machine()
     podman.add({ name: BOX_2, agentId: ID_2, agentName: 'agent-2' }) // started by B, marker unreadable
     await a.svc.ensureIsolatedRunning('agent-1', ID_1)
-    writeFileSync(join(dir, `test-host-${PID_B}.json`), '{not json')
+    mkdirSync(join(dir, 'hosts'), { recursive: true })
+    writeFileSync(join(dir, 'hosts', `${PID_B}.json`), '{not json')
 
     await a.svc.stopAll()
 
@@ -302,25 +313,26 @@ describe('PodmanService shutdown with two runtimes', () => {
     expect(logs.some((l) => l.includes(`${BOX_2} (owner unknown: unreadable container claims of pid ${PID_B})`))).toBe(true)
   })
 
-  it('ignores markers from another host (roaming profile)', async () => {
+  it('ignores markers from another machine (shared network home)', async () => {
     const { dir, podman, a } = machine()
-    const elsewhere = new ComputeUserRegistry({ dir, pid: PID_B, host: 'other-host', liveness: async () => ({ alive: true, reason: 'test' }), exitHook: false })
+    const elsewhere = new ComputeUserRegistry({ dir, pid: PID_B, host: 'other-host', machineId: 'other-machine', liveness: async () => ({ alive: true, reason: 'test' }), exitHook: false })
     podman.add({ name: BOX_2, agentId: ID_2, agentName: 'agent-2' })
     await elsewhere.claim(BOX_2)
 
     await a.svc.stopAll()
 
     expect(podman.running()).toEqual([])
+    expect(claimsOnDisk(dir)[PID_B]).toEqual([BOX_2]) // never removed from here
   })
 
-  it('removes its own marker once it has stopped its containers', async () => {
-    const { a } = machine()
+  it('its host record claims nothing once it has stopped its containers', async () => {
+    const { dir, a } = machine()
     await a.svc.ensureIsolatedRunning('agent-1', ID_1)
-    expect(existsSync(a.users.file)).toBe(true)
+    expect(claimsOnDisk(dir)).toEqual({ [PID_A]: [BOX_1] })
 
     await a.svc.stopAll()
 
-    expect(existsSync(a.users.file)).toBe(false)
+    expect(claimsOnDisk(dir)).toEqual({ [PID_A]: [] })
   })
 
   it('stopping an agent container releases the claim; starting one claims it', async () => {
@@ -363,8 +375,9 @@ describe('ComputeUserRegistry', () => {
 
     rmSync(blocker) // plain file, no links
     await vi.waitFor(() => expect(existsSync(users.file)).toBe(true), { timeout: 2000 })
+    expect(claimsOnDisk(join(blocker, 'compute'))).toEqual({ [PID_A]: ['adf-mcp'] })
     await users.release(['adf-mcp'])
-    expect(existsSync(users.file)).toBe(false)
+    expect(claimsOnDisk(join(blocker, 'compute'))).toEqual({ [PID_A]: [] })
   })
 
   it('a dirty registry rewrites its marker before reading the others', async () => {
@@ -388,12 +401,14 @@ describe('ComputeUserRegistry across suspend (fake timers)', () => {
   // Timers and Date are fake; file I/O is real, so pump the event loop
   // (setImmediate stays real) until the I/O a timer started has finished.
   const pump = async (done: () => boolean) => {
-    for (let i = 0; i < 2000 && !done(); i++) await new Promise((r) => setImmediate(r))
+    // The reader reads each record before judging it: give loaded runs room.
+    for (let i = 0; i < 20000 && !done(); i++) await new Promise((r) => setImmediate(r))
   }
   const fakeTimers = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   const staleMarker = (dir: string, pid: number, containers: string[]) => {
-    const file = join(dir, `test-host-${pid}.json`)
-    writeFileSync(file, JSON.stringify({ v: 1, pid, host: 'test-host', kind: 'daemon', startedAt: '', containers }))
+    mkdirSync(join(dir, 'hosts'), { recursive: true })
+    const file = join(dir, 'hosts', `${pid}.json`)
+    writeFileSync(file, JSON.stringify({ v: 1, pid, runtimeId: `r${pid}`, hostname: 'test-host', kind: 'daemon', mode: 'daemon', startedAt: 1, settingsPath: '', version: null, endpoint: null, containers }))
     const old = new Date(Date.now() - 10 * 60_000)
     utimesSync(file, old, old)
     return file
