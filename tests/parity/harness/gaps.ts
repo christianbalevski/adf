@@ -37,7 +37,7 @@ export interface GapEntry {
 
 const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 /** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
-const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity'] as const
+const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials'] as const
 /** The W3-B scenario that starts agent-1 and leaves it running (as chat-tool-call). */
 const W3B_RUNNING = ['agent-keystore'] as const
 const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING] as const

@@ -63,6 +63,8 @@ async function testProviderCredentialsForDashboard(
 
 import chokidar from 'chokidar'
 import { isKeyMaterialPurpose, REVEAL_REFUSED_REASON } from '../../shared/constants/identity-reveal'
+import { lockedCredentialCancelled, lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
+import { askReplaceLockedCredential } from '../services/locked-credential-dialog'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
@@ -7571,7 +7573,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           const kdfParamsJson = workspace.getDatabase().getIdentity('crypto:kdf:params')
           workspace.getDatabase().setIdentityRaw(purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson)
         } else {
-          workspace.setIdentity(purpose, args.value)
+          // A locked credentials envelope: the owner chooses (Rule E3, design §3.2).
+          const locked = lockedCredentialWrite(workspace, purpose)
+          if (!locked) workspace.setIdentity(purpose, args.value)
+          else if (await askReplaceLockedCredential(locked, 'this machine', (line) => console.log(`[Credentials] ${line}`))) {
+            replaceLockedCredential(workspace, locked, args.value, (line) => console.warn(`[Credentials] ${args.filePath}: ${line}`))
+          } else {
+            return { success: false, error: String(new Error(lockedCredentialCancelled(locked))) }
+          }
         }
         return { success: true }
       } finally {
@@ -7729,7 +7738,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         args.purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson
       )
     } else {
-      currentWorkspace.setIdentity(args.purpose, args.value)
+      // A locked credentials envelope: the owner chooses (Rule E3, design §3.2).
+      const workspace = currentWorkspace
+      const locked = args.purpose.startsWith('crypto:') ? null : lockedCredentialWrite(workspace, args.purpose)
+      if (!locked) workspace.setIdentity(args.purpose, args.value)
+      else if (await askReplaceLockedCredential(locked, 'this machine', (line) => console.log(`[Credentials] ${line}`))) {
+        replaceLockedCredential(workspace, locked, args.value, (line) => console.warn(`[Credentials] ${currentFilePath}: ${line}`))
+      } else {
+        throw new Error(lockedCredentialCancelled(locked))
+      }
     }
   })
 

@@ -1,8 +1,10 @@
-import { dialog, shell } from 'electron'
+import { shell } from 'electron'
 import { z } from 'zod'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client'
 import { startCallbackServer } from '../../../providers/chatgpt-subscription/callback-server'
+import { lockedCredentialCancelled } from '../../../services/locked-credential'
+import { askReplaceLockedCredential } from '../../../services/locked-credential-dialog'
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 
 /**
@@ -57,39 +59,35 @@ const codeOf = (err: unknown): string | undefined => {
 }
 
 /**
- * A credential write the daemon refused because the agent's credentials
- * envelope is locked here (409 `credentials_locked`): the owner chooses, in a
- * native dialog, to replace (the daemon then stores it, discarding a locked
- * sealed value unread, and logs that in the agent's logs) or to cancel. The
- * same choices as the terminal app (src/main/tui/setup/LockedCredential.tsx).
- * True when the owner chose to replace.
+ * The locked envelope a 409 `credentials_locked` names (its structured
+ * body: `purpose`, `sealed`), or null for another refusal (a legacy file
+ * password, which no replace gets past).
  */
-export async function confirmLockedReplace(ctx: DaemonModeContext, purpose: string, err: unknown): Promise<boolean> {
-  const sealedRow = /can't be read or overwritten/.test(message(err))
-  const { response } = await dialog.showMessageBox({
-    type: 'warning',
-    message: sealedRow
-      ? `The saved "${purpose}" of this agent is sealed, and its credentials are locked on this machine.`
-      : `This agent's credentials are locked on this machine.`,
-    detail: sealedRow
-      ? 'It cannot be read or overwritten until the credentials unlock (the share password on the Identity tab, or your owner identity). Replace it anyway? The old value is discarded unread.'
-      : `Store "${purpose}" unsealed anyway? It is sealed once the credentials unlock (the share password on the Identity tab, or your owner identity).`,
-    buttons: ['Replace', 'Cancel'],
-    defaultId: 1,
-    cancelId: 1,
-  })
-  const replace = response === 0
-  ctx.log.log(`[Backend] ${purpose}: the agent's credentials are locked in the daemon; the owner chose to ${replace ? 'replace' : 'cancel'}`)
-  return replace
+function lockedOf(err: unknown, purpose: string): { purpose: string; sealed: boolean } | null {
+  if (codeOf(err) !== 'credentials_locked') return null
+  const body = (err as DaemonError).body as { purpose?: unknown; sealed?: unknown } | null
+  if (typeof body?.sealed !== 'boolean') return null
+  return { purpose: typeof body.purpose === 'string' ? body.purpose : purpose, sealed: body.sealed }
 }
 
-/** A path-addressed credential write, with the locked-envelope choice on 409 `credentials_locked`. */
-async function writeWithLockedChoice(ctx: DaemonModeContext, purpose: string, write: (replace: boolean) => Promise<unknown>): Promise<void> {
+/**
+ * A credential write the daemon refused because the agent's credentials
+ * envelope is locked there: the owner chooses Replace (the daemon stores it,
+ * discarding a locked sealed value unread, and logs that in the agent's
+ * logs) or Cancel, in the dialog embedded Studio shows for the same case
+ * (services/locked-credential-dialog.ts). Returns the write's outcome:
+ * written, or the cancel sentence (also embedded's).
+ */
+export async function writeWithLockedChoice(ctx: DaemonModeContext, purpose: string, write: (replace: boolean) => Promise<unknown>): Promise<void> {
   try {
     await write(false)
   } catch (err) {
-    if (codeOf(err) !== 'credentials_locked') throw err
-    if (!(await confirmLockedReplace(ctx, purpose, err))) throw err
+    const locked = lockedOf(err, purpose)
+    if (!locked) throw err
+    const where = ctx.mode === 'remote' ? 'the daemon\'s machine' : 'this machine'
+    if (!(await askReplaceLockedCredential(locked, where, (line) => ctx.log.log(`[Backend] ${line}`)))) {
+      throw new Error(lockedCredentialCancelled(locked))
+    }
     await write(true)
   }
 }

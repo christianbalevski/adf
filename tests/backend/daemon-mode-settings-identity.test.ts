@@ -16,6 +16,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 import { electronStub } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { IPC } from '../../src/shared/constants/ipc-channels'
+import { lockedCredentialCancelled } from '../../src/main/services/locked-credential'
 import { REVEAL_REFUSED_REASON } from '../../src/shared/constants/identity-reveal'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { LOCAL_PROOF_HEADER, mintLocalProof } from '../../src/main/daemon/local-access'
@@ -39,6 +40,7 @@ const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.
 const invoke = (channel: string, ...args: unknown[]) => Promise.resolve(electronStub.handlers.get(channel)!({}, ...args))
 const requests = (method: string, path: string) => daemon.requests.filter((r) => r.method === method && r.path === path)
 const locked = (message: string) => ({ status: 409, body: { error: message, code: 'credentials_locked' } })
+
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-w3b-'))
@@ -101,36 +103,45 @@ describe('provider keys never cross as values they are not', () => {
 
 describe('locked-envelope choices (409 credentials_locked)', () => {
   const route = 'PUT /files/agent/providers/p1/credential'
-  const lockedThenOk = (msg: string) => ({ body }: { body: unknown }) => ((body as { replace?: boolean }).replace ? { success: true } : locked(msg))
+  /** The daemon's structured refusal: the choice reads `sealed`, never the message. */
+  const lockedThenOk = (purpose: string, sealed: boolean) => ({ body }: { body: unknown }) => ((body as { replace?: boolean }).replace
+    ? { success: true }
+    : { status: 409, body: { error: 'any wording', code: 'credentials_locked', purpose, sealed, envelopeState: 'locked' } })
 
   it('Replace: the owner is asked, then the daemon stores it with replace', async () => {
-    daemon.routes.set(route, lockedThenOk('The credentials envelope of this agent is locked on this daemon — refusing to store "provider:p1:apiKey" unsealed.'))
+    daemon.routes.set(route, lockedThenOk('provider:p1:apiKey', false))
     electronStub.dialogResponse = 0
     expect(await invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath: FILE, providerId: 'p1', value: 'sk-new' })).toEqual({ success: true })
     const dialogCall = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')
-    expect(dialogCall?.args[0]).toMatchObject({ buttons: ['Replace', 'Cancel'], cancelId: 1 })
+    expect(dialogCall?.args[0]).toMatchObject({ buttons: ['Replace', 'Cancel'], cancelId: 1, message: "This agent's credentials are locked on this machine." })
     expect(requests('PUT', '/files/agent/providers/p1/credential').map((r) => r.body)).toEqual([{ value: 'sk-new' }, { value: 'sk-new', replace: true }])
     expect(logs.some((l) => l.includes('the owner chose to replace'))).toBe(true)
   })
 
-  it('a sealed value is named as such; Cancel stores nothing and shows the daemon\'s refusal', async () => {
-    const msg = 'This agent\'s saved "provider:p1:apiKey" is sealed and its credentials envelope is locked on this daemon, so it can\'t be read or overwritten.'
-    daemon.routes.set(route, lockedThenOk(msg))
+  it('a sealed value is named as such; Cancel stores nothing and answers as embedded does', async () => {
+    daemon.routes.set(route, lockedThenOk('provider:p1:apiKey', true))
     electronStub.dialogResponse = 1
-    expect(await invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath: FILE, providerId: 'p1', value: 'sk-new' })).toEqual({ success: false, error: `Error: ${msg}` })
+    expect(await invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath: FILE, providerId: 'p1', value: 'sk-new' }))
+      .toEqual({ success: false, error: `Error: ${lockedCredentialCancelled({ purpose: 'provider:p1:apiKey', sealed: true })}` })
     expect((electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { message: string }).message).toContain('is sealed')
     expect(requests('PUT', '/files/agent/providers/p1/credential')).toHaveLength(1)
+  })
+
+  it('a refusal without the structured fields (a legacy file password) asks nothing', async () => {
+    daemon.routes.set(route, () => ({ status: 409, body: { error: 'locked with its file password', code: 'credentials_locked' } }))
+    expect(await invoke(IPC.PROVIDER_CREDENTIAL_SET, { filePath: FILE, providerId: 'p1', value: 'sk-new' })).toEqual({ success: false, error: 'Error: locked with its file password' })
+    expect(electronStub.calls.some((c) => c.api === 'dialog.showMessageBox')).toBe(false)
   })
 
   it('IDENTITY_SET on the open agent has the same choice', async () => {
     await handle.session.openFile(FILE, async () => AGENT)
     const path = `/agents/${AGENT}/identity/${encodeURIComponent('app:token')}`
-    daemon.routes.set(`PUT ${path}`, lockedThenOk('The credentials envelope of this agent is locked on this daemon — refusing to store "app:token" unsealed.'))
+    daemon.routes.set(`PUT ${path}`, lockedThenOk('app:token', false))
     electronStub.dialogResponse = 0
     expect(await invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: 'v' })).toBeUndefined()
     expect(requests('PUT', path).map((r) => r.body)).toEqual([{ value: 'v' }, { value: 'v', replace: true }])
     electronStub.dialogResponse = 1
-    await expect(invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: 'v' })).rejects.toThrow(/refusing to store/)
+    await expect(invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: 'v' })).rejects.toThrow(lockedCredentialCancelled({ purpose: 'app:token', sealed: false }))
     await handle.session.closeFile()
   })
 })

@@ -6,7 +6,7 @@ import { deriveOwnerIdentity, validateMnemonic } from '../../../crypto/mnemonic-
 import { verifyAttestation } from '../../../services/attestation.service'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
-import { confirmLockedReplace, REMOTE_VALUES_UNSUPPORTED } from './providers'
+import { REMOTE_VALUES_UNSUPPORTED, writeWithLockedChoice } from './providers'
 
 /**
  * The daemon-mode handlers of identity (tracker W3-B, design §5): the open
@@ -122,12 +122,8 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   [IPC.IDENTITY_SET]: (ctx, _event, args: { purpose: string; value: string }) =>
     onOpenAgent(ctx, 'Storing a value in the open agent', () => ({ error: NO_ADF }), async (client, agentId) => {
       const path = `/agents/${enc(agentId)}/identity/${enc(args.purpose)}`
-      try {
-        await client.request('PUT', path, { body: { value: args.value } })
-      } catch (err) {
-        if (codeOf(err) !== 'credentials_locked' || !(await confirmLockedReplace(ctx, args.purpose, err))) throw err
-        await client.request('PUT', path, { body: { value: args.value, replace: true } })
-      }
+      await writeWithLockedChoice(ctx, args.purpose, (replace) =>
+        client.request('PUT', path, { body: { value: args.value, ...(replace ? { replace } : {}) } }))
       return undefined
     }),
 

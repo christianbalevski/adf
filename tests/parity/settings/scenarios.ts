@@ -103,8 +103,8 @@ export const subscriptionStatusScenario: ParityScenario = {
  * An agent whose credentials are locked on this machine (sealed to another
  * owner, openable with a share password), not open: the agent overrides
  * form saves its provider key over the sealed one, then a key for a
- * provider it has no key for yet. Every native dialog is answered with the
- * first button.
+ * provider it has no key for yet. Both modes ask Replace / Cancel
+ * (services/locked-credential-dialog.ts); every dialog is answered Replace.
  */
 export const lockedCredentialsScenario: ParityScenario = {
   name: 'locked-credentials',
@@ -121,6 +121,6 @@ export const lockedCredentialsScenario: ParityScenario = {
   },
 }
 
-export const SETTINGS_SCENARIOS: readonly ParityScenario[] = [providerRoundTripScenario, agentProviderKeyScenario, subscriptionStatusScenario]
+export const SETTINGS_SCENARIOS: readonly ParityScenario[] = [providerRoundTripScenario, agentProviderKeyScenario, subscriptionStatusScenario, lockedCredentialsScenario]
 /** Run against embedded Studio only, each with the reason (above). */
-export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = [lockedCredentialsScenario]
+export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = []
