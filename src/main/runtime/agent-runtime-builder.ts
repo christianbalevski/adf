@@ -122,6 +122,19 @@ export interface BuildAgentRuntimeOptions {
    * unlocked before start). Later unlocks go through applyDerivedKey.
    */
   derivedKey?: Buffer | null
+  /**
+   * Prompt settings as the host read them for this start (Studio reads them
+   * at every AGENT_START, so a settings change applies to the next start).
+   * Absent: the prompts the builder was constructed with.
+   */
+  prompts?: AgentRuntimePrompts
+}
+
+/** The three prompt settings an agent is assembled with. */
+export interface AgentRuntimePrompts {
+  basePrompt: string
+  toolPrompts: Record<string, string>
+  compactionPrompt?: string
 }
 
 /** What applyDerivedKey restarted so its credentials take effect. */
@@ -363,9 +376,9 @@ export class AgentRuntimeBuilder {
         registry,
         ...(this.settings ? { effectiveRuntime: { settings: this.settings } } : {}),
         restoreLoop: opts.restoreLoop,
-        basePrompt: this.basePrompt,
-        toolPrompts: this.toolPrompts,
-        compactionPrompt: this.compactionPrompt,
+        basePrompt: opts.prompts ? opts.prompts.basePrompt : this.basePrompt,
+        toolPrompts: opts.prompts ? opts.prompts.toolPrompts : this.toolPrompts,
+        compactionPrompt: opts.prompts ? opts.prompts.compactionPrompt : this.compactionPrompt,
         adfCallHandler,
         systemScopeHandler,
         adapterManager: adapterRuntime.manager,
