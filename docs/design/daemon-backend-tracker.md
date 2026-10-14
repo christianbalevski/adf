@@ -64,7 +64,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
 | W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | TODO |
-| W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D | TODO |
+| W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | TODO |
 | W4-B | Remote mode | 4 | W3-A … W3-D | TODO |
 | W4-C | Documentation | 4 | W4-A | TODO |
 | W5-A | Full parity run and triage | 5 | W4-A | TODO |
