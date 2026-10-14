@@ -633,6 +633,12 @@ export interface RuntimeAgentEvent {
   agentId: string
   filePath: string | null
   event: AgentExecutionEvent
+  /**
+   * `trigger_message` of a chat whose sending client already shows it (POST
+   * /agents/:id/chat `echoed` with X-ADF-Client-Session): that session id.
+   * Every other client still gets the event.
+   */
+  echoOrigin?: string
 }
 
 export interface RuntimeAgentLoadedEvent {
@@ -740,6 +746,9 @@ export class RuntimeReviewRequiredError extends Error {
     this.name = 'RuntimeReviewRequiredError'
   }
 }
+
+/** Echo origins kept for chats whose turn has not started yet. */
+const ECHO_ORIGINS_KEPT = 256
 
 export class RuntimeService extends EventEmitter {
   private readonly settings?: RuntimeSettingsStore
@@ -1282,11 +1291,12 @@ export class RuntimeService extends EventEmitter {
    * `opts.turnId`: correlation id stamped as `turn_id` on the turn's events
    * (AdfEventDispatch.turnId). `opts.content`: the message's content blocks
    * (text, images, audio, video; Studio's AGENT_INVOKE `content`), used
-   * instead of `text` when given. `opts.echoed`: the sending UI already shows
-   * the message (Studio's AGENT_INVOKE), so the executor does not add it to
-   * the UI log a second time.
+   * instead of `text` when given. `opts.echoOrigin`: the client session that
+   * already shows the message (Studio's AGENT_INVOKE); the turn's
+   * `trigger_message` carries it as `echoOrigin`, so only that session skips
+   * it. Needs `opts.turnId`.
    */
-  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[]; echoed?: boolean } = {}): Promise<void> {
+  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[]; echoOrigin?: string } = {}): Promise<void> {
     const contentJson: ContentBlock[] = opts.content && opts.content.length > 0 ? opts.content : [{ type: 'text', text }]
     const dispatch = createDispatch(
       createEvent({
@@ -1299,12 +1309,32 @@ export class RuntimeService extends EventEmitter {
             content_json: contentJson,
             created_at: Date.now(),
           },
-          ...(opts.echoed ? { echoed: true } : {}),
         },
       }),
       { scope: 'agent' },
     )
+    if (opts.turnId && opts.echoOrigin) this.noteEchoOrigin(opts.turnId, opts.echoOrigin)
     await this.trigger(agentId, opts.turnId ? { ...dispatch, turnId: opts.turnId } : dispatch, loop)
+  }
+
+  /** Chat turns whose sender already shows the message: turnId → client session. Oldest dropped past ECHO_ORIGINS_KEPT. */
+  private readonly echoOrigins = new Map<string, string>()
+
+  private noteEchoOrigin(turnId: string, sessionId: string): void {
+    this.echoOrigins.set(turnId, sessionId)
+    while (this.echoOrigins.size > ECHO_ORIGINS_KEPT) this.echoOrigins.delete(this.echoOrigins.keys().next().value!)
+  }
+
+  /** The session that sent the chat a `trigger_message` announces, from the emitting executor's running turn. */
+  private takeEchoOrigin(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): string | undefined {
+    if (event.type !== 'trigger_message' || this.echoOrigins.size === 0) return undefined
+    const loop = event.loop ?? MAIN_LOOP
+    const executor = loop === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loop)?.executor
+    const turnId = executor?.getRunningTurnId()
+    if (!turnId) return undefined
+    const origin = this.echoOrigins.get(turnId)
+    if (origin !== undefined) this.echoOrigins.delete(turnId)
+    return origin
   }
 
   /**
@@ -3738,7 +3768,8 @@ export class RuntimeService extends EventEmitter {
   private hostBindings(managed: ManagedRuntimeAgent): AgentHostBindings {
     return {
       onEvent: (event) => {
-        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event } satisfies RuntimeAgentEvent)
+        const echoOrigin = this.takeEchoOrigin(managed, event)
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event, ...(echoOrigin ? { echoOrigin } : {}) } satisfies RuntimeAgentEvent)
         if (event.type === 'state_changed') this.foldDisplayState(managed, event)
       },
       // `trigger_message` and the like: Studio sends them on AGENT_EVENT too.

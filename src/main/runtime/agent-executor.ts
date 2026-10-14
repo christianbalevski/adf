@@ -549,6 +549,11 @@ export class AgentExecutor extends EventEmitter {
   private absorbedTurnIds: string[] = []
   /** turnId of the dispatch the current (outermost) turn is running. */
   private runningTurnId: string | null = null
+
+  /** The turnId of the dispatch the current (outermost) turn runs; null between turns or for a dispatch without one. */
+  getRunningTurnId(): string | null {
+    return this.runningTurnId
+  }
   /** Loop notice for chats discarded while a turn still held the slot —
    *  written once that turn has settled, so it never splits a tool batch. */
   private pendingDiscardNotice: string | null = null

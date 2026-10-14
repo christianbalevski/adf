@@ -16362,7 +16362,7 @@
           },
           "echoed": {
             "type": "boolean",
-            "description": "`true`: the sending client already shows the message (Studio's AGENT_INVOKE), so the chat log does not add it again."
+            "description": "`true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect."
           }
         },
         "example": {

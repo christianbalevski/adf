@@ -577,22 +577,23 @@ describe('daemon HTTP API', () => {
     })
   })
 
-  it('POST /agents/:id/chat with echoed marks the chat dispatch echoed (Studio AGENT_INVOKE); a non-boolean is refused', async () => {
+  it('POST /agents/:id/chat with echoed names the sending client session as the echo origin, never marks the dispatch; a non-boolean is refused', async () => {
     const runtime = new RuntimeService({ enforceReviewGate: false })
     const ref = runtime.createAgent({ name: 'agent-1', provider: new MockLLMProvider() })
-    const trigger = vi.spyOn(runtime, 'trigger').mockResolvedValue(undefined as never)
+    const sendChat = vi.spyOn(runtime, 'sendChat').mockResolvedValue(undefined)
     const server = createDaemonHttpApi(runtime)
     servers.push(server)
     const bad = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'hi', echoed: 'yes' } })
     expect(bad.statusCode).toBe(400)
-    const ok = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'hi', echoed: true } })
+    const session = '0b6e1f2a-3c4d-4e5f-8a9b-0c1d2e3f4a5b'
+    const ok = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, headers: { 'x-adf-client-session': session }, payload: { text: 'hi', echoed: true } })
     expect(ok.statusCode).toBe(202)
-    await vi.waitFor(() => expect(trigger).toHaveBeenCalled())
-    const dispatch = trigger.mock.calls[0][1] as { event: { data: { echoed?: boolean } } }
-    expect(dispatch.event.data.echoed).toBe(true)
-    await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'plain' } })
-    await vi.waitFor(() => expect(trigger).toHaveBeenCalledTimes(2))
-    expect((trigger.mock.calls[1][1] as { event: { data: { echoed?: boolean } } }).event.data.echoed).toBeUndefined()
+    await vi.waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(sendChat.mock.calls[0][3]).toMatchObject({ echoOrigin: session })
+    // Without a session header there is nobody to spare the echo.
+    await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'plain', echoed: true } })
+    await vi.waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][3]).not.toHaveProperty('echoOrigin')
   })
 
   it('exposes health, agent listing, and async chat acknowledgement', async () => {

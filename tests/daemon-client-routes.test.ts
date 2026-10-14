@@ -256,6 +256,20 @@ describe('several clients on one daemon, in real time', () => {
     expect(others[0].frames.find(f => f.kind === 'push' && f.topic === 'inbox')).toMatchObject({ payload: { inbox: { version: 1, messages: [] } } })
   })
 
+  it('a chat sent echoed by one session: its trigger_message reaches every other session, not the sender', async () => {
+    const { client, one } = await fleet()
+    const sender = await reader(client, { focus: one.agentId, client: 'studio' })
+    const other = await reader(client, { focus: one.agentId, client: 'studio-2' })
+    const { turnId } = await client.withClientSession(sender.sessionId).request<{ turnId: string }>('POST', `/agents/${one.agentId}/chat`, { body: { text: 'hello from the sender', echoed: true } })
+    const turnEnded = (r: Reader) => r.frames.some(f => f.kind === 'executor' && f.agentId === one.agentId && f.event.type === 'turn_complete')
+    await waitFor(() => turnEnded(sender) && turnEnded(other), 8000, 'turn complete on both sessions')
+    const triggers = (r: Reader) => r.frames.filter(f => f.kind === 'executor' && f.agentId === one.agentId && f.event.type === 'trigger_message')
+    expect(triggers(other)).toHaveLength(1)
+    expect(JSON.stringify(triggers(other)[0])).toContain('hello from the sender')
+    expect(triggers(sender)).toHaveLength(0)
+    expect(turnId).toMatch(/^turn_/)
+  })
+
   it('echo suppression is per event: an agent write raised during a client PUT still reaches the writer', async () => {
     // The client's request is held open 300 ms before its handler runs; the agent writes meanwhile, in its own turn.
     let inRequest: () => void = () => {}

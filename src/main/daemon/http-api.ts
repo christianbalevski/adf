@@ -381,7 +381,7 @@ interface ChatBody {
   content?: ContentBlock[]
   /** Cognition loop to talk to. Absent = main (docs/design/agent-loops-mvp.md §6.2). */
   loop?: string
-  /** The sending client already shows the message (Studio's AGENT_INVOKE): the chat log does not echo it again. */
+  /** The sending client session (X-ADF-Client-Session) already shows the message (Studio's AGENT_INVOKE): only that session skips the turn's trigger_message. */
   echoed?: boolean
 }
 
@@ -2534,7 +2534,9 @@ export function createDaemonHttpApi(
     }
 
     const turnId = `turn_${nanoid(12)}`
-    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}), ...(echoed ? { echoed: true } : {}) }))
+    // The echo is the sending session's alone: other clients (a second Studio, the terminal app) still get trigger_message.
+    const echoOrigin = echoed ? clientSessionOf(request).holder : undefined
+    queueTurn(turnId, () => runtime.sendChat(request.params.id, text, request.body?.loop, { turnId, ...(content?.length ? { content } : {}), ...(echoOrigin ? { echoOrigin } : {}) }))
     return reply.code(202).send({ accepted: true, turnId })
   })
 
