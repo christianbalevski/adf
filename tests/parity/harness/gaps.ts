@@ -37,8 +37,6 @@ export interface GapEntry {
 
 const ALL = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 const RUNNING = ['start-agent', 'chat-tool-call'] as const
-/** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
-const NOT_RUNNING_AT_DUMP = ['open-agent', 'start-agent'] as const
 
 // --- helpers ------------------------------------------------------------------
 
@@ -55,21 +53,7 @@ type Row = Record<string, unknown>
 function table(rec: ComparableRecording, name: string): Array<{ file: string; rows: Row[] }> {
   return Object.entries(rec.state.adf).flatMap(([file, dump]) => (dump.tables[name] ? [{ file, rows: dump.tables[name].rows as Row[] }] : []))
 }
-function setRows(rec: ComparableRecording, file: string, name: string, rows: Row[]): void {
-  rec.state.adf[file].tables[name].rows = rows
-}
-function withoutPushes(step: StepRecord): unknown {
-  const { pushes: _p, ...rest } = step as StepRecord & { pushes: unknown }
-  return rest
-}
 const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
-
-/** AGENT_EVENT types the interim GET /events adapter carries (client-stream.ts). */
-const ADAPTER_EVENT_TYPES = new Set(['state_changed', 'turn_complete', 'error'])
-const eventLineType = (line: string): string | null => {
-  const m = /^ {2}(?:\[app\] )?adf:agent:event ([a-z_]+)/.exec(line)
-  return m ? m[1] : null
-}
 
 type MenuItem = { label?: string; type?: string; role?: string; enabled?: boolean; submenu?: MenuItem[] }
 const STATUS_LINE = /^ADF daemon: /
@@ -118,36 +102,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2b:open-document-reads',
-    ws: 'W2-B',
-    scenarios: ALL,
-    path: 'steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step',
-    what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session.',
-    apply(d, e) {
-      const reads = new Set<string>([IPC.DOC_GET_BATCH, IPC.DOC_READ_INTERNAL_FILE])
-      const start = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.AGENT_START)
-      const before = start < 0 ? e.steps : e.steps.slice(0, start)
-      const want = before.filter((s) => s.kind === 'invoke' && reads.has(s.channel)).length
-      const hits: number[] = []
-      for (const [i, step] of d.steps.entries()) {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke-error' || base?.kind !== 'invoke' || base.channel !== step.channel) continue
-        if (!reads.has(step.channel) || (start >= 0 && i >= start)) return 0
-        if ((step.error as { code?: unknown }).code !== 'daemon_mode_unavailable' || !/: W2-B\b/.test(step.error.message)) return 0
-        hits.push(i)
-      }
-      if (hits.length !== want) return 0
-      for (const i of hits) {
-        d.steps[i] = clone(e.steps[i])
-        for (const lines of Object.values(d.timelines)) {
-          const at = lines.indexOf(`< ${i + 1} (threw)`)
-          if (at >= 0) lines[at] = `< ${i + 1}`
-        }
-      }
-      return hits.length
-    },
-  },
-  {
     id: 'w3a:start-session-id',
     ws: 'W3-A',
     scenarios: RUNNING,
@@ -169,110 +123,65 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w2b:agent-event-stream',
-    ws: 'W2-B',
-    scenarios: RUNNING,
-    path: 'AGENT_EVENT: the pushes, their timeline lines and the step push watermarks they shift',
-    what: 'The interim GET /events adapter carries only state_changed, turn_complete and error; deltas, tool calls, context, metadata, file updates and loop_seq come with the client stream.',
+    id: 'w3a:chat-echo',
+    ws: 'W3-A',
+    scenarios: ['chat-tool-call'],
+    path: 'AGENT_EVENT: one `trigger_message` (triggerType chat, the AGENT_INVOKE text) per AGENT_INVOKE, its timeline line and the step push watermarks it shifts',
+    what: 'The chat route has no `echoed`: the daemon announces Studio\'s own chat as a trigger_message, which the renderer shows as a second user bubble (embedded dispatches it with echoed: true).',
     apply(d, e) {
       const ch = IPC.AGENT_EVENT
-      const full = e.pushes[ch] ?? []
-      const kept = full.filter((p) => ADAPTER_EVENT_TYPES.has((p as { type?: string }).type ?? ''))
-      if (full.length === kept.length || !same(kept, d.pushes[ch] ?? [])) return 0
-      for (const [agent, lines] of Object.entries(e.timelines)) {
-        const filtered = lines.filter((l) => { const t = eventLineType(l); return t === null || ADAPTER_EVENT_TYPES.has(t) })
-        if (!same(filtered, d.timelines[agent])) return 0
+      const sent = d.steps.flatMap((st) => (st.kind === 'invoke' && st.channel === IPC.AGENT_INVOKE ? [String((st.args[0] as { userMessage?: unknown })?.userMessage)] : []))
+      const echo = (p: unknown, text: string) => {
+        const ev = p as { type?: string; payload?: { triggerType?: unknown; content?: unknown } }
+        return ev?.type === 'trigger_message' && ev.payload?.triggerType === 'chat' && ev.payload.content === text
       }
-      if (d.steps.length !== e.steps.length || d.steps.some((s, i) => !same(withoutPushes(s), withoutPushes(e.steps[i])))) return 0
-      d.pushes[ch] = clone(full)
-      d.timelines = clone(e.timelines)
-      d.steps = d.steps.map((s, i) => ({ ...s, pushes: clone(e.steps[i].pushes) }) as StepRecord)
-      return 1
+      if (sent.length === 0 || (e.pushes[ch] ?? []).some((p) => sent.some((t) => echo(p, t)))) return 0
+      const pushes = [...(d.pushes[ch] ?? [])]
+      for (const text of sent) {
+        const at = pushes.findIndex((p) => echo(p, text))
+        if (at < 0) return 0
+        pushes.splice(at, 1)
+      }
+      if (!same(pushes, e.pushes[ch] ?? [])) return 0
+      const line = /^ {2}(?:\[app\] )?adf:agent:event trigger_message$/
+      const timelines: Record<string, string[]> = {}
+      let lines = 0
+      for (const [agent, list] of Object.entries(d.timelines)) {
+        timelines[agent] = list.filter((l) => !(line.test(l) && ++lines))
+      }
+      if (lines !== sent.length || !same(timelines, e.timelines)) return 0
+      const bare = (st: StepRecord) => { const { pushes: _p, ...rest } = st as StepRecord & { pushes: unknown }; return rest }
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(bare(st), bare(e.steps[i])))) return 0
+      d.pushes[ch] = pushes
+      d.timelines = timelines
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return sent.length
     },
   },
   {
-    id: 'w2b:streaming-check',
-    ws: 'W2-B',
-    scenarios: RUNNING,
-    path: 'problems: the streaming check',
-    what: 'No text_delta_batch reaches the window (same cause as w2b:agent-event-stream).',
-    apply(d) {
-      const before = d.problems?.length ?? 0
-      d.problems = (d.problems ?? []).filter((p) => !/^streaming: \d+ text slice\(s\) arrived as 0 text_delta_batch push\(es\)$/.test(p))
-      const n = before - d.problems.length
-      if (d.problems.length === 0) delete d.problems
-      return n
-    },
-  },
-  {
-    id: 'w2b:identity-on-open',
-    ws: 'W2-B',
-    scenarios: ALL,
-    path: 'state: adf_identity and adf_attestations rows',
-    what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
+    id: 'mode:wire-undefined-keys',
+    ws: 'mode',
+    scenarios: ['chat-tool-call'],
+    path: 'pushes: payload keys whose embedded value is `undefined` (e.g. file_updated `previousContent`)',
+    what: 'The client stream is JSON: a key whose value is undefined is omitted (D5.1 wire serialization), where embedded IPC keeps the key with undefined. The renderer reads both the same.',
     apply(d, e) {
       let n = 0
-      for (const name of ['adf_identity', 'adf_attestations']) {
-        for (const { file, rows } of table(d, name)) {
-          const base = e.state.adf[file]?.tables[name]?.rows as Row[] | undefined
-          if (rows.length === 0 && base && base.length > 0) { setRows(d, file, name, clone(base)); n++ }
+      const restore = (dv: unknown, ev: unknown): void => {
+        if (!dv || !ev || typeof dv !== 'object' || typeof ev !== 'object') return
+        if (Array.isArray(ev)) {
+          if (Array.isArray(dv)) ev.forEach((item, i) => restore(dv[i], item))
+          return
+        }
+        const dObj = dv as Record<string, unknown>
+        for (const [k, v] of Object.entries(ev as Record<string, unknown>)) {
+          if (v === undefined && !(k in dObj)) { dObj[k] = undefined; n++ } else restore(dObj[k], v)
         }
       }
-      return n
-    },
-  },
-  {
-    id: 'w2b:identity-meta',
-    ws: 'W2-B',
-    scenarios: ALL,
-    path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
-    what: 'Same cause as w2b:identity-on-open: the identity stamps are written on open.',
-    apply(d, e) {
-      let n = 0
-      for (const { file, rows } of table(d, 'adf_meta')) {
-        const base = (e.state.adf[file]?.tables.adf_meta?.rows ?? []) as Row[]
-        for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
-          const want = base.find((r) => r.key === key)
-          if (!want || rows.some((r) => r.key === key)) continue
-          rows.push(clone(want))
-          n++
-        }
-        rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
+      for (const [ch, list] of Object.entries(e.pushes)) {
+        const mine = d.pushes[ch]
+        if (!mine || mine.length !== list.length) continue
+        list.forEach((ev, i) => { if (same(mine[i], ev)) restore(mine[i], ev) })
       }
-      return n
-    },
-  },
-  {
-    id: 'w2b:open-document-handle',
-    ws: 'W2-B',
-    scenarios: NOT_RUNNING_AT_DUMP,
-    path: 'state: adf_meta row adf_clean_close',
-    what: 'Nothing holds the file open (no client session to hold it), so the fixture\'s clean-close marker stays set.',
-    apply(d, e) {
-      let n = 0
-      for (const { file, rows } of table(d, 'adf_meta')) {
-        const base = (e.state.adf[file]?.tables.adf_meta?.rows ?? []) as Row[]
-        if (base.some((r) => r.key === 'adf_clean_close')) continue
-        const at = rows.findIndex((r) => r.key === 'adf_clean_close')
-        if (at >= 0) { rows.splice(at, 1); n++ }
-      }
-      return n
-    },
-  },
-  {
-    id: 'w2b:open-document-wal',
-    ws: 'W2-B',
-    scenarios: NOT_RUNNING_AT_DUMP,
-    path: 'state.tree: the -wal and -shm files of an open agent file',
-    what: 'Same cause as w2b:open-document-handle: the file is not held open, so no -wal/-shm beside it.',
-    apply(d, e) {
-      let n = 0
-      for (const line of e.state.tree) {
-        if (!/\.adf-(wal|shm)$/.test(line) || d.state.tree.includes(line)) continue
-        d.state.tree.push(line)
-        n++
-      }
-      if (n) d.state.tree.sort((a, b) => (a.slice(2) < b.slice(2) ? -1 : a.slice(2) > b.slice(2) ? 1 : 0))
       return n
     },
   },
