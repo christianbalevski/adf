@@ -9,8 +9,11 @@ import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client
  * daemon that cannot be reached is polled again for `unreachableMs` (a
  * reconnect, a busy daemon) before the wait gives up; a job the daemon no
  * longer knows (404: it restarted) ends the wait at once. Past `deadlineMs`
- * the job is cancelled. Every outcome other than a finished job is a
- * sentence the handler shows, never a silent hang.
+ * this wait ends; the job is cancelled only with `cancelOnDeadline`, for a
+ * job no other client can have joined (one started without a key): another
+ * client waiting on a shared install keeps its own deadline. Every outcome
+ * other than a finished job is a sentence the handler shows, never a silent
+ * hang.
  */
 
 export interface DaemonJobProgress {
@@ -38,8 +41,10 @@ export type JobOutcome =
 export interface AwaitJobOptions {
   /** Between polls. Default 250 ms. */
   pollMs?: number
-  /** The job is cancelled after this long. */
+  /** This wait ends after this long. */
   deadlineMs: number
+  /** Cancel the job at the deadline: only for a job no other client shares. */
+  cancelOnDeadline?: boolean
   /** How long the daemon may be unreachable before the wait gives up. Default 60 s. */
   unreachableMs?: number
   /** Called with every running view (progress) and once with the finished one. */
@@ -84,9 +89,14 @@ export async function awaitDaemonJob(client: () => Promise<DaemonClient>, jobId:
       if (job.state !== 'running') return { kind: 'finished', job }
     }
     if (now() - started > opts.deadlineMs) {
-      opts.log?.warn(`[Backend] ${opts.what} (job ${jobId}) ran past ${Math.round(opts.deadlineMs / 60_000)} min; cancelling it`)
+      const minutes = Math.round(opts.deadlineMs / 60_000)
+      if (!opts.cancelOnDeadline) {
+        opts.log?.warn(`[Backend] ${opts.what} (job ${jobId}) ran past ${minutes} min; Studio stops waiting, the daemon keeps it`)
+        return { kind: 'lost', reason: `${capitalize(opts.what)} did not finish within ${minutes} minutes; Studio stopped waiting, and it may still finish in the ADF daemon.` }
+      }
+      opts.log?.warn(`[Backend] ${opts.what} (job ${jobId}) ran past ${minutes} min; cancelling it`)
       try { await (await client()).request('POST', `/jobs/${encodeURIComponent(jobId)}/cancel`) } catch { /* the daemon answers or not; the wait ends either way */ }
-      return { kind: 'lost', reason: `${capitalize(opts.what)} did not finish within ${Math.round(opts.deadlineMs / 60_000)} minutes; Studio cancelled it.` }
+      return { kind: 'lost', reason: `${capitalize(opts.what)} did not finish within ${minutes} minutes; Studio cancelled it.` }
     }
     await sleep(pollMs)
   }

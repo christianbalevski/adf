@@ -16,6 +16,9 @@
  * `key` (e.g. the package an install is for) is not started twice: while
  * one with the same kind and key runs, `start` answers that one
  * (`joined: true`), so two clients asking for the same install share it.
+ * After a cancel the work may still run (an install cannot stop half-way):
+ * a new job with that key starts, and waits for that work to settle before
+ * its own begins.
  *
  * Generic: other route modules create jobs through `jobsFor(ctx)`.
  */
@@ -81,6 +84,8 @@ export interface JobContext {
 
 export class JobRegistry {
   private readonly jobs = new Map<string, Job>()
+  /** Per kind and key: the work of the last job started with it, until it settles. */
+  private readonly keyWork = new Map<string, Promise<void>>()
 
   start(kind: string, run: (ctx: JobContext) => Promise<unknown>, opts: StartOptions = {}): JobView & { joined?: true } {
     this.sweep()
@@ -95,13 +100,36 @@ export class JobRegistry {
     const job: Job = { id: randomUUID(), kind, state: 'running', createdAt: Date.now(), controller: new AbortController(), ...(opts.key !== undefined ? { key: opts.key } : {}) }
     this.jobs.set(job.id, job)
     console.log(`[ADF Daemon] Job ${job.id} (${kind}) started`)
-    void Promise.resolve()
-      .then(() => run({ signal: job.controller.signal, id: job.id, setProgress: (p, detail) => this.progress(job, p, detail) }))
-      .then(
-        (result) => this.finish(job, 'succeeded', { result }),
-        (err) => this.finish(job, 'failed', { error: err instanceof Error ? err.message : String(err) }),
-      )
+    const ctx: JobContext = { signal: job.controller.signal, id: job.id, setProgress: (p, detail) => this.progress(job, p, detail) }
+    // The key stays taken until the work of the last job with it has settled,
+    // not only while that job reads `running`: a cancelled install keeps
+    // installing, and a retry must not install into the same place meanwhile.
+    const slot = opts.key !== undefined ? `${kind}|${opts.key}` : null
+    const previous = slot ? this.keyWork.get(slot) : undefined
+    const work = Promise.resolve().then(async () => {
+      if (previous) {
+        console.log(`[ADF Daemon] Job ${job.id} (${kind}) waits for the cancelled job's work for ${opts.key} to finish`)
+        this.progress(job, 'Waiting for a cancelled run of the same work to finish')
+        await previous
+        if (job.controller.signal.aborted) throw new Error('Cancelled by the client')
+      }
+      return run(ctx)
+    })
+    work.then(
+      (result) => this.finish(job, 'succeeded', { result }),
+      (err) => this.finish(job, 'failed', { error: err instanceof Error ? err.message : String(err) }),
+    )
+    if (slot) {
+      const settled = work.then(() => {}, () => {})
+      this.keyWork.set(slot, settled)
+      void settled.then(() => { if (this.keyWork.get(slot) === settled) this.keyWork.delete(slot) })
+    }
     return this.view(job)
+  }
+
+  /** Whether the work of a job with this kind and key has not settled yet (running, or cancelled and still working). */
+  keyBusy(kind: string, key: string): boolean {
+    return this.keyWork.has(`${kind}|${key}`)
   }
 
   get(id: string): JobView | undefined {

@@ -21,7 +21,8 @@
 // topics carry it too where the composition root wires them. While an
 // install of the same package runs, a second request joins it
 // (`job.joined`). An install cannot stop half-way: a cancelled job reads
-// `cancelled` and the installer finishes on its own.
+// `cancelled` and the installer finishes on its own; a new request for the
+// same install starts a job that waits for that work first (jobs.ts).
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { JobLimitError, jobsFor, type JobContext } from '../jobs'

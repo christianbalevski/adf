@@ -3,6 +3,7 @@ import { DaemonError } from '../../../../shared/daemon-client'
 import type { McpRegistrationTestResult } from '../../../../shared/types/ipc.types'
 import { enc, type DaemonModeContext } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
+import { errorText } from './common'
 import { awaitDaemonJob, startDaemonJob } from './jobs'
 
 /**
@@ -74,8 +75,13 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
   if (ctx.mode === 'remote' && oauth) {
     throw new DaemonModeUnavailableError('Signing in to an OAuth MCP server from Studio in remote mode', 'W4-B', 'the loopback callback relay, design §9.3')
   }
-  const client = await ctx.ready()
-  const { jobId } = await startDaemonJob(client, '/admin/mcp/registration-test', rawArgs ?? {})
+  let jobId: string
+  try {
+    jobId = (await startDaemonJob(await ctx.ready(), '/admin/mcp/registration-test', rawArgs ?? {})).jobId
+  } catch (err) {
+    // Refused (429 too many jobs) or unreachable: a failed result, as every other ending.
+    return failedResult(rawArgs, errorText(err))
+  }
   const handled = new Set<string>()
 
   const answer = async (id: string): Promise<void> => {
@@ -107,6 +113,8 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
   const outcome = await awaitDaemonJob(() => ctx.ready(), jobId, {
     what: 'the MCP connect test',
     deadlineMs: TEST_DEADLINE_MS,
+    // Started without a key: nobody else waits on this test.
+    cancelOnDeadline: true,
     pollMs: POLL_MS,
     log: ctx.log,
     onPoll: async (job) => {

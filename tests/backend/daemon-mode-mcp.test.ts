@@ -274,6 +274,14 @@ describe('MCP_REGISTRATION_TEST interactive steps', () => {
     })
   })
 
+  it('a refused start (429, too many jobs) answers a failed result, not a rejection', async () => {
+    daemon.routes.set('POST /admin/mcp/registration-test', () => ({ status: 429, body: { error: 'Too many jobs are running on this daemon (128); try again when some have finished.', code: 'too_many_jobs' } }))
+    expect(await invoke(IPC.MCP_REGISTRATION_TEST, { registration: { name: 'r', type: 'http', url: 'https://mcp.example.test/mcp' } })).toEqual({
+      success: false, tools: [], location: 'remote http', authRan: false, notes: [],
+      error: 'Error: Too many jobs are running on this daemon (128); try again when some have finished.',
+    })
+  })
+
   it('a daemon that restarted mid-test (404 on the job) answers a failed result saying so', async () => {
     daemon.routes.set('POST /admin/mcp/registration-test', () => ({ status: 202, body: { jobId: 'gone', job: { id: 'gone', state: 'running' } } }))
     daemon.routes.set('GET /jobs/gone', () => ({ status: 404, body: { error: 'No such job', code: 'not_found' } }))
@@ -376,8 +384,14 @@ describe('awaitDaemonJob', () => {
     fake.routes.set('POST /jobs/slow/cancel', () => { cancels.push('slow'); return { cancelled: true } })
     t = 0
     const slow = new DaemonClient({ baseUrl: BASE, fetch: fake.fetch })
-    const timedOut = await awaitDaemonJob(async () => slow, 'slow', { what: 'the slow job', deadlineMs: 60_000, sleep: async () => { t += 30_000 }, now: () => t })
+    const timedOut = await awaitDaemonJob(async () => slow, 'slow', { what: 'the slow job', deadlineMs: 60_000, cancelOnDeadline: true, sleep: async () => { t += 30_000 }, now: () => t })
     expect(timedOut).toEqual({ kind: 'lost', reason: 'The slow job did not finish within 1 minutes; Studio cancelled it.' })
+    expect(cancels).toEqual(['slow'])
+
+    // A shared (keyed) job: this waiter's deadline ends its wait only; another client may still wait on the job.
+    t = 0
+    const mine = await awaitDaemonJob(async () => slow, 'slow', { what: 'the shared install', deadlineMs: 60_000, sleep: async () => { t += 30_000 }, now: () => t })
+    expect(mine).toEqual({ kind: 'lost', reason: 'The shared install did not finish within 1 minutes; Studio stopped waiting, and it may still finish in the ADF daemon.' })
     expect(cancels).toEqual(['slow'])
   })
 })

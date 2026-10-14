@@ -9023,7 +9023,7 @@
           "Admin"
         ],
         "summary": "Install an MCP npm package as a job",
-        "description": "The same install as POST /admin/mcp/packages/npm, run as a job so no request is held open. Progress lines are on the job (`progressLog`, `detail.package`). While an install of the same package runs, the request joins it. An install cannot stop half-way: cancel marks the job cancelled and the installer finishes.",
+        "description": "The same install as POST /admin/mcp/packages/npm, run as a job so no request is held open. Progress lines are on the job (`progressLog`, `detail.package`). While an install of the same package runs, the request joins it. An install cannot stop half-way: cancel marks the job cancelled and the installer finishes; a new request for the same package then starts a job that waits for it.",
         "operationId": "startMcpNpmPackageInstallJob",
         "requestBody": {
           "required": true,

@@ -91,4 +91,23 @@ describe('JobRegistry', () => {
     expect(view.progressLog![0]).toEqual({ seq: 4, text: 'line 4', detail: { package: 'p' } })
     expect(view.progressLog!.at(-1)?.seq).toBe(MAX_PROGRESS_LOG + 3)
   })
+
+  it('after a cancel the key stays taken until the work settles: a retry waits for it, then runs', async () => {
+    const jobs = new JobRegistry()
+    let finishFirst!: () => void
+    const order: string[] = []
+    const first = jobs.start('t.install', async () => { order.push('first start'); await new Promise<void>((r) => { finishFirst = r }); order.push('first end') }, { key: 'pkg' })
+    await vi.waitFor(() => expect(order).toEqual(['first start']))
+    expect(jobs.cancel(first.id)).toBe(true)
+    expect(jobs.keyBusy('t.install', 'pkg')).toBe(true)
+    // The cancelled job no longer reads running, so this is a new job, not a join.
+    const retry = jobs.start('t.install', async () => { order.push('retry start'); return 'ok' }, { key: 'pkg' })
+    expect(retry.id).not.toBe(first.id)
+    await vi.waitFor(() => expect(jobs.get(retry.id)?.progress).toBe('Waiting for a cancelled run of the same work to finish'))
+    expect(order).toEqual(['first start'])
+    finishFirst()
+    await vi.waitFor(() => expect(jobs.get(retry.id)?.state).toBe('succeeded'))
+    expect(order).toEqual(['first start', 'first end', 'retry start'])
+    await vi.waitFor(() => expect(jobs.keyBusy('t.install', 'pkg')).toBe(false))
+  })
 })
