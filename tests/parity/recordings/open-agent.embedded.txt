@@ -1,0 +1,429 @@
+# parity recording: open-agent
+
+## steps
+1. invoke adf:file:open
+  args:
+    -
+      filePath: "<ROOT>/agents/agent-1.adf"
+  result:
+    agentWasRunning: false
+    filePath: "<ROOT>/agents/agent-1.adf"
+    success: true
+2. invoke adf:doc:get-batch
+  args: []
+  result:
+    agentConfig:
+      adapters: {}
+      adf_version: "0.2"
+      audit:
+        files: false
+        inbox: false
+        loop: true
+        outbox: false
+      autonomous: false
+      autostart: false
+      card:
+        endpoints: {}
+      code_execution:
+        attestation_add: true
+        attestation_issue: true
+        attestation_list: true
+        emit_event: true
+        get_identity: true
+        identity_status: true
+        loop_inject: true
+        model_invoke: true
+        network: false
+        restricted_methods:
+          - "attestation_issue"
+        set_identity: true
+        sys_lambda: true
+        task_resolve: true
+      compute:
+        enabled: false
+      context:
+        audit:
+          files: false
+          inbox: false
+          loop: true
+          outbox: false
+        dynamic_instructions:
+          context_warning: true
+          idle_reminder: true
+          inbox_hints: true
+          mesh_updates: true
+      description: ""
+      handle: "agent-1"
+      icon: "🤖"
+      id: "5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01"
+      instructions: ""
+      limits:
+        execution_timeout_ms: 60000
+        max_active_turns: null
+        max_audio_size_bytes: 10485760
+        max_file_read_tokens: 30000
+        max_file_write_bytes: 5000000
+        max_image_size_bytes: 5242880
+        max_tool_result_preview_chars: 5000
+        max_tool_result_tokens: 16000
+        max_video_size_bytes: 20971520
+      locked_fields: []
+      logging:
+        default_level: "info"
+        max_rows: 10000
+        rules: []
+      mcp:
+        servers: []
+      messaging:
+        inbox_mode: true
+        mode: "proactive"
+        receive: true
+        visibility: "localhost"
+      metadata:
+        created_at: "<iso>"
+        updated_at: "<iso>"
+      model:
+        model_id: "parity-model"
+        provider: "parity-llm"
+        temperature: 0.7
+        vision: false
+      name: "agent-1"
+      providers: []
+      security:
+        allow_unsigned: true
+        level: 1
+      serving:
+        api: []
+        public:
+          enabled: false
+        shared:
+          enabled: false
+          patterns: []
+      start_in_state: "idle"
+      state: "idle"
+      tools:
+        -
+          enabled: true
+          name: "fs_read"
+          visible: true
+        -
+          enabled: true
+          name: "fs_write"
+          visible: true
+        -
+          enabled: true
+          name: "fs_list"
+          visible: true
+        -
+          enabled: false
+          name: "fs_delete"
+          visible: false
+        -
+          enabled: true
+          name: "msg_send"
+          visible: true
+        -
+          enabled: true
+          name: "agent_discover"
+          visible: true
+        -
+          enabled: true
+          name: "msg_list"
+          visible: true
+        -
+          enabled: true
+          name: "msg_read"
+          visible: true
+        -
+          enabled: true
+          name: "msg_update"
+          visible: true
+        -
+          enabled: true
+          name: "chat_info"
+          visible: false
+        -
+          enabled: true
+          name: "sys_code"
+          visible: true
+        -
+          enabled: true
+          name: "sys_lambda"
+          visible: true
+        -
+          enabled: true
+          name: "sys_set_timer"
+          visible: true
+        -
+          enabled: true
+          name: "sys_list_timers"
+          visible: true
+        -
+          enabled: true
+          name: "sys_delete_timer"
+          visible: true
+        -
+          enabled: true
+          name: "sys_get_config"
+          visible: true
+        -
+          enabled: true
+          name: "sys_update_config"
+          restricted: true
+          visible: true
+        -
+          enabled: false
+          name: "sys_create_adf"
+          restricted: true
+          visible: false
+        -
+          enabled: true
+          name: "db_query"
+          visible: true
+        -
+          enabled: false
+          name: "db_execute"
+          visible: false
+        -
+          enabled: false
+          name: "loop_compact"
+          visible: false
+        -
+          enabled: false
+          name: "loop_clear"
+          visible: false
+        -
+          enabled: true
+          name: "loop_send"
+          visible: true
+        -
+          enabled: true
+          name: "loop_list"
+          visible: true
+        -
+          enabled: true
+          name: "loop_manage"
+          visible: true
+        -
+          enabled: false
+          name: "msg_delete"
+          visible: false
+        -
+          enabled: true
+          name: "say"
+          visible: true
+        -
+          enabled: true
+          name: "ask"
+          visible: true
+        -
+          enabled: true
+          name: "sys_set_state"
+          visible: true
+        -
+          enabled: true
+          name: "sys_get_meta"
+          visible: true
+        -
+          enabled: true
+          name: "sys_set_meta"
+          visible: true
+        -
+          enabled: true
+          name: "sys_delete_meta"
+          visible: true
+        -
+          enabled: true
+          name: "sys_fetch"
+          visible: true
+        -
+          enabled: false
+          name: "adf_shell"
+          visible: false
+        -
+          enabled: false
+          name: "ws_connect"
+          visible: false
+        -
+          enabled: false
+          name: "ws_disconnect"
+          visible: false
+        -
+          enabled: false
+          name: "ws_connections"
+          visible: false
+        -
+          enabled: false
+          name: "ws_send"
+          visible: false
+        -
+          enabled: false
+          name: "stream_bind"
+          visible: false
+        -
+          enabled: false
+          name: "stream_unbind"
+          visible: false
+        -
+          enabled: false
+          name: "stream_bindings"
+          visible: false
+        -
+          enabled: false
+          name: "fs_transfer"
+          visible: false
+        -
+          enabled: false
+          name: "compute_exec"
+          restricted: true
+          visible: false
+        -
+          enabled: false
+          name: "mcp_install"
+          visible: false
+        -
+          enabled: false
+          name: "mcp_restart"
+          visible: false
+        -
+          enabled: false
+          name: "mcp_uninstall"
+          visible: false
+      triggers:
+        on_chat:
+          enabled: true
+          targets:
+            -
+              scope: "agent"
+        on_file_change:
+          enabled: true
+          targets:
+            -
+              debounce_ms: 2000
+              filter:
+                watch: "README.*"
+              scope: "agent"
+        on_inbox:
+          enabled: true
+          targets:
+            -
+              scope: "agent"
+        on_llm_call:
+          enabled: false
+          targets: []
+        on_logs:
+          enabled: false
+          targets: []
+        on_outbox:
+          enabled: false
+          targets: []
+        on_startup:
+          enabled: false
+          targets: []
+        on_task_complete:
+          enabled: true
+          targets:
+            -
+              scope: "agent"
+        on_task_create:
+          enabled: false
+          targets: []
+        on_timer:
+          enabled: true
+          targets:
+            -
+              scope: "system"
+            -
+              scope: "agent"
+        on_tool_call:
+          enabled: false
+          targets: []
+      ws_connections: []
+    chat:
+      earlierCount: 0
+      llmMessages: []
+      uiLog: []
+      version: 1
+    contextBaseline: null
+    document: |
+      # agent-1
+      
+      Created: 2026-10-14
+      Status: New agent, self-configuring.
+      
+    statusText: ""
+3. invoke adf:doc:read-internal-file
+  args:
+    -
+      binaryContent: false
+      path: "mind.md"
+  result:
+    binary: false
+    content: |
+      # Mind
+      
+      My index, loaded every turn. Keep it small; details live in pages under `mind/`.
+      
+      ## Always
+      
+      <!-- One line per rule: what my principal wants and why. Corrections and preferences go here, since only this section loads every turn. Also who my principal is and my current focus. -->
+      
+      ## Pages
+      
+      <!-- One line per page: - [title](adf-file://mind/slug.md) — one-line hook -->
+      
+    mimeType: "text/markdown"
+    size: 380
+4. invoke adf:doc:read-internal-file
+  args:
+    -
+      binaryContent: false
+      path: "soul.md"
+  result:
+    binary: false
+    content: |
+      # Soul
+      
+      This is the default voice, shared by every new agent. Keep it and I sound like all of them. The soul-creation skill in the first-party catalog has ten starting voices and a process for adopting or building one.
+      
+      ## Voice
+      
+      - I answer first. Reasons come after, if they're needed.
+      - Short sentences. Short replies to humans.
+      - If my principal is wrong or about to waste hours, I say so and propose the fix.
+      - \"I don't know\" is an acceptable answer. When I break something I say what broke, what I changed, and what's still unknown.
+      
+      ## Taboos
+      
+      - No \"Great question\", \"I'd be happy to\", or opening apologies.
+      - No summaries that restate what was just said.
+      - No offers tacked onto the end of a reply.
+      
+      ## Exemplars
+      
+      - \"Done. The cron runs at 8am Monday; first run is tomorrow.\"
+      - \"No, that won't work. The API caps at 100 rows. I'll page through it instead, about 20 minutes.\"
+      - \"I broke the deploy at 14:10 and rolled it back at 14:12. A missing env var. Fixed.\"
+      
+      ## Origin
+      
+      <!-- Where I came from, who I work for, what I'm becoming. Fill in as it happens. -->
+      
+    mimeType: "text/markdown"
+    size: 1067
+5. invoke adf:file:get-current
+  args: []
+  result:
+    agentRunning: false
+    filePath: "<ROOT>/agents/agent-1.adf"
+6. invoke adf:agent:status
+  args: []
+  result:
+    running: false
+    state: "stopped"
+
+## local calls (1)
+#1 app.addRecentDocument:
+  - "<ROOT>/agents/agent-1.adf"
+
+## llm requests (0)
