@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { mcpConnectorFor } from './mcp-connectors'
-import { existsSync, readdirSync, realpathSync, renameSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
@@ -2667,6 +2667,18 @@ export class RuntimeService extends EventEmitter {
     return this.pendingRenames.get(this.canonicalFilePath(filePath))
   }
 
+  /**
+   * Drop a pending rename without the name checks syncAgentFileToName runs
+   * (a file being deleted may have a name that is not a valid new name, e.g.
+   * `:` on POSIX). Returns the dropped name.
+   */
+  cancelPendingRename(filePath: string): string | undefined {
+    const key = this.canonicalFilePath(filePath)
+    const name = this.pendingRenames.get(key)
+    this.pendingRenames.delete(key)
+    return name
+  }
+
   /** Renames the file of an agent that just unloaded, if a rename waits; the caller emits the event. */
   private applyPendingRename(agentId: string, filePath: string): RuntimeAgentFileRenamedEvent | null {
     const name = this.pendingRenames.get(filePath)
@@ -2683,7 +2695,9 @@ export class RuntimeService extends EventEmitter {
   /** Studio's performAdfRename for a file no agent holds open. */
   private renameAgentFileNow(filePath: string, newName: string): RuntimeFileRenameResult {
     const newPath = join(dirname(filePath), `${newName}.adf`)
-    if (newPath !== filePath && existsSync(newPath)) return { error: `A file named "${newName}.adf" already exists.` }
+    // On a case-insensitive volume a case-only rename's target "exists": it is the source itself.
+    const caseOnly = newPath !== filePath && sameInode(filePath, newPath)
+    if (newPath !== filePath && !caseOnly && existsSync(newPath)) return { error: `A file named "${newName}.adf" already exists.` }
     try {
       if (newPath !== filePath) {
         // Merge WAL frames into the main file before moving it; sidecars that
@@ -2701,7 +2715,14 @@ export class RuntimeService extends EventEmitter {
         if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
           return { error: 'WAL sidecars could not be checkpointed — rename aborted to avoid losing unflushed data.' }
         }
-        renameSync(filePath, newPath)
+        if (caseOnly) {
+          // Through a temporary name, so the new spelling sticks on every case-insensitive filesystem.
+          const temp = `${filePath}.${process.pid}-${Date.now()}.renaming`
+          renameSync(filePath, temp)
+          renameSync(temp, newPath)
+        } else {
+          renameSync(filePath, newPath)
+        }
       }
       const workspace = AdfWorkspace.open(newPath)
       try {
@@ -3286,6 +3307,17 @@ export class RuntimeService extends EventEmitter {
 
   private canonicalFilePath(filePath: string): string {
     try { return realpathSync(filePath) } catch { return filePath }
+  }
+}
+
+/** Both paths name the same file (device + inode); false when either is missing. */
+function sameInode(a: string, b: string): boolean {
+  try {
+    const x = statSync(a, { bigint: true })
+    const y = statSync(b, { bigint: true })
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
   }
 }
 

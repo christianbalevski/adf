@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
@@ -902,5 +902,43 @@ describe('daemon file routes: delete with a pending rename', () => {
     await tick(50)
     expect(existsSync(a.filePath)).toBe(false)
     expect(existsSync(join(root, 'agent-5.adf'))).toBe(false)
+  })
+})
+
+describe('daemon file routes: final-check fixes', () => {
+  it('a case-only rename of a running agent is applied when it stops', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime, renames } = setup({ trackedDirectories: [root] })
+    const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'Agent-1' } })).json().renameDeferred).toBe(true)
+    await runtime.unloadAgent(ref.id)
+    const newPath = join(root, 'Agent-1.adf')
+    for (let i = 0; i < 50 && renames.length === 0; i++) await tick(20)
+    expect(readdirSync(root).filter(n => n.endsWith('.adf'))).toEqual(['Agent-1.adf'])
+    expect(renames).toEqual([{ oldPath: a.filePath, newPath }])
+    const ws = AdfWorkspace.open(newPath)
+    try { expect(ws.getAgentConfig().name).toBe('Agent-1') } finally { ws.close() }
+  })
+
+  it.runIf(process.platform !== 'win32')('DELETE drops a pending rename even when the file name is not a valid new name (":" on POSIX)', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent:1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-2' } })).json().renameDeferred).toBe(true)
+    expect((await server.inject({ method: 'DELETE', url: `/files?path=${q(a.filePath)}` })).json()).toMatchObject({ success: true, stopped: true })
+    await tick(50)
+    expect(readdirSync(root).filter(n => n.endsWith('.adf'))).toEqual([])
+  })
+
+  it('cancelPendingRename drops the pending name without validating it', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { runtime } = setup({ trackedDirectories: [root] })
+    await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    expect(runtime.syncAgentFileToName(a.filePath, 'agent-3')).toEqual({ deferred: true })
+    expect(runtime.cancelPendingRename(a.filePath)).toBe('agent-3')
+    expect(runtime.getPendingRename(a.filePath)).toBeUndefined()
   })
 })

@@ -69,7 +69,7 @@ export interface FileOpsSettings extends TrackedDirsSettings {
 
 export type FileOpsRuntime = Pick<RuntimeService,
   | 'listAgents' | 'listLiveAgents' | 'getAgent' | 'getAgentConfig' | 'setAgentConfig' | 'unloadAgent' | 'scanAdfFiles'
-  | 'rekeyAgentPath' | 'syncAgentFileToName' | 'getPendingRename'>
+  | 'rekeyAgentPath' | 'syncAgentFileToName' | 'getPendingRename' | 'cancelPendingRename'>
 
 export interface FileOpsDeps {
   runtime: FileOpsRuntime
@@ -851,8 +851,7 @@ export class AgentFileOps {
     const loaded = this.loadedAt(filePath)
     if (!loaded) await this.assertNotLeasedElsewhere(filePath)
     // Before the unload: a pending rename would move the file away from the delete.
-    const pending = this.runtime.getPendingRename(filePath)
-    if (pending) this.runtime.syncAgentFileToName(filePath, basename(filePath, '.adf'))
+    const pending = this.runtime.cancelPendingRename(filePath)
     if (loaded) {
       console.log(`[FileOps] Stopping ${loaded.name} before deleting ${filePath}`)
       const deadlineMs = this.deps.unloadDeadlineMs ?? DELETE_UNLOAD_DEADLINE_MS
