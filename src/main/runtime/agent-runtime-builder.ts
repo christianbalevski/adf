@@ -1375,8 +1375,12 @@ export class AgentRuntimeBuilder {
     state.keyRef.current = derivedKey
     emitAgentDerivedKeyChanged(state.workspace, derivedKey)
     if (!derivedKey) {
-      // Password removed or identity wiped: running adapters were started with
-      // the old key in their context; restart them without it.
+      // Password removed or identity wiped: running adapters that read their
+      // credentials through the old key (they have stored credentials) were
+      // started with it in their context; restart those without it. An
+      // adapter with no stored credential never used the key and keeps
+      // running. After a wipe no credential is left, so nothing restarts (as
+      // in Studio); an adapter that needs one fails at its next start.
       const adaptersRestarted = previous ? await this.restartAdaptersWithKey(state, null) : []
       return { applied: true, adaptersRestarted, mcpReconnected: [] }
     }
@@ -1441,15 +1445,17 @@ export class AgentRuntimeBuilder {
   }
 
   /**
-   * Restart every running adapter of the agent with `derivedKey` in its
-   * context (an adapter keeps the key it started with). Logged to the
-   * console and adf_logs. Returns the types restarted.
+   * Restart the running adapters of the agent that have stored credentials
+   * (`adapter:<type>:*`, the rows they read through the key) with
+   * `derivedKey` in their context (an adapter keeps the key it started
+   * with). Logged to the console and adf_logs. Returns the types restarted.
    */
   private async restartAdaptersWithKey(state: BuiltAgentState, derivedKey: Buffer | null): Promise<string[]> {
     const manager = state.adapterManager
     if (!manager) return []
     const { workspace, label } = state
-    const running = manager.getStates().map(s => s.type)
+    const usesKey = (type: string): boolean => workspace.listIdentityPurposes(`adapter:${type}:`).some(p => p.startsWith(`adapter:${type}:`))
+    const running = manager.getStates().map(s => s.type).filter(usesKey)
     if (running.length === 0) return []
     for (const type of running) {
       try { await manager.stopAdapter(type) } catch { /* reconcile retries the start */ }

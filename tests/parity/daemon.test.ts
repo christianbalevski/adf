@@ -8,6 +8,8 @@ import { applyGapAllowlist, GAP_ALLOWLIST } from './harness/gaps'
 import { toGoldenForm } from './harness/normalize'
 import { runScenario } from './harness/scenario'
 import { CORE_SCENARIOS } from './scenarios/core'
+import { SETTINGS_SCENARIOS } from './settings/scenarios'
+import { IDENTITY_SCENARIOS } from './identity/scenarios'
 import { MESH_SCENARIOS } from './mesh/scenarios'
 
 /**
@@ -80,7 +82,7 @@ describe.skipIf(!BUNDLE)('parity: daemon backend (child process)', () => {
   }
 
   it('every gap entry names a workstream and lists only known scenarios', () => {
-    const names = new Set([...CORE_SCENARIOS, ...MESH_SCENARIOS].map((s) => s.name))
+    const names = new Set([...CORE_SCENARIOS, ...MESH_SCENARIOS, ...SETTINGS_SCENARIOS, ...IDENTITY_SCENARIOS].map((s) => s.name))
     for (const entry of GAP_ALLOWLIST) {
       expect(entry.ws).toMatch(/^(W\d-[A-Z]\d?|E3|mode)$/)
       for (const s of entry.scenarios) expect(names.has(s), `${entry.id}: ${s}`).toBe(true)

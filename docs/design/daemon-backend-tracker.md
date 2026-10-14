@@ -62,7 +62,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W2-C2 | Studio main switches from the interim `/events` adapter to W2-B client sessions (focus, holds, reattach, gap) | 2 | W2-B, W2-C | TODO |
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | MERGED |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
-| W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
+| W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | MERGED |
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
 | W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | MERGED |
 | W3-E | TUI on client sessions — folded into W2-B (owner, 2026-10-14) | 2 | — | IN W2-B |
@@ -348,6 +348,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-C2 | D5 deviation: executor frames carry no `turnId`, absorbed ids or discarded-turn frame; Studio works around it with `umbilical:true` (turn.completed/agent.error/chat.discarded). Add them to executor frames and drop the workaround | W5-A |
 | W2-C2 | `w3a:chat-echo`: in daemon mode Studio shows its own chat twice (`POST /agents/:id/chat` lacks `echoed`). W3-A acceptance criterion | W3-A |
 | W2-C2 | Version-mismatch refusal only offers `ADF_STUDIO_BACKEND=embedded`/hand edit as the way back; needs the §8.2 dialog | W4-A |
+| W3-B | If `icacls` fails to restrict the proof file on Windows, the daemon runs without a local proof, so every local-only route (reveal, owner import) refuses; make that state visible in Studio and `adf daemon status` | W4-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |

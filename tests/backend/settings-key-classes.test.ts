@@ -165,6 +165,28 @@ describe('settings key classes', () => {
     expect(unclassified).toEqual([])
   })
 
+  it('daemon mode can write every key the renderer writes: client keys to the client file, the rest through PATCH /settings, none refused', () => {
+    // In daemon mode SETTINGS_SET sends every non-client key to PATCH /settings
+    // (daemon-mode/settings.ts splitSettingsPatch); the daemon refuses its
+    // write-denied keys (daemon/http-api.ts SETTINGS_WRITE_DENY_KEYS and the
+    // secret keys), which would fail the renderer's whole write.
+    const api = readFileSync(join(ROOT, 'src', 'main', 'daemon', 'http-api.ts'), 'utf8')
+    const listOf = (name: string): string[] => {
+      const start = api.indexOf(`const ${name} = [`)
+      expect(start, name).toBeGreaterThanOrEqual(0)
+      const body = api.slice(start, api.indexOf(']', start))
+      return [...body.matchAll(/'([A-Za-z][\w:.-]*)'/g)].map((m) => m[1])
+    }
+    const denied = new Set([...listOf('SETTINGS_SECRET_KEYS'), ...listOf('SETTINGS_WRITE_DENY_KEYS')])
+    expect(denied.has('trustedDaemonEncKeys')).toBe(true)
+    const rendererKeys = new Set<string>()
+    for (const f of files) if (relative(ROOT, f.path).startsWith(join('src', 'renderer'))) for (const key of rendererWriteKeys(f.text)) rendererKeys.add(key)
+    expect(rendererKeys.has('providers')).toBe(true)
+    expect(rendererKeys.has('theme')).toBe(true)
+    const refused = [...rendererKeys].filter((key) => settingsKeyClass(key) !== 'client' && (denied.has(key) || key.startsWith('ownerMnemonicSuperseded:')))
+    expect(refused).toEqual([])
+  })
+
   it('reads every key of a multi-key setSettings literal', () => {
     const keys = objectLiteralKeys("({ providers: rest, defaultProviderId: next ?? '', [UI_FONT_SYSTEM_MIGRATION_KEY]: true, compute, ...other })", 1)
     expect(keys).toEqual(['providers', 'defaultProviderId', 'uiFontSystemDefaultApplied', 'compute'])

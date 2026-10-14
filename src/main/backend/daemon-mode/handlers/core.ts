@@ -109,7 +109,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const opened = await ctx.session.openFile(filePath, (p) => ctx.runningAgentAt(p))
       const status = await agentStatus(ctx, opened.agentId)
       const agentWasRunning = status !== null
-      if (opened.agentId && agentWasRunning) {
+      // Running or held open (W2-A): the daemon answers the password state either way, as embedded checks every file.
+      if (opened.agentId) {
         const client = await ctx.ready()
         const pw = await client.request<{ needsPassword: boolean; unlocked: boolean }>('GET', `/agents/${enc(opened.agentId)}/identity/password`)
         if (pw.needsPassword && !pw.unlocked) {

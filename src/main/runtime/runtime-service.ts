@@ -9,6 +9,7 @@ import { templateFilePath } from '../adf/agent-templates'
 import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
+import { lockedCredentialWrite, replaceLockedCredential, type LockedCredential } from '../services/locked-credential'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
@@ -463,6 +464,23 @@ export interface RuntimeCredentialWriteOptions {
 
 /** 409 code of a credential write refused because its envelope is locked here. */
 export const CREDENTIALS_LOCKED_CODE = 'credentials_locked'
+
+/**
+ * 409 `credentials_locked` for an owner write to a locked credentials
+ * envelope (services/locked-credential.ts). The body carries `purpose`,
+ * `sealed` (a value is stored sealed: a replace discards it unread) and
+ * `envelopeState`, so a client chooses without reading the message.
+ */
+export function credentialsLockedError(locked: LockedCredential): RuntimeLoopError {
+  return new RuntimeLoopError(
+    locked.sealed
+      ? `This agent's saved "${locked.purpose}" is sealed and its credentials envelope is ${locked.envelopeState} on this daemon, so it can't be read or overwritten. ${CREDENTIALS_UNLOCK_HINT} Or replace it (replace: true): the old value is discarded.`
+      : `The credentials envelope of this agent is ${locked.envelopeState} on this daemon — refusing to store "${locked.purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT} Or store it anyway (replace: true): it is sealed once the envelope unlocks.`,
+    409,
+    CREDENTIALS_LOCKED_CODE,
+    { purpose: locked.purpose, sealed: locked.sealed, envelopeState: locked.envelopeState },
+  )
+}
 
 /** One cognition loop as the owner sees it: live status plus its declaration. */
 export interface RuntimeAgentLoopInfo extends LoopInfo {
@@ -3957,34 +3975,14 @@ export class RuntimeService extends EventEmitter {
       workspace.setIdentity(purpose, value)
       return false
     }
-    const state = workspace.getEnvelopeState('credentials')
-    const envelopeLocked = state === 'locked' || state === 'foreign'
-    const row = workspace.getIdentityRow(purpose)
-    const rowEnvelope = row ? envelopeFromAlgo(row.encryption_algo) : null
-    const rowLocked = rowEnvelope !== null && workspace.getEnvelopeState(rowEnvelope) !== 'unlocked'
-    if (!envelopeLocked && !rowLocked) {
+    const locked = lockedCredentialWrite(workspace, purpose)
+    if (!locked) {
       workspace.setIdentity(purpose, value)
       return false
     }
-    if (!opts.replace) {
-      throw new RuntimeLoopError(
-        rowLocked
-          ? `This agent's saved "${purpose}" is sealed and its credentials envelope is ${state} on this daemon, so it can't be read or overwritten. ${CREDENTIALS_UNLOCK_HINT} Or replace it (replace: true): the old value is discarded.`
-          : `The credentials envelope of this agent is ${state} on this daemon — refusing to store "${purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT} Or store it anyway (replace: true): it is sealed once the envelope unlocks.`,
-        409,
-        CREDENTIALS_LOCKED_CODE,
-      )
-    }
-    const codeAccess = row?.code_access ?? false
-    if (rowLocked) workspace.deleteIdentity(purpose)
-    workspace.setIdentity(purpose, value, codeAccess)
-    const message = rowLocked
-      ? `Owner replaced locked sealed credential "${purpose}" (the old value was discarded unread); the new value is stored unsealed until the credentials envelope unlocks.`
-      : `Owner stored credential "${purpose}" while the credentials envelope is ${state}; it is stored unsealed until the envelope unlocks.`
-    console.warn(`[RuntimeService] ${target.config.name}: ${message}`)
-    // Straight to adf_logs (not the agent's log-level filter): an owner override is always recorded.
-    try { workspace.getDatabase().insertLog('warn', 'runtime', 'credential_replaced', purpose, message) } catch { /* non-fatal */ }
-    return rowLocked
+    if (!opts.replace) throw credentialsLockedError(locked)
+    replaceLockedCredential(workspace, locked, value, (line) => console.warn(`[RuntimeService] ${target.config.name}: ${line}`))
+    return locked.sealed
   }
 
   private describeIdentity(target: AgentTarget, purpose: string): RuntimeIdentityMeta {

@@ -1,6 +1,7 @@
 import type { DaemonHandlerTable } from '../context'
 import { APP_HANDLERS } from './app'
 import { CORE_HANDLERS } from './core'
+import { SETTINGS_IDENTITY_HANDLERS } from './settings-identity'
 import { FLEET_HANDLERS } from './fleet'
 
 /**
@@ -11,5 +12,6 @@ import { FLEET_HANDLERS } from './fleet'
 export const DAEMON_MODE_HANDLERS: DaemonHandlerTable = {
   ...APP_HANDLERS,
   ...CORE_HANDLERS,
+  ...SETTINGS_IDENTITY_HANDLERS,
   ...FLEET_HANDLERS,
 }
