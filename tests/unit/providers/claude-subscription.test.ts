@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildTranscript, claudeToolAlias, fingerprint, fromClaudeToolName, toApiMessage, toClaudeToolName, toolAliasMap } from '../../../src/main/providers/claude-subscription/transcript'
-import { splitForColdStart } from '../../../src/main/providers/claude-subscription/provider'
+import { sessionConfig, splitForColdStart } from '../../../src/main/providers/claude-subscription/provider'
 import { extractLoginUrl, stripAnsi } from '../../../src/main/providers/claude-subscription/auth-manager'
 import { compareVersions } from '../../../src/main/providers/claude-subscription/claude-code'
 import type { LLMMessage } from '../../../src/shared/types/provider.types'
@@ -79,6 +79,19 @@ describe('claude-subscription transcript', () => {
     expect(entries[2].parentUuid).toBe(entries[1].uuid)
     expect(entries[1].message).toMatchObject({ role: 'assistant', stop_reason: 'tool_use', model: 'claude-haiku-4-5' })
     expect(entries.every((e) => e.sessionId === 'sid' && e.cwd === '/tmp/c')).toBe(true)
+  })
+})
+
+describe('claude-subscription session config', () => {
+  const base = { system: 's', messages: [] }
+
+  it('leaves the output cap to the model and maps reasoning', () => {
+    const adaptive = sessionConfig('m', { ...base, maxTokens: 4096, reasoning: { enabled: true, effort: 'high' } })
+    expect(adaptive).toMatchObject({ thinking: { type: 'adaptive' }, effort: 'high' })
+    expect(adaptive.maxOutputTokens).toBeUndefined()
+    expect(sessionConfig('m', { ...base, reasoning: { max_tokens: 8000 } }).thinking).toMatchObject({ type: 'enabled', budgetTokens: 8000 })
+    expect(sessionConfig('m', { ...base }).thinking).toEqual({ type: 'disabled' })
+    expect(sessionConfig('m', { ...base, thinkingBudget: 0 }).thinking).toEqual({ type: 'disabled' })
   })
 })
 

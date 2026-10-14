@@ -66,7 +66,13 @@ const EFFORT: Record<ReasoningEffort, NonNullable<SessionConfig['effort']>> = {
   minimal: 'low', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh',
 }
 
-function sessionConfig(modelId: string, options: CreateMessageOptions): SessionConfig {
+/**
+ * The agent's max tokens is deliberately not applied: Claude Code sizes each
+ * request's output to the model's own maximum, and that cap also covers
+ * thinking — a small one (e.g. the old 4096 default) lets a high-effort turn
+ * spend it all thinking and end with no reply or tool call.
+ */
+export function sessionConfig(modelId: string, options: CreateMessageOptions): SessionConfig {
   const r = options.reasoning
   const budget = r?.max_tokens ?? options.thinkingBudget
   const enabled = r?.enabled ?? (r?.effort !== undefined || (budget !== undefined && budget > 0))
@@ -79,7 +85,6 @@ function sessionConfig(modelId: string, options: CreateMessageOptions): SessionC
       : budget ? { type: 'enabled', budgetTokens: budget, display }
         : { type: 'adaptive', display },
     ...(enabled && r?.effort ? { effort: EFFORT[r.effort] } : {}),
-    ...(options.maxTokens && options.maxTokens > 0 ? { maxOutputTokens: options.maxTokens } : {}),
   }
 }
 

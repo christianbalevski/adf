@@ -60,6 +60,31 @@ class ToolThenAnswerProvider implements LLMProvider {
   }
 }
 
+describe('output limit reached before any reply', () => {
+  beforeEach(() => { clearAllUmbilicalBuses() })
+
+  it('is reported in the loop instead of ending quietly', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-output-limit-'))
+    const filePath = join(dir, 'agent-1.adf')
+    createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() }).dispose()
+    const workspace = AdfWorkspace.open(filePath)
+    const config = workspace.getAgentConfig()
+    const provider: LLMProvider = {
+      name: 'scripted', modelId: 'scripted-v1',
+      createMessage: async () => ({ id: 'r', content: [{ type: 'thinking', thinking: 'hmm…' }], stop_reason: 'max_tokens', usage: { input_tokens: 10, output_tokens: 4096 } }),
+      validateConfig: async () => ({ valid: true }),
+    }
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath, config, provider })
+    try {
+      await agent.executor.executeTurn(chat('hello'))
+      expect(JSON.stringify(workspace.getLoop())).toMatch(/reached the output limit/)
+      expect(workspace.getLogs().some((l) => l.event === 'output_limit_reached')).toBe(true)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
 describe('chat while the agent is working', () => {
   beforeEach(() => { clearAllUmbilicalBuses() })
 

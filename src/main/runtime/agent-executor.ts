@@ -2421,6 +2421,23 @@ export class AgentExecutor extends EventEmitter {
           this.session.getWorkspace()._providerMeta = response.providerMetadata
         }
 
+        // A response cut off by the output limit before any reply or tool call
+        // would otherwise end the turn silently ("ended quietly").
+        if (response.stop_reason === 'max_tokens' && !response.content.some(b => (b.type === 'text' && b.text?.trim()) || b.type === 'tool_use')) {
+          const limit = request.options.maxTokens
+          const notice = `[System] The model reached the output limit${limit ? ` (${limit} tokens)` : ''} before replying — ` +
+            `its reasoning used it up. Raise Max tokens in the agent's model settings, or lower the reasoning effort.`
+          try {
+            this.session.getWorkspace().insertLog('warn', 'executor', 'output_limit_reached', null, notice.slice(0, 300))
+          } catch { /* observability is never fatal */ }
+          const noticeSeq = this.session.appendContextEntry('System', notice)
+          this.emitEvent({
+            type: 'context_injected',
+            payload: { category: 'System', content: notice, ...(noticeSeq !== undefined ? { seq: noticeSeq } : {}) },
+            timestamp: Date.now()
+          })
+        }
+
         // Model input a provider added on its own (Claude Code's reminders:
         // environment, date, account) — recorded so the loop shows everything
         // the model received.

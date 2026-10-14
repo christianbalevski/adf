@@ -142,6 +142,18 @@ describe.skipIf(!live)('claude-subscription (live)', () => {
     expect(text(r2)).toMatch(/zed/i)
   }, 120_000)
 
+  it('a small max tokens with high-effort thinking still gets a reply', async () => {
+    const r = await provider.createMessage({
+      system,
+      messages: [{ role: 'user', content: 'Think carefully: how many primes are there below 200? Then reply with just the number.' }],
+      maxTokens: 512,
+      reasoning: { effort: 'high' },
+      signal: AbortSignal.timeout(120_000),
+    })
+    expect(r.stop_reason).toBe('end_turn')
+    expect(text(r)).toMatch(/46/)
+  }, 150_000)
+
   it('streams thinking when reasoning is enabled', async () => {
     let thinking = ''
     const r = await provider.createMessage({

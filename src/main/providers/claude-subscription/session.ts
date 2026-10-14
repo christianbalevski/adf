@@ -39,7 +39,6 @@ export interface SessionConfig {
   tools: ToolProviderFormat[]
   thinking: NonNullable<Options['thinking']>
   effort?: NonNullable<Options['effort']>
-  maxOutputTokens?: number
 }
 
 export interface TurnUsage {
@@ -336,9 +335,7 @@ export class ClaudeCodeSession {
       CLAUDE_CODE_TOTAL_TOKENS_REMINDER: 'off',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
-      ...(this.config.maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.config.maxOutputTokens) } : {}),
-    })
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',    })
 
     const mcp = toolsServer(this.config.tools, (id) => this.onToolCall(id))
     this.query = query({
