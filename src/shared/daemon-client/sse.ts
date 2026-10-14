@@ -72,8 +72,13 @@ export interface EventStreamOptions<F extends StreamFrame = DaemonEventFrame> {
   onEvent: (frame: F) => void
   /** Which parsed `data` payloads are frames. Default: an object with an `event` (umbilical frames). */
   isFrame?: (value: unknown) => value is F
-  /** Dedupe key of a frame (null = never deduped). Default `dedupeKey`. */
-  dedupeKey?: (frame: F) => string | null
+  /**
+   * Dedupe identity of a frame (null = never deduped). Default `dedupeKey`
+   * (agent + seq is durable, a `c:<cursor>` key is cursor-scoped). Mark every
+   * key built from the transport cursor `cursorScoped`, or a daemon restart
+   * drops new frames until the window turns over.
+   */
+  dedupeKey?: (frame: F) => DedupeKey | null
   onState?: (info: ConnectionInfo) => void
   /** Once per resumed connection, when the daemon says how the resume went (daemons that send `stream.hello`). */
   onResume?: (info: ResumeInfo) => void
@@ -101,6 +106,8 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
   private resumePending = false
   private readonly seen = new Set<string>()
   private readonly seenOrder: string[] = []
+  /** Remembered keys that a daemon restart invalidates (DedupeKey.cursorScoped). */
+  private readonly cursorScoped = new Set<string>()
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private info: ConnectionInfo = { state: 'idle', attempt: 0 }
@@ -161,7 +168,9 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
     if (this.options.agentId) params.set('agentId', this.options.agentId)
     if (this.lastCursor >= 0) {
       params.set('since', String(this.lastCursor))
+      // Only an epoch the daemon told us (stream.hello) goes with the cursor.
       if (this.epoch) params.set('epoch', this.epoch)
+      else params.delete('epoch')
     } else {
       if (!this.options.replay) params.set('since', String(Number.MAX_SAFE_INTEGER))
       else params.delete('since')
@@ -184,8 +193,12 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
       const response = await this.fetchImpl(url, {
         headers: { Accept: 'text/event-stream', ...(typeof this.options.headers === 'function' ? this.options.headers(url) : this.options.headers ?? {}) },
         signal: controller.signal,
+        // A redirect would carry the headers (token) to wherever it points.
+        redirect: 'manual',
       })
       if (!response.ok || !response.body) {
+        void response.body?.cancel().catch(() => {})
+        if (isRedirect(response)) throw new Error(redirectMessage(this.options.baseUrl, response))
         throw new Error(`HTTP ${response.status} ${response.statusText}`.trim())
       }
       this.attempt = 0
@@ -281,9 +294,9 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
       if (frame.cursor < this.lastCursor) this.forgetCursorKeys()
       this.lastCursor = frame.cursor
     }
-    const key = this.options.dedupeKey ? this.options.dedupeKey(frame) : dedupeKey(frame)
+    const key = this.options.dedupeKey ? this.options.dedupeKey(frame) : defaultDedupeKey(frame)
     if (key) {
-      if (this.seen.has(key)) return
+      if (this.seen.has(key.key)) return
       this.remember(key)
     }
     try { this.options.onEvent(frame) } catch { /* listener errors never break the stream */ }
@@ -327,25 +340,41 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
     try { this.options.onResume?.(info) } catch { /* a bad listener must not kill the stream */ }
   }
 
-  private remember(key: string): void {
+  private remember({ key, cursorScoped }: DedupeKey): void {
     this.seen.add(key)
     this.seenOrder.push(key)
+    if (cursorScoped) this.cursorScoped.add(key)
     const cap = this.options.dedupeWindow ?? 5000
     while (this.seenOrder.length > cap) {
       const old = this.seenOrder.shift()
-      if (old) this.seen.delete(old)
+      if (old) { this.seen.delete(old); this.cursorScoped.delete(old) }
     }
   }
 
+  /** The daemon restarted: keys built from its cursors no longer identify anything. */
   private forgetCursorKeys(): void {
+    if (this.cursorScoped.size === 0) return
     for (let i = this.seenOrder.length - 1; i >= 0; i--) {
       const key = this.seenOrder[i]
-      if (key.startsWith('c:')) {
+      if (this.cursorScoped.has(key)) {
         this.seen.delete(key)
         this.seenOrder.splice(i, 1)
       }
     }
+    this.cursorScoped.clear()
   }
+}
+
+/**
+ * A frame's dedupe identity. `cursorScoped`: the key is built from the
+ * daemon's transport cursor (or anything else that restarts with the
+ * daemon), so it is forgotten when the daemon restarts (new epoch, or the
+ * cursor going backwards); otherwise a restarted daemon's new frames would
+ * collide with old keys and be dropped. Durable keys (agent + seq) are kept.
+ */
+export interface DedupeKey {
+  key: string
+  cursorScoped: boolean
 }
 
 /** `a:<agent>:<seq>` for agent events, `c:<cursor>` for daemon-scope ones (and frames without an umbilical event). */
@@ -354,6 +383,22 @@ export function dedupeKey(frame: StreamFrame & { event?: Partial<DaemonEventFram
   if (event?.agent_id && typeof event.seq === 'number' && event.seq > 0) return `a:${event.agent_id}:${event.seq}`
   if (typeof frame.cursor === 'number') return `c:${frame.cursor}`
   return null
+}
+
+function defaultDedupeKey(frame: StreamFrame): DedupeKey | null {
+  const key = dedupeKey(frame)
+  return key ? { key, cursorScoped: key.startsWith('c:') } : null
+}
+
+/** A 3xx (or, under `redirect: 'manual'` in a browser-like fetch, an opaque redirect). */
+export function isRedirect(response: Response): boolean {
+  return response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400 && response.status !== 304)
+}
+
+/** Redirects are never followed: they would carry the token, local proof or body to another place. */
+export function redirectMessage(baseUrl: string, response: Response): string {
+  const location = response.headers.get('location')
+  return `Daemon at ${baseUrl} answered a redirect (HTTP ${response.status}${location ? ` to ${location}` : ''}); redirects are not followed, so the token stays with ${baseUrl}`
 }
 
 /** An umbilical frame from `GET /events`: an object with an `event`. */

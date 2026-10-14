@@ -5,7 +5,7 @@ import * as sseNs from '../../../shared/daemon-client/sse'
 import { cjs } from '../interop'
 import type { DaemonEventFrame } from '../../../shared/daemon-client/types'
 
-export type { ConnectionInfo, ConnectionState, EventStreamOptions, ResumeInfo, StreamFrame, StreamQuery } from '../../../shared/daemon-client/sse'
+export type { ConnectionInfo, ConnectionState, DedupeKey, EventStreamOptions, ResumeInfo, StreamFrame, StreamQuery } from '../../../shared/daemon-client/sse'
 
 const shared = cjs(sseNs)
 

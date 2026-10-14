@@ -10,7 +10,7 @@
 // timers. Where the token comes from is injected (DaemonCredentials); the
 // Node implementation (env, token file, local proof) is cli/daemon-url.ts.
 
-import { EventStream, type EventStreamOptions, type StreamFrame } from './sse'
+import { EventStream, isRedirect, redirectMessage, type EventStreamOptions, type StreamFrame } from './sse'
 import { normalizeRuntime } from './normalize'
 import {
   DaemonError,
@@ -135,10 +135,12 @@ export interface DaemonClientOptions {
   /** Credentials for `baseUrl`'s origin. None: requests carry no token. */
   credentials?: DaemonCredentials
   /**
-   * Credentials for another daemon (`withBaseUrl` to a different origin
-   * without a token). None: that client carries no token.
+   * Credentials for the client `withBaseUrl` builds: for another origin, or
+   * for any origin with an explicit `token` (so it can add e.g. the local
+   * proof). None: another origin carries no token, an explicit token is sent
+   * as is (staticCredentials).
    */
-  credentialsFor?: (baseUrl: string) => DaemonCredentials | undefined
+  credentialsFor?: (baseUrl: string, token?: string) => DaemonCredentials | undefined
   /** Injected for tests. */
   fetch?: typeof fetch
   /** Per-request timeout for non-streaming calls. Default 15s. */
@@ -164,10 +166,11 @@ export type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
 const enc = encodeURIComponent
 
-/** `url`'s origin, or null when it does not parse. */
+/** `url`'s origin, or null when it does not parse or has an opaque origin (`'null'`: file:, data:, …). */
 function originOf(url: string): string | null {
   try {
-    return new URL(url).origin
+    const origin = new URL(url).origin
+    return origin === 'null' ? null : origin
   } catch {
     return null
   }
@@ -193,22 +196,32 @@ export class DaemonClient {
 
   /**
    * Same transport (fetch, timeout) against another daemon. The current
-   * credentials are carried over only to the same origin; another origin gets
-   * `token`, or `credentialsFor(baseUrl)`, or none — never this daemon's.
+   * credentials are carried over only to the same origin without a `token`;
+   * otherwise the client gets `credentialsFor(baseUrl, token)` (or just
+   * `token`), or none — never this daemon's.
    */
-  withBaseUrl(baseUrl: string, token?: string): DaemonClient {
+  withBaseUrl(baseUrl: string, token?: string): this {
     const next = baseUrl.replace(/\/+$/, '')
     const credentials = token
-      ? staticCredentials(token)
+      ? this.options.credentialsFor?.(next, token) ?? staticCredentials(token)
       : this.origin !== null && originOf(next) === this.origin
         ? this.credentials
         : this.options.credentialsFor?.(next)
-    return new DaemonClient({ ...this.options, baseUrl: next, credentials })
+    return this.derive({ ...this.options, baseUrl: next, credentials })
   }
 
   /** Same daemon and credentials, another default timeout for the calls made through it. */
-  withTimeout(timeoutMs: number): DaemonClient {
-    return new DaemonClient({ ...this.options, timeoutMs })
+  withTimeout(timeoutMs: number): this {
+    return this.derive({ ...this.options, timeoutMs })
+  }
+
+  /**
+   * A client like this one with other options; `withBaseUrl` and
+   * `withTimeout` build through it. A subclass whose constructor takes other
+   * options overrides it so the derived client keeps the subclass.
+   */
+  protected derive(options: DaemonClientOptions): this {
+    return new (this.constructor as new (options: DaemonClientOptions) => this)(options)
   }
 
   /** Whether requests carry a bearer token. */
@@ -263,6 +276,8 @@ export class DaemonClient {
         headers: this.headersFor(url, options.body !== undefined ? { 'Content-Type': 'application/json' } : {}, path),
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
+        // Never followed: a 302 would forward the token / local proof, a 307 the body.
+        redirect: 'manual',
       })
     } catch (err) {
       const reason = controller.signal.aborted && !options.signal?.aborted ? `timed out after ${timeoutMs}ms` : errorMessage(err)
@@ -270,6 +285,10 @@ export class DaemonClient {
     } finally {
       clearTimeout(timer)
       options.signal?.removeEventListener('abort', onAbort)
+    }
+    if (isRedirect(response)) {
+      void response.body?.cancel().catch(() => {})
+      throw new DaemonError(redirectMessage(this.baseUrl, response), response.status)
     }
     const text = await response.text()
     let body: unknown = null

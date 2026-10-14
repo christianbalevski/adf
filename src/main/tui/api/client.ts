@@ -32,18 +32,30 @@ export interface DaemonClientOptions {
   timeoutMs?: number
 }
 
+type SharedOptions = sharedClientNs.DaemonClientOptions
+
 export class DaemonClient extends shared.DaemonClient {
-  constructor(options: DaemonClientOptions = {}) {
+  /** `resolved`: options already built for the shared client (derive); `options` is then ignored. */
+  constructor(options: DaemonClientOptions = {}, resolved?: SharedOptions) {
+    super(resolved ?? DaemonClient.resolve(options))
+  }
+
+  private static resolve(options: DaemonClientOptions): SharedOptions {
     const baseUrl = resolveDaemonUrl(options.baseUrl)
     const lookup = { localToken: options.localToken, env: options.env }
-    super({
+    return {
       baseUrl,
-      // `--token` belongs to this URL; another daemon (withBaseUrl) gets
-      // ADF_DAEMON_TOKEN or its own local token file, never this one.
+      // `--token` belongs to this URL; another daemon (withBaseUrl) gets its
+      // own `--token`, or ADF_DAEMON_TOKEN, or its own local token file (and
+      // local proof, when it is this machine's daemon), never this one.
       credentials: daemonCredentials(baseUrl, { ...lookup, token: options.token }),
-      credentialsFor: url => daemonCredentials(url, lookup),
+      credentialsFor: (url, token) => daemonCredentials(url, { ...lookup, token }),
       fetch: options.fetch,
       timeoutMs: options.timeoutMs,
-    })
+    }
+  }
+
+  protected override derive(options: SharedOptions): this {
+    return new DaemonClient({}, options) as this
   }
 }
