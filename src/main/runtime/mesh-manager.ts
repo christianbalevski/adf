@@ -493,8 +493,11 @@ export class MeshManager extends EventEmitter {
     reg.messageUnsubscribe = () => {
       unsubscribeBus()
       unsubscribeSignals()
-      // The key belongs to this load: a reload starts locked again.
+      // The key and the adapter manager belong to this load (Studio's
+      // agent-off teardown removes the adapter manager too): a reload starts
+      // locked and sets its own manager.
       this.clearDerivedKey(filePath)
+      this.removeAdapterManager(filePath)
     }
   }
 
