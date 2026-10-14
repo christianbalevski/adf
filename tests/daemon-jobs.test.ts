@@ -1,6 +1,6 @@
 // daemon/jobs.ts: long-running work answered as 202 + GET /jobs/:id.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { FINISHED_TTL_MS, JobRegistry, MAX_FINISHED } from '../src/main/daemon/jobs'
+import { FINISHED_TTL_MS, JobLimitError, JobRegistry, MAX_FINISHED, MAX_PROGRESS_LOG, MAX_RUNNING } from '../src/main/daemon/jobs'
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -49,5 +49,65 @@ describe('JobRegistry', () => {
     await vi.waitFor(() => expect(jobs.get(ids.at(-1)!)?.state).toBe('succeeded'))
     jobs.start('t', async () => 0) // sweeps
     expect(ids.filter((id) => jobs.get(id)).length).toBe(MAX_FINISHED)
+  })
+
+  it('a start with the key of a running job of the same kind joins it', async () => {
+    const jobs = new JobRegistry()
+    let finish!: () => void
+    const run = vi.fn(async () => { await new Promise<void>((r) => { finish = r }); return 'done' })
+    const first = jobs.start('t.install', run, { key: 'pkg-a' })
+    const again = jobs.start('t.install', run, { key: 'pkg-a' })
+    const other = jobs.start('t.install', async () => 'b', { key: 'pkg-b' })
+    expect(again).toMatchObject({ id: first.id, joined: true })
+    expect(other.id).not.toBe(first.id)
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+    finish()
+    await vi.waitFor(() => expect(jobs.get(first.id)?.state).toBe('succeeded'))
+    // Finished: the next start is a new job.
+    expect(jobs.start('t.install', async () => 0, { key: 'pkg-a' }).id).not.toBe(first.id)
+  })
+
+  it('refuses a start past MAX_RUNNING running jobs', () => {
+    const jobs = new JobRegistry()
+    const never = () => new Promise<never>(() => {})
+    for (let i = 0; i < MAX_RUNNING; i++) jobs.start('t.hold', never)
+    expect(() => jobs.start('t.hold', never)).toThrow(JobLimitError)
+    expect(jobs.runningCount()).toBe(MAX_RUNNING)
+    jobs.cancelAll()
+    expect(jobs.runningCount()).toBe(0)
+    expect(() => jobs.start('t.hold', never)).not.toThrow()
+    jobs.cancelAll()
+  })
+
+  it('keeps the last progress lines, numbered, with their detail', async () => {
+    const jobs = new JobRegistry()
+    const job = jobs.start('t.progress', async (ctx) => {
+      for (let i = 1; i <= MAX_PROGRESS_LOG + 3; i++) ctx.setProgress(`line ${i}`, { package: 'p' })
+    })
+    await vi.waitFor(() => expect(jobs.get(job.id)?.state).toBe('succeeded'))
+    const view = jobs.get(job.id)!
+    expect(view.progress).toBe(`line ${MAX_PROGRESS_LOG + 3}`)
+    expect(view.progressLog).toHaveLength(MAX_PROGRESS_LOG)
+    expect(view.progressLog![0]).toEqual({ seq: 4, text: 'line 4', detail: { package: 'p' } })
+    expect(view.progressLog!.at(-1)?.seq).toBe(MAX_PROGRESS_LOG + 3)
+  })
+
+  it('after a cancel the key stays taken until the work settles: a retry waits for it, then runs', async () => {
+    const jobs = new JobRegistry()
+    let finishFirst!: () => void
+    const order: string[] = []
+    const first = jobs.start('t.install', async () => { order.push('first start'); await new Promise<void>((r) => { finishFirst = r }); order.push('first end') }, { key: 'pkg' })
+    await vi.waitFor(() => expect(order).toEqual(['first start']))
+    expect(jobs.cancel(first.id)).toBe(true)
+    expect(jobs.keyBusy('t.install', 'pkg')).toBe(true)
+    // The cancelled job no longer reads running, so this is a new job, not a join.
+    const retry = jobs.start('t.install', async () => { order.push('retry start'); return 'ok' }, { key: 'pkg' })
+    expect(retry.id).not.toBe(first.id)
+    await vi.waitFor(() => expect(jobs.get(retry.id)?.progress).toBe('Waiting for a cancelled run of the same work to finish'))
+    expect(order).toEqual(['first start'])
+    finishFirst()
+    await vi.waitFor(() => expect(jobs.get(retry.id)?.state).toBe('succeeded'))
+    expect(order).toEqual(['first start', 'first end', 'retry start'])
+    await vi.waitFor(() => expect(jobs.keyBusy('t.install', 'pkg')).toBe(false))
   })
 })

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, type IpcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, shell, type IpcMain } from 'electron'
 import { join } from 'node:path'
 import type { StudioBackendMode } from '../../../shared/types/backend.types'
 import type { AgentStatus, AgentSummary, DaemonClient } from '../../../shared/daemon-client'
@@ -22,6 +22,8 @@ import { DAEMON_MODE_HANDLERS } from './handlers'
 import { channelKey, pendingWorkstream } from './pending'
 import { DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
+import { InstallProgressRelay } from './mcp/install-progress'
+import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
 
 /**
@@ -190,6 +192,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       .catch(() => {})
   }
 
+  const installs = new InstallProgressRelay((channel, payload) => output.send(channel, payload), log)
+  const mcpOAuth = new McpOAuthAuthorizeOpener({
+    mode: deps.mode,
+    fetchInput: async (filePath, approvalId) => (await started).request<{ input?: unknown }>('GET', '/approvals/input', { query: { filePath, approvalId } }).then((r) => r.input),
+    openExternal: (url) => shell.openExternal(url),
+    log,
+  })
+
   // eslint-disable-next-line prefer-const
   let bridge: EventBridge
   const approvals = new ApprovalsUi({
@@ -213,7 +223,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     output,
     batcher,
     client: () => connection.current,
-    onApprovals: (snapshot) => approvals.apply(snapshot),
+    onApprovals: (snapshot) => { approvals.apply(snapshot); void mcpOAuth.apply(snapshot) },
     onAgentsChanged: () => { approvals.refresh(); refreshTokens() },
     onFileRenamed: (oldPath, newPath) => session.rekey(oldPath, newPath),
     onNotice: (text) => statusUi.notice(text),
@@ -261,15 +271,17 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[Backend] Could not list the daemon's agents at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     try {
-      approvals.apply(await client.request<NotificationsSnapshot>('GET', '/approvals'))
+      const snapshot = await client.request<NotificationsSnapshot>('GET', '/approvals')
+      approvals.apply(snapshot)
+      void mcpOAuth.apply(snapshot)
       // Requests reach the daemon: connected, before the stream's own open.
       connection.markConnected()
     } catch (err) {
       log.warn(`[Backend] Could not read the daemon's approvals at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     clientSession.start({
-      onFrame: (frame) => bridge.handleFrame(frame),
-      onGap: (gap) => { void bridge.handleGap(gap) },
+      onFrame: (frame) => { installs.observe(frame); bridge.handleFrame(frame) },
+      onGap: (gap) => { installs.onGap(); void bridge.handleGap(gap) },
       onConnection: (c) => {
         if (c.state === 'open') connection.markConnected()
         else if (c.state === 'reconnecting') connection.markDisconnected(c.error)
@@ -318,6 +330,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     bridge,
     clientSettings,
     approvals,
+    installs,
     ready: () => started.then(sessionClient),
     runningAgentAt: async (filePath) => findRunningAgent(await started, filePath),
     raw: async (path, query) => {

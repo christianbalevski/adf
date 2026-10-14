@@ -63,7 +63,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W2-C | Daemon-mode core in Studio main | 2 | W0-A, W0-B, W0-E, W1-F | MERGED |
 | W3-A | Proxy: files, documents, agent runtime, review, templates | 3 | W2-A, W2-B, W2-C | TODO |
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | MERGED |
-| W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
+| W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | MERGED |
 | W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | MERGED |
 | W3-E | TUI on client sessions — folded into W2-B (owner, 2026-10-14) | 2 | — | IN W2-B |
 | W3-F | Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | TODO |
@@ -349,6 +349,10 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-C2 | `w3a:chat-echo`: in daemon mode Studio shows its own chat twice (`POST /agents/:id/chat` lacks `echoed`). W3-A acceptance criterion | W3-A |
 | W2-C2 | Version-mismatch refusal only offers `ADF_STUDIO_BACKEND=embedded`/hand edit as the way back; needs the §8.2 dialog | W4-A |
 | W3-B | If `icacls` fails to restrict the proof file on Windows, the daemon runs without a local proof, so every local-only route (reveal, owner import) refuses; make that state visible in Studio and `adf daemon status` | W4-A |
+| W3-C | Remote placeholder check is `startsWith('__redacted__')`; a backspaced or mid-edited placeholder is saved as the secret. Compare exact placeholder + track "field touched" | W4-B |
+| W3-C | E3 candidate: `closeConnection` orphans a shim-launched (cmd /c) MCP server that ignores stdin EOF on Windows | W5-A |
+| Lead | MERGE GATE for W3-A: `tests/parity/documents` green on the daemon side with real W2-C2 sessions (no skip, no `PARITY_W3A_HOLDS`) | Lead (W3-A merge) |
+| W3-A | A locked running agent keeps running with the stub provider in daemon mode instead of being stopped (D3 difference) | W5-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |

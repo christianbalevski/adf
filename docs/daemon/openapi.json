@@ -8472,7 +8472,12 @@
             "description": "`0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`.",
             "schema": {
               "type": "string",
-              "enum": ["1", "0", "true", "false"]
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
             }
           }
         ],
@@ -8521,7 +8526,12 @@
             "description": "`0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`.",
             "schema": {
               "type": "string",
-              "enum": ["1", "0", "true", "false"]
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
             }
           }
         ],
@@ -9126,6 +9136,90 @@
         }
       }
     },
+    "/admin/mcp/packages/npm/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install an MCP npm package as a job",
+        "description": "The same install as POST /admin/mcp/packages/npm, run as a job so no request is held open. Progress lines are on the job (`progressLog`, `detail.package`). While an install of the same package runs, the request joins it. An install cannot stop half-way: cancel marks the job cancelled and the installer finishes; a new request for the same package then starts a job that waits for it.",
+        "operationId": "startMcpNpmPackageInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "example": "@modelcontextprotocol/server-filesystem"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PackageInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/admin/mcp/packages/python": {
       "post": {
         "tags": [
@@ -9207,6 +9301,93 @@
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/mcp/packages/python/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install an MCP Python package as a job",
+        "description": "The same install as POST /admin/mcp/packages/python (uv and Python are downloaded first when missing), run as a job. Joins a running install of the same package and version.",
+        "operationId": "startMcpPythonPackageInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "example": "mcp-server-fetch"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PackageInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -9320,6 +9501,90 @@
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/adapters/packages/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install a channel adapter package as a job",
+        "description": "The same install as POST /admin/adapters/packages, run as a job. Joins a running install of the same package.",
+        "operationId": "startAdapterPackageInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string",
+                    "example": "@modelcontextprotocol/server-filesystem"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/PackageInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -9493,6 +9758,105 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/admin/sandbox/packages/jobs": {
+      "post": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Install sandbox packages as a job",
+        "description": "Installs each package in turn, as Studio's sandbox package dialog does; a failed package does not stop the others. Joins a running job for the same package list.",
+        "operationId": "startSandboxPackagesInstallJob",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "packages"
+                ],
+                "properties": {
+                  "packages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "example": "lodash"
+                        },
+                        "version": {
+                          "type": "string",
+                          "example": "4.17.21"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a SandboxInstallJobResult.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/JobAccepted"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "job": {
+                          "type": "object",
+                          "properties": {
+                            "result": {
+                              "$ref": "#/components/schemas/SandboxInstallJobResult"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -10866,6 +11230,20 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           }
         }
       }
@@ -11079,7 +11457,7 @@
           "MCP"
         ],
         "summary": "Ensure uv and Python on the daemon host",
-        "description": "Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes.",
+        "description": "Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes. While one runs, another request joins it (`job.joined`).",
         "operationId": "ensureMcpPythonRuntime",
         "responses": {
           "202": {
@@ -11114,6 +11492,20 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "description": "Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Too many jobs are running on this daemon (128); try again when some have finished.",
+                  "code": "too_many_jobs"
+                }
+              }
+            }
           }
         }
       }
@@ -11710,6 +12102,55 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/files/agent/config": {
+      "get": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "An agent file's config by path",
+        "description": "The live config of a running agent or open document; any other file is read through one readonly connection (nothing written). Same path rules as the other /files routes. Credential values are identity rows, not config.",
+        "operationId": "getAgentFileConfig",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Absolute path of the .adf file",
+            "schema": {
+              "type": "string"
+            },
+            "example": "/home/me/agents/agent-1.adf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentFileConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -25999,7 +26440,15 @@
             "description": "Why it failed or was cancelled"
           },
           "progress": {
-            "type": "string"
+            "type": "string",
+            "description": "The latest progress line the work reported"
+          },
+          "progressLog": {
+            "type": "array",
+            "description": "The last 50 progress lines, oldest first",
+            "items": {
+              "$ref": "#/components/schemas/JobProgressEntry"
+            }
           }
         }
       },
@@ -26014,7 +26463,20 @@
             "type": "string"
           },
           "job": {
-            "$ref": "#/components/schemas/Job"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Job"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "joined": {
+                    "type": "boolean",
+                    "description": "True when the request joined a job of the same kind and key that was already running"
+                  }
+                }
+              }
+            ]
           }
         }
       },
@@ -27172,6 +27634,111 @@
                 "type": "string"
               }
             }
+          }
+        }
+      },
+      "JobProgressEntry": {
+        "type": "object",
+        "required": [
+          "seq",
+          "text"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "description": "Numbered from 1 per job"
+          },
+          "text": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "What the line is about, e.g. `{ \"package\": \"@scope/name\" }` for an install"
+          }
+        }
+      },
+      "PackageInstallJobResult": {
+        "type": "object",
+        "description": "Studio's install answer: the installed package, or the installer's error as String(error)",
+        "required": [
+          "success"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "installed": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "error": {
+            "type": "string",
+            "example": "Error: Invalid npm package name: not a package!"
+          }
+        }
+      },
+      "SandboxInstallJobResult": {
+        "type": "object",
+        "required": [
+          "success",
+          "results"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "const": true
+          },
+          "results": {
+            "type": "object",
+            "description": "Per package name",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "success"
+              ],
+              "properties": {
+                "success": {
+                  "type": "boolean"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "error": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "AgentFileConfigResponse": {
+        "type": "object",
+        "required": [
+          "filePath",
+          "agentId",
+          "loaded",
+          "config"
+        ],
+        "properties": {
+          "filePath": {
+            "type": "string",
+            "description": "Canonical path"
+          },
+          "agentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loaded": {
+            "type": "boolean",
+            "description": "Running here or an open document: the live config"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The agent's AgentConfig"
           }
         }
       }

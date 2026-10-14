@@ -41,9 +41,11 @@ const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials', 'owner-import', 'owner-sealed-key'] as const
 /** The W3-B scenarios that start agent-1 and leave it running (as chat-tool-call). */
 const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
+/** W3-C scenarios (tests/parity/mcp): no agent runs, the fixture files are edited closed. */
+const W3C = ['w3c-install-progress', 'w3c-mcp-attach-credentials', 'w3c-adapter-telegram', 'w3c-mcp-connect-test', 'w3c-mcp-oauth-connect'] as const
 /** Scenarios that open a file that is not running, held by the client session (W2-C2). */
 const HELD_ONLY = ['legacy-password-unlock'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...HELD_ONLY] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
@@ -301,6 +303,43 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
+    id: 'w3a:settings-tracked-root-push',
+    ws: 'W3-A',
+    scenarios: ['w3c-mcp-attach-credentials', 'w3c-adapter-telegram'],
+    path: 'TRACKED_DIRS_CHANGED: one push per folder a SETTINGS_SET adds to trackedDirectories, its timeline line and the step push watermarks it shifts',
+    what: 'A PATCH /settings that adds a tracked folder re-syncs the daemon\'s watcher, which announces each newly tracked root (tracked_dirs, as for notifyAdfFileCreated); embedded SETTINGS_SET restarts its watcher and pushes nothing. The renderer rescans the folder once more.',
+    apply(d, e) {
+      const ch = IPC.TRACKED_DIRS_CHANGED
+      const roots = d.steps.flatMap((st) => (st.kind === 'invoke' && st.channel === IPC.SETTINGS_SET
+        ? ((st.args[0] as { trackedDirectories?: unknown })?.trackedDirectories as unknown[] | undefined ?? []).filter((r): r is string => typeof r === 'string')
+        : []))
+      if (roots.length === 0) return 0
+      const mine = [...(d.pushes[ch] ?? [])]
+      for (const root of roots) {
+        const at = mine.findIndex((p) => same(p, { dirPath: root }))
+        if (at < 0) return 0
+        mine.splice(at, 1)
+      }
+      if (!same(mine, e.pushes[ch] ?? [])) return 0
+      const line = /^ {2}(?:\[app\] )?adf:tracked-dirs:changed$/
+      const timelines: Record<string, string[]> = {}
+      let lines = 0
+      for (const [key, list] of Object.entries(d.timelines)) {
+        const kept = list.filter((l) => !(line.test(l) && ++lines))
+        // A timeline of step markers only exists because of that push (embedded has none).
+        if (!(key in e.timelines) && kept.every((l) => l.startsWith('> ') || l.startsWith('< '))) continue
+        timelines[key] = kept
+      }
+      if (lines === 0) return 0
+      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
+      if (mine.length) d.pushes[ch] = mine
+      else delete d.pushes[ch]
+      d.timelines = timelines
+      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return roots.length
+    },
+  },
+  {
     id: 'mode:help-menu',
     ws: 'mode',
     scenarios: [...ALL, ...MESH],
@@ -422,7 +461,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent', ...W3B_NO_AGENT, ...HELD_ONLY],
+    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {

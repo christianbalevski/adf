@@ -204,9 +204,12 @@ export interface McpRegistrationTestDeps {
   authPreflight: McpAuthPreflightRunner
   onLog: McpLogSink
   /**
-   * Cancels the test (daemon jobs). The run stops waiting at its next step,
-   * disconnects the server it started and answers `error: 'Cancelled'`. An
-   * OAuth callback listener already open stays until its own timeout.
+   * Cancels the test (daemon jobs). The run stops waiting at its next step
+   * and answers `error: 'Cancelled'`; the work in flight stops too: an OAuth
+   * flow waiting for its callback closes its loopback listener, and a
+   * connect still starting its server closes it (McpConnectOptions.signal).
+   * The host's auth preflight is released by the host (mcp-admin-routes
+   * answers its Continue step when the job ends). Studio passes none.
    */
   signal?: AbortSignal
 }
@@ -258,6 +261,8 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     : null
   cancelled?.catch(() => { /* observed by step() */ })
   const step = <T>(work: Promise<T>): Promise<T> => (cancelled ? Promise.race([work, cancelled]) : work)
+  // A cancel also closes a server still starting (no signal: connect as is).
+  const connectOpts = signal ? { signal } : undefined
   const finish = async (result: { success: boolean; tools: unknown[]; error?: string }): Promise<McpRegistrationTestResult> => {
     // Capture state BEFORE disconnect — teardown clears the log buffer.
     const state = tempManager.getServerState(reg.name)
@@ -286,12 +291,13 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         const flow = await step(runMcpHttpOAuthFlow(serverCfg.url, appOAuthStore, deps.oauthIO, {
           clientId: oauthReg.oauthClientId,
           scopes: oauthReg.oauthScopes,
+          ...(signal ? { signal } : {}),
         }))
         if (!flow.authorized) {
           return finish({ success: false, tools: [], error: flow.error ?? 'OAuth sign-in did not complete.' })
         }
       }
-      const tools = await step(tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined }))
+      const tools = await step(tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined }, connectOpts))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
     }
@@ -346,7 +352,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         // `uv tool run <pkg> <userArgs> <authArgs>` for pypi.
         await step(deps.authPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env }))
       }
-      const tools = await step(tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined }))
+      const tools = await step(tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined }, connectOpts))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
     }
@@ -366,7 +372,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     try {
       const tools = await step(tempManager.connect(
         { name: reg.name, transport: 'stdio', env },
-        { externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env }, cwd: testDir }) },
+        { ...connectOpts, externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env }, cwd: testDir }) },
       ))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })

@@ -14,6 +14,7 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
+import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
@@ -98,6 +99,13 @@ export interface McpConnectOptions {
    *  linked in a result. Defaults to the host scratch dir; container
    *  transports must supply a reader that goes through podman. */
   linkedFileReader?: McpLinkedFileReader
+  /**
+   * Stops this connect: an attempt in flight closes the client and transport
+   * it opened (the server process with them) at once instead of when its
+   * connect settles, and no retry follows. The daemon's registration-test
+   * cancel passes it; Studio passes none.
+   */
+  signal?: AbortSignal
 }
 
 interface McpManagedServer {
@@ -194,6 +202,8 @@ export class McpClientManager extends EventEmitter {
       return null
     }
 
+    if (options?.signal?.aborted) return null
+
     // If already managed, disconnect first
     if (this.servers.has(serverConfig.name)) {
       await this.disconnect(serverConfig.name)
@@ -219,13 +229,13 @@ export class McpClientManager extends EventEmitter {
     this.addLog(managed, 'system', `Connecting to "${serverConfig.name}"${mode} — ${target}`)
 
     let tools = await this.attemptConnection(managed, 0, { scheduleRetryOnFailure: false })
-    if (!tools && this.servers.get(serverConfig.name) === managed && managed.autoRestart) {
+    if (!tools && this.servers.get(serverConfig.name) === managed && managed.autoRestart && !options?.signal?.aborted) {
       // One fast inline retry (2s backoff) before returning — a server that
       // needs a second attempt (transient bind/warm-up failure) still starts
       // with its tools instead of flapping error→connected in the background.
       this.addLog(managed, 'system', `Retrying inline in ${INITIAL_BACKOFF_MS / 1000}s...`)
       await new Promise<void>((r) => { setTimeout(r, INITIAL_BACKOFF_MS).unref?.() })
-      if (this.servers.get(serverConfig.name) === managed && managed.autoRestart) {
+      if (this.servers.get(serverConfig.name) === managed && managed.autoRestart && !options?.signal?.aborted) {
         tools = await this.attemptConnection(managed, 0)
       }
     }
@@ -256,7 +266,16 @@ export class McpClientManager extends EventEmitter {
     const timeoutMs = connectTimeoutForAttempt(retryIndex)
     let client: Client | null = null
     let transport: InstanceType<typeof StdioClientTransport> | InstanceType<typeof StreamableHTTPClientTransport> | Transport | null = null
-    const isStale = () => this.servers.get(managed.config.name) !== managed || !managed.autoRestart
+    // A cancelled connect (connectOptions.signal) counts as stale: nothing is
+    // assigned or retried, and what the attempt opened is closed at once.
+    const signal = managed.connectOptions?.signal
+    const isStale = () => this.servers.get(managed.config.name) !== managed || !managed.autoRestart || !!signal?.aborted
+    const onAbort = (): void => {
+      this.addLog(managed, 'system', 'Connect cancelled — closing the server it started')
+      void this.abandonAttempt(client, transport)
+    }
+    if (signal?.aborted) return null
+    signal?.addEventListener('abort', onAbort, { once: true })
 
     try {
       managed.status = 'connecting'
@@ -438,6 +457,8 @@ export class McpClientManager extends EventEmitter {
         }
       }
       return null
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
     }
   }
 
@@ -449,16 +470,35 @@ export class McpClientManager extends EventEmitter {
     client: Client | null,
     transport: McpManagedServer['transport']
   ): Promise<void> {
+    // E3: the attempt is abandoned, so on Windows its process tree goes
+    // first, while the shim is still alive. Read after client.close() the
+    // transport no longer has its process (closing the client closes it), and
+    // once close() has killed the cmd.exe shim of an npx/uvx server, a
+    // `taskkill /T` of the dead shim no longer reaches the real server.
+    const child = this.stdioTransportChild(transport)
+    const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
+    if (!exitedBeforeClose) await this.sweepPidTreeNow(this.stdioTransportPid(transport))
     if (client) {
       try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
     }
     if (transport) {
-      const child = this.stdioTransportChild(transport)
-      const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
-      const pid = this.stdioTransportPid(transport)
       try { await transport.close() } catch { /* ignore */ }
-      if (!exitedBeforeClose) this.sweepPidTree(pid)
     }
+  }
+
+  /** sweepPidTree, awaited (bounded): taskkill /T has run when it resolves. */
+  private sweepPidTreeNow(pid: number | null): Promise<void> {
+    if (pid == null || process.platform !== 'win32') return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3000)
+      timer.unref?.()
+      try {
+        execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => { clearTimeout(timer); resolve() })
+      } catch {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
   }
 
   /**

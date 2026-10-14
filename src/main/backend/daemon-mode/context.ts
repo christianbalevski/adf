@@ -9,6 +9,7 @@ import type { EventBridge } from './event-bridge'
 import type { SharedMnemonicStore } from '../../services/owner-secret-store'
 import type { DaemonModeSession } from './session'
 import type { ClientSettingsStore } from './settings'
+import type { InstallProgressRelay } from './mcp/install-progress'
 
 /**
  * What every daemon-mode handler gets. Handlers hold no state of their own:
@@ -22,6 +23,8 @@ export interface DaemonModeContext {
   bridge: EventBridge
   clientSettings: ClientSettingsStore
   approvals: ApprovalsUi
+  /** Install progress pushes the client stream cannot deliver (W3-C, mcp/install-progress.ts). */
+  installs: InstallProgressRelay
   /** The client once connected and the session started; rejects when there is no daemon. */
   ready(): Promise<DaemonClient>
   /** The running agent at `filePath` (GET /files/agent), or null. */
