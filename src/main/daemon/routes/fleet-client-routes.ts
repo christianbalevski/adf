@@ -15,10 +15,12 @@
 // nor in a tracked folder has none.
 
 import { existsSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { AgentVitalsService } from '../../services/agent-vitals'
-import { canonicalizePath, containsPath } from '../../utils/tracked-paths'
+import { AdfWorkspace } from '../../adf/adf-workspace'
+import { markConfigReviewed } from '../../services/agent-review'
+import { canonicalizePath, containsPath, isSameOrSubPath } from '../../utils/tracked-paths'
 import type { FleetSettableState, FleetStateResult } from '../../../shared/types/ipc.types'
 import { createDaemonVitalsDeps } from '../vitals-routes'
 import type { DaemonRouteContext } from './index'
@@ -108,10 +110,15 @@ export function registerFleetClientRoutes(server: FastifyInstance, ctx: DaemonRo
     return { updated, failed }
   })
 
-  // Found an agent from the fleet map: inside a tracked folder, or (newRoot)
-  // a sibling of a tracked root, never elsewhere. The file is created with
-  // the default template, its identity provisioned, marked reviewed (the
-  // owner made it) and left closed; the folder is tracked (agent factory).
+  // Found an agent from the fleet map, as Studio's MESH_FOUND_AGENT does it:
+  // the destination must be an absolute folder inside a tracked folder, or
+  // (newRoot) a sibling of a tracked root, never elsewhere. The folder is
+  // created, the file (the typed name slugged, no length limit) is made from
+  // the default template with the typed name, its identity provisioned (a
+  // failure, such as a locked owner identity, is logged and the file kept),
+  // marked reviewed (the owner made it) and left closed; a folder no tracked
+  // root covers is tracked, and the watcher tells the mesh and the clients.
+  // W3-A: the checks and the slug are a copy of ipc/index.ts (E1 requested).
   server.post<{ Body: { dir?: unknown; name?: unknown; newRoot?: unknown } }>('/fleet/found', async (request) => {
     const factory = options.agentFactory
     if (!factory) return { success: false, error: 'Agent creation is not configured on this daemon.' }
@@ -119,6 +126,7 @@ export function registerFleetClientRoutes(server: FastifyInstance, ctx: DaemonRo
       const name = typeof request.body?.name === 'string' ? request.body.name.trim() : ''
       const dir = typeof request.body?.dir === 'string' ? request.body.dir : ''
       if (!name) return { success: false, error: 'Agent name required' }
+      if (!isAbsolute(dir)) return { success: false, error: 'Destination must be an absolute folder path' }
       const tracked = trackedDirs()
       const canonDir = canonicalizePath(dir)
       const inTracked = tracked.some((d) => containsPath(canonicalizePath(d), canonDir))
@@ -129,9 +137,30 @@ export function registerFleetClientRoutes(server: FastifyInstance, ctx: DaemonRo
       const fileName = foundAgentFileName(name)
       const filePath = join(dir, `${fileName}.adf`)
       if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
-      const created = await factory.create({ name: fileName, directory: dir, load: false })
-      console.log(`[Fleet] Founded ${created.filePath} from the fleet map`)
-      return { success: true, filePath: created.filePath }
+
+      const made = await factory.templatesService().instantiate({ destPath: filePath, name })
+      if (!made.success) return { success: false, error: made.error }
+      const workspace = AdfWorkspace.open(filePath)
+      try {
+        try {
+          if (!options.identity) throw new Error('no owner identity on this daemon')
+          options.identity.service.ensureWorkspaceIdentity(workspace)
+        } catch (err) {
+          console.warn('[OwnerIdentity] Identity provisioning on found failed:', err)
+        }
+        options.settingsStore?.set?.('reviewedAgents', markConfigReviewed(options.settingsStore.get('reviewedAgents'), workspace.getAgentConfig()))
+      } finally {
+        workspace.close()
+      }
+      const folder = dirname(canonicalizePath(filePath))
+      const roots = trackedDirs()
+      if (!roots.some((d) => { try { return isSameOrSubPath(d, folder) } catch { return false } })) {
+        options.settingsStore?.set?.('trackedDirectories', [...roots, folder])
+        console.log(`[Fleet] Tracking ${folder} (founded ${filePath})`)
+      }
+      ctx.options.routes?.trackedDirWatcher?.sync()
+      console.log(`[Fleet] Founded ${filePath} from the fleet map`)
+      return { success: true, filePath }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
