@@ -2555,8 +2555,8 @@ function clientSessionOf(request: { headers: Record<string, string | string[] | 
   return holder && DOCUMENT_HOLDER_FORMAT.test(holder) ? { holder } : {}
 }
 
-/** Routes a document write never blocks: start takes the lease itself; stop and unlock write nothing of the file's. */
-const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/agents/:id/unload', '/agents/:id/identity/password/unlock'])
+/** Routes a document write never blocks: start takes the lease itself; stop and unlock write nothing of the file's; reveal is a read. */
+const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/agents/:id/unload', '/agents/:id/identity/password/unlock', '/agents/:id/identity/reveal'])
 
 /**
  * Open documents (design D4) in the HTTP layer:

@@ -7,14 +7,20 @@
 //   POST /files/agent/providers/:providerId/credential/copy-app-key?path=   { replace? }
 //
 // The reveal routes are the one exception to "values never leave the
-// daemon", and they answer local callers only (local-access.ts), as the
-// owner phrase does: embedded Studio shows these values in its own window,
-// and in daemon mode the window's process is a loopback client of this
-// daemon. Key material (`crypto:*`: signing keys, envelope descriptors, KDF
-// rows) is never returned, whoever asks. A value that is absent, sealed in a
-// locked envelope or encrypted with a password key the daemon does not hold
-// is left out of `values`. Answers carry `Cache-Control: no-store`; values
-// are never logged.
+// daemon" (design §5.4.1). They answer local callers that ALSO present this
+// run's local proof (X-ADF-Local-Proof, the daemon-local-proof file next to
+// the daemon settings), in every mode: the token alone, forwarded to the
+// loopback port (`ssh -L`, socat), is refused. Embedded Studio shows these
+// values in its own window; in daemon mode that window's process is a
+// local client that can read the proof file. Key material (`crypto:*`) is
+// never returned, whoever asks. Answers carry `Cache-Control: no-store`;
+// values are never logged.
+//
+// Both are reads: a document another runtime runs (opened read-only here)
+// is revealed from its open workspace, and a file nobody has open is read
+// through one readonly connection (no migration, no envelope re-wrap, no
+// write). Such a file's sealed values stay out (no envelope is unlocked),
+// as Studio's read of a file it does not have open leaves them out.
 //
 // copy-app-key stores the app provider's own key (Settings → Providers) as
 // the agent's provider credential, inside the daemon: the app key reaches a
@@ -23,25 +29,27 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { basename } from 'node:path'
+import { AdfDatabase } from '../../adf/adf-database'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import { RuntimeLoopError } from '../../runtime/runtime-service'
+import { isKeyMaterialPurpose } from '../../../shared/constants/identity-reveal'
 import { AgentFileOps, FileOpError } from '../file-ops'
-import { PathAgentOps, withClosedAgentFile } from '../path-agent-ops'
+import { PathAgentOps } from '../path-agent-ops'
 import { requireLocalCaller } from '../identity-routes'
+import { requireLocalProof } from './identity-import-routes'
 import { providerSettings } from './credentials-routes'
 import { resolveAgentWorkspace, resolveAgentWorkspaceByPath } from './agent-resolver'
 import type { DaemonRouteContext } from './index'
 import { badRequest, notFound } from './route-helpers'
 
 const VALUES = 'Stored credential values can be read'
-
-/** Key material: never returned by any route. */
-const KEY_MATERIAL = /^crypto:/
+const PROOF_REFUSAL = 'Stored credential values are shown only to Studio on the daemon\'s own machine: this request lacks the local proof (X-ADF-Local-Proof, the daemon-local-proof file next to the daemon settings).'
 
 interface RevealBody { purposes?: unknown; prefix?: unknown }
+interface Selection { purposes: string[]; prefix: string | null }
 
 /** The purposes a reveal asks for: an explicit list, every purpose under an exact prefix, or both. */
-function selection(body: unknown): { purposes: string[]; prefix: string | null } | string {
+function selection(body: unknown): Selection | string {
   const b = (body && typeof body === 'object' && !Array.isArray(body) ? body : {}) as RevealBody
   if (b.purposes !== undefined && (!Array.isArray(b.purposes) || !b.purposes.every((p) => typeof p === 'string' && p.length > 0))) {
     return 'purposes must be an array of non-empty strings'
@@ -53,19 +61,40 @@ function selection(body: unknown): { purposes: string[]; prefix: string | null }
   return { purposes, prefix }
 }
 
-/** The readable values of the selection; key material and unreadable rows are left out. */
-function readValues(ws: AdfWorkspace, derivedKey: Buffer | null, sel: { purposes: string[]; prefix: string | null }): Record<string, string> {
-  // listIdentityPurposes matches with LIKE (case-insensitive, `_`/`%` wildcards): keep exact prefix matches only.
-  const wanted = new Set(sel.purposes)
-  if (sel.prefix !== null) for (const purpose of ws.listIdentityPurposes(sel.prefix)) if (purpose.startsWith(sel.prefix)) wanted.add(purpose)
+/** The selected purposes among `all`, exact prefix match (a LIKE would take `_`/`%` as wildcards), never key material. */
+function wanted(all: Iterable<string>, sel: Selection): string[] {
+  const out = new Set(sel.purposes)
+  if (sel.prefix !== null) for (const purpose of all) if (purpose.startsWith(sel.prefix)) out.add(purpose)
+  return [...out].filter((p) => !isKeyMaterialPurpose(p))
+}
+
+/** The readable values of the selection in an open workspace. */
+function readValues(ws: AdfWorkspace, derivedKey: Buffer | null, sel: Selection): Record<string, string> {
   const values: Record<string, string> = {}
-  for (const purpose of wanted) {
-    if (KEY_MATERIAL.test(purpose)) continue
+  for (const purpose of wanted(sel.prefix !== null ? ws.listIdentityPurposes(sel.prefix) : [], sel)) {
     let value: string | null = null
     try { value = ws.getIdentityDecrypted(purpose, derivedKey) } catch { value = null }
     if (value !== null) values[purpose] = value
   }
   return values
+}
+
+/** The plain values of the selection in a file nobody has open: one readonly connection, nothing written. */
+function peekValues(filePath: string, sel: Selection): Record<string, string> {
+  return AdfDatabase.peek(filePath, (db) => {
+    let rows: Array<{ purpose: string; value: Buffer | string; encryption_algo: string | null }> = []
+    try {
+      rows = db.prepare('SELECT purpose, value, encryption_algo FROM adf_identity').all() as typeof rows
+    } catch { /* no identity table in an old file */ }
+    const byPurpose = new Map(rows.map((r) => [r.purpose, r]))
+    const values: Record<string, string> = {}
+    for (const purpose of wanted(byPurpose.keys(), sel)) {
+      const row = byPurpose.get(purpose)
+      if (!row || (row.encryption_algo ?? 'plain') !== 'plain') continue
+      values[purpose] = Buffer.isBuffer(row.value) ? row.value.toString('utf-8') : String(row.value)
+    }
+    return values
+  })
 }
 
 function sendError(reply: FastifyReply, err: unknown) {
@@ -82,9 +111,12 @@ export function registerCredentialValueRoutes(server: FastifyInstance, ctx: Daem
   const settings = ctx.options.settingsStore
   const files = new AgentFileOps({ runtime, settings, identity: ctx.options.identity, events: NO_EVENTS })
   const pathOps = new PathAgentOps(runtime, files, settings)
+  const local = (request: Parameters<typeof requireLocalCaller>[0], reply: FastifyReply): boolean =>
+    requireLocalCaller(request, reply, ctx.localAccess, VALUES)
+    && requireLocalProof(request, reply, ctx.localAccess.localProof ?? null, PROOF_REFUSAL)
 
   server.post<{ Params: { id: string }; Body: unknown }>('/agents/:id/identity/reveal', async (request, reply) => {
-    if (!requireLocalCaller(request, reply, ctx.localAccess, VALUES)) return reply
+    if (!local(request, reply)) return reply
     const sel = selection(request.body)
     if (typeof sel === 'string') return badRequest(reply, sel)
     const found = resolveAgentWorkspace(runtime, request.params.id)
@@ -94,17 +126,13 @@ export function registerCredentialValueRoutes(server: FastifyInstance, ctx: Daem
   })
 
   server.post<{ Querystring: { path?: string }; Body: unknown }>('/files/agent/identity/reveal', async (request, reply) => {
-    if (!requireLocalCaller(request, reply, ctx.localAccess, VALUES)) return reply
+    if (!local(request, reply)) return reply
     const sel = selection(request.body)
     if (typeof sel === 'string') return badRequest(reply, sel)
     try {
       const filePath = await files.adfPath(request.query.path)
       const open = resolveAgentWorkspaceByPath(runtime, filePath)
-      // A file nobody has open is opened for the read with this runtime's
-      // envelope keys and closed again (Studio reads it the same way).
-      const values = open
-        ? readValues(open.workspace, open.derivedKey, sel)
-        : withClosedAgentFile(filePath, (ws) => readValues(ws, null, sel))
+      const values = open ? readValues(open.workspace, open.derivedKey, sel) : peekValues(filePath, sel)
       return reply.header('Cache-Control', 'no-store').send({ filePath, loaded: !!open, values })
     } catch (err) {
       return sendError(reply, err)

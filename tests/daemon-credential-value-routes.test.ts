@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -67,12 +67,15 @@ function setup() {
   }
   const runtime = new RuntimeService({ settings: store, providerFactory: () => new MockLLMProvider() })
   runtimes.push(runtime)
-  const server = createDaemonHttpApi(runtime, { settingsStore: store })
+  const server = createDaemonHttpApi(runtime, { settingsStore: store, security: { localProof: PROOF } })
   servers.push(server)
   return { runtime, server }
 }
 
 const q = (p: string) => encodeURIComponent(p)
+const PROOF = 'p'.repeat(43)
+/** This machine's local proof, as Studio and the adf CLI send it on local-only routes. */
+const proof = { 'x-adf-local-proof': PROOF }
 
 describe('POST /agents/:id/identity/reveal and /files/agent/identity/reveal', () => {
   it('answers values under an exact prefix and named purposes, never key material, local callers only', async () => {
@@ -80,31 +83,45 @@ describe('POST /agents/:id/identity/reveal and /files/agent/identity/reveal', ()
     const filePath = seedAgent('agent-1')
     const { id } = await runtime.loadAgent(filePath)
 
-    const res = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, payload: { prefix: 'provider:p1:', purposes: ['app:token', 'crypto:test:secret', 'missing'] } })
+    const res = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, headers: proof, payload: { prefix: 'provider:p1:', purposes: ['app:token', 'crypto:test:secret', 'missing'] } })
     expect(res.statusCode).toBe(200)
     expect(res.headers['cache-control']).toBe('no-store')
     // `provider:p1_x:` is not under the exact prefix `provider:p1:` (a LIKE would match it).
     expect(res.json()).toEqual({ agentId: id, values: { 'provider:p1:apiKey': 'sk-agent', 'app:token': 'code-secret' } })
 
-    const remote = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, payload: { prefix: 'provider:' }, remoteAddress: '10.0.0.9' })
+    const remote = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, headers: proof, payload: { prefix: 'provider:' }, remoteAddress: '10.0.0.9' })
     expect(remote.statusCode).toBe(403)
     expect(remote.json().code).toBe('loopback_only')
     expect(remote.body).not.toContain('sk-agent')
-    const proxied = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, payload: { prefix: 'provider:' }, headers: { 'x-forwarded-for': '1.2.3.4' } })
+    const proxied = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, payload: { prefix: 'provider:' }, headers: { ...proof, 'x-forwarded-for': '1.2.3.4' } })
     expect(proxied.statusCode).toBe(403)
 
-    expect((await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, payload: {} })).statusCode).toBe(400)
-    expect((await server.inject({ method: 'POST', url: '/agents/nope/identity/reveal', payload: { prefix: 'x' } })).statusCode).toBe(404)
+    // A token holder on the loopback port without the proof (a forwarded port: ssh -L, socat) gets nothing.
+    for (const headers of [{}, { 'x-adf-local-proof': 'q'.repeat(43) }]) {
+      const noProof = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, headers, payload: { prefix: 'provider:' } })
+      expect(noProof.statusCode).toBe(403)
+      expect(noProof.json().code).toBe('loopback_only')
+      expect(noProof.body).not.toContain('sk-agent')
+    }
+
+    expect((await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, headers: proof, payload: {} })).statusCode).toBe(400)
+    expect((await server.inject({ method: 'POST', url: '/agents/nope/identity/reveal', headers: proof, payload: { prefix: 'x' } })).statusCode).toBe(404)
   })
 
   it('reads a file nobody has open, and refuses another machine', async () => {
     const { server } = setup()
     const filePath = seedAgent('agent-2')
-    const res = await server.inject({ method: 'POST', url: `/files/agent/identity/reveal?path=${q(filePath)}`, payload: { prefix: 'provider:p1:' } })
+    const before = statSync(filePath).mtimeMs
+    const res = await server.inject({ method: 'POST', url: `/files/agent/identity/reveal?path=${q(filePath)}`, headers: proof, payload: { prefix: 'provider:p1:' } })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual({ filePath, loaded: false, values: { 'provider:p1:apiKey': 'sk-agent' } })
-    const remote = await server.inject({ method: 'POST', url: `/files/agent/identity/reveal?path=${q(filePath)}`, payload: { prefix: 'provider:' }, remoteAddress: '10.0.0.9' })
+    // A read: one readonly connection, the file and its sidecars as they were.
+    expect(statSync(filePath).mtimeMs).toBe(before)
+    expect(existsSync(`${filePath}-wal`)).toBe(false)
+    const remote = await server.inject({ method: 'POST', url: `/files/agent/identity/reveal?path=${q(filePath)}`, headers: proof, payload: { prefix: 'provider:' }, remoteAddress: '10.0.0.9' })
     expect(remote.statusCode).toBe(403)
+    const noProof = await server.inject({ method: 'POST', url: `/files/agent/identity/reveal?path=${q(filePath)}`, payload: { prefix: 'provider:' } })
+    expect(noProof.statusCode).toBe(403)
   })
 })
 
@@ -133,7 +150,7 @@ describe('POST /files/agent/providers/:providerId/credential/copy-app-key', () =
     const { id } = await runtime.loadAgent(filePath)
     const res = await server.inject({ method: 'POST', url: `/files/agent/providers/p1/credential/copy-app-key?path=${q(filePath)}`, payload: {} })
     expect(res.json()).toMatchObject({ agentId: id, success: true, loaded: true })
-    const values = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, payload: { purposes: ['provider:p1:apiKey'] } })
+    const values = await server.inject({ method: 'POST', url: `/agents/${id}/identity/reveal`, headers: proof, payload: { purposes: ['provider:p1:apiKey'] } })
     expect(values.json().values).toEqual({ 'provider:p1:apiKey': 'sk-app' })
   })
 })
