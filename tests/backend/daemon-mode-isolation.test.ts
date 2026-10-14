@@ -42,7 +42,17 @@ describe('daemon mode loads no embedded backend module', () => {
     const failures: string[] = []
     for (const file of files(DAEMON_MODE_DIR)) {
       try {
-        await import(/* @vite-ignore */ file)
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await import(/* @vite-ignore */ file)
+            break
+          } catch (err) {
+            // vitest's transform cache on Windows: a concurrent rename races (EPERM); not this test's subject.
+            const cacheRace = err instanceof Error && /EPERM: operation not permitted, rename .*[\\/]ssr[\\/]/.test(err.message)
+            if (!cacheRace || attempt === 3) throw err
+            await new Promise((r) => setTimeout(r, 100 * attempt))
+          }
+        }
       } catch (err) {
         const cause = (err as { cause?: unknown }).cause
         failures.push(`${relative(DAEMON_MODE_DIR, file)}: ${err instanceof Error ? err.message : String(err)}${cause instanceof Error ? ` (${cause.message})` : ''}`)

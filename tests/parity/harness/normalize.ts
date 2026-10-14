@@ -291,6 +291,10 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     })).sort((a, b) => cmp(a.outKey, b.outKey) || cmp(a.k, b.k))
     const out: Record<string, unknown> = {}
     for (const { k, outKey } of entries) {
+      // Two raw keys that normalize to one would silently drop a value.
+      if (Object.prototype.hasOwnProperty.call(out, outKey)) {
+        throw new Error(`parity normalizer: keys collide after normalization at ${path}: ${outKey}`)
+      }
       out[outKey] = walk(obj[k], `${path}.${k}`, floor, seen, k)
     }
     return out

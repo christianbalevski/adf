@@ -193,7 +193,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     if (electron.pushes.length > pushesAtDone || llm.requests.length > requestsAtDone) {
       const late = electron.pushes.slice(pushesAtDone).map((p) => `${p.channel} ${JSON.stringify(p.args[0])?.slice(0, 120)}`)
       if (opts.tolerant) {
-        behaviour.push(`kept going within ${scenario.quietMs} ms of done: ${late.length} push(es) (${late.map((l) => l.split(' ')[0]).join(', ')}), ${llm.requests.length - requestsAtDone} LLM request(s)`)
+        behaviour.push(`kept going after done: ${late.length} push(es) (${late.map((l) => l.split(' ')[0]).join(', ')}), ${llm.requests.length - requestsAtDone} LLM request(s)`)
       } else throw new Error([
         `parity harness: ${scenario.name} was done but the backend kept going within ${scenario.quietMs} ms:`,
         ...late,
@@ -221,9 +221,10 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     await llm.close()
     llmOpen = false
     problems.push(...(await leakedHandles(handlesBefore)))
-    const streaming = streamingProblems(streamingReport(electron.pushes, llm.streams))
-    if (opts.tolerant) behaviour.push(...streaming)
-    else problems.push(...streaming)
+    const report = streamingReport(electron.pushes, llm.streams)
+    // Tolerant runs record the category and counts only: a golden must hold no timing.
+    if (opts.tolerant) behaviour.push(...streamingSummary(report))
+    else problems.push(...streamingProblems(report))
 
     const stateAfterShutdown = dumpPersistedState(env, fixtureFiles)
     env.assertRealStateUntouched()
@@ -334,6 +335,15 @@ export function streamingProblems(report: StreamingReport): string[] {
   report.sliceLatencyMs.forEach((ms, k) => {
     if (!(ms >= 0 && ms <= SLICE_DELTA_BOUND_MS)) out.push(`streaming: slice ${k + 1} reached the window after ${ms} ms (bound ${SLICE_DELTA_BOUND_MS} ms)`)
   })
+  return out
+}
+
+/** streamingProblems without timing: the category and the slice counts (tolerant runs). */
+export function streamingSummary(report: StreamingReport): string[] {
+  const out: string[] = []
+  if (report.batches !== report.slices) out.push(`streaming: ${report.slices} text slice(s) arrived as ${report.batches} text_delta_batch push(es)`)
+  const late = report.sliceLatencyMs.filter((ms) => !(ms >= 0 && ms <= SLICE_DELTA_BOUND_MS)).length
+  if (late > 0 && report.batches === report.slices) out.push(`streaming: ${late} of ${report.slices} slice(s) late`)
   return out
 }
 

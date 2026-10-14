@@ -1,4 +1,4 @@
-import { spawn, execFile, type ChildProcess } from 'node:child_process'
+import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -38,6 +38,21 @@ export const DAEMON_BUNDLE = resolve(REPO, 'out/main/daemon.js')
 /** The OS temp dir before any run points TEMP into its root: harness files that are not the backend's state go here. */
 const OUTSIDE_TMP = tmpdir()
 const BOOT_TIMEOUT_MS = 90_000
+
+/**
+ * Every daemon child still alive. If the test process exits before a
+ * shutdown ran (a crash, a timeout that kills the worker), they are killed
+ * on the way out, the same hard way.
+ */
+const LIVE_DAEMONS = new Set<number>()
+process.on('exit', () => {
+  for (const pid of LIVE_DAEMONS) {
+    try {
+      if (process.platform === 'win32') execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' })
+      else process.kill(-pid, 'SIGKILL')
+    } catch { /* already gone */ }
+  }
+})
 
 type DaemonModeModule = typeof import('../../../src/main/backend/daemon-mode/index')
 type LeaseModule = typeof import('../../../src/main/runtime/agent-lease')
@@ -108,12 +123,31 @@ async function waitForLog(logFile: string, text: string, timeoutMs: number, from
   return false
 }
 
-/** §4.3: the client keys move into studio-client-settings.json at the switch. */
-function seedClientSettings(env: ParityEnv): void {
-  const settings = JSON.parse(readFileSync(join(env.userDataDir, 'adf-settings.json'), 'utf-8')) as Record<string, unknown>
+/**
+ * W4-A EMULATION: what the switch from embedded to local mode does before
+ * Studio first attaches (design §4.3, §5.3, tracker W4-A). Until W4-A ships
+ * it, the harness does it the same way:
+ *
+ * - the client keys MOVE from adf-settings.json into
+ *   studio-client-settings.json (none stays in both files);
+ * - the owner phrase and the `studio-runtime:<scope>` entry go into the "OS
+ *   keychain" (the plaintext test keychain file), so the daemon adopts the
+ *   fixture's runtime identity.
+ *
+ * The allowlist entry `w4a:local-mode-switch` (harness/gaps.ts) names it.
+ */
+export function emulateLocalModeSwitch(env: ParityEnv, keychainFile: string): void {
+  const settingsPath = join(env.userDataDir, 'adf-settings.json')
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
   const client: Record<string, unknown> = {}
-  for (const key of CLIENT_SETTINGS_KEYS) if (key in settings) client[key] = settings[key]
+  for (const key of CLIENT_SETTINGS_KEYS) {
+    if (!(key in settings)) continue
+    client[key] = settings[key]
+    delete settings[key]
+  }
   writeFileSync(join(env.userDataDir, 'studio-client-settings.json'), JSON.stringify(client, null, 2))
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  writeTestKeychain(keychainFile, settingsPath)
 }
 
 async function waitHealthy(url: string, child: ChildProcess, exited: () => number | null, logFile: string): Promise<void> {
@@ -180,8 +214,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       const logFile = join(outside, 'adf-daemon.log')
       const keychainFile = join(outside, 'keychain.json')
       const settingsPath = join(env.userDataDir, 'adf-settings.json')
-      writeTestKeychain(keychainFile, settingsPath)
-      seedClientSettings(env)
+      emulateLocalModeSwitch(env, keychainFile)
 
       const startChild = async (): Promise<DaemonChild> => {
         const stdlibDir = writeStdlibManifest(env)
@@ -210,10 +243,18 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
         let exitCode: number | null = null
         const child = spawn(ELECTRON, args, { env: childEnv, stdio: ['ignore', out, out], windowsHide: true, detached: process.platform !== 'win32', cwd: outside })
         closeSync(out)
-        child.once('exit', (code) => { exitCode = code ?? -1 })
+        if (child.pid !== undefined) LIVE_DAEMONS.add(child.pid)
+        child.once('exit', (code) => {
+          exitCode = code ?? -1
+          if (child.pid !== undefined) LIVE_DAEMONS.delete(child.pid)
+        })
         const exited = () => exitCode
         try {
           await waitHealthy(url, child, exited, logFile)
+          // The fake compute seam MUST be on: a real PodmanService stops every adf-* container on shutdown.
+          if (!(await waitForLog(logFile, '[Compute] ADF_COMPUTE=fake', 5_000, logStart))) {
+            throw new Error(`parity harness: the daemon child did not log the fake compute seam ([Compute] ADF_COMPUTE=fake); killed (log ${logFile})`)
+          }
           if (!(await waitForLog(logFile, '[SandboxStdlib] Standard library up to date', 30_000, logStart))) {
             throw new Error(`parity harness: the daemon child did not report the sandbox standard library as installed (log ${logFile})`)
           }
@@ -229,24 +270,32 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       let daemon = await startChild()
       const pids: Array<number | undefined> = [daemon.child.pid]
 
-      vi.resetModules()
+      let handle: import('../../../src/main/backend/daemon-mode/index').DaemonModeHandle
+      let leases: LeaseModule
       const resources = createRunResources()
-      installEnvironmentStubs(electron, resources)
-      const daemonMode = (await import(/* @vite-ignore */ srcPath('main/backend/daemon-mode/index.ts'))) as DaemonModeModule
-      const leases = (await import(/* @vite-ignore */ srcPath('main/runtime/agent-lease.ts'))) as LeaseModule
-      const handle = daemonMode.registerDaemonModeHandlers({
-        mode: 'local',
-        userDataDir: env.userDataDir,
-        connect: async () => ({ baseUrl: url, logFile, description: `the parity daemon pid ${daemon.child.pid} on ${url}`, source: { token: () => token } }),
-        hooks: {
-          showMainWindow: () => { electron.openWindow(); return null },
-          openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },
-        },
-      })
-      electron.openWindow()
-      if (!(await handle.ready)) {
-        await killTree(daemon.child, daemon.exited)
-        throw new Error('parity harness: Studio daemon mode could not connect to the daemon child')
+      let booted = false
+      try {
+        vi.resetModules()
+        installEnvironmentStubs(electron, resources)
+        const daemonMode = (await import(/* @vite-ignore */ srcPath('main/backend/daemon-mode/index.ts'))) as DaemonModeModule
+        leases = (await import(/* @vite-ignore */ srcPath('main/runtime/agent-lease.ts'))) as LeaseModule
+        handle = daemonMode.registerDaemonModeHandlers({
+          mode: 'local',
+          userDataDir: env.userDataDir,
+          connect: Object.assign(
+            async () => ({ baseUrl: url, logFile, description: `the parity daemon pid ${daemon.child.pid} on ${url}`, source: { token: () => token } }),
+            { logFile }),
+          hooks: {
+            showMainWindow: () => { electron.openWindow(); return null },
+            openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },
+          },
+        })
+        electron.openWindow()
+        if (!(await handle.ready)) throw new Error('parity harness: Studio daemon mode could not connect to the daemon child')
+        booted = true
+      } finally {
+        // Whatever failed after the child started, the child goes with it.
+        if (!booted) await killTree(daemon.child, daemon.exited)
       }
 
       const known = () => pids.filter((p): p is number => p !== undefined)
@@ -262,9 +311,12 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
           pids.push(daemon.child.pid)
         },
         async shutdown() {
-          await handle.shutdown()
-          await leases.resetProcessAgentLeases()
-          await killTree(daemon.child, daemon.exited)
+          try {
+            await handle.shutdown()
+            await leases.resetProcessAgentLeases()
+          } finally {
+            await killTree(daemon.child, daemon.exited)
+          }
           leaks = await releaseRunResources(resources, env)
           if (daemon.exited() === null) leaks.push(`daemon child pid ${daemon.child.pid} still running after taskkill`)
           // Debugging aid: PARITY_DAEMON_LOG_DIR=<dir> keeps a copy of each run's daemon log.

@@ -11,7 +11,7 @@ PARITY_RUNS=10 … run tests/parity        # every scenario 10 times; all runs M
 PARITY_SLICE_BOUND_MS=600 … run tests/parity   # a wider streaming bound on a loaded machine
 ```
 
-The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the built daemon bundle: `npx electron-vite build` first. Without `out/main/daemon.js` they are skipped, and the test report says so.
+The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the built daemon bundle: `npx electron-vite build` first. Without `out/main/daemon.js` they are skipped, and the test report says so; `PARITY_REQUIRE_DAEMON=1` makes a missing bundle a failure. A bundle older than the newest file under `src/main` always fails. `PARITY_RUNS` applies to the daemon side too.
 
 `npm test` also runs it, under plain Node on CI.
 
@@ -30,10 +30,10 @@ The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the b
 | `harness/state-dump.ts` | `.adf` table dump, user-data JSON, file listing |
 | `harness/recording.ts`, `format.ts` | Recording shape, per-agent timelines, text rendering, line diff |
 | `harness/normalize.ts` | Every normalization rule, each with what it hides |
-| `harness/daemon-backend.ts` | `daemonBackend()`: the built daemon in a fenced child process, Studio's daemon-mode handlers in this process |
+| `harness/daemon-backend.ts` | `daemonBackend()`: the built daemon in a fenced child process, Studio's daemon-mode handlers in this process; `emulateLocalModeSwitch()` |
+| `harness/gaps.ts` | The daemon side's known differences: named, workstream-tagged transforms (the gap allowlist) |
 | `scenarios/core.ts` | open, start, chat turn with a tool call |
 | `recordings/*.embedded.txt` | Embedded baseline (golden form, rule G1) |
-| `recordings/*.daemon.txt` | The same scenarios in daemon mode; the target is a file identical to the embedded one |
 | `daemon-reconnect.test.ts` | Daemon killed under a connected Studio, restarted: not-connected state, reconnect, resync |
 
 ## What a recording contains
@@ -76,16 +76,16 @@ Write a `ParityScenario` in your own file under `tests/parity/<domain>/`. Wait e
 The in-process mode (`vi.doMock` stubs, the daemon in the test process, started from source) is a development loop only. The acceptance runs use the built daemon bundle in a child process, because that is what Studio ships and runs. `daemonBackend()` (`harness/daemon-backend.ts`):
 
 1. Picks a free port P and calls `env.allowPort(P)`.
-2. Emulates what the switch to local mode does before Studio first attaches (W4-A, design §4.3, §5.3): the client keys of `adf-settings.json` are copied into `studio-client-settings.json`, and the owner phrase plus the `studio-runtime:<scope>` entry are written to a plaintext test keychain file (`ADF_TEST_KEYCHAIN_FILE`), so the daemon adopts the fixture's runtime identity.
+2. `emulateLocalModeSwitch()` does what the switch to local mode will do before Studio first attaches (W4-A, design §4.3, §5.3): the client keys MOVE from `adf-settings.json` into `studio-client-settings.json`, and the owner phrase plus the `studio-runtime:<scope>` entry are written to a plaintext test keychain file (`ADF_TEST_KEYCHAIN_FILE`), so the daemon adopts the fixture's runtime identity. The gap allowlist names it (`w4a:local-mode-switch`).
 3. Writes the sandbox standard-library manifest the embedded side's module stub stands for, and removes it once the daemon logged that it read it (module stubs do not reach the child; its real service would `npm install`).
 4. Spawns `node_modules/electron/dist/electron.exe` with `ELECTRON_RUN_AS_NODE=1`, `--require <abs>/tests/parity/harness/fence.cjs` and `out/main/daemon.js`. The child inherits the run's environment (fence variables, `NODE_OPTIONS=--require "<fence>"`), plus `ADF_DAEMON_SETTINGS=<userData>/adf-settings.json`, the port, a per-run `ADF_DAEMON_TOKEN`, `ADF_TEST_SEAMS=1` with `ADF_COMPUTE=fake`, and the test keychain file; `ADF_KEYCHAIN` and `ADF_SECRET_STORE` are removed for the child only, so the test keychain file is the daemon's keychain, and the fence refuses the real keychain addon in the child. The pid file, the daemon log and the keychain file live in a temp directory outside the run root. These variables are passed only to the spawn, never set on `process.env`.
 5. `ADF_COMPUTE=fake` with `ADF_TEST_SEAMS=1` is the product seam from W1-G: the daemon uses a fake compute service instead of `PodmanService`.
-6. Registers `registerDaemonModeHandlers` into the same `FakeElectron`, pointed at `http://127.0.0.1:P`.
+6. Checks the child logged `[Compute] ADF_COMPUTE=fake` (else it is killed and the run fails), then registers `registerDaemonModeHandlers` into the same `FakeElectron`, pointed at `http://127.0.0.1:P`. A failure anywhere after the spawn kills the child (`finally`); a process-exit hook kills any child still alive.
 7. `shutdown()` runs Studio's daemon-mode quit path (session end), then stops the daemon with `taskkill /T /F /PID <pid>` on Windows (a process-group SIGKILL elsewhere). Never `POST /daemon/shutdown`, `adf daemon stop` or another graceful stop. `killDaemon()` and `restartDaemon()` do the same mid-run (daemon-reconnect.test.ts).
 8. `normalization()` names the daemon's port (`DAEMON_PORT`), pid and scratch root, and its port-named local-proof file.
 9. Violations from the child and its descendants land in `<root>/violations.log`, which `env.assertRealStateUntouched()` already reads.
 
-`daemon.test.ts` commits the daemon-mode recording of each core scenario as `recordings/<scenario>.daemon.txt`. The acceptance bar is that file being identical to `<scenario>.embedded.txt`, i.e. `diffBackends(scenario, embeddedBackend, daemonBackend())` returning `''`. Until W1-A, W1-E, W2-A and W2-B land, the daemon run is tolerant and the remaining differences are listed, with the workstream that closes each, in docs/design/daemon-backend-gaps.md ("Parity diffs after W2-C"). `PARITY_DAEMON_LOG_DIR=<dir>` keeps a copy of each run's daemon log.
+`daemon.test.ts` runs each core scenario against both backends and compares the recordings. The acceptance bar is no difference: `diffBackends(scenario, embeddedBackend, daemonBackend())` returning `''`. Until W2-A, W2-B and the bug fixes it names land, the daemon run is tolerant and every remaining difference is an entry of `harness/gaps.ts`: a transform scoped to one place, tagged with the workstream that removes it (or `mode` for a documented per-mode expectation), applied to the daemon side only. Each entry MUST match in every scenario it lists, so a fixed gap fails the test until its entry is removed, and nothing may be left after them; the list can only shrink. docs/design/daemon-backend-gaps.md "Parity diffs after W2-C" is generated from it (`gaps-doc.test.ts`). Tolerant runs record the streaming check as its category and slice counts only, never timing. `PARITY_DAEMON_LOG_DIR=<dir>` keeps a copy of each run's daemon log.
 
 ### State and shutdown
 
@@ -93,4 +93,4 @@ The in-process mode (`vi.doMock` stubs, the daemon in the test process, started 
 
 ### Reconnect
 
-`daemon-reconnect.test.ts` kills the daemon child under a connected Studio: the Help menu shows the connection problem and "Reconnect to the ADF Daemon", one dialog says so, and a call fails with "Cannot reach daemon". A restarted daemon (a new epoch) is reconnected to by itself; the client stream reports `stream.gap`, and the pushes include the D6 resync set the daemon can answer today (tracked directories, the approvals snapshot). The resync's `chat_updated`, `DOC_AGENT_CONFIG_CHANGED` and running-agent batch are covered by tests/backend/daemon-mode-bridge.test.ts. A streamed-turn variant that compares the final chat with the embedded run needs the client stream's executor frames (W2-B).
+`daemon-reconnect.test.ts` kills the daemon child under a connected Studio: the Help menu shows the connection problem and "Reconnect to the ADF Daemon", one dialog says so, and a call fails with "Cannot reach daemon". A restarted daemon (a new epoch) is reconnected to by itself; the client stream reports `stream.gap`, the pushes include the D6 resync set the daemon can answer today (tracked directories, the approvals snapshot), and FILE_GET_CURRENT still names the open file. A second test drops the client stream in the middle of a streamed turn: the resume is exact, the chat message's turn settles, and the chat and the written file end as they would have. The resync's `chat_updated`, `DOC_AGENT_CONFIG_CHANGED` and running-agent batch are covered by tests/backend/daemon-mode-bridge.test.ts; a stream that LOSES frames mid-turn (the resync after an evicted cursor) is a `todo` pending W2-B's per-session ring.

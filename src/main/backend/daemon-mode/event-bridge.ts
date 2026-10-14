@@ -159,9 +159,12 @@ export class EventBridge {
   /** Agents whose events the client no longer wants (it is stopping them, embedded detaches its host first). */
   private readonly detached = new Set<string>()
   private focus: string | null = null
+  /** AGENT_EVENTs held back while a start request is in flight (see holdForeground). */
+  private heldForeground: unknown[] | null = null
   private readonly log: Log
   private readonly now: () => number
   private resyncing: Promise<void> | null = null
+  private disposed = false
 
   constructor(private readonly deps: EventBridgeDeps) {
     this.log = deps.log ?? console
@@ -276,8 +279,31 @@ export class EventBridge {
   }
 
   dispose(): void {
+    // Quitting is not a file switch: the session's release must not move agents to the background list.
+    this.disposed = true
     for (const w of [...this.waiters]) w.resolve('stopped')
     this.deps.batcher.flush()
+  }
+
+  /**
+   * AGENT_START: embedded answers the start before the startup turn's first
+   * event reaches the renderer (the turn is dispatched after the reply); the
+   * daemon's events can arrive before its HTTP reply. The open agent's
+   * AGENT_EVENTs are held until `releaseForeground` and then sent in order.
+   */
+  holdForeground(): void {
+    this.heldForeground ??= []
+  }
+
+  releaseForeground(): void {
+    const held = this.heldForeground
+    this.heldForeground = null
+    for (const event of held ?? []) this.deps.output.send(IPC.AGENT_EVENT, event)
+  }
+
+  private sendForeground(event: unknown): void {
+    if (this.heldForeground) this.heldForeground.push(event)
+    else this.deps.output.send(IPC.AGENT_EVENT, event)
   }
 
   // --- focus ---------------------------------------------------------------
@@ -292,7 +318,7 @@ export class EventBridge {
   private focusChanged(next: string | null): void {
     const prev = this.focus
     this.focus = next
-    if (prev === next) return
+    if (prev === next || this.disposed) return
     const lost = prev ? this.agents.get(prev) : undefined
     const gained = next ? this.agents.get(next) : undefined
     if (!lost && !gained?.shownInBackground) return
@@ -336,7 +362,7 @@ export class EventBridge {
     const focused = this.deps.session.isFocused(frame.agentId, filePath)
     const event = frame.event
     if (focused) {
-      this.deps.output.send(IPC.AGENT_EVENT, event)
+      this.sendForeground(event)
       if (agent && event.type === 'state_changed' && (event.loop ?? 'main') === 'main') {
         agent.lastForegroundState = String((event.payload as { state?: unknown })?.state)
       }
@@ -404,7 +430,7 @@ export class EventBridge {
       // display state through the executor's own state change.
       if (focused && !this.detached.has(frame.agentId)) {
         const event: AgentExecutionEvent = { type: 'error', payload: { ...frame.payload }, timestamp: frame.timestamp }
-        this.deps.output.send(IPC.AGENT_EVENT, event)
+        this.sendForeground(event)
       }
       return
     }
@@ -448,7 +474,7 @@ export class EventBridge {
   private foregroundStopped(agent: BridgeAgent, timestamp: number): void {
     if (agent.lastForegroundState === 'stopped') return
     agent.lastForegroundState = 'stopped'
-    this.deps.output.send(IPC.AGENT_EVENT, { type: 'state_changed', payload: { state: 'stopped' }, timestamp })
+    this.sendForeground({ type: 'state_changed', payload: { state: 'stopped' }, timestamp })
   }
 
   private onPush(frame: PushFrame): void {

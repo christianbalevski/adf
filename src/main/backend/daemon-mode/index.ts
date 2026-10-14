@@ -94,6 +94,8 @@ export interface DaemonModeHandle {
   ready: Promise<boolean>
   /** `protocol.handle('adf-file', …)` in daemon mode. */
   adfFile(request: Request): Promise<Response>
+  /** Drop the client stream connection and reconnect now (Help > Reconnect). */
+  reconnect(): void
   /** Studio's quit path in daemon mode: end the client session. The daemon itself is not stopped here (W4-A). */
   shutdown(): Promise<void>
 }
@@ -225,6 +227,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     }
     try {
       approvals.apply(await client.request<NotificationsSnapshot>('GET', '/approvals'))
+      // Requests reach the daemon: connected, before the stream's own open.
+      connection.markConnected()
     } catch (err) {
       log.warn(`[Backend] Could not read the daemon's approvals at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -352,6 +356,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     clientSettings,
     ready: started.then(() => true, () => false),
     adfFile,
+    reconnect,
     shutdown,
   }
 }

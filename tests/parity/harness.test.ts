@@ -153,6 +153,12 @@ describe('parity harness: normalizer', () => {
     }
   })
 
+  it('R14 refuses two keys that normalize to one', () => {
+    const r = rec()
+    r.state = { adf: {}, userDataJson: {}, leases: { 'hosts/4242.json': { v: 1 }, 'hosts/<pid:this-process>.json': { v: 2 } }, tree: [] }
+    expect(() => normalizeRecording(r, { ...ctx, pids: [{ value: 4242, name: 'pid:this-process' }] })).toThrow(/keys collide/)
+  })
+
   it('G1 drops socket lines from the golden file listing only', () => {
     const r = rec()
     r.state = { adf: {}, userDataJson: {}, leases: {}, tree: ['d leases/hosts/', 's leases/hosts/x.sock'] }
@@ -377,6 +383,37 @@ describe('parity harness: fences', () => {
       expect(out).toMatch(/refused net: 127.0.0.1:7385/)
       // Both refusals are in the run's log, written by the worker and by the child.
       expect(env.violations().length).toBe(2)
+    } finally {
+      env.dispose()
+    }
+  })
+
+  it('a fenced child refuses the OS keychain addon and records it', async () => {
+    const env = await createParityEnv('selftest')
+    try {
+      const { execFileSync } = await import('node:child_process')
+      const out = execFileSync(process.execPath, ['-e', "try { require('@napi-rs/keyring'); console.log('loaded') } catch (e) { console.log(e.message) }"],
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8' })
+      expect(out).toMatch(/refused keychain: load of @napi-rs\/keyring/)
+      expect(env.violations().map((v) => JSON.parse(v).kind)).toEqual(['keychain'])
+    } finally {
+      env.dispose()
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('allows a named pipe only when the lease registry of the run names it', async () => {
+    const env = await createParityEnv('selftest')
+    try {
+      const pipe = '\\\\.\\pipe\\adf-runtime-0123456789abcdef'
+      expect(() => connect(pipe).destroy()).toThrow(/refused net: pipe/)
+      mkdirSync(join(env.leaseDir, 'hosts'), { recursive: true })
+      writeFileSync(join(env.leaseDir, 'hosts', '4242.json'), JSON.stringify({ endpoint: pipe }))
+      const sock = connect(pipe)
+      sock.on('error', () => {}) // nothing listens: ENOENT, not a fence refusal
+      sock.destroy()
+      expect(() => connect('\\\\.\\pipe\\adf-runtime-fedcba9876543210').destroy()).toThrow(/refused net: pipe/)
+      expect(env.violations()).toHaveLength(2)
+      unlinkSync(join(env.leaseDir, 'hosts', '4242.json'))
     } finally {
       env.dispose()
     }

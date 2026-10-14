@@ -40,7 +40,7 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
     const agents = createFixtureAgents(env, [{ name: 'agent-1' }])
     writeSettingsFile(env, baseSettings(env, llm, agents, { trackedDirectories: [env.agentsDir] }))
     // "Dismiss" on the disconnected dialog.
-    electron.dialogs = { showMessageBox: (options) => ({ response: ((options as { buttons?: string[] }).buttons?.length ?? 1) - 1 }) }
+    electron.dialogs = { showMessageBox: (options) => ({ response: Math.max(0, ((options as { buttons?: string[] }).buttons ?? []).indexOf('Dismiss')) }) }
     const booted = await daemonBackend().boot(env, electron)
     try {
       const invoke = (channel: string, ...args: unknown[]) => Promise.resolve(electron.handlers.get(channel)!(electron.ipcEvent(), ...args))
@@ -69,6 +69,8 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
         .toContain('Reconnected to the ADF daemon.')
       expect(helpLabels(electron)).toEqual(['ADF Studio Documentation', '-', 'Open Daemon Log'])
       expect(await invoke(IPC.AGENT_STATUS)).toEqual({ running: false, state: 'stopped' })
+      // The session kept the open file across the daemon's restart.
+      expect(await invoke(IPC.FILE_GET_CURRENT)).toEqual({ filePath: agents['agent-1'].filePath, agentRunning: false })
     } finally {
       await booted.shutdown()
       await llm.close()
@@ -80,4 +82,46 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
     }
     expect(booted.leaks()).toEqual([])
   }, 180_000)
+
+  it('a stream dropped in the middle of a streamed turn resumes it exactly: the chat ends as it would have', async () => {
+    const env = await createParityEnv('daemon-reconnect-turn')
+    const llm = await startMockLlm((req) => {
+      if (req.isPreflight) return { text: 'ok' }
+      if (req.last?.role === 'tool') return { text: 'Wrote note.md.' }
+      return { toolCalls: [{ name: 'fs_write', arguments: { mode: 'write', path: 'note.md', content: 'hello from agent-1' } }] }
+    }, { now: () => Date.now() - env.startedAt })
+    env.allowPort(Number(new URL(llm.baseUrl).port))
+    const electron = createFakeElectron(env)
+    const agents = createFixtureAgents(env, [{ name: 'agent-1' }])
+    writeSettingsFile(env, baseSettings(env, llm, agents))
+    const booted = await daemonBackend().boot(env, electron)
+    try {
+      const invoke = (channel: string, ...args: unknown[]) => Promise.resolve(electron.handlers.get(channel)!(electron.ipcEvent(), ...args))
+      const filePath = agents['agent-1'].filePath
+      await invoke(IPC.FILE_OPEN, { filePath })
+      expect(await invoke(IPC.AGENT_START, { filePath, hasUserMessage: true })).toMatchObject({ success: true })
+      const turn = invoke(IPC.AGENT_INVOKE, { userMessage: 'Write a note.', filePath })
+      // The reply streams in slices 200 ms apart: drop the stream once it is under way.
+      await waitFor('the turn to start', () => electron.pushes.some((p) => p.channel === IPC.AGENT_EVENT && (p.args[0] as { type?: string })?.type === 'state_changed'))
+      booted.handle.reconnect()
+      expect(await turn).toEqual({ success: true })
+      const chat = await invoke(IPC.DOC_GET_CHAT, {}) as { chatHistory: { uiLog: Array<{ type?: string; content?: unknown }> } }
+      expect(JSON.stringify(chat.chatHistory.uiLog)).toContain('Wrote note.md.')
+      const read = await invoke(IPC.DOC_READ_INTERNAL_FILE, { path: 'note.md', binaryContent: false })
+      expect(read).toMatchObject({ content: 'hello from agent-1', binary: false })
+    } finally {
+      await booted.shutdown()
+      await llm.close()
+      try {
+        env.assertRealStateUntouched()
+      } finally {
+        env.dispose()
+      }
+    }
+  }, 180_000)
+
+  // The D6 resync after LOST frames mid-turn (an evicted cursor) needs the
+  // client stream's executor frames and per-session ring; GET /events resumes
+  // exactly within its 1000-event buffer. Pending W2-B.
+  it.todo('a stream that loses frames mid-turn gets the D6 resync set and ends with the embedded chat (W2-B)')
 })

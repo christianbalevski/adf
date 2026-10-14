@@ -222,6 +222,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     // no `hasUserMessage`; a file whose own key is locked starts unchecked
     // (`preflight.code: credentials_locked`), and the prompt-before-start of
     // design §6.1 row 27 is W3-A's.
+    ctx.bridge.holdForeground()
     try {
       const started = await client.request<{ agent?: AgentStatus & { id: string }; preflight?: { code: string; message: string } }>(
         'POST', `/agents/${enc(filePath)}/start`, { query: { preflight: 1 }, timeoutMs: 120_000 })
@@ -233,6 +234,9 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     } catch (err) {
       const body = (err as { body?: { code?: unknown } }).body
       return { success: false, error: err instanceof Error ? err.message : String(err), ...(typeof body?.code === 'string' ? { code: body.code } : {}) }
+    } finally {
+      // After the reply reaches the renderer (the next macrotask), as embedded orders it.
+      setImmediate(() => ctx.bridge.releaseForeground())
     }
   },
 
