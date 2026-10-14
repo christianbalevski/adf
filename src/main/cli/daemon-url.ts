@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { daemonSettingsDir, readDaemonToken } from '../daemon/daemon-token'
 import { readLocalProof } from '../daemon/local-access'
+import type { DaemonCredentials } from '../../shared/daemon-client/client'
 
 export const DEFAULT_DAEMON_PORT = 7385
 export const DEFAULT_DAEMON_URL = `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`
@@ -95,4 +96,43 @@ export function localProofHeaders(url: string, path: string, env: NodeJS.Process
   if (!isLocalOnlyRoute(path) || !isLocalDaemonUrl(url, env)) return {}
   const proof = readLocalProof(daemonSettingsDir(env), loopbackPort(url) ?? DEFAULT_DAEMON_PORT)
   return proof ? { 'X-ADF-Local-Proof': proof } : {}
+}
+
+export interface NodeCredentialOptions {
+  /** `--token`: used as is, never re-read. */
+  token?: string
+  /**
+   * With no token given: read this machine's daemon token file (this
+   * machine's daemon only; isLocalDaemonUrl), re-read it on a 401, and send
+   * the local proof on local-only routes. The terminal app sets it; tests
+   * leave it off so they never read real user files.
+   */
+  localToken?: boolean
+  /** Environment for the lookup. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv
+}
+
+/**
+ * The shared client's credentials for the daemon at `url`, the Node way:
+ * `token`, then ADF_DAEMON_TOKEN, then (with `localToken`) the token file of
+ * this machine's daemon. Everything is resolved for `url` alone; the client
+ * sends it only to `url`'s origin.
+ */
+export function daemonCredentials(url: string, options: NodeCredentialOptions = {}): DaemonCredentials {
+  const env = options.env ?? process.env
+  let token = resolveDaemonToken(options.token, env, options.localToken ? url : undefined)
+  return {
+    token: () => token,
+    // The daemon answered 401: pick up a token file that appeared or changed
+    // since (daemon first start). localDaemonToken is null for any URL that is
+    // not this machine's daemon, so a remote URL never gets the local token.
+    refresh: () => {
+      if (!options.localToken || options.token || env.ADF_DAEMON_TOKEN) return false
+      const fresh = localDaemonToken(url, env)
+      if (!fresh || fresh === token) return false
+      token = fresh
+      return true
+    },
+    localProof: path => (options.localToken ? localProofHeaders(url, path, env) : {}),
+  }
 }

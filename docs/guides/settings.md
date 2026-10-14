@@ -510,6 +510,38 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 - **Auto-refresh** — Toggle auto-refresh to poll for task status changes
 - **Per-ADF** — Tasks reload automatically when navigating between ADF files
 
+## Backend
+
+**Settings → Backend** chooses where agents run:
+
+| Choice | Agents run in |
+|--------|---------------|
+| Embedded | Studio. The default. |
+| Local daemon | An ADF daemon on this computer, using Studio's settings and agent files. |
+| Remote daemon | An ADF daemon on another computer, reached by URL and token. See [Remote daemon](../cli/remote-daemon.md). |
+
+Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs embedded. In this build only Embedded can be selected.
+
+- **Keep the daemon running when Studio quits** (`keepDaemonRunning`, default off) applies to Local daemon. Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it.
+- **Remote daemon URL** must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` URL needs the confirmation that the token is sent unencrypted.
+- **Token** is encrypted with the OS keychain (stored as `safe:…`), sent only to the URL's origin, and not shown again after you save it. Changing the URL to another origin removes the saved token.
+
+### Start embedded whatever the file says
+
+If Studio does not start in a daemon mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Settings → Backend shows that the variable is set.
+
+```powershell
+# Windows (PowerShell)
+$env:ADF_STUDIO_BACKEND = 'embedded'; & "$env:LOCALAPPDATA\Programs\ADF Studio\ADF Studio.exe"
+```
+
+```sh
+# macOS
+ADF_STUDIO_BACKEND=embedded "/Applications/ADF Studio.app/Contents/MacOS/ADF Studio"
+```
+
+On Linux, set the variable in the terminal you start Studio from. The variable also accepts `local` and `remote`. Deleting `studio-backend.json` returns Studio to embedded permanently.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
