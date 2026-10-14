@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -12,6 +12,7 @@ import {
   readRemoteToken,
   resolveBootBackend,
   type SecretCodec,
+  type StudioBackendConfig,
 } from '../../src/main/backend/backend-config'
 import { checkRemoteDaemonUrl } from '../../src/shared/utils/remote-backend-url'
 
@@ -49,7 +50,7 @@ describe('resolveBootBackend', () => {
     const path = tempConfigPath()
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    expect(boot).toEqual({ mode: 'embedded', source: 'default', configPath: path, config: defaultBackendConfig() })
+    expect(boot).toEqual({ mode: 'embedded', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null })
     expect(lines).toEqual([])
     expect(existsSync(path)).toBe(false)
   })
@@ -207,7 +208,11 @@ describe('Settings → Backend store', () => {
 describe('remote URL rules (§9.2)', () => {
   const codec = fakeCodec()
   const apply = (remoteUrl: string, allowInsecureHttp?: boolean) =>
-    applyBackendPatch(defaultBackendConfig(), { remoteUrl, allowInsecureHttp }, { codec, allowModeChange: false })
+    applyBackendPatch(
+      defaultBackendConfig(),
+      { remoteUrl, allowInsecureHttp, insecureHttpOrigin: allowInsecureHttp ? new URL(remoteUrl).origin : undefined },
+      { codec, allowModeChange: false },
+    )
 
   it('accepts https, loopback and tailnet http', () => {
     expect(checkRemoteDaemonUrl('https://adf.example.com').kind).toBe('https')
@@ -230,5 +235,113 @@ describe('remote URL rules (§9.2)', () => {
     expect(apply('https://user:pw@adf.example.com')).toMatchObject({ ok: false, code: 'invalid_url' })
     expect(apply('https://adf.example.com/?token=x')).toMatchObject({ ok: false, code: 'invalid_url' })
     expect(apply('ftp://adf.example.com')).toMatchObject({ ok: false, code: 'invalid_url' })
+  })
+})
+
+describe('review fixes', () => {
+  const codec = fakeCodec()
+  const opts = { codec, allowModeChange: false }
+  const confirmed = (url: string): StudioBackendConfig => ({ ...defaultBackendConfig(), remote: { url, token: null, allowInsecureHttp: true } })
+
+  it('does not carry a plain-http confirmation over to a new origin', () => {
+    const current = confirmed('http://192.168.1.5:7385')
+    // The renderer used to send the stale `true` with the new URL.
+    expect(applyBackendPatch(current, { remoteUrl: 'http://203.0.113.9:7385', allowInsecureHttp: true }, opts))
+      .toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
+    expect(applyBackendPatch(current, { remoteUrl: 'http://203.0.113.9:7385', allowInsecureHttp: true, insecureHttpOrigin: 'http://192.168.1.5:7385' }, opts))
+      .toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
+    const fresh = applyBackendPatch(current, { remoteUrl: 'http://203.0.113.9:7385', allowInsecureHttp: true, insecureHttpOrigin: 'http://203.0.113.9:7385' }, opts)
+    expect(fresh.ok && fresh.config.remote).toMatchObject({ url: 'http://203.0.113.9:7385', allowInsecureHttp: true })
+    // Same origin, new path: the earlier confirmation still holds.
+    const samePath = applyBackendPatch(current, { remoteUrl: 'http://192.168.1.5:7385/adf', allowInsecureHttp: true }, opts)
+    expect(samePath.ok && samePath.config.remote.allowInsecureHttp).toBe(true)
+  })
+
+  it('never boots or keeps a token for an unconfirmed plain-http URL from the file', () => {
+    const path = tempConfigPath()
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc' } }))
+    const { lines, log } = recordingLog()
+    const boot = resolveBootBackend(path, {}, log)
+    expect(boot.mode).toBe('embedded')
+    expect(boot.config.remote).toEqual({ url: null, token: null, allowInsecureHttp: false })
+    expect(lines.some((l) => l.includes('ignored with its token'))).toBe(true)
+    expect(lines.some((l) => l.includes('mode is remote'))).toBe(true)
+  })
+
+  it('does not block unrelated saves on a stored unconfirmed URL', () => {
+    const current: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'local', remote: { url: 'http://192.168.1.5:7385', token: null, allowInsecureHttp: false } }
+    expect(applyBackendPatch(current, { keepDaemonRunning: true }, opts).ok).toBe(true)
+    expect(applyBackendPatch(current, { mode: 'embedded' }, opts).ok).toBe(true)
+    expect(applyBackendPatch(current, { remoteUrl: 'http://192.168.1.5:7385' }, opts)).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
+  })
+
+  it('warns and refuses saves when the file cannot be read', async () => {
+    const path = tempConfigPath()
+    mkdirSync(path) // a directory where the file should be: readFileSync fails with EISDIR
+    const { lines, log } = recordingLog()
+    const boot = resolveBootBackend(path, {}, log)
+    expect(boot).toMatchObject({ mode: 'embedded', source: 'file' })
+    expect(boot.writeBlocked).toContain('could not be read')
+    expect(lines.some((l) => l.includes('could not be read'))).toBe(true)
+    const s = createBackendSettingsStore({ boot, codec, log })
+    expect(await s.set({ keepDaemonRunning: true })).toMatchObject({ ok: false, code: 'file_unreadable' })
+  })
+
+  it('accepts the override in any case', () => {
+    const path = tempConfigPath()
+    writeFileSync(path, JSON.stringify({ mode: 'local' }))
+    expect(resolveBootBackend(path, { ADF_STUDIO_BACKEND: ' EMBEDDED ' }, recordingLog().log)).toMatchObject({ mode: 'embedded', source: 'env' })
+  })
+
+  it('parses a file with a UTF-8 BOM', () => {
+    const path = tempConfigPath()
+    writeFileSync(path, '﻿' + JSON.stringify({ mode: 'local' }))
+    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'local', source: 'file' })
+  })
+
+  it('rejects wrongly typed patch fields instead of throwing', () => {
+    const current = defaultBackendConfig()
+    expect(applyBackendPatch(current, { remoteUrl: 5 } as never, opts)).toMatchObject({ ok: false, code: 'invalid_url' })
+    expect(applyBackendPatch(current, { remoteToken: 5 } as never, opts)).toMatchObject({ ok: false, code: 'invalid_token' })
+    expect(applyBackendPatch(current, { keepDaemonRunning: 'yes' } as never, opts)).toMatchObject({ ok: false, code: 'invalid_patch' })
+    expect(applyBackendPatch(current, { mode: 1 } as never, opts)).toMatchObject({ ok: false, code: 'invalid_mode' })
+  })
+
+  it('reports why encryption is unavailable', async () => {
+    const reason = 'No OS keyring is available'
+    const noKeyring: SecretCodec = { ...fakeCodec(false), unavailableReason: () => reason }
+    const path = tempConfigPath()
+    const boot = resolveBootBackend(path, {}, recordingLog().log)
+    const s = createBackendSettingsStore({ boot, codec: noKeyring, log: recordingLog().log })
+    expect(s.get().encryptionUnavailableReason).toBe(reason)
+    expect(await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })).toMatchObject({ ok: false, code: 'encryption_unavailable', error: reason })
+  })
+
+  it('serializes concurrent saves so none is lost', async () => {
+    const path = tempConfigPath()
+    const boot = resolveBootBackend(path, {}, recordingLog().log)
+    const s = createBackendSettingsStore({ boot, codec, log: recordingLog().log })
+    const results = await Promise.all([
+      s.set({ keepDaemonRunning: true }),
+      s.set({ remoteUrl: 'https://adf.example.com' }),
+      s.set({ remoteToken: TOKEN }),
+    ])
+    expect(results.every((r) => r.ok)).toBe(true)
+    const onDisk = JSON.parse(readFileSync(path, 'utf-8'))
+    expect(onDisk).toMatchObject({ keepDaemonRunning: true, remote: { url: 'https://adf.example.com' } })
+    expect(onDisk.remote.token).toMatch(/^safe:/)
+  })
+
+  it('keeps the previous state when the write fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-backend-config-'))
+    const blocker = join(dir, 'not-a-dir')
+    writeFileSync(blocker, '')
+    const boot = resolveBootBackend(backendConfigPath(blocker), {}, recordingLog().log)
+    const rec = recordingLog()
+    const s = createBackendSettingsStore({ boot, codec, log: rec.log })
+    const result = await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })
+    expect(result).toMatchObject({ ok: false, code: 'write_failed' })
+    expect(s.get().configured).toMatchObject({ remoteUrl: null, remoteTokenSaved: false })
+    expect(rec.lines.join('\n')).not.toContain(TOKEN)
   })
 })

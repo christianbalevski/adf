@@ -5,9 +5,23 @@ import { createBackendSettingsStore, type BackendSettingsStore, type BootBackend
 
 const SAFE_PREFIX = 'safe:'
 
+/**
+ * Linux without a Secret Service keyring: safeStorage falls back to
+ * 'basic_text', a fixed key that only obfuscates. Not good enough for a
+ * token that controls a remote daemon.
+ */
+function isObfuscationOnly(): boolean {
+  if (process.platform !== 'linux') return false
+  const backend = (safeStorage as { getSelectedStorageBackend?: () => string }).getSelectedStorageBackend?.()
+  return backend === 'basic_text'
+}
+
 /** Electron safeStorage as the `safe:` codec, the format SettingsService uses. */
 export const safeStorageCodec: SecretCodec = {
-  available: () => safeStorage.isEncryptionAvailable(),
+  available: () => safeStorage.isEncryptionAvailable() && !isObfuscationOnly(),
+  unavailableReason: () => isObfuscationOnly()
+    ? 'No OS keyring is available (Studio would only obfuscate the token), so the token cannot be saved. Install and unlock a Secret Service keyring such as GNOME Keyring or KWallet, then restart Studio.'
+    : safeStorage.isEncryptionAvailable() ? null : 'OS keychain encryption is not available, so the token cannot be saved.',
   encrypt: (plain) => SAFE_PREFIX + safeStorage.encryptString(plain).toString('base64'),
   decrypt: (stored) => {
     if (!stored.startsWith(SAFE_PREFIX) || !safeStorage.isEncryptionAvailable()) return null

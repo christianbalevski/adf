@@ -34,6 +34,8 @@ export interface BackendSettingsView {
   modeSwitchAvailable: boolean
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
+  /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
+  encryptionUnavailableReason: string | null
 }
 
 export interface BackendSettingsPatch {
@@ -45,6 +47,11 @@ export interface BackendSettingsPatch {
   remoteToken?: string
   clearRemoteToken?: boolean
   allowInsecureHttp?: boolean
+  /**
+   * The origin the user confirmed plain HTTP for. `allowInsecureHttp: true`
+   * counts for a new address only when this names that address's origin.
+   */
+  insecureHttpOrigin?: string
 }
 
 export type BackendSettingsErrorCode =
@@ -55,6 +62,8 @@ export type BackendSettingsErrorCode =
   | 'token_without_url'
   | 'invalid_token'
   | 'encryption_unavailable'
+  | 'invalid_patch'
+  | 'file_unreadable'
   | 'write_failed'
 
 export type BackendSettingsSaveResult =

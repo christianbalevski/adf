@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'fs'
 import { mkdir } from 'fs/promises'
 import { dirname, join } from 'path'
 import { readJsonOrQuarantine, writeJsonAtomicAsync } from '../utils/atomic-json'
@@ -57,6 +58,8 @@ export interface StudioBackendConfig {
 
 export interface SecretCodec {
   available(): boolean
+  /** Why `available()` is false, in words the user can act on. */
+  unavailableReason?(): string | null
   /** Returns `safe:<base64>`. Throws when encryption is unavailable. */
   encrypt(plain: string): string
   /** Null when the value cannot be decrypted in this process. */
@@ -69,6 +72,11 @@ export interface BootBackend {
   configPath: string
   /** The file's contents, normalized (defaults when there is no file). */
   config: StudioBackendConfig
+  /**
+   * Set when the file exists but could not be read, or is corrupt and could
+   * not be moved aside. Its bytes may be the only copy, so saves are refused.
+   */
+  writeBlocked: string | null
 }
 
 type Log = Pick<Console, 'log' | 'warn'>
@@ -110,13 +118,62 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
       if (check.url) config.remote.url = check.url
       else warnings.push('remote.url is not a valid daemon URL; ignored')
     }
-    if (r.token !== undefined && r.token !== null) {
-      if (typeof r.token === 'string' && r.token.startsWith(SAFE_PREFIX) && config.remote.url) config.remote.token = r.token
-      else warnings.push('remote.token is not an encrypted (safe:) token for a valid remote.url; ignored')
-    }
     config.remote.allowInsecureHttp = config.remote.url !== null && r.allowInsecureHttp === true
+    // An unconfirmed plain-HTTP URL is never used (§9.2): drop it with its
+    // token, so neither boot nor a later client sends the token over it.
+    if (config.remote.url && !config.remote.allowInsecureHttp && checkRemoteDaemonUrl(config.remote.url).kind === 'insecure-http') {
+      warnings.push('remote.url is plain http to an address that is not loopback or tailnet, and allowInsecureHttp is not set; ignored with its token')
+      config.remote.url = null
+    }
+    if (r.token !== undefined && r.token !== null && config.remote.url) {
+      if (typeof r.token === 'string' && r.token.startsWith(SAFE_PREFIX)) config.remote.token = r.token
+      else warnings.push('remote.token is not an encrypted (safe:) token; ignored')
+    }
+  }
+  if (config.mode === 'remote' && !config.remote.url) {
+    warnings.push('mode is remote but there is no usable remote.url; using embedded')
+    config.mode = 'embedded'
   }
   return { config, warnings }
+}
+
+/**
+ * Read the file for boot. Strips a UTF-8 BOM (hand-edited on Windows). A
+ * parse failure is handed to `readJsonOrQuarantine`, which moves the file
+ * aside or reports that it could not.
+ */
+function readBootFile(configPath: string): { found: boolean; data: unknown; problem: string | null; writeBlocked: string | null } {
+  if (!existsSync(configPath)) return { found: false, data: null, problem: null, writeBlocked: null }
+  let raw: string
+  try {
+    raw = readFileSync(configPath, 'utf-8')
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code ?? 'unknown error'
+    return {
+      found: true,
+      data: null,
+      problem: `the file could not be read (${code}); using embedded, and Settings → Backend will not overwrite it`,
+      writeBlocked: `${configPath} could not be read (${code}). Fix its permissions or delete it, then restart Studio.`,
+    }
+  }
+  try {
+    return { found: true, data: JSON.parse(raw.replace(/^\uFEFF/, '')), problem: null, writeBlocked: null }
+  } catch {
+    const { quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<unknown>(configPath)
+    if (quarantinedTo) {
+      return { found: true, data: null, problem: `the file could not be parsed and was moved to ${quarantinedTo}; using embedded`, writeBlocked: null }
+    }
+    if (corruptUnpreserved) {
+      return {
+        found: true,
+        data: null,
+        problem: 'the file could not be parsed or moved aside; using embedded, and Settings → Backend will not overwrite it',
+        writeBlocked: `${configPath} is corrupt and could not be moved aside. Fix or delete it, then restart Studio.`,
+      }
+    }
+    // Readable on the second read: the file changed in between.
+    return { found: true, data: null, problem: 'the file changed while it was read; using embedded', writeBlocked: `${configPath} changed while Studio read it. Restart Studio.` }
+  }
 }
 
 /**
@@ -125,15 +182,14 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
  * single existence check and logs nothing.
  */
 export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, log: Log = console): BootBackend {
-  const { data, quarantinedTo } = readJsonOrQuarantine<unknown>(configPath)
-  const fileFound = data !== null || quarantinedTo !== null
-  const { config, warnings } = normalizeBackendConfig(data)
-  if (quarantinedTo) warnings.push(`the file could not be parsed and was moved to ${quarantinedTo}; using embedded`)
+  const file = readBootFile(configPath)
+  const { config, warnings } = normalizeBackendConfig(file.data)
+  if (file.problem) warnings.push(file.problem)
   for (const w of warnings) log.warn(`[Backend] ${configPath}: ${w}`)
 
   let mode = config.mode
-  let source: StudioBackendSource = fileFound ? 'file' : 'default'
-  const override = env[BACKEND_ENV_OVERRIDE]?.trim()
+  let source: StudioBackendSource = file.found ? 'file' : 'default'
+  const override = env[BACKEND_ENV_OVERRIDE]?.trim().toLowerCase()
   if (override) {
     if (isMode(override)) {
       mode = override
@@ -144,7 +200,7 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   }
   if (source === 'env') log.log(`[Backend] ${mode} (from ${BACKEND_ENV_OVERRIDE}; ${configPath} says ${config.mode})`)
   else if (source === 'file') log.log(`[Backend] ${mode} (from ${configPath})`)
-  return { mode, source, configPath, config }
+  return { mode, source, configPath, config, writeBlocked: file.writeBlocked }
 }
 
 /** The saved remote token in plain text, for the daemon client in main only. */
@@ -164,6 +220,7 @@ export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<Bo
     },
     modeSwitchAvailable: MODE_SWITCH_AVAILABLE,
     encryptionAvailable: codec.available(),
+    encryptionUnavailableReason: codec.available() ? null : (codec.unavailableReason?.() ?? null),
   }
 }
 
@@ -192,6 +249,23 @@ export function applyBackendPatch(
   const notices: string[] = []
   const changes: string[] = []
 
+  // The patch crosses IPC from the renderer: check every field's type first.
+  const fieldTypes: Array<[keyof BackendSettingsPatch, 'string' | 'boolean' | 'string|null', BackendSettingsErrorCode]> = [
+    ['mode', 'string', 'invalid_mode'],
+    ['keepDaemonRunning', 'boolean', 'invalid_patch'],
+    ['remoteUrl', 'string|null', 'invalid_url'],
+    ['remoteToken', 'string', 'invalid_token'],
+    ['clearRemoteToken', 'boolean', 'invalid_patch'],
+    ['allowInsecureHttp', 'boolean', 'invalid_patch'],
+    ['insecureHttpOrigin', 'string', 'invalid_patch'],
+  ]
+  for (const [field, type, code] of fieldTypes) {
+    const value: unknown = patch[field]
+    if (value === undefined) continue
+    const okType = type === 'string|null' ? value === null || typeof value === 'string' : typeof value === type
+    if (!okType) return fail(code, `${field} has the wrong type.`)
+  }
+
   if (patch.mode !== undefined) {
     if (!isMode(patch.mode)) return fail('invalid_mode', 'Unknown backend mode.')
     if (patch.mode !== current.mode) {
@@ -203,11 +277,12 @@ export function applyBackendPatch(
     }
   }
 
-  if (patch.keepDaemonRunning !== undefined && (patch.keepDaemonRunning === true) !== current.keepDaemonRunning) {
-    next.keepDaemonRunning = patch.keepDaemonRunning === true
+  if (patch.keepDaemonRunning !== undefined && patch.keepDaemonRunning !== current.keepDaemonRunning) {
+    next.keepDaemonRunning = patch.keepDaemonRunning
     changes.push(`keepDaemonRunning=${next.keepDaemonRunning}`)
   }
 
+  let originChanged = false
   if (patch.remoteUrl !== undefined) {
     const raw = (patch.remoteUrl ?? '').trim()
     if (!raw) {
@@ -221,6 +296,7 @@ export function applyBackendPatch(
       if (!check.url) return fail('invalid_url', check.reason ?? 'Invalid URL.')
       if (check.url !== current.remote.url) {
         if (remoteUrlOrigin(check.url) !== remoteUrlOrigin(current.remote.url)) {
+          originChanged = true
           if (current.remote.token !== null && patch.remoteToken === undefined) {
             notices.push('The saved token was removed because the daemon address changed. Enter the token for the new address.')
             changes.push('remote token removed (origin changed)')
@@ -235,7 +311,13 @@ export function applyBackendPatch(
   }
 
   if (patch.allowInsecureHttp !== undefined) {
-    const allow = patch.allowInsecureHttp === true && next.remote.url !== null
+    // A confirmation counts only for the origin it names. An earlier one
+    // survives only while the origin stays the same, so a stale `true` sent
+    // with a new address does not carry over.
+    const nextOrigin = remoteUrlOrigin(next.remote.url)
+    const fresh = patch.insecureHttpOrigin !== undefined && patch.insecureHttpOrigin === nextOrigin
+    const kept = !originChanged && current.remote.allowInsecureHttp
+    const allow = patch.allowInsecureHttp && nextOrigin !== null && (fresh || kept)
     if (allow !== next.remote.allowInsecureHttp) changes.push(`allowInsecureHttp=${allow}`)
     next.remote.allowInsecureHttp = allow
   }
@@ -246,13 +328,13 @@ export function applyBackendPatch(
   }
 
   if (patch.remoteToken !== undefined) {
-    const token = typeof patch.remoteToken === 'string' ? patch.remoteToken.trim() : ''
+    const token = patch.remoteToken.trim()
     if (!token || token.length > MAX_TOKEN_LENGTH || !TOKEN_PATTERN.test(token)) {
       return fail('invalid_token', 'The token must be printable characters without spaces.')
     }
     if (!next.remote.url) return fail('token_without_url', 'Enter the daemon URL before the token.')
     if (!opts.codec.available()) {
-      return fail('encryption_unavailable', 'The OS keychain is not available, so the token cannot be stored encrypted. It was not saved.')
+      return fail('encryption_unavailable', opts.codec.unavailableReason?.() ?? 'The OS keychain is not available, so the token cannot be stored encrypted. It was not saved.')
     }
     try {
       next.remote.token = opts.codec.encrypt(token)
@@ -262,7 +344,10 @@ export function applyBackendPatch(
     changes.push('remote token saved')
   }
 
-  if (next.remote.url && !next.remote.allowInsecureHttp && checkRemoteDaemonUrl(next.remote.url).kind === 'insecure-http') {
+  // Only a save that touches the remote fields is checked, so an unrelated
+  // save (mode, keepDaemonRunning) is never blocked by the stored URL.
+  const touchesRemote = patch.remoteUrl !== undefined || patch.remoteToken !== undefined || patch.allowInsecureHttp !== undefined
+  if (touchesRemote && next.remote.url && !next.remote.allowInsecureHttp && checkRemoteDaemonUrl(next.remote.url).kind === 'insecure-http') {
     return fail('insecure_url_unconfirmed', 'This http:// address is not loopback or a tailnet address. Confirm that you trust this network, or use https://.')
   }
 
@@ -292,6 +377,7 @@ export function createBackendSettingsStore(deps: {
   let queue: Promise<unknown> = Promise.resolve()
 
   const save = async (patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
+    if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
     const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE })
     if (!result.ok) return result
     if (result.changes.length > 0) {
