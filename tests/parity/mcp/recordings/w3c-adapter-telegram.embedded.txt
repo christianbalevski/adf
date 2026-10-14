@@ -1,0 +1,220 @@
+{
+  "steps": [
+    {
+      "invoke": "adf:settings:set",
+      "args": [
+        {
+          "trackedDirectories": [
+            "<ROOT>\\agents"
+          ]
+        }
+      ],
+      "result": {
+        "success": true
+      }
+    },
+    {
+      "invoke": "adf:adapter:attach",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "config": {
+            "enabled": true,
+            "policy": {
+              "allow_from": [
+                "424242"
+              ],
+              "dm": "allowlist"
+            }
+          },
+          "filePath": "<ROOT>\\agents\\agent-2.adf"
+        }
+      ],
+      "result": {
+        "enabled": true,
+        "success": true
+      }
+    },
+    {
+      "invoke": "adf:adapter:credential-set",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "envKey": "TELEGRAM_BOT_TOKEN",
+          "filePath": "<ROOT>\\agents\\agent-2.adf",
+          "value": "123456:parity-fake-token"
+        }
+      ],
+      "result": {
+        "success": true
+      }
+    },
+    {
+      "invoke": "adf:adapter:credential-get",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "filePath": "<ROOT>\\agents\\agent-2.adf"
+        }
+      ],
+      "result": {
+        "credentials": {
+          "TELEGRAM_BOT_TOKEN": "123456:parity-fake-token"
+        },
+        "storedKeys": [
+          "TELEGRAM_BOT_TOKEN"
+        ]
+      }
+    },
+    {
+      "invoke": "adf:adapter:credential-list-files",
+      "args": [
+        {
+          "adapterType": "telegram"
+        }
+      ],
+      "result": {
+        "files": [
+          {
+            "fileName": "agent-2.adf",
+            "filePath": "<ROOT>\\agents\\agent-2.adf",
+            "hasCredentials": true,
+            "populatedKeys": [
+              "TELEGRAM_BOT_TOKEN"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "invoke": "adf:adapter:attach",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "config": {
+            "enabled": true
+          },
+          "filePath": "<ROOT>\\agents\\agent-2.adf"
+        }
+      ],
+      "result": {
+        "alreadyAttached": true,
+        "enabled": true,
+        "success": true
+      }
+    },
+    {
+      "invoke": "adf:adapter:get-status",
+      "args": [],
+      "result": {
+        "adapters": [],
+        "perAgent": []
+      }
+    },
+    {
+      "invoke": "adf:adapter:get-logs",
+      "args": [
+        {
+          "filePath": "<ROOT>\\agents\\agent-2.adf",
+          "type": "telegram"
+        }
+      ],
+      "result": {
+        "logs": [],
+        "running": false
+      }
+    },
+    {
+      "invoke": "adf:adapter:restart",
+      "args": [
+        {
+          "filePath": "<ROOT>\\agents\\agent-2.adf",
+          "type": "telegram"
+        }
+      ],
+      "result": {
+        "error": "That agent is not running, so its channel has nothing to restart. Start the agent instead.",
+        "success": false
+      }
+    },
+    {
+      "invoke": "adf:adapter:restart",
+      "args": [
+        {
+          "type": "telegram"
+        }
+      ],
+      "result": {
+        "error": "No agent is open, so there is no channel to restart.",
+        "success": false
+      }
+    },
+    {
+      "invoke": "adf:adapter:detach",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "filePath": "<ROOT>\\agents\\agent-2.adf"
+        }
+      ],
+      "result": {
+        "success": true
+      }
+    },
+    {
+      "invoke": "adf:adapter:credential-get",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "filePath": "<ROOT>\\agents\\agent-2.adf"
+        }
+      ],
+      "result": {
+        "credentials": {},
+        "storedKeys": []
+      }
+    },
+    {
+      "invoke": "adf:adapter:attach",
+      "args": [
+        {
+          "adapterType": "telegram",
+          "config": {
+            "enabled": false
+          },
+          "filePath": "<ROOT>\\agents\\agent-2.adf"
+        }
+      ],
+      "result": {
+        "enabled": false,
+        "success": true
+      }
+    }
+  ],
+  "pushes": {},
+  "local": [],
+  "files": {
+    "agents/agent-1.adf": {
+      "config": {
+        "adapters": {},
+        "mcp": {
+          "servers": []
+        }
+      },
+      "credentialRows": []
+    },
+    "agents/agent-2.adf": {
+      "config": {
+        "adapters": {
+          "telegram": {
+            "enabled": false
+          }
+        },
+        "mcp": {
+          "servers": []
+        }
+      },
+      "credentialRows": []
+    }
+  }
+}
