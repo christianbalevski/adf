@@ -8,6 +8,7 @@ agent's virtual filesystem under `skills/<name>/`.
 - [`agent-memory`](agent-memory/SKILL.md) — maintain the mind.md wiki with audit-grounded citations: retrieval lambda, lint workflow, page templates.
 - [`browser-profile-portability`](browser-profile-portability/SKILL.md) — securely carry browser sessions and saved passwords between containers.
 - [`conventional-skill-to-adf`](conventional-skill-to-adf/SKILL.md) — adapt filesystem-oriented skills to ADF primitives.
+- [`production-artifact-clean-install-qa`](production-artifact-clean-install-qa/SKILL.md) — verify a released installer or package from clean install to first use, with evidence for every step.
 - [`self-observation`](self-observation/SKILL.md) — quantify your own behavioral patterns from loop and audit history with hot-path code.
 - [`skill-loader`](skill-loader/SKILL.md) — configure discovery and live indexing entirely in agent space.
 - [`soul-creation`](soul-creation/SKILL.md) — give an agent a distinct voice by creating or replacing its soul.md.
