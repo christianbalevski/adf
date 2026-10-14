@@ -64,6 +64,8 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-B | Proxy: settings, providers, models, subscription auth, identity, credentials | 3 | W2-C, W1-C | TODO |
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | TODO |
 | W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | TODO |
+| W3-E | TUI on client sessions: TUI consumes the D5 client stream (focus = open chat) instead of `/events`, so it streams and updates like Studio | 3 | W2-B | TODO |
+| W3-F | Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors | 3 | W2-A, W2-B | TODO |
 | W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | TODO |
 | W4-B | Remote mode | 4 | W3-A … W3-D | TODO |
 | W4-C | Documentation | 4 | W4-A | TODO |
