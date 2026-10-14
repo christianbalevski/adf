@@ -967,6 +967,8 @@ export class RuntimeService extends EventEmitter {
       }
 
       managed.degraded = undefined
+      // A provider built while its sealed key was locked is the stub: build the real one.
+      if (lockedKeyProviders.has(managed.agent.executor.getProvider() as LLMProvider)) this.rebuildProviderAfterUnlock(managed)
       // Values the owner stored (or replaced) while locked were written
       // plain: seal them now that the envelope is open (Studio parity with
       // ensureWorkspaceIdentity's migration pass).
@@ -1502,10 +1504,7 @@ export class RuntimeService extends EventEmitter {
     managed.agent.applyConfigChange(config)
 
     if (providerSelectionChanged(previousConfig, config) && this.providerFactory) {
-      const provider = await this.providerFactory(config, managed.filePath, {
-        workspace: managed.agent.workspace,
-        derivedKey: managed.derivedKey,
-      })
+      const provider = await this.agentProvider(config, managed.filePath, managed.agent.workspace, managed.derivedKey)
       managed.agent.executor.updateProvider(provider)
     }
 
@@ -2133,11 +2132,14 @@ export class RuntimeService extends EventEmitter {
 
   private rebuildProviderAfterUnlock(managed: ManagedRuntimeAgent): void {
     if (!this.providerFactory) return
-    void Promise.resolve(this.providerFactory(managed.config, managed.filePath, {
-      workspace: managed.agent.workspace,
-      derivedKey: managed.derivedKey,
-    })).then(
-      provider => managed.agent.executor.updateProvider(provider),
+    void this.agentProvider(managed.config, managed.filePath, managed.agent.workspace, managed.derivedKey).then(
+      (provider) => {
+        const replacesStub = lockedKeyProviders.has(managed.agent.executor.getProvider() as LLMProvider)
+        managed.agent.executor.updateProvider(provider)
+        if (replacesStub && !lockedKeyProviders.has(provider)) {
+          console.log(`[RuntimeService] ${managed.config.name}: provider key unlocked; the provider uses it from the next turn`)
+        }
+      },
       err => console.warn(`[RuntimeService] Provider rebuild after unlock failed for ${managed.id}:`, err),
     )
   }
@@ -2568,14 +2570,8 @@ export class RuntimeService extends EventEmitter {
       // The agent has its own key but it cannot be opened here (password or
       // envelope locked): not a missing key. The agent loads and unlocks
       // later (unlockAgentIdentityPassword, owner identity); the start goes on.
-      const ownEntry = config.providers?.find(p => p.id === config.model.provider)
-      if (ownEntry && agentProviderKeySource(ownEntry, workspace, derivedKey, store) === 'locked') {
-        return {
-          ok: true,
-          credentialsLocked: `The API key of ${config.name}'s own provider "${ownEntry.name || ownEntry.id}" is stored in the file but locked here; ` +
-            'unlock the agent after it starts (its file password, or the owner identity) and its provider uses the key.',
-        }
-      }
+      const credentialsLocked = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+      if (credentialsLocked) return { ok: true, credentialsLocked }
       let provider: LLMProvider
       try {
         provider = await this.providerFactory(config, filePath, { workspace, derivedKey })
@@ -3096,7 +3092,40 @@ export class RuntimeService extends EventEmitter {
     }
     // Envelope-sealed keys are already open (unlockWorkspaceEnvelopes); the
     // legacy password key is the caller's, or arrives later through unlock.
-    return this.providerFactory(config, filePath, { workspace, derivedKey })
+    return this.agentProvider(config, filePath, workspace, derivedKey)
+  }
+
+  /**
+   * The agent's provider. When the agent's own provider key is stored but
+   * locked here (file password, or a sealed envelope this daemon cannot open
+   * yet), a stub that fails every call with `credentials_locked` before any
+   * request: the real provider would send an empty key and the executor
+   * would blame Settings → Providers. An unlock rebuilds the real one
+   * (unlockAgentIdentityPassword, refreshAgentCredentials).
+   */
+  private async agentProvider(config: AgentConfig, filePath: string | null, workspace: AdfWorkspace, derivedKey: Buffer | null): Promise<LLMProvider> {
+    return this.lockedKeyStub(config, workspace, derivedKey) ?? this.providerFactory!(config, filePath, { workspace, derivedKey })
+  }
+
+  /** The credentials_locked stub when the agent's own provider key cannot be opened here, else null. */
+  private lockedKeyStub(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): LLMProvider | null {
+    const message = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+    if (!message) return null
+    const entry = config.providers!.find(p => p.id === config.model.provider)!
+    console.warn(`[RuntimeService] ${message}`)
+    return lockedKeyProvider(entry, config.model.model_id, message)
+  }
+
+  /** Why the agent's own provider key is locked here and how to unlock it; null when it is not. */
+  private lockedProviderKeyMessage(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): string | null {
+    const entry = config.providers?.find(p => p.id === config.model.provider)
+    if (!entry || agentProviderKeySource(entry, workspace, derivedKey, this.providerSettings()) !== 'locked') return null
+    const provider = `"${entry.name || entry.id}"`
+    return workspace.isPasswordProtected() && !derivedKey
+      ? `${config.name}'s API key for its provider ${provider} is locked with the agent's file password, so no request was sent. ` +
+        `Unlock it: POST /agents/${config.id}/identity/password/unlock with {"password": "…"}. The next turn uses the key.`
+      : `${config.name}'s API key for its provider ${provider} is sealed and its credentials envelope is locked on this daemon, so no request was sent. ` +
+        'Make the owner identity available (adf identity unlock, or adf identity restore); the agent re-checks and the next turn uses the key.'
   }
 
   private async buildLoadedAgent(
@@ -3119,7 +3148,10 @@ export class RuntimeService extends EventEmitter {
         createProviderForModel: (model) => {
           if (!this.providerFactory) return provider
           // The key at call time: an unlock after start reaches model_invoke too.
-          const resolved = this.providerFactory({ ...config, model }, filePath, { workspace, derivedKey: keyCell.current })
+          const modelConfig = { ...config, model }
+          const stub = this.lockedKeyStub(modelConfig, workspace, keyCell.current)
+          if (stub) return stub
+          const resolved = this.providerFactory(modelConfig, filePath, { workspace, derivedKey: keyCell.current })
           if (isPromiseLike(resolved)) {
             throw new Error('RuntimeService: model_invoke providerFactory must be synchronous.')
           }
@@ -3274,6 +3306,31 @@ function addUsage(target: RuntimeUsageTotals, usage: LoopTokenUsage): void {
   // `input` is already cache-inclusive (AI SDK v6 reports inputTokens.total),
   // so cache buckets are a breakdown of input, not an addition to it.
   target.total = target.input + target.output
+}
+
+/** Providers made by lockedKeyProvider (so an unlock knows it replaces one). */
+const lockedKeyProviders = new WeakSet<LLMProvider>()
+
+/**
+ * A provider whose every call fails with `credentials_locked` before any
+ * request. validateConfig answers valid: the executor's own preflight would
+ * turn a failure into "check the API key in Settings → Providers".
+ */
+function lockedKeyProvider(entry: AdfProviderConfig, modelId: string, message: string): LLMProvider {
+  const provider: LLMProvider = {
+    name: entry.name || entry.id,
+    providerId: entry.id,
+    providerType: entry.type as LLMProvider['providerType'],
+    modelId,
+    async createMessage() {
+      throw Object.assign(new Error(message), { code: CREDENTIALS_LOCKED_CODE })
+    },
+    async validateConfig() {
+      return { valid: true }
+    },
+  }
+  lockedKeyProviders.add(provider)
+  return provider
 }
 
 /** Dispose an agent; `rethrow` false logs instead (cleanup of an agent that never registered). */

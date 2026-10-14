@@ -339,7 +339,7 @@ describe('preflightProvider', () => {
 
     const result = await runtime.preflightProvider(filePath)
 
-    expect(result).toEqual({ ok: true, credentialsLocked: expect.stringContaining('stored in the file but locked here') })
+    expect(result).toEqual({ ok: true, credentialsLocked: expect.stringContaining("is locked with the agent's file password, so no request was sent") })
     expect(factory).not.toHaveBeenCalled()
     expect(validate).not.toHaveBeenCalled()
   })
@@ -698,5 +698,49 @@ describe('unload robustness', () => {
 
     expect(order).toEqual(['reconcile (renamed: true, held: true)', 'agent_stopped', 'agent-file-renamed'])
     expect(await leases.isHeld(filePath)).toBe(false)
+  })
+})
+
+describe('an agent whose own provider key is locked', () => {
+  it('fails its turns with credentials_locked before any request, and runs once unlocked', async () => {
+    const { filePath } = seedAgent(tempDir(), 'agent-1', {
+      model: { provider: 'anthropic', model_id: 'claude-x' } as AgentConfig['model'],
+      providers: [{ id: 'anthropic', type: 'anthropic', name: 'Anthropic', baseUrl: '' }] as AgentConfig['providers'],
+    })
+    const workspace = AdfWorkspace.open(filePath)
+    workspace.setIdentity('provider:anthropic:apiKey', 'sk-own')
+    workspace.setPassword('pw')
+    workspace.close()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const built: Array<Buffer | null> = []
+    const runtime = runtimeWith({
+      settings: { get: () => undefined },
+      providerFactory: (_config, _path, context) => { built.push(context?.derivedKey ?? null); return new MockLLMProvider({ tokensPerResponse: 5 }) },
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const seen = record(runtime)
+    const errors = () => seen.filter((s) => s.kind === 'agent' && s.type === 'error').map((s) => String((s as { payload: { error: string } }).payload.error))
+
+    const ref = await runtime.loadAgent(filePath)
+    await runtime.startAgent(ref.id)
+    await waitFor(() => errors().length > 0)
+
+    expect(errors()[0]).toBe(
+      `agent-1's API key for its provider "Anthropic" is locked with the agent's file password, so no request was sent. ` +
+      `Unlock it: POST /agents/${ref.id}/identity/password/unlock with {"password": "…"}. The next turn uses the key.`,
+    )
+    expect(errors()[0]).not.toContain('Settings')
+    expect(built).toEqual([]) // the real provider was never built
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    runtime.unlockAgentIdentityPassword(ref.id, 'pw')
+    await waitFor(() => built.length === 1)
+    expect(built[0]).not.toBeNull()
+    const before = seen.length
+    await runtime.sendChat(ref.id, 'hello')
+    const after = seen.slice(before)
+    expect(after.some((s) => s.kind === 'agent' && s.type === 'turn_complete')).toBe(true)
+    expect(after.some((s) => s.kind === 'agent' && s.type === 'error')).toBe(false)
   })
 })
