@@ -344,6 +344,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W3-D | E3 candidate: embedded emergency stop logs a spurious chat error "Cannot dispatch startup while agent lifecycle is disposed" (`useAgent.ts:465`) | W5-A |
 | W3-D | `/fleet/vitals` builds a second `AgentVitalsService` (duplicate caches/scans) | W5-A |
 | W2-C2 | D5 deviation: executor frames carry no `turnId`, absorbed ids or discarded-turn frame; Studio works around it with `umbilical:true` (turn.completed/agent.error/chat.discarded). Add them to executor frames and drop the workaround | W5-A |
+| W2-C2 | `w3a:chat-echo`: in daemon mode Studio shows its own chat twice (`POST /agents/:id/chat` lacks `echoed`). W3-A acceptance criterion | W3-A |
+| W2-C2 | Version-mismatch refusal only offers `ADF_STUDIO_BACKEND=embedded`/hand edit as the way back; needs the §8.2 dialog | W4-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
