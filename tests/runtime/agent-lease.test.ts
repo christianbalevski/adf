@@ -33,7 +33,6 @@ import {
   leaseDir,
   listRuntimeHosts,
   machineId,
-  listStudioClients,
   processAgentLeases,
   type AgentLeaseRecord,
 } from '../../src/main/runtime/agent-lease'
