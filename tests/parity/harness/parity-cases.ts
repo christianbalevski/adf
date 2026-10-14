@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { embeddedBackend } from './backend'
+import { embeddedBackend as embeddedBase, type ParityBackend } from './backend'
 import { DAEMON_BUNDLE, daemonBackend } from './daemon-backend'
 import { diffRendered, renderRecording } from './format'
 import { applyGapAllowlist } from './gaps'
@@ -22,11 +22,23 @@ import { runScenario, type ParityScenario } from './scenario'
 const RUNS = Math.max(1, Number(process.env.PARITY_RUNS ?? 1))
 const BUNDLE = existsSync(DAEMON_BUNDLE)
 
+export interface ParityCaseOptions {
+  /**
+   * Wraps each backend of a run, for a domain whose scenarios need the
+   * machine set up before the backend boots (e.g. a loopback server whose
+   * port the daemon child's fence must allow: it reads its ports at spawn).
+   * Applied to both backends alike.
+   */
+  backend?: (backend: ParityBackend) => ParityBackend
+}
+
 /**
  * `embeddedOnly`: scenarios the daemon side cannot drive yet (each names
  * why in its comment); they get the embedded check only.
  */
-export function parityCases(domain: string, scenarios: readonly ParityScenario[], embeddedOnly: readonly ParityScenario[] = []): void {
+export function parityCases(domain: string, scenarios: readonly ParityScenario[], embeddedOnly: readonly ParityScenario[] = [], opts: ParityCaseOptions = {}): void {
+  const wrap = opts.backend ?? ((b: ParityBackend) => b)
+  const embeddedBackend = wrap(embeddedBase)
   describe(`parity: ${domain}, embedded backend`, () => {
     for (const scenario of [...scenarios, ...embeddedOnly]) {
       it(`${scenario.name}: stable and matches its recording`, async () => {
@@ -51,7 +63,7 @@ export function parityCases(domain: string, scenarios: readonly ParityScenario[]
         const embedded = await runScenario(scenario, embeddedBackend)
         const expected = renderRecording(toGoldenForm(embedded.normalized))
         for (let run = 0; run < RUNS; run++) {
-          const daemon = await runScenario(scenario, daemonBackend(), { tolerant: true })
+          const daemon = await runScenario(scenario, wrap(daemonBackend()), { tolerant: true })
           const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, structuredClone(embedded.normalized))
           expect(unmatched, `gap entries that matched nothing in ${scenario.name} (fixed? remove them from harness/gaps.ts)`).toEqual([])
           const actual = renderRecording(toGoldenForm(daemon.normalized))

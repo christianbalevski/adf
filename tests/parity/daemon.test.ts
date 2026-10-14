@@ -11,6 +11,7 @@ import { CORE_SCENARIOS } from './scenarios/core'
 import { SETTINGS_SCENARIOS } from './settings/scenarios'
 import { IDENTITY_SCENARIOS } from './identity/scenarios'
 import { MESH_SCENARIOS } from './mesh/scenarios'
+import { W3C_SCENARIO_NAMES } from './mcp/scenarios'
 
 /**
  * Parity harness, daemon side (tracker W2-C, README "Daemon backend").
@@ -82,7 +83,7 @@ describe.skipIf(!BUNDLE)('parity: daemon backend (child process)', () => {
   }
 
   it('every gap entry names a workstream and lists only known scenarios', () => {
-    const names = new Set([...CORE_SCENARIOS, ...MESH_SCENARIOS, ...SETTINGS_SCENARIOS, ...IDENTITY_SCENARIOS].map((s) => s.name))
+    const names = new Set([...[...CORE_SCENARIOS, ...MESH_SCENARIOS, ...SETTINGS_SCENARIOS, ...IDENTITY_SCENARIOS].map((s) => s.name), ...W3C_SCENARIO_NAMES])
     for (const entry of GAP_ALLOWLIST) {
       expect(entry.ws).toMatch(/^(W\d-[A-Z]\d?|E3|mode)$/)
       for (const s of entry.scenarios) expect(names.has(s), `${entry.id}: ${s}`).toBe(true)

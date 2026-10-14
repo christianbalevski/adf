@@ -35,6 +35,8 @@ import type { ClientSessionRegistry } from '../client-sessions'
 import { registerDocumentRoutes } from './document-routes'
 import { registerCredentialValueRoutes } from './credential-value-routes'
 import { registerFleetClientRoutes } from './fleet-client-routes'
+import { registerPackageJobRoutes } from './package-job-routes'
+import { registerAgentFileConfigRoutes } from './agent-file-config-routes'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -80,6 +82,8 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerDocumentRoutes,
   registerCredentialValueRoutes,
   registerFleetClientRoutes,
+  registerPackageJobRoutes,
+  registerAgentFileConfigRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
