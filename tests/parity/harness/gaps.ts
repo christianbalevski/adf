@@ -22,7 +22,7 @@ import type { ComparableRecording, RawRecording, StepRecord } from './recording'
  * in step).
  */
 
-export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'mode'
+export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'W5-A' | 'mode'
 
 export interface GapEntry {
   id: string
@@ -36,8 +36,13 @@ export interface GapEntry {
   apply(daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }): number
 }
 
-const ALL = ['open-agent', 'start-agent', 'chat-tool-call'] as const
-const RUNNING = ['start-agent', 'chat-tool-call'] as const
+const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
+/** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
+const W3B_NO_AGENT = ['provider-round-trip', 'agent-provider-key', 'subscription-status', 'owner-identity', 'locked-credentials', 'owner-import', 'owner-sealed-key'] as const
+/** The W3-B scenarios that start agent-1 and leave it running (as chat-tool-call). */
+const W3B_RUNNING = ['agent-keystore', 'agent-claim'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING] as const
+const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** Scenarios whose agent file nobody holds open when the state is dumped (chat-tool-call's still runs). */
 const NOT_RUNNING_AT_DUMP = ['open-agent', 'start-agent'] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
@@ -169,7 +174,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2c2:open-document-reads',
     ws: 'W2-C2',
-    scenarios: ALL,
+    scenarios: CORE,
     path: 'steps: every DOC_GET_BATCH and DOC_READ_INTERNAL_FILE before the first AGENT_START (and their `(threw)` timeline markers), no other step',
     what: 'Reading a file that is not running throws "not available in daemon mode yet: W2-B": the daemon serves open documents (W2-A), but Studio holds one only through its client session.',
     apply(d, e) {
@@ -244,7 +249,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2c2:agent-event-stream',
     ws: 'W2-C2',
-    scenarios: RUNNING,
+    scenarios: ['start-agent', 'chat-tool-call'],
     path: 'AGENT_EVENT: the pushes, their timeline lines and the step push watermarks they shift',
     what: 'The interim GET /events adapter carries only state_changed, turn_complete and error; deltas, tool calls, context, metadata, file updates and loop_seq come with the client stream.',
     apply(d, e) {
@@ -266,7 +271,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2c2:streaming-check',
     ws: 'W2-C2',
-    scenarios: RUNNING,
+    scenarios: ['start-agent', 'chat-tool-call'],
     path: 'problems: the streaming check',
     what: 'No text_delta_batch reaches the window (same cause as w2c2:agent-event-stream).',
     apply(d) {
@@ -280,7 +285,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2c2:identity-on-open',
     ws: 'W2-C2',
-    scenarios: [...ALL, ...MESH],
+    scenarios: [...CORE, 'agent-keystore', ...MESH],
     path: 'state: adf_identity and adf_attestations rows',
     what: 'The daemon runs its open steps (ensureWorkspaceIdentity on open, W2-A) only for a document a client session holds: no keys, no owner and operator attestations.',
     apply(d, e) {
@@ -297,7 +302,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w2c2:identity-meta',
     ws: 'W2-C2',
-    scenarios: [...ALL, ...MESH],
+    scenarios: [...CORE, 'agent-keystore', ...MESH],
     path: 'state: adf_meta rows adf_did, adf_owner_did, adf_runtime_did',
     what: 'Same cause as w2c2:identity-on-open: the identity stamps are written on open.',
     apply(d, e) {
@@ -312,6 +317,75 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         }
         rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
       }
+      return n
+    },
+  },
+  {
+    id: 'w2c2:claim-previous-did',
+    ws: 'W2-C2',
+    scenarios: ['agent-claim'],
+    path: 'the claim\'s clone attestation (IDENTITY_ATTESTATIONS_GET result, adf_attestations) and adf_meta adf_did_history',
+    what: 'Same cause as w2c2:identity-on-open: the daemon minted no DID on open, so its claim has no previous DID to record (no clone attestation, no DID history).',
+    apply(d, e) {
+      let n = 0
+      const isClone = (a: unknown) => (a as { role?: unknown })?.role === 'clone'
+      // The attestations the panel reads after the claim.
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.IDENTITY_ATTESTATIONS_GET) return
+        const mine = (step.result as { attestations?: unknown[] })?.attestations
+        const theirs = (base.result as { attestations?: unknown[] })?.attestations
+        if (!mine || !theirs || mine.some(isClone)) return
+        if (!same(mine, theirs.filter((a) => !isClone(a)))) return
+        step.result = clone(base.result)
+        n++
+      })
+      for (const { file, rows } of table(d, 'adf_attestations')) {
+        const base = (e.state.adf[file]?.tables.adf_attestations?.rows ?? []) as Row[]
+        const withoutIds = (r: Row[]) => r.map(({ id: _id, ...rest }) => rest)
+        if (rows.some(isClone) || !base.some(isClone)) continue
+        if (!same(withoutIds(rows), withoutIds(base.filter((r) => !isClone(r))))) continue
+        setRows(d, file, 'adf_attestations', clone(base))
+        n++
+      }
+      for (const { rows } of table(d, 'adf_meta')) {
+        const want = Object.values(e.state.adf).flatMap((dump) => (dump.tables.adf_meta?.rows ?? []) as Row[]).find((r) => r.key === 'adf_did_history')
+        if (!want || rows.some((r) => r.key === 'adf_did_history')) continue
+        rows.push(clone(want))
+        rows.sort((a, b) => String(a.key).localeCompare(String(b.key)))
+        n++
+      }
+      return n
+    },
+  },
+  {
+    id: 'w5a:restore-delegation-date',
+    ws: 'W5-A',
+    scenarios: ['owner-import'],
+    path: 'runtimeDelegation: IDENTITY_OWNER_STATUS results after the restore, and adf-settings.json',
+    what: 'Visible: after restoring the same owner, embedded Studio re-signs its runtime delegation, so Settings → Identity shows a new signing date and signature; the daemon keeps the delegation it adopted from Studio (§5.3: only Studio writes its runtime identity), still valid, with the old date. W5-A decides: the daemon re-signs, or Studio rewrites the studio-runtime entry after a restore (W4-A).',
+    apply(d, e) {
+      let n = 0
+      const ORIGINAL = '<sig:runtime-delegation>'
+      type Delegation = { issuer?: unknown; subject?: unknown; role?: unknown; signature?: unknown; issued_at?: unknown }
+      const swap = (mine: Delegation | undefined, theirs: Delegation | undefined): Delegation | undefined => {
+        if (!mine || !theirs || mine.signature !== ORIGINAL || theirs.signature === ORIGINAL) return undefined
+        if (mine.issuer !== theirs.issuer || mine.subject !== theirs.subject || mine.role !== theirs.role) return undefined
+        if (!/^<sig:valid#\d+>$/.test(String(theirs.signature))) return undefined
+        n++
+        return clone(theirs)
+      }
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.IDENTITY_OWNER_STATUS) return
+        const r = step.result as { runtimeDelegation?: Delegation }
+        const next = swap(r?.runtimeDelegation, (base.result as { runtimeDelegation?: Delegation })?.runtimeDelegation)
+        if (next) r.runtimeDelegation = next
+      })
+      const settings = d.state.userDataJson['adf-settings.json'] as { runtimeDelegation?: Delegation } | undefined
+      const baseSettings = e.state.userDataJson['adf-settings.json'] as { runtimeDelegation?: Delegation } | undefined
+      const next = swap(settings?.runtimeDelegation, baseSettings?.runtimeDelegation)
+      if (next && settings) settings.runtimeDelegation = next
       return n
     },
   },
@@ -417,6 +491,47 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
+    id: 'mode:redacted-provider-keys',
+    ws: 'mode',
+    scenarios: ['provider-round-trip', 'agent-provider-key'],
+    path: 'steps: providers[].apiKey in SETTINGS_GET results and in the SETTINGS_SET args that write them back; the PROVIDER_CREDENTIAL_SET value of "Copy app key"',
+    what: 'The daemon answers app provider keys as __redacted__ (§4.2) and the renderer writes back what it read; the daemon keeps the stored key and copies the app key itself, so the persisted keys are the same.',
+    apply(d, e) {
+      const REDACTED = '__redacted__'
+      let n = 0
+      // `__redacted__` where embedded has a real key: `apiKey` of an entry of a
+      // `providers` list at the same index (the settings object's), nothing else.
+      const swapProviders = (dv: unknown, ev: unknown): void => {
+        const mine = (dv as { providers?: unknown } | null)?.providers
+        const theirs = (ev as { providers?: unknown } | null)?.providers
+        if (!Array.isArray(mine) || !Array.isArray(theirs)) return
+        mine.forEach((entry, i) => {
+          const base = theirs[i] as { id?: unknown; apiKey?: unknown } | undefined
+          const p = entry as { id?: unknown; apiKey?: unknown } | null
+          if (!p || p.apiKey !== REDACTED || !base || base.id !== p.id) return
+          if (typeof base.apiKey !== 'string' || base.apiKey === '' || base.apiKey === REDACTED) return
+          p.apiKey = base.apiKey
+          n++
+        })
+      }
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
+        if (step.channel === IPC.SETTINGS_GET) swapProviders(step.result, base.result)
+        if (step.channel === IPC.SETTINGS_SET) swapProviders(step.args[0], base.args[0])
+        if (step.channel === IPC.PROVIDER_CREDENTIAL_SET) {
+          const a = step.args[0] as { value?: unknown } | undefined
+          const b = base.args[0] as { value?: unknown } | undefined
+          if (a?.value === REDACTED && typeof b?.value === 'string' && b.value !== REDACTED) {
+            step.args = [{ ...a, value: b.value }, ...step.args.slice(1)]
+            n++
+          }
+        }
+      })
+      return n
+    },
+  },
+  {
     id: 'w4a:client-record-control-url',
     ws: 'W4-A',
     scenarios: [...ALL, ...MESH],
@@ -430,7 +545,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-host-record-lazy',
     ws: 'W0-C',
-    scenarios: ['open-agent'],
+    scenarios: ['open-agent', ...W3B_NO_AGENT],
     path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
     what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
     apply(d, e) {
@@ -444,7 +559,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-lease-agent-id',
     ws: 'W0-C',
-    scenarios: ['chat-tool-call', 'fleet-map'],
+    scenarios: ['chat-tool-call', ...W3B_RUNNING, 'fleet-map'],
     path: 'state.leases: the agent lease\'s agentId',
     what: 'Bug: the daemon\'s agent lease records agentId null.',
     apply(d, e) {

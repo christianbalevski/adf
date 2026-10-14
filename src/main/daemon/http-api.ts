@@ -51,6 +51,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { safeJsonStringify } from './sse-wire'
 import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import { FileOpError, leaseHolderElsewhere, requireAdfPath } from './file-ops'
+import { convertOwnLegacyPassword } from '../services/envelope-actions'
 import { readFileProviderConfig } from './path-agent-ops'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
 
@@ -2018,7 +2019,8 @@ export function createDaemonHttpApi(
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.password !== 'string') return badRequest(reply, 'password is required')
     try {
-      return runtime.unlockAgentIdentityPassword(request.params.id, request.body.password, clientSessionOf(request))
+      const unlocked = runtime.unlockAgentIdentityPassword(request.params.id, request.body.password, clientSessionOf(request))
+      return { ...unlocked, converted: await convertOwnLegacyFile(runtime, opts, request.params.id, request.body.password) }
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -2560,8 +2562,32 @@ function clientSessionOf(request: { headers: Record<string, string | string[] | 
   return holder && DOCUMENT_HOLDER_FORMAT.test(holder) ? { holder } : {}
 }
 
-/** Routes a document write never blocks: start takes the lease itself; stop and unlock write nothing of the file's. */
-const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/agents/:id/unload', '/agents/:id/identity/password/unlock'])
+/**
+ * After an unlock: the owner's own legacy whole-file-password file is
+ * converted, as Studio's IDENTITY_PASSWORD_UNLOCK does
+ * (envelope-actions.ts convertOwnLegacyPassword): password removed (the
+ * file's key forgotten everywhere), keys and envelopes minted, the same
+ * password kept as the credentials share password. Not while the owner
+ * identity is not ready, and not for a file another runtime runs (it is
+ * open here for reading only). True when converted.
+ */
+async function convertOwnLegacyFile(runtime: RuntimeService, opts: DaemonHttpApiOptions, agentId: string, password: string): Promise<boolean> {
+  const identity = opts.identity
+  const target = runtime.getAgentWorkspace(agentId)
+  if (!identity?.isReady() || !target?.derivedKey || !target.filePath) return false
+  const filePath = target.filePath
+  if (!target.running && await leaseHolderElsewhere(runtime.agentLeaseRegistry, filePath)) return false
+  const converted = convertOwnLegacyPassword(target.workspace, target.derivedKey, password, {
+    svc: identity.service,
+    onPasswordRemoved: () => runtime.forgetFileDerivedKey(filePath),
+    label: '[ADF Daemon] Unlock:',
+  })
+  if (converted) console.log(`[ADF Daemon] Converted the legacy file password of ${filePath} to envelopes; the password is kept as its share password`)
+  return converted
+}
+
+/** Routes a document write never blocks: start takes the lease itself; stop and unlock write nothing of the file's; reveal is a read. */
+const LEASE_CHECK_EXEMPT = new Set(['/agents/:id/start', '/agents/:id/stop', '/agents/:id/unload', '/agents/:id/identity/password/unlock', '/agents/:id/identity/reveal'])
 
 /**
  * Open documents (design D4) in the HTTP layer:

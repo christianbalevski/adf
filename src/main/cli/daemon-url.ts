@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { daemonSettingsDir, readDaemonToken } from '../daemon/daemon-token'
-import { readLocalProof } from '../daemon/local-access'
+import { isLocalOnlyRoute, readLocalProof } from '../daemon/local-access'
 import type { DaemonCredentials } from '../../shared/daemon-client/client'
 
 export const DEFAULT_DAEMON_PORT = 7385
@@ -81,11 +81,8 @@ export function resolveDaemonToken(explicit?: string, env: NodeJS.ProcessEnv = p
   return url ? localDaemonToken(url, env) : undefined
 }
 
-/** Routes the daemon answers for local callers only (local-access.ts). */
-export function isLocalOnlyRoute(path: string): boolean {
-  const p = path.split('?')[0]
-  return p === '/daemon/shutdown' || /^\/identity\/(create|restore|import|unlock|lock|confirm-backup)$/.test(p)
-}
+/** Routes that take this machine's local proof (local-access.ts). */
+export { isLocalOnlyRoute }
 
 /**
  * X-ADF-Local-Proof for a local-only route of this machine's daemon
