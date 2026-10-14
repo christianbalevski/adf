@@ -30,16 +30,43 @@ export async function revealValues(client: DaemonClient, filePath: string, prefi
   return out
 }
 
+/** Edit distance, capped: `max + 1` once it is certainly larger. */
+function editDistance(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = row
+  }
+  return prev[b.length]
+}
+
 /**
- * Remote mode: a credential write whose value is or starts with the
- * placeholder. The untouched placeholder of a key the file stores keeps the
- * stored value (`keep`); anything else built from it cannot be saved, and
- * says so instead of storing the placeholder as the secret: an edited
- * placeholder (`__redacted__abc`), or the placeholder under a key the file
- * does not store (a renamed key). Null for an ordinary value.
+ * A value made from the placeholder rather than typed: it contains the
+ * placeholder, is a piece of it (backspaced: `__redacted_`), or is it with a
+ * character or two changed (`__redaXcted__`). No real secret looks like that.
+ */
+export function isEditedPlaceholder(value: string): boolean {
+  if (value === REDACTED_VALUE) return false
+  if (value.includes(REDACTED_VALUE)) return true
+  if (value.length >= 6 && REDACTED_VALUE.includes(value)) return true
+  return value.length >= 6 && editDistance(value, REDACTED_VALUE, 2) <= 2
+}
+
+/**
+ * Remote mode: a credential write made from the placeholder (W3-C follow-up:
+ * the exact placeholder is compared, not a prefix). The untouched
+ * placeholder of a key the file stores keeps the stored value (`keep`);
+ * anything else built from it cannot be saved, and says so instead of
+ * storing the placeholder as the secret: an edited placeholder
+ * (`__redacted__abc`, a backspaced `__redacted_`), or the placeholder under
+ * a key the file does not store (a renamed key). Null for an ordinary value.
+ * The credential form also replaces the placeholder with what the user
+ * types (renderer utils/placeholder-field.ts), so an edit never keeps it.
  */
 export function placeholderWrite(value: string, stored: boolean, envKey: string): { keep: true } | { error: string } | null {
-  if (!value.startsWith(REDACTED_VALUE)) return null
+  if (value !== REDACTED_VALUE && !isEditedPlaceholder(value)) return null
   if (value === REDACTED_VALUE && stored) return { keep: true }
   return {
     error: value === REDACTED_VALUE

@@ -223,6 +223,10 @@ describe('credential values: local mode reads them, a remote daemon never sends 
         success: false,
         error: 'RENAMED_KEY has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for RENAMED_KEY.',
       })
+      // Exact placeholder only (W4-B): a backspaced or mid-edited placeholder is refused too, never saved as the secret.
+      for (const edited of ['__redacted_', '__redac', '__redaXcted__', '__redcted__', 'x__redacted__']) {
+        expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: edited }), edited).toMatchObject({ success: false, error: expect.stringMatching(/shown as a placeholder/) })
+      }
       expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' })).toEqual({ success: true })
       expect(bodies).toEqual([{ npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' }])
     })
