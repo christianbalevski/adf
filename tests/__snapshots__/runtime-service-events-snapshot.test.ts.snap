@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`RuntimeService umbilical /events output > is unchanged for load, startup turn, chat turn, state change and unload 1`] = `
+"agent.loaded source=system:lifecycle {autostart,filePath,handle,name}
+context.injected source=agent:<id> {bytes,category,filePath}
+agent.state.changed source=agent:<id> state=thinking {filePath,state}
+llm.completed source=agent:<id> {cache_read_tokens,cache_write_tokens,call_source,duration_ms,input_tokens,model,output_tokens,provider,reasoning_tokens,stop_reason,turn_id}
+turn.completed source=agent:<id> {content,filePath,seq}
+agent.state.changed source=agent:<id> state=idle {filePath,state}
+agent.state.changed source=agent:<id> state=thinking {filePath,state}
+llm.completed source=agent:<id> {cache_read_tokens,cache_write_tokens,call_source,duration_ms,input_tokens,model,output_tokens,provider,reasoning_tokens,stop_reason,turn_id}
+turn.completed source=agent:<id> {content,filePath,seq}
+agent.state.changed source=agent:<id> state=idle {filePath,state}
+agent.state.changed source=system:unknown state=hibernate {filePath,state}
+agent.state.changed source=system:unknown state=stopped {filePath,state}
+agent.unloaded source=system:lifecycle {filePath}"
+`;
