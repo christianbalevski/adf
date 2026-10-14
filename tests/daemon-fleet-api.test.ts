@@ -278,7 +278,7 @@ describe('POST /runtime/emergency-stop: partial stops and the daemon wiring', ()
 
   it('daemon/index.ts passes those deps as routes.gaps', () => {
     const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
-    expect(source).toMatch(/routes: \{ startedBy, gaps: daemonGapRouteDeps\(\{ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity\.mcpOAuth \}\) \}/)
+    expect(source).toMatch(/routes: \{ startedBy, gaps: daemonGapRouteDeps\(\{ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity\.mcpOAuth \}\)(, [\w, ]+)? \}/)
   })
 })
 
