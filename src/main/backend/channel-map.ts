@@ -253,8 +253,7 @@ export const CHANNEL_MAP = {
   // --- Models and settings ---------------------------------------------------
   [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { gaps: [OPEN_DOC, PATH_FILE], note: 'filePath maps to agentId for ADF-stored providers.' }),
   [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings'], {
-    gaps: [gap('W2-C', 'run the client-key migrations (migrateUiFontSystemDefault, settings-migrations.ts:101-117) on studio-client-settings.json; the daemon file never sees them')],
-    note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__.' }),
+    note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
   [IPC.SETTINGS_SET]: proxied('invoke', ['PATCH /settings'], {
     gaps: [gap('W1-A', 'apply sandboxMaxWorkers live (read once at boot, daemon/index.ts:183), like the prompt keys')],
     note: 'Split by settingsKeyClass(): client keys go to studio-client-settings.json, backend keys to the daemon. menuBarEnabled applies in Studio main.',
@@ -336,8 +335,8 @@ export const CHANNEL_MAP = {
   [IPC.DIRECTORY_STOP_ALL]: proxied('invoke', ['POST /agents/:id/stop'], { gaps: [FS_BROWSE] }),
 
   // --- Tools and token usage -------------------------------------------------
-  [IPC.TOOLS_DESCRIPTIONS]: proxied('invoke', ['GET /runtime/tools/descriptions'], {
-    gaps: [gap('W2-C', 'fold the open agent\'s own tools (its MCP and adapter tools) into the catalog in provider format; the route returns built-in and stubbed runtime tools only')],
+  [IPC.TOOLS_DESCRIPTIONS]: proxied('invoke', ['GET /runtime/tools/descriptions', 'GET /agents/:id/tools'], {
+    note: 'The handler folds the open agent\'s own tools (GET /agents/:id/tools, those with a schema) into the route\'s built-in and stubbed runtime tools, in provider format; a built-in wins a name clash.',
   }),
   [IPC.TOKEN_USAGE_GET]: proxied('invoke', ['GET /runtime/usage']),
   [IPC.TOKEN_USAGE_CLEAR]: proxied('invoke', ['DELETE /runtime/usage']),

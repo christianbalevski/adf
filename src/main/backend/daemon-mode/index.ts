@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain as electronIpcMain, type IpcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, type IpcMain } from 'electron'
 import { join } from 'node:path'
 import type { StudioBackendMode } from '../../../shared/types/backend.types'
 import type { AgentStatus, AgentSummary, DaemonClient } from '../../../shared/daemon-client'
@@ -178,8 +178,20 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   let clientSession: ClientSession | null = null
   const reconnect = (): void => {
+    const state = connection.state
+    if (state.state === 'failed' || !clientSession) {
+      // Nothing to reconnect: the connector itself failed this session.
+      log.warn('[Backend] Reconnect requested, but Studio found no daemon to connect to this session; restart Studio to try again')
+      void dialog.showMessageBox({
+        type: 'warning',
+        message: 'Studio has no ADF daemon to reconnect to.',
+        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${RECOVERY_HINT}`,
+        buttons: ['OK'],
+      }).catch(() => {})
+      return
+    }
     log.log('[Backend] Reconnecting to the ADF daemon (requested)')
-    clientSession?.reconnect()
+    clientSession.reconnect()
   }
   initApplicationMenu(clientSettings, {
     logFile: () => connection.logFile,

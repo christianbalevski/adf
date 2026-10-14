@@ -6,7 +6,7 @@ This list groups the channel map's gaps by the workstream that closes them. A ga
 
 `tests/backend/channel-map.test.ts` fails when a row here differs from the map (workstream, need text or channel list), and when an entry's `note` describes embedded behaviour instead of recording it as a gap. Change the map first, then regenerate the rows.
 
-The D2 test "every `proxied` channel has a daemon-mode handler" is W2-C's: it needs the handlers W2-C and W3 register. W0-A checks only that every `proxied` channel has a route or a gap.
+The D2 test "every `proxied` channel has a daemon-mode handler" is W2-C's (`tests/backend/daemon-mode-handlers.test.ts`). W0-A checks only that every `proxied` channel has a route or a gap.
 
 Counts at W0-A: 279 channels (278 in `IPC`, 1 raw string channel). 217 `proxied` invoke channels, 50 of them with no daemon route today; 16 `proxied` push channels, all fed from the client stream (W2-B); 7 `remote-variant`, 7 `remote-unsupported`, 32 `local`.
 
@@ -25,7 +25,7 @@ Added beyond that list: the §6 recipe rows for every start path (W1-B: full mes
 
 - W2-A gaps that change existing routes edit `src/main/daemon/http-api.ts`, which W2-A owns in wave 2.
 - The W1-A `sandboxMaxWorkers` gap and the W1-B discovery gap are read or wired in `src/main/daemon/index.ts`, which neither workstream owns.
-- The W2-C gap (client-key migrations on `studio-client-settings.json`) follows from `uiFontSystemDefaultApplied` being a client key.
+- The W2-C gap (client-key migrations on `studio-client-settings.json`) followed from `uiFontSystemDefaultApplied` being a client key; closed by W2-C.
 ## W1-A
 | Need | Channels |
 |---|---|
@@ -123,10 +123,7 @@ All W1-D gaps are closed. The routes are in the channel map; see "Route notes fr
 | client-stream push topic `adapter_install`, fed by progress callbacks in the install route | `ADAPTER_INSTALL_PROGRESS` |
 | client-stream push topic `adapter_status` | `ADAPTER_STATUS_CHANGED` |
 ## W2-C
-| Need | Channels |
-|---|---|
-| run the client-key migrations (migrateUiFontSystemDefault, settings-migrations.ts:101-117) on studio-client-settings.json; the daemon file never sees them | `SETTINGS_GET` |
-| fold the open agent's own tools (its MCP and adapter tools) into the catalog in provider format; the route returns built-in and stubbed runtime tools only | `TOOLS_DESCRIPTIONS` |
+All W2-C gaps are closed: Studio main runs the client-key migrations on `studio-client-settings.json`, and the `TOOLS_DESCRIPTIONS` handler folds in the open agent's own tools. See "Daemon-mode handlers after W2-C" below.
 
 ## Route notes from W1-D
 
@@ -135,8 +132,59 @@ What the daemon-mode handlers (W2-C, W3) need to know about the W1-D routes. Eac
 - **Wrapped answers.** Two IPC handlers answer a value JSON cannot carry as a body: `APPROVALS_GET_INPUT` (the raw input, or undefined) and `IDENTITY_DRAFT_DISCARD` (a boolean). Their routes answer `{ input }` (`{}` for undefined) and `{ discarded }`; the handlers unwrap them.
 - **Addressing.** The approvals and fleet routes take file paths, as the IPC arguments and the approvals hub do. The per-agent identity routes (`/agents/:id/claim`, `/attestations`, `/envelope*`) take an agent id and reach loaded agents only; open documents come with W2-A (`routes/agent-resolver.ts` is the one place to extend). They have no derived key until W1-A exposes one, so a whole-file-password file reads its password rows as locked and claim refuses it.
 - **`MCP_GET_SERVER_LOGS`** needs the open agent's id (`agentId`) for live logs; without it the daemon answers the logs it kept from probe, test and agent runs.
-- **`TOOLS_DESCRIPTIONS`** returns the built-in and stubbed runtime tools. The open agent's own tools are not in it (a W2-C gap above).
+- **`TOOLS_DESCRIPTIONS`** returns the built-in and stubbed runtime tools. The daemon-mode handler folds in the open agent's own tools from `GET /agents/:id/tools` (W2-C).
 - **Client duties.** The fleet-burn totals are a client key: the handler calls `POST /fleet/burn/hydrate` once per session with `fleetMapState.burnTotals`. The registration test's interactive steps are polled: while its job runs, the handler polls `GET /admin/mcp/interactions?jobId=`, opens `open_url` steps with `shell.openExternal`, shows the native Continue dialog for `confirm` steps and answers `POST /admin/mcp/interactions/:interactionId/continue`. A confirm nobody answers in 5 minutes reads `timed_out` and is named in the result's notes.
 - **Jobs.** Work that can take minutes answers `202 { jobId, job }`: `POST /admin/mcp/registration-test` and `POST /admin/mcp/python-runtime`. Poll `GET /jobs/:jobId` until `state` leaves `running`; the job's `result` is the IPC result. `POST /jobs/:jobId/cancel` stops it. Finished jobs are kept 10 minutes. New long-running routes use the same registry (`src/main/daemon/jobs.ts`).
 - **Recent tools.** `MESH_GET_RECENT_TOOLS` uses `GET /fleet/recent-tools`, which adds loaded agents the mesh does not track. `GET /network/mesh/recent-tools` (mesh-registered agents only) stays: it is part of the published API the CLI and the terminal app use.
 - **Emergency stop** answers `success: false` with `skipped` and `failed` when any part was left running; the handler shows them.
+
+## Daemon-mode handlers after W2-C
+
+`registerDaemonModeHandlers` (`src/main/backend/daemon-mode/index.ts`) registers a handler for every invoke and send channel of the channel map, except the 12 local channels main/index.ts and the services register in both modes (`REGISTERED_OUTSIDE`). `tests/backend/daemon-mode-handlers.test.ts` is the D2 test: every `proxied`, `remote-variant` and `remote-unsupported` channel has a daemon-mode handler, and every push channel fed from the client stream has a bridge mapping (`PUSH_TOPICS` in `event-bridge.ts`).
+
+Implemented by W2-C (24): `FILE_OPEN`, `FILE_CLOSE`, `FILE_GET_CURRENT`, `DOC_GET_BATCH`, `DOC_GET_HEADER`, `DOC_GET_CHAT`, `DOC_READ_INTERNAL_FILE`, `AGENT_START`, `AGENT_STOP`, `AGENT_STATUS`, `AGENT_INVOKE`, `SETTINGS_GET`, `SETTINGS_SET`, `APPROVALS_LIST`, `APPROVALS_RESOLVE`, `APPROVALS_GET_INPUT`, `APPROVALS_GET_PENDING_REVEAL`, `TOOLS_DESCRIPTIONS`, `TEMPLATES_MIGRATION_SEEN`, `DOC_SET_CHAT`, `IDENTITY_PASSWORD_SET`, `IDENTITY_PASSWORD_CHANGE`, `APP_GET_VERSION`, `APP_SET_BADGE_COUNT`.
+
+Every other channel (218) is registered with a handler that throws `<CHANNEL> is not available in daemon mode yet: <workstream>` (`pending.ts`): W3-A 86 (files, documents, agent runtime, review, templates, tracked and bulk directories, identity drafts, the share drag), W3-B 44 (models, providers, subscription auth, identity), W3-C 40 (MCP, adapters, sandbox packages, skills, registries), W3-D 48 (mesh, fleet, dashboard, token usage, compute, firewall, vitals, emergency stop). A W3 workstream adds its table to `handlers/index.ts`; the channel then leaves the pending list.
+
+Inside the implemented handlers, a step whose daemon route has not landed throws the same error naming the route's workstream; nothing falls back to embedded state:
+
+| Step | Workstream |
+|---|---|
+| Hold a file as an open document and release it (FILE_OPEN, FILE_CLOSE); until then FILE_OPEN of a file that is not running succeeds without its contents, logged once | W2-B |
+| DOC_GET_BATCH, DOC_GET_HEADER, DOC_GET_CHAT, DOC_READ_INTERNAL_FILE of a file that is not running in the daemon | W2-A |
+| `lastTokens` and `contextBaseline` in DOC_GET_BATCH (answered `undefined` / `null`, logged once) | W2-A |
+| AGENT_START: start on the open document with `hasUserMessage` and the foreground startup dispatch; today it loads the file (`POST /agents/load`), which starts it without the startup turn; no `sessionId` in the result | W2-A, W1-A |
+| AGENT_INVOKE with image or file content blocks | W2-A |
+| FILE_OPEN with the native dialog in remote mode | W4-B |
+| `adf-file://` (answers 501) | W1-E |
+
+The client stream is the interim `GET /events` adapter (`createEventsAdapterSession`). It forwards only the umbilical events with an exact executor counterpart (`agent.state.changed`, `turn.completed`, `agent.error`) and `agent.loaded` / `agent.unloaded`. Not delivered until W2-B: text and thinking deltas, tool call start and result, `chat_updated`, `trigger_message`, `context_injected`, `response_metadata`, `loop_seq`, document and file updates, approvals, asks, suspend, every push topic, and the host lifecycle events other than load and unload (W1-A, W2-B).
+
+Follow-ups for other workstreams:
+
+- W2-B: the push frame payload of each topic is the payload of its IPC channel (`PUSH_TOPICS`); `host` frames carry `state` and `handle` for `agent_started`; executor frames carry the chat `turnId` (AGENT_INVOKE waits on it). Implement `ClientSession` (`client-stream.ts`) over `/client/sessions` and pass it as `createSession`.
+- W0-C / W4-A: `registerClient` has no daemon URL, so the client record's `controlUrl` names the default port 7385 whatever port the daemon uses.
+- W0-D: the daemon's host record and the agent lease carry `version: null`.
+- W4-A: the quit path ends the client session and leaves the daemon running; the R4 behaviour (stop a Studio-started daemon unless `keepDaemonRunning`) and the version-mismatch choice of §8.2 (shown today as the connection-failure dialog) are W4-A's.
+
+## Parity diffs after W2-C
+
+`tests/parity/recordings/<scenario>.daemon.txt` against `<scenario>.embedded.txt`, for open-agent, start-agent and chat-tool-call. No normalizer rule hides any of them. Differences that remain and who closes them:
+
+| Difference | Scenarios | Workstream |
+|---|---|---|
+| DOC_GET_BATCH and both DOC_READ_INTERNAL_FILE calls throw (file not running, no open document) | all | W2-A, W2-B |
+| On open the daemon does not mint the agent's identity: `adf_identity` and `adf_attestations` empty, no `adf_did`, `adf_owner_did`, `adf_runtime_did` meta, no `adf_loop_tools_backfilled`, `adf_clean_close` left set, no `-wal`/`-shm` while open | all | W2-A |
+| AGENT_START result has no `sessionId` | start-agent, chat-tool-call | W2-A |
+| No startup turn on start (no `trigger_message`, no model call, empty loop): start with the foreground startup dispatch | start-agent | W2-A, W1-A |
+| One provider preflight request fewer (Studio's `validateConfig` check on a client-initiated start) | chat-tool-call | W1-A |
+| AGENT_EVENT carries only `state_changed`, `turn_complete`, `error`: no deltas (streaming check fails), tool start/result, `context_injected`, `response_metadata`, `file_updated`, `loop_seq`, `chat_updated`; AGENT_INVOKE therefore resolves after 5 pushes, not 17 | start-agent, chat-tool-call | W2-B |
+| AGENT_STOP pushes `state_changed: stopped` (the executor's own event), which the embedded foreground stop does not send | start-agent | W2-B (focus and lifecycle), triage W5-A |
+| `adf_effective_runtime` meta records host `daemon`, not `studioForeground` | start-agent, chat-tool-call | by design; triage W5-A |
+| Help menu has "Open Daemon Log" (disabled until connected) | all | by design (§8.1) |
+| `recentFiles` and the other client keys live in `studio-client-settings.json`; `adf-settings.json` has no `recentFiles` | all | by design (§4.2) |
+| Lease registry: Studio is `clients/<pid>.json` (`studio-client`), the daemon `hosts/<pid>.json`; the agent lease is held by the daemon | all | by design (§10.3) |
+| `user-data` has the daemon's `runtime-enc-key`, `runtime-enc-key.pub`, `daemon-local-proof-<port>`; no `templates/` until the template service is first used; a daemon scratch root under `temp/` | all | by design; triage W5-A |
+| The persisted turn checkpoint and context baseline rows follow from the missing startup turn and deltas | start-agent | W2-A, W2-B |
+
+The rows marked "by design" are differences in where daemon mode keeps things. Whether the harness compares them per mode or by contents is a W5-A decision; W2-C does not normalize them away.
