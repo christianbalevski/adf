@@ -20,10 +20,10 @@
           type: "openai-compatible"
   result:
     sources:
-      parity-llm: "agent"
+      parity-llm: "locked"
 3. shutdown  [pushes 0→0]
 
-## local calls (2)
+## local calls (1)
 #1 Menu.setApplicationMenu:
   -
     -
@@ -113,16 +113,6 @@
       submenu:
         -
           label: "ADF Studio Documentation"
-#2 dialog.showMessageBox:
-  -
-    buttons:
-      - "Replace"
-      - "Cancel"
-    cancelId: 1
-    defaultId: 1
-    detail: "It cannot be read or overwritten until the credentials unlock (the share password on the Identity tab, or your owner identity). Replace it anyway? The old value is discarded unread."
-    message: "The saved \"provider:parity-llm:apiKey\" of this agent is sealed, and its credentials are locked on this machine."
-    type: "warning"
 
 ## llm requests (0)
 
@@ -555,25 +545,15 @@ hosts/<pid:this-process>.json:
   value: "<key-bytes#2> len=539"
 #3:
   code_access: 0
-  encryption_algo: "plain"
+  encryption_algo: "env:credentials"
   kdf_params: null
   purpose: "provider:parity-llm:apiKey"
   salt: null
-  value: "<key-bytes#3> len=13"
+  value: "<key-bytes#3> len=41"
 
 ## state: agents/agent-1.adf adf_inbox (0 rows; id, message_id, from, to, reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, source, source_context, sent_at, received_at, status, original_message)
 
-## state: agents/agent-1.adf adf_logs (1 rows; id, level, origin, event, target, message, data, created_at, loop)
-#1:
-  created_at: "<t>"
-  data: null
-  event: "credential_replaced"
-  id: 1
-  level: "warn"
-  loop: null
-  message: "Owner replaced locked sealed credential \"provider:parity-llm:apiKey\" (the old value was discarded unread); the new value is stored unsealed until the credentials envelope unlocks."
-  origin: "runtime"
-  target: "provider:parity-llm:apiKey"
+## state: agents/agent-1.adf adf_logs (0 rows; id, level, origin, event, target, message, data, created_at, loop)
 
 ## state: agents/agent-1.adf adf_loop (0 rows; seq, role, content_json, model, tokens, created_at, ord, loop)
 

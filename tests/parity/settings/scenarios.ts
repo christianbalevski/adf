@@ -140,6 +140,6 @@ export const ownerSealedKeyScenario: ParityScenario = {
   },
 }
 
-export const SETTINGS_SCENARIOS: readonly ParityScenario[] = [providerRoundTripScenario, agentProviderKeyScenario, subscriptionStatusScenario, lockedCredentialsScenario]
+export const SETTINGS_SCENARIOS: readonly ParityScenario[] = [providerRoundTripScenario, agentProviderKeyScenario, subscriptionStatusScenario, lockedCredentialsScenario, ownerSealedKeyScenario]
 /** Run against embedded Studio only, each with the reason (above). */
-export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = [ownerSealedKeyScenario]
+export const SETTINGS_EMBEDDED_ONLY: readonly ParityScenario[] = []

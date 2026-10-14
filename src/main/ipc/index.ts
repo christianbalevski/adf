@@ -7565,6 +7565,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
       if (!workspace) return { success: false, error: 'Cannot open file' }
+      // A temp-open starts locked: run the unlock cascade first (as the MCP and
+      // adapter credential sets do), so the owner's own sealed key is replaced
+      // sealed and only a file this install cannot open asks (Rule E3).
+      if (workspace !== currentWorkspace) unlockWorkspaceEnvelopes(workspace)
       try {
         const purpose = `provider:${args.providerId}:apiKey`
         const derivedKey = derivedKeyCache.get(args.filePath) ?? null
