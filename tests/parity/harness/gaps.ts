@@ -87,6 +87,10 @@ function table(rec: ComparableRecording, name: string): Array<{ file: string; ro
   return Object.entries(rec.state.adf).flatMap(([file, dump]) => (dump.tables[name] ? [{ file, rows: dump.tables[name].rows as Row[] }] : []))
 }
 const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
+function withoutPushes(step: StepRecord): unknown {
+  const { pushes: _p, ...rest } = step as StepRecord & { pushes: unknown }
+  return rest
+}
 
 /**
  * Walk a daemon value and the embedded value at the same place: `visit`
