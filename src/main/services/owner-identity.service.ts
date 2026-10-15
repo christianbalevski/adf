@@ -765,54 +765,61 @@ export class OwnerIdentityService {
       return { keysGenerated: false, sealed: 0 }
     }
 
-    const recipients = this.getEnvelopeRecipients()
-    if (recipients) {
-      if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
-      else this.unlockWorkspaceEnvelopes(workspace)
-      // Heal files claimed before the dead-envelope purge existed: identity
-      // is ours (unlocked) but the credentials envelope is dead-foreign —
-      // drop it and re-provision so new credentials seal again.
-      if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
-        workspace.provisionEnvelopes(recipients)
+    // One BEGIN IMMEDIATE transaction: the checks below (envelopes, signing
+    // keys) and the writes they decide on are atomic against every other
+    // connection, so two runtimes provisioning the same file at once (the
+    // boot sweep and a lazy open elsewhere) cannot each mint envelopes or
+    // keys with the last writer winning; the second finds them and is a no-op.
+    return workspace.immediateTransaction(() => {
+      const recipients = this.getEnvelopeRecipients()
+      if (recipients) {
+        if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
+        else this.unlockWorkspaceEnvelopes(workspace)
+        // Heal files claimed before the dead-envelope purge existed: identity
+        // is ours (unlocked) but the credentials envelope is dead-foreign —
+        // drop it and re-provision so new credentials seal again.
+        if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
+          workspace.provisionEnvelopes(recipients)
+        }
+        // Fresh-provision path caches the DEK without going through
+        // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
+        this.ensureTrustedDaemonSlots(workspace)
+      } else {
+        console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
       }
-      // Fresh-provision path caches the DEK without going through
-      // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
-      this.ensureTrustedDaemonSlots(workspace)
-    } else {
-      console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
-    }
 
-    let keysGenerated = false
-    const stampAndAttest = () => {
-      if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
-      if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
-      issueOwnerAttestation(workspace, {
-        ownerDid: this.getOwnerDid(),
-        ownerPrivateKey: this.getOwnerSigningKey(),
-        runtimeDid: this.getRuntimeDid(),
-        runtimePrivateKey: this.getRuntimeSigningKey()
-      })
-    }
-    const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
-    if (signingRow === null) {
-      workspace.generateIdentityKeys(null, opts.adoptKeys)
-      keysGenerated = true
-      stampAndAttest()
-    } else if (
-      signingRow.encryption_algo === 'plain' &&
-      workspace.getDid() &&
-      !workspace.getMeta('adf_owner_did') &&
-      this.getOwnerSigningKey()
-    ) {
-      // A plain key minted where no owner key was available (a headless
-      // child from an older daemon, generate-keys without an owner): it is
-      // sealed below like any plain row, and gets the owner stamps and
-      // attestations it never received. Only reached for own/reviewed files.
-      stampAndAttest()
-    }
+      let keysGenerated = false
+      const stampAndAttest = () => {
+        if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+        if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+        issueOwnerAttestation(workspace, {
+          ownerDid: this.getOwnerDid(),
+          ownerPrivateKey: this.getOwnerSigningKey(),
+          runtimeDid: this.getRuntimeDid(),
+          runtimePrivateKey: this.getRuntimeSigningKey()
+        })
+      }
+      const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
+      if (signingRow === null) {
+        workspace.generateIdentityKeys(null, opts.adoptKeys)
+        keysGenerated = true
+        stampAndAttest()
+      } else if (
+        signingRow.encryption_algo === 'plain' &&
+        workspace.getDid() &&
+        !workspace.getMeta('adf_owner_did') &&
+        this.getOwnerSigningKey()
+      ) {
+        // A plain key minted where no owner key was available (a headless
+        // child from an older daemon, generate-keys without an owner): it is
+        // sealed below like any plain row, and gets the owner stamps and
+        // attestations it never received. Only reached for own/reviewed files.
+        stampAndAttest()
+      }
 
-    const sealed = workspace.sealPlainRowsIntoEnvelopes()
-    return { keysGenerated, sealed }
+      const sealed = workspace.sealPlainRowsIntoEnvelopes()
+      return { keysGenerated, sealed }
+    })
   }
 
   /**

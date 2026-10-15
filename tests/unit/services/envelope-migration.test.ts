@@ -229,6 +229,41 @@ describe('sweepEnvelopeMigration: files another runtime runs (W5-G)', () => {
   })
 })
 
+describe('ensureWorkspaceIdentity: atomic per file (W5-G)', () => {
+  it('a second connection provisioning the same file meanwhile cannot interleave; afterwards it is a no-op', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    AdfWorkspace.create(filePath, { name: 'agent-1' }).close()
+    const a = AdfWorkspace.open(filePath)
+    const b = AdfWorkspace.open(filePath)
+    try {
+      // B gives up at once instead of after 5 s when the file is write-locked.
+      ;(b.getDatabase() as unknown as { db: { pragma(s: string): unknown } }).db.pragma('busy_timeout = 0')
+      // Between A's check (no signing key) and its key generation, B runs its whole provisioning.
+      const generate = a.generateIdentityKeys.bind(a)
+      let bResult: unknown = null
+      vi.spyOn(a, 'generateIdentityKeys').mockImplementation((...args: Parameters<typeof a.generateIdentityKeys>) => {
+        try { bResult = svc.ensureWorkspaceIdentity(b) } catch (err) { bResult = err }
+        return generate(...args)
+      })
+      expect(svc.ensureWorkspaceIdentity(a).keysGenerated).toBe(true)
+      // A held the write lock from its first check: B could not write in between.
+      expect(String(bResult)).toMatch(/SQLITE_BUSY|database is locked/)
+      // Now B finds A's envelopes and keys: nothing to do, and it opens them.
+      expect(svc.ensureWorkspaceIdentity(b)).toEqual({ keysGenerated: false, sealed: 0 })
+      expect(b.getSigningKeys(null)).not.toBeNull()
+      expect(b.getDid()).toBe(a.getDid())
+      const atts = readAdfAttestations(b)
+      expect(atts.map((x) => x.role).sort()).toEqual(['operator', 'owner'])
+      expect(atts.every((x) => x.subject === a.getDid())).toBe(true)
+    } finally {
+      a.close()
+      b.close()
+    }
+  })
+})
+
 describe('review gating (mintKeys) + claimWorkspace (spec D11)', () => {
   it('mintKeys: false is unlock-only — an unreviewed file is not mutated', () => {
     const settings = makeSettings()

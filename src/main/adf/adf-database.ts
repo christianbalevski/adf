@@ -3753,6 +3753,16 @@ export class AdfDatabase {
     return this.db.transaction(fn)()
   }
 
+  /**
+   * `fn` in a BEGIN IMMEDIATE transaction: the file's write lock is taken
+   * before `fn` reads, so a check-then-write in it is atomic against every
+   * other connection (another process provisioning the same file). Inside a
+   * transaction already, a savepoint.
+   */
+  immediateTransaction<T>(fn: () => T): T {
+    return this.db.transaction(fn).immediate()
+  }
+
   // ===========================================================================
   // Inbox
   // ===========================================================================
