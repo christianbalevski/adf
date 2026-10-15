@@ -461,24 +461,24 @@ describe('the switch dialog\'s plan for every pair of modes (REM-19)', () => {
 
   it('E→L: the client keys and everything Studio holds move to the daemon, exactly as the boot handover does', async () => {
     studioHoldsEverything()
-    const plan = await planHandover('local', deps(), 'embedded')
+    const plan = await planHandover('local', deps())
     expect(ids(plan)).toEqual(['chatgpt', 'client-settings', 'mcp-oauth', 'owner-phrase', 'runtime-identity'])
     expect(changed(await runHandover('local', deps()))).toEqual(ids(plan))
   })
 
   it('E→R and L→R: client keys only', async () => {
     studioHoldsEverything()
-    expect(ids(await planHandover('remote', deps(), 'embedded'))).toEqual(['client-settings'])
+    expect(ids(await planHandover('remote', deps()))).toEqual(['client-settings'])
     await runHandover('local', deps())
     // The client keys already moved with the switch to local: nothing is left to move.
-    expect(ids(await planHandover('remote', deps(), 'local'))).toEqual([])
+    expect(ids(await planHandover('remote', deps()))).toEqual([])
     expect(changed(await runHandover('remote', deps()))).toEqual([])
   })
 
   it('L→E: what the daemon holds for Studio moves back', async () => {
     studioHoldsEverything()
     await runHandover('local', deps())
-    const plan = await planHandover('embedded', deps(), 'local')
+    const plan = await planHandover('embedded', deps())
     expect(ids(plan)).toEqual(['chatgpt', 'client-settings', 'mcp-oauth', 'runtime-identity'])
     expect(changed(await runHandover('embedded', deps()))).toEqual(ids(plan))
   })
@@ -486,7 +486,7 @@ describe('the switch dialog\'s plan for every pair of modes (REM-19)', () => {
   it('R→E after E→R: only the client keys; credentials stayed in Studio, so nothing "moves back"', async () => {
     studioHoldsEverything()
     await runHandover('remote', deps())
-    const plan = await planHandover('embedded', deps(), 'remote')
+    const plan = await planHandover('embedded', deps())
     expect(ids(plan)).toEqual(['client-settings'])
     expect(changed(await runHandover('embedded', deps()))).toEqual(['client-settings'])
     expect(studioTokens(SUBS[0]).exists()).toBe(true)
@@ -496,7 +496,7 @@ describe('the switch dialog\'s plan for every pair of modes (REM-19)', () => {
     studioHoldsEverything()
     await runHandover('local', deps())
     await runHandover('remote', deps())
-    const plan = await planHandover('embedded', deps(), 'remote')
+    const plan = await planHandover('embedded', deps())
     expect(ids(plan)).toEqual(['chatgpt', 'client-settings', 'mcp-oauth', 'runtime-identity'])
     expect(changed(await runHandover('embedded', deps()))).toEqual(ids(plan))
   })
@@ -504,14 +504,33 @@ describe('the switch dialog\'s plan for every pair of modes (REM-19)', () => {
   it('R→L after E→R: exactly what moves from Studio to the local daemon', async () => {
     studioHoldsEverything()
     await runHandover('remote', deps())
-    const plan = await planHandover('local', deps(), 'remote')
+    const plan = await planHandover('local', deps())
     expect(ids(plan)).toEqual(['chatgpt', 'mcp-oauth', 'owner-phrase', 'runtime-identity'])
     expect(changed(await runHandover('local', deps()))).toEqual(ids(plan))
   })
 
+  it('L→R→L: the runtime entry is current and nothing else is left in Studio, so nothing is listed and nothing changes', async () => {
+    studioHoldsEverything()
+    await runHandover('local', deps())
+    await runHandover('remote', deps())
+    const plan = await planHandover('local', deps())
+    expect(ids(plan)).toEqual([])
+    expect(changed(await runHandover('local', deps()))).toEqual([])
+  })
+
+  it('a missing record: the runtime entry is listed for deletion only while it is in the keychain', async () => {
+    studioHoldsEverything()
+    await runHandover('local', deps())
+    unlinkSync(join(dir, 'studio-handover.json'))
+    expect(ids(await planHandover('embedded', deps()))).toEqual(['client-settings', 'runtime-identity'])
+    expect(changed(await runHandover('embedded', deps()))).toEqual(['client-settings', 'runtime-identity'])
+    unlinkSync(join(dir, 'studio-handover.json'))
+    expect(ids(await planHandover('embedded', deps()))).toEqual([])
+  })
+
   it('to local without a runtime identity in Studio: the runtime key is not listed (nothing is written)', async () => {
     studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
-    const plan = await planHandover('local', deps(), 'remote')
+    const plan = await planHandover('local', deps())
     expect(ids(plan)).toEqual(['chatgpt', 'client-settings'])
     expect(changed(await runHandover('local', deps()))).toEqual(ids(plan))
   })

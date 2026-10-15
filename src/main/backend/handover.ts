@@ -624,8 +624,9 @@ export interface RuntimeEntrySync {
  * owner switch, a restore), it is re-signed with the owner phrase when one is
  * at hand, as embedded Studio's ensureRuntimeKey does. Unchanged values are
  * not rewritten. Also used after an owner import in daemon mode.
+ * `dryRun` (the switch dialog's plan): the same answer, nothing written.
  */
-export async function syncStudioRuntimeEntry(deps: HandoverDeps, opts: { ownerPhrase?: string | null } = {}): Promise<RuntimeEntrySync> {
+export async function syncStudioRuntimeEntry(deps: HandoverDeps, opts: { ownerPhrase?: string | null; dryRun?: boolean } = {}): Promise<RuntimeEntrySync> {
   if (!deps.daemonSecrets) return { outcome: 'skipped', detail: deps.daemonSecretsUnavailable ?? 'no keychain the daemon can read' }
   const settings = (await readJsonObject(deps.settingsPath)) ?? {}
   const ownerDid = typeof settings.ownerDid === 'string' ? settings.ownerDid : null
@@ -670,6 +671,7 @@ export async function syncStudioRuntimeEntry(deps: HandoverDeps, opts: { ownerPh
       if (isDeepStrictEqual(fields, { ...input })) return { outcome: 'unchanged', detail: `keychain entry ${account} is current` }
     } catch { /* rewrite a malformed entry */ }
   }
+  if (opts.dryRun) return { outcome: 'written', detail: `keychain entry ${account} would be written${valid ? '' : ' with a delegation re-signed by the current owner'}` }
   deps.daemonSecrets.set(account, serializeStudioRuntimeEntry(input))
   const check = verifyStudioRuntimeEntry(deps.daemonSecrets.get(account) ?? '', { ownerDid, runtimeDid, runtimeEncPublicKey })
   if (!check.ok) return { outcome: 'failed', detail: `keychain entry ${account} was written but does not verify (${check.reason}: ${check.detail})` }
@@ -690,7 +692,6 @@ function deleteStudioRuntimeEntry(deps: HandoverDeps, marker: HandoverMarker | n
   return result('deleted', `keychain entry ${account} deleted`)
 }
 
-/** Embedded Studio mirrors the owner phrase into the keychain when one exists; the daemon reads it there. */
 /** Whether mirrorOwnerPhrase would write: a keychain the daemon reads without the entry, and Studio's valid phrase of the owner on record. */
 function ownerPhraseToMirror(deps: HandoverDeps, settings: Json): boolean {
   if (!deps.daemonSecrets || deps.daemonSecrets.get(OWNER_MNEMONIC_ACCOUNT)) return false
@@ -702,6 +703,12 @@ function ownerPhraseToMirror(deps: HandoverDeps, settings: Json): boolean {
   }
 }
 
+/** Whether Studio's runtime entry is in the keychain the daemon reads (the way back to embedded deletes it). */
+function hasStudioRuntimeEntry(deps: HandoverDeps): boolean {
+  return !!deps.daemonSecrets && deps.daemonSecrets.get(studioRuntimeAccount(studioRuntimeScope(deps.settingsPath))) !== null
+}
+
+/** Embedded Studio mirrors the owner phrase into the keychain when one exists; the daemon reads it there. */
 async function mirrorOwnerPhrase(deps: HandoverDeps): Promise<HandoverItemResult> {
   const result = (outcome: HandoverOutcome, detail: string): HandoverItemResult => ({ id: 'owner-phrase', label: 'Owner phrase', outcome, detail })
   if (!deps.daemonSecrets) return result('kept', deps.daemonSecretsUnavailable ?? 'no keychain the daemon can read')
@@ -752,13 +759,13 @@ async function daemonSignIns(deps: HandoverDeps): Promise<SignIns> {
 
 /**
  * Read-only: what a switch to `target` would move, for the switch dialog;
- * exactly what runHandover at the next start does. `from` is the mode this
- * launch runs (REM-19): to or from remote moves client keys only, except that
- * credentials an earlier switch put in this computer's daemon stores come
- * back to Studio on the way to embedded (from local, or from remote after
- * local); a switch from remote to local moves Studio's own, as from embedded.
+ * exactly what runHandover at the next start changes, read from the stores
+ * themselves (REM-19), whatever mode this launch runs: to remote, client
+ * keys only; to embedded, what this computer's daemon stores hold for
+ * Studio (after local, or remote after local), and nothing else; to local,
+ * what Studio holds and the runtime entry when it would be written.
  */
-export async function planHandover(target: HandoverTarget, deps: HandoverDeps, from?: HandoverTarget): Promise<HandoverPlanItem[]> {
+export async function planHandover(target: HandoverTarget, deps: HandoverDeps): Promise<HandoverPlanItem[]> {
   const items: HandoverPlanItem[] = []
   const settings = (await readJsonObject(deps.settingsPath).catch(() => null)) ?? {}
   const clientPath = join(deps.userDataDir, CLIENT_FILE)
@@ -779,8 +786,8 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps, f
   const toDaemon = target === 'local'
   const marker = read.state === 'ok' ? read.marker : null
   if (!toDaemon && marker?.holder !== 'daemon') {
-    // From remote with nothing in this computer's daemon stores: Studio kept its credentials, nothing comes back.
-    if (from !== 'remote' && read.state === 'absent' && typeof settings.runtimeDid === 'string') {
+    // No record, but Studio's runtime entry is in the keychain (a switch to local happened): it is deleted.
+    if (read.state === 'absent' && typeof settings.runtimeDid === 'string' && hasStudioRuntimeEntry(deps)) {
       items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: 'the keychain copy of Studio\'s runtime key, if any, is deleted' })
     }
     return items
@@ -801,11 +808,11 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps, f
     if (ownerPhraseToMirror(deps, settings)) {
       items.push({ id: 'owner-phrase', label: 'Owner phrase', detail: 'copied into the OS keychain entry ADF / owner-mnemonic, as embedded Studio does; Studio keeps it' })
     }
-    // Studio has a runtime identity to share only once it has a runtime DID (syncStudioRuntimeEntry skips it otherwise).
-    if (typeof settings.runtimeDid === 'string') {
-      items.push(deps.daemonSecrets
-        ? { id: 'runtime-identity', label: 'Runtime identity', detail: 'Studio\'s runtime key is written to the OS keychain so the daemon signs as this runtime' }
-        : { id: 'runtime-identity', label: 'Runtime identity', detail: `not shared: ${deps.daemonSecretsUnavailable ?? 'no keychain'}. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review` })
+    if (!deps.daemonSecrets) {
+      if (typeof settings.runtimeDid === 'string') items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: `not shared: ${deps.daemonSecretsUnavailable ?? 'no keychain'}. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review` })
+    } else if ((await syncStudioRuntimeEntry(deps, { dryRun: true })).outcome === 'written') {
+      // Only when the boot would write it: a current entry (local → remote → local) is left as it is.
+      items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: 'Studio\'s runtime key is written to the OS keychain so the daemon signs as this runtime' })
     }
   } else {
     const store = daemonOAuthStore(deps)
@@ -815,7 +822,7 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps, f
       const n = store.listServerUrls().filter((url) => moved.has(url) || !own.has(url)).length
       if (n > 0) items.push({ id: 'mcp-oauth', label: 'MCP sign-ins', detail: `${n} server sign-in(s) move back into Studio` })
     }
-    items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: 'the keychain copy of Studio\'s runtime key is deleted' })
+    if (hasStudioRuntimeEntry(deps)) items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: 'the keychain copy of Studio\'s runtime key is deleted' })
   }
   return items
 }

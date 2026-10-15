@@ -209,7 +209,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
   let pending: { target: StudioBackendMode; gaveUp: boolean; waitingFor: () => string[]; finish: () => void; cancel: () => void } | null = null
 
   const confirm = async (target: StudioBackendMode): Promise<boolean> => {
-    const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }), ctx.activeMode)
+    const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }))
       .catch((err) => [{ id: 'client-settings' as const, label: 'Handover', detail: `could not be planned: ${err instanceof Error ? err.message : String(err)}` }])
     const activity = ctx.agentActivity()
     const running = activity.map((a) => a.filePath)
