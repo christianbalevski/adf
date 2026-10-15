@@ -27,7 +27,7 @@ const versionInfo = (over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo =
   localProof: { available: false, problem: 'the local proof file could not be written or protected: icacls failed' }, ...over,
 })
 
-async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer }) {
+async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean> }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-quit-'))
   dirs.push(dir)
   const daemon = createFakeDaemon(BASE)
@@ -55,6 +55,7 @@ async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => b
     createSession: () => session,
     keepDaemonRunning: opts.keep,
     reloadCredentials: opts.reloadCredentials,
+    waitForExit: opts.waitForExit,
     log,
   })
   expect(await handle.ready).toBe(true)
@@ -98,14 +99,20 @@ describe('daemon-mode quit (§8.3)', () => {
     expect(session.ended).toBe(true)
   })
 
-  it('a switch to embedded waits for the stopped daemon to exit', async () => {
-    const { handle, logs, daemon } = await boot({ keep: false })
-    let healthChecks = 0
-    // Answers twice more while it stops its agents, then is gone.
-    daemon.routes.set('GET /health', () => { if (++healthChecks > 2) throw new TypeError('fetch failed'); return { ok: true } })
+  it('a switch to embedded waits for the daemon process to exit (its pid, not /health, which closes first)', async () => {
+    const waits: Array<[number, number]> = []
+    const { handle, logs } = await boot({ keep: false, waitForExit: async (pid, budget) => { waits.push([pid, budget]); return true } })
     await handle.shutdown({ waitForDaemonExitMs: 4_000 })
-    expect(healthChecks).toBe(3)
+    expect(waits).toEqual([[4242, 4_000]])
     expect(logs).toContain('[Backend] The ADF daemon exited')
+  })
+
+  it('keepDaemonRunning changed in Settings: the session follows it, for the crash path', async () => {
+    const { handle, daemon, session } = await boot({ keep: false })
+    ;(session as { sessionId: string | null }).sessionId = 's-1'
+    daemon.routes.set('PUT /client/sessions/s-1/exit-when-closed', () => ({ sessionId: 's-1', exitDaemonWhenClosed: false }))
+    await handle.setKeepDaemonRunning(true)
+    expect(daemon.requests.find((r) => r.method === 'PUT')).toMatchObject({ path: '/client/sessions/s-1/exit-when-closed', body: { exitDaemonWhenClosed: false } })
   })
 })
 

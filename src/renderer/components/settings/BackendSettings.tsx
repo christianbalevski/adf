@@ -32,6 +32,7 @@ const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
 function activeLine(view: BackendSettingsView): string {
   const mode = MODE_LABELS[view.active.mode]
   if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
+  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   return `This launch runs ${mode}.`
 }
@@ -171,7 +172,7 @@ export function BackendSettings() {
               disabled: saving || (mode !== view.configured.mode && mode !== 'embedded' &&
                 (!view.modeSwitchAvailable || (mode === 'remote' && !view.remoteSwitchAvailable))),
             }))}
-            onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved. Studio is restarting.') }}
+            onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved.') }}
             ariaLabel="Backend"
           />
         </SettingsRow>
@@ -186,24 +187,24 @@ export function BackendSettings() {
               : undefined}
           />
         )}
-        <SettingsRow
+        {(view.configured.mode === 'local' || view.active.mode === 'local') && <SettingsRow
           separator
           label="Keep the daemon running when Studio quits"
-          description="Applies to Local daemon, at the next quit. Off: quitting Studio stops a daemon that Studio started, as quitting stops agents in embedded mode, unless another client (the terminal app) is connected; after a crash it stops 60 seconds later. A daemon started with adf daemon start is never stopped by Studio. On: the daemon keeps running your agents, and the ADF CLI manages it (adf daemon stop)."
+          description="Off: quitting Studio stops a daemon that Studio started, as quitting stops agents in embedded mode; with another client (the terminal app) connected it stops when that one disconnects; after a crash it stops 60 seconds later. A daemon started with adf daemon start is never stopped by Studio. On: the daemon keeps running your agents, and the ADF CLI manages it (adf daemon stop)."
         >
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={view.configured.keepDaemonRunning}
               disabled={saving}
-              onChange={(event) => void save('backend', { keepDaemonRunning: event.target.checked }, 'Saved. Applies at the next quit.')}
+              onChange={(event) => void save('backend', { keepDaemonRunning: event.target.checked }, 'Saved. Applies from now on.')}
               className="rounded text-blue-500"
             />
             <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
               {view.configured.keepDaemonRunning ? 'On' : 'Off'}
             </span>
           </label>
-        </SettingsRow>
+        </SettingsRow>}
         {messageFor('backend') && (
           <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5">
             <MessageLine message={messageFor('backend')} />

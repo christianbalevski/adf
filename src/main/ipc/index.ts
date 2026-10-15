@@ -1739,6 +1739,18 @@ function setLiveAgentName(filePath: string, name: string): void {
   }
 }
 
+/**
+ * Main-process actions of the embedded backend for the backend switch
+ * (W4-A, backend/mode-switch.ts): which agents run and whether a turn is in
+ * flight, and the gated background start (the same path as
+ * BACKGROUND_AGENT_START) to resume agents a switch carried over. Set by
+ * registerAllIpcHandlers; nothing in the IPC layer reads it.
+ */
+export const hostActions: {
+  startBackgroundAgent?: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>
+  agentActivity?: () => Array<{ filePath: string; busy: boolean }>
+} = {}
+
 export interface IpcHostHooks {
   /** Show the main window, creating it when none exists (see main/index.ts). */
   showMainWindow?: () => BrowserWindow | null
@@ -6297,6 +6309,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.BACKGROUND_AGENT_START, async (_event, args: { filePath: string }) => {
     return startBackgroundAgentGated(args.filePath)
   })
+  hostActions.startBackgroundAgent = startBackgroundAgentGated
+  hostActions.agentActivity = () => [
+    ...(currentFilePath && agentExecutor ? [{ filePath: currentFilePath, busy: agentExecutor.isTurnActive() }] : []),
+    ...(backgroundAgentManager?.getStatuses() ?? []).map((s) => ({ filePath: s.filePath, busy: s.state === 'active' || (s.activeLoops ?? 0) > 0 })),
+  ]
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_STATUS, async () => {
     if (!backgroundAgentManager) return { agents: [], starting: [] }

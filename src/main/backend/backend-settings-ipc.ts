@@ -42,7 +42,8 @@ export const safeStorageCodec: SecretCodec = {
 export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
   daemonStatus?: () => BackendDaemonStatus | null
   confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
-  applyModeSwitch?: (target: StudioBackendMode) => void
+  applyModeSwitch?: (target: StudioBackendMode) => string | void
+  onKeepDaemonRunningChange?: (keep: boolean) => void
 } = {}): BackendSettingsStore {
   const store = createBackendSettingsStore({ boot, codec: safeStorageCodec, ...hooks })
   ipcMain.handle(IPC.BACKEND_SETTINGS_GET, () => store.get())

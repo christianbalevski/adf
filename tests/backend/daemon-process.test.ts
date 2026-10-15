@@ -58,6 +58,7 @@ function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versio
       state.up = false
       return json(202, { accepted: true, pid: state.info?.pid })
     }
+    if (url.pathname === '/client/sessions') return json(200, { sessions: [{ client: 'tui', version: '0.7.8', exitDaemonWhenClosed: false }] })
     if (url.pathname === '/client/reload-credentials') {
       calls[calls.length - 1].proof = headers['x-adf-local-proof'] ?? null
       return json(200, { runtime: { state: 'absent' }, unlocked: [], stillLocked: [], sessions: [], recovered: 0 })
@@ -350,6 +351,9 @@ describe('DaemonProcessController', () => {
     expect(calls.filter(c => c.path === '/daemon/shutdown')).toHaveLength(1)
     expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
     expect(progress[0]).toBe('Stopping the ADF daemon (pid 900)…')
+    // The replacement counts as started by the CLI too: Studio's quit never stops a CLI user's daemon.
+    expect(spawner.spawns[0].options.env?.ADF_DAEMON_STARTED_BY).toBe('cli')
+    expect(await ctl.listClientSessions()).toEqual([{ client: 'tui', version: '0.7.8', exitDaemonWhenClosed: false }])
     expect(logs.some(l => l.includes('as the user chose'))).toBe(true)
   })
 

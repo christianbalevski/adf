@@ -16,18 +16,18 @@ import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
 import { shutdownSandboxHosts } from './runtime/sandbox-host'
 import { getUserDataPath } from './utils/user-data-path'
-import { BACKEND_ENV_OVERRIDE, backendConfigPath, resolveBootBackend, type BackendSettingsStore } from './backend/backend-config'
+import { backendConfigPath, resolveBootBackend, type BackendSettingsStore } from './backend/backend-config'
 import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/backend-settings-ipc'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
-  agentNames,
   askVersionMismatch,
-  confirmModeSwitch,
+  createModeSwitcher,
   notifyDaemonOfHandover,
   relaunchStudio,
+  resumeSwitchedAgents,
   runBootHandover,
-  SESSION_BACKEND_ARG,
+  sessionBackendEnv,
   showHandoverSummary,
   SWITCH_DAEMON_EXIT_WAIT_MS,
   syncRuntimeEntryAfterImport,
@@ -546,12 +546,17 @@ app.whenReady().then(async () => {
   // Backend selection (design D9): decided once, before any handler exists.
   // No studio-backend.json and no ADF_STUDIO_BACKEND means embedded, as before.
   // SESSION_BACKEND_ARG: the user chose embedded for one launch (§8.2 version mismatch).
-  const bootEnv = process.argv.includes(SESSION_BACKEND_ARG) ? { ...process.env, [BACKEND_ENV_OVERRIDE]: 'embedded' } : process.env
-  const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), bootEnv)
+  const sessionBackend = sessionBackendEnv(process.argv, process.env)
+  const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), sessionBackend.env)
+  if (sessionBackend.session) backend.source = 'session'
+  // A mode this launch overrides for one session (ADF_STUDIO_BACKEND, or the
+  // version-mismatch choice) moves client keys only: credentials stay where
+  // the configured mode keeps them (§8.2).
+  const sessionOnly = backend.source === 'env' || backend.source === 'session'
   // Mode-switch handover (§11): move what belongs to this mode's side before
   // any backend handler, store or daemon exists. Idempotent; a no-op when
   // everything is already where it belongs.
-  const handover = await runBootHandover(backend.mode, getUserDataPath())
+  const handover = await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly })
   let backendStore: BackendSettingsStore | null = null
   if (backend.mode === 'embedded') {
     try {
@@ -564,7 +569,11 @@ app.whenReady().then(async () => {
     }
     embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
     // A daemon that keeps running on these settings re-reads the stores the handover emptied.
-    if (handover?.changed) void notifyDaemonOfHandover(getUserDataPath())
+    if (handover?.changed && !sessionOnly) void notifyDaemonOfHandover(getUserDataPath())
+    // The agents that ran before a switch run again here (§11.1).
+    const embedded = embeddedIpc
+    void resumeSwitchedAgents('embedded', getUserDataPath(), async (filePath) =>
+      embedded.hostActions.startBackgroundAgent?.(filePath) ?? { success: false, error: 'the embedded backend is not ready' })
   } else {
     const userDataDir = getUserDataPath()
     daemonMode = registerDaemonModeHandlers({
@@ -575,15 +584,17 @@ app.whenReady().then(async () => {
           userDataDir,
           execPath: process.execPath,
           daemonEntry: join(__dirname, 'daemon.js'),
-          onVersionMismatch: (decision, running) => askVersionMismatch(decision, running, () => mainWindow),
+          onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
         : remoteDaemonConnector(backend.config, safeStorageCodec),
       hooks: { showMainWindow, openFile: requestOpenFile },
       // Read at quit: a change in Settings → Backend applies to the next quit.
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
-      reloadCredentials: handover?.changed === true,
+      reloadCredentials: handover?.changed === true && !sessionOnly,
       ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
     })
+    const handle = daemonMode
+    void handle.ready.then(async (ok) => { if (ok) await resumeSwitchedAgents(backend.mode, userDataDir, (filePath) => handle.startBackgroundAgent(filePath)) })
   }
   // Client keys (updater, spellcheck) come from studio-client-settings.json in daemon mode (§4.1).
   const readClientSetting = (key: string): unknown => daemonMode ? daemonMode.clientSettings.get(key) : embeddedIpc?.readAppSetting(key)
@@ -591,22 +602,25 @@ app.whenReady().then(async () => {
     if (daemonMode) daemonMode.clientSettings.set(key, value)
     else embeddedIpc?.writeAppSetting(key, value)
   }
-  backendStore = registerBackendSettingsHandlers(backend, {
-    daemonStatus: () => daemonMode?.status() ?? null,
-    confirmModeSwitch: (target) => confirmModeSwitch(target, {
-      activeMode: backend.mode,
-      userDataDir: getUserDataPath(),
-      runningAgents: () => daemonMode
-        ? agentNames(daemonMode.bridge.runningAgents().map((a) => a.filePath))
-        : agentNames(processAgentLeases().heldPaths()),
-      keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
-      daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
-      window: () => mainWindow,
-    }),
-    applyModeSwitch: (target) => {
+  const switcher = createModeSwitcher({
+    activeMode: backend.mode,
+    userDataDir: getUserDataPath(),
+    agentActivity: () => daemonMode
+      ? daemonMode.agentActivity()
+      : embeddedIpc?.hostActions.agentActivity?.() ?? processAgentLeases().heldPaths().map((filePath) => ({ filePath, busy: false })),
+    keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
+    daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
+    window: () => mainWindow,
+    relaunch: (target) => {
       switchingTo = target
       relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)
     },
+  })
+  backendStore = registerBackendSettingsHandlers(backend, {
+    daemonStatus: () => daemonMode?.status() ?? null,
+    confirmModeSwitch: switcher.confirm,
+    applyModeSwitch: switcher.apply,
+    onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
   registerOrbitalCacheHandlers(app.getPath('userData'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)

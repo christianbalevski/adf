@@ -130,6 +130,8 @@ export function buildDaemonEnv(base: NodeJS.ProcessEnv, opts: {
   pidFile: string
   port: number
   userDataDir?: string
+  /** Who the daemon run counts as started by (GET /version). Default `studio`; a restart keeps the replaced run's. */
+  startedBy?: DaemonStartedBy
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(base)) {
@@ -144,7 +146,7 @@ export function buildDaemonEnv(base: NodeJS.ProcessEnv, opts: {
   env.ADF_DAEMON_HOST = '127.0.0.1'
   env.ADF_DAEMON_SETTINGS = opts.settingsPath
   env.ADF_DAEMON_PIDFILE = opts.pidFile
-  env[DAEMON_STARTED_BY_ENV] = 'studio' satisfies DaemonStartedBy
+  env[DAEMON_STARTED_BY_ENV] = opts.startedBy ?? ('studio' satisfies DaemonStartedBy)
   if (opts.userDataDir) env.ADF_USER_DATA_DIR = opts.userDataDir
   return env
 }
@@ -318,7 +320,7 @@ export class DaemonProcessController {
    * `spawnedHere` is true only when the daemon that answers is the child
    * spawned here: another start (CLI, a second Studio) can win the port.
    */
-  async spawn(onProgress?: (text: string) => void, retried = false): Promise<DaemonHandle> {
+  async spawn(onProgress?: (text: string) => void, retried = false, startedBy: DaemonStartedBy = 'studio'): Promise<DaemonHandle> {
     const { paths } = this
     await mkdir(dirname(paths.logFile), { recursive: true })
     const env = buildDaemonEnv(this.env, {
@@ -326,6 +328,7 @@ export class DaemonProcessController {
       pidFile: paths.pidFile,
       port: this.port,
       userDataDir: this.config.userDataDir,
+      startedBy,
     })
     this.log(`[DaemonProcess] Starting the ADF daemon: ${this.config.execPath} ${this.config.daemonEntry} on ${this.url} (settings ${this.config.settingsPath}, log ${paths.logFile})`)
     onProgress?.('Starting the ADF daemon…')
@@ -364,7 +367,7 @@ export class DaemonProcessController {
         if (!retried) {
           // Nothing took over: the other start failed too, or ours crashed. One more try, then the error with the log.
           this.log(`[DaemonProcess] The daemon Studio started (pid ${childPid}) exited (code ${exited}) and no other ADF daemon answers ${this.url}; starting it once more`)
-          return this.spawn(onProgress, true)
+          return this.spawn(onProgress, true, startedBy)
         }
       }
       const tail = await tailFile(paths.logFile, 15)
@@ -441,9 +444,22 @@ export class DaemonProcessController {
       }
       await this.sleep(POLL_MS)
     }
-    this.log(`[DaemonProcess] ADF daemon pid ${running.pid} stopped; starting Studio's`)
-    const handle = await this.spawn(onProgress)
+    // The replacement counts as started by whoever started the one it replaces: a CLI user's daemon is not stopped by Studio's quit later.
+    this.log(`[DaemonProcess] ADF daemon pid ${running.pid} stopped; starting Studio's (started by ${running.startedBy}, as the one it replaces)`)
+    const handle = await this.spawn(onProgress, false, running.startedBy)
     return this.attachOrRefuse(handle.info, handle.spawnedHere ? 'spawned' : 'attached')
+  }
+
+  /** The clients connected to the running daemon (GET /client/sessions); null when it cannot say (an older daemon). */
+  async listClientSessions(): Promise<Array<{ client: string; version: string }> | null> {
+    try {
+      const res = await this.request('/client/sessions')
+      if (!res.ok) return null
+      const body = await res.json() as { sessions?: Array<{ client: string; version: string }> }
+      return Array.isArray(body.sessions) ? body.sessions : null
+    } catch {
+      return null
+    }
   }
 
   /**

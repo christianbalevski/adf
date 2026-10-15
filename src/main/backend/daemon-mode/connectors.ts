@@ -54,7 +54,12 @@ export function localDaemonConnector(opts: {
    * embedded (the caller restarts Studio). Without it the connector fails
    * with the decision's sentence.
    */
-  onVersionMismatch?: (decision: Extract<AttachDecision, { kind: 'version-mismatch' }>, running: DaemonVersionInfo) => Promise<VersionMismatchChoice>
+  onVersionMismatch?: (
+    decision: Extract<AttachDecision, { kind: 'version-mismatch' }>,
+    running: DaemonVersionInfo,
+    /** The clients connected to it (the dialog names them: a restart disconnects them); null when it cannot say. */
+    clients: Array<{ client: string; version: string }> | null,
+  ) => Promise<VersionMismatchChoice>
   /** Tests: the controller's process and network seams. */
   processDeps?: DaemonProcessDeps
 }): DaemonConnector {
@@ -70,7 +75,7 @@ export function localDaemonConnector(opts: {
   const connect = async (progress: (text: string) => void) => {
     let result = await controller.ensure(progress)
     if (result.kind === 'refused' && result.decision.kind === 'version-mismatch' && opts.onVersionMismatch) {
-      const choice = await opts.onVersionMismatch(result.decision, result.info)
+      const choice = await opts.onVersionMismatch(result.decision, result.info, await controller.listClientSessions())
       ;(opts.log ?? console.log)(`[Backend] ${result.decision.message} The user chose: ${choice === 'restart' ? "restart the daemon with Studio's version" : 'embedded mode for this session'}`)
       if (choice === 'embedded') throw new SwitchToEmbeddedError(`${result.decision.message} Studio restarts in embedded mode for this session.`)
       result = await controller.restart(result.info, progress)

@@ -22,6 +22,9 @@ import { randomBytes } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { CLIENT_SESSION_EXPIRY_MS } from '../src/main/daemon/client-sessions'
 import { FENCE_PATH, removeTreeWithoutLinks } from './parity/harness/env'
+import { AdfWorkspace } from '../src/main/adf/adf-workspace'
+import { AgentLeaseRegistry } from '../src/main/runtime/agent-lease'
+import { waitForDaemonExit } from '../src/main/backend/daemon-mode/daemon-exit'
 
 const REPO = resolve(__dirname, '..')
 const BUNDLE = resolve(REPO, 'out/main/daemon.js')
@@ -75,7 +78,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) removeTreeWithoutLinks(root)
 })
 
-async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon> {
+async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon & { root: string; pid: number }> {
   const root = mkdtempSync(join(tmpdir(), 'adf-quit-e2e-'))
   roots.push(root)
   const userData = join(root, 'user-data')
@@ -83,6 +86,11 @@ async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon> {
   const home = join(root, 'home')
   for (const d of [userData, temp, home, join(home, 'AppData', 'Roaming'), join(home, 'AppData', 'Local')]) mkdirSync(d, { recursive: true })
   stdlibManifest(userData)
+  // A provider for the agent the switch test loads; it never runs a turn, so nothing calls it.
+  writeFileSync(join(userData, 'adf-settings.json'), JSON.stringify({
+    providers: [{ id: 'p1', type: 'openai-compatible', name: 'P1', baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'k', defaultModel: 'm1' }],
+    defaultProviderId: 'p1', providerChecksEnabled: false, remoteCatalogsEnabled: false, updateChecksEnabled: false, meshEnabled: false,
+  }))
   const port = await freePort()
   const meshPort = await freePort()
   const token = randomBytes(32).toString('base64url')
@@ -133,6 +141,8 @@ async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon> {
   }
   expect(readFileSync(logFile, 'utf-8')).toContain('[Compute] ADF_COMPUTE=fake')
   return {
+    root,
+    pid: child.pid!,
     url,
     token,
     child,
@@ -152,7 +162,7 @@ async function call<T>(d: Daemon, method: string, path: string, body?: unknown):
     headers: { Authorization: `Bearer ${d.token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  expect(res.status, `${method} ${path}`).toBeLessThan(300)
+  if (res.status >= 300) throw new Error(`${method} ${path}: HTTP ${res.status} ${await res.text()}\n${d.log().split(/\r?\n/).slice(-15).join('\n')}`)
   return await res.json() as T
 }
 
@@ -177,6 +187,30 @@ describe.skipIf(!existsSync(BUNDLE))('quit behaviour against the daemon bundle (
     await openSession(d, 'studio', true)
     expect(await d.waitExit(EXPIRY_MS + 3_000)).toBe(false)
     expect(d.log()).toMatch(/Not stopping the daemon: .*started by cli, not Studio/)
+  }, 90_000)
+
+  it('a switch to embedded: Studio waits for the daemon process, which unloads its agent and frees its lease before it is gone', async () => {
+    const d = await startDaemon('studio')
+    const agentsDir = join(d.root, 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    const filePath = join(agentsDir, 'agent-1.adf')
+    AdfWorkspace.create(filePath, { name: 'agent-1', handle: 'agent-1', autonomous: false, start_in_state: 'idle', model: { provider: 'p1', model_id: 'm1' } }).close()
+    await call(d, 'POST', '/agents/load', { filePath })
+    const studio = await openSession(d, 'studio', true)
+    // While it runs there, another runtime cannot take the agent.
+    const other = new AgentLeaseRegistry({ kind: 'studio-embedded', pid: 4_000_000 + Math.floor(Math.random() * 1000), sweepDeadEntries: false })
+    try {
+      expect((await other.acquire(filePath)).ok).toBe(false)
+      await call(d, 'POST', `/client/sessions/${studio.sessionId}/quit`, { stopDaemon: true })
+      // /health goes quiet first (the server closes before the agents unload); the pid is what Studio waits on.
+      expect(await waitForDaemonExit(d.pid, 25_000)).toBe(true)
+      expect(d.log()).toContain('stopping the daemon: Studio started this daemon run')
+      expect(await d.waitExit(2_000)).toBe(true)
+      // Embedded Studio can start the agent now.
+      expect((await other.acquire(filePath)).ok).toBe(true)
+    } finally {
+      await other.close()
+    }
   }, 90_000)
 
   it('Studio quits (keepDaemonRunning off): the daemon stops, unless the terminal app is still connected', async () => {

@@ -388,8 +388,10 @@ export function createBackendSettingsStore(deps: {
    * (what moves, what happens to running agents). False cancels the save.
    */
   confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
-  /** After a confirmed mode change is on disk: restart Studio into it. */
-  applyModeSwitch?: (target: StudioBackendMode) => void
+  /** After a confirmed mode change is on disk: restart Studio into it. Returns a notice for the page. */
+  applyModeSwitch?: (target: StudioBackendMode) => string | void
+  /** keepDaemonRunning was saved with a new value (the running session follows it). */
+  onKeepDaemonRunningChange?: (keep: boolean) => void
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
@@ -397,6 +399,7 @@ export function createBackendSettingsStore(deps: {
 
   const save = async (patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
+    const previous = current
     const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE, allowRemoteSwitch: deps.allowRemoteSwitch })
     if (!result.ok) return result
     // A switch away from the running backend restarts Studio (D9); back to it is a plain save.
@@ -416,8 +419,11 @@ export function createBackendSettingsStore(deps: {
       current = result.config
       log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
     }
-    if (switching && deps.applyModeSwitch) deps.applyModeSwitch(result.config.mode)
-    return { ok: true, view: toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null), notices: result.notices }
+    const notices = [...result.notices]
+    if (switching) notices.push((deps.applyModeSwitch?.(result.config.mode)) || 'Studio restarts now.')
+    else if (result.config.mode !== previous.mode) notices.push('Studio already runs this mode; no restart is needed.')
+    if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
+    return { ok: true, view: toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null), notices }
   }
 
   return {

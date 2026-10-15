@@ -23,6 +23,7 @@ import { channelKey, pendingWorkstream } from './pending'
 import { DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
+import { waitForDaemonExit } from './daemon-exit'
 import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
@@ -65,7 +66,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.BACKEND_SETTINGS_SET,
 ]
 
-export const RECOVERY_HINT = `To run agents in Studio instead, choose Embedded in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session.`
+export const RECOVERY_HINT = `To run agents in Studio instead, choose Embedded in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
 
 /** How long a lost daemon connection may last before waiting chats are ended. */
 export const TURN_DISCONNECT_GRACE_MS = 15_000
@@ -101,6 +102,8 @@ export interface DaemonModeDeps {
   reloadCredentials?: boolean
   /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
   sharedMnemonic?: () => SharedMnemonicStore | null
+  /** Tests: waits for the daemon's pid to exit (default: process liveness). */
+  waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
   afterOwnerImport?: (phrase: string) => Promise<string>
 }
@@ -122,6 +125,12 @@ export interface DaemonModeHandle {
   reconnect(): void
   /** Settings → Backend: the daemon this session uses and the connection state. */
   status(): BackendDaemonStatus
+  /** keepDaemonRunning changed in Settings: the session's crash behaviour follows it (exitDaemonWhenClosed). */
+  setKeepDaemonRunning(keep: boolean): Promise<void>
+  /** The gated background start (BACKGROUND_AGENT_START): resumes an agent a switch carried over. */
+  startBackgroundAgent(filePath: string): Promise<{ success: boolean; error?: string; code?: string }>
+  /** Agents running in the daemon and whether a turn is in flight (the switch dialog). */
+  agentActivity(): Array<{ filePath: string; busy: boolean }>
   /**
    * Studio's quit path in daemon mode (§8.3): end the client session; in
    * local mode with `keepDaemonRunning` off, the daemon stops when Studio
@@ -278,6 +287,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
   let versionInfo: DaemonVersionInfo | null = null
+  const refreshVersion = (client: DaemonClient): void => {
+    void client.request<DaemonVersionInfo>('GET', '/version').then((v) => {
+      if (versionInfo && (v.pid !== versionInfo.pid || v.version !== versionInfo.version)) {
+        log.log(`[Backend] The ADF daemon is now pid ${v.pid}, version ${v.version}, started by ${v.startedBy} (was pid ${versionInfo.pid})`)
+      }
+      versionInfo = v
+    }).catch(() => {})
+  }
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
     void leases.registerClient(deps.mode, { ...clientRecord, ...(connection.baseUrl ? { controlUrl: connection.baseUrl } : {}) })
     versionInfo = connection.endpointInfo?.daemon ?? null
@@ -318,6 +335,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       },
       onReattached: (info) => {
         log.log(`[Backend] Client stream reattached${info.epochChanged ? ' (new session)' : ''}: re-sending the focus and the held documents`)
+        // The daemon may have restarted (another pid, version or launcher): Settings → Backend and the switch dialog read this.
+        refreshVersion(client)
         return session.reattach()
       },
       onFatal: (message) => {
@@ -418,20 +437,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   const adfFile = createAdfFileHandler({ session, connection, fetch: deps.fetch, log })
 
-  /** Resolves true once nothing answers the daemon's /health (it exited), false at the deadline. */
+  /** Resolves true once the daemon's process exited (its pid, not its /health), false at the deadline. */
   const waitDaemonGone = async (budgetMs: number): Promise<boolean> => {
-    const url = connection.baseUrl
-    if (!url) return true
-    const deadline = Date.now() + budgetMs
-    while (Date.now() < deadline) {
-      try {
-        await (deps.fetch ?? fetch)(`${url}/health`, { signal: AbortSignal.timeout(800) })
-      } catch {
-        return true
-      }
-      await new Promise((r) => setTimeout(r, 250))
-    }
-    return false
+    const pid = versionInfo?.pid ?? connection.endpointInfo?.daemon?.pid
+    if (!pid) return true
+    return (deps.waitForExit ?? waitForDaemonExit)(pid, budgetMs)
   }
 
   let shutdownPromise: Promise<void> | null = null
@@ -488,6 +498,33 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     }
   }
 
+  const setKeepDaemonRunning = async (keep: boolean): Promise<void> => {
+    const id = clientSession?.sessionId
+    const client = connection.current
+    if (deps.mode !== 'local' || !id || !client) return
+    try {
+      await client.request('PUT', `/client/sessions/${encodeURIComponent(id)}/exit-when-closed`, { body: { exitDaemonWhenClosed: !keep } })
+      log.log(`[Backend] keepDaemonRunning ${keep ? 'on' : 'off'}: after a crash the daemon ${keep ? 'keeps running' : 'stops once this session expires'}`)
+    } catch (err) {
+      log.warn(`[Backend] Could not update the session's quit behaviour: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const startBackgroundAgent = async (filePath: string) => {
+    const handler = DAEMON_MODE_HANDLERS[IPC.BACKGROUND_AGENT_START]
+    if (!handler) return { success: false, error: 'Background start is not available in daemon mode' }
+    try {
+      return await handler(ctx, {} as Electron.IpcMainInvokeEvent, { filePath }) as { success: boolean; error?: string; code?: string }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  const agentActivity = () => bridge.runningAgents().map((a) => ({
+    filePath: a.filePath,
+    busy: a.mapping.state === 'active' || a.mapping.activeLoops > 0 || (a.lastForegroundState !== undefined && a.lastForegroundState !== 'idle' && a.lastForegroundState !== 'stopped' && a.lastForegroundState !== 'error'),
+  }))
+
   return {
     registered,
     pending,
@@ -499,6 +536,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     adfFile,
     reconnect,
     status,
+    setKeepDaemonRunning,
+    startBackgroundAgent,
+    agentActivity,
     shutdown,
   }
 }

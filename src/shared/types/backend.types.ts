@@ -16,6 +16,8 @@ export type StudioBackendSource =
   | 'file'
   /** `ADF_STUDIO_BACKEND` set in the environment (recovery override). */
   | 'env'
+  /** Embedded for this launch only: the user chose it when the daemon's version did not match (§8.2). */
+  | 'session'
 
 export interface BackendSettingsView {
   /** The backend this Studio process booted with. Fixed until restart. */
