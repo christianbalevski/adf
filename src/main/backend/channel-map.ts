@@ -207,8 +207,8 @@ export const CHANNEL_MAP = {
 
   // --- Models and settings ---------------------------------------------------
   [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath goes to the route as filePath (an agent file\'s own provider); a path the route refuses is dropped and the app providers are listed.' }),
-  [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings'], {
-    note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
+  [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings', 'POST /settings/providers/keys/reveal'], {
+    note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__; local mode replaces it with the stored key through POST /settings/providers/keys/reveal (local proof); remote mode keeps the placeholder. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
   [IPC.SETTINGS_SET]: proxied('invoke', ['PATCH /settings'], {
     note: 'Split by settingsKeyClass(): client keys go to studio-client-settings.json, backend keys to the daemon. menuBarEnabled applies in Studio main.',
   }),

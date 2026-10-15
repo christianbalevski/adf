@@ -125,6 +125,29 @@ describe('POST /agents/:id/identity/reveal and /files/agent/identity/reveal', ()
   })
 })
 
+describe('POST /settings/providers/keys/reveal (W5-D3)', () => {
+  it('answers the app keys of the settings file to local callers with the proof only', async () => {
+    const { server } = setup()
+    const res = await server.inject({ method: 'POST', url: '/settings/providers/keys/reveal', headers: proof, payload: { ids: ['p1', 'p9'] } })
+    expect(res.statusCode).toBe(200)
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(res.json()).toEqual({ keys: { p1: 'sk-app' } })
+    expect((await server.inject({ method: 'POST', url: '/settings/providers/keys/reveal', headers: proof, payload: {} })).json()).toEqual({ keys: { p1: 'sk-app' } })
+    expect((await server.inject({ method: 'POST', url: '/settings/providers/keys/reveal', headers: proof, payload: { ids: 'p1' } })).statusCode).toBe(400)
+
+    for (const request of [
+      { headers: proof, remoteAddress: '10.0.0.9' },
+      { headers: { ...proof, 'x-forwarded-for': '1.2.3.4' } },
+      { headers: {} },
+      { headers: { 'x-adf-local-proof': 'q'.repeat(43) } },
+    ]) {
+      const refused = await server.inject({ method: 'POST', url: '/settings/providers/keys/reveal', payload: {}, ...request })
+      expect(refused.statusCode).toBe(403)
+      expect(refused.body).not.toContain('sk-app')
+    }
+  })
+})
+
 describe('POST /files/agent/providers/:providerId/credential/copy-app-key', () => {
   it('stores the app provider\'s key in the agent file without it crossing HTTP', async () => {
     const { server } = setup()

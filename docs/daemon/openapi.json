@@ -13821,6 +13821,75 @@
         }
       }
     },
+    "/settings/providers/keys/reveal": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "x-adf-stability": "internal",
+        "summary": "Read the app providers' API keys (local callers only)",
+        "description": "The keys of Settings → Providers that GET /settings answers as `__redacted__`: those stored in the daemon's settings file (a key kept in the OS keychain is never returned). Local callers that present this run's local proof (`X-ADF-Local-Proof`) only, in every mode; the token alone gets 403 `loopback_only`. Studio in local mode fills its key field with them, as embedded Studio does; a remote Studio keeps the placeholder. `Cache-Control: no-store`; keys are never logged.",
+        "operationId": "revealAppProviderKeys",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "description": "Provider ids to answer; all when absent.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "example": [
+                      "anthropic"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "keys"
+                  ],
+                  "properties": {
+                    "keys": {
+                      "type": "object",
+                      "description": "provider id → API key. Providers without a key in the settings file are left out.",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/files/agent/providers/{providerId}/credentials": {
       "get": {
         "tags": [

@@ -127,7 +127,7 @@ export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT)
  * Routes the daemon answers for local callers only, where a client on this
  * machine sends the local proof: owner secrets and shutdown (proof required
  * behind a proxy), owner import, trust-daemon / untrust-daemon and the
- * stored-value reveal routes (proof required in every mode). A client never sends the proof for another route.
+ * stored-value reveal routes, agent values and app provider keys (proof required in every mode). A client never sends the proof for another route.
  */
 export function isLocalOnlyRoute(path: string): boolean {
   const p = path.split('?')[0]
@@ -137,6 +137,7 @@ export function isLocalOnlyRoute(path: string): boolean {
     || /^\/identity\/(create|restore|import|unlock|lock|confirm-backup|trust-daemon|untrust-daemon)$/.test(p)
     || /^\/agents\/[^/]+\/identity\/reveal$/.test(p)
     || p === '/files/agent/identity/reveal'
+    || p === '/settings/providers/keys/reveal'
 }
 
 export interface LocalAccessOptions {
