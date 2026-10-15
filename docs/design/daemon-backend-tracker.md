@@ -394,6 +394,13 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W5 review | Missing §3.2 rows: W1-G compute ownership, the owner-switch E3 (cbd951fe, 8230df9d), W3-A watcher stops, Open Recent UNC filter, embedded boot handover/resume, E2 leases | W5-D1 (done: rows added; Open Recent test `tests/backend/menu-recent-unc.test.ts`) |
 | W5-D1 | A token-keyed challenge on `/health` (the listener proves it holds the token without receiving it) would stop a same-user program that reads the pid file from claiming the daemon's pid | post-merge |
 | W5-A2 | Install end on the 15 s no-gap timeout: when the stream stalls past `END_WAIT_MS`, Studio sends the end from the job result; if that install's own progress lines then arrive late before its own end, the first line ends the drop (57a881cb treats it as another install), so the late end is shown a second time. Telling them apart needs a job id on the install pushes (the daemon's `withInstallProgress` has no job context) | deferred: rare (a stream stalled over 15 s mid-install); the renderer shows "installed" twice, nothing else |
+| W5-D3 | Remote `recentFiles` reached `adf-settings.json` on a switch to embedded; the boot WAL sweep then ran `readdirSync` on `\\host\share` (NTLM leak) | done 9959cbeb (E3, characterization be94d754: the sweep skips every path `unsafeLocalPath` refuses), 3bdd8f76 (remote mode keeps its recent files in `remoteRecentFiles`, never moved back) |
+| W5-D3 | Embedded Settings → Compute never named other runtimes using a container; Stop did not ask | done 3cf0ee19 (E3, characterization 08b0fa74: `listContainersWithUsers`; Stop asks in both modes) |
+| W5-D3 | Leases keyed by path only: a copied or restored `.adf` ran next to the original (one Telegram bot polled twice) | done 56acbc7f (E2: a live lease of the same agent id at another path refuses with `agent_leased`, naming both paths) |
+| W5-D3 | A switch to embedded waits 22 s for the daemon; resumed starts that hit `agent_leased` were never retried | done 641eb630 (retried every 5 s for up to 60 s, then reported) |
+| W5-D3 | Settings → Providers key field showed the placeholder in local mode | done 3fcd2d50 (`POST /settings/providers/keys/reveal`, local proof; remote keeps the placeholder) |
+| W5-D3 | Autostart after a switch to embedded also hits `agent_leased` while the daemon exits, and is not retried (only the resumed agents are) | open: Lead |
+| W5-D3 | A `recentFiles` list written by remote mode before 3bdd8f76 still holds the server's paths and moves to embedded once; the sweep (9959cbeb) and the menu skip network paths, other server paths show as missing | accepted (one-time) |
 
 ## 7. Parity triage (filled in W5-A)
 
@@ -414,7 +421,7 @@ Run (W5-A2, again after the review fixes): bundle rebuilt at c66c62cf, `PARITY_R
 | every scenario | `mode:client-settings-file`: client keys in `studio-client-settings.json` | by design (§4.2). Impact: none; one value per key | 3366b89f |
 | every scenario | `mode:client-defaults-unwritten`: client keys at their default are written nowhere | by design (§4.1). Impact: none | 3b3ac49f |
 | every scenario | `mode:handover-marker`: `studio-handover.json` records that the daemon holds moved credentials | by design (§11.1). Impact: none (a file in user data) | 3b3ac49f |
-| provider-round-trip, agent-provider-key | `mode:redacted-provider-keys`: app provider keys answered as `__redacted__` | by design (§4.2). Impact: the provider key field shows a placeholder, never the key | 7c11be56 |
+| provider-round-trip, agent-provider-key | `mode:redacted-provider-keys`: app provider keys answered as `__redacted__` | local mode fixed by W5-D3 (3fcd2d50): it reads the keys through the local-proof reveal, so the field holds the key as in embedded. Remote keeps the placeholder by design (§9.4); the entry is now `remote:redacted-provider-keys` (remote only) | 7c11be56 |
 | every scenario | `mode:daemon-build-version`: the daemon records its bundle version | by design. Impact: none (one build in a real install) | 3b3ac49f |
 | every scenario | `mode:lease-roles`: the daemon is the runtime host, Studio a client record | by design (§10.2, §10.3). Impact: none; `adf daemon status` names the daemon as host | 3366b89f |
 | every scenario | `mode:daemon-files`: the daemon's enc key, local proof and scratch root | by design. Impact: none (files in user data) | 3366b89f |
@@ -429,3 +436,4 @@ Run (W5-A2, again after the review fixes): bundle rebuilt at c66c62cf, `PARITY_R
 | remote: owner-identity, owner-import | `remote:owner-identity-on-server` | by design (§9.4). Impact: owner phrase backup and restore say to run them on the server | b4a49111 |
 | remote: w3c-mcp-oauth-connect, w2c2-agent-mcp-oauth | `remote:asks-before-sign-in-page` | by design (W4-B review). Impact: one click on a native question before a sign-in page opens | b4a49111 |
 | remote: scenarios that open files | `remote:no-os-recent-documents` | by design (W4-B review). Impact: daemon paths go into Open Recent, not the OS recent documents | 91c0dfb6 |
+| remote: scenarios that open files | `remote:remote-recent-files`: Open Recent kept in `remoteRecentFiles` | by design (W5-D3). Impact: none in remote mode; a switch to embedded leaves the server's paths behind | W5-D3 |

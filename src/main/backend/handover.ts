@@ -37,7 +37,7 @@
 import { promises as fsp } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { dirname, join } from 'node:path'
-import { CLIENT_SETTINGS_KEYS } from '../../shared/constants/client-settings-keys'
+import { CLIENT_FILE_ONLY_KEYS, CLIENT_SETTINGS_KEYS } from '../../shared/constants/client-settings-keys'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { deriveOwnerIdentity } from '../crypto/mnemonic-identity'
 import { createAttestation, verifyAttestation } from '../services/attestation.service'
@@ -198,6 +198,9 @@ const SUBSCRIPTIONS = [
 ] as const
 
 const CLIENT_KEYS: ReadonlySet<string> = new Set(CLIENT_SETTINGS_KEYS)
+/** Client keys that never move into adf-settings.json (remote mode's recent files): they stay in the client file. */
+const KEPT_CLIENT_KEYS: ReadonlySet<string> = new Set(CLIENT_FILE_ONLY_KEYS)
+const movesToEmbedded = (key: string): boolean => CLIENT_KEYS.has(key) && !KEPT_CLIENT_KEYS.has(key)
 
 // --- files --------------------------------------------------------------------
 
@@ -408,9 +411,13 @@ async function moveClientSettings(target: HandoverTarget, deps: HandoverDeps): P
   const result = (outcome: HandoverOutcome, detail: string): HandoverItemResult => ({ id: 'client-settings', label, outcome, detail })
   if (target === 'embedded') {
     const client = await readJsonObject(clientPath)
-    const moving = Object.fromEntries(Object.entries(client ?? {}).filter(([key]) => CLIENT_KEYS.has(key)))
+    const moving = Object.fromEntries(Object.entries(client ?? {}).filter(([key]) => movesToEmbedded(key)))
     const keys = Object.keys(moving)
     if (client === null) return result('unchanged', `no ${CLIENT_FILE}`)
+    // Remote mode's recent files are paths on another machine: embedded never
+    // gets them (it opens and sweeps its recent paths). They stay in the
+    // client file for the next remote session.
+    const kept = Object.fromEntries(Object.entries(client).filter(([key]) => KEPT_CLIENT_KEYS.has(key)))
     if (keys.length > 0) {
       await updateJsonFile(deps.settingsPath, (data) => {
         let changed = false
@@ -422,10 +429,13 @@ async function moveClientSettings(target: HandoverTarget, deps: HandoverDeps): P
       if (wrong.length > 0) return result('failed', `${deps.settingsPath} does not hold ${wrong.join(', ')} after the write; ${CLIENT_FILE} kept`)
     }
     await deps.beforeSourceDelete?.('client-settings')
-    await unlinkIfExists(clientPath)
+    const keptKeys = Object.keys(kept)
+    if (keptKeys.length > 0) await writeJsonAtomicAsync(clientPath, kept)
+    else await unlinkIfExists(clientPath)
+    const keptNote = keptKeys.length > 0 ? `; ${keptKeys.join(', ')} (remote mode only) kept in ${CLIENT_FILE}` : ''
     return result(keys.length > 0 ? 'moved' : 'unchanged', keys.length > 0
-      ? `${keys.length} keys moved from ${CLIENT_FILE} into ${deps.settingsPath}`
-      : `${CLIENT_FILE} held no client keys; removed`)
+      ? `${keys.length} keys moved from ${CLIENT_FILE} into ${deps.settingsPath}${keptNote}`
+      : keptKeys.length > 0 ? `${CLIENT_FILE} held no client keys to move${keptNote}` : `${CLIENT_FILE} held no client keys; removed`)
   }
 
   const settings = (await readJsonObject(deps.settingsPath)) ?? {}
@@ -796,7 +806,7 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps): 
   const clientPath = join(deps.userDataDir, CLIENT_FILE)
   if (target === 'embedded') {
     const client = await readJsonObject(clientPath).catch(() => null)
-    const n = Object.keys(client ?? {}).filter((key) => CLIENT_KEYS.has(key)).length
+    const n = Object.keys(client ?? {}).filter(movesToEmbedded).length
     if (n > 0) items.push({ id: 'client-settings', label: 'Client settings', detail: `${n} settings (theme, recent files, …) move back into adf-settings.json` })
   } else {
     const n = Object.keys(settings).filter((key) => CLIENT_KEYS.has(key)).length

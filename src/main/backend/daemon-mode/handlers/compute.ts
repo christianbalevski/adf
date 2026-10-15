@@ -14,8 +14,8 @@ import { fleetState } from './poll'
  * W1-G: a runtime stops only the containers it started. `leftRunning` (in
  * COMPUTE_STATUS, from the daemon's last stop) names a container left to
  * another runtime, and each container row carries `users`, the other live
- * runtimes using it (GET /compute/users), for the reset confirmation.
- * Embedded rows have no `users`: there the list is empty.
+ * runtimes using it (GET /compute/users), for the Stop, Remove and Rebuild
+ * confirmations. Embedded rows carry them too (listContainersWithUsers).
  */
 
 /** Podman install, machine init/start and image pulls take minutes. */

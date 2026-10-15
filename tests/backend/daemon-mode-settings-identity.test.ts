@@ -101,6 +101,43 @@ describe('provider keys never cross as values they are not', () => {
   })
 })
 
+// W5-D3: Settings → Providers showed the app key as a placeholder in local
+// mode; embedded shows the stored key. Local mode reads it through the
+// local-proof reveal route, as W3-B reads an agent's own values.
+describe('Settings → Providers app keys in local mode', () => {
+  const providers = [
+    { id: 'p1', type: 'openai', name: 'OpenAI', baseUrl: '', apiKey: '__redacted__' },
+    { id: 'p2', type: 'anthropic', name: 'Anthropic', baseUrl: '' },
+  ]
+
+  it('SETTINGS_GET fills the placeholder with the stored key, asking with the local proof for those keys only', async () => {
+    const { proof } = mintLocalProof(dir, 47391)
+    daemon.routes.set('GET /settings', () => ({ settings: { providers } }))
+    daemon.routes.set('POST /settings/providers/keys/reveal', () => ({ keys: { p1: 'sk-app' } }))
+    const settings = await invoke(IPC.SETTINGS_GET) as { providers: Array<{ id: string; apiKey?: string }> }
+    expect(settings.providers).toEqual([{ ...providers[0], apiKey: 'sk-app' }, providers[1]])
+    const sent = requests('POST', '/settings/providers/keys/reveal')[0]
+    expect(sent.body).toEqual({ ids: ['p1'] })
+    expect(sent.headers[LOCAL_PROOF_HEADER]).toBe(proof)
+  })
+
+  it('a daemon that does not reveal them (no proof, an older daemon) leaves the placeholder and says so in the log', async () => {
+    daemon.routes.set('GET /settings', () => ({ settings: { providers } }))
+    daemon.routes.set('POST /settings/providers/keys/reveal', () => ({ status: 403, body: { error: 'refused', code: 'loopback_only' } }))
+    logs.length = 0
+    const settings = await invoke(IPC.SETTINGS_GET) as { providers: Array<{ apiKey?: string }> }
+    expect(settings.providers[0].apiKey).toBe('__redacted__')
+    expect(logs.some((m) => /app provider keys stay hidden/.test(m))).toBe(true)
+  })
+
+  it('no placeholder, no reveal request', async () => {
+    daemon.routes.set('GET /settings', () => ({ settings: { providers: [providers[1]] } }))
+    daemon.requests.length = 0
+    await invoke(IPC.SETTINGS_GET)
+    expect(requests('POST', '/settings/providers/keys/reveal')).toEqual([])
+  })
+})
+
 describe('locked-envelope choices (409 credentials_locked)', () => {
   const route = 'PUT /files/agent/providers/p1/credential'
   /** The daemon's structured refusal: the choice reads `sealed`, never the message. */

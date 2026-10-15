@@ -13,7 +13,7 @@ import { AboutTab } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { BackendSettings } from './BackendSettings'
-import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
+import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
@@ -2835,7 +2835,8 @@ function ComputeTab({
                       onClick={async () => {
                         setBusyContainer(c.name); setSetupError(null)
                         try {
-                          if (c.running && isShared && computeEnvStatus.activeAgents.length > 0 && !window.confirm(`Stop ${c.name}? ${computeEnvStatus.activeAgents.length} active agent(s) may be interrupted.`)) return
+                          const stopQuestion = containerStopConfirmation(c, isShared, computeEnvStatus.activeAgents)
+                          if (stopQuestion && !window.confirm(stopQuestion)) return
                           const result = c.running ? await window.adfApi.computeStopContainer({ name: c.name }) : await window.adfApi.computeStartContainer({ name: c.name })
                           if (!result.success) setSetupError(result.error ?? `${c.running ? 'Stop' : 'Start'} failed`)
                         } finally { setBusyContainer(null); refreshAll() }

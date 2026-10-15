@@ -5,6 +5,7 @@
 //   POST /agents/:id/identity/reveal                              { purposes?, prefix? }
 //   POST /files/agent/identity/reveal?path=                       { purposes?, prefix? }
 //   POST /files/agent/providers/:providerId/credential/copy-app-key?path=   { replace? }
+//   POST /settings/providers/keys/reveal                          { ids? }
 //
 // The reveal routes are the one exception to "values never leave the
 // daemon" (design §5.4.1). They answer local callers that ALSO present this
@@ -21,6 +22,13 @@
 // through one readonly connection (no migration, no envelope re-wrap, no
 // write). Such a file's sealed values stay out (no envelope is unlocked),
 // as Studio's read of a file it does not have open leaves them out.
+//
+// /settings/providers/keys/reveal answers the app providers' keys (Settings →
+// Providers) that GET /settings sends as `__redacted__`: the keys stored in
+// the daemon's settings file, never one kept in the OS keychain (that one is
+// not in GET /settings either, so a save never writes it into the file). Same
+// local-proof rule as the reveal routes: Studio in local mode fills its key
+// field with it, as embedded Studio does; remote mode keeps the placeholder.
 //
 // copy-app-key stores the app provider's own key (Settings → Providers) as
 // the agent's provider credential, inside the daemon: the app key reaches a
@@ -137,6 +145,22 @@ export function registerCredentialValueRoutes(server: FastifyInstance, ctx: Daem
     } catch (err) {
       return sendError(reply, err)
     }
+  })
+
+  server.post<{ Body: { ids?: unknown } | null }>('/settings/providers/keys/reveal', async (request, reply) => {
+    if (!local(request, reply)) return reply
+    const ids = request.body?.ids
+    if (ids !== undefined && (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string'))) return badRequest(reply, 'ids must be an array of strings')
+    const wantedIds = ids === undefined ? null : new Set(ids as string[])
+    const keys: Record<string, string> = {}
+    const providers = settings?.get('providers')
+    for (const entry of Array.isArray(providers) ? providers : []) {
+      const p = entry as { id?: unknown; apiKey?: unknown } | null
+      if (!p || typeof p.id !== 'string' || typeof p.apiKey !== 'string' || !p.apiKey) continue
+      if (wantedIds && !wantedIds.has(p.id)) continue
+      keys[p.id] = p.apiKey
+    }
+    return reply.header('Cache-Control', 'no-store').send({ keys })
   })
 
   server.post<{ Querystring: { path?: string }; Params: { providerId: string }; Body: { replace?: unknown } | null }>(

@@ -575,6 +575,13 @@ export class BackgroundAgentManager extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       const config = workspace.getAgentConfig()
+      // The lease names the agent now; a copy of an agent another runtime
+      // (or this one) runs from another file is refused (W5-D3).
+      const idLease = await this.agentLeases.noteAgentId(filePath, config.id)
+      if (idLease && !idLease.ok) {
+        try { workspace.close() } catch { /* already closed */ }
+        throw new BackgroundStartError(idLease.message, AGENT_LEASED_CODE)
+      }
       // Agent name is derived from filename, same as opening the file does: a
       // file renamed outside the app must not run under its old name.
       const fileDerivedName = basename(filePath, '.adf')

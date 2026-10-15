@@ -975,3 +975,117 @@ describe('holder liveness: a missing endpoint', () => {
     expect(verdict.alive).toBe(true)
   })
 })
+
+// W5-D3: the lease was keyed by path only, so a copied or restored .adf (same
+// agent id, another file) in a tracked folder autostarted next to the
+// original and polled the same Telegram bot token twice.
+describe('a copy of a running agent (same agent id, another path) is refused', () => {
+  /** agent-1.adf and a byte copy of it (same id) in another folder. */
+  function original_and_copy(): { original: string; copy: string; config: AgentConfig } {
+    const work = tempDir('adf-lease-id-')
+    const { filePath, config } = seedAgent(work, 'agent-1', false)
+    const copies = join(work, 'restored')
+    mkdirSync(copies)
+    const copy = join(copies, 'agent-1.adf')
+    writeFileSync(copy, readFileSync(filePath))
+    return { original: filePath, copy, config }
+  }
+
+  it('acquire with the agent id refuses while another live holder runs that id, naming both paths; it starts once that one stops', async () => {
+    const leases = tempDir('adf-lease-id-leases-')
+    const { original, copy, config } = original_and_copy()
+    const daemon = registry(leases, { kind: 'daemon', controlUrl: 'http://127.0.0.1:7999' })
+    const studio = registry(leases, { kind: 'studio-embedded' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    cleanups.push(() => vi.restoreAllMocks())
+
+    expect((await daemon.acquire(original, { agentId: config.id })).ok).toBe(true)
+    const refused = await studio.acquire(copy, { agentId: config.id })
+    expect(refused.ok).toBe(false)
+    if (refused.ok) return
+    expect(refused.code).toBe(AGENT_LEASED_CODE)
+    expect(refused.record.path).toBe(await canonicalLeasePath(original))
+    expect(refused.message).toContain(`agent-1 was not started: ${await canonicalLeasePath(copy)} has the agent id ${config.id}`)
+    expect(refused.message).toContain(`${await canonicalLeasePath(original)} with the same id is already running in the ADF daemon (pid ${process.pid}, http://127.0.0.1:7999)`)
+    // The path lease the refused call took is given back at once.
+    expect(leaseFiles(leases)).toHaveLength(1)
+    expect(await studio.isHeld(copy)).toBe(false)
+
+    await daemon.reconcile()
+    expect((await studio.acquire(copy, { agentId: config.id })).ok).toBe(true)
+  })
+
+  it('a lease taken before the file was read is checked when the id is noted; a dead holder of the id does not block', async () => {
+    const leases = tempDir('adf-lease-id-note-')
+    const { original, copy, config } = original_and_copy()
+    const studio = registry(leases, { kind: 'studio-embedded' })
+    const daemon = registry(leases)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    cleanups.push(() => vi.restoreAllMocks())
+
+    expect((await studio.acquire(original, { agentId: config.id })).ok).toBe(true)
+    expect((await daemon.acquire(copy)).ok).toBe(true) // no id yet: path lease only
+    const noted = await daemon.noteAgentId(copy, config.id)
+    expect(noted?.ok).toBe(false)
+    expect(noted?.ok === false && noted.message).toMatch(/already running in another ADF Studio \(pid \d+\)/)
+
+    // A holder that died leaves its lease behind: not a conflict.
+    await daemon.reconcile()
+    const sleeper = spawnSleeper()
+    const deadPid = sleeper.pid!
+    killTree(deadPid)
+    await waitForExit(sleeper)
+    await studio.reconcile()
+    const canonical = await canonicalLeasePath(original)
+    writeFileSync(join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`), JSON.stringify({
+      v: 1, path: canonical, agentId: config.id, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: deadPid, runtimeId: 'gone', hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: null },
+    }))
+    expect((await daemon.acquire(copy)).ok).toBe(true)
+    expect(await daemon.noteAgentId(copy, config.id)).toBeNull()
+  })
+
+  it('one process never runs two copies either', async () => {
+    const leases = tempDir('adf-lease-id-own-')
+    const { original, copy, config } = original_and_copy()
+    const reg = registry(leases, { kind: 'studio-embedded' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    cleanups.push(() => vi.restoreAllMocks())
+    expect((await reg.acquire(original, { agentId: config.id })).ok).toBe(true)
+    const second = await reg.acquire(copy, { agentId: config.id })
+    expect(second.ok === false && second.message).toMatch(/is already running in this ADF Studio/)
+    // Re-entrant for the original's own path.
+    expect((await reg.acquire(original, { agentId: config.id })).ok).toBe(true)
+  })
+
+  it('RuntimeService.loadAgent and a background start refuse the copy with agent_leased', async () => {
+    const leases = tempDir('adf-lease-id-hosts-')
+    const { original, copy, config } = original_and_copy()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    cleanups.push(() => vi.restoreAllMocks())
+    const theirs = registry(leases, { kind: 'studio-embedded' })
+    expect((await theirs.acquire(original, { agentId: config.id })).ok).toBe(true)
+
+    const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: () => new MockLLMProvider(), agentLeases: registry(leases) })
+    cleanups.push(async () => { for (const a of runtime.listAgents()) await runtime.unloadAgent(a.id, { mode: 'immediate' }) })
+    const refused = await runtime.loadAgent(copy).catch((err: unknown) => err)
+    expect(refused).toBeInstanceOf(RuntimeLoopError)
+    expect(refused).toMatchObject({ statusCode: 409, code: AGENT_LEASED_CODE })
+    expect((refused as Error).message).toMatch(/^agent-1 was not started: .* has the agent id .* already running in another ADF Studio/)
+    expect(runtime.listAgents()).toEqual([])
+    expect(leaseFiles(leases)).toHaveLength(1)
+
+    // Studio's background start (BackgroundAgentManager, process registry).
+    const other = registry(processAgentLeases().dir, { kind: 'daemon' })
+    expect((await other.acquire(original, { agentId: config.id })).ok).toBe(true)
+    const manager = new BackgroundAgentManager({
+      get: () => undefined,
+      getProvider: (id: string) => ({ id: id || 'mock', type: 'anthropic', name: 'mock-provider', apiKey: 'test-key' }),
+    } as unknown as SettingsService, '', {})
+    cleanups.push(async () => { await manager.stopAll(); manager.dispose() })
+    expect(await manager.startAgent(copy)).toBe(false)
+    expect(manager.getLastStartError(copy)).toEqual({ code: AGENT_LEASED_CODE, error: expect.stringMatching(/^agent-1 was not started: .*already running in the ADF daemon/) })
+    expect(await processAgentLeases().isHeld(copy)).toBe(false)
+  })
+})
