@@ -1,11 +1,12 @@
 // The machine id in lease and host records (W5-G, CI run 38749217035: a
 // Windows host record carried `machineId: null`). reg.exe answered after its
-// 3 s timeout on a loaded runner, and the failed lookup was cached for the
-// whole process. A record without a machine id is judged by the reader's own
-// pids, so a runtime on another machine sharing the lease folder could take a
-// live agent. The lookup now retries with a longer timeout, a failure is
-// remembered only briefly, and a registry that wrote its records without the
-// id rewrites them once it is read.
+// 3 s timeout on a loaded runner (2-4 s measured locally under CPU load), and
+// the failed lookup was cached for the whole process. A record without a
+// machine id is judged by the reader's own pids, so a runtime on another
+// machine sharing the lease folder could take a live agent. The lookup now
+// retries with a longer timeout, a failure is remembered only briefly, and a
+// registry that wrote its records without the id (the first write waits at
+// most 3 s, as before) rewrites them once it is read.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -59,7 +60,7 @@ describe('machine id lookup', () => {
     __setMachineIdReaderForTests(async () => {
       if (!answer) throw new Error('spawn reg.exe ETIMEDOUT')
       return answer
-    }, 40)
+    }, { retryMs: 40 })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await machineId()).toBeNull()
     answer = 'machine-1'
@@ -74,7 +75,7 @@ describe('machine id lookup', () => {
     __setMachineIdReaderForTests(async () => {
       if (!answer) throw new Error('spawn reg.exe ETIMEDOUT')
       return answer
-    }, 40)
+    }, { retryMs: 40 })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const dir = tempDir()
@@ -97,5 +98,24 @@ describe('machine id lookup', () => {
     writeFileSync(agent2, '')
     const second = await reg.acquire(agent2)
     expect(readJson<AgentLeaseRecord>((second as { leaseFile: string }).leaseFile).holder.machineId).toBe('machine-1')
+  })
+
+  it('a lookup slower than the wait of the first write goes on: the records written meanwhile get the id when it answers', async () => {
+    let answer!: (id: string) => void
+    const slow = new Promise<string>((resolve) => { answer = resolve })
+    __setMachineIdReaderForTests(() => slow, { waitMs: 30 })
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dir = tempDir()
+    const agent = join(dir, 'agent-1.adf')
+    writeFileSync(agent, '')
+    const reg = registry(dir)
+    const lease = await reg.acquire(agent)
+    const leaseFile = (lease as { leaseFile: string }).leaseFile
+    // The start did not wait for the lookup.
+    expect(readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId).toBeNull()
+    expect(readJson<AgentLeaseRecord>(leaseFile).holder.machineId).toBeNull()
+    answer('machine-1')
+    await expect.poll(() => readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId, { timeout: 5_000 }).toBe('machine-1')
+    await expect.poll(() => readJson<AgentLeaseRecord>(leaseFile).holder.machineId, { timeout: 5_000 }).toBe('machine-1')
   })
 })

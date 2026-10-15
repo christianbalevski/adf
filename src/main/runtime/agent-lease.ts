@@ -325,10 +325,17 @@ function errCode(err: unknown): string | undefined {
 const MACHINE_ID_ATTEMPT_TIMEOUTS_MS = [3_000, 10_000]
 /** A failed lookup is remembered this long; the next caller after it asks again. */
 const MACHINE_ID_RETRY_MS = 15_000
+/**
+ * How long a registry's first write waits for the lookup (agent starts wait
+ * on it). A slower lookup goes on, and the records are rewritten once it
+ * answers.
+ */
+const MACHINE_ID_WAIT_MS = 3_000
 
 type MachineIdReader = (timeoutMs: number) => Promise<string | null>
 let machineIdReader: MachineIdReader = readMachineId
 let machineIdRetryMs = MACHINE_ID_RETRY_MS
+let machineIdWaitMs = MACHINE_ID_WAIT_MS
 let machineIdLookup: { promise: Promise<string | null>; failedAt: number | null } | null = null
 
 /**
@@ -348,10 +355,11 @@ export function machineId(): Promise<string | null> {
   return entry.promise
 }
 
-/** Tests: replace the platform reader and the retry interval (undefined restores them) and forget the cached id. */
-export function __setMachineIdReaderForTests(reader?: MachineIdReader, retryMs?: number): void {
+/** Tests: replace the platform reader, the retry interval and the first write's wait (undefined restores them) and forget the cached id. */
+export function __setMachineIdReaderForTests(reader?: MachineIdReader, opts: { retryMs?: number; waitMs?: number } = {}): void {
   machineIdReader = reader ?? readMachineId
-  machineIdRetryMs = retryMs ?? MACHINE_ID_RETRY_MS
+  machineIdRetryMs = opts.retryMs ?? MACHINE_ID_RETRY_MS
+  machineIdWaitMs = opts.waitMs ?? MACHINE_ID_WAIT_MS
   machineIdLookup = null
 }
 
@@ -1247,10 +1255,18 @@ export class AgentLeaseRegistry {
 
   private ensureReady(rewriteEntry: boolean): Promise<void> {
     if (!this.ready) {
+      let lookup: Promise<string | null> | undefined
       this.ready = this.startEndpoint()
-        .then(async () => { this.machineIdValue = this.machineIdOverride !== undefined ? this.machineIdOverride : await machineId() })
+        .then(async () => {
+          if (this.machineIdOverride !== undefined) { this.machineIdValue = this.machineIdOverride; return }
+          lookup = machineId()
+          let timer: NodeJS.Timeout | undefined
+          const waited = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), machineIdWaitMs); timer.unref?.() })
+          this.machineIdValue = await Promise.race([lookup, waited])
+          clearTimeout(timer)
+        })
         .then(() => this.writeEntry())
-        .then(() => this.scheduleMachineIdRetry())
+        .then(() => this.scheduleMachineIdRetry(lookup))
     } else if (rewriteEntry) {
       this.ready = this.ready.then(() => this.writeEntry())
     }
@@ -1258,22 +1274,27 @@ export class AgentLeaseRegistry {
   }
 
   /**
-   * The machine id could not be read when the host record was first written:
-   * ask again every MACHINE_ID_RETRY_MS (15 s) and, once read, rewrite the host
-   * record and every lease this process holds. A record without a machine id
-   * is judged by the reader's own pids, so a runtime on another machine
-   * sharing the lease folder could take a live agent from this one.
+   * The machine id was not read when the host record was first written: wait
+   * for the lookup still running (`pending`), else ask again every
+   * MACHINE_ID_RETRY_MS (15 s), and once read rewrite the host record and
+   * every lease this process holds. A record without a machine id is judged
+   * by the reader's own pids, so a runtime on another machine sharing the
+   * lease folder could take a live agent from this one.
    */
-  private scheduleMachineIdRetry(): void {
+  private scheduleMachineIdRetry(pending?: Promise<string | null>): void {
     if (this.machineIdValue || this.machineIdOverride !== undefined || this.machineIdRetry || !this.ready) return
-    this.machineIdRetry = setTimeout(() => {
-      this.machineIdRetry = null
-      void machineId().then(async (id) => {
-        if (!this.ready) return // closed meanwhile
+    const settle = (lookup: Promise<string | null>): void => {
+      void lookup.then(async (id) => {
+        if (!this.ready || this.machineIdValue) return // closed meanwhile, or already stamped
         if (!id) { this.scheduleMachineIdRetry(); return }
         this.machineIdValue = id
         await this.stampMachineId(id)
       })
+    }
+    if (pending) { settle(pending); return }
+    this.machineIdRetry = setTimeout(() => {
+      this.machineIdRetry = null
+      settle(machineId())
     }, machineIdRetryMs)
     this.machineIdRetry.unref?.()
   }
@@ -1297,7 +1318,7 @@ export class AgentLeaseRegistry {
         }
       })
     }
-    console.log(`[AgentLease] Read this machine's id on a later try; added it to the host record and ${leases} held lease(s)`)
+    console.log(`[AgentLease] Read this machine's id late; added it to the host record and ${leases} held lease(s)`)
   }
 
   private async startEndpoint(): Promise<void> {
