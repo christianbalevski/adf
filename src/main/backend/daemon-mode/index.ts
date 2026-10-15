@@ -151,6 +151,12 @@ export interface DaemonModeDeps {
   processAlive?: (pid: number) => boolean
   /** Tests: the pause before Studio starts a daemon it started again (default DAEMON_RESPAWN_DELAY_MS). */
   respawnDelayMs?: number
+  /**
+   * Electron's powerMonitor (main/index.ts passes it): on `resume` the
+   * daemon is checked and the client stream re-dialed at once. Absent: no
+   * resume handling (tests, the parity harness).
+   */
+  powerMonitor?: Pick<Electron.PowerMonitor, 'on' | 'removeListener'> | null
   /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
   afterOwnerImport?: (phrase: string) => Promise<string>
   /** Tests: Studio's restarts after a failed launch. Default: relaunchStudio / relaunchEmbeddedForSession (mode-switch.ts). */
@@ -683,6 +689,32 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     })
   }
 
+  /**
+   * The computer woke up. A stream that slept is often dead without knowing
+   * it; the idle watchdog would notice only after 75 s. Check the daemon
+   * (/health, no token, 3 s) and re-dial the stream at once: the resume is
+   * exact when the daemon kept the session, a new session otherwise. A
+   * daemon that does not answer is a lost connection now (local mode: the
+   * exit check and the pid check before the token run from there).
+   */
+  const RESUME_HEALTH_TIMEOUT_MS = 3_000
+  const onSystemResume = (): void => {
+    const client = connection.current
+    const state = connection.state.state
+    if (shutdownPromise || !clientSession || !client || state === 'failed' || state === 'connecting') return
+    log.log('[Backend] The computer resumed: checking the ADF daemon and re-dialing the client stream')
+    void client.withTimeout(RESUME_HEALTH_TIMEOUT_MS).health().then(
+      () => { clientSession?.reconnect() },
+      (err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err)
+        log.warn(`[Backend] The ADF daemon did not answer after the computer resumed: ${reason}`)
+        connection.markDisconnected(`no answer after the computer resumed: ${reason}`)
+        clientSession?.reconnect()
+      },
+    )
+  }
+  deps.powerMonitor?.on('resume', onSystemResume)
+
   /** Resolves true once the stream is connected again (the new session opened, documents re-held, focus re-sent). */
   const waitConnected = (budgetMs: number): Promise<boolean> => new Promise((done) => {
     if (connection.state.state === 'connected') { done(true); return }
@@ -821,6 +853,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   let shutdownPromise: Promise<void> | null = null
   const shutdown = (opts: { waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
+      deps.powerMonitor?.removeListener('resume', onSystemResume)
       statusUi.dispose()
       approvals.dispose()
       remoteServices?.picker.cancelAll()

@@ -65,6 +65,8 @@ function createBootHarness() {
       on: (channel: string) => { calls.push(`ipcMain.on(${channel})`) },
     },
     nativeTheme: { shouldUseDarkColors: false, on: () => {}, off: () => {} },
+    // Daemon mode subscribes to `resume` (sleep and wake, W5-D2).
+    powerMonitor: { on: rec('powerMonitor.on'), removeListener: () => {} },
     protocol: {
       registerSchemesAsPrivileged: rec('protocol.registerSchemesAsPrivileged'),
       handle: (scheme: string) => { calls.push(`protocol.handle(${scheme})`) },

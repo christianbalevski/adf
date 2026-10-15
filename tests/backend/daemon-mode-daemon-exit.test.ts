@@ -211,3 +211,44 @@ describe('local mode: the token after a dropped connection (W5-D1 pid check, eve
     expect(seen.at(-1)).toEqual({ path: '/identity/import', auth: 'Bearer t', proof: 'p' })
   })
 })
+
+describe('sleep and wake (powerMonitor resume)', () => {
+  it('checks the daemon at once and re-dials the stream; a daemon that does not answer is a lost connection now', async () => {
+    const { EventEmitter } = await import('node:events')
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-resume-'))
+    dirs.push(dir)
+    const daemon = createFakeDaemon(BASE)
+    daemon.routes.set('GET /agents', () => [])
+    daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
+    daemon.routes.set('GET /health', () => ({ ok: true }))
+    const session = createFakeClientSession()
+    const power = new EventEmitter()
+    const logs: string[] = []
+    const handle = registerDaemonModeHandlers({
+      mode: 'local',
+      userDataDir: dir,
+      connect: Object.assign(async () => ({ baseUrl: BASE, logFile: null, description: 'fake', source: { token: () => 't' } }), { logFile: null }),
+      leases: { registerClient: async () => {} },
+      ipcMain: { handle: () => {}, on: () => {} } as never,
+      fetch: daemon.fetch,
+      createSession: () => session,
+      powerMonitor: power as never,
+      log: { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(m) }, error: (m: string) => { logs.push(m) } },
+    })
+    expect(await handle.ready).toBe(true)
+    expect(handle.connection.state.state).toBe('connected')
+
+    power.emit('resume')
+    await vi.waitFor(() => expect(session.reconnects).toBe(1))
+    expect(daemon.requests.filter((r) => r.path === '/health')).toHaveLength(1)
+    expect(logs).toContain('[Backend] The computer resumed: checking the ADF daemon and re-dialing the client stream')
+
+    daemon.routes.set('GET /health', () => ({ status: 503, body: { error: 'down' } }))
+    power.emit('resume')
+    await vi.waitFor(() => expect(session.reconnects).toBe(2))
+    expect(handle.connection.state).toMatchObject({ state: 'disconnected', error: expect.stringMatching(/^no answer after the computer resumed/) })
+
+    await handle.shutdown()
+    expect(power.listenerCount('resume')).toBe(0)
+  })
+})
