@@ -310,7 +310,11 @@ export function useAdfFile() {
     }
   }, [applyFileContents])
 
-  const completeFileOpen = useCallback(async () => {
+  /**
+   * `reattach: false`: the gate was passed without the agent's key (Wipe All
+   * Keys); a daemon agent still on its stub provider is not re-attached.
+   */
+  const completeFileOpen = useCallback(async (opts: { reattach?: boolean } = {}) => {
     setShowSettings(false)
     resetAgent()
     // Review state belongs to the previous file until main re-checks below.
@@ -318,7 +322,7 @@ export function useAdfFile() {
     await loadFileContents()
 
     const filePath = useDocumentStore.getState().filePath
-    if (filePath && reattachAfterUnlock.delete(filePath)) {
+    if (filePath && reattachAfterUnlock.delete(filePath) && opts.reattach !== false) {
       // A running agent skips the review check, as openFile's re-attach does.
       useAppStore.getState().addStartingFilePath(filePath)
       const startResult = await window.adfApi.startAgent().finally(() => useAppStore.getState().removeStartingFilePath(filePath))
@@ -575,6 +579,8 @@ export function useAdfFile() {
 
   const closeFile = useCallback(async () => {
     if (!confirmDiscardConflicts()) return
+    // The password prompt was cancelled (or the file closed): nothing to re-attach after an unlock.
+    reattachAfterUnlock.clear()
     await window.adfApi.closeFile()
     resetDocument()
     resetAgent()
