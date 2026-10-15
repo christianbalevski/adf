@@ -360,6 +360,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W4-B | DNS pinning covers only `guardedFetch`; `sys_fetch`, `ws_connect`, MCP still check-then-connect (rebinding); NAT64 local-use `64:ff9b:1::/48` and Teredo not mapped; unresolvable-host refusal breaks `NODE_USE_ENV_PROXY` without local DNS | W5-A |
 | W4-B | Plain http to `100.64.0.0/10` counts as tailnet but is also ISP CGNAT; recommend https via MagicDNS in docs | W4-C |
 | W4-B | User-testing checklist items wrong for remote: MODE-06, MODE-07, IDN-02, IDN-03, DMN-20, DMN-22, DMN-18/19 + Remote host row, FILE-16, TMPL-04, MESH-04, COMP-06, FILE-08 | W4-C |
+| W3-F | `PUT files/raw` takes no base revision and echoes the upload to the uploader's own session | W5-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
