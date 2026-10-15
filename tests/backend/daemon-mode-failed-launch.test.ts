@@ -46,6 +46,8 @@ function boot(connect: () => Promise<never> | Promise<unknown>, mode: 'local' | 
     fetch: daemon.fetch,
     createSession: () => session,
     relaunch: { reconnect: (reason) => { relaunches.push(`reconnect: ${reason}`) }, embeddedForSession: (reason) => { relaunches.push(`embedded: ${reason}`) } },
+    // The stub window never answers the stash request: main's fallback restarts at once.
+    stashWaitMs: 0,
     log: { log: () => {}, warn: () => {}, error: () => {} },
   })
   return { handle, session, relaunches }
@@ -60,7 +62,12 @@ describe('after a failed launch', () => {
     expect(handle.connection.state.state).toBe('failed')
     expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Use Embedded for This Session'])
     helpItem('Reconnect to the ADF Daemon')!.click!()
+    await vi.waitFor(() => expect(relaunches).toHaveLength(1))
     helpItem('Use Embedded for This Session')!.click!()
+    await vi.waitFor(() => expect(relaunches).toHaveLength(2))
+    // No client session had opened: no confirmation; the window is asked to keep its unsaved text first.
+    expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox').map((c) => (c.args[0] as { title?: string }).title)).toEqual(['ADF daemon not available'])
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.MENU_ACTION).map((p) => p.args[0])).toEqual(['stash-edits-and-reconnect', 'stash-edits-and-use-embedded'])
     expect(relaunches).toEqual([
       'reconnect: Reconnect after a failed connection to the ADF daemon',
       'embedded: no ADF daemon could be reached at launch',
@@ -91,6 +98,31 @@ describe('after a failed launch', () => {
     const dialog = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { buttons: string[] }
     expect(dialog.buttons).toEqual(['Reconnect', 'Open Settings → Backend', 'Open Daemon Log', 'OK'])
     expect(relaunches).toEqual([])
+  })
+
+  it('a failure during the session: Reconnect asks first; Cancel restarts nothing, Restart Studio keeps unsaved editors then restarts', async () => {
+    electronStub.calls.length = 0
+    electronStub.pushes.length = 0
+    electronStub.dialogResponse = 99 // dismiss the failure dialog
+    const { handle, session, relaunches } = boot(async () => ({ baseUrl: BASE, logFile: null, description: 'the fake daemon', source: { token: () => 't' } }))
+    expect(await handle.ready).toBe(true)
+    session.listener!.onFatal?.('The ADF daemon speaks client API 9; this Studio speaks 1.')
+    expect(handle.connection.state.state).toBe('failed')
+    const confirms = () => electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox' && (c.args[0] as { title?: string }).title === 'Restart Studio').map((c) => c.args[0] as { message: string; detail: string; buttons: string[] })
+
+    electronStub.dialogResponse = 1 // Cancel
+    helpItem('Reconnect to the ADF Daemon')!.click!()
+    await vi.waitFor(() => expect(confirms()).toHaveLength(1))
+    expect(confirms()[0]).toMatchObject({ message: 'Reconnect restarts Studio.', buttons: ['Restart Studio', 'Cancel'] })
+    expect(confirms()[0].detail).toMatch(/client API 9[\s\S]*Unsaved text in open editors is kept as recovery copies/)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(relaunches).toEqual([])
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.MENU_ACTION)).toEqual([])
+
+    electronStub.dialogResponse = 0 // Restart Studio
+    helpItem('Reconnect to the ADF Daemon')!.click!()
+    await vi.waitFor(() => expect(relaunches).toEqual(['reconnect: Reconnect after a failed connection to the ADF daemon']))
+    expect(electronStub.pushes.filter((p) => p.channel === IPC.MENU_ACTION).map((p) => p.args[0])).toEqual(['stash-edits-and-reconnect'])
   })
 
   it('while the stream is only disconnected, Reconnect reconnects it and the embedded escape is not offered', async () => {

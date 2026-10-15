@@ -430,6 +430,22 @@ export async function askVersionMismatch(
   return 'embedded'
 }
 
+let relaunching = false
+
+/**
+ * One restart per process: each app.relaunch() starts one more instance at
+ * quit, so a second request (the window's answer and main's fallback, or
+ * two clicks) is logged and dropped.
+ */
+function relaunchStarted(reason: string): boolean {
+  if (relaunching) {
+    console.log(`[Backend] Studio is already restarting; not restarting again for: ${reason}`)
+    return true
+  }
+  relaunching = true
+  return false
+}
+
 /**
  * Restart Studio in embedded mode for this launch only (SESSION_BACKEND_ARG):
  * after a daemon version mismatch, or a launch whose daemon could not be
@@ -437,6 +453,7 @@ export async function askVersionMismatch(
  * they are; credentials do not move (session-only handover).
  */
 export function relaunchEmbeddedForSession(reason: string): void {
+  if (relaunchStarted(reason)) return
   console.log(`[Backend] Restarting Studio in embedded mode for this session (${reason}); credentials stay where the saved mode keeps them`)
   app.relaunch({ args: [...process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG), SESSION_BACKEND_ARG] })
   app.quit()
@@ -459,6 +476,7 @@ export async function syncRuntimeEntryAfterImport(userDataDir: string, phrase: s
 
 /** Restart Studio into the backend just saved. A session-only embedded override is not carried over. */
 export function relaunchStudio(reason: string): void {
+  if (relaunchStarted(reason)) return
   console.log(`[Backend] Restarting Studio: ${reason}`)
   app.relaunch({ args: process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG) })
   app.quit()

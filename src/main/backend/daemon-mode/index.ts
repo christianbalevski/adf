@@ -139,6 +139,8 @@ export interface DaemonModeDeps {
   afterOwnerImport?: (phrase: string) => Promise<string>
   /** Tests: Studio's restarts after a failed launch. Default: relaunchStudio / relaunchEmbeddedForSession (mode-switch.ts). */
   relaunch?: { reconnect(reason: string): void; embeddedForSession(reason: string): void }
+  /** How long a restart waits for the window to keep its unsaved editors and restart itself. Default 15 s. */
+  stashWaitMs?: number
 }
 
 export interface DaemonModeHandle {
@@ -397,12 +399,54 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   let clientSession: ClientSession | null = null
   const relaunch = deps.relaunch ?? { reconnect: relaunchStudio, embeddedForSession: relaunchEmbeddedForSession }
+  /**
+   * Restart after the connection failed. The window first keeps every
+   * unsaved editor as a recovery copy (W3-F RECOVERY_STASH, listed at the
+   * next launch), then asks for the restart itself (BACKEND_RESTART_STUDIO);
+   * without a window, or one that does not answer, main restarts.
+   */
+  const restartKeepingEdits = (kind: 'reconnect' | 'embedded-session', reason: string): void => {
+    const restart = () => kind === 'reconnect' ? relaunch.reconnect(reason) : relaunch.embeddedForSession(reason)
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && !w.webContents.isDestroyed())
+    if (!win) { restart(); return }
+    log.log(`[Backend] Asking the window to keep its unsaved editor text as recovery copies, then restarting (${reason})`)
+    win.webContents.send(IPC.MENU_ACTION, kind === 'reconnect' ? 'stash-edits-and-reconnect' : 'stash-edits-and-use-embedded')
+    const fallback = setTimeout(() => {
+      log.warn('[Backend] The window did not restart Studio after keeping its unsaved text; restarting now')
+      restart()
+    }, deps.stashWaitMs ?? 15_000)
+    fallback.unref?.()
+  }
+  /**
+   * After the connection failed during this session (a client session had
+   * opened: documents may be open), a restart is confirmed first. A launch
+   * that never connected restarts at once.
+   */
+  const confirmRestart = async (action: string, failure: string): Promise<boolean> => {
+    if (!clientSession) return true
+    const buttons = ['Restart Studio', 'Cancel']
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      title: 'Restart Studio',
+      message: `${action} restarts Studio.`,
+      detail: `The connection to the ADF daemon failed during this session: ${failure}\n\nUnsaved text in open editors is kept as recovery copies; the next launch lists them.`,
+      buttons,
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }).catch(() => ({ response: 1 }))
+    if (response !== 0) log.log(`[Backend] ${action} cancelled; Studio stays without a daemon connection`)
+    return response === 0
+  }
   const reconnect = (): void => {
     const state = connection.state
     if (state.state === 'failed') {
-      // The launch found no daemon (or none it can use): the connector runs again at Studio's start.
-      log.log(`[Backend] Reconnect requested after a failed connection (${state.message}): restarting Studio to connect again`)
-      relaunch.reconnect('Reconnect after a failed connection to the ADF daemon')
+      // The connector failed, or the session became unusable: the connector runs again at Studio's start.
+      void confirmRestart('Reconnect', state.message).then((ok) => {
+        if (!ok) return
+        log.log(`[Backend] Reconnect requested after a failed connection (${state.message}): restarting Studio to connect again`)
+        restartKeepingEdits('reconnect', 'Reconnect after a failed connection to the ADF daemon')
+      })
       return
     }
     if (!clientSession) {
@@ -425,8 +469,12 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
    * too (two pollers of one bot, Telegram 409).
    */
   const useEmbeddedForSession = deps.mode === 'local' ? (): void => {
-    log.log('[Backend] Use Embedded for This Session requested after a failed connection to the ADF daemon')
-    relaunch.embeddedForSession('no ADF daemon could be reached at launch')
+    const state = connection.state
+    void confirmRestart('Use Embedded for This Session', state.state === 'failed' ? state.message : 'not connected').then((ok) => {
+      if (!ok) return
+      log.log('[Backend] Use Embedded for This Session requested after a failed connection to the ADF daemon')
+      restartKeepingEdits('embedded-session', clientSession ? 'the ADF daemon connection failed during the session' : 'no ADF daemon could be reached at launch')
+    })
   } : undefined
   /** Remote mode, after a failed launch: Settings → Backend, where the URL and token are fixed and tested. */
   const openBackendSettings = deps.mode === 'remote' ? (): void => {
