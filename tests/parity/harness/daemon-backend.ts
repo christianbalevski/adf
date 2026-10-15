@@ -2,6 +2,7 @@ import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_pro
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http'
 import { createServer } from 'node:net'
+import { RELAY_HOST } from './relay-host'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -422,9 +423,9 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
           mode: proxy ? 'remote' : 'local',
           userDataDir: env.userDataDir,
           connect,
-          // Remote: the OAuth relay listens on 127.0.0.2, as on another computer's loopback (the
+          // Remote: the OAuth relay listens on RELAY_HOST, as on another computer's loopback (the
           // daemon's callback server holds 127.0.0.1); the fake MCP server's https page is on 127.0.0.1.
-          ...(proxy ? { remoteOAuth: { bindHost: '127.0.0.2', allowPage: (url: URL) => url.hostname === '127.0.0.1' } } : {}),
+          ...(proxy ? { remoteOAuth: { bindHost: RELAY_HOST, allowPage: (url: URL) => url.hostname === '127.0.0.1' } } : {}),
           // The OS keychain's shared owner-phrase entry is the test keychain file here, as for the daemon child.
           sharedMnemonic: () => ({
             read: () => {

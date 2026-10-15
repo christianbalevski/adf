@@ -1,5 +1,6 @@
 import type { ParityBackend } from '../harness/backend'
 import { completeFakeAuthorization, type FakeMcpServer } from './fake-mcp-server'
+import { RELAY_URL_HOST } from '../harness/relay-host'
 
 /**
  * A backend the fake MCP server (fake-mcp-server.ts) is reachable from: the
@@ -18,7 +19,7 @@ export function withFakeServer(fake: () => FakeMcpServer): (backend: ParityBacke
       const open = shell.openExternal.bind(shell)
       shell.openExternal = async (url: string) => {
         await open(url)
-        void completeFakeAuthorization(url, server.port, (p) => env.allowPort(p), backend.name === 'remote' ? '127.0.0.2' : undefined)
+        void completeFakeAuthorization(url, server.port, (p) => env.allowPort(p), backend.name === 'remote' ? RELAY_URL_HOST : undefined)
       }
       const booted = await backend.boot(env, electron)
       const own = booted.normalization?.bind(booted)
