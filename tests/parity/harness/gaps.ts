@@ -276,8 +276,9 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         const base = e.state.adf[file]?.tables.adf_tasks?.rows as Row[] | undefined
         if (!rows || !base) continue
         const kept = rows.filter((r) => !(r.tool === 'mcp_oauth_authorize' && r.status === 'completed' && r.result === 'Authorization completed'))
-        if (kept.length === rows.length || !same(kept, base)) continue
-        n += rows.length - kept.length
+        // Exactly the one request; anything else stays and shows.
+        if (rows.length - kept.length !== 1 || !same(kept, base)) continue
+        n += 1
         dump.tables.adf_tasks.rows = kept
       }
       return n
@@ -295,9 +296,13 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         const rows = dump.tables.adf_logs?.rows as Row[] | undefined
         const base = e.state.adf[file]?.tables.adf_logs?.rows as Row[] | undefined
         if (!rows || !base) continue
+        // The two steps, in order (agent-runtime-builder.ts prepareHttpOAuthOnce): the URL raised, then the token sealed.
+        const STEPS = [/^OAuth sign-in for "[^"]+" approved — authorization URL raised as a "mcp_oauth_authorize" request/, /^OAuth sign-in for "[^"]+" complete — token sealed into the agent\.$/]
         const signIn = (r: Row) => r.event === 'oauth_signin' && r.origin === 'mcp' && r.level === 'info'
+        const dropped = rows.filter(signIn)
+        if (dropped.length !== 2 || !dropped.every((r, i) => STEPS[i].test(String(r.message ?? '')))) continue
         const kept = rows.filter((r) => !signIn(r))
-        if (kept.length === rows.length || kept.length !== base.length) continue
+        if (kept.length !== base.length) continue
         const renumbered = kept.map((r, i) => ({ ...r, id: base[i].id }))
         if (!same(renumbered, base)) continue
         n += rows.length - kept.length
