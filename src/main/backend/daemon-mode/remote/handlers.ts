@@ -216,7 +216,7 @@ export const REMOTE_MODE_HANDLERS: DaemonHandlerTable = {
     const picked = await r.picker.pick('folder', `Track a folder on ${r.host()}`)
     if (!picked || !('path' in picked)) return { directories: await list() }
     try {
-      const tracked = await client.request<{ directories: string[] }>('POST', '/tracked-dirs', { body: { path: picked.path }, timeoutMs: 120_000 })
+      const tracked = await client.request<{ directories: string[] }>('POST', '/tracked-dirs', { body: { path: picked.path, autostart: false }, timeoutMs: 120_000 })
       return { directories: tracked.directories }
     } catch (err) {
       // Already covered by a tracked folder: the list as it is (as local mode).

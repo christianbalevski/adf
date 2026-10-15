@@ -228,6 +228,8 @@ describe('tracked directories, picker, drafts, reveal', () => {
     expect(await call(IPC.TRACKED_DIRS_ADD)).toEqual({ directories: [dir] })
     daemon.routes.set('POST /tracked-dirs', () => ({ status: 201, body: { directories: [dir, join(tmpdir(), 'other')] } }))
     expect(await call(IPC.TRACKED_DIRS_ADD)).toEqual({ directories: [dir, join(tmpdir(), 'other')] })
+    // As embedded Studio: tracking does not start the folder's agents.
+    expect(daemon.requests.filter((r) => r.method === 'POST' && r.path === '/tracked-dirs').at(-1)?.body).toEqual({ path: join(dir, 'sub'), autostart: false })
   })
 
   it('TRACKED_DIRS_GET collapses nested entries and persists the list; REMOVE of an untracked folder answers the list', async () => {

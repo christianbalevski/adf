@@ -24729,6 +24729,10 @@
           "path": {
             "type": "string",
             "description": "Absolute path to an existing directory"
+          },
+          "autostart": {
+            "type": "boolean",
+            "description": "Default true. false: track the folder without the autostart pass (Studio sends it, as embedded Studio starts a tracked folder's agents only at its next start); `autostart` is then an empty report."
           }
         },
         "example": {

@@ -82,6 +82,20 @@ function setup(initial: Record<string, unknown> = {}) {
 }
 
 describe('daemon tracked folders API', () => {
+  it('autostart: false (Studio, as embedded Studio tracks a folder) tracks without starting its agents (W5-D2)', async () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-tracked-')))
+    const reviewedId = seedAgent(root, 'agent-1')
+    const { runtime, server, settings, changes } = setup({ reviewedAgents: [reviewedId] })
+    expect((await server.inject({ method: 'POST', url: '/tracked-dirs', payload: { path: root, autostart: 'no' } })).statusCode).toBe(400)
+    const tracked = await server.inject({ method: 'POST', url: '/tracked-dirs', payload: { path: root, autostart: false } })
+    expect(tracked.statusCode).toBe(201)
+    expect(tracked.json()).toMatchObject({ directories: [root], autostart: { scanned: 0, started: [], skipped: [], failed: [] }, needsReview: [] })
+    expect(tracked.json().entry).toEqual({ path: root, exists: true, agentCount: 1, loadedCount: 0 })
+    expect(settings.data.trackedDirectories).toEqual([root])
+    expect(changes).toEqual([[root]])
+    expect(runtime.listAgents()).toEqual([])
+  })
+
   it('tracks a folder now: persists, notifies the live daemon, autostarts reviewed agents and reports the rest', async () => {
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-tracked-')))
     const reviewedId = seedAgent(root, 'agent-1')

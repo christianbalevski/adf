@@ -470,13 +470,16 @@ export function listTrackedDirs(runtime: RuntimeService, settings: TrackedDirsSe
 /**
  * Track `input` now: validate, persist (settings.trackedDirectories), tell the
  * live daemon (`onChanged` → mesh tracked roots), then run the autostart pass
- * over it — review gate and all, exactly as at boot.
+ * over it — review gate and all, exactly as at boot. `autostart: false`
+ * (Studio, as embedded Studio tracks a folder) skips the pass: its agents
+ * start at the next daemon start, as at Studio's.
  */
 export async function trackDir(
   runtime: RuntimeService,
   settings: TrackedDirsSettings,
   input: unknown,
   onChanged?: (dirs: string[]) => void,
+  opts: { autostart?: boolean } = {},
 ): Promise<TrackDirResult> {
   if (!settings.set) throw new TrackedDirError('Settings store is read-only.', 405)
   if (typeof input !== 'string' || input.trim() === '') throw new TrackedDirError('path is required', 400)
@@ -502,7 +505,13 @@ export async function trackDir(
   onChanged?.(directories)
 
   const maxDepth = maxDepthOf(settings)
-  const autostart = await runtime.autostartFromDirectories([dir], { maxDepth })
+  let autostart: RuntimeAutostartReport
+  if (opts.autostart === false) {
+    console.log(`[TrackedDirs] Tracking ${dir} without starting its agents (the client asked; they start at the next daemon start)`)
+    autostart = { scanned: 0, started: [], skipped: [], failed: [] }
+  } else {
+    autostart = await runtime.autostartFromDirectories([dir], { maxDepth })
+  }
   noteAutostartReport(autostart)
   const failures = new Map(autostart.failed.map(f => [f.filePath, f.error] as const))
   return {

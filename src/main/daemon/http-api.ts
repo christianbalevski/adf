@@ -2461,10 +2461,12 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.post<{ Body: { path?: unknown } }>('/tracked-dirs', async (request, reply) => {
+  server.post<{ Body: { path?: unknown; autostart?: unknown } }>('/tracked-dirs', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    const autostart = request.body?.autostart
+    if (autostart !== undefined && typeof autostart !== 'boolean') return badRequest(reply, 'autostart must be a boolean')
     try {
-      const result = await trackDir(runtime, opts.settingsStore, request.body?.path, opts.onTrackedDirectoriesChanged)
+      const result = await trackDir(runtime, opts.settingsStore, request.body?.path, opts.onTrackedDirectoriesChanged, { autostart })
       return reply.code(201).send(result)
     } catch (err) {
       return trackedDirsError(reply, err)
