@@ -915,6 +915,9 @@ describe('daemon file routes: re-review fixes', () => {
         res.on('error', reject)
       })
       req.on('error', reject)
+      // The server closes once it answered; a write still in flight then
+      // fails with EPIPE on the socket after the request let go of it (Linux).
+      req.on('socket', (socket) => socket.on('error', () => {}))
       const chunk = Buffer.alloc(64 * 1024, 7)
       let sent = 0
       let answered = false
