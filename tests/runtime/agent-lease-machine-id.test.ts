@@ -223,4 +223,23 @@ describe('machine id lookup', () => {
     rmSync(lock)
     await expect.poll(() => readJson<AgentLeaseRecord>(leaseFile).holder.machineId, { timeout: 5_000 }).toBe('machine-1')
   })
+
+  it('ADF_MACHINE_ID is a test seam: ignored without ADF_TEST_SEAMS=1', async () => {
+    const saved = { seams: process.env.ADF_TEST_SEAMS, id: process.env.ADF_MACHINE_ID }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      process.env.ADF_MACHINE_ID = 'made-up-machine'
+      process.env.ADF_TEST_SEAMS = '1'
+      __setMachineIdReaderForTests()
+      expect(await machineId()).toBe('made-up-machine')
+      delete process.env.ADF_TEST_SEAMS
+      __setMachineIdReaderForTests()
+      expect(await machineId()).not.toBe('made-up-machine')
+    } finally {
+      if (saved.seams === undefined) delete process.env.ADF_TEST_SEAMS
+      else process.env.ADF_TEST_SEAMS = saved.seams
+      if (saved.id === undefined) delete process.env.ADF_MACHINE_ID
+      else process.env.ADF_MACHINE_ID = saved.id
+    }
+  })
 })

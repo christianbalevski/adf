@@ -21,6 +21,8 @@ process.env.ADF_LEASE_DIR = leaseDirForSuite
 
 // Lease and host records name this machine; a fixed id keeps tests (and
 // the processes they spawn) from reading the real one (a reg/ioreg spawn).
+// ADF_MACHINE_ID is a test seam: honoured only with ADF_TEST_SEAMS=1.
+process.env.ADF_TEST_SEAMS ??= '1'
 process.env.ADF_MACHINE_ID ??= 'test-machine'
 
 /**

@@ -47,7 +47,8 @@
  * only in the exact local form this module creates (never a UNC/SMB path).
  *
  * Machines. Records carry a machine id (Linux /etc/machine-id, macOS
- * IOPlatformUUID, Windows MachineGuid; ADF_MACHINE_ID overrides). A record
+ * IOPlatformUUID, Windows MachineGuid; ADF_MACHINE_ID overrides it in tests,
+ * ADF_TEST_SEAMS=1 and unpackaged only). A record
  * from another machine (a network home shared by two machines) is never
  * judged by this machine's pids: it counts as alive and is never swept.
  *
@@ -73,6 +74,7 @@ import { createConnection, createServer, type Server, type Socket } from 'node:n
 import { homedir, hostname as osHostname, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { getUserDataPath } from '../utils/user-data-path'
+import { testSeamsAllowed } from '../utils/test-seams'
 
 export const AGENT_LEASED_CODE = 'agent_leased'
 
@@ -408,7 +410,8 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
 }
 
 async function readMachineId(timeoutMs: number): Promise<string | null> {
-  if (process.env.ADF_MACHINE_ID) return process.env.ADF_MACHINE_ID
+  // Test seam (ADF_TEST_SEAMS=1, unpackaged): a made-up machine id.
+  if (process.env.ADF_MACHINE_ID && testSeamsAllowed()) return process.env.ADF_MACHINE_ID
   if (process.platform === 'linux') {
     for (const file of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
       try {
