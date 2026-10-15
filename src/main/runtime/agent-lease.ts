@@ -277,6 +277,24 @@ export function agentLeasedMessage(
   return text
 }
 
+/**
+ * The sentence a start refused for its agent id shows: `path` is a copy of
+ * the agent `record.path` runs (same id), and where that one runs.
+ */
+export function agentIdLeasedMessage(path: string, agentId: string, record: AgentLeaseRecord, ownProcess: boolean, otherMachine = false): string {
+  const h = record.holder
+  const where = ownProcess
+    ? (h.kind === 'daemon' ? 'in this ADF daemon' : 'in this ADF Studio')
+    : otherMachine
+      ? `on another machine (${h.hostname || 'unknown host'}, pid ${h.pid}) that shares this lease folder`
+      : h.kind === 'daemon'
+        ? `in the ADF daemon (pid ${h.pid}${h.controlUrl ? `, ${h.controlUrl}` : ''})`
+        : `in another ADF Studio (pid ${h.pid})`
+  return `${agentNameOf(path)} was not started: ${path} has the agent id ${agentId}, and ${record.path} with the same id is already running ${where}. ` +
+    'The two files are copies of one agent; running both would answer its timers and messages twice and poll its Telegram bot twice. ' +
+    'Stop the running copy first, or keep only one of the two files.'
+}
+
 function describeHolder(h: LeaseHolder): string {
   return `${h.kind === 'daemon' ? 'the ADF daemon' : 'ADF Studio'} pid ${h.pid}`
 }
@@ -627,7 +645,23 @@ export class AgentLeaseRegistry {
    */
   async acquire(filePath: string, opts: { agentId?: string | null } = {}): Promise<AgentLeaseResult> {
     const target = await this.target(filePath)
-    return this.withKey(target.key, () => this.acquireLocked(target, opts.agentId ?? null))
+    const agentId = opts.agentId ?? null
+    const { result, fresh } = await this.withKey(target.key, async () => {
+      const heldBefore = this.held.has(target.key)
+      return { result: await this.acquireLocked(target, agentId), fresh: !heldBefore }
+    })
+    if (!result.ok || result.unprotected || !agentId) return result
+    const generation = this.held.get(target.key)?.generation
+    const conflict = await this.agentIdConflict(target, agentId)
+    if (!conflict) return result
+    // A path lease this call took is given back now (not at the caller's
+    // reconcile), unless another start in this process took it again since.
+    if (fresh) {
+      await this.withKey(target.key, async () => {
+        if (this.held.get(target.key)?.generation === generation) await this.releaseLocked(target.key)
+      })
+    }
+    return conflict
   }
 
   /** Release every held lease no probe lists. Never throws. */
@@ -689,20 +723,26 @@ export class AgentLeaseRegistry {
 
   /**
    * Record the agent id in a lease taken before the file was opened (a
-   * daemon load acquires first, then reads the config). No-op when this
-   * process does not hold it or it names that id already. Never throws.
+   * daemon load and a background start acquire first, then read the
+   * config), then check it as acquire() does: a refusal when another live
+   * holder runs that agent id from another file, else null. No-op (null)
+   * when this process does not hold the lease. Never throws.
    */
-  async noteAgentId(filePath: string, agentId: string): Promise<void> {
+  async noteAgentId(filePath: string, agentId: string): Promise<AgentLeaseResult | null> {
     try {
       const target = await this.target(filePath)
-      await this.withKey(target.key, async () => {
+      const held = await this.withKey(target.key, async () => {
         const entry = this.held.get(target.key)
-        if (!entry || entry.record.agentId === agentId) return
+        if (!entry) return false
+        if (entry.record.agentId === agentId) return true
         entry.record = { ...entry.record, agentId }
         await writeAtomic(entry.file, JSON.stringify(entry.record, null, 2))
+        return true
       })
+      return held ? await this.agentIdConflict(target, agentId) : null
     } catch (err) {
       console.warn(`[AgentLease] Could not record the agent id in the lease of ${agentNameOf(filePath)}:`, err)
+      return null
     }
   }
 
@@ -878,6 +918,43 @@ export class AgentLeaseRegistry {
       message: `${name} could not be started: its lease file ${target.file} could not be read or replaced (${reason}). ` +
         'If no other ADF Studio or daemon runs this agent, delete that file and start it again.',
     }
+  }
+
+  /**
+   * The lease is keyed by path, so a copied or restored `.adf` (same agent
+   * id, another file) got its own lease, and two runtimes, or one runtime
+   * twice, ran one agent: both answered its timers and both polled its
+   * Telegram bot (W5-D3). Checked after our path lease is written: two
+   * hosts starting two copies at once each see the other's lease (at worst
+   * both refuse; never both run). Another holder's lease that is stale or
+   * unreadable is ignored here; whoever starts its path replaces it.
+   */
+  private async agentIdConflict(target: LeaseTarget, agentId: string): Promise<AgentLeaseResult | null> {
+    for (const [key, h] of this.held) {
+      if (key !== target.key && h.record.agentId === agentId) {
+        return this.agentIdRefusal(target, agentId, h.file, h.record, true)
+      }
+    }
+    let names: string[]
+    try { names = await fsp.readdir(this.dir) } catch { return null }
+    for (const name of names) {
+      const m = /^([0-9a-f]{64})\.json$/.exec(name)
+      if (!m || m[1] === target.key || this.held.has(m[1])) continue
+      const file = join(this.dir, name)
+      let record: AgentLeaseRecord | null = null
+      try { record = (await readLease(file))?.record ?? null } catch { continue }
+      if (!record || record.agentId !== agentId || record.holder.runtimeId === this.runtimeId) continue
+      const liveness = await holderLiveness(record.holder, this.dir)
+      if (!liveness.alive) continue
+      return this.agentIdRefusal(target, agentId, file, record, false, liveness.otherMachine)
+    }
+    return null
+  }
+
+  private agentIdRefusal(target: LeaseTarget, agentId: string, leaseFile: string, record: AgentLeaseRecord, ownProcess: boolean, otherMachine = false): AgentLeaseResult {
+    const message = agentIdLeasedMessage(target.canonical, agentId, record, ownProcess, otherMachine)
+    console.warn(`[AgentLease] ${message}`)
+    return { ok: false, code: AGENT_LEASED_CODE, leaseFile, record, message }
   }
 
   /** Can a fresh file be created in the lease dir? Tells a delete-pending lease from an unusable dir. */
