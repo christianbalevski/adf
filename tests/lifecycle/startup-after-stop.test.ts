@@ -10,10 +10,12 @@ import type { AgentProfileName } from '../../src/main/runtime/agent-capability-p
 import { ToolRegistry } from '../../src/main/tools/tool-registry'
 
 /**
- * A startup dispatch that runs after the agent was stopped or disposed
- * (embedded AGENT_START schedules it on process.nextTick; AGENT_STOP or
- * EMERGENCY_STOP can tear the agent down first). Parity allowlist entries
- * e3:stop-startup-dispatch-error and e3:emergency-stop-startup-dispatch-error.
+ * E3 (design §3.2): a startup dispatch that runs after the agent was stopped
+ * or disposed (embedded AGENT_START schedules it on process.nextTick;
+ * AGENT_STOP or EMERGENCY_STOP can tear the agent down first) is a no-op.
+ * Parity allowlist entries e3:stop-startup-dispatch-error and
+ * e3:emergency-stop-startup-dispatch-error recorded the error it used to send
+ * on AGENT_EVENT. Before start it is still a caller error.
  */
 
 const agents: Array<AssembledAgent<AgentProfileName>> = []
@@ -46,18 +48,24 @@ function makeAgent(startInState: 'active' | 'idle') {
 
 describe('startup dispatch after the agent was torn down', () => {
   for (const startInState of ['idle', 'active'] as const) {
-    it(`rejects after stop (start_in_state ${startInState})`, async () => {
+    it(`is a no-op after stop (start_in_state ${startInState})`, async () => {
       const agent = makeAgent(startInState)
+      const evaluateStartup = vi.spyOn(agent.triggerEvaluator, 'onStartup')
+      const executeTurn = vi.spyOn(agent.executor, 'executeTurn')
       await agent.start()
       await agent.stop({ mode: 'graceful' })
-      await expect(agent.dispatchStartup()).rejects.toThrow('Cannot dispatch startup while agent lifecycle is stopped')
+      await expect(agent.dispatchStartup()).resolves.toBe(false)
+      expect(evaluateStartup).not.toHaveBeenCalled()
+      expect(executeTurn).not.toHaveBeenCalled()
     })
 
-    it(`rejects after dispose (start_in_state ${startInState})`, async () => {
+    it(`is a no-op after dispose (start_in_state ${startInState})`, async () => {
       const agent = makeAgent(startInState)
+      const executeTurn = vi.spyOn(agent.executor, 'executeTurn')
       await agent.start()
       await agent.disposeAsync({ mode: 'graceful' })
-      await expect(agent.dispatchStartup()).rejects.toThrow('Cannot dispatch startup while agent lifecycle is disposed')
+      await expect(agent.dispatchStartup()).resolves.toBe(false)
+      expect(executeTurn).not.toHaveBeenCalled()
     })
   }
 

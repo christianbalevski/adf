@@ -87,10 +87,6 @@ function table(rec: ComparableRecording, name: string): Array<{ file: string; ro
   return Object.entries(rec.state.adf).flatMap(([file, dump]) => (dump.tables[name] ? [{ file, rows: dump.tables[name].rows as Row[] }] : []))
 }
 const leaseFiles = (rec: ComparableRecording) => Object.keys(rec.state.leases)
-function withoutPushes(step: StepRecord): unknown {
-  const { pushes: _p, ...rest } = step as StepRecord & { pushes: unknown }
-  return rest
-}
 
 /**
  * Walk a daemon value and the embedded value at the same place: `visit`
@@ -513,66 +509,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         n += extra.length
       }
       d.pushes[batch] = clone(eBatches)
-      return n
-    },
-  },
-  {
-    id: 'e3:emergency-stop-startup-dispatch-error',
-    ws: 'E3',
-    scenarios: ['emergency-stop'],
-    path: 'EMERGENCY_STOP: the embedded AGENT_EVENT error push and its timeline line',
-    what: 'Embedded bug (tracker §6, E3 candidate): during the teardown the open agent\'s startup dispatch reports "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT. Daemon mode sends no such error.',
-    apply(d, e) {
-      const step = e.steps.findIndex((s) => s.kind === 'invoke' && s.channel === IPC.EMERGENCY_STOP)
-      if (step < 0) return 0
-      const errors = (e.pushes[IPC.AGENT_EVENT] ?? []) as Array<{ type?: string; payload?: { error?: string } }>
-      if ((d.pushes[IPC.AGENT_EVENT] ?? []).length !== 0 || errors.length !== 1 || errors[0].type !== 'error' || !/lifecycle is disposed/.test(errors[0].payload?.error ?? '')) return 0
-      let n = 0
-      for (const [agent, lines] of Object.entries(d.timelines)) {
-        const eb = stepBlock(e.timelines[agent] ?? [], step + 1)
-        const db = stepBlock(lines, step + 1)
-        if (!eb || !db) return 0
-        const errorLines = e.timelines[agent].slice(eb.from, eb.to).filter((l) => /^ {2}adf:agent:event error$/.test(l))
-        if (errorLines.length === 0) continue
-        lines.splice(db.to, 0, ...errorLines)
-        n += errorLines.length
-      }
-      if (n !== 1) return 0
-      d.pushes[IPC.AGENT_EVENT] = clone(e.pushes[IPC.AGENT_EVENT])
-      // Channels in name order, as the recording keeps them.
-      d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
-      if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
-      return n
-    },
-  },
-  {
-    id: 'e3:stop-startup-dispatch-error',
-    ws: 'E3',
-    scenarios: ['password-unlock', 'config-during-start', 'rename-while-running'],
-    path: 'AGENT_STOP: the embedded AGENT_EVENT error push, its timeline line and the step push watermarks it shifts',
-    what: 'Embedded bug (tracker §6, E3 candidate, as e3:emergency-stop-startup-dispatch-error): stopping an agent started idle sends "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT, which the chat shows as an error. Daemon mode sends no such error.',
-    apply(d, e) {
-      const step = e.steps.findIndex((st) => st.kind === 'invoke' && st.channel === IPC.AGENT_STOP)
-      if (step < 0) return 0
-      const errors = (e.pushes[IPC.AGENT_EVENT] ?? []) as Array<{ type?: string; payload?: { error?: string } }>
-      if ((d.pushes[IPC.AGENT_EVENT] ?? []).length !== 0 || errors.length !== 1 || errors[0].type !== 'error' || !/Cannot dispatch startup while agent lifecycle is disposed/.test(errors[0].payload?.error ?? '')) return 0
-      let n = 0
-      for (const [agent, lines] of Object.entries(d.timelines)) {
-        const eb = stepBlock(e.timelines[agent] ?? [], step + 1)
-        const db = stepBlock(lines, step + 1)
-        if (!eb || !db) continue
-        const block = e.timelines[agent].slice(eb.from, eb.to)
-        const at = block.findIndex((l) => /^ {2}adf:agent:event error$/.test(l))
-        if (at < 0) continue
-        lines.splice(db.from + at, 0, block[at])
-        n++
-      }
-      if (n !== 1) return 0
-      if (d.steps.length !== e.steps.length || d.steps.some((st, i) => !same(withoutPushes(st), withoutPushes(e.steps[i])))) return 0
-      d.pushes[IPC.AGENT_EVENT] = clone(e.pushes[IPC.AGENT_EVENT])
-      d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
-      if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
-      d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
       return n
     },
   },
