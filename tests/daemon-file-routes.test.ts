@@ -365,6 +365,7 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     const ws = AdfWorkspace.open(a.filePath)
     try {
       ws.generateIdentityKeys(null)
+      ws.setIdentity('provider:p1:apiKey', 'sk-older-value-of-the-key')
       ws.setIdentity('provider:p1:apiKey', 'sk-plain-secret')
       expect(ws.getIdentityRow('crypto:signing:private_key')).not.toBeNull()
     } finally {
@@ -407,8 +408,13 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
       expect(rows['crypto:signing:private_key']).toBeUndefined()
       expect(rows['provider:p1:apiKey']).toBeUndefined()
       expect(rows['crypto:signing:public_key']).toBeDefined() // public material stays
-      // secure_delete: the removed values are not left in the file's free pages.
+      // secure_delete + VACUUM: neither the removed value nor an older version of it is left in free pages.
       expect(stripped.rawPayload.includes(Buffer.from('sk-plain-secret'))).toBe(false)
+      expect(stripped.rawPayload.includes(Buffer.from('sk-older-value-of-the-key'))).toBe(false)
+      const copy = join(tempDir('adf-export-'), 'vacuumed.adf')
+      writeFileSync(copy, stripped.rawPayload)
+      const vdb = new Database(copy, { readonly: true })
+      try { expect(vdb.pragma('freelist_count', { simple: true })).toBe(0) } finally { vdb.close() }
 
       const full = await server.inject({ method: 'GET', url: `${url}${url.includes('?') ? '&' : '?'}includeSecrets=true`, headers: withProof })
       expect(full.statusCode).toBe(200)

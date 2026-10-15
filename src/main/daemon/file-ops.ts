@@ -539,8 +539,9 @@ const EXPORT_KEPT_PLAIN = /^crypto:(signing:public_key$|envelope:|kdf:)/
  * Remove the plain secrets from a snapshot copy (export without
  * `includeSecrets`): plain `crypto:*` key rows and plain credential rows.
  * Sealed rows stay (they open only with a key the receiver holds).
- * `secure_delete` zeroes the removed values in the file. Returns how many
- * rows were removed.
+ * `secure_delete` zeroes the removed values, and a VACUUM rewrites the copy
+ * so no freed page keeps an older value of any row. Returns how many rows
+ * were removed.
  */
 export function stripPlainSecrets(file: string): number {
   const db = new Database(file, { fileMustExist: true })
@@ -552,6 +553,8 @@ export function stripPlainSecrets(file: string): number {
     const drop = rows.filter((r) => (r.encryption_algo ?? 'plain') === 'plain' && !EXPORT_KEPT_PLAIN.test(r.purpose)).map((r) => r.purpose)
     const del = db.prepare('DELETE FROM adf_identity WHERE purpose = ?')
     db.transaction(() => { for (const purpose of drop) del.run(purpose) })()
+    // Freed pages can still hold earlier versions of rows (an overwritten key, an older credential).
+    db.exec('VACUUM')
     return drop.length
   } finally {
     try { db.close() } catch { /* closed */ }
