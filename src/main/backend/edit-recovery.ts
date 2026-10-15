@@ -22,7 +22,7 @@ import { ipcMain, shell } from 'electron'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, posix, relative, resolve, sep, win32 } from 'node:path'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { restrictToCurrentUserWindows } from '../daemon/local-access'
 
@@ -59,8 +59,9 @@ const HASH_SUFFIX = /-[0-9a-f]{8}$/
  * name in different folders keep separate copies.
  */
 export function agentFolder(agentFilePath: string, platform: NodeJS.Platform = process.platform): string {
-  const name = basename(agentFilePath).replace(/\.adf$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || '_'
-  const full = resolve(agentFilePath)
+  const path = platform === 'win32' ? win32 : posix
+  const name = path.basename(agentFilePath).replace(/\.adf$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || '_'
+  const full = path.resolve(agentFilePath)
   const hash = createHash('sha256').update(platform === 'win32' ? full.toLowerCase() : full).digest('hex').slice(0, 8)
   return `${name}-${hash}`
 }
@@ -74,9 +75,15 @@ async function restrictFile(file: string): Promise<void> {
   await done
 }
 
-/** `<root>/<agent>/<path>`, or null when `path` would leave the agent's folder. */
+/**
+ * `<root>/<agent>/<path>`, or null when `path` would leave the agent's folder.
+ * A `..` segment is refused with either separator on every platform: `\` is
+ * a file name character on macOS and Linux, but a copy named `..\x` would
+ * climb out wherever it is opened on Windows.
+ */
 export function recoveryFile(root: string, agentFilePath: string, path: string): string | null {
   if (!path || path.includes('\0') || /^[a-zA-Z]:|^[\\/]/.test(path)) return null
+  if (path.split(/[\\/]/).includes('..')) return null
   const folder = join(root, agentFolder(agentFilePath))
   const file = resolve(folder, path)
   return file.startsWith(folder + sep) ? file : null
