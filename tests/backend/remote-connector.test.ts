@@ -307,3 +307,11 @@ describe('where the token and the local proof go', () => {
     expect(sent.filter((r) => new URL(r.url).origin !== base).length).toBe(2)
   })
 })
+
+describe('the waiting notification', () => {
+  it('keeps the whole URL (it holds colons)', async () => {
+    const { remoteWaitingNotice } = await import('../../src/main/backend/daemon-mode')
+    expect(remoteWaitingNotice('Waiting for the remote ADF daemon at https://adf.example.test:8443 (attempt 1; next in 2 s): Cannot reach…'))
+      .toBe('Waiting for the remote ADF daemon at https://adf.example.test:8443. Studio keeps trying.')
+  })
+})

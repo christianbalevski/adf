@@ -73,6 +73,17 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
 
 export const RECOVERY_HINT = `To use embedded mode for this session, start Studio with ${BACKEND_ENV_OVERRIDE}=embedded.`
 
+/**
+ * The one notification while Studio waits for an unreachable remote daemon,
+ * from the connector's progress line "Waiting for the remote ADF daemon at
+ * <url> (attempt n; …): <reason>". The URL holds colons, so the line is cut
+ * at " (attempt ".
+ */
+export function remoteWaitingNotice(progress: string): string {
+  const at = progress.indexOf(' (attempt ')
+  return `${at > 0 ? progress.slice(0, at) : REMOTE_WAITING_PREFIX}. Studio keeps trying.`
+}
+
 /** Remote mode: Settings → Backend works without a daemon, so the URL, the token or the mode can be fixed there. */
 export const REMOTE_RECOVERY_HINT = `Settings → Backend works without the daemon: fix the remote daemon's URL or token there and use Test connection, or choose Embedded. ${RECOVERY_HINT}`
 
@@ -199,7 +210,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   connection.onState((state) => {
     if (deps.mode !== 'remote' || waitingNoticed || state.state !== 'connecting' || !state.progress?.startsWith(REMOTE_WAITING_PREFIX)) return
     waitingNoticed = true
-    statusUi.notice(`${state.progress.split(':')[0]}: Studio keeps trying.`)
+    statusUi.notice(remoteWaitingNotice(state.progress))
   })
   // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
   const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })

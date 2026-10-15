@@ -103,6 +103,8 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
   const [pathDraft, setPathDraft] = useState('')
   const [newFolder, setNewFolder] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  /** A refused New folder: shown next to the field, the listing stays. */
+  const [folderError, setFolderError] = useState<string | null>(null)
   /** Only the newest browse may set the listing: a slow answer for an older folder is dropped. */
   const browseSeq = useRef(0)
   const listRef = useRef<HTMLDivElement>(null)
@@ -203,11 +205,12 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
   const createFolder = async () => {
     if (!folder || newFolder === null) return
     const why = nameProblem(newFolder, 'folder')
-    if (why) { setError(why); return }
+    if (why) { setFolderError(why); return }
+    setFolderError(null)
     setCreating(true)
     try {
       const made = await window.adfApi.createRemoteFolder({ parent: folder, name: newFolder.trim() })
-      if ('error' in made) setError(made.error)
+      if ('error' in made) setFolderError(made.error)
       else { setNewFolder(null); await browse(made.path) }
     } finally {
       setCreating(false)
@@ -297,16 +300,21 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
             <TextInput
               autoFocus
               value={newFolder}
-              onChange={(e) => setNewFolder(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void createFolder(); if (e.key === 'Escape') { e.stopPropagation(); setNewFolder(null) } }}
+              onChange={(e) => { setNewFolder(e.target.value); setFolderError(null) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void createFolder()
+                // Escape cancels the field only: preventDefault stops the dialog's own cancel.
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setNewFolder(null); setFolderError(null) }
+              }}
               placeholder="Folder name"
               aria-label="New folder name"
               spellCheck={false}
             />
             <Button size="compact" variant="primary" loading={creating} disabled={!newFolder.trim()} onClick={() => void createFolder()}>Create folder</Button>
-            <Button size="compact" onClick={() => setNewFolder(null)}>Cancel</Button>
+            <Button size="compact" onClick={() => { setNewFolder(null); setFolderError(null) }}>Cancel</Button>
           </>
         )}
+        {folderError && <span className="text-[12px] text-[var(--adf-ui-danger)]">{folderError}</span>}
         {importOnly && folder !== null && !folderAllowed && (
           <span className="text-[12px] text-[var(--adf-ui-danger)]">Choose a tracked folder or the agents folder, or a folder inside one.</span>
         )}
