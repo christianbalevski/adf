@@ -11,6 +11,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
 
+/** Every fs stat main makes, to prove a network path never reaches the file system. */
+const statCalls = vi.hoisted(() => [] as string[])
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:fs/promises')>()
+  const stat = ((p: Parameters<typeof real.stat>[0], ...rest: unknown[]) => { statCalls.push(String(p)); return (real.stat as (...a: unknown[]) => unknown)(p, ...rest) }) as typeof real.stat
+  return { ...real, stat, default: { ...real, stat } }
+})
+
 import { electronStub } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { IPC } from '../../src/shared/constants/ipc-channels'
@@ -19,6 +27,7 @@ import { registerDaemonModeHandlers, REMOTE_BROWSER_SESSION_SENTENCE, type Daemo
 import { REMOTE_MODE_HANDLERS, REMOTE_OWNER_IDENTITY_SENTENCE } from '../../src/main/backend/daemon-mode/remote/handlers'
 import { RemotePicker } from '../../src/main/backend/daemon-mode/remote/picker'
 import type { RemotePickRequest } from '../../src/shared/types/backend.types'
+import { _resetLocalOpenGrants, grantLocalOpen, unsafeLocalPath } from '../../src/main/backend/local-open-grants'
 
 const BASE = 'https://adf.example.test:8443'
 const HOST = 'adf.example.test:8443'
@@ -113,14 +122,17 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     expect(uploads).toEqual([])
   })
 
-  it('FILE_OPEN of a file of this computer offers an upload; on yes it streams the copy into the picked folder and opens it', async () => {
+  it('FILE_OPEN of a file this computer handed over (OS open, Open Recent) offers an upload; on yes it streams the copy into the picked folder and opens it', async () => {
+    grantLocalOpen(localAdf)
     const shown = electronStub.calls.length
     const opened = invoke(IPC.FILE_OPEN, { filePath: localAdf })
     const request = await answerPick({ path: '/srv/agents' })
-    expect(request).toMatchObject({ kind: 'folder', title: `Upload agent-9.adf to a folder on ${HOST}` })
+    expect(request).toMatchObject({ kind: 'folder', within: 'import', title: `Upload agent-9.adf to a folder on ${HOST}` })
     expect(await opened).toEqual({ success: true, filePath: '/srv/agents/agent-9.adf', agentWasRunning: false })
-    const box = electronStub.calls.slice(shown).find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { message: string; buttons: string[] }
+    const box = electronStub.calls.slice(shown).find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { message: string; detail: string; buttons: string[] }
     expect(box.message).toBe(`agent-9.adf is on this computer, not on ${HOST}.`)
+    // The full local path, so the user sees which file would travel.
+    expect(box.detail.startsWith(localAdf)).toBe(true)
     expect(box.buttons).toEqual(['Upload a copy…', 'Cancel'])
     expect(uploads).toHaveLength(1)
     expect(uploads[0].query).toEqual({ directory: '/srv/agents', name: 'agent-9', unique: 'true' })
@@ -130,9 +142,38 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
   })
 
   it('declining the upload sends nothing', async () => {
+    grantLocalOpen(localAdf)
     electronStub.dialogResponse = 1
     expect(await invoke(IPC.FILE_OPEN, { filePath: localAdf })).toEqual({ success: false, error: 'Cancelled' })
     expect(uploads).toEqual([])
+  })
+
+  it('a path main did not hand over is never read from this disk: a daemon cannot get a local file offered (W4-B review)', async () => {
+    _resetLocalOpenGrants()
+    statCalls.length = 0
+    const shown = electronStub.calls.length
+    const answer = await invoke(IPC.FILE_OPEN, { filePath: localAdf })
+    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at/) })
+    expect(statCalls).toEqual([])
+    expect(electronStub.calls.slice(shown).filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
+    expect(uploads).toEqual([])
+  })
+
+  it.each(['\\\\attacker.example\\share\\agent-1.adf', '//attacker.example/share/agent-1.adf', '\\\\?\\UNC\\attacker\\s\\a.adf', '\\\\.\\pipe\\x.adf'])('no file-system call for the network or device path %s, even when granted', async (p) => {
+    grantLocalOpen(p)
+    statCalls.length = 0
+    const answer = await invoke(IPC.FILE_OPEN, { filePath: p })
+    expect(answer.success).toBe(false)
+    expect(statCalls).toEqual([])
+    expect(unsafeLocalPath(p, 'win32')).toMatch(/network or device/)
+  })
+
+  it('unsafeLocalPath refuses relative and device paths', () => {
+    expect(unsafeLocalPath('agent.adf', 'win32')).toMatch(/not an absolute path/)
+    expect(unsafeLocalPath('C:\\agents\\CON.adf', 'win32')).toMatch(/device/)
+    expect(unsafeLocalPath('C:\\agents\\agent-1.adf', 'win32')).toBeNull()
+    expect(unsafeLocalPath('/home/me/agent-1.adf', 'linux')).toBeNull()
+    expect(unsafeLocalPath('agent-1.adf', 'linux')).toMatch(/not an absolute path/)
   })
 
   it('a path on neither machine is a sentence', async () => {
@@ -232,6 +273,15 @@ describe('remote-unsupported channels: each shows its sentence, never a raw erro
     const shown = [text, ...boxes].join('\n')
     expect(shown).not.toMatch(/not available in daemon mode yet|W4-B|HTTP \d{3}|Unknown agent/)
     expect(shown).toMatch(/daemon host|daemon's machine|on adf\.example\.test|remote (ADF )?daemon|on its machine|on that host|on the server|remote server/i)
+  })
+
+  it('FILE_REVEAL of a path with control characters shows it escaped and offers no Copy', async () => {
+    const before = electronStub.calls.length
+    await invoke(IPC.FILE_REVEAL, { filePath: '/srv/agents/a\u001b[31m\u202eevil.adf' })
+    const box = electronStub.calls.slice(before).find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { detail: string; buttons: string[] }
+    expect(box.buttons).toEqual(['OK'])
+    expect(box.detail).toContain('a\\u001b[31m\\u202eevil.adf')
+    expect(electronStub.calls.slice(before).some((c) => c.api === 'clipboard.writeText')).toBe(false)
   })
 
   it('FILE_REVEAL shows the daemon path as text, with a Copy button', async () => {

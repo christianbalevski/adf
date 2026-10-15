@@ -6,6 +6,7 @@ import type { DaemonHandlerTable, DaemonInvokeHandler, DaemonModeContext } from 
 import { createAndOpen } from '../documents/file-handlers'
 import { daemonStatus, errorMessage } from '../documents/open-file'
 import { DAEMON_MODE_HANDLERS } from '../handlers'
+import { hasLocalOpenGrant, unsafeLocalPath } from '../../local-open-grants'
 import type { RemoteServices } from './services'
 
 /**
@@ -33,12 +34,40 @@ function windowFor(): BrowserWindow | undefined {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined
 }
 
-/** A message box with the path as text and a Copy button: the path is on the daemon's machine. */
+/** C0/C1 controls and bidirectional overrides: a daemon-sent path with them could hide what it says or run as a command when pasted. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+
+/** A path as text for a dialog: control characters shown as \uXXXX. */
+export function displayPath(path: string): string {
+  return path.replace(CONTROL_CHARS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+}
+
+/**
+ * A message box with the path as text and a Copy button: the path is on the
+ * daemon's machine. A path with control characters is shown escaped and has
+ * no Copy button (W4-B review).
+ */
 async function showRemotePath(message: string, detail: string, path: string): Promise<void> {
   const win = windowFor()
-  const options = { type: 'info', message, detail, buttons: ['OK', 'Copy path'], defaultId: 0, cancelId: 0 } as Electron.MessageBoxOptions
+  const copyable = displayPath(path) === path
+  const options = {
+    type: 'info',
+    message,
+    detail: copyable ? detail : `${detail}\n\nThe path contains control characters, so Studio does not copy it.`,
+    buttons: copyable ? ['OK', 'Copy path'] : ['OK'],
+    defaultId: 0,
+    cancelId: 0,
+  } as Electron.MessageBoxOptions
   const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
-  if (response === 1) clipboard.writeText(path)
+  if (copyable && response === 1) clipboard.writeText(path)
+}
+
+/** A plain message box on the focused window. */
+export async function showMessage(type: 'info' | 'warning' | 'error', message: string, detail: string): Promise<void> {
+  const win = windowFor()
+  const options = { type, message, detail, buttons: ['OK'], defaultId: 0 } as Electron.MessageBoxOptions
+  if (win) await dialog.showMessageBox(win, options)
+  else await dialog.showMessageBox(options)
 }
 
 const base = (channel: keyof typeof DAEMON_MODE_HANDLERS): DaemonInvokeHandler => {
@@ -51,8 +80,11 @@ type Location = { where: 'daemon' } | { where: 'local' } | { where: 'nowhere'; w
 
 /**
  * Where an agent file named by path lives: the daemon has it (GET
- * /files/agent answers), else this computer has it (an OS open, a drop, an
- * old recent entry), else neither.
+ * /files/agent answers), else this computer has it, else neither. This
+ * computer's disk is looked at only for a path main itself handed to the
+ * renderer (an OS open or Open Recent: local-open-grants.ts), and never for
+ * a network or device path: every other path may come from the daemon
+ * (W4-B review), and a UNC path would make Windows send NTLM credentials.
  */
 async function locate(ctx: DaemonModeContext, filePath: string): Promise<Location> {
   const client = await ctx.ready()
@@ -62,10 +94,21 @@ async function locate(ctx: DaemonModeContext, filePath: string): Promise<Locatio
   } catch (err) {
     const status = daemonStatus(err)
     if (status !== 404 && status !== 400) throw err
+    const why = errorMessage(err)
+    const unsafe = unsafeLocalPath(filePath)
+    if (unsafe) return { where: 'nowhere', why }
+    if (!hasLocalOpenGrant(filePath)) return { where: 'nowhere', why }
     try {
       if ((await stat(filePath)).isFile() && filePath.toLowerCase().endsWith('.adf')) return { where: 'local' }
     } catch { /* not here either */ }
-    return { where: 'nowhere', why: errorMessage(err) }
+    return { where: 'nowhere', why }
+  }
+}
+
+/** Upload progress on every window's task-bar entry (-1 clears it). */
+function setProgress(value: number): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { if (!win.isDestroyed()) win.setProgressBar(value) } catch { /* window going away */ }
   }
 }
 
@@ -82,22 +125,27 @@ async function offerUpload(ctx: DaemonModeContext, localPath: string): Promise<{
   const options = {
     type: 'question',
     message: `${name} is on this computer, not on ${host}.`,
-    detail: `Agents run on the ADF daemon at ${host}, so it can only open files there. Studio can upload a copy into a folder on ${host}. The copy is a separate agent: it needs review before it runs, and the file on this computer stays as it is.`,
+    detail: `${displayPath(localPath)}\n\nAgents run on the ADF daemon at ${host}, so it can only open files there. Studio can upload a copy of this file into a tracked folder or the agents folder on ${host}. The copy is a separate agent: it needs review before it runs, and the file on this computer stays as it is.`,
     buttons: ['Upload a copy…', 'Cancel'],
     defaultId: 0,
     cancelId: 1,
   } as Electron.MessageBoxOptions
   const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
   if (response !== 0) return { cancelled: true }
-  const picked = await r.picker.pick('folder', `Upload ${name} to a folder on ${host}`)
+  // Only folders the daemon imports into: tracked folders and the agents folder.
+  const picked = await r.picker.pick('folder', `Upload ${name} to a folder on ${host}`, { within: 'import' })
   if (!picked || !('path' in picked)) return { cancelled: true }
   const client = await ctx.ready()
   ctx.log.log(`[Remote] Uploading ${localPath} to ${picked.path} on ${host}`)
   let res: Response
+  setProgress(0)
   try {
-    res = await r.upload(client, '/files/import', { directory: picked.path, name: basename(localPath, '.adf').replace(/\.adf$/i, ''), unique: 'true' }, localPath)
+    res = await r.upload(client, '/files/import', { directory: picked.path, name: basename(localPath, '.adf').replace(/\.adf$/i, ''), unique: 'true' }, localPath,
+      (sent, total) => setProgress(total > 0 ? Math.min(1, sent / total) : 2))
   } catch (err) {
     return { error: `Uploading ${name} to ${host} failed: ${errorMessage(err)}` }
+  } finally {
+    setProgress(-1)
   }
   const text = await res.text().catch(() => '')
   let body: { filePath?: unknown; error?: unknown; idReassigned?: { reason?: unknown } } | null = null
@@ -185,14 +233,21 @@ export const REMOTE_MODE_HANDLERS: DaemonHandlerTable = {
 
   [IPC.FILE_REVEAL]: async (ctx, _event, args: { filePath: string }) => {
     const host = remote(ctx).host()
-    await showRemotePath(`This file is on ${host}.`, `Studio cannot show it in a folder on this computer. Its path on ${host}:\n\n${args?.filePath ?? ''}`, args?.filePath ?? '')
+    const path = typeof args?.filePath === 'string' ? args.filePath : ''
+    await showRemotePath(`This file is on ${host}.`, `Studio cannot show it in a folder on this computer. Its path on ${host}:\n\n${displayPath(path)}`, path)
   },
 
   [IPC.TEMPLATE_REVEAL]: async (ctx) => {
     const host = remote(ctx).host()
-    const client = await ctx.ready()
-    const list = await client.request<{ folder: string }>('GET', '/templates')
-    await showRemotePath(`The templates folder is on ${host}.`, `Studio cannot show it in a folder on this computer. Its path on ${host}:\n\n${list.folder}`, list.folder)
+    let folder: string
+    try {
+      folder = (await (await ctx.ready()).request<{ folder: string }>('GET', '/templates')).folder
+    } catch (err) {
+      ctx.log.warn(`[Remote] Could not read the templates folder of ${host}: ${errorMessage(err)}`)
+      await showMessage('warning', `The templates folder is on ${host}.`, `Studio cannot show it here, and could not ask ${host} where it is: ${errorMessage(err)}`)
+      return
+    }
+    await showRemotePath(`The templates folder is on ${host}.`, `Studio cannot show it in a folder on this computer. Its path on ${host}:\n\n${displayPath(folder)}`, folder)
   },
 
   // The phrase never goes to another machine; the daemon would refuse it anyway (local-only routes).
