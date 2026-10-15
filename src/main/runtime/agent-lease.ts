@@ -318,25 +318,70 @@ function errCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | undefined)?.code
 }
 
-let machineIdLookup: Promise<string | null> | null = null
+/**
+ * Per-attempt timeouts of the machine id lookup. reg.exe / ioreg can take
+ * seconds on a loaded machine; a second, longer attempt rides that out.
+ */
+const MACHINE_ID_ATTEMPT_TIMEOUTS_MS = [3_000, 10_000]
+/** A failed lookup is remembered this long; the next caller after it asks again. */
+const MACHINE_ID_RETRY_MS = 15_000
 
-/** A stable id of this machine (cached), or null when it cannot be read. */
+type MachineIdReader = (timeoutMs: number) => Promise<string | null>
+let machineIdReader: MachineIdReader = readMachineId
+let machineIdRetryMs = MACHINE_ID_RETRY_MS
+let machineIdLookup: { promise: Promise<string | null>; failedAt: number | null } | null = null
+
+/**
+ * A stable id of this machine, or null when it cannot be read. A read id is
+ * cached for the process; a failed lookup only for MACHINE_ID_RETRY_MS, so
+ * one slow reg.exe does not leave every record of this process without it.
+ */
 export function machineId(): Promise<string | null> {
-  machineIdLookup ??= readMachineId().then((id) => id?.trim().toLowerCase() || null, () => null)
-  return machineIdLookup
+  const cached = machineIdLookup
+  if (cached && (cached.failedAt === null || Date.now() - cached.failedAt < machineIdRetryMs)) return cached.promise
+  const entry: { promise: Promise<string | null>; failedAt: number | null } = { promise: Promise.resolve(null), failedAt: null }
+  entry.promise = lookupMachineId().then((id) => {
+    if (!id) entry.failedAt = Date.now()
+    return id
+  })
+  machineIdLookup = entry
+  return entry.promise
 }
 
-function run(cmd: string, args: string[]): Promise<string> {
+/** Tests: replace the platform reader and the retry interval (undefined restores them) and forget the cached id. */
+export function __setMachineIdReaderForTests(reader?: MachineIdReader, retryMs?: number): void {
+  machineIdReader = reader ?? readMachineId
+  machineIdRetryMs = retryMs ?? MACHINE_ID_RETRY_MS
+  machineIdLookup = null
+}
+
+async function lookupMachineId(): Promise<string | null> {
+  let lastError: unknown = null
+  for (const timeoutMs of MACHINE_ID_ATTEMPT_TIMEOUTS_MS) {
+    try {
+      const id = (await machineIdReader(timeoutMs))?.trim().toLowerCase() || null
+      if (id) return id
+      // Read, but the platform has none: asking again at once will not change that.
+      break
+    } catch (err) {
+      lastError = err
+    }
+  }
+  console.warn(`[AgentLease] Could not read this machine's id${lastError ? ` (${lastError instanceof Error ? lastError.message : String(lastError)})` : ''}; asked again in ${Math.ceil(machineIdRetryMs / 1000)} s. Until then this process's records carry no machine id and records of other runtimes are judged by this machine's pids`)
+  return null
+}
+
+function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((ok, fail) => {
     try {
-      execFile(cmd, args, { timeout: 3000, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => (err ? fail(err) : ok(stdout)))
+      execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => (err ? fail(err) : ok(stdout)))
     } catch (err) {
       fail(err)
     }
   })
 }
 
-async function readMachineId(): Promise<string | null> {
+async function readMachineId(timeoutMs: number): Promise<string | null> {
   if (process.env.ADF_MACHINE_ID) return process.env.ADF_MACHINE_ID
   if (process.platform === 'linux') {
     for (const file of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
@@ -345,12 +390,12 @@ async function readMachineId(): Promise<string | null> {
     return null
   }
   if (process.platform === 'darwin') {
-    return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']))?.[1] ?? null
+    return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], timeoutMs))?.[1] ?? null
   }
   if (process.platform === 'win32') {
     // By full path: never a reg.exe found first on PATH.
     const reg = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe')
-    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']))?.[1] ?? null
+    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'], timeoutMs))?.[1] ?? null
   }
   return null
 }
@@ -586,6 +631,8 @@ export class AgentLeaseRegistry {
   private readonly hostnameOverride: string | undefined
   private machineIdValue: string | null = null
   private readonly machineIdOverride: string | null | undefined
+  /** Pending retry of a failed machine id lookup (scheduleMachineIdRetry). */
+  private machineIdRetry: NodeJS.Timeout | null = null
   private readonly takeoverLockTtlMs: number
   private readonly beforeTakeoverReplace?: () => Promise<void>
   private readonly sweepEntries: boolean
@@ -785,6 +832,8 @@ export class AgentLeaseRegistry {
   /** Test / shutdown helper: release everything, remove host entries, close the endpoint. */
   async close(): Promise<void> {
     await this.ready?.catch(() => {})
+    if (this.machineIdRetry) clearTimeout(this.machineIdRetry)
+    this.machineIdRetry = null
     for (const key of [...this.held.keys()]) await this.withKey(key, () => this.releaseLocked(key))
     await this.removeOwnEntries()
     const server = this.server
@@ -1201,10 +1250,54 @@ export class AgentLeaseRegistry {
       this.ready = this.startEndpoint()
         .then(async () => { this.machineIdValue = this.machineIdOverride !== undefined ? this.machineIdOverride : await machineId() })
         .then(() => this.writeEntry())
+        .then(() => this.scheduleMachineIdRetry())
     } else if (rewriteEntry) {
       this.ready = this.ready.then(() => this.writeEntry())
     }
     return this.ready
+  }
+
+  /**
+   * The machine id could not be read when the host record was first written:
+   * ask again every MACHINE_ID_RETRY_MS (15 s) and, once read, rewrite the host
+   * record and every lease this process holds. A record without a machine id
+   * is judged by the reader's own pids, so a runtime on another machine
+   * sharing the lease folder could take a live agent from this one.
+   */
+  private scheduleMachineIdRetry(): void {
+    if (this.machineIdValue || this.machineIdOverride !== undefined || this.machineIdRetry || !this.ready) return
+    this.machineIdRetry = setTimeout(() => {
+      this.machineIdRetry = null
+      void machineId().then(async (id) => {
+        if (!this.ready) return // closed meanwhile
+        if (!id) { this.scheduleMachineIdRetry(); return }
+        this.machineIdValue = id
+        await this.stampMachineId(id)
+      })
+    }, machineIdRetryMs)
+    this.machineIdRetry.unref?.()
+  }
+
+  /** Write `id` into the host record and into every held lease that still names this runtime. */
+  private async stampMachineId(id: string): Promise<void> {
+    if (this.ready) await this.ensureReady(true)
+    let leases = 0
+    for (const [key, entry] of [...this.held]) {
+      await this.withKey(key, async () => {
+        if (this.held.get(key) !== entry) return
+        try {
+          const current = await readLease(entry.file)
+          if (!current?.record || current.record.holder.runtimeId !== this.runtimeId) return
+          const record: AgentLeaseRecord = { ...current.record, holder: { ...current.record.holder, machineId: id } }
+          await writeAtomic(entry.file, JSON.stringify(record, null, 2))
+          entry.record = record
+          leases++
+        } catch (err) {
+          console.warn(`[AgentLease] ${agentNameOf(entry.record.path)}: could not add the machine id to its lease:`, err instanceof Error ? err.message : err)
+        }
+      })
+    }
+    console.log(`[AgentLease] Read this machine's id on a later try; added it to the host record and ${leases} held lease(s)`)
   }
 
   private async startEndpoint(): Promise<void> {
