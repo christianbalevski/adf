@@ -130,6 +130,10 @@ running after 30 minutes, Studio stops waiting and notifies you: "The switch
 to *B* is waiting: *agents* still has a turn in flight. Settings → Backend:
 Finish Switch Now (stops the turns) or Cancel Switch."
 
+While a switch waits, the latest choice wins: choosing another backend
+replaces the waiting switch (after its own switch dialog), and choosing the
+backend Studio runs now cancels it, as **Cancel Switch** does.
+
 Switching from Local daemon back to Embedded while the daemon keeps running
 (it was started with `adf daemon start`, or **Keep the daemon running** is
 on): its agents stay in the daemon. The dialog says "The ADF daemon on this
