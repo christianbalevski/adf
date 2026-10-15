@@ -41,15 +41,21 @@ async function httpServer(): Promise<{ port: number; hits: string[] }> {
 const workspace = { insertLog: () => {} } as unknown as AdfWorkspace
 
 describe('NAT64 local-use 64:ff9b:1::/48 and Teredo 2001::/32', () => {
-  it('before: not classified as the IPv4 address they carry', async () => {
+  it('after: classified as the IPv4 address they carry', async () => {
     const open = { allowLocal: true, allowLinkLocal: true }
     // 64:ff9b:1::a9fe:a9fe carries 169.254.169.254 in its last 32 bits.
-    expect(isCloudMetadataIp('64:ff9b:1::a9fe:a9fe')).toBe(false)
-    expect(await checkFetchTarget('http://[64:ff9b:1::a9fe:a9fe]/latest/', open)).toBeNull()
-    expect(await checkFetchTarget('http://[64:ff9b:1::c0a8:105]/')).toBeNull() // 192.168.1.5
+    expect(isCloudMetadataIp('64:ff9b:1::a9fe:a9fe')).toBe(true)
+    expect(await checkFetchTarget('http://[64:ff9b:1::a9fe:a9fe]/latest/', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[64:ff9b:1::c0a8:105]/')).toMatch(/private-network/) // 192.168.1.5
+    expect(await checkConnectTarget('ws://[64:ff9b:1::7f00:1]:7385/', { daemonPort: 7385 })).toMatch(/daemon/)
     // Teredo: the client IPv4 is the last 32 bits inverted (5601:5601 → 169.254.169.254).
-    expect(isCloudMetadataIp('2001:0:4136:e378:8000:63bf:5601:5601')).toBe(false)
-    expect(await checkFetchTarget('http://[2001:0:4136:e378:8000:63bf:5601:5601]/', open)).toBeNull()
+    expect(isCloudMetadataIp('2001:0:4136:e378:8000:63bf:5601:5601')).toBe(true)
+    expect(await checkFetchTarget('http://[2001:0:4136:e378:8000:63bf:5601:5601]/', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[2001:0:4136:e378:8000:63bf:3f57:fefe]/')).toMatch(/private-network/) // 192.168.1.1
+    // A public address behind them stays allowed; documentation 2001:db8::/32 is not Teredo.
+    expect(await checkFetchTarget('http://[64:ff9b:1::5db8:d822]/')).toBeNull() // 93.184.216.34
+    expect(await checkFetchTarget('http://[2001:0:4136:e378:8000:63bf:a247:27dd]/')).toBeNull() // 93.184.216.34 inverted
+    expect(await checkFetchTarget('http://[2001:db8::1]/')).toBeNull()
   })
 })
 

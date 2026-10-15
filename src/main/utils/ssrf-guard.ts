@@ -26,9 +26,10 @@ const MAPPED_HEX = /^::(?:ffff:(?:0{1,4}:)?)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
  * The IPv4 address inside an IPv4-mapped or -compatible IPv6 address, as
  * `[match, dotted]`, in either spelling; null otherwise. `new URL()` turns
  * `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`, so the hex form must
- * classify the same as the dotted one. NAT64 (`64:ff9b::/96`, RFC 6052) and
- * 6to4 (`2002::/16`, RFC 3056) addresses carry an IPv4 address too and are
- * classified as it (W1-D follow-up): a NAT64 gateway turns
+ * classify the same as the dotted one. NAT64 (`64:ff9b::/96`, RFC 6052;
+ * local-use `64:ff9b:1::/48`, RFC 8215), 6to4 (`2002::/16`, RFC 3056) and
+ * Teredo (`2001::/32`, RFC 4380) addresses carry an IPv4 address too and are
+ * classified as it (W1-D, W4-B follow-ups): a NAT64 gateway turns
  * `64:ff9b::a9fe:a9fe` into a connection to 169.254.169.254.
  */
 function mappedIPv4Match(addr: string): [string, string] | null {
@@ -44,7 +45,11 @@ function mappedIPv4Match(addr: string): [string, string] | null {
   return embedded ? [addr, embedded] : null
 }
 
-/** The IPv4 address of a NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address, either spelling; null otherwise. */
+/**
+ * The IPv4 address of a NAT64 (64:ff9b::/96, local-use 64:ff9b:1::/48) or
+ * 6to4 (2002::/16) address, or the client address of a Teredo address
+ * (2001::/32), either spelling; null otherwise.
+ */
 function translatedIPv4(raw: string): string | null {
   let addr = raw.toLowerCase()
   // A dotted IPv4 tail (64:ff9b::169.254.169.254) as two hex groups.
@@ -58,7 +63,11 @@ function translatedIPv4(raw: string): string | null {
   const groups = expandIPv6(addr).split(':').map((g) => parseInt(g, 16))
   const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
   if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) return v4(groups[6], groups[7])
+  // Local-use NAT64 (RFC 8215): the IPv4 address in the last 32 bits.
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return v4(groups[6], groups[7])
   if (groups[0] === 0x2002) return v4(groups[1], groups[2])
+  // Teredo (RFC 4380): the client's IPv4 address, inverted, in the last 32 bits.
+  if (groups[0] === 0x2001 && groups[1] === 0) return v4(groups[6] ^ 0xffff, groups[7] ^ 0xffff)
   return null
 }
 

@@ -40,7 +40,7 @@ describe('NAT64 64:ff9b::/96 and 6to4 2002::/16 carry an IPv4 address', () => {
     expect(await checkFetchTarget('http://[2002:5db8:d822::1]/')).toBeNull()
     // Other IPv6 is untouched.
     expect(await checkFetchTarget('http://[2001:db8::1]/')).toBeNull()
-    expect(await checkFetchTarget('http://[64:ff9b:1::a9fe:a9fe]/')).toBeNull() // local-use NAT64 (RFC 8215): prefix length varies
+    // Local-use NAT64 (RFC 8215) and Teredo: tests/unit/utils/egress-pinning.test.ts.
   })
 })
 
