@@ -355,6 +355,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W3-A | E3 candidate: stopping an agent started idle sends "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT in embedded (allowlist `e3:stop-startup-dispatch-error`, same cause as `e3:emergency-stop-startup-dispatch-error`) | W5-A |
 | W3-A | A locked running agent keeps running with the stub provider in daemon mode instead of being stopped (D3 difference) | W5-A |
 | W2-C2 | `agent-oauth.test.ts` compares outcomes only (embedded's 50 ms coalesced approvals snapshot lands at varying points); make the snapshot timing deterministic in the harness and compare full recordings | W5-A |
+| W4-A | Linux `basic_text` safeStorage counts as available for moved-back tokens and MCP blobs (same as embedded today) | W5-B |
+| W4-A | K12: no-keychain machines — `trustedDaemonEncKeys` enrollment fallback not built; switch dialog states it | W5-A |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
