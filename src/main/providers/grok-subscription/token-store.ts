@@ -15,7 +15,7 @@ export function clearTokens(): void {
   store.clearTokens()
 }
 
-/** A sign-in to `accountId` succeeded: drop the session set aside for it (auth.replaced.json). */
+/** A sign-in to `accountId` succeeded: drop the sessions set aside for it (auth.replaced.*.json). */
 export function noteSignIn(accountId: string | undefined): void {
   store.signedIn(accountId)
 }

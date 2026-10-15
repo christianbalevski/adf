@@ -57,15 +57,31 @@ import {
 export const HANDOVER_MARKER_FILE = 'studio-handover.json'
 const CLIENT_FILE = 'studio-client-settings.json'
 const STUDIO_TOKEN_FILE = 'auth.json'
-const DAEMON_TOKEN_FILE = 'auth.daemon.json'
+export const DAEMON_TOKEN_FILE = 'auth.daemon.json'
 /**
- * The session the accounts-conflict dialog did not keep, for one restore
- * (credential-cipher, as auth.daemon.json). Deleted after
- * REPLACED_TOKEN_MAX_AGE_DAYS (sweepReplacedSessions, every handover) or at
- * the next sign-in to its account (subscription-token-store signedIn).
+ * A session the accounts-conflict dialog did not keep, for one restore
+ * (credential-cipher, as auth.daemon.json): `auth.replaced.<time>.json`, one
+ * file per set-aside session, so a second conflict never overwrites the
+ * first. Each is deleted after REPLACED_TOKEN_MAX_AGE_DAYS
+ * (sweepReplacedSessions, every handover) or at the next sign-in to its
+ * account (subscription-token-store signedIn). The pattern also matches the
+ * single `auth.replaced.json` of earlier builds.
  */
-export const REPLACED_TOKEN_FILE = 'auth.replaced.json'
+export const REPLACED_TOKEN_PATTERN = /^auth\.replaced(\.[\w-]+)?\.json$/
 export const REPLACED_TOKEN_MAX_AGE_DAYS = 30
+
+/** A new set-aside file in `dir`, named by the time (never an existing one). */
+async function replacedTokenPath(dir: string): Promise<string> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  for (let n = 0; ; n++) {
+    const path = join(dir, `auth.replaced.${stamp}${n ? `-${n}` : ''}.json`)
+    try {
+      await fsp.access(path)
+    } catch {
+      return path
+    }
+  }
+}
 const SAFE_PREFIX = 'safe:'
 const AES_GCM_PREFIX = 'aesgcm:'
 
@@ -479,7 +495,6 @@ async function moveSubscription(
   const dir = join(deps.userDataDir, sub.dir)
   const studioPath = join(dir, STUDIO_TOKEN_FILE)
   const daemonPath = join(dir, DAEMON_TOKEN_FILE)
-  const replacedPath = join(dir, REPLACED_TOKEN_FILE)
   const result = (outcome: HandoverOutcome, detail: string, pending = false): SessionMove => ({ item: { id: sub.id, label: sub.label, outcome, detail, ...(pending ? { pending } : {}) } })
   const sourcePath = toDaemon ? studioPath : daemonPath
   const destPath = toDaemon ? daemonPath : studioPath
@@ -514,11 +529,13 @@ async function moveSubscription(
       // The other is saved once anyway, in case it was a separate login.
       keep = dest.expires_at > source.expires_at ? dest : source
       const dropped = keep === source ? dest : source
+      const replacedPath = await replacedTokenPath(dir)
       await writeTokenFile(replacedPath, deps.daemonCipher.encrypt(JSON.stringify(dropped)))
       note = `; both sides held ${sessionAccountLabel(source)}, the more recently refreshed session kept (the other saved encrypted in ${replacedPath})`
     } else {
       const studio = toDaemon ? source : dest
       const daemon = toDaemon ? dest : source
+      const replacedPath = await replacedTokenPath(dir)
       const conflict: SessionConflict = {
         provider: sub.id,
         label: sub.label,
@@ -868,23 +885,34 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps): 
  * and the next start retries.
  */
 /**
- * Delete each `auth.replaced.json` older than REPLACED_TOKEN_MAX_AGE_DAYS
- * (by its write time). Logged per file; never throws. Returns the deleted paths.
+ * Delete each set-aside session (REPLACED_TOKEN_PATTERN) older than
+ * REPLACED_TOKEN_MAX_AGE_DAYS (by its write time). Logged per file; never
+ * throws. Returns the deleted paths.
  */
 export async function sweepReplacedSessions(userDataDir: string, opts: { now?: number; log?: (line: string) => void } = {}): Promise<string[]> {
   const log = opts.log ?? ((line: string) => console.log(line))
   const cutoff = (opts.now ?? Date.now()) - REPLACED_TOKEN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
   const deleted: string[] = []
   for (const sub of SUBSCRIPTIONS) {
-    const path = join(userDataDir, sub.dir, REPLACED_TOKEN_FILE)
+    const dir = join(userDataDir, sub.dir)
+    let names: string[]
     try {
-      const st = await fsp.stat(path)
-      if (!st.isFile() || st.mtimeMs > cutoff) continue
-      await fsp.unlink(path)
-      deleted.push(path)
-      log(`[Handover] Deleted ${path}: the ${sub.label} set aside by the accounts dialog is older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days`)
+      names = (await fsp.readdir(dir)).filter((name) => REPLACED_TOKEN_PATTERN.test(name))
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`[Handover] Could not check ${path}: ${errorText(err)}`)
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`[Handover] Could not list ${dir}: ${errorText(err)}`)
+      continue
+    }
+    for (const name of names) {
+      const path = join(dir, name)
+      try {
+        const st = await fsp.stat(path)
+        if (!st.isFile() || st.mtimeMs > cutoff) continue
+        await fsp.unlink(path)
+        deleted.push(path)
+        log(`[Handover] Deleted ${path}: the ${sub.label} set aside by the accounts dialog is older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days`)
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`[Handover] Could not check ${path}: ${errorText(err)}`)
+      }
     }
   }
   return deleted

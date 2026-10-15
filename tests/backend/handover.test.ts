@@ -8,7 +8,7 @@
  * (subscription-token-store under Node, credential-cipher, DaemonAppOAuthStore)
  * on an in-memory keychain. Never touches the real keychain.
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, utimesSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -18,7 +18,7 @@ import {
   planHandover,
   readCredentialHolder,
   readHandoverMarker,
-  REPLACED_TOKEN_FILE,
+  REPLACED_TOKEN_PATTERN,
   REPLACED_TOKEN_MAX_AGE_DAYS,
   runHandover,
   syncStudioRuntimeEntry,
@@ -121,6 +121,12 @@ function studioTokens(sub: (typeof SUBS)[number]) {
 }
 
 /** The daemon: the real token store, which under Node uses auth.daemon.json and credential-cipher. */
+/** The set-aside sessions of `sub` (auth.replaced.<time>.json), sorted. */
+function replacedFiles(sub: (typeof SUBS)[number]): string[] {
+  const at = join(dir, sub.dir)
+  return existsSync(at) ? readdirSync(at).filter((name) => REPLACED_TOKEN_PATTERN.test(name)).sort().map((name) => join(at, name)) : []
+}
+
 function daemonTokens(sub: (typeof SUBS)[number]) {
   const store = createSubscriptionTokenStore<ReturnType<RotatingAuthServer['issue']>>(sub.dir)
   return { path: join(dir, sub.dir, 'auth.daemon.json'), read: store.readTokens, write: store.writeTokens }
@@ -361,7 +367,7 @@ describe('accounts conflict and ownership', () => {
     expect(report.failed).toBe(false)
     expect(studioTokens(sub).exists()).toBe(false)
     expect(daemon.read()?.refresh_token).toBe(refreshed.refresh_token)
-    expect(existsSync(join(dir, sub.dir, REPLACED_TOKEN_FILE))).toBe(true)
+    expect(replacedFiles(sub)).toHaveLength(1)
   })
 
   it('back in embedded, a daemon session Studio never handed over (adf auth login on a CLI daemon) stays with the daemon', async () => {
@@ -383,32 +389,45 @@ describe('accounts conflict and ownership', () => {
   })
 })
 
-describe('auth.replaced.json lifetime (W5-D1)', () => {
-  it(`is deleted at the next handover once older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days (logged); a newer one stays`, async () => {
+describe('auth.replaced.*.json lifetime (W5-D1, W5-F)', () => {
+  it(`each is deleted at the next handover once older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days (logged); a newer one stays`, async () => {
     const [old, recent] = SUBS
-    for (const sub of SUBS) {
+    const write = (sub: (typeof SUBS)[number], name: string) => {
       mkdirSync(join(dir, sub.dir), { recursive: true })
-      writeFileSync(join(dir, sub.dir, REPLACED_TOKEN_FILE), encryptCredential(JSON.stringify(auth.issue(sub.subject))))
+      writeFileSync(join(dir, sub.dir, name), encryptCredential(JSON.stringify(auth.issue(sub.subject))))
+      return join(dir, sub.dir, name)
     }
+    // The single file of earlier builds and a timestamped one, both aged; a recent one beside them.
+    const legacy = write(old, 'auth.replaced.json')
+    const stamped = write(old, 'auth.replaced.2026-09-01T10-00-00-000Z.json')
+    const fresh = write(old, 'auth.replaced.2026-10-14T10-00-00-000Z.json')
+    const other = write(recent, 'auth.replaced.2026-09-01T10-00-00-000Z.json')
     const aged = (Date.now() - (REPLACED_TOKEN_MAX_AGE_DAYS * 24 + 1) * 3600_000) / 1000
-    utimesSync(join(dir, old.dir, REPLACED_TOKEN_FILE), aged, aged)
+    for (const path of [legacy, stamped]) utimesSync(path, aged, aged)
     const lines: string[] = []
     await runHandover('embedded', deps({ log: (line) => lines.push(line) }))
-    expect(existsSync(join(dir, old.dir, REPLACED_TOKEN_FILE))).toBe(false)
-    expect(existsSync(join(dir, recent.dir, REPLACED_TOKEN_FILE))).toBe(true)
-    expect(lines.some((l) => l.includes(`Deleted ${join(dir, old.dir, REPLACED_TOKEN_FILE)}`) && l.includes(`older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days`))).toBe(true)
+    expect(replacedFiles(old)).toEqual([fresh])
+    expect(replacedFiles(recent)).toEqual([other])
+    for (const path of [legacy, stamped]) {
+      expect(lines.some((l) => l.includes(`Deleted ${path}`) && l.includes(`older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days`))).toBe(true)
+    }
   })
 
-  it('is deleted when its account signs in again; another account\'s sign-in leaves it', () => {
+  it('every one of an account is deleted when that account signs in again; another account\'s sign-in leaves them', () => {
     const sub = SUBS[0]
-    const path = join(dir, sub.dir, REPLACED_TOKEN_FILE)
     mkdirSync(join(dir, sub.dir), { recursive: true })
-    writeFileSync(path, encryptCredential(JSON.stringify({ ...auth.issue(sub.subject), account_id: 'acct-set-aside' })))
+    const write = (name: string, account: string) => {
+      writeFileSync(join(dir, sub.dir, name), encryptCredential(JSON.stringify({ ...auth.issue(sub.subject), account_id: account })))
+      return join(dir, sub.dir, name)
+    }
+    write('auth.replaced.json', 'acct-set-aside')
+    write('auth.replaced.2026-10-01T10-00-00-000Z.json', 'acct-set-aside')
+    const kept = write('auth.replaced.2026-10-02T10-00-00-000Z.json', 'acct-kept')
     const store = createSubscriptionTokenStore(sub.dir)
     store.signedIn('acct-other')
-    expect(existsSync(path)).toBe(true)
+    expect(replacedFiles(sub)).toHaveLength(3)
     store.signedIn('acct-set-aside')
-    expect(existsSync(path)).toBe(false)
+    expect(replacedFiles(sub)).toEqual([kept])
   })
 })
 
@@ -725,13 +744,29 @@ describe('the way back to embedded (review fixes)', () => {
     const studioSide = auth.issue('acct-studio')
     studioTokens(sub).write(studioSide)
     daemonTokens(sub).write(auth.issue('acct-daemon'))
-    await runHandover('local', deps({ chooseSession: async () => 'daemon' }))
-    const saved = readFileSync(join(dir, sub.dir, REPLACED_TOKEN_FILE), 'utf-8')
+    let shown: SessionConflict | null = null
+    await runHandover('local', deps({ chooseSession: async (c) => { shown = c; return 'daemon' } }))
+    expect(replacedFiles(sub)).toEqual([shown!.replacedFile])
+    expect(shown!.replacedFile).toMatch(/auth\.replaced\.\d{4}-\d\d-\d\dT[\d-]+Z\.json$/)
+    const saved = readFileSync(shown!.replacedFile, 'utf-8')
     expect(saved.startsWith('aesgcm:')).toBe(true)
     expect(JSON.parse(decryptCredential(saved)!).refresh_token).toBe(studioSide.refresh_token)
     // The daemon's own session won: it stays the daemon's, so it does not move to Studio later.
     const read = await readHandoverMarker(dir)
     expect(read.state === 'ok' && read.marker.moved.sessions).toEqual({})
+  })
+
+  it('a second conflict keeps the first set-aside session: each in its own file (W5-F)', async () => {
+    const sub = SUBS[0]
+    const first = auth.issue('acct-studio-1')
+    studioTokens(sub).write(first)
+    daemonTokens(sub).write(auth.issue('acct-daemon'))
+    await runHandover('local', deps({ chooseSession: async () => 'daemon' }))
+    const second = auth.issue('acct-studio-2')
+    studioTokens(sub).write(second)
+    await runHandover('local', deps({ chooseSession: async () => 'daemon' }))
+    const saved = replacedFiles(sub).map((path) => JSON.parse(decryptCredential(readFileSync(path, 'utf-8'))!).refresh_token)
+    expect(saved.sort()).toEqual([first.refresh_token, second.refresh_token].sort())
   })
 
   it('a stale client file from the old one-time seed never overwrites newer values', async () => {

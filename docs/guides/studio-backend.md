@@ -190,15 +190,16 @@ folder. Do not edit it.
 If Studio and the daemon are signed in to the same provider with different
 accounts, Studio asks "Studio and the ADF daemon are signed in to ChatGPT with
 different accounts." (or Grok). Choose **Keep *account* (Studio)** or **Keep
-*account* (daemon)**. The other account's session is signed out here and saved
-once, encrypted with the daemon's key, as `<provider>/auth.replaced.json` in
-Studio's user data folder. To use that account in the daemon instead: stop the
-daemon and replace `auth.daemon.json` with it (Windows PowerShell:
-`Move-Item -Force auth.replaced.json auth.daemon.json` in that provider's
-folder; `auth.daemon.json` already exists, so a plain rename fails).
-Studio deletes `auth.replaced.json` 30 days after it was written (at its next
-start), or as soon as that account signs in again on either side; the log
-names the file it deleted.
+*account* (daemon)**. The other account's session is signed out here and saved,
+encrypted with the daemon's key, as `<provider>/auth.replaced.<time>.json` in
+Studio's user data folder (the dialog names the file). Each conflict writes its
+own file, so a later one never overwrites an earlier one. To use that account
+in the daemon instead: stop the daemon and replace `auth.daemon.json` with it
+(Windows PowerShell: `Move-Item -Force auth.replaced.<time>.json auth.daemon.json`
+in that provider's folder; `auth.daemon.json` already exists, so a plain rename
+fails). Studio deletes each `auth.replaced.*.json` 30 days after it was written
+(at its next start), or as soon as its account signs in again on either side;
+the log names each file it deleted.
 
 The same account signed in on both sides independently (the daemon signed in
 before your first switch) keeps both sessions, each on its side; no accounts
@@ -554,7 +555,7 @@ Every message the backend features show, and where it is explained. Text in
 | "ADF_STUDIO_BACKEND is set in this environment and overrides this choice …" | [Switch the backend](#switch-the-backend) |
 | "Studio now runs *B*." / "… part of the handover is not done." | [What moves](#what-moves-during-a-switch), [When a move is not done](#when-a-move-is-not-done) |
 | "Studio and the ADF daemon are signed in to … with different accounts." | [Two accounts](#two-accounts-the-conflict-dialog) |
-| `auth.replaced.json` | [Two accounts](#two-accounts-the-conflict-dialog) |
+| `auth.replaced.<time>.json` | [Two accounts](#two-accounts-the-conflict-dialog) |
 | "not moved back: … still runs on these settings" | [When a move is not done](#when-a-move-is-not-done) |
 | "… is missing, so Studio cannot tell its sign-ins from the daemon's own" | [When a move is not done](#when-a-move-is-not-done) |
 | "Saved. Applies from now on." (Keep the daemon running) | [Quit Studio](#quit-studio) |
