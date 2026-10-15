@@ -424,10 +424,20 @@ export async function askVersionMismatch(
   const win = window()
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
   if (response === 0) return 'restart'
-  console.log('[Backend] Restarting Studio in embedded mode for this session (daemon version mismatch); credentials stay with the daemon')
+  relaunchEmbeddedForSession('daemon version mismatch')
+  return 'embedded'
+}
+
+/**
+ * Restart Studio in embedded mode for this launch only (SESSION_BACKEND_ARG):
+ * after a daemon version mismatch, or a launch whose daemon could not be
+ * reached. The saved mode, the daemon, its agents and its sign-ins stay as
+ * they are; credentials do not move (session-only handover).
+ */
+export function relaunchEmbeddedForSession(reason: string): void {
+  console.log(`[Backend] Restarting Studio in embedded mode for this session (${reason}); credentials stay where the saved mode keeps them`)
   app.relaunch({ args: [...process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG), SESSION_BACKEND_ARG] })
   app.quit()
-  return 'embedded'
 }
 
 /**

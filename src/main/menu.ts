@@ -20,10 +20,17 @@ export interface DaemonMenuOptions {
   logFile: () => string | null
   /** A one-line connection status, or null while connected. */
   problem: () => string | null
-  /** Whether "Reconnect to the ADF Daemon" makes sense now (the connection dropped). */
+  /** Whether "Reconnect to the ADF Daemon" makes sense now (the connection dropped, or the launch failed to connect). */
   canReconnect: () => boolean
   openLog: () => void
   reconnect: () => void
+  /**
+   * After a failed launch (no daemon this session): "Use Embedded for This
+   * Session" restarts Studio in embedded mode for one launch. Offered while
+   * `canUseEmbedded` says so.
+   */
+  useEmbeddedForSession?: () => void
+  canUseEmbedded?: () => boolean
   /**
    * Remote mode: recent files are paths on the daemon's machine. They are
    * not added to the OS recent documents (the Windows shell may contact a
@@ -227,14 +234,19 @@ export function buildApplicationMenu(): void {
 }
 
 function daemonHelpItems(): Electron.MenuItemConstructorOptions[] {
-  if (!daemonMenu) return []
-  const options = daemonMenu
+  return daemonMenu ? daemonHelpTemplate(daemonMenu) : []
+}
+
+/** The Help menu's daemon items for `options` (exported for tests). */
+export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuItemConstructorOptions[] {
   const logFile = options.logFile()
   const problem = options.problem()
+  const useEmbedded = options.useEmbeddedForSession
   return [
     { type: 'separator' },
     { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
     ...(problem ? [{ label: problem, enabled: false }] : []),
-    ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : [])
+    ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : []),
+    ...(problem && useEmbedded && options.canUseEmbedded?.() ? [{ label: 'Use Embedded for This Session', click: () => useEmbedded() }] : [])
   ]
 }

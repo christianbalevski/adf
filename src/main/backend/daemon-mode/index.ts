@@ -11,6 +11,7 @@ import { openSharedMnemonicStore, type SharedMnemonicStore } from '../../service
 import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../../daemon/local-access'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
+import { relaunchEmbeddedForSession, relaunchStudio } from '../mode-switch'
 import { createAdfFileHandler } from './adf-file'
 import { ApprovalsUi } from './approvals-ui'
 import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
@@ -136,6 +137,8 @@ export interface DaemonModeDeps {
   waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
   afterOwnerImport?: (phrase: string) => Promise<string>
+  /** Tests: Studio's restarts after a failed launch. Default: relaunchStudio / relaunchEmbeddedForSession (mode-switch.ts). */
+  relaunch?: { reconnect(reason: string): void; embeddedForSession(reason: string): void }
 }
 
 export interface DaemonModeHandle {
@@ -393,15 +396,21 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let clientSession: ClientSession | null = null
+  const relaunch = deps.relaunch ?? { reconnect: relaunchStudio, embeddedForSession: relaunchEmbeddedForSession }
   const reconnect = (): void => {
     const state = connection.state
-    if (state.state === 'failed' || !clientSession) {
-      // Nothing to reconnect: the connector itself failed this session.
-      log.warn('[Backend] Reconnect requested, but Studio found no daemon to connect to this session; restart Studio to try again')
+    if (state.state === 'failed') {
+      // The launch found no daemon (or none it can use): the connector runs again at Studio's start.
+      log.log(`[Backend] Reconnect requested after a failed connection (${state.message}): restarting Studio to connect again`)
+      relaunch.reconnect('Reconnect after a failed connection to the ADF daemon')
+      return
+    }
+    if (!clientSession) {
+      log.warn('[Backend] Reconnect requested while Studio is still looking for the ADF daemon; it connects when the daemon answers')
       void dialog.showMessageBox({
-        type: 'warning',
-        message: 'Studio has no ADF daemon to reconnect to.',
-        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
+        type: 'info',
+        message: 'Studio is still connecting to the ADF daemon.',
+        detail: `It connects when the daemon answers. ${deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
         buttons: ['OK'],
       }).catch(() => {})
       return
@@ -409,15 +418,22 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log.log('[Backend] Reconnecting to the ADF daemon (requested)')
     clientSession.reconnect()
   }
+  /** After a failed launch: embedded for this launch only; the saved mode stays (§8.2 session-only). */
+  const useEmbeddedForSession = (): void => {
+    log.log('[Backend] Use Embedded for This Session requested after a failed connection to the ADF daemon')
+    relaunch.embeddedForSession('no ADF daemon could be reached at launch')
+  }
   initApplicationMenu(clientSettings, {
     logFile: () => connection.logFile,
     problem: () => connectionProblem(connection.state, connection.baseUrl),
-    canReconnect: () => connection.state.state === 'disconnected',
+    canReconnect: () => connection.state.state === 'disconnected' || connection.state.state === 'failed',
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
+    useEmbeddedForSession,
+    canUseEmbedded: () => connection.state.state === 'failed',
     remoteRecents: deps.mode === 'remote',
   })
-  const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
+  const statusUi = new ConnectionStatusUi(connection, { reconnect, useEmbeddedForSession, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
 
   const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
   let versionInfo: DaemonVersionInfo | null = null

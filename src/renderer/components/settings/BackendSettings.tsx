@@ -32,7 +32,7 @@ const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
 function activeLine(view: BackendSettingsView): string {
   const mode = MODE_LABELS[view.active.mode]
   if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
-  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
+  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match, or it could not be reached). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   return `This launch runs ${mode}.`
 }

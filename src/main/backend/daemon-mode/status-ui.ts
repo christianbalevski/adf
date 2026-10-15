@@ -63,7 +63,7 @@ export class ConnectionStatusUi {
 
   constructor(
     private readonly connection: DaemonConnection,
-    private readonly actions: { reconnect: () => void; openLog: () => void; recoveryHint: string },
+    private readonly actions: { reconnect: () => void; openLog: () => void; recoveryHint: string; useEmbeddedForSession?: () => void },
     private readonly log: Log = console,
   ) {
     this.unsubscribe = connection.onState((state) => this.onState(state))
@@ -171,20 +171,25 @@ export class ConnectionStatusUi {
     }
   }
 
+  /** A failed launch: Reconnect (Studio restarts and tries again), embedded for this session, the log. */
   private async showFailedDialog(message: string): Promise<void> {
     const logFile = this.connection.logFile
-    const buttons = [...(logFile ? ['Open Daemon Log'] : []), 'OK']
+    const embedded = this.actions.useEmbeddedForSession
+    const buttons = ['Reconnect', ...(embedded ? ['Use Embedded for This Session'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
     try {
       const { response } = await dialog.showMessageBox({
         type: 'error',
         title: 'ADF daemon not available',
         message: 'Studio could not connect to an ADF daemon.',
-        detail: `${message}\n\n${this.actions.recoveryHint}`,
+        detail: `${message}\n\nReconnect restarts Studio and tries again (Help → Reconnect to the ADF Daemon does the same later).${embedded ? ' Use Embedded for This Session restarts Studio running agents itself for this launch only; the saved mode stays.' : ''}\n\n${this.actions.recoveryHint}`,
         buttons,
         defaultId: buttons.length - 1,
+        cancelId: buttons.length - 1,
         noLink: true,
       })
-      if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
+      if (buttons[response] === 'Reconnect') this.actions.reconnect()
+      else if (buttons[response] === 'Use Embedded for This Session') embedded?.()
+      else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
     } catch (err) {
       this.log.warn('[Backend] Could not show the connection failure dialog:', err)
     }
