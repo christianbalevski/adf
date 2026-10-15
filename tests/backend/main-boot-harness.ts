@@ -76,7 +76,16 @@ function createBootHarness() {
     dialog: { showMessageBox: async () => ({ response: 0 }), showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showErrorBox: rec('dialog.showErrorBox') },
     Notification: class { static isSupported() { return false } on() { return this } show() {} close() {} },
     Menu: { buildFromTemplate: (t: unknown) => ({ items: t }), setApplicationMenu: rec('Menu.setApplicationMenu') },
-    Tray: class {},
+    // Daemon mode's ApprovalsUi creates the macOS menu bar icon on darwin.
+    Tray: class {
+      private destroyed = false
+      on() { return this }
+      setTitle() {}
+      setToolTip() {}
+      popUpContextMenu() {}
+      isDestroyed() { return this.destroyed }
+      destroy() { this.destroyed = true }
+    },
     nativeImage: { createFromPath: () => ({ setTemplateImage: () => {} }) },
     safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
   }
