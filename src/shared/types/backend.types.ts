@@ -43,10 +43,6 @@ export interface BackendSettingsView {
     /** The user confirmed sending the token over plain HTTP to `remoteUrl`. */
     allowInsecureHttp: boolean
   }
-  /** Switching between embedded and local daemon from Settings (W4-A). */
-  modeSwitchAvailable: boolean
-  /** Switching to Remote daemon is available (it moves nothing, design §5.5). */
-  remoteSwitchAvailable: boolean
   /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
   daemon?: BackendDaemonStatus | null
   /**
@@ -98,7 +94,6 @@ export interface BackendSettingsPatch {
 }
 
 export type BackendSettingsErrorCode =
-  | 'mode_switch_unavailable'
   /** The user cancelled the switch dialog; nothing changed. */
   | 'switch_cancelled'
   | 'invalid_mode'

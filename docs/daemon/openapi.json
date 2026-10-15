@@ -18732,6 +18732,7 @@
           "name": "agent-1",
           "filePath": "/home/me/Documents/adf-agents/agent-1.adf",
           "did": "did:key:z6Mk…",
+          "loaded": true,
           "started": true
         }
       },

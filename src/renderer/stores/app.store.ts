@@ -130,7 +130,7 @@ function saveChatWidth(width: ChatWidth): void {
   } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
 }
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
-export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'about'
+export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'backend' | 'about'
 
 export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured'
 

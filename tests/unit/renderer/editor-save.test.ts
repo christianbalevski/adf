@@ -4,7 +4,7 @@ import { useDocumentStore } from '../../../src/renderer/stores/document.store'
 import { useAgentStore } from '../../../src/renderer/stores/agent.store'
 import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveActiveEditorTab, saveEditorTab } from '../../../src/renderer/utils/editor-save'
 import { changeAgentConfig, confirmDiscardConflicts, type SaveAnswer } from '../../../src/renderer/utils/edit-conflict'
-import { CONFIG_RECOVERY_PATH, recoveredEditsMessage, startEditRecovery } from '../../../src/renderer/utils/edit-recovery'
+import { CONFIG_RECOVERY_PATH, recoveredEditsMessage, startEditRecovery, stashUnsavedEditors } from '../../../src/renderer/utils/edit-recovery'
 import { setSkillMuted } from '../../../src/renderer/utils/skills-state'
 
 /**
@@ -166,7 +166,30 @@ describe('recovery copies', () => {
     tabs().closeTab('notes.md')
     expect(stash).toHaveBeenLastCalledWith({ agentFilePath: AGENT, path: 'notes.md', content: null })
     stop()
-    expect(recoveredEditsMessage([{ agent: 'agent-1', path: 'notes.md' }])).toBe('Studio kept your unsaved version of agent-1/notes.md from the last session, which ended while someone else\'s change was waiting for your answer.')
+    expect(recoveredEditsMessage([{ agent: 'agent-1', path: 'notes.md' }])).toBe('Studio kept your unsaved version of agent-1/notes.md from the last session, which ended before it was saved.')
+  })
+})
+
+describe('a restart main asks for after the daemon connection failed', () => {
+  it('keeps every unsaved editor of the open agent as a recovery copy; saved and binary tabs are left alone', async () => {
+    const stash = vi.fn(async () => ({ success: true }))
+    tabs().openTab('notes.md', 'base', false, undefined, 1)
+    tabs().updateTabContent('notes.md', 'typed, not saved')
+    tabs().openTab('saved.md', 'clean', false, undefined, 1)
+    tabs().openTab('image.png', '', true, undefined, 1)
+    useDocumentStore.getState().setDocumentContent('# unsaved readme')
+    expect(await stashUnsavedEditors({ recoveryStash: stash })).toBe(2)
+    expect(stash.mock.calls.map((c) => c[0])).toEqual([
+      { agentFilePath: AGENT, path: 'notes.md', content: 'typed, not saved' },
+      { agentFilePath: AGENT, path: 'README.md', content: '# unsaved readme' },
+    ])
+  })
+
+  it('nothing open: nothing kept', async () => {
+    useDocumentStore.getState().setFilePath(null)
+    const stash = vi.fn(async () => ({ success: true }))
+    expect(await stashUnsavedEditors({ recoveryStash: stash })).toBe(0)
+    expect(stash).not.toHaveBeenCalled()
   })
 })
 

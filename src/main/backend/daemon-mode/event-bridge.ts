@@ -627,8 +627,9 @@ export class EventBridge {
     }
     if (route.action === 'notice') {
       const p = frame.payload as { holding?: unknown; reason?: unknown; sessions?: unknown }
+      const clients = typeof p?.sessions === 'number' ? `${p.sessions} other client${p.sessions === 1 ? ' is' : 's are'}` : 'other clients are'
       const text = p?.holding === true
-        ? `The ADF daemon keeps running while ${typeof p.sessions === 'number' ? p.sessions : 'other'} other client${p.sessions === 1 ? ' is' : 's are'} connected, and stops when the last one closes.${typeof p.reason === 'string' ? ` (${p.reason})` : ''}`
+        ? `The ADF daemon keeps running while ${clients} connected, and stops when the last one closes.${typeof p.reason === 'string' ? ` (${p.reason})` : ''}`
         : `The ADF daemon no longer stops when the other clients close.${typeof p?.reason === 'string' ? ` (${p.reason})` : ''}`
       this.log.log(`[Backend] ${text}`)
       if (p?.holding === true) this.deps.onNotice?.(text)

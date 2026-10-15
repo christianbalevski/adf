@@ -546,6 +546,7 @@ Example 201 (`application/json`):
   "name": "agent-1",
   "filePath": "/home/me/Documents/adf-agents/agent-1.adf",
   "did": "did:key:z6Mk…",
+  "loaded": true,
   "started": true
 }
 ```
@@ -4231,7 +4232,7 @@ Example 200 (`application/octet-stream`):
 
 **Upload an internal file's bytes**
 
-The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type. W3-F, as PUT /agents/{id}/files/content: a base revision (`If-Match` or `baseRevision`) that is not current, or a create (`If-None-Match: *` or `mustNotExist=true`) of a file that exists, answers 409 `stale_revision` and writes nothing; neither is taken with `unique=true`. The `file_updated` the write raises is not sent to the session named by X-ADF-Client-Session.
+The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type.
 
 Operation `putAgentFileRaw` · bearer token
 
@@ -4243,10 +4244,6 @@ Operation `putAgentFileRaw` · bearer token
 | `path` | query | string | yes | File path inside the agent |
 | `mimeType` | query | string |  |  |
 | `unique` | query | `"true"` \| `"false"` |  |  |
-| `baseRevision` | query | integer |  | W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there. |
-| `If-Match` | header | string |  | W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field. |
-| `If-None-Match` | header | `"*"` |  | W3-F: `*` makes the write a create: refused with 409 `stale_revision` when the file exists. As the body's `mustNotExist`. |
-| `mustNotExist` | query | `"true"` \| `"false"` |  | W3-F: create only, as If-None-Match: *: refused (409 stale_revision) when the file exists |
 
 **Request body** (required): `application/octet-stream`
 
@@ -16648,15 +16645,13 @@ Operation `createClientSession` · bearer token
 | `version` | string | yes | Client version, for the daemon log |
 | `exitDaemonWhenClosed` | boolean |  | Stop a Studio-started daemon when this session expires and no other session is open. Default false. |
 | `umbilical` | boolean |  | Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false. |
-| `pid` | integer |  | The client's process id, kept only from a caller on this machine (local proof). A new session of the same client ends that client's sessions whose pid is no longer running and whose stream is closed (a relaunch after a crash), without the orphan rule. |
 
 ```json
 {
   "client": "string",
   "version": "string",
   "exitDaemonWhenClosed": true,
-  "umbilical": true,
-  "pid": 1
+  "umbilical": true
 }
 ```
 
@@ -16719,7 +16714,7 @@ Example 200 (`application/json`):
 
 **Stream the session's frames (Server-Sent Events)**
 
-One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical | turn`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). `turn` = a stop dropped queued chats (`outcome: discarded`). Executor frames of a turn carry its `turnId`; `turn_complete` and `error` also the `absorbedTurnIds` that end with it. Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.
+One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.
 
 Operation `streamClientSessionEvents` · bearer token
 
@@ -16749,17 +16744,6 @@ Example 200 (`text/event-stream`):
   {
     "cursor": 0,
     "kind": "executor",
-    "turnId": "string",
-    "absorbedTurnIds": [
-      "string"
-    ],
-    "outcome": "discarded",
-    "turnIds": [
-      "string"
-    ],
-    "unansweredTurnIds": [
-      "string"
-    ],
     "agentId": "string",
     "filePath": "string",
     "loop": "string",
@@ -21423,7 +21407,6 @@ An open document (design D4): an .adf held open by client sessions, with or with
 | `version` | string | yes | Client version, for the daemon log |
 | `exitDaemonWhenClosed` | boolean |  | Stop a Studio-started daemon when this session expires and no other session is open. Default false. |
 | `umbilical` | boolean |  | Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false. |
-| `pid` | integer |  | The client's process id, kept only from a caller on this machine (local proof). A new session of the same client ends that client's sessions whose pid is no longer running and whose stream is closed (a relaunch after a crash), without the orphan rule. |
 
 <a id="schema-clientsessioncreated"></a>
 
@@ -21492,17 +21475,12 @@ Data of the `stream.gap` control frame on a client session stream: frames were l
 
 ### ClientFrame
 
-One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes "[Circular]". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).
+One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes "[Circular]". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `cursor` | integer | yes | Resume cursor, per session |
-| `kind` | `"executor"` \| `"host"` \| `"push"` \| `"umbilical"` \| `"turn"` | yes |  |
-| `turnId` | string |  | `executor`: the turn the event belongs to (the `turnId` POST …/chat answered); absent outside a turn. |
-| `absorbedTurnIds` | string[] |  | `executor` `turn_complete` (not interrupted) and `error`: the other chats this turn answered; they end with it. |
-| `outcome` | `"discarded"` |  | `turn`: a stop or `off` dropped queued chats (`turnIds`) and cut off the turn answering `unansweredTurnIds`. |
-| `turnIds` | string[] |  |  |
-| `unansweredTurnIds` | string[] |  |  |
+| `kind` | `"executor"` \| `"host"` \| `"push"` \| `"umbilical"` | yes |  |
 | `agentId` | string \| null |  |  |
 | `filePath` | string \| null |  |  |
 | `loop` | string |  |  |

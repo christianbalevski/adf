@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from 'react'
 import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextInput } from '../ui'
-import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../../shared/utils/remote-backend-url'
+import { checkRemoteDaemonUrl, remoteUrlOrigin, type RemoteUrlClass } from '../../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
 
 type MessageGroup = 'backend' | 'remote'
@@ -32,7 +32,7 @@ const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
 function activeLine(view: BackendSettingsView): string {
   const mode = MODE_LABELS[view.active.mode]
   if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
-  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
+  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match, or it could not be reached). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   return `This launch runs ${mode}.`
 }
@@ -52,6 +52,20 @@ function daemonLine(daemon: BackendDaemonStatus): string {
   if (daemon.version) parts.push(`version ${daemon.version}`)
   if (daemon.startedBy) parts.push(daemon.how === 'spawned' ? 'started by this Studio' : `started by ${daemon.startedBy === 'studio' ? 'Studio' : daemon.startedBy === 'cli' ? 'the ADF CLI' : 'a service'}`)
   return parts.join(' · ')
+}
+
+/**
+ * Why Save is refused for the remote draft, or null. An invalid URL is
+ * refused; so is plain http that is not confirmed, except the saved URL with
+ * its confirmation unchecked and no new token: saving that withdraws the
+ * confirmation (main keeps the token; the transport rule then blocks
+ * connecting until the box is checked again or the URL changes).
+ */
+export function remoteSaveBlocked(draft: { kind: RemoteUrlClass | null; urlChanged: boolean; confirmed: boolean; savedConfirmed: boolean; newToken: boolean }): 'invalid' | 'unconfirmed' | null {
+  if (draft.kind === 'invalid') return 'invalid'
+  if (draft.kind !== 'insecure-http' || draft.confirmed) return null
+  const withdrawing = !draft.urlChanged && draft.savedConfirmed && !draft.newToken
+  return withdrawing ? null : 'unconfirmed'
 }
 
 function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: string } | null }) {
@@ -143,6 +157,7 @@ export function BackendSettings() {
   const insecureConfirmed = draftOrigin !== null && insecureFor === draftOrigin
   const remoteDirty = urlChanged || insecureConfirmed !== view.configured.allowInsecureHttp || tokenDraft.trim() !== ''
   const remoteInvalid = urlCheck?.kind === 'invalid' || (urlCheck?.kind === 'insecure-http' && !insecureConfirmed)
+  const saveBlocked = remoteSaveBlocked({ kind: urlCheck?.kind ?? null, urlChanged, confirmed: insecureConfirmed, savedConfirmed: view.configured.allowInsecureHttp, newToken: tokenDraft.trim() !== '' }) !== null
 
   const saveRemote = () => {
     const patch: BackendSettingsPatch = { remoteUrl: urlDraft.trim() || null, allowInsecureHttp: insecureConfirmed }
@@ -198,18 +213,14 @@ export function BackendSettings() {
         <SettingsRow
           label="Run agents in"
           description={MODE_DESCRIPTIONS[view.configured.mode]}
-          help={view.modeSwitchAvailable
-            ? `${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`
-            : `${activeLine(view)} Switching the backend is available in a later build.`}
+          help={`${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`}
         >
           <SegmentedControl
             value={view.configured.mode}
             options={(['embedded', 'local', 'remote'] as const).map((mode) => ({
               value: mode,
               label: MODE_LABELS[mode],
-              // Embedded stays selectable: it is how a hand-edited file is undone.
-              disabled: saving || (mode !== view.configured.mode && mode !== 'embedded' &&
-                (!view.modeSwitchAvailable || (mode === 'remote' && !view.remoteSwitchAvailable))),
+              disabled: saving,
             }))}
             onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved.') }}
             ariaLabel="Backend"
@@ -330,7 +341,7 @@ export function BackendSettings() {
             <Button disabled={remoteInvalid || !urlDraft.trim()} loading={checking} onClick={() => void testRemote()}>
               Test connection
             </Button>
-            <Button variant="primary" disabled={!remoteDirty || remoteInvalid} loading={saving} onClick={saveRemote}>
+            <Button variant="primary" disabled={!remoteDirty || saveBlocked} loading={saving} onClick={saveRemote}>
               Save
             </Button>
           </div>
@@ -354,7 +365,7 @@ export function BackendSettings() {
         >
           {!remoteConfigured && (
             <Button
-              disabled={!view.remoteSwitchAvailable || !remoteReady || saving}
+              disabled={!remoteReady || saving}
               onClick={() => void save('remote', { mode: 'remote' }, '')}
             >
               Switch to This Daemon

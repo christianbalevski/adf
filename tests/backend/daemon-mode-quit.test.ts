@@ -27,12 +27,12 @@ const versionInfo = (over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo =
   localProof: { available: false, problem: 'the local proof file could not be written or protected: icacls failed' }, ...over,
 })
 
-async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean> }) {
+async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>; pending?: unknown[] }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-quit-'))
   dirs.push(dir)
   const daemon = createFakeDaemon(BASE)
   daemon.routes.set('GET /agents', () => [])
-  daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
+  daemon.routes.set('GET /approvals', () => ({ pending: opts.pending ?? [], history: [] }))
   daemon.routes.set('POST /client/reload-credentials', () => ({ runtime: { state: 'adopted' }, unlocked: [], stillLocked: [], sessions: ['chatgpt'], recovered: 0 }))
   const session = createFakeClientSession()
   const quits: boolean[] = []
@@ -135,5 +135,25 @@ describe('after a handover, and Settings → Backend', () => {
       connection: 'connected', url: BASE, pid: 4242, version: '0.8.0', startedBy: 'studio', how: 'spawned',
       localProof: { available: false, problem: expect.stringContaining('icacls') },
     })
+  })
+
+  it('agentActivity(): an agent waiting on an approval is marked, for the switch dialog (DMN-02)', async () => {
+    const pending = [{ id: 'C:/agents/agent-1.adf|main|t1', kind: 'approval', requestId: 't1', filePath: 'C:/agents/agent-1.adf', agentName: 'agent-1', loop: 'main', createdAt: 1 }]
+    const { handle } = await boot({ keep: false, pending })
+    expect(handle.agentActivity()).toEqual([{ filePath: 'C:/agents/agent-1.adf', busy: true, waiting: true }])
+  })
+
+  it('status(): after `adf daemon restart` the row names the new daemon and who started it, not "started by this Studio" (DMN-14)', async () => {
+    const { handle, session, daemon, logs } = await boot({ keep: false })
+    expect(handle.status()).toMatchObject({ pid: 4242, startedBy: 'studio', how: 'spawned' })
+    // The CLI restarted the daemon: the stream reattaches on a new epoch, and /version names another process.
+    daemon.routes.set('GET /version', () => versionInfo({ pid: 5151, startedBy: 'cli' }))
+    await session.listener!.onReattached?.({ epochChanged: true })
+    await vi.waitFor(() => expect(handle.status()).toMatchObject({ pid: 5151, startedBy: 'cli', how: 'attached' }))
+    expect(logs).toContain('[Backend] The ADF daemon is now pid 5151, version 0.8.0, started by cli (was pid 4242)')
+    // The same process again (a plain reconnect): the launch's answer holds.
+    daemon.routes.set('GET /version', () => versionInfo())
+    await session.listener!.onReattached?.({ epochChanged: false })
+    await vi.waitFor(() => expect(handle.status()).toMatchObject({ pid: 4242, startedBy: 'studio', how: 'spawned' }))
   })
 })
