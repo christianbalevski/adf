@@ -498,11 +498,11 @@ export const CHANNEL_MAP = {
   [IPC.MESH_PEER_AGENT_HEALTH]: proxied('invoke', ['GET /network/peers/health']),
   [IPC.MESH_FIREWALL_CHECK]: local('invoke', 'The port and LAN binding come from the daemon mesh server, not from Studio main.', {
     reads: ['GET /network/server'],
-    remote: 'Hidden: the firewall is the laptop\'s, the mesh server is the server\'s (§9.3).',
+    remote: 'Labelled, not hidden: the check answers supported: false with a sentence (the firewall is the laptop\'s, the mesh server the server\'s; §9.4); the panel shows it without a fix button.',
   }),
   [IPC.MESH_FIREWALL_APPLY]: local('invoke', 'Elevation prompt from Studio; the port comes from the daemon mesh server.', {
     reads: ['GET /network/server'],
-    remote: 'Hidden, as MESH_FIREWALL_CHECK.',
+    remote: 'Refused with the sentence of MESH_FIREWALL_CHECK (success: false).',
   }),
 
   // --- Agent review ----------------------------------------------------------

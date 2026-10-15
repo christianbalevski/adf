@@ -530,7 +530,7 @@ Rationale: default `false` matches embedded mode, where agents stop when Studio 
 | MCP OAuth and ChatGPT sign-in callbacks | Studio main runs the local callback listener and relays the code, as `adf auth login --relay` does |
 | Compute browser session viewer | Unsupported in v1 (the session URL is the server's loopback) |
 | Identity create/restore/unlock, reveal phrase, switch owner | Unsupported by design (§5.4) |
-| Host exec approvals, podman, firewall | Act on the server; the firewall panel is `local` and refers to the laptop, so it is hidden in `remote` |
+| Host exec approvals, podman, firewall | Act on the server; the firewall panel is `local` and refers to the laptop, so in `remote` it is labelled with the reason and offers no fix (§9.4) |
 
 Every unsupported action MUST show a sentence that names the reason and the terminal command to run on the server where one exists.
 
