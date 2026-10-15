@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -18,6 +19,7 @@ import Module from 'node:module'
  * - `fence.cjs`: no podman/wsl spawn, no connection except to this run's own
  *   loopback ports, never 7385. Also in child processes and workers
  *   (NODE_OPTIONS and Worker execArgv carry `--require fence.cjs`).
+ * - Machine: `ADF_MACHINE_ID` is a random id per run (no reg.exe / ioreg lookup).
  * - Secrets: `ADF_KEYCHAIN=0` makes every OS-keychain opener in Studio code
  *   return null, `ADF_SECRET_STORE=file` forces the daemon's passphrase-file
  *   backend, and any load of `@napi-rs/keyring` is refused and recorded.
@@ -60,7 +62,7 @@ const fence = createRequire(__filename)('./fence.cjs') as Fence
 
 /** Variables the harness sets; every other `ADF_*` is removed for the run. */
 const OWN_ENV = [
-  'ADF_USER_DATA_DIR', 'ADF_LEASE_DIR', 'ADF_TEMP_DIR', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN',
+  'ADF_USER_DATA_DIR', 'ADF_LEASE_DIR', 'ADF_TEMP_DIR', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN', 'ADF_MACHINE_ID',
   'MESH_PORT', 'MESH_HOST', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TMPDIR', 'TEMP', 'TMP',
   'PARITY_FENCE_LOG', 'PARITY_FENCE_ROOT', 'PARITY_FENCE_PORTS', 'NODE_OPTIONS',
@@ -253,6 +255,11 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     ADF_TEMP_DIR: tempDir,
     ADF_SECRET_STORE: 'file',
     ADF_KEYCHAIN: '0',
+    // The lease records' machine id, without reg.exe / ioreg: on a loaded
+    // runner the lookup took seconds and a record was written without it, or
+    // after the snapshot (CI run 38749217035). Unit-tested in
+    // tests/runtime/agent-lease-machine-id.test.ts.
+    ADF_MACHINE_ID: randomUUID(),
     MESH_PORT: String(meshPort),
     MESH_HOST: '127.0.0.1',
     HOME: homeDir,
