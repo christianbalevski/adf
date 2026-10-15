@@ -938,6 +938,26 @@ export class PodmanService extends EventEmitter {
     return (await this.computeUsers.others()).claims.get(name) ?? []
   }
 
+  /**
+   * Embedded Settings → Compute (IPC COMPUTE_LIST_CONTAINERS): listContainers()
+   * with `users`, the other live runtimes using each container, on the rows
+   * one claims, as the daemon-mode list has them (GET /compute/users). The
+   * Stop, Remove and Rebuild confirmations name them. A registry that cannot
+   * be read leaves the rows without `users` (logged).
+   */
+  async listContainersWithUsers(): Promise<ContainerSummary[]> {
+    const containers = await this.listContainers()
+    if (containers.length === 0) return containers
+    let claims: Map<string, string[]>
+    try {
+      claims = (await this.computeUsers.others()).claims
+    } catch (err) {
+      console.warn('[Compute] Could not read which other runtimes use the containers:', err instanceof Error ? err.message : err)
+      return containers
+    }
+    return containers.map((c) => (claims.get(c.name)?.length ? { ...c, users: claims.get(c.name)! } : c))
+  }
+
   isRunning(): boolean {
     return this.status === 'running'
   }

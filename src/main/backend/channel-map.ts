@@ -103,14 +103,6 @@ function unsupported(kind: ChannelKind, routes: readonly string[], remote: strin
 
 // Gaps shared by many channels.
 
-/** Design §6 recipe rows owned by W1-B, for every start path. */
-const RECIPE = [
-  gap('W1-B', 'full mesh registration: message bus subscription, isMessageTriggered, config updates (registerAgent)'),
-  gap('W1-B', 'umbilical taps on, or a written reason'),
-  gap('W1-B', 'shared ensureCoreToolDeclarations (delete the private copy, agent-runtime-builder.ts:350)'),
-  gap('W1-B', 'interactive MCP OAuth as a HIL request carrying the authorize URL; keep the MCP manager on setup failure'),
-] as const
-
 /** Lifetime burn totals live in the client key fleetMapState.burnTotals (§4.1). */
 const BURN_HYDRATE = 'Once per session, POST /fleet/burn/hydrate with the client key fleetMapState.burnTotals.'
 
@@ -150,10 +142,6 @@ export const CHANNEL_MAP = {
   [IPC.DOC_SET_DOCUMENT]: proxied('invoke', ['PUT /agents/:id/document']),
   [IPC.DOC_GET_AGENT_CONFIG]: proxied('invoke', ['GET /agents/:id/config']),
   [IPC.DOC_SET_AGENT_CONFIG]: proxied('invoke', ['GET /agents/:id/config', 'PUT /agents/:id/config', 'GET /files/agent'], {
-    gaps: [
-      gap('W1-B', 'MCP reconcile on config change'),
-      gap('W1-B', 'mesh config update on config change (meshManager.updateAgentConfig)'),
-    ],
     note: 'The handler refuses a config whose id differs from the open file (session check). A running agent\'s deferred rename is read back from GET /files/agent pendingName.',
   }),
   [IPC.DOC_AGENT_CONFIG_CHANGED]: proxied('push', [], {
@@ -163,7 +151,7 @@ export const CHANNEL_MAP = {
   [IPC.DOC_GET_CHAT]: proxied('invoke', ['GET /agents/:id/chat']),
   [IPC.DOC_GET_CHAT_OLDER]: proxied('invoke', ['GET /agents/:id/chat']),
   [IPC.DOC_SET_CHAT]: local('invoke', 'No-op stub that returns success; chat is written by the runtime only. No daemon call.'),
-  [IPC.DOC_CLEAR_CHAT]: proxied('invoke', ['DELETE /agents/:id/chat'], { gaps: [gap('W1-B', 'main-loop clear resets the mesh session (meshManager.resetAgentSession)')] }),
+  [IPC.DOC_CLEAR_CHAT]: proxied('invoke', ['DELETE /agents/:id/chat']),
   [IPC.DOC_GET_INBOX]: proxied('invoke', ['GET /agents/:id/inbox']),
   [IPC.DOC_CLEAR_INBOX]: proxied('invoke', ['DELETE /agents/:id/inbox']),
   [IPC.DOC_GET_OUTBOX]: proxied('invoke', ['GET /agents/:id/outbox']),
@@ -172,9 +160,6 @@ export const CHANNEL_MAP = {
 
   // --- Agent runtime ---------------------------------------------------------
   [IPC.AGENT_START]: proxied('invoke', ['POST /agents/:id/start', 'GET /agents/:id/status', 'GET /agents/:id/triggers', 'GET /approvals/interactions', 'GET /agents/:id/identity/password', 'POST /agents/:id/stop', 'GET /agents/:id/config'], {
-    gaps: [
-      ...RECIPE,
-    ],
     note: 'The reuse path (agent already running) returns sessionId, the display state (GET /agents/:id/triggers), and main\'s pending approvals and asks (GET /approvals/interactions). A held document whose key is locked answers code credentials_locked without starting (design §6.1 row 27).',
   }),
   [IPC.AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
@@ -207,8 +192,8 @@ export const CHANNEL_MAP = {
 
   // --- Models and settings ---------------------------------------------------
   [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath goes to the route as filePath (an agent file\'s own provider); a path the route refuses is dropped and the app providers are listed.' }),
-  [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings'], {
-    note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
+  [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings', 'POST /settings/providers/keys/reveal'], {
+    note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__; local mode replaces it with the stored key through POST /settings/providers/keys/reveal (local proof); remote mode keeps the placeholder. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
   [IPC.SETTINGS_SET]: proxied('invoke', ['PATCH /settings'], {
     note: 'Split by settingsKeyClass(): client keys go to studio-client-settings.json, backend keys to the daemon. menuBarEnabled applies in Studio main.',
   }),
@@ -262,7 +247,6 @@ export const CHANNEL_MAP = {
 
   // --- Background agents -----------------------------------------------------
   [IPC.BACKGROUND_AGENT_START]: proxied('invoke', ['GET /files/agent', 'POST /agents/load', 'POST /agents/:id/start'], {
-    gaps: [...RECIPE],
     note: 'Foreground, review and password gates from GET /files/agent (reviewed, passwordProtected), then load with requireReview: true and start (the startup turn). A file this session unlocked passes the password gate: its key stays in the daemon while the session holds it.',
   }),
   [IPC.BACKGROUND_AGENT_EVENT_BATCH]: proxied('push', [], {
@@ -489,9 +473,7 @@ export const CHANNEL_MAP = {
   [IPC.MESH_SERVER_START]: proxied('invoke', ['POST /network/server/start']),
   [IPC.MESH_SERVER_STOP]: proxied('invoke', ['POST /network/server/stop']),
   [IPC.MESH_SERVER_LAN_IPS]: proxied('invoke', ['GET /network/mesh/lan-addresses']),
-  [IPC.MESH_DISCOVERED_RUNTIMES]: proxied('invoke', ['GET /network/mesh/discovered-runtimes'], {
-    gaps: [gap('W1-B', 'mDNS and tailnet discovery in the daemon (the route returns [], daemon/index.ts:343), with directory cards, /ping meta and trust decoration')],
-  }),
+  [IPC.MESH_DISCOVERED_RUNTIMES]: proxied('invoke', ['GET /network/mesh/discovered-runtimes']),
   [IPC.MESH_PEER_SHARED_FILE]: proxied('invoke', ['GET /network/peers/shared-file'], {
     note: 'Network read; proxied so it runs on the host that discovered the peer (in remote mode, the server\'s network).',
   }),

@@ -938,11 +938,16 @@ export class RuntimeService extends EventEmitter {
       }
       let config = workspace.getAgentConfig() as AgentConfig
       progress.agentId = config.id
-      // The lease was taken before the file was read: it names the agent now, as Studio's start does.
-      if (lease?.ok) await this.agentLeases?.noteAgentId(canonicalPath, config.id)
       // Before anything is built: a second file with a loaded agent's id
       // would otherwise start its MCP servers and adapters only to be refused.
       this.assertNoDuplicateId(config.id, canonicalPath)
+      // The lease was taken before the file was read: it names the agent now,
+      // as Studio's start does, and a copy of an agent another runtime runs
+      // (same id, another file) is refused (W5-D3).
+      if (lease?.ok) {
+        const idLease = await this.agentLeases?.noteAgentId(canonicalPath, config.id)
+        if (idLease && !idLease.ok) throw new RuntimeLoopError(idLease.message, 409, AGENT_LEASED_CODE, { holder: idLease.record.holder })
+      }
       const previousName = this.adoptFileName(workspace, config, canonicalPath)
       const keyCell: DerivedKeyCell = doc ? doc.keyCell : { current: opts.derivedKey ?? null }
       if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey

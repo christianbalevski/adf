@@ -476,6 +476,25 @@ describe('remote target', () => {
     expect(studioTokens(SUBS[0]).exists()).toBe(true)
     expect(daemonMcp().listServerUrls()).toEqual([])
   })
+
+  it('remote mode\'s recent files (paths on the daemon\'s machine) never move into adf-settings.json; they wait in the client file for the next remote session (W5-D3)', async () => {
+    await runHandover('remote', deps())
+    const clientPath = join(dir, 'studio-client-settings.json')
+    const remoteRecent = ['\\\\evil\\share\\agent-2.adf', '/srv/agents/agent-3.adf']
+    writeFileSync(clientPath, JSON.stringify({ ...JSON.parse(readFileSync(clientPath, 'utf-8')), remoteRecentFiles: remoteRecent }))
+
+    const plan = await planHandover('embedded', deps())
+    expect(plan.find((i) => i.id === 'client-settings')?.detail).toMatch(/^2 settings/)
+    const report = await runHandover('embedded', deps())
+    expect(report.items.find((i) => i.id === 'client-settings')?.detail).toMatch(/remoteRecentFiles \(remote mode only\) kept/)
+    expect(readSettings()).toMatchObject({ theme: 'dark', recentFiles: ['C:/agents/agent-1.adf'] })
+    expect(readSettings()).not.toHaveProperty('remoteRecentFiles')
+    expect(JSON.parse(readFileSync(clientPath, 'utf-8'))).toEqual({ remoteRecentFiles: remoteRecent })
+
+    // Back to remote: they are there again, and the local recent files join them.
+    await runHandover('remote', deps())
+    expect(JSON.parse(readFileSync(clientPath, 'utf-8'))).toEqual({ theme: 'dark', recentFiles: ['C:/agents/agent-1.adf'], remoteRecentFiles: remoteRecent })
+  })
 })
 
 describe('the switch dialog\'s plan for every pair of modes (REM-19)', () => {

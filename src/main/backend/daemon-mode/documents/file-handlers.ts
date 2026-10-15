@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
+import { recentFilesKey } from '../../../../shared/constants/client-settings-keys'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { DaemonClient } from '../../../../shared/daemon-client'
 import { scratchRootPath } from '../../../utils/scratch-dir'
@@ -187,12 +188,13 @@ export function reviewSummaryKeys<T>(summary: T): T {
 /** Embedded's claim refusal names a template (ipc/index.ts FILE_REVIEW_ACCEPT); the daemon's names the agent. */
 const CLAIM_KEYS_UNAVAILABLE = 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.'
 
-/** Re-key the client key recentFiles and the session after the open file moved (embedded persistAcceptedAgent). */
+/** Re-key the client key recentFiles (remoteRecentFiles in remote mode) and the session after the open file moved (embedded persistAcceptedAgent). */
 function noteMoved(ctx: DaemonModeContext, oldPath: string, newPath: string): void {
   ctx.session.rekey(oldPath, newPath)
-  const recent = ctx.clientSettings.get('recentFiles')
+  const key = recentFilesKey(ctx.mode === 'remote')
+  const recent = ctx.clientSettings.get(key)
   if (Array.isArray(recent) && recent.includes(oldPath)) {
-    ctx.clientSettings.set('recentFiles', recent.map((p) => (p === oldPath ? newPath : p)))
+    ctx.clientSettings.set(key, recent.map((p) => (p === oldPath ? newPath : p)))
   }
   ctx.recordRecentFile(newPath)
 }

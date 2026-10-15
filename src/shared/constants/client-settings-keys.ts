@@ -53,6 +53,10 @@ export const CLIENT_SETTINGS_KEYS = [
   'nativeNotificationsEnabled',
   'menuBarEnabled',
   'recentFiles',
+  // Remote mode's Open Recent: paths on the remote daemon's machine, kept
+  // apart from `recentFiles` (CLIENT_FILE_ONLY_KEYS) so they never reach
+  // embedded Studio, whose boot sweep and menu touch the paths (W5-D3).
+  'remoteRecentFiles',
   'updateChecksEnabled',
   'spellcheckDownloadsEnabled',
 ] as const
@@ -125,6 +129,22 @@ export const BACKEND_SETTINGS_KEYS = [
   'daemonLegacyRuntimeDids',
   'trustedDaemonEncKeys',
 ] as const
+
+/** Remote mode's recent files (menu.ts); never `recentFiles`. */
+export const REMOTE_RECENT_FILES_KEY = 'remoteRecentFiles'
+
+/**
+ * Client keys that stay in `studio-client-settings.json` when Studio
+ * switches back to embedded (handover.ts moveClientSettings): embedded never
+ * reads them, and a remote daemon's paths must not become paths embedded
+ * Studio opens or sweeps.
+ */
+export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY]
+
+/** The settings key of Open Recent: `recentFiles`, or `remoteRecentFiles` in remote mode. */
+export function recentFilesKey(remote: boolean): 'recentFiles' | typeof REMOTE_RECENT_FILES_KEY {
+  return remote ? REMOTE_RECENT_FILES_KEY : 'recentFiles'
+}
 
 export type ClientSettingsKey = (typeof CLIENT_SETTINGS_KEYS)[number]
 export type BackendSettingsKey = (typeof BACKEND_SETTINGS_KEYS)[number]

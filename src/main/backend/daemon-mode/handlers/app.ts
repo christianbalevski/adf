@@ -1,16 +1,42 @@
 import { app } from 'electron'
 import { IPC } from '../../../../shared/constants/ipc-channels'
-import type { AgentToolsResult } from '../../../../shared/daemon-client'
+import { DaemonError, type AgentToolsResult, type DaemonClient } from '../../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../../shared/types/ipc.types'
-import { enc, isNotFound, type DaemonHandlerTable } from '../context'
+import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { mergeSettingsViews, splitSettingsPatch } from '../settings'
 import { editedPlaceholderRefusal, isEditedPlaceholder } from '../mcp/common'
+import { REDACTED_API_KEY } from './providers'
 
 /**
  * Daemon-mode handlers owned by W2-C outside the core flow: the settings
  * split (§4.2), approvals, the tool catalog, and the Electron-local channels
  * that read no backend state.
  */
+
+/**
+ * Replace each `__redacted__` provider key in `settings` (in place) with the
+ * stored key: POST /settings/providers/keys/reveal, local callers with the
+ * local proof only. A key the daemon does not answer keeps the placeholder
+ * (logged); the rest of the settings answer is unaffected.
+ */
+async function revealProviderKeys(ctx: DaemonModeContext, client: DaemonClient, settings: Record<string, unknown>): Promise<void> {
+  const providers = settings.providers
+  if (!Array.isArray(providers)) return
+  const ids = (providers as Array<{ id?: unknown; apiKey?: unknown }>)
+    .filter((p) => p?.apiKey === REDACTED_API_KEY && typeof p.id === 'string')
+    .map((p) => p.id as string)
+  if (ids.length === 0) return
+  let keys: Record<string, string> = {}
+  try {
+    keys = (await client.request<{ keys: Record<string, string> }>('POST', '/settings/providers/keys/reveal', { body: { ids } })).keys ?? {}
+  } catch (err) {
+    if (err instanceof DaemonError && err.unreachable) throw err
+    ctx.log.warn(`[Settings] The app provider keys stay hidden in Settings → Providers: the ADF daemon did not reveal them (${err instanceof Error ? err.message : String(err)})`)
+    return
+  }
+  settings.providers = (providers as Array<Record<string, unknown>>).map((p) =>
+    p?.apiKey === REDACTED_API_KEY && typeof p.id === 'string' && typeof keys[p.id] === 'string' ? { ...p, apiKey: keys[p.id] } : p)
+}
 
 export const APP_HANDLERS: DaemonHandlerTable = {
   // --- local -----------------------------------------------------------------
@@ -30,9 +56,14 @@ export const APP_HANDLERS: DaemonHandlerTable = {
   [IPC.IDENTITY_PASSWORD_CHANGE]: () => ({ success: false, error: 'Whole-file passwords are no longer supported — remove the password and use a share password instead.' }),
 
   // --- settings (§4.2) ---------------------------------------------------------
+  // Local mode: the app provider keys GET /settings answers as the
+  // placeholder come from the local-proof reveal route, so the key field
+  // holds the stored key as in embedded (W5-D3). Remote mode keeps the
+  // placeholder: a remote daemon never sends stored values.
   [IPC.SETTINGS_GET]: async (ctx) => {
     const client = await ctx.ready()
     const { settings } = await client.request<{ settings: Record<string, unknown> | null }>('GET', '/settings')
+    if (ctx.mode === 'local' && settings) await revealProviderKeys(ctx, client, settings)
     return mergeSettingsViews(settings, ctx.clientSettings)
   },
 

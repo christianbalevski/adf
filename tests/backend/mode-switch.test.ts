@@ -218,6 +218,32 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(h.notifications[0]).toMatch(/Running again after the switch: agent-1\. Not started: agent-2/)
   })
 
+  // W5-D3: the switch to embedded waits 22 s for the daemon to exit; one that
+  // takes longer still holds the leases, and the resume never tried again.
+  it('a start refused with agent_leased (the old runtime still holds it) is tried again until the wait runs out; then the notification says what is still not started', async () => {
+    writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'local', to: 'embedded', agents: [agent1, agent2], at: new Date().toISOString() }))
+    const calls: string[] = []
+    const leased = { success: false, code: 'agent_leased', error: 'agent-x is already running in the ADF daemon (pid 4242).' }
+    await resumeSwitchedAgents('embedded', dir, async (p) => {
+      calls.push(p)
+      // agent-1 is let go of on the third try; agent-2 never is.
+      if (p === agent1) return calls.filter((c) => c === agent1).length >= 3 ? { success: true } : leased
+      return leased
+    }, { leaseWaitMs: 200, retryMs: 20 })
+    expect(calls.filter((c) => c === agent1)).toHaveLength(3)
+    expect(calls.filter((c) => c === agent2).length).toBeGreaterThan(3)
+    expect(h.notifications).toHaveLength(1)
+    expect(h.notifications[0]).toMatch(/Running again after the switch: agent-1\. Not started: agent-2 \(still held after 0 s: agent-x is already running in the ADF daemon/)
+  })
+
+  it('any other refusal is reported at once, not retried', async () => {
+    writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'local', to: 'embedded', agents: [agent1], at: new Date().toISOString() }))
+    const start = vi.fn(async () => ({ success: false, error: 'Agent is password-protected. Open it in the foreground and unlock first.' }))
+    await resumeSwitchedAgents('embedded', dir, start, { leaseWaitMs: 200, retryMs: 20 })
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(h.notifications[0]).toMatch(/Not started: agent-1 \(Agent is password-protected/)
+  })
+
   it('embedded resume waits for the backend to be ready (the mesh boot), as autostart does', async () => {
     writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'local', to: 'embedded', agents: [agent1], at: new Date().toISOString() }))
     let meshUp!: () => void

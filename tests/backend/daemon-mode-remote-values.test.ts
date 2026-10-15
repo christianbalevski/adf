@@ -68,6 +68,14 @@ describe('stored values with a remote daemon', () => {
     expect(daemon.requests.map((r) => r.path)).toEqual([`/agents/${AGENT}/identity`, `/agents/${AGENT}/identity`])
   })
 
+  it('SETTINGS_GET keeps the app provider key as the placeholder and never asks for it (W5-D3: only local mode reveals it)', async () => {
+    daemon.routes.set('GET /settings', () => ({ settings: { providers: [{ id: 'p1', type: 'openai', name: 'OpenAI', baseUrl: '', apiKey: '__redacted__' }] } }))
+    daemon.requests.length = 0
+    const settings = await invoke(IPC.SETTINGS_GET) as { providers: Array<{ apiKey?: string }> }
+    expect(settings.providers[0].apiKey).toBe('__redacted__')
+    expect(daemon.requests.map((r) => r.path)).toEqual(['/settings'])
+  })
+
   it('IDENTITY_SET keeps the stored value for the untouched placeholder and refuses an edited one', async () => {
     await handle.session.openFile(FILE, async () => AGENT)
     daemon.requests.length = 0

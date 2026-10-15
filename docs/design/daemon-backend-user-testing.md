@@ -3,7 +3,7 @@
 **Status: test plan for `feat/daemon-backend`.** Walked by the owner during the
 one-week daily-driver period, before the Embedded backend code is deleted.
 Corrected against what W0-W4 built (W4-C, 2026-10-14). R items describe remote
-mode as built by W4-B and reconciled with W4-A's switch dialog. The user guide for these features is
+mode as built by W4-B and reconciled with W4-A's switch dialog. W5-D3 (2026-10-15) added the W5 fixes and the daily-driver gaps (FILE-25, CHAT-26, LOOP-11, TIME-15, TIME-16, CHAN-10, COMP-09, MESH-18, MESH-19, PROV-13, DMN-39..DMN-41). The user guide for these features is
 [Studio backend](../guides/studio-backend.md); expected messages are quoted
 from the code.
 
@@ -109,6 +109,7 @@ daemon while Studio runs (DMN-17).
 | FILE-22 | Start/Stop from the row context menu and the status dot; folder Start all / Stop all. | Each agent starts/stops once; starting/stopping spinners clear; unreviewed agents prompt review first. | [ ] | [ ] | [ ] |
 | FILE-23 | In agent-1, ask it to `sys_create_adf` a child with autostart. | Child listed and running; no review prompt. | [ ] | [ ] | [ ] |
 | FILE-24 | View → Reload with agent-1 running and open. | Same agent reopens; running state, loop and tabs correct. | [ ] | [ ] | [ ] |
+| FILE-25 | In R, open two agents from the server (picker) so Open Recent lists them; switch to E; File → Open Recent; quit and relaunch E; switch back to R. | E's Open Recent lists only the agents opened in E or L before, none of the server's paths; `adf-settings.json` has no `remoteRecentFiles`; main.log at the E boot has no WAL sweep of a server path and Windows asks for no network credentials. Back in R, Open Recent lists the server's agents again (kept as `remoteRecentFiles` in `studio-client-settings.json`, W5-D3). | [ ] | N/A | [ ] |
 
 ## 3. Editor and document (EDIT)
 
@@ -173,6 +174,7 @@ daemon while Studio runs (DMN-17).
 | CHAT-23 | Agent sets `sys_set_meta status`. | Status text in header and sidebar. | [ ] | [ ] | [ ] |
 | CHAT-24 | MCP tool returns an image (multimodal on). | Rendered inline; saved under `mcp/`. | [ ] | [ ] | [ ] |
 | CHAT-25 | Transient provider error (429/5xx). | Auto-retry per recovery config; retries visible in logs; final outcome shown. | [ ] | [ ] | [ ] |
+| CHAT-26 | Ask agent-1 to save an image in its files and reply with `![chart](adf-file://chart.png)` and a link `[notes](adf-file://notes.md)`; then attach a PDF in the composer and send; relaunch Studio and reopen agent-1. | The image renders inline in the reply; the link opens `notes.md` in the editor; the attachment chip is on the user row and opens the file. After the relaunch all three still render and open. Remote: content comes from the daemon. | [ ] | [ ] | [ ] |
 
 ## 6. Inner loops (LOOP)
 
@@ -188,6 +190,7 @@ daemon while Studio runs (DMN-17).
 | LOOP-08 | Switch tabs. | Status-bar gauge and breakdown follow the viewed loop. | [ ] | [ ] | [ ] |
 | LOOP-09 | Delete a loop via config edit. | Tab disappears; stream archived (audit row). | [ ] | [ ] | [ ] |
 | LOOP-10 | Background loop logs while its tab is unfocused. | Unread dot on that tab. | [ ] | [ ] | [ ] |
+| LOOP-11 | agent-2 `researcher` tab with a history longer than one page: scroll to the top → Load older. | Earlier `researcher` rows page in; no main-loop rows; no jump, no duplicates (as CHAT-13 for main). | [ ] | [ ] | [ ] |
 
 ## 7. HIL: approvals, asks, suspend, OS notifications (HIL)
 
@@ -206,11 +209,11 @@ daemon while Studio runs (DMN-17).
 | HIL-11 | agent-5 suspended, wait past 120 s. | Auto-off; dialog clears. | [ ] | [ ] | [ ] |
 | HIL-12 | Window unfocused; approval arrives. | OS toast; click focuses Studio and opens the agent. | [ ] | [ ] | [ ] |
 | HIL-13 | 5 approvals within 2 s, window unfocused. | One summary toast; click opens the bell panel. | [ ] | [ ] | [ ] |
-| HIL-14 | Window hidden to tray (macOS: closed); click a toast. | Window shows and reveals the request. | [ ] | [ ] | [ ] |
+| HIL-14 | Window hidden to tray (macOS: closed); click a toast. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Window shows and reveals the request. | [ ] | [ ] | [ ] |
 | HIL-15 | Settings → Notifications off. | No toasts; bell still updates. | [ ] | [ ] | [ ] |
 | HIL-16 | Approval whose args contain headers/body/token. | Toast and bell preview redact them. | [ ] | [ ] | [ ] |
 | HIL-17 | Pending approvals (macOS/Linux). | Dock badge = bell count; 0 clears. Windows: N/A (nothing shown). | [ ] | [ ] | [ ] |
-| HIL-18 | Tray menu with pending items. | "Waiting on you" lists them; click reveals. | [ ] | [ ] | [ ] |
+| HIL-18 | Tray menu with pending items. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). "Waiting on you" lists them; click reveals. | [ ] | [ ] | [ ] |
 | HIL-19 | agent-3 routes approval to Telegram (on_task_create); approve on phone. | Studio card and bell clear. | [ ] | [ ] | [ ] |
 | HIL-20 | Agent requests change of a locked field. | One-time protection override card; no "Always approve". | [ ] | [ ] | [ ] |
 | HIL-21 | L/R: approve the same request in `adf` TUI (`y`). | Studio card and bell clear within 1 s. E: N/A (CLI cannot attach). | N/A | [ ] | [ ] |
@@ -233,6 +236,8 @@ daemon while Studio runs (DMN-17).
 | TIME-12 | Header/fleet state buttons: idle, hibernate, off. | State changes; dot updates in all surfaces. | [ ] | [ ] | [ ] |
 | TIME-13 | Overview Next wakes. | Matches Timers tab. | [ ] | [ ] | [ ] |
 | TIME-14 | Autostart agents with Studio relaunch. | agent-2, agent-3 start; password-protected and unreviewed agents skipped. L/R: started by the daemon, already running when Studio attaches. | [ ] | [ ] | [ ] |
+| TIME-15 | Daily use: leave agent-2 running for an hour (1-minute interval timer with lambda, cron timer), opening and closing it in Studio and quitting and relaunching Studio once (L: keep-running on). | About 60 interval fires and each cron fire, each once (`Timer Fired` rows, Timers tab run count); none doubled after the relaunch; the lambda's log rows once per fire. | [ ] | [ ] | [ ] |
+| TIME-16 | agent-1 has a trigger whose `source` filter is `system:studio` (fires only for actions taken in Studio). Do the action from Studio, then the same from `adf` (L/R) or by the agent. | Fires once for the Studio action only, in L and R as in E (W5-D2: the daemon tags Studio's requests with the source `system:studio`). | [ ] | [ ] | [ ] |
 
 ## 9. Files, tables, meta, inbox, outbox, logs, tasks (DATA)
 
@@ -287,6 +292,7 @@ daemon while Studio runs (DMN-17).
 | PROV-10 | Subscription usage limit reached. | Error with reset time; no auto-retry. | [ ] | [ ] | [ ] |
 | PROV-11 | Background agent blocked on a missing provider → setup sheet → pick provider. | Model set on the file; agent starts. | [ ] | [ ] | [ ] |
 | PROV-12 | Settings → Privacy → provider checks off. | No provider test calls on Home. | [ ] | [ ] | [ ] |
+| PROV-13 | Settings → Providers → open a provider with a saved API key; delete the key's last character, then retype it; Done. | E and L: the field holds the stored key (dots of its length); the edit behaves as in any text field and the provider still tests ok. L reads it through the daemon's local-only reveal (W5-D3). R: a placeholder (dots); typing replaces it; the server's key never reaches this computer. | [ ] | [ ] | [ ] |
 
 ## 12. MCP (MCP)
 
@@ -321,6 +327,7 @@ daemon while Studio runs (DMN-17).
 | CHAN-07 | Agent sends a form/poll to Telegram; answer on phone. | Native keyboard/poll; answer arrives threaded. | [ ] | [ ] | [ ] |
 | CHAN-08 | Adapter logs over a 1-hour run. | No `409 Conflict` (duplicate poller). | [ ] | [ ] | [ ] |
 | CHAN-09 | Smoke Email, Discord, Slack if configured; WhatsApp QR pairing file. | Connect, receive, reply. WhatsApp session dir on the agent's host. | [ ] | [ ] | [ ] |
+| CHAN-10 | Telegram receiving: from the phone send agent-3 a text, a photo and a document while Studio shows another agent; then while agent-3 is open. | Each arrives once in agent-3's inbox (photo and document as attachments that open); `on_inbox` fires once per message; one reply each; the sidebar shows activity while agent-3 is not open. | [ ] | [ ] | [ ] |
 
 ## 14. Compute, sandbox, browser (COMP)
 
@@ -334,6 +341,7 @@ daemon while Studio runs (DMN-17).
 | COMP-06 | Computer tab / browser viewer for an isolated agent; start/stop/resume Chromium. | noVNC desktop loads; browser controls work. Remote: the viewer shows "The browser viewer needs the daemon on this computer: the container's noVNC port is on the remote server's loopback." and, when the agent opens a browser, a notification "<agent> opened a browser in its container on the daemon host. Its viewer is on that host's loopback, …". Never a blank viewer. | [ ] | [ ] | [ ] |
 | COMP-07 | Settings → Packages: add, list, remove; agent Make Runtime. | Install progress; listed with size and installer. | [ ] | [ ] | [ ] |
 | COMP-08 | Container base image, system packages, VM CPUs/memory, max sandbox workers. | Saved; effective after the documented restart. | [ ] | [ ] | [ ] |
+| COMP-09 | Two runtimes on this machine use one container: Studio (E) with agent-6's MCP server in a container, plus a daemon on other settings (`$env:ADF_DAEMON_SETTINGS='<other>\adf-settings.json'; $env:ADF_DAEMON_PORT='7395'; adf daemon start`) running an agent with an MCP server in a container. In L the second runtime is an embedded Studio `--instance=2`. Settings → Compute; Stop `adf-mcp`, Cancel; Rebuild, Cancel. | The `adf-mcp` row says "Also used by daemon pid N" (L: "studio-embedded pid N"). Stop asks "Stop adf-mcp? daemon pid N also uses this container; its agents lose it until it starts again."; Cancel leaves it running. The Rebuild dialog names the other runtime too (W5-D3). Stop the second runtime: the row loses the line. | [ ] | [ ] | N/A |
 
 ## 15. Mesh, fleet, LAN, tailnet (MESH)
 
@@ -356,6 +364,8 @@ daemon while Studio runs (DMN-17).
 | MESH-15 | `F` fullscreen and edge-scroll. | Enters/leaves fullscreen; title bar reacts. | [ ] | [ ] | [ ] |
 | MESH-16 | Serving agent: click 🌐 badge. | Page opens in the browser. Remote: URL is the daemon host's; reachable only if LAN-bound. | [ ] | [ ] | [ ] |
 | MESH-17 | Stewards, voice chips (`V`), say bubbles. | Shown and updated. | [ ] | [ ] | [ ] |
+| MESH-18 | agent-1 serves an API route handled by a lambda (`serving.api`, e.g. `GET /hello` → `api.ts:hello`); open `http://127.0.0.1:<mesh port>/agents/agent-1/api/hello` in a browser, then change the lambda's file. | The lambda's answer is returned; after the edit the next request returns the new answer without restarting agent-1. Remote: the URL is the daemon host's (reachable from here only if LAN-bound). | [ ] | [ ] | [ ] |
+| MESH-19 | Mesh between machines: this machine and the remote host both on the LAN (or tailnet) with mesh on and LAN access on; each sees the other in Discovered runtimes; agent-1 here `msg_send`s an agent on the other machine, which replies. | Both runtimes listed with their source badge; the message is delivered once and the reply lands in agent-1's inbox once; both outboxes show delivered. L: the daemon is the runtime here. R: N/A (the remote daemon is the other machine). | [ ] | [ ] | N/A |
 
 ## 16. Templates, registry, skills (TMPL)
 
@@ -377,7 +387,7 @@ daemon while Studio runs (DMN-17).
 |---|---|---|---|---|---|
 | SET-01 | Theme light/dark/system. | Applies; system follows OS. | [ ] | [ ] | [ ] |
 | SET-02 | Font family, custom font, UI scale, chat width, agent avatars (orbital/emoji). | Applies immediately; orbitals cached (fast on relaunch). | [ ] | [ ] | [ ] |
-| SET-03 | Notifications: system notifications; menu bar icon. | Toggles toasts and tray icon. | [ ] | [ ] | [ ] |
+| SET-03 | Notifications: system notifications; menu bar icon. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Toggles toasts and tray icon (toasts alone: HIL-15). | [ ] | [ ] | [ ] |
 | SET-04 | Privacy: update checks, provider checks, live catalogs, spell-check dictionaries. | Each disables its network calls. | [ ] | [ ] | [ ] |
 | SET-05 | Files: agents folder (picker), max scan depth. | Saved; composer default folder follows. Remote: daemon-host path. | [ ] | [ ] | [ ] |
 | SET-06 | Prompts: global system prompt, compaction prompt, tool instructions (modified badge, reset), apply updates automatically, dynamic instructions. | Auto-saved; running agents use it next turn. | [ ] | [ ] | [ ] |
@@ -399,13 +409,13 @@ daemon while Studio runs (DMN-17).
 | DASH-06 | Status bar: state, gauge, tokens, version, Logs/Tasks toggles. | Correct; panels toggle. | [ ] | [ ] | [ ] |
 | DASH-07 | Context breakdown modal. | Categories and USD. | [ ] | [ ] | [ ] |
 | DASH-08 | Emergency stop: the status bar's Kill button (tooltip "Stop all agents and disable mesh"). | Every agent stops, mesh off. L/R: daemon agents stop (`adf agents`). | [ ] | [ ] | [ ] |
-| DASH-09 | Tray "Today: … tokens". | Matches Usage today. | [ ] | [ ] | [ ] |
+| DASH-09 | Tray "Today: … tokens". | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Matches Usage today. | [ ] | [ ] | [ ] |
 
 ## 19. Tray, menu, updater, window, zoom, spellcheck, drag-drop, deep links (APP)
 
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
-| APP-01 | Tray click. | Summary, Waiting on you, Running (click opens agent), Open, Settings…, Quit. | [ ] | [ ] | [ ] |
+| APP-01 | Tray click. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Summary, Waiting on you, Running (click opens agent), Open, Settings…, Quit. | [ ] | [ ] | [ ] |
 | APP-02 | Menus: File, Edit, View, Window, Help (docs link). | Every item works; accelerators shown. | [ ] | [ ] | [ ] |
 | APP-03 | Shortcuts `Ctrl+,` `Ctrl+N` `Ctrl+O` `Ctrl+Shift+O` `Ctrl+S` `Ctrl+W` `Ctrl+Shift+W`. | Each performs its action. | [ ] | [ ] | [ ] |
 | APP-04 | Zoom in/out/reset with UI scale set. | Combine; persist. | [ ] | [ ] | [ ] |
@@ -468,7 +478,7 @@ daemon while Studio runs (DMN-17).
 | DMN-23 | Host name not in `ADF_DAEMON_ALLOWED_HOSTS`. | "The ADF daemon at <url> does not accept the host name <name>. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon)." | N/A | N/A | [ ] |
 | DMN-24 | Network drop 30 s, idle and mid-stream (disable Wi-Fi or kill the tunnel). | Help menu status line and, after 3 s, the "Studio lost its connection" dialog; on restore, reconnects, missed events replayed, no duplicates; input during the drop handled per DMN-13. | N/A | N/A | [ ] |
 | DMN-25 | Network drop longer than the event replay window (busy agent, 10 min). | Studio re-snapshots (loop reloads); no gap in rows. | N/A | [ ] | [ ] |
-| DMN-26 | Laptop sleep 10 min, resume (R). | Reconnects; state current. | N/A | N/A | [ ] |
+| DMN-26 | Laptop sleep 10 min with agent-2 and agent-3 running, resume. | L: Studio and the daemon resume together; Settings → Backend shows the same daemon pid; the open agent and tabs are as left; each agent-2 timer due during the sleep fires once (TIME-08); one Telegram poller (CHAN-08); a phone message sent during the sleep is answered once. R: reconnects; state current. | N/A | [ ] | [ ] |
 | DMN-27 | First switch E → L: run agent-1 (API key), agent-2 (ChatGPT), agent-5 (Grok), agent-6 (Claude, per-agent key, MCP creds, HTTP OAuth MCP), agent-3 (Telegram token). | All work without re-entering secrets: the summary lists the ChatGPT and Grok sessions and MCP sign-ins as moved; Claude Code is shared and needs nothing. Per-agent credentials unlock in the daemon because it adopted Studio's runtime identity (`adf identity`: runtime `studio (adopted)`). Review shows the agents as yours. | N/A | [ ] | N/A |
 | DMN-28 | Switch back L → E; run the same agents. | All work; no re-login: the summary lists the sessions and MCP sign-ins as moved back, and `auth.daemon.json` is gone. ChatGPT still signed in after 24 h (one session moved, not two copies). | [ ] | N/A | N/A |
 | DMN-29 | R: enter an app-level provider key in Studio. | Stored on the daemon host; local keys never sent to the remote daemon. | N/A | N/A | [ ] |
@@ -481,6 +491,9 @@ daemon while Studio runs (DMN-17).
 | DMN-36 | Remote daemon host in another time zone. | Timestamps shown in local time; usage bucketed by documented day. | N/A | N/A | [ ] |
 | DMN-37 | DMN-15 → Use Embedded Mode for This Session. | Studio restarts in E for this launch only. Settings → Backend: "This launch runs Embedded for this session only (the ADF daemon's version did not match). The next launch uses Local daemon." (no Restart now banner). The old daemon and its agents keep running; Studio does not start them (agent_leased, DMN-16); sign-ins and the runtime identity stay with the daemon. The next launch asks again. | N/A | [ ] | N/A |
 | DMN-38 | DMN-15 with the source-checkout daemon and a TUI from that same checkout connected (`npm run tui`, or its `adf`; a TUI from Studio's build speaks the other client API, falls back to /events and is not listed) → Restart It Anyway. | The dialog adds "This daemon was started by the ADF CLI (adf daemon start), not Studio. Restarting replaces it; the new one counts as started by cli too, so Studio's quit never stops it." and "Connected to it now: tui …. A restart disconnects them."; "Use Embedded Mode for This Session" is the default button. After the restart the "ADF daemon" row says "started by the ADF CLI"; the old checkout's TUI cannot use the new daemon's client sessions and falls back to /events. | N/A | [ ] | N/A |
+| DMN-39 | During an outage (L: kill the daemon with `taskkill /T /F /PID <pid>`; R: stop the tunnel), type a message in agent-1's composer and send. | The chat shows an error where the message was sent (W5-D2), naming the daemon that could not be reached; the message is not queued and not sent later; no endless working state. After reconnecting, sending again runs one turn. | N/A | [ ] | [ ] |
+| DMN-40 | L, Studio started the daemon: kill it (`taskkill /T /F /PID <pid>`) while idle; wait; then Reconnect (notice, dialog or Help menu). | A notice says the ADF daemon stopped (W5-D2). Reconnect starts a new daemon (new pid on the "ADF daemon" row, `started   by studio`) and Studio attaches: the open agent and tabs restored, autostart agents running, one Telegram poller. | N/A | [ ] | N/A |
+| DMN-41 | Copy `agent-3.adf` (Telegram) into another tracked folder while agent-3 runs (or restore an older copy of it there); Rescan; start the copy; relaunch Studio. | The start is refused: "agent-3 was not started: <copy path> has the agent id <id>, and <original path> with the same id is already running in the ADF daemon (pid N). The two files are copies of one agent; …" (E: "… in this ADF Studio"). Autostart skips the copy. Adapter logs: no `409 Conflict`; the phone gets one reply per message. Stop agent-3: the copy starts (W5-D3). | [ ] | [ ] | [ ] |
 
 ## 23. Side-by-side parity (PAR)
 

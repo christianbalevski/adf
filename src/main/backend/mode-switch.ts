@@ -8,6 +8,7 @@ import { DaemonProcessController, decideAttach, type AttachDecision } from './da
 import type { DaemonVersionInfo } from '../daemon/routes/meta-routes'
 import { openDaemonSecrets } from './daemon-secrets'
 import { BACKEND_ENV_OVERRIDE } from './backend-config'
+import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import type { VersionMismatchChoice } from './daemon-mode/connectors'
 import {
   syncStudioRuntimeEntry,
@@ -51,6 +52,13 @@ export const SWITCH_DAEMON_EXIT_WAIT_MS = 22_000
 export const SWITCH_RESUME_FILE = 'studio-switch-resume.json'
 /** A resume record older than this is not acted on (Studio did not come back right after the switch). */
 const RESUME_MAX_AGE_MS = 30 * 60_000
+/**
+ * After a switch, an agent the old runtime still holds (its lease: a daemon
+ * whose exit outlasted SWITCH_DAEMON_EXIT_WAIT_MS) is started again every
+ * RESUME_LEASE_RETRY_MS until this long after the first try.
+ */
+export const RESUME_LEASE_WAIT_MS = 60_000
+const RESUME_LEASE_RETRY_MS = 5_000
 /** "Wait for them to finish": the longest wait before the switch gives up and asks again. */
 const WAIT_FOR_TURNS_MAX_MS = 30 * 60_000
 
@@ -387,13 +395,15 @@ function notify(body: string): void {
  * After the restart of a switch (§11.1): start the agents that ran before it,
  * on this side. `start` is the gated background start of this mode. An agent
  * already running (autostart, or still in a daemon that kept running) is
- * left as it is. Logged, and shown as one notification.
+ * left as it is. A start refused with `agent_leased` (the old runtime has
+ * not let go of it yet) is retried for up to RESUME_LEASE_WAIT_MS. Logged,
+ * and shown as one notification once nothing is left to retry.
  */
 export async function resumeSwitchedAgents(
   mode: StudioBackendMode,
   userDataDir: string,
-  start: (filePath: string) => Promise<{ success: boolean; error?: string }>,
-  opts: { ready?: Promise<unknown> } = {},
+  start: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>,
+  opts: { ready?: Promise<unknown>; leaseWaitMs?: number; retryMs?: number } = {},
 ): Promise<void> {
   const file = join(userDataDir, SWITCH_RESUME_FILE)
   let record: ResumeRecord | null = null
@@ -412,13 +422,30 @@ export async function resumeSwitchedAgents(
   }
   // The backend's own boot (embedded: the mesh) finishes first, as autostart waits for it.
   await opts.ready?.catch(() => {})
+  const leaseWaitMs = opts.leaseWaitMs ?? RESUME_LEASE_WAIT_MS
+  const retryMs = opts.retryMs ?? RESUME_LEASE_RETRY_MS
   const started: string[] = []
   const failed: string[] = []
-  for (const filePath of record.agents) {
-    const result = await start(filePath).catch((err) => ({ success: false, error: err instanceof Error ? err.message : String(err) }))
-    const name = agentNames([filePath])[0]
-    if (result.success) started.push(name)
-    else failed.push(`${name} (${result.error ?? 'failed'})`)
+  const deadline = Date.now() + leaseWaitMs
+  let pending = [...record.agents]
+  for (let round = 0; pending.length > 0; round++) {
+    const leased: Array<{ filePath: string; error: string }> = []
+    for (const filePath of pending) {
+      const result: { success: boolean; error?: string; code?: string } = await start(filePath)
+        .catch((err) => ({ success: false, error: err instanceof Error ? err.message : String(err) }))
+      const name = agentNames([filePath])[0]
+      if (result.success) started.push(name)
+      else if (result.code === AGENT_LEASED_CODE) leased.push({ filePath, error: result.error ?? 'held by another runtime' })
+      else failed.push(`${name} (${result.error ?? 'failed'})`)
+    }
+    pending = leased.map((l) => l.filePath)
+    if (pending.length === 0) break
+    if (Date.now() + retryMs > deadline) {
+      for (const l of leased) failed.push(`${agentNames([l.filePath])[0]} (still held after ${Math.round(leaseWaitMs / 1000)} s: ${l.error})`)
+      break
+    }
+    if (round === 0) console.log(`[Backend] After the switch to ${mode}: ${agentNames(pending).join(', ')} still held by the previous runtime; trying again for up to ${Math.round(leaseWaitMs / 1000)} s`)
+    await new Promise((r) => setTimeout(r, retryMs))
   }
   console.log(`[Backend] After the switch to ${mode}: started ${started.join(', ') || 'none'}${failed.length ? `; not started: ${failed.join(', ')}` : ''}`)
   if (started.length || failed.length) {
