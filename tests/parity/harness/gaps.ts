@@ -290,7 +290,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     what: 'The switch to local mode records that the daemon holds the moved credentials (handover.ts), so the switch back moves them to Studio; embedded Studio that never switched has no marker.',
     apply(d) {
       const marker = d.state.userDataJson['studio-handover.json'] as Record<string, unknown> | undefined
-      if (!marker || marker.holder !== 'daemon' || marker.v !== 1) return 0
+      if (!marker || marker.holder !== 'daemon' || marker.v !== 2) return 0
       delete d.state.userDataJson['studio-handover.json']
       d.state.tree = d.state.tree.filter((l) => l !== 'f user-data/studio-handover.json')
       return 1
