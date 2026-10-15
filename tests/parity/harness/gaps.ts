@@ -1,7 +1,8 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { IPC } from '../../../src/shared/constants/ipc-channels'
 import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
 import { clientSettingsDefaults } from '../../../src/main/backend/daemon-mode/settings'
-import { EMULATE_W4A } from './daemon-backend'
 import type { ComparableRecording, RawRecording, StepRecord } from './recording'
 
 /**
@@ -21,6 +22,9 @@ import type { ComparableRecording, RawRecording, StepRecord } from './recording'
  * from this list (renderGapTable; tests/parity/gaps-doc.test.ts keeps them
  * in step).
  */
+
+/** The daemon bundle's version (electron.vite.config.ts defines __ADF_VERSION__ from package.json). */
+const BUILD_VERSION = (JSON.parse(readFileSync(resolve(__dirname, '../../../package.json'), 'utf-8')) as { version: string }).version
 
 export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'W5-A' | 'mode'
 
@@ -154,20 +158,6 @@ function stripDaemonHelp(items: unknown): { items: MenuItem[]; status: boolean }
 
 export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
-    id: 'w4a:local-mode-switch',
-    ws: 'W4-A',
-    scenarios: [...ALL, ...MESH],
-    path: 'harness: emulateLocalModeSwitch() (daemon-backend.ts)',
-    what: 'The harness does what the switch to local mode will do: client keys moved to studio-client-settings.json, owner phrase and studio-runtime entry in the (test) keychain.',
-    apply(d) {
-      if (!EMULATE_W4A) return 0
-      // Proof the emulation ran: the client file holds client keys only.
-      const client = d.state.userDataJson['studio-client-settings.json'] as Record<string, unknown> | undefined
-      const keys = new Set<string>(CLIENT_SETTINGS_KEYS)
-      return client && Object.keys(client).length > 0 && Object.keys(client).every((k) => keys.has(k)) ? 1 : 0
-    },
-  },
-  {
     id: 'mode:wire-undefined-keys',
     ws: 'mode',
     scenarios: ['chat-tool-call'],
@@ -250,27 +240,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w4a:daemon-writes-client-defaults',
-    ws: 'W4-A',
-    scenarios: [...ALL, ...MESH],
-    path: 'state: client keys at their shipped default in the daemon\'s adf-settings.json',
-    what: 'The daemon\'s settings store writes the defaults of Studio client keys (menuBarEnabled, updateChecksEnabled, …) into adf-settings.json after the switch moved them out.',
-    apply(d) {
-      const settings = d.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
-      const client = d.state.userDataJson['studio-client-settings.json'] as Record<string, unknown> | undefined
-      if (!settings || !client) return 0
-      const defaults = clientSettingsDefaults() as Record<string, unknown>
-      let n = 0
-      for (const key of CLIENT_SETTINGS_KEYS) {
-        if (!(key in settings) || !(key in client) || same(settings[key], client[key])) continue
-        if (!same(settings[key], defaults[key])) continue
-        delete settings[key]
-        n++
-      }
-      return n
-    },
-  },
-  {
     id: 'mode:client-settings-file',
     ws: 'mode',
     scenarios: [...ALL, ...MESH],
@@ -289,6 +258,41 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       d.state.userDataJson['adf-settings.json'] = Object.fromEntries(Object.keys(settings).sort().map((k) => [k, settings[k]]))
       delete d.state.userDataJson['studio-client-settings.json']
       d.state.tree = d.state.tree.filter((l) => l !== 'f user-data/studio-client-settings.json')
+      return 1
+    },
+  },
+  {
+    id: 'mode:client-defaults-unwritten',
+    ws: 'mode',
+    scenarios: [...ALL, ...MESH],
+    path: 'state: user-data/adf-settings.json (merged with studio-client-settings.json): client keys at their shipped default',
+    what: 'Embedded SettingsService writes every client key, defaults included; in daemon mode a client key at its default is in no file (ClientSettingsStore answers the default, and the daemon never writes client keys, §4.1).',
+    apply(d, e) {
+      const settings = d.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
+      const base = e.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
+      if (!settings || !base || 'studio-client-settings.json' in d.state.userDataJson) return 0
+      const defaults = clientSettingsDefaults() as Record<string, unknown>
+      let n = 0
+      for (const key of CLIENT_SETTINGS_KEYS) {
+        if (key in settings || !(key in base) || !(key in defaults) || !same(base[key], defaults[key])) continue
+        settings[key] = defaults[key]
+        n++
+      }
+      if (n > 0) d.state.userDataJson['adf-settings.json'] = Object.fromEntries(Object.keys(settings).sort().map((k) => [k, settings[k]]))
+      return n
+    },
+  },
+  {
+    id: 'mode:handover-marker',
+    ws: 'mode',
+    scenarios: [...ALL, ...MESH],
+    path: 'state: user-data/studio-handover.json',
+    what: 'The switch to local mode records that the daemon holds the moved credentials (handover.ts), so the switch back moves them to Studio; embedded Studio that never switched has no marker.',
+    apply(d) {
+      const marker = d.state.userDataJson['studio-handover.json'] as Record<string, unknown> | undefined
+      if (!marker || marker.holder !== 'daemon' || marker.v !== 1) return 0
+      delete d.state.userDataJson['studio-handover.json']
+      d.state.tree = d.state.tree.filter((l) => l !== 'f user-data/studio-handover.json')
       return 1
     },
   },
@@ -334,31 +338,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w4a:client-record-control-url',
-    ws: 'W4-A',
-    scenarios: [...ALL, ...MESH],
-    path: 'state.leases: clients/<pid:this-process>.json controlUrl',
-    what: 'Bug: Studio\'s client record names the default daemon port 7385 whatever port the daemon uses (registerClient takes no URL).',
-    apply(d) {
-      const rec = d.state.leases['clients/<pid:this-process>.json'] as Record<string, unknown> | undefined
-      return rec && rec.controlUrl === 'http://127.0.0.1:7385' ? 1 : 0
-    },
-  },
-  {
-    id: 'w0c:daemon-host-record-lazy',
-    ws: 'W0-C',
-    scenarios: ['open-agent', ...W3B_NO_AGENT, ...W3C, ...HELD_ONLY, ...W3A_NO_AGENT],
-    path: 'state.leases: the daemon\'s hosts/<pid>.json while it holds no lease',
-    what: 'Bug: the daemon writes its runtime host record only once it holds an agent lease; §10.3 has every runtime host register (embedded Studio does at boot).',
-    apply(d, e) {
-      const embeddedHost = e.state.leases['hosts/<pid:this-process>.json']
-      if (!embeddedHost || leaseFiles(d).some((f) => f.startsWith('hosts/'))) return 0
-      d.state.leases['hosts/<pid:daemon>.json'] = { ...(clone(embeddedHost) as Record<string, unknown>), kind: 'daemon', mode: 'daemon', pid: '<pid:daemon>', endpoint: '<lease-endpoint:daemon>', runtimeId: '<lease-runtime-id:daemon>', controlUrl: 'http://127.0.0.1:<DAEMON_PORT>' }
-      d.state.tree.push('d leases/hosts/', 'f leases/hosts/<pid:daemon>.json')
-      return 1
-    },
-  },
-  {
     id: 'w0c:daemon-lease-agent-id',
     ws: 'W0-C',
     scenarios: ['chat-tool-call', ...W3B_RUNNING, 'fleet-map'],
@@ -377,17 +356,18 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w0d:daemon-version-null',
-    ws: 'W0-D',
-    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
+    id: 'mode:daemon-build-version',
+    ws: 'mode',
+    // The daemon writes its host record at boot, so every scenario has one.
+    scenarios: [...ALL, ...MESH],
     path: 'state.leases: `version` of the daemon\'s host record and lease holder',
-    what: 'Bug: the daemon records version null in its host record and agent leases.',
+    what: 'The daemon records its bundle\'s build version (package.json); the harness\'s Studio runs with the fake app version 0.0.0-parity. One build in a real install.',
     apply(d) {
       let n = 0
       for (const rec of Object.values(d.state.leases)) {
         const r = rec as Record<string, unknown>
         const holder = (r.holder ?? r) as Record<string, unknown>
-        if (holder.kind === 'daemon' && holder.version === null) { holder.version = '0.0.0-parity'; n++ }
+        if (holder.kind === 'daemon' && holder.version === BUILD_VERSION) { holder.version = '0.0.0-parity'; n++ }
       }
       return n
     },
@@ -407,7 +387,8 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       if (!client || !host) return 0
       const { containers: _c, ...hostFields } = host
       const wantClient = { ...hostFields, kind: 'studio-client', mode: 'local', endpoint: '<lease-endpoint:studio-client>', runtimeId: '<lease-runtime-id:studio-client>', controlUrl: client.controlUrl }
-      if (typeof client.controlUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(client.controlUrl) || !same(client, wantClient)) return 0
+      // The client record names the daemon Studio uses (W4-A; it named the default port 7385 before).
+      if (client.controlUrl !== 'http://127.0.0.1:<DAEMON_PORT>' || !same(client, wantClient)) return 0
       const daemonRecords = Object.values(d.state.leases).map((rec) => rec as Record<string, unknown>)
         .flatMap((r) => [r, ...(r.holder && typeof r.holder === 'object' ? [r.holder as Record<string, unknown>] : [])])
         .filter((r) => r.kind === 'daemon')
