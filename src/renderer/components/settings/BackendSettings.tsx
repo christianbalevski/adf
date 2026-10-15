@@ -137,6 +137,13 @@ export function BackendSettings() {
   const remoteConfigured = view.configured.mode === 'remote'
   const remoteActive = view.active.mode === 'remote'
   const restart = () => { void window.adfApi.restartStudio() }
+  /** A saved mode this launch does not run (not when ADF_STUDIO_BACKEND decides the mode). */
+  const pendingRestart = view.active.source !== 'env' && view.configured.mode !== view.active.mode
+  const runsNow = view.active.mode === 'embedded'
+    ? 'Agents running in Studio stop when it quits.'
+    : view.active.mode === 'local'
+      ? 'The local daemon keeps or stops its agents as "Keep the daemon running" says.'
+      : 'Studio disconnects from the remote daemon it uses now.'
 
   const messageFor = (group: MessageGroup) =>
     message?.group === group ? message : null
@@ -146,6 +153,12 @@ export function BackendSettings() {
       {view.active.notices.length > 0 && (
         <div role="status" className="mb-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
           {view.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
+        </div>
+      )}
+      {pendingRestart && (
+        <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+          <span>This launch runs {MODE_LABELS[view.active.mode]}. Restart Studio to use {MODE_LABELS[view.configured.mode]}.</span>
+          <Button variant="primary" size="compact" onClick={restart}>Restart now</Button>
         </div>
       )}
       <SettingsGroup
@@ -275,22 +288,20 @@ export function BackendSettings() {
         <SettingsRow
           separator
           label="Use this daemon"
-          description={remoteActive
+          description={remoteActive && remoteConfigured
             ? 'Studio is using this remote daemon. Choose Embedded above to run agents in Studio again.'
             : remoteConfigured
-              ? 'Saved: Studio connects to this daemon at the next launch.'
-              : 'Studio restarts and connects to the saved daemon. Agents that run in Studio now stop when it quits; agents in the remote daemon keep running there.'}
+              ? 'Saved as the backend for the next launch. Restart Studio to connect.'
+              : `Saves Remote daemon as the backend for the next launch; Restart now then connects. ${runsNow} Agents in the remote daemon keep running there.`}
         >
-          {remoteConfigured && !remoteActive ? (
-            <Button variant="primary" onClick={restart}>Restart now</Button>
-          ) : !remoteConfigured ? (
+          {!remoteConfigured && (
             <Button
               disabled={!view.remoteSwitchAvailable || !remoteReady || saving}
-              onClick={() => void save('remote', { mode: 'remote' }, 'Saved. Studio connects to the remote daemon after a restart.')}
+              onClick={() => void save('remote', { mode: 'remote' }, 'Saved. Restart Studio to connect to the remote daemon.')}
             >
-              Switch to remote daemon
+              Use for next launch
             </Button>
-          ) : null}
+          )}
         </SettingsRow>
       </SettingsGroup>
     </>
