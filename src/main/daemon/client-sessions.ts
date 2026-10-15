@@ -451,7 +451,8 @@ class ClientSession {
     readonly id: string,
     readonly client: string,
     readonly version: string,
-    readonly exitDaemonWhenClosed: boolean,
+    /** Changed by its client when its quit behaviour changes (PUT …/exit-when-closed). */
+    public exitDaemonWhenClosed: boolean,
     ringFrames: number,
     ringChars: number,
   ) {
@@ -514,6 +515,8 @@ export class ClientSessionRegistry {
   /** §8.3: the owning Studio session expired while others were open; the daemon stops when the last one ends. */
   private orphanPending: string | null = null
   private disposed = false
+  /** A quit decided to stop the daemon: no new session opens before it stops (W4-A). */
+  private closing = false
 
   constructor(private readonly options: ClientSessionRegistryOptions = {}) {
     this.ringFrames = options.ringFrames ?? CLIENT_RING_FRAMES
@@ -527,7 +530,7 @@ export class ClientSessionRegistry {
   // --- sessions ---------------------------------------------------------------
 
   create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean }): { sessionId: string; epoch: string } {
-    if (this.disposed) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
+    if (this.disposed || this.closing) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
     const session = new ClientSession(randomUUID(), input.client, input.version, input.exitDaemonWhenClosed === true, this.ringFrames, this.ringChars)
     session.umbilical = input.umbilical === true
     this.sessions.set(session.id, session)
@@ -548,6 +551,40 @@ export class ClientSessionRegistry {
 
   get size(): number {
     return this.sessions.size
+  }
+
+  /** Every open session, for clients deciding whether others are connected (no ids of other sessions). */
+  list(): Array<{ client: string; version: string; exitDaemonWhenClosed: boolean }> {
+    return [...this.sessions.values()].map((s) => ({ client: s.client, version: s.version, exitDaemonWhenClosed: s.exitDaemonWhenClosed }))
+  }
+
+  /** Its client's quit behaviour changed (Studio's keepDaemonRunning). */
+  setExitDaemonWhenClosed(sessionId: string, value: boolean): void {
+    const session = this.require(sessionId)
+    if (session.exitDaemonWhenClosed === value) return
+    session.exitDaemonWhenClosed = value
+    this.log(`Client session ${sessionId} (${session.client}) ${value ? 'now stops the daemon when it expires' : 'no longer stops the daemon when it expires'}`)
+  }
+
+  /**
+   * A quit asked to stop a Studio-started daemon while other sessions are
+   * open (§8.3): stop once the last one ends, as the orphan rule does after
+   * a crash; they get `daemon_orphan_hold`.
+   */
+  holdForQuit(why: string): void {
+    this.orphanPending = why
+    const clients = [...this.sessions.values()].map((s) => s.client).join(', ')
+    this.log(`Not stopping the daemon yet: ${why}, but ${this.sessions.size} other client session(s) are open (${clients}); it stops when the last one ends`)
+    this.publishPush('daemon_orphan_hold', {
+      holding: true,
+      reason: 'Studio quit; the daemon it started keeps running while you are connected and stops when the last client disconnects',
+      sessions: this.sessions.size,
+    })
+  }
+
+  /** The daemon is about to stop (a quit decided it): refuse new sessions from now on. */
+  markClosing(): void {
+    this.closing = true
   }
 
   /** The agent a session follows, or undefined for an unknown session. */
@@ -971,6 +1008,7 @@ export class ClientSessionRegistry {
       return
     }
     this.log(`Stopping the daemon: ${why}, and no other client session is open`)
+    this.closing = true
     this.options.requestShutdown()
   }
 

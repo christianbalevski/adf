@@ -54,8 +54,6 @@ export interface DaemonRouteDeps {
   importBodyLimit?: number
   /** Client sessions and their event stream (client-sessions.ts). Absent: the one daemon/index.ts registered (registerDaemonClientSessions), else one fed by the runtime, the approvals hub and the event bus. */
   clientSessions?: ClientSessionRegistry
-  /** Why this run has no local proof (the proof file could not be protected), for GET /version; null when it has one. */
-  localProofProblem?: string | null
 }
 
 export interface DaemonRouteContext {

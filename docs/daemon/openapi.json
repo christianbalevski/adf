@@ -14449,6 +14449,40 @@
             "$ref": "#/components/responses/Unavailable"
           }
         }
+      },
+      "get": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "List the open client sessions",
+        "description": "Which clients are connected (client name, version, whether its session stops the daemon when it expires), without session ids. ADF Studio names them before it offers to restart a daemon of another version (design daemon-backend.md §8.2).",
+        "operationId": "listClientSessions",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "The open sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSessionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/client/sessions/{id}": {
@@ -15114,7 +15148,7 @@
           "Client (internal)"
         ],
         "summary": "End a client session as its client quits",
-        "description": "ADF Studio's quit (design daemon-backend.md §8.3). Ends the session like DELETE /client/sessions/{id}, then, with `stopDaemon: true`, stops the daemon only when this run was started by Studio (GET /version `startedBy: studio`) and no other client session is open; otherwise it keeps running. One request, so no session can open between the check and the stop. The answer and the daemon log give the reason. The shutdown is the daemon's own bounded one (the same as POST /daemon/shutdown), started after the answer. An unknown or expired session id is not an error (`ended: false`): the stop decision still applies. With `stopDaemon: true` the caller must be local (loopback, no proxy headers; the local proof behind a proxy), as for POST /daemon/shutdown.",
+        "description": "ADF Studio's quit (design daemon-backend.md §8.3). Ends the session like DELETE /client/sessions/{id}, then, with `stopDaemon: true`, stops the daemon only when this run was started by Studio (GET /version `startedBy: studio`); with other client sessions open the stop is pending until the last one ends or expires (they get `daemon_orphan_hold`). A daemon the CLI or a service started keeps running. When it stops, new sessions are refused before the answer is sent, so none can open between the decision and the stop. The answer and the daemon log give the reason. The shutdown is the daemon's own bounded one (the same as POST /daemon/shutdown), started after the answer. An unknown or expired session id is not an error (`ended: false`): the stop decision still applies. With `stopDaemon: true` the caller must be local (loopback, no proxy headers; the local proof behind a proxy), as for POST /daemon/shutdown.",
         "operationId": "quitClientSession",
         "x-adf-stability": "internal",
         "requestBody": {
@@ -15196,6 +15230,103 @@
           },
           "403": {
             "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/exit-when-closed": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Change a session's orphan behaviour",
+        "description": "The client's quit behaviour changed (ADF Studio's keepDaemonRunning): with `exitDaemonWhenClosed: true` the session's expiry stops a Studio-started daemon when no other session is open (the orphan rule, §8.3); with false it does not.",
+        "operationId": "setClientSessionExitWhenClosed",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "exitDaemonWhenClosed"
+                ],
+                "properties": {
+                  "exitDaemonWhenClosed": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "sessionId",
+                    "exitDaemonWhenClosed"
+                  ],
+                  "properties": {
+                    "sessionId": {
+                      "type": "string"
+                    },
+                    "exitDaemonWhenClosed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "exitDaemonWhenClosed is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such client session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -28266,6 +28397,36 @@
           "recovered": {
             "type": "integer",
             "description": "Loops that left an auth error."
+          }
+        }
+      },
+      "ClientSessionList": {
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "client",
+                "version",
+                "exitDaemonWhenClosed"
+              ],
+              "properties": {
+                "client": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "exitDaemonWhenClosed": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         }
       }

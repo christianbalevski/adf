@@ -1,18 +1,22 @@
 // Studio's quit and mode-switch handover against its daemon (design
 // daemon-backend.md §8.3, §11). Internal routes, tag `Client (internal)`:
 //
-//   POST /client/sessions/:id/quit       {stopDaemon?}  end the session; stop the daemon when allowed
-//   POST /client/reload-credentials      {}             re-read the stores Studio moved credentials into
+//   GET  /client/sessions                         the open sessions' clients (no ids)
+//   POST /client/sessions/:id/quit                {stopDaemon?}  end the session; stop the daemon when allowed
+//   PUT  /client/sessions/:id/exit-when-closed    {exitDaemonWhenClosed}  the client's quit behaviour changed
+//   POST /client/reload-credentials               {}             re-read the stores Studio moved credentials into
 //
 // Quit (§8.3, `keepDaemonRunning` off): the session ends, then the daemon
 // stops only when this run was started by Studio (GET /version `startedBy`)
-// AND no other client session is open. A daemon the CLI or a service
-// started is never stopped here, and with other clients connected it keeps
-// running. The decision and its reason are logged and answered, so Studio
-// logs them too. One request, so no other session can open between Studio's
-// check and the stop. The shutdown is the daemon's own bounded one (20 s),
-// which runs on after Studio has exited: it stops only the containers this
-// daemon run claimed (W1-G).
+// AND no other client session is open. With other clients connected the
+// stop is pending: it happens when the last one ends or expires (the orphan
+// rule's hold). A daemon the CLI or a service started is never stopped
+// here. The decision and its reason are logged and answered, so Studio logs
+// them too. When it stops, the registry refuses new sessions before the
+// answer is sent, so none can open between the decision and the stop. The
+// shutdown is the daemon's own bounded one (20 s), which runs on after
+// Studio has exited: it stops only the containers this daemon run claimed
+// (W1-G).
 //
 // Reload: Studio main moved credentials into the daemon's stores (auth.daemon.json,
 // the keychain's MCP sign-ins and studio-runtime entry) while this daemon
@@ -66,6 +70,22 @@ export function registerClientLifecycleRoutes(server: FastifyInstance, ctx: Daem
   const registry = (): ClientSessionRegistry | undefined =>
     (server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
 
+  server.get('/client/sessions', async (_request, reply) => {
+    const sessions = registry()
+    if (!sessions) return reply.code(405).send({ error: 'Client sessions are not available on this daemon.', code: 'method_not_allowed' })
+    return { sessions: sessions.list() }
+  })
+
+  server.put<{ Params: { id: string }; Body: { exitDaemonWhenClosed?: unknown } | undefined }>('/client/sessions/:id/exit-when-closed', async (request, reply) => {
+    const value = request.body && typeof request.body === 'object' ? request.body.exitDaemonWhenClosed : undefined
+    if (typeof value !== 'boolean') return badRequest(reply, 'exitDaemonWhenClosed must be a boolean')
+    const sessions = registry()
+    if (!sessions) return reply.code(405).send({ error: 'Client sessions are not available on this daemon.', code: 'method_not_allowed' })
+    if (!sessions.has(request.params.id)) return reply.code(404).send({ error: `No client session ${request.params.id} (it ended or expired, or the daemon restarted).`, code: 'session_not_found' })
+    sessions.setExitDaemonWhenClosed(request.params.id, value)
+    return { sessionId: request.params.id, exitDaemonWhenClosed: value }
+  })
+
   server.post<{ Params: { id: string }; Body: { stopDaemon?: unknown } | undefined }>('/client/sessions/:id/quit', async (request, reply) => {
     const body = request.body && typeof request.body === 'object' ? request.body : {}
     if (body.stopDaemon !== undefined && typeof body.stopDaemon !== 'boolean') return badRequest(reply, 'stopDaemon must be a boolean')
@@ -88,9 +108,13 @@ export function registerClientLifecycleRoutes(server: FastifyInstance, ctx: Daem
     }
     if (!stopDaemon) return answer(false, 'the client asked to leave the daemon running (keepDaemonRunning on)')
     if (startedBy !== 'studio') return answer(false, `this daemon run was started by ${startedBy}, not Studio; Studio never stops it`)
-    if (others > 0) return answer(false, `${others} other client session(s) are still open`)
     if (!ctx.options.requestShutdown) return answer(false, 'shutdown is not available on this daemon')
-    // Answer first; the shutdown closes this server.
+    if (others > 0) {
+      sessions.holdForQuit(`Studio quit (client session ${id}) and asked to stop the daemon it started`)
+      return answer(false, `${others} other client session(s) are still open; the daemon stops when the last one ends`)
+    }
+    // No session may open between this decision and the stop; answer first, the shutdown closes this server.
+    sessions.markClosing()
     setTimeout(() => ctx.options.requestShutdown?.(), 50)
     return answer(true, 'Studio started this daemon run and no other client session is open')
   })

@@ -79,15 +79,54 @@ describe('POST /client/sessions/:id/quit (§8.3 quit behaviour)', () => {
     expect(d.requestShutdown).toHaveBeenCalledTimes(1)
   })
 
-  it('another client session (the terminal app) keeps the daemon running', async () => {
+  it('another client session (the terminal app) keeps the daemon running until it ends, then the daemon stops', async () => {
+    const d = daemon('studio')
+    const id = await d.open('studio', true)
+    const tui = await d.open('tui')
+    const res = await d.quit(id, true)
+    expect(res.json()).toMatchObject({ ended: true, stopping: false, otherSessions: 1 })
+    expect(res.json().reason).toMatch(/1 other client session.*stops when the last one ends/)
+    await settle()
+    expect(d.requestShutdown).not.toHaveBeenCalled()
+    // The terminal app quits: the held stop happens (no orphaned daemon).
+    expect((await d.server.inject({ method: 'DELETE', url: `/client/sessions/${tui}`, headers: auth })).statusCode).toBe(200)
+    await settle()
+    expect(d.requestShutdown).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Studio coming back before the terminal app quits clears the held stop', async () => {
+    const d = daemon('studio')
+    const id = await d.open('studio', true)
+    const tui = await d.open('tui')
+    await d.quit(id, true)
+    await d.open('studio', true)
+    await d.server.inject({ method: 'DELETE', url: `/client/sessions/${tui}`, headers: auth })
+    await settle()
+    expect(d.requestShutdown).not.toHaveBeenCalled()
+  })
+
+  it('once the daemon decided to stop, no new session opens', async () => {
+    const d = daemon('studio')
+    const id = await d.open('studio', true)
+    expect((await d.quit(id, true)).json()).toMatchObject({ stopping: true })
+    const late = await d.server.inject({ method: 'POST', url: '/client/sessions', headers: auth, payload: { client: 'tui', version: '1.0.0' } })
+    expect(late.statusCode).toBe(503)
+  })
+
+  it('GET /client/sessions names the connected clients; PUT exit-when-closed follows keepDaemonRunning', async () => {
     const d = daemon('studio')
     const id = await d.open('studio', true)
     await d.open('tui')
-    const res = await d.quit(id, true)
-    expect(res.json()).toMatchObject({ ended: true, stopping: false, otherSessions: 1 })
-    expect(res.json().reason).toMatch(/1 other client session/)
-    await settle()
-    expect(d.requestShutdown).not.toHaveBeenCalled()
+    const list = await d.server.inject({ method: 'GET', url: '/client/sessions', headers: auth })
+    expect(list.json()).toEqual({ sessions: [
+      { client: 'studio', version: '1.0.0', exitDaemonWhenClosed: true },
+      { client: 'tui', version: '1.0.0', exitDaemonWhenClosed: false },
+    ] })
+    expect(validate('ClientSessionList', list.json())).toEqual([])
+    const put = await d.server.inject({ method: 'PUT', url: `/client/sessions/${id}/exit-when-closed`, headers: auth, payload: { exitDaemonWhenClosed: false } })
+    expect(put.json()).toEqual({ sessionId: id, exitDaemonWhenClosed: false })
+    expect((await d.server.inject({ method: 'GET', url: '/client/sessions', headers: auth })).json().sessions[0].exitDaemonWhenClosed).toBe(false)
+    expect((await d.server.inject({ method: 'PUT', url: '/client/sessions/nope/exit-when-closed', headers: auth, payload: { exitDaemonWhenClosed: true } })).statusCode).toBe(404)
   })
 
   it('a CLI-started daemon is never stopped by Studio', async () => {

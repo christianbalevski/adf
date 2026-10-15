@@ -26,7 +26,7 @@ import { TrackedDirWatcher } from './dir-watcher'
 import { createMeshControls } from './mesh-controls'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
-import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
+import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof, noteLocalProofProblem } from './local-access'
 import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -159,7 +159,6 @@ if (process.env.ADF_DAEMON_TOKEN) {
 // requires it in every mode, the other local-only routes only behind a proxy.
 const behindProxy = behindProxyFromEnv()
 let localProof: string | null = null
-let localProofProblem: string | null = null
 if (behindProxy) {
   const minted = mintLocalProof(dirname(settingsPath), port)
   localProof = minted.proof
@@ -169,7 +168,7 @@ if (behindProxy) {
     localProof = mintLocalProof(dirname(settingsPath), port).proof
   } catch (err) {
     // Visible in GET /version (`localProof`), Studio's Settings → Backend and `adf daemon status`.
-    localProofProblem = `the local proof file could not be written or protected: ${err instanceof Error ? err.message : String(err)}`
+    noteLocalProofProblem(`the local proof file could not be written or protected: ${err instanceof Error ? err.message : String(err)}`)
     console.error('[ADF Daemon] Could not write or protect the local proof file; owner import (adf identity import) and the stored-value reveal routes stay unavailable:', err instanceof Error ? err.message : err)
   }
 }
@@ -393,7 +392,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher, localProofProblem },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),

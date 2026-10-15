@@ -102,6 +102,17 @@ export function mintLocalProof(settingsDir: string, port: number = DEFAULT_PORT,
   return { proof, path }
 }
 
+let proofProblem: string | null = null
+
+/** This daemon run could not mint its proof: why (GET /version `localProof.problem`, `adf daemon status`). */
+export function noteLocalProofProblem(problem: string): void {
+  proofProblem = problem
+}
+
+export function localProofProblem(): string | null {
+  return proofProblem
+}
+
 /** The proof of the daemon on `port` (see localProofPath), or null. */
 export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT): string | null {
   try {

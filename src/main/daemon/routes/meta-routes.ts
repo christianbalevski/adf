@@ -11,6 +11,7 @@
 import { dirname } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import type { DaemonRouteContext } from './index'
+import { localProofProblem } from '../local-access'
 
 /**
  * Version of the internal client API (`/client/*` routes, client frames).
@@ -76,7 +77,7 @@ export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       runtimeId: typeof runtimeId === 'string' && runtimeId.length > 0 ? runtimeId : null,
       pid: process.pid,
       startedBy: options.routes?.startedBy ?? 'cli',
-      localProof: { available: !!ctx.localAccess.localProof, problem: ctx.localAccess.localProof ? null : options.routes?.localProofProblem ?? 'no local proof was minted for this run' },
+      localProof: { available: !!ctx.localAccess.localProof, problem: ctx.localAccess.localProof ? null : localProofProblem() ?? 'no local proof was minted for this run' },
     }
   })
 }
