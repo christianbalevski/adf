@@ -76,7 +76,7 @@ const base = (channel: keyof typeof DAEMON_MODE_HANDLERS): DaemonInvokeHandler =
   return handler
 }
 
-type Location = { where: 'daemon' } | { where: 'local' } | { where: 'nowhere'; why: string }
+type Location = { where: 'daemon' } | { where: 'local' } | { where: 'nowhere'; why: string; lookedHere: boolean }
 
 /**
  * Where an agent file named by path lives: the daemon has it (GET
@@ -96,12 +96,12 @@ async function locate(ctx: DaemonModeContext, filePath: string): Promise<Locatio
     if (status !== 404 && status !== 400) throw err
     const why = errorMessage(err)
     const unsafe = unsafeLocalPath(filePath)
-    if (unsafe) return { where: 'nowhere', why }
-    if (!hasLocalOpenGrant(filePath)) return { where: 'nowhere', why }
+    if (unsafe) return { where: 'nowhere', why, lookedHere: false }
+    if (!hasLocalOpenGrant(filePath)) return { where: 'nowhere', why, lookedHere: false }
     try {
       if ((await stat(filePath)).isFile() && filePath.toLowerCase().endsWith('.adf')) return { where: 'local' }
     } catch { /* not here either */ }
-    return { where: 'nowhere', why }
+    return { where: 'nowhere', why, lookedHere: true }
   }
 }
 
@@ -180,7 +180,10 @@ export const REMOTE_MODE_HANDLERS: DaemonHandlerTable = {
           if ('error' in uploaded) return { success: false, error: uploaded.error }
           filePath = uploaded.filePath
         } else if (location.where === 'nowhere') {
-          return { success: false, error: `No agent file at ${filePath} on ${remote(ctx).host()} (${location.why}), and none on this computer.` }
+          // Say only what is known: this computer was looked at only for a path it handed over itself.
+          return { success: false, error: location.lookedHere
+            ? `No agent file at ${filePath} on ${remote(ctx).host()} (${location.why}), and none on this computer.`
+            : `No agent file at ${filePath} on ${remote(ctx).host()} (${location.why}). To upload a file of this computer, open it from the file manager or Open Recent.` }
         }
       }
       return await open(ctx, event, { ...(args ?? {}), filePath })

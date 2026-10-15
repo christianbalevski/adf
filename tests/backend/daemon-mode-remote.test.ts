@@ -117,6 +117,13 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     expect(await opened).toEqual({ success: false, error: 'Cancelled' })
   })
 
+  it('a daemon path goes into Open Recent but never into the OS recent documents (the Windows shell may contact a UNC host)', async () => {
+    const before = electronStub.calls.length
+    expect((await invoke(IPC.FILE_OPEN, { filePath: SERVER_FILE })).success).toBe(true)
+    expect(electronStub.calls.slice(before).filter((c) => c.api === 'app.addRecentDocument')).toEqual([])
+    expect(handle.clientSettings.get('recentFiles')).toContain(SERVER_FILE)
+  })
+
   it('FILE_OPEN of a path the daemon has opens it without asking', async () => {
     expect(await invoke(IPC.FILE_OPEN, { filePath: SERVER_FILE })).toEqual({ success: true, filePath: SERVER_FILE, agentWasRunning: false })
     expect(uploads).toEqual([])
@@ -153,7 +160,9 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     statCalls.length = 0
     const shown = electronStub.calls.length
     const answer = await invoke(IPC.FILE_OPEN, { filePath: localAdf })
-    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at/) })
+    // It says only what is known: this computer was not looked at.
+    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at .*To upload a file of this computer, open it from the file manager or Open Recent\.$/) })
+    expect(answer.error).not.toMatch(/none on this computer/)
     expect(statCalls).toEqual([])
     expect(electronStub.calls.slice(shown).filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
     expect(uploads).toEqual([])
@@ -176,7 +185,8 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     expect(unsafeLocalPath('agent-1.adf', 'linux')).toMatch(/not an absolute path/)
   })
 
-  it('a path on neither machine is a sentence', async () => {
+  it('a handed-over path on neither machine is a sentence that says this computer was looked at', async () => {
+    grantLocalOpen(join(dir, 'missing.adf'))
     const answer = await invoke(IPC.FILE_OPEN, { filePath: join(dir, 'missing.adf') })
     expect(answer.success).toBe(false)
     expect(answer.error).toMatch(new RegExp(`No agent file at .*missing\\.adf on ${HOST}.*none on this computer`))

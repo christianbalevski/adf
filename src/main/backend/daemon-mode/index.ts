@@ -371,6 +371,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     canReconnect: () => connection.state.state === 'disconnected',
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
+    remoteRecents: deps.mode === 'remote',
   })
   const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
 
