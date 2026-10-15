@@ -164,8 +164,8 @@ export interface DaemonModeHandle {
   setKeepDaemonRunning(keep: boolean): Promise<void>
   /** The gated background start (BACKGROUND_AGENT_START): resumes an agent a switch carried over. */
   startBackgroundAgent(filePath: string): Promise<{ success: boolean; error?: string; code?: string }>
-  /** Agents running in the daemon and whether a turn is in flight (the switch dialog). */
-  agentActivity(): Array<{ filePath: string; busy: boolean }>
+  /** Agents running in the daemon, whether a turn is in flight, and whether one waits on an approval or a question (the switch dialog). */
+  agentActivity(): Array<{ filePath: string; busy: boolean; waiting: boolean }>
   /**
    * Studio's quit path in daemon mode (§8.3): end the client session; in
    * local mode with `keepDaemonRunning` off, the daemon stops when Studio
@@ -746,10 +746,17 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     }
   }
 
-  const agentActivity = () => bridge.runningAgents().map((a) => ({
-    filePath: a.filePath,
-    busy: a.mapping.state === 'active' || a.mapping.activeLoops > 0 || (a.lastForegroundState !== undefined && a.lastForegroundState !== 'idle' && a.lastForegroundState !== 'stopped' && a.lastForegroundState !== 'error'),
-  }))
+  const agentActivity = () => {
+    const waiting = new Set(approvals.pendingFilePaths())
+    const running = bridge.runningAgents().map((a) => ({
+      filePath: a.filePath,
+      busy: a.mapping.state === 'active' || a.mapping.activeLoops > 0 || (a.lastForegroundState !== undefined && a.lastForegroundState !== 'idle' && a.lastForegroundState !== 'stopped' && a.lastForegroundState !== 'error'),
+      waiting: waiting.has(a.filePath),
+    }))
+    // An approval names its agent even when the running list has not caught up.
+    for (const filePath of waiting) if (!running.some((a) => a.filePath === filePath)) running.push({ filePath, busy: true, waiting: true })
+    return running
+  }
 
   return {
     registered,

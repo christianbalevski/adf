@@ -55,6 +55,11 @@ export class ApprovalsUi {
     }
   }
 
+  /** The agent files with an approval or a question waiting for an answer now. */
+  pendingFilePaths(): string[] {
+    return [...new Set(this.pending.map((p) => p.filePath))]
+  }
+
   /**
    * One approvals snapshot. The first one is the state Studio found on
    * connecting: adopted without toasts (NativeNotifier.seed), as embedded

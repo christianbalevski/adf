@@ -169,8 +169,12 @@ export function showHandoverSummary(report: HandoverReport | null, mode: StudioB
 export interface SwitchContext {
   activeMode: StudioBackendMode
   userDataDir: string
-  /** The agents running now and whether a turn is in flight (embedded: this process; daemon mode: the daemon). */
-  agentActivity: () => Array<{ filePath: string; busy: boolean }>
+  /**
+   * The agents running now, whether a turn is in flight, and (daemon mode)
+   * whether one waits on an approval or a question (embedded: this process;
+   * daemon mode: the daemon).
+   */
+  agentActivity: () => Array<{ filePath: string; busy: boolean; waiting?: boolean }>
   /** studio-backend.json `keepDaemonRunning` now. */
   keepDaemonRunning: () => boolean
   /** Local mode: who started the daemon Studio uses (GET /version). */
@@ -214,7 +218,11 @@ export function createModeSwitcher(ctx: SwitchContext) {
     const activity = ctx.agentActivity()
     const running = activity.map((a) => a.filePath)
     // A local daemon that keeps running after Studio quits (CLI-started, or "keep running" on) keeps its agents.
-    const localDaemonStays = ctx.activeMode === 'local' && (ctx.keepDaemonRunning() || ctx.daemonStartedBy() !== 'studio')
+    // An unknown starter (no answer from /version) counts as stopping: the dialog asks about turns rather than promise they go on.
+    const startedBy = ctx.daemonStartedBy()
+    const keep = ctx.keepDaemonRunning()
+    const startedElsewhere = startedBy != null && startedBy !== 'studio'
+    const localDaemonStays = ctx.activeMode === 'local' && (keep || startedElsewhere)
     // Turns Studio's restart does not interrupt (on a remote daemon, or a local one that stays): nothing to wait for (DMN-02).
     const busy = ctx.activeMode === 'remote' || localDaemonStays ? [] : activity.filter((a) => a.busy).map((a) => a.filePath)
     const remoteUrl = ctx.remoteUrl?.() ?? null
@@ -241,10 +249,15 @@ export function createModeSwitcher(ctx: SwitchContext) {
     } else if (ctx.activeMode === 'remote') {
       lines.push(`The remote daemon keeps running its agents (${names}). Studio does not start them ${target === 'embedded' ? 'itself' : 'in the local daemon'}.`)
     } else if (localDaemonStays && target !== 'local') {
-      const startedBy = ctx.daemonStartedBy()
-      lines.push(`The ADF daemon on this computer keeps running (${startedBy && startedBy !== 'studio' ? `started by ${startedBy}` : '"Keep the daemon running" is on'}), and so do its agents (${names}) there. ${target === 'embedded'
+      const why = startedElsewhere ? `started by ${startedBy === 'cli' ? 'the ADF CLI' : startedBy === 'service' ? 'a service manager' : startedBy}` : '"Keep the daemon running" is on'
+      lines.push(`The ADF daemon on this computer keeps running (${why}), and so do its agents (${names}) there. ${target === 'embedded'
         ? 'Studio does not start an agent the daemon runs; stop it there first (adf daemon stop) to run it in Studio.'
         : 'They are not started on the remote daemon.'}`)
+      // Their approvals and questions stay open in the daemon, which Studio no longer shows after the switch.
+      const waiting = activity.filter((a) => a.waiting).map((a) => a.filePath)
+      if (waiting.length > 0) {
+        lines.push(`Waiting for an answer there: ${agentNames(waiting).join(', ')}. Answer with adf (adf tasks, adf approve, adf deny, adf asks, adf answer) or in the terminal app (adf).`)
+      }
     } else if (target === 'remote') {
       lines.push(`Running agents stop: ${names} stop here and are not started on the remote daemon, which runs its own agents.`)
     } else {

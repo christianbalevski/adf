@@ -109,7 +109,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
   const agent1 = 'C:/agents/agent-1.adf'
   const agent2 = 'C:/agents/agent-2.adf'
 
-  function switcher(activity: () => Array<{ filePath: string; busy: boolean }>, activeMode: 'embedded' | 'local' | 'remote' = 'embedded', daemon: { keep?: boolean; startedBy?: 'studio' | 'cli' | null } = {}) {
+  function switcher(activity: () => Array<{ filePath: string; busy: boolean; waiting?: boolean }>, activeMode: 'embedded' | 'local' | 'remote' = 'embedded', daemon: { keep?: boolean; startedBy?: 'studio' | 'cli' | null } = {}) {
     const relaunched: string[] = []
     const s = createModeSwitcher({
       activeMode,
@@ -173,13 +173,27 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     h.responses.push(2)
     await switcher(busy, 'local', { startedBy: 'studio' }).s.confirm('embedded')
     expect(h.dialogs.at(-1)!.buttons).toEqual(['Wait for Them to Finish', 'Stop Them Now', 'Cancel'])
+    // Who started it is unknown (no /version answer): counted as stopping, so the turns are asked about.
+    h.responses.push(2)
+    await switcher(busy, 'local', { startedBy: null }).s.confirm('embedded')
+    expect(h.dialogs.at(-1)!.buttons).toEqual(['Wait for Them to Finish', 'Stop Them Now', 'Cancel'])
+    expect(h.dialogs.at(-1)!.detail).not.toMatch(/Keep the daemon running/)
     // Started by the CLI, or "keep running" on: the daemon and its turns go on; nothing to wait for or stop.
-    for (const daemon of [{ startedBy: 'cli' as const }, { startedBy: 'studio' as const, keep: true }]) {
+    for (const [daemon, why] of [[{ startedBy: 'cli' as const }, 'started by the ADF CLI'], [{ startedBy: 'studio' as const, keep: true }, '"Keep the daemon running" is on']] as const) {
       h.responses.push(1)
       await switcher(busy, 'local', daemon).s.confirm('embedded')
       expect(h.dialogs.at(-1)!.buttons, JSON.stringify(daemon)).toEqual(['Switch and Restart', 'Cancel'])
-      expect(h.dialogs.at(-1)!.detail).toMatch(/keeps running .*and so do its agents \(agent-1\) there/)
+      expect(h.dialogs.at(-1)!.detail).toContain(`keeps running (${why}), and so do its agents (agent-1) there`)
     }
+  })
+
+  it('from Local with a daemon that stays (DMN-02): agents waiting on an approval are named, with where to answer them', async () => {
+    h.responses.push(1)
+    await switcher(() => [{ filePath: agent1, busy: true, waiting: true }, { filePath: agent2, busy: false }], 'local', { startedBy: 'cli' }).s.confirm('embedded')
+    expect(h.dialogs.at(-1)!.detail).toContain('Waiting for an answer there: agent-1. Answer with adf (adf tasks, adf approve, adf deny, adf asks, adf answer) or in the terminal app (adf).')
+    h.responses.push(1)
+    await switcher(() => [{ filePath: agent1, busy: false }], 'local', { startedBy: 'cli' }).s.confirm('embedded')
+    expect(h.dialogs.at(-1)!.detail).not.toMatch(/Waiting for an answer/)
   })
 
   it('"Stop Them Now" restarts at once; Cancel does nothing', async () => {
