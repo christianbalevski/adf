@@ -56,8 +56,8 @@ export function embeddedIPv4s(raw: string): string[] {
   const fromGroups = (x: number, y: number) => quad(hi(x), lo(x), hi(y), lo(y))
   const out: string[] = []
   const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0)
-  // ::a.b.c.d, ::ffff:a.b.c.d, ::ffff:0:a.b.c.d
-  if (zero(0, 4) && ((g[4] === 0 && (g[5] === 0 || g[5] === 0xffff)) || (g[4] === 0xffff && g[5] === 0))) out.push(fromGroups(g[6], g[7]))
+  // ::a.b.c.d (not :: and ::1, which are IPv6's own), ::ffff:a.b.c.d, ::ffff:0:a.b.c.d
+  if (zero(0, 4) && ((g[4] === 0 && ((g[5] === 0 && g[6] !== 0) || g[5] === 0xffff)) || (g[4] === 0xffff && g[5] === 0))) out.push(fromGroups(g[6], g[7]))
   if (g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)) out.push(fromGroups(g[6], g[7]))
   if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) {
     const local: string[] = []
@@ -427,7 +427,9 @@ function classifyCandidates(candidates: string[], loopbackHost: boolean): HostCl
     anyOwnAddress: candidates.some((ip) => isOwnInterfaceIp(ip)),
     // Blocked classes minus loopback (private, CGNAT, unspecified, multicast, …)
     // — loopback itself is allowed by default and only tier-gated per-port.
-    anyNonLoopbackBlocked: candidates.some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
+    // Each IPv4 reading of an address counts on its own: one reading being
+    // loopback must not let another, private one through.
+    anyNonLoopbackBlocked: candidates.flatMap((ip) => [ip, ...embeddedIPv4s(ip)]).some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
   }
 }
 

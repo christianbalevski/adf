@@ -76,6 +76,9 @@ describe('local-use NAT64 prefixes /48 to /64 and ISATAP', () => {
     expect(await checkConnectTarget('ws://[64:ff9b:1:7f00:1:100::]:7385/', { daemonPort: 7385 })).toMatch(/daemon/) // /48 127.0.0.1
     // A public address under each reading stays allowed: 93.184.216.34 in a /48 prefix.
     expect(await checkFetchTarget('http://[64:ff9b:1:5db8:d8:2200::]/')).toBeNull()
+    // Readings count one by one: /96 reads 127.0.0.0 (loopback, allowed), /64 reads 10.0.0.127 (private).
+    expect(embeddedIPv4s('64:ff9b:1:0:a:0:7f00:0').sort()).toEqual(['10.0.0.127', '127.0.0.0'])
+    expect(await checkFetchTarget('http://[64:ff9b:1:0:a:0:7f00:0]/')).toMatch(/private-network/)
     // The u-octet (bits 64-71) must be zero for an embedding.
     expect(embeddedIPv4s('64:ff9b:1:a9fe:ffa9:fe00::')).toEqual([])
   })
