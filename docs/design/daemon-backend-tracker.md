@@ -66,7 +66,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-C | Proxy: MCP, adapters, sandbox packages, skills, registries | 3 | W2-C, W1-D | MERGED |
 | W3-D | Proxy: mesh, fleet, dashboard, tools, token usage, compute, emergency stop | 3 | W2-C, W1-D | MERGED |
 | W3-E | TUI on client sessions — folded into W2-B (owner, 2026-10-14) | 2 | — | IN W2-B |
-| W3-F | Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | TODO |
+| W3-F | MERGED. Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | TODO |
 | W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | TODO |
 | W4-B | Remote mode | 4 | W3-A … W3-D | TODO |
 | W4-C | Documentation | 4 | W4-A | TODO |
