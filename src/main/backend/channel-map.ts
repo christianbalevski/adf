@@ -533,6 +533,12 @@ export const CHANNEL_MAP = {
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
 
+  // --- Recovery copies of unsaved text (W3-F) ---------------------------------
+  [IPC.RECOVERY_STASH]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes; writes <userData>/recovered.'),
+  [IPC.RECOVERY_LIST]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes.'),
+  [IPC.RECOVERY_ARCHIVE]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes.'),
+  [IPC.RECOVERY_REVEAL]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes; opens the folder on this machine.'),
+
   // --- Overview, emergency stop, identity drafts -----------------------------
   [IPC.AGENT_VITALS]: proxied('invoke', ['GET /fleet/vitals']),
   [IPC.AGENT_ACTIVITY]: proxied('invoke', ['GET /fleet/activity']),

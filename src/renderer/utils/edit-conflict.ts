@@ -1,4 +1,5 @@
 import { useEditorTabsStore, type TabConflict } from '../stores/editor-tabs.store'
+import { useAgentStore } from '../stores/agent.store'
 import { describeWriter, type ResourceConflict, type ResourceWriter } from '../../shared/types/resource-revision.types'
 
 /**
@@ -14,6 +15,12 @@ import { describeWriter, type ResourceConflict, type ResourceWriter } from '../.
 
 /** What setDocument / writeInternalFile / setAgentConfig answer (preload). */
 export type SaveAnswer = { success?: boolean; revision?: number; conflict?: ResourceConflict } | null | undefined
+
+/** What a save is based on: the revision and text of the file when the edit began. */
+export interface SaveBase {
+  revision: number | undefined
+  baseContent: string
+}
 
 export type SaveOutcome =
   | { kind: 'saved'; revision?: number }
@@ -43,11 +50,14 @@ export async function saveTabContent(
   path: string,
   content: string,
   write: (content: string, baseRevision: number | undefined) => Promise<SaveAnswer>,
+  base?: SaveBase,
 ): Promise<SaveOutcome> {
   const store = useEditorTabsStore.getState
   const tab = store().tabs.find((t) => t.path === path)
-  const baseContent = tab?.savedContent ?? ''
-  let outcome = classifySave(await write(content, tab?.revision), baseContent, content)
+  // The base taken when the save was scheduled (editor-save.ts), else the tab's now.
+  const baseContent = base ? base.baseContent : tab?.savedContent ?? ''
+  const baseRevision = base ? base.revision : tab?.revision
+  let outcome = classifySave(await write(content, baseRevision), baseContent, content)
   if (outcome.kind === 'retry') {
     console.info(`[Editor] ${path}: revision moved without a change to the text; saving over ${outcome.baseRevision}`)
     outcome = classifySave(await write(content, outcome.baseRevision), baseContent, content)
@@ -55,6 +65,9 @@ export async function saveTabContent(
     if (outcome.kind === 'retry') outcome = { kind: 'conflict', conflict: { content: baseContent, revision: outcome.baseRevision, writer: null } }
   }
   if (outcome.kind === 'conflict') {
+    // A tab closed while this save was on its way comes back with the
+    // notice: the refused text has nowhere else to go.
+    if (!store().tabs.some((t) => t.path === path)) store().openTab(path, outcome.conflict.content ?? content, false, undefined, outcome.conflict.revision)
     store().setTabConflict(path, outcome.conflict, content)
     return outcome
   }
@@ -109,4 +122,51 @@ export function stableJson(value: unknown): string {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return v
     return Object.fromEntries(Object.keys(v as Record<string, unknown>).sort().map((k) => [k, (v as Record<string, unknown>)[k]]))
   })
+}
+
+/**
+ * Close or agent switch over unsaved text under a "changed elsewhere"
+ * notice: ask before it goes. `paths`: the tabs being closed; without it,
+ * every conflicted tab and the config panel's version (an agent switch).
+ * True: go ahead (the user discarded, or nothing was at stake). The
+ * recovery copies go with the conflicts (edit-recovery.ts).
+ */
+export function confirmDiscardConflicts(
+  paths?: readonly string[],
+  confirm: (message: string) => boolean = (message) => window.confirm(message),
+): boolean {
+  const names = useEditorTabsStore.getState().tabs.filter((t) => t.conflict && (!paths || paths.includes(t.path))).map((t) => t.path)
+  if (!paths && useAgentStore.getState().configConflict) names.push('the config')
+  if (names.length === 0) return true
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  const them = names.length === 1 ? 'it' : 'them'
+  return confirm(`Discard your unsaved changes to ${list}?\n\nSomeone else changed ${them} while you were editing. OK discards your version. Cancel keeps ${them} open.`)
+}
+
+/**
+ * A one-shot config change from outside the config panel (Identity → publish
+ * attestations, the provider setup dialog): read the config with its
+ * revision, apply `change`, save over that revision. Refused because
+ * someone else saved in between: read again and apply the change to their
+ * config (the change is a few fields, not a stale copy of the whole), up to
+ * three times. The store takes the saved config and its revision, so the
+ * config panel's next save is based on it and does not blame another window
+ * for this one's change. Answers the saved config, or null.
+ */
+export async function changeAgentConfig<C extends object>(change: (config: C) => C): Promise<C | null> {
+  const api = window.adfApi
+  if (!api?.getAgentConfigWithRevision) return null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const read = await api.getAgentConfigWithRevision()
+    if (!read?.config) return null
+    const updated = change(read.config as unknown as C)
+    const saved = await api.setAgentConfig(updated, read.revision !== undefined ? { baseRevision: read.revision } : undefined)
+    if (saved?.conflict) continue
+    if (saved && saved.success === false) return null
+    const store = useAgentStore.getState()
+    store.setConfig(updated as never)
+    if (saved?.revision !== undefined) store.setConfigRevision(saved.revision)
+    return updated
+  }
+  return null
 }

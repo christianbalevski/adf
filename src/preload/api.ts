@@ -70,6 +70,8 @@ export interface AdfApi {
    */
   setDocument: (content: string, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   getAgentConfig: () => Promise<AgentConfig | null>
+  /** W3-F: the config and the revision a save over it passes as `baseRevision` (null config: no file open). */
+  getAgentConfigWithRevision: () => Promise<{ config: AgentConfig | null; revision?: number }>
   /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.config` is the config now. */
   setAgentConfig: (config: unknown, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   /**
@@ -713,6 +715,15 @@ export interface AdfApi {
   /** The view never contains the remote token, only whether one is saved. */
   getBackendSettings: () => Promise<BackendSettingsView>
   setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
+
+  // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
+  /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => Promise<{ success: boolean }>
+  /** Copies left by a quit or crash with the notice up. */
+  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; path: string; file: string; modifiedAt: number }> }>
+  /** Dismiss: move them under recovered/archive/<time>/. */
+  recoveryArchive: () => Promise<{ moved: number }>
+  recoveryReveal: () => Promise<{ success: boolean }>
 
   // Platform ('darwin' | 'win32' | 'linux' | ...)
   platform: NodeJS.Platform

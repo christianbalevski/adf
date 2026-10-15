@@ -1,6 +1,17 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import type { ResourceWriter } from '../../shared/types/resource-revision.types'
+
+/** W3-F: a config save refused because the config changed elsewhere; the config panel shows the notice. */
+export interface ConfigConflictState {
+  mine: AgentConfig
+  theirs: AgentConfig | null
+  revision: number
+  writer: ResourceWriter | null
+  /** The agent file the edit belongs to. */
+  owner: string | null
+}
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 
@@ -144,6 +155,8 @@ interface AgentStoreState extends LoopSlice {
    * undefined saves without one.
    */
   configRevision?: number
+  /** W3-F: the config panel's unsaved version under a "changed elsewhere" notice (null: none). */
+  configConflict: ConfigConflictState | null
   statusText: string
   /**
    * Which loop's stream the user is currently LOOKING AT (the selected tab in
@@ -184,6 +197,7 @@ interface AgentStoreState extends LoopSlice {
   dropLoop: (loop: string) => void
   setConfig: (config: AgentConfig | null) => void
   setConfigRevision: (revision: number | undefined) => void
+  setConfigConflict: (conflict: ConfigConflictState | null) => void
   setStatusText: (text: string) => void
   setTokenUsage: (usage: TokenUsage, loop?: string) => void
   setTokenEstimate: (estimate: number | null, loop?: string) => void
@@ -257,6 +271,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     earlierCount: 0,
     sideLoops: {},
     config: null,
+    configConflict: null,
     statusText: '',
     viewedLoop: MAIN_LOOP,
     tokenUsage: { input: 0, output: 0 },
@@ -338,6 +353,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     },
     setConfig: (config) => set({ config }),
     setConfigRevision: (revision) => set({ configRevision: revision }),
+    setConfigConflict: (conflict) => set({ configConflict: conflict }),
     setStatusText: (text) => set({ statusText: text }),
     setTokenUsage: (usage, loop) => patchSlice(loop, () => ({ tokenUsage: usage })),
     setTokenEstimate: (estimate, loop) => patchSlice(loop, () => ({ tokenEstimate: estimate })),
@@ -390,6 +406,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         sideLoops: {},
         config: null,
         configRevision: undefined,
+        configConflict: null,
         statusText: '',
         viewedLoop: MAIN_LOOP
       })

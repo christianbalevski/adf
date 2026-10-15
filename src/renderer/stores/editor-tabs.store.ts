@@ -69,6 +69,8 @@ interface EditorTabsState {
    * agent's text while a stale debounce puts the pre-agent text back on disk.
    */
   lastExternalWrite: ExternalWriteMark | null
+  /** W3-F: bumped to move focus to the "changed elsewhere" notice (Ctrl+S while it is up). */
+  conflictFocusSeq: number
 
   /** `revision` (W3-F): the revision `content` is, from the read that produced it. */
   openTab: (path: string, content: string, isBinary: boolean, mimeType?: string, revision?: number) => void
@@ -103,6 +105,8 @@ interface EditorTabsState {
    * the tab is dirty and the next save overwrites theirs.
    */
   resolveTabConflict: (path: string, choice: 'reload' | 'keep', theirs?: { content: string; revision?: number }) => void
+  /** W3-F: focus the active tab's notice (a save was asked for while it is up). */
+  focusConflictNotice: () => void
   reset: () => void
 }
 
@@ -117,6 +121,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
   tabs: [],
   activeTabPath: null,
   lastExternalWrite: null,
+  conflictFocusSeq: 0,
 
   openTab: (path, content, isBinary, mimeType, revision) => {
     const { tabs } = get()
@@ -280,6 +285,10 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
         return { ...t, isDirty: true, revision: t.conflict.revision, conflict: undefined }
       })
     }))
+  },
+
+  focusConflictNotice: () => {
+    set((s) => ({ conflictFocusSeq: s.conflictFocusSeq + 1 }))
   },
 
   reset: () => {

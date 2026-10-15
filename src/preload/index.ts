@@ -48,6 +48,8 @@ const api: AdfApi = {
   setDocument: (content: string, opts?: { baseRevision?: number }) =>
     ipcRenderer.invoke(IPC.DOC_SET_DOCUMENT, opts?.baseRevision !== undefined ? { content, baseRevision: opts.baseRevision } : { content }),
   getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
+  // W3-F: the config and its revision, for a read-modify-write over it.
+  getAgentConfigWithRevision: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG, { withRevision: true }),
   setAgentConfig: (config: unknown, opts?: { baseRevision?: number }) =>
     opts?.baseRevision !== undefined
       ? ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config, { baseRevision: opts.baseRevision })
@@ -715,6 +717,12 @@ const api: AdfApi = {
   // Settings → Backend
   getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
   setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
+
+  // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => ipcRenderer.invoke(IPC.RECOVERY_STASH, stash),
+  recoveryList: () => ipcRenderer.invoke(IPC.RECOVERY_LIST),
+  recoveryArchive: () => ipcRenderer.invoke(IPC.RECOVERY_ARCHIVE),
+  recoveryReveal: () => ipcRenderer.invoke(IPC.RECOVERY_REVEAL),
 
   // Platform identifier ('darwin' | 'win32' | 'linux' | ...)
   platform: process.platform

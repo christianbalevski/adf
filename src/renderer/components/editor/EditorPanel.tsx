@@ -14,7 +14,9 @@ import { BrowserViewer } from './BrowserViewer'
 import { ImageViewer } from './ImageViewer'
 import { resolveImageMime } from '../../../shared/utils/image-files'
 import { estimateTokens, formatTokenCount } from '../../utils/token-estimate'
-import { saveTabContent } from '../../utils/edit-conflict'
+import { confirmDiscardConflicts } from '../../utils/edit-conflict'
+import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveEditorTab } from '../../utils/editor-save'
+import type { SaveBase } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice } from './ChangedElsewhereNotice'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
@@ -64,6 +66,7 @@ export function EditorPanel() {
   const closeTab = useEditorTabsStore((s) => s.closeTab)
   const updateTabContent = useEditorTabsStore((s) => s.updateTabContent)
   const reloadBrowserTab = useEditorTabsStore((s) => s.reloadBrowserTab)
+  const conflictFocusSeq = useEditorTabsStore((s) => s.conflictFocusSeq)
 
   // Chat-in-center: the Loops panel becomes a pinned first stage tab, peer to
   // the documents and the browser. Same AgentLoop component the dock mounts —
@@ -116,7 +119,10 @@ export function EditorPanel() {
   // `owner` is the agent this text belongs to. writeInternalFile has no agent
   // argument — it lands in whatever workspace main has open when it arrives —
   // so a save that outlives its agent has to be dropped, not delivered.
-  const pendingSaveRef = useRef<{ path: string; content: string; owner: string | null } | null>(null)
+  // `base` (W3-F): the revision and text the edit started from, taken when
+  // the save is scheduled, so a save delivered after its tab closed still
+  // names it.
+  const pendingSaveRef = useRef<{ path: string; content: string; owner: string | null; base: SaveBase } | null>(null)
 
   const [lineWrap, setLineWrap] = useState(() => localStorage.getItem(LINE_WRAP_STORAGE_KEY) !== '0')
   const toggleLineWrap = useCallback(() => {
@@ -144,47 +150,63 @@ export function EditorPanel() {
       return
     }
     const owner = useDocumentStore.getState().filePath
-    pendingSaveRef.current = { path, content, owner }
+    const previous = pendingSaveRef.current
+    const base = previous && previous.path === path && previous.owner === owner ? previous.base : captureSaveBase(path)
+    pendingSaveRef.current = { path, content, owner, base }
     saveTimerRef.current = setTimeout(() => {
       pendingSaveRef.current = null
       saveTimerRef.current = null
-      performSave(path, content, owner)
+      performSave(path, content, owner, base)
     }, 300)
   }, [])
-
-  // Saves of one file run one after another, so each goes over the revision
-  // the previous one produced (W3-F) instead of refusing its own predecessor.
-  const saveChainRef = useRef(new Map<string, Promise<unknown>>())
 
   // README.md is the only file with a dedicated store/IPC pair — it backs the
   // document store the rest of the UI reads. Every other workspace file,
   // mind.md and soul.md included, round-trips through the generic
   // internal-file path and stays in sync via `file_updated`.
   //
-  // W3-F: each save goes over the tab's revision. Someone else's write since
-  // then refuses it, and the tab shows the "changed elsewhere" notice with
-  // the user's text kept (saveTabContent).
-  const performSave = useCallback((path: string, content: string, owner: string | null) => {
-    // The agent moved on between scheduling and delivery. Writing now would put
-    // one agent's text into another agent's file.
-    if (owner !== useDocumentStore.getState().filePath || isAgentSwitching()) return
-    // The notice is up: nothing is written until the user picks Reload or Keep mine.
-    if (useEditorTabsStore.getState().tabs.find((t) => t.path === path)?.conflict) return
-    const api = window.adfApi
-    if (!api) return
-    const write = (text: string, baseRevision: number | undefined) => {
-      // Re-checked per attempt: a save queued behind another must not land after a switch.
-      if (owner !== useDocumentStore.getState().filePath || isAgentSwitching()) return Promise.resolve({ success: false })
-      const opts = baseRevision !== undefined ? { baseRevision } : undefined
-      return path === 'README.md' ? api.setDocument(text, opts) : api.writeInternalFile(path, text, opts)
-    }
-    const chains = saveChainRef.current
-    const run = (chains.get(path) ?? Promise.resolve())
-      .then(() => saveTabContent(path, content, write))
-      .catch((err) => console.error(`[Editor] Saving ${path} failed:`, err))
-    chains.set(path, run)
-    void run.finally(() => { if (chains.get(path) === run) chains.delete(path) })
+  // W3-F: each save goes over the revision the edit started from. Someone
+  // else's write since then refuses it, and the tab shows the "changed
+  // elsewhere" notice with the user's text kept (editor-save.ts). Dropped
+  // when the agent moved on between scheduling and delivery: writing then
+  // would put one agent's text into another agent's file.
+  const performSave = useCallback((path: string, content: string, owner: string | null, base?: SaveBase) => {
+    void saveEditorTab(path, content, owner, base)
   }, [])
+
+  // Ctrl+S / File > Save (App.tsx): the debounced save now, else the active tab if it has unsaved text.
+  useEffect(() => registerEditorFlush(() => {
+    const pending = pendingSaveRef.current
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = null
+    pendingSaveRef.current = null
+    if (pending) {
+      performSave(pending.path, pending.content, pending.owner, pending.base)
+      return
+    }
+    const store = useEditorTabsStore.getState()
+    const active = store.tabs.find((t) => t.path === store.activeTabPath)
+    if (active && active.kind === 'file' && active.isDirty) performSave(active.path, active.content, useDocumentStore.getState().filePath)
+  }), [performSave])
+
+  // What this window's saves produced belongs to the agent they were for.
+  useEffect(() => { resetEditorSaves() }, [agentFilePath])
+
+  // Closing a tab: unsaved text under a notice is not dropped without asking;
+  // a save still waiting for its debounce goes out now, over its own base
+  // (a refusal brings the tab back with the notice).
+  const handleCloseTab = useCallback((path: string) => {
+    const tab = useEditorTabsStore.getState().tabs.find((t) => t.path === path)
+    if (tab?.conflict && !confirmDiscardConflicts([path])) return
+    const pending = pendingSaveRef.current
+    if (pending?.path === path) {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+      pendingSaveRef.current = null
+      if (!tab?.conflict) performSave(pending.path, pending.content, pending.owner, pending.base)
+    }
+    closeTab(path)
+  }, [closeTab, performSave])
 
   // The notice's answers. Reload: their text (read again when the refusal did
   // not carry it). Keep mine: save this text over their revision now.
@@ -287,7 +309,7 @@ export function EditorPanel() {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       const pending = pendingSaveRef.current
       pendingSaveRef.current = null
-      if (pending) performSave(pending.path, pending.content, pending.owner)
+      if (pending) performSave(pending.path, pending.content, pending.owner, pending.base)
     }
   }, [performSave])
 
@@ -321,7 +343,7 @@ export function EditorPanel() {
           tabs={tabs}
           activeTabPath={null}
           onSelect={selectFileTab}
-          onClose={closeTab}
+          onClose={handleCloseTab}
           onReload={reloadBrowserTab}
           chatTab={chatTab}
         />
@@ -338,7 +360,7 @@ export function EditorPanel() {
   if (!activeTab) {
     return (
       <div className="h-full flex flex-col">
-        <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={closeTab} chatTab={chatTab} />
+        <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={handleCloseTab} chatTab={chatTab} />
         <div className="flex-1 flex flex-col items-center justify-center gap-3">
           <span className="text-neutral-400 dark:text-neutral-500 text-sm">No file open</span>
           <button
@@ -363,11 +385,12 @@ export function EditorPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={closeTab} onReload={reloadBrowserTab} chatTab={chatTab} />
+      <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={handleCloseTab} onReload={reloadBrowserTab} chatTab={chatTab} />
       {activeTab.conflict && (
         <ChangedElsewhereNotice
           what={activeTab.path}
           writer={activeTab.conflict.writer}
+          focusSeq={conflictFocusSeq}
           onReload={() => { void reloadTheirs(activeTab.path) }}
           onKeep={() => keepMine(activeTab.path)}
         />

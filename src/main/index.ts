@@ -5,6 +5,7 @@ import { join } from 'path'
 // repair) that must never exist in a daemon-mode Studio.
 type EmbeddedIpc = typeof import('./ipc')
 import { registerOrbitalCacheHandlers } from './ipc/orbital-cache'
+import { registerEditRecoveryHandlers } from './backend/edit-recovery'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
@@ -556,6 +557,7 @@ app.whenReady().then(async () => {
   }
   registerBackendSettingsHandlers(backend)
   registerOrbitalCacheHandlers(app.getPath('userData'))
+  registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
     mainWindow?.setFullScreen(!!fullscreen)

@@ -21,7 +21,6 @@ import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-tar
 import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, PRE_LLM_HOOK_MAIN_TARGET, type PreLlmHookDraft } from './pre-llm-hook-config'
 import { classifyConfigSave } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice } from '../editor/ChangedElsewhereNotice'
-import type { ResourceWriter } from '../../../shared/types/resource-revision.types'
 
 /**
  * All tools this runtime supports. Any tool listed here will appear
@@ -894,9 +893,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   // so the write is refused if someone else changed the config meanwhile.
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingSaveRef = useRef<{ config: AgentConfigType; owner: string | null; baseRevision?: number; baseConfig: AgentConfigType | null } | null>(null)
-  /** W3-F: a save refused because the config changed elsewhere; the notice offers Reload or Keep mine. */
-  const [configConflict, setConfigConflict] = useState<{ mine: AgentConfigType; theirs: AgentConfigType | null; revision: number; writer: ResourceWriter | null; owner: string | null } | null>(null)
-  useEffect(() => { setConfigConflict(null) }, [filePath])
+  /**
+   * W3-F: a save refused because the config changed elsewhere; the notice
+   * offers Reload or Keep mine. In the agent store, so an agent switch or a
+   * quit can ask about it / keep a copy (edit-conflict.ts, edit-recovery.ts).
+   */
+  const configConflict = useAgentStore((s) => s.configConflict)
+  const setConfigConflict = useAgentStore((s) => s.setConfigConflict)
 
   useEffect(() => {
     if (savingRef.current) {
