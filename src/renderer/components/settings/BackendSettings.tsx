@@ -51,6 +51,9 @@ function daemonLine(daemon: BackendDaemonStatus): string {
   if (daemon.pid) parts.push(`pid ${daemon.pid}`)
   if (daemon.version) parts.push(`version ${daemon.version}`)
   if (daemon.startedBy) parts.push(daemon.how === 'spawned' ? 'started by this Studio' : `started by ${daemon.startedBy === 'studio' ? 'Studio' : daemon.startedBy === 'cli' ? 'the ADF CLI' : 'a service'}`)
+  // K12 (no OS keychain): the owner's trust in the daemon's key, set with adf identity trust-daemon.
+  if (daemon.trust?.state === 'trusted') parts.push('daemon key trusted by the owner')
+  else if (daemon.trust?.state === 'not-trusted') parts.push('daemon key not trusted (adf identity trust-daemon)')
   return parts.join(' · ')
 }
 

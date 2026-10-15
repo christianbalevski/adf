@@ -75,6 +75,8 @@ function connectTimeoutForAttempt(retryIndex: number): number {
 }
 const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
+/** How long a closing stdio server gets to exit on stdin EOF before its process tree is killed (the SDK waits as long). */
+const CLOSE_GRACE_MS = 2000
 
 /** Strip security-sensitive env vars that MCP server configs must not override. */
 function filterBlockedEnv(env: Record<string, string>): Record<string, string> {
@@ -857,6 +859,20 @@ export class McpClientManager extends EventEmitter {
     const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
     const pid = this.stdioTransportPid(transport)
 
+    // E3: on Windows the SDK's close kills only the process it spawned, the
+    // cmd.exe shim of an npx/uvx server, and the sweep after close reaches
+    // only the dead shim, so a server that ignores stdin EOF was orphaned.
+    // Give it the graceful EOF exit first (the SDK's own 2 s), then kill the
+    // tree while the shim still links it, as abandonAttempt does.
+    let treeHandled = false
+    if (process.platform === 'win32' && child && !exitedBeforeClose && pid != null) {
+      treeHandled = true
+      if (!(await this.endStdinAndWait(child, CLOSE_GRACE_MS))) {
+        this.addLog(managed, 'system', `Server did not exit ${CLOSE_GRACE_MS / 1000}s after its input closed — stopping its process tree`)
+        await this.sweepPidTreeNow(pid)
+      }
+    }
+
     if (client) {
       try {
         client.onclose = () => { /* detached */ }
@@ -888,7 +904,20 @@ export class McpClientManager extends EventEmitter {
     // Runs even when client.close()/transport.close() threw or timed out —
     // but never when the child was already dead before we started closing
     // (pid-reuse hazard: the pid may now belong to an unrelated process).
-    if (!exitedBeforeClose) this.sweepPidTree(pid)
+    if (!exitedBeforeClose && !treeHandled) this.sweepPidTree(pid)
+  }
+
+  /** End the child's stdin and wait up to `graceMs` for it to exit; true when it did. */
+  private endStdinAndWait(child: import('child_process').ChildProcess, graceMs: number): Promise<boolean> {
+    const exited = () => child.exitCode !== null || child.signalCode !== null
+    if (exited()) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => {
+      const done = () => { clearTimeout(timer); child.off('exit', done); resolve(exited()) }
+      const timer = setTimeout(done, graceMs)
+      timer.unref?.()
+      child.once('exit', done)
+      try { child.stdin?.end() } catch { /* already closed */ }
+    })
   }
 
   /** Pid of the child spawned by our own StdioClientTransport, else null. */

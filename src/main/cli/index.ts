@@ -861,7 +861,67 @@ async function identityCommand(io: CliIo, options: CliOptions, args: string[]): 
     return 0
   }
 
-  throw new Error('Usage: adf identity [status | new | restore | import | unlock | lock]')
+  if (action === 'trust-daemon') return await trustDaemon(io, options, args.slice(1))
+
+  if (action === 'untrust-daemon') {
+    const answer = await postJson(io, options, '/identity/untrust-daemon')
+    if (options.json) {
+      io.stdout(`${JSON.stringify(answer, null, 2)}\n`)
+      return 0
+    }
+    const result = isRecord(answer) ? answer : {}
+    const trust = isRecord(result.trust) ? result.trust : {}
+    io.stdout(
+      `Revoked key ${String(result.retiredLabel ?? '')}: the daemon now uses a new key, and the old one no longer opens anything here.\n` +
+      `Slots removed from ${String(result.agentsUpdated ?? 0)} loaded agent(s); the tracked folders are swept in the background, and\n` +
+      'ADF Studio removes the slot from each agent it opens. A copy of an agent outside the tracked folders keeps the old slot\n' +
+      'until it is opened, and anyone holding a copy of the old key file can open that slot until then.\n' +
+      `${String(trust.message ?? '')}\n`,
+    )
+    return 0
+  }
+
+  throw new Error('Usage: adf identity [status | new | restore | import | unlock | lock | trust-daemon | untrust-daemon]')
+}
+
+/**
+ * `adf identity trust-daemon` (K12, no OS keychain): the owner lets ADF
+ * Studio wrap agent credentials to this daemon's key. Says what that means
+ * and asks for "trust" first, unless --yes.
+ */
+async function trustDaemon(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  for (const arg of args) {
+    if (arg !== '--yes') throw new Error(`Unknown option for adf identity trust-daemon: ${arg}`)
+  }
+  const current = await requestJson(io, options, '/identity')
+  const trust = isRecord(current) && isRecord(current.trust) ? current.trust : null
+  if (trust?.state === 'trusted') {
+    io.stdout(`${String(trust.message ?? '')}\n`)
+    return 0
+  }
+  if (!args.includes('--yes')) {
+    io.stdout(
+      'Trusting this daemon adds its key (the runtime-enc-key file next to the daemon settings) to\n' +
+      'trustedDaemonEncKeys. ADF Studio then wraps every agent\'s credentials to that key, so anyone who\n' +
+      'can read that file, or write the settings file, can unlock them without the owner passphrase.\n' +
+      'The grant is an entry in the settings file, not a signed statement.\n' +
+      'Revoke it with adf identity untrust-daemon.\n',
+    )
+    const answer = (await ask(io, 'Type "trust" to go ahead: ')).trim().toLowerCase()
+    if (answer !== 'trust') {
+      io.stdout('Nothing was changed.\n')
+      return 1
+    }
+  }
+  const answer = await postJson(io, options, '/identity/trust-daemon', { confirm: true })
+  if (options.json) {
+    io.stdout(`${JSON.stringify(answer, null, 2)}\n`)
+    return 0
+  }
+  const result = isRecord(answer) ? answer : {}
+  const granted = isRecord(result.trust) ? result.trust : {}
+  io.stdout(`${String(granted.message ?? '')}\nSlots added to ${String(result.agentsUpdated ?? 0)} loaded agent(s).\n`)
+  return 0
 }
 
 /**
@@ -970,6 +1030,7 @@ function formatIdentity(value: JsonValue): string {
     ['ownerDid', String(value.ownerDid ?? '')],
     ['runtimeDid', String(value.runtimeDid ?? '')],
     ...(isRecord(value.runtime) ? [['runtime', `${String(value.runtime.source ?? '')} (${String(value.runtime.state ?? '')})`]] : []),
+    ...(isRecord(value.trust) && value.trust.state !== 'not-applicable' ? [['daemonKey', String(value.trust.state ?? '')]] : []),
     ['storage', String(value.storage ?? '')],
     ['backupConfirmed', String(value.backupConfirmed ?? false)],
   ])}${typeof value.message === 'string' ? `${value.message}\n` : ''}` +
@@ -1422,6 +1483,10 @@ Commands:
                                   agents
   identity unlock|lock          Unlock/lock a passphrase-protected identity
                                   (machines without an OS keychain)
+  identity trust-daemon [--yes]  No OS keychain: let ADF Studio wrap agent
+                                  credentials to this daemon's key file, so
+                                  they unlock without the passphrase (asks)
+  identity untrust-daemon        Revoke that trust
   templates                      List agent templates
   new [name] [--template <id>] [--provider <id>] [--model <id>]
       [--dir <path>] [--start]   Create an agent from a template, sealed

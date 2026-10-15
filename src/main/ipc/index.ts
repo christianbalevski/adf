@@ -9,7 +9,7 @@ import { prepareFoundAgent } from '../utils/found-agent'
 import {
   AdapterAttachArgs, AdapterCredentialGetArgs, AdapterCredentialSetArgs, AdapterDetachArgs, AdapterListFilesArgs,
   AdapterPackageArgs, AdapterTypeArgs, McpAttachArgs, McpCredentialGetArgs, McpCredentialListArgs, McpCredentialSetArgs,
-  McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, validateMcpArgs,
+  McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, mcpAttachEntry, validateMcpArgs,
 } from './mcp-adapter-args'
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
@@ -154,7 +154,7 @@ import { resolveAgentComputeTargetSelection } from '../services/execution-target
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
-import { buildMcpServerConfigFromRegistration, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
@@ -7160,22 +7160,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         return { success: true, alreadyAttached: true }
       }
 
-      const entry = buildMcpServerConfigFromRegistration({
-        id: `mcp:${args.serverConfig.name}`,
-        name: args.serverConfig.name,
-        type: args.serverConfig.type,
-        npmPackage: args.serverConfig.npmPackage,
-        pypiPackage: args.serverConfig.pypiPackage,
-        command: args.serverConfig.command,
-        args: args.serverConfig.args,
-        url: args.serverConfig.url,
-        env: args.serverConfig.envKeys?.map((key) => ({ key, value: '' })),
-        headers: args.serverConfig.headers,
-        headerEnv: args.serverConfig.headerEnv,
-        bearerTokenEnvVar: args.serverConfig.bearerTokenEnvVar,
-        credentialStorage: args.serverConfig.credentialStorage,
-        runLocation: args.serverConfig.runLocation
-      })
+      const entry = mcpAttachEntry(args.serverConfig)
 
       config.mcp.servers.push(entry)
       ws.setAgentConfig(config)

@@ -809,7 +809,7 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps): 
       items.push({ id: 'owner-phrase', label: 'Owner phrase', detail: 'copied into the OS keychain entry ADF / owner-mnemonic, as embedded Studio does; Studio keeps it' })
     }
     if (!deps.daemonSecrets) {
-      if (typeof settings.runtimeDid === 'string') items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: `not shared: ${deps.daemonSecretsUnavailable ?? 'no keychain'}. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review` })
+      if (typeof settings.runtimeDid === 'string') items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: `not shared: ${deps.daemonSecretsUnavailable ?? 'no keychain'}. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review. Agents made in Studio unlock their credentials in the daemon only through the owner phrase, which stays in Studio: restore it there (adf identity restore); adf identity trust-daemon then lets them unlock without it` })
     } else if ((await syncStudioRuntimeEntry(deps, { dryRun: true })).outcome === 'written') {
       // Only when the boot would write it: a current entry (local → remote → local) is left as it is.
       items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: 'Studio\'s runtime key is written to the OS keychain so the daemon signs as this runtime' })

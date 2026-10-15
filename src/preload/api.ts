@@ -515,6 +515,7 @@ export interface AdfApi {
       command?: string
       args?: string[]
       url?: string
+      oauth?: boolean
       envKeys?: string[]
       headers?: { key: string; value: string }[]
       headerEnv?: { key: string; value: string }[]

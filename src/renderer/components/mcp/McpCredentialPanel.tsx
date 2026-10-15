@@ -17,6 +17,35 @@ function flattenAdfFiles(entries: TrackedDirEntry[]): { filePath: string; fileNa
   return result
 }
 
+/**
+ * The `serverConfig` of MCP_ATTACH_SERVER for a registration. OAuth (the
+ * registration's flag or its catalog entry's) travels into the .adf, so another
+ * runtime signs in instead of connecting without auth, unless a bearer or
+ * header token is among `savedKeys`: a dual-mode server given a pasted token
+ * uses the token (as the TUI writes `oauth: false` for it). The server entry
+ * is written once: a server already attached keeps the entry it has.
+ */
+export function mcpAttachServerConfig(server: McpServerRegistration, registryEntry: McpRegistryEntry | undefined, envKeys: string[], savedKeys: string[] = []) {
+  const tokenKeys = new Set([server.bearerTokenEnvVar, ...(server.headerEnv ?? []).map((entry) => entry.value)].filter(Boolean))
+  const tokenSaved = savedKeys.some((key) => tokenKeys.has(key))
+  return {
+    name: server.name,
+    type: server.type,
+    npmPackage: server.npmPackage,
+    pypiPackage: server.pypiPackage,
+    command: server.command,
+    args: server.args,
+    url: server.url,
+    oauth: (isOAuthEntry(server, registryEntry) && !tokenSaved) || undefined,
+    envKeys,
+    headers: server.headers,
+    headerEnv: server.headerEnv,
+    bearerTokenEnvVar: server.bearerTokenEnvVar,
+    credentialStorage: server.credentialStorage,
+    runLocation: server.runLocation
+  }
+}
+
 interface McpCredentialPanelProps {
   server: McpServerRegistration
   registryEntry?: McpRegistryEntry
@@ -196,21 +225,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
       // Attach the MCP server config to the ADF (idempotent)
       const attachResult = await window.adfApi?.attachMcpServer({
         filePath,
-        serverConfig: {
-          name: server.name,
-          type: server.type,
-          npmPackage: server.npmPackage,
-          pypiPackage: server.pypiPackage,
-          command: server.command,
-          args: server.args,
-          url: server.url,
-          envKeys: allEnvKeys.length > 0 ? allEnvKeys : keysToSave.map(([k]) => k),
-          headers: server.headers,
-          headerEnv: server.headerEnv,
-          bearerTokenEnvVar: server.bearerTokenEnvVar,
-          credentialStorage: server.credentialStorage,
-          runLocation: server.runLocation
-        }
+        serverConfig: mcpAttachServerConfig(server, registryEntry, allEnvKeys.length > 0 ? allEnvKeys : keysToSave.map(([k]) => k), keysToSave.map(([k]) => k))
       })
       if (attachResult && !attachResult.success) {
         setSaveStatus((prev) => ({ ...prev, [filePath]: attachResult.error ?? 'Failed to attach server' }))

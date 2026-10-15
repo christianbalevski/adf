@@ -65,7 +65,8 @@ export function PasswordDialog() {
     setError('')
     setShowForgot(false)
     setOpen(false)
-    await completeFileOpen()
+    // The keys are gone, not unlocked: a daemon agent still on its stub provider is not re-attached.
+    await completeFileOpen({ reattach: false })
   }, [setOpen, completeFileOpen])
 
   const handleCancel = useCallback(async () => {
