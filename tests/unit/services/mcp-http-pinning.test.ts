@@ -16,7 +16,8 @@ const h = vi.hoisted(() => {
 })
 vi.mock('@modelcontextprotocol/sdk/client', () => ({ Client: h.MockClient }))
 
-import { McpClientManager } from '../../../src/main/services/mcp-client-manager'
+import { MCP_HTTP_EGRESS, McpClientManager } from '../../../src/main/services/mcp-client-manager'
+import { daemonGuardPort } from '../../../src/main/utils/guarded-fetch'
 
 class TestManager extends McpClientManager {
   public httpOpts: Array<Record<string, unknown>> = []
@@ -29,11 +30,18 @@ class TestManager extends McpClientManager {
 const config = { name: 'remote', transport: 'http', url: 'http://mcp.adf-test.invalid/mcp' } as McpServerConfig
 
 describe('MCP HTTP transport', () => {
-  it('before: built without a fetch of its own (the SDK uses the global fetch, which resolves the host itself, unchecked)', async () => {
+  it('after: built with a fetch that connects only to checked addresses: LAN and loopback allowed, cloud metadata and the daemon port refused', async () => {
     const mgr = new TestManager()
     await mgr.connect(config)
     expect(mgr.httpOpts).toHaveLength(1)
-    expect('fetch' in mgr.httpOpts[0]).toBe(false)
+    const fetchFn = mgr.httpOpts[0].fetch as typeof fetch
+    expect(typeof fetchFn).toBe('function')
+    await expect(fetchFn('http://169.254.169.254/latest/meta-data')).rejects.toThrow(/cloud-metadata/)
+    await expect(fetchFn('http://[64:ff9b::a9fe:a9fe]/')).rejects.toThrow(/cloud-metadata/)
+    await expect(fetchFn(`http://127.0.0.1:${daemonGuardPort()}/agents`)).rejects.toThrow(/daemon control API/)
+    // A LAN server is not refused by the guard (the connection itself fails: nothing listens there).
+    await expect(fetchFn('http://10.255.255.1:9/', { signal: AbortSignal.timeout(200) })).rejects.not.toThrow(/Blocked/)
+    expect(MCP_HTTP_EGRESS()).toMatchObject({ allowLocal: true, allowLinkLocal: true })
     await mgr.disconnectAll()
   })
 })

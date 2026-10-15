@@ -16,6 +16,8 @@ import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
 import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
+import { daemonGuardPort, egressFetch } from '../utils/guarded-fetch'
+import type { FetchGuardOptions } from '../utils/ssrf-guard'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
 import { UnauthorizedError } from './mcp-http-oauth'
@@ -47,6 +49,14 @@ const BLOCKED_ENV_VARS = new Set([
   'LD_LIBRARY_PATH',
   'DYLD_LIBRARY_PATH',
 ])
+
+/**
+ * The egress policy of an MCP HTTP server's requests. The owner (or a file's
+ * reviewed config) names the server, so loopback, LAN and link-local servers
+ * are allowed; the always-blocked tiers stay: cloud metadata and the local
+ * daemon control API (read per request: the daemon port can change).
+ */
+export const MCP_HTTP_EGRESS = (): FetchGuardOptions => ({ allowLocal: true, allowLinkLocal: true, daemonPort: daemonGuardPort() })
 
 const MAX_LOG_ENTRIES = 500
 const MAX_RETRIES = 3
@@ -305,6 +315,11 @@ export class McpClientManager extends EventEmitter {
         transport = this.createHttpTransport(new URL(managed.config.url!), {
           ...(Object.keys(headers).length ? { requestInit: { headers } } : {}),
           ...(authProvider ? { authProvider } : {}),
+          // Every request (OAuth discovery included) connects only to an
+          // address the egress guard checked: LAN and link-local servers
+          // stay reachable, cloud metadata and the daemon control API do not,
+          // and a DNS answer that changes to one of them is refused (W4-B).
+          fetch: egressFetch(MCP_HTTP_EGRESS),
         })
       } else {
         // Default: spawn directly on host via StdioClientTransport

@@ -35,11 +35,12 @@
  */
 
 import { lookup as dnsLookup } from 'node:dns/promises'
-import { request as httpRequest, type IncomingMessage } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from 'node:http'
+import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
-import { Readable } from 'node:stream'
-import { checkFetchTarget, envProxyFor, type FetchGuardOptions } from './ssrf-guard'
+import { pipeline, Readable, type Transform } from 'node:stream'
+import { constants as zlibConstants, createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
+import { checkConnectTarget, checkFetchTarget, envProxyFor, type FetchGuardOptions } from './ssrf-guard'
 
 /** The process's own fetch, as loaded; a stub that replaced it (tests) is used without the pinned connection. */
 const NATIVE_FETCH = globalThis.fetch
@@ -70,14 +71,25 @@ export function guardedLookup(check: (address: string) => Promise<string | null>
 /** Statuses whose Response has no body. */
 const NULL_BODY = new Set([101, 103, 204, 205, 304])
 
+/**
+ * The guard's policy for one resolved address of `target`: the URL with the
+ * address as its literal host, checked as a fetch (http, https) or a
+ * connect (ws, wss) target. For `guardedLookup`.
+ */
+export function addressCheck(target: URL, guard: FetchGuardOptions, kind: 'fetch' | 'connect' = 'fetch'): (address: string) => Promise<string | null> {
+  const secure = target.protocol === 'https:' || target.protocol === 'wss:'
+  const port = target.port || (secure ? '443' : '80')
+  const check = kind === 'connect' ? checkConnectTarget : checkFetchTarget
+  return (address) => {
+    const literal = address.includes(':') ? `[${address}]` : address
+    return check(`${target.protocol}//${literal}:${port}${target.pathname}`, guard)
+  }
+}
+
 /** One GET over node:http(s), connecting only to addresses `guardedLookup` checked. */
 function pinnedGet(url: string, signal: AbortSignal, guard: FetchGuardOptions): Promise<Response> {
   const target = new URL(url)
-  const port = target.port || (target.protocol === 'https:' ? '443' : '80')
-  const check = (address: string) => {
-    const literal = address.includes(':') ? `[${address}]` : address
-    return checkFetchTarget(`${target.protocol}//${literal}:${port}${target.pathname}`, guard)
-  }
+  const check = addressCheck(target, guard)
   const send = target.protocol === 'https:' ? httpsRequest : httpRequest
   return new Promise<Response>((resolve, reject) => {
     const req = send(target, { method: 'GET', signal, lookup: guardedLookup(check) }, (res: IncomingMessage) => {
@@ -93,6 +105,165 @@ function pinnedGet(url: string, signal: AbortSignal, guard: FetchGuardOptions): 
     req.on('error', reject)
     req.end()
   })
+}
+
+// --- pinnedFetch ----------------------------------------------------------------
+
+/** Statuses a fetch with `redirect: 'follow'` follows. */
+const REDIRECTS = new Set([301, 302, 303, 307, 308])
+/** fetch's own redirect limit. */
+const MAX_FOLLOWED_REDIRECTS = 20
+
+/**
+ * Keep-alive agents per policy: a pooled socket is reused only by requests
+ * under the policy whose lookup checked its address (the pool key ignores
+ * the lookup).
+ */
+const pinnedAgents = new Map<string, HttpAgent | HttpsAgent>()
+function pinnedAgent(protocol: string, guard: FetchGuardOptions): HttpAgent | HttpsAgent {
+  const key = `${protocol}|${JSON.stringify(guard, Object.keys(guard).sort())}|${JSON.stringify(guard.ownOrigin ?? null)}`
+  let agent = pinnedAgents.get(key)
+  if (!agent) {
+    agent = protocol === 'https:' ? new HttpsAgent({ keepAlive: true }) : new HttpAgent({ keepAlive: true })
+    pinnedAgents.set(key, agent)
+  }
+  return agent
+}
+
+/** The response body as fetch delivers it: decoded per `content-encoding` (gzip, deflate, br). */
+function decodedBody(res: IncomingMessage): Readable {
+  const encodings = String(res.headers['content-encoding'] ?? '').toLowerCase().split(',').map((e) => e.trim()).filter(Boolean)
+  const decoders: Transform[] = []
+  for (const encoding of encodings.reverse()) {
+    if (encoding === 'gzip' || encoding === 'x-gzip') decoders.push(createGunzip({ flush: zlibConstants.Z_SYNC_FLUSH, finishFlush: zlibConstants.Z_SYNC_FLUSH }))
+    else if (encoding === 'deflate') decoders.push(createInflate({ flush: zlibConstants.Z_SYNC_FLUSH, finishFlush: zlibConstants.Z_SYNC_FLUSH }))
+    else if (encoding === 'br') decoders.push(createBrotliDecompress({ flush: zlibConstants.BROTLI_OPERATION_FLUSH, finishFlush: zlibConstants.BROTLI_OPERATION_FLUSH }))
+    else if (encoding !== 'identity') return res // an encoding fetch does not decode either: the bytes as sent
+  }
+  if (decoders.length === 0) return res
+  return pipeline([res, ...decoders] as unknown as [Readable, ...Transform[]], () => { /* errors reach the last stream */ }) as unknown as Readable
+}
+
+/** The error fetch rejects with for an aborted signal. */
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('This operation was aborted', 'AbortError')
+}
+
+/** One request over node:http(s) to an address `guardedLookup` checked; no redirect is followed. */
+function pinnedRequest(url: URL, method: string, headers: Headers, body: Buffer | null, signal: AbortSignal, guard: FetchGuardOptions): Promise<Response> {
+  const sent: Record<string, string> = {}
+  headers.forEach((value, name) => { sent[name] = value })
+  // The defaults Node's fetch sends.
+  sent.accept ??= '*/*'
+  sent['user-agent'] ??= 'node'
+  sent['accept-encoding'] ??= 'gzip, deflate, br'
+  if (body) sent['content-length'] = String(body.length)
+  const send = url.protocol === 'https:' ? httpsRequest : httpRequest
+  return new Promise<Response>((resolve, reject) => {
+    // The abort is handled here, not through the request's `signal` option,
+    // so a body being read fails with the signal's reason, as fetch's does.
+    let res: IncomingMessage | null = null
+    const onAbort = () => {
+      const reason = abortReason(signal) as Error
+      if (res) res.destroy(reason)
+      req.destroy(reason)
+    }
+    const req = send(url, {
+      method,
+      headers: sent,
+      agent: pinnedAgent(url.protocol, guard),
+      lookup: guardedLookup(addressCheck(url, guard)),
+    }, (incoming: IncomingMessage) => {
+      res = incoming
+      res.once('close', () => signal.removeEventListener('abort', onAbort))
+      const responseHeaders = new Headers()
+      for (const [name, value] of Object.entries(res.headers)) {
+        if (value === undefined) continue
+        for (const one of Array.isArray(value) ? value : [value]) responseHeaders.append(name, one)
+      }
+      const status = res.statusCode ?? 502
+      const empty = NULL_BODY.has(status) || method === 'HEAD'
+      if (empty) res.resume()
+      const response = new Response(empty ? null : (Readable.toWeb(decodedBody(res)) as unknown as ReadableStream<Uint8Array>), {
+        status,
+        statusText: res.statusMessage ?? '',
+        headers: responseHeaders,
+      })
+      Object.defineProperty(response, 'url', { value: url.toString() })
+      resolve(response)
+    })
+    signal.addEventListener('abort', onAbort, { once: true })
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      if (!res) signal.removeEventListener('abort', onAbort)
+      if (signal.aborted) reject(abortReason(signal))
+      // The guard refused an address the lookup answered: its sentence.
+      else if (err.code === 'EGUARD') reject(new Error(err.message))
+      else reject(new TypeError('fetch failed', { cause: err }))
+    })
+    req.end(body ?? undefined)
+  })
+}
+
+/**
+ * A `fetch` that connects only to addresses the egress guard checked (W4-B
+ * follow-up): each hop is checked with `checkFetchTarget` (the guard's
+ * sentence when refused, the resolver's code for an unknown host), then
+ * sent over node:http(s) with `guardedLookup`, so the connection reaches an
+ * address the guard passed, with the URL's host name as SNI and Host. A DNS
+ * answer that changes between the check and the connection (rebinding, TTL
+ * 0) is refused, never reached.
+ *
+ * Fetch semantics kept: request bodies and headers as `Request` builds
+ * them, fetch's default headers, a decoded body (gzip, deflate, br), a
+ * streamed body (SSE), `redirect` (`follow` re-checks every hop; `manual`
+ * answers the 3xx), the abort reason. A URL that goes through an env proxy
+ * (ssrf-guard envProxyFor) uses Node's fetch: the proxy looks the host up.
+ * `guard` is read per call.
+ */
+export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const policy = typeof guard === 'function' ? guard() : guard
+    const request = new Request(input, init?.body != null ? { ...init, duplex: 'half' } as RequestInit : init)
+    const signal = request.signal
+    if (signal.aborted) throw abortReason(signal)
+    let url = new URL(request.url)
+    let method = request.method
+    const headers = new Headers(request.headers)
+    let body: Buffer | null = request.body ? Buffer.from(await request.arrayBuffer()) : null
+    for (let hop = 0; ; hop++) {
+      if (envProxyFor(url)) {
+        return NATIVE_FETCH(url, { method, headers, ...(body ? { body: body as unknown as BodyInit } : {}), signal, redirect: request.redirect })
+      }
+      const refusal = await checkFetchTarget(url.toString(), policy)
+      if (refusal) throw new Error(refusal)
+      const response = await pinnedRequest(url, method, headers, body, signal, policy)
+      const location = response.headers.get('location')
+      if (!REDIRECTS.has(response.status) || !location || request.redirect === 'manual') return response
+      try { await response.body?.cancel() } catch { /* best effort */ }
+      if (request.redirect === 'error') throw new TypeError('fetch failed', { cause: new Error(`unexpected redirect to ${location}`) })
+      if (hop >= MAX_FOLLOWED_REDIRECTS) throw new TypeError('fetch failed', { cause: new Error('redirect count exceeded') })
+      const next = new URL(location, url)
+      if (response.status === 303 ? method !== 'GET' && method !== 'HEAD' : (response.status === 301 || response.status === 302) && method === 'POST') {
+        method = 'GET'
+        body = null
+        for (const name of ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location']) headers.delete(name)
+      }
+      // As fetch: credentials stay with the origin they were given for.
+      if (next.origin !== url.origin) for (const name of ['authorization', 'proxy-authorization', 'cookie']) headers.delete(name)
+      url = next
+    }
+  }) as typeof fetch
+}
+
+/**
+ * pinnedFetch for egress an agent or a file drives (sys_fetch, MCP HTTP).
+ * A replaced global fetch (unit tests stub it) is used as it is, checked
+ * per call.
+ */
+export function egressFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)): typeof fetch {
+  const pinned = pinnedFetch(guard)
+  return ((input: string | URL | Request, init?: RequestInit) =>
+    globalThis.fetch === NATIVE_FETCH ? pinned(input, init) : globalThis.fetch(input, init)) as typeof fetch
 }
 
 /** Port the local daemon control API listens on when nothing overrides it. */

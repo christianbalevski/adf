@@ -2,6 +2,7 @@
 // W5-A). Written first as a characterization of the guard and of sys_fetch /
 // ws_connect as they were (E3); each fix commit flips the rows it changes.
 import { createServer, type Server } from 'node:http'
+import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer } from 'ws'
 
@@ -20,6 +21,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
 })
 import { checkConnectTarget, checkFetchTarget, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
 import { SysFetchTool } from '../../../src/main/tools/built-in/sys-fetch.tool'
+import { pinnedFetch } from '../../../src/main/utils/guarded-fetch'
 import { WsConnectionManager, type WsManagerDelegate } from '../../../src/main/services/ws-connection-manager'
 import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 
@@ -107,14 +109,61 @@ describe('a host name behind an HTTP proxy (NODE_USE_ENV_PROXY)', () => {
   })
 })
 
-describe('sys_fetch: the guard and the connection resolve the host separately', () => {
-  it('before: a name only the guard\'s lookup knows passes the guard, then the connection\'s own lookup fails', async () => {
+describe('sys_fetch: the connection uses the addresses the guard checked', () => {
+  it('after: a name only the checked lookup knows is reached, with its Host header', async () => {
     const { port, hits } = await httpServer()
     dnsScript.set('pinned.adf-test.invalid', ['127.0.0.1'])
-    expect(await checkFetchTarget(`http://pinned.adf-test.invalid:${port}/x`)).toBeNull()
     const r = await new SysFetchTool().execute({ url: `http://pinned.adf-test.invalid:${port}/x`, method: 'GET', timeout_ms: 10000 }, workspace)
+    expect(r.isError).toBe(false)
+    expect(JSON.parse(r.content)).toMatchObject({ status: 200, body: 'reached' })
+    expect(hits).toEqual(['/x'])
+  }, 20000)
+
+  it('after: an answer that changes to the daemon port after the check is refused, never reached', async () => {
+    const { port, hits } = await httpServer()
+    process.env.ADF_DAEMON_PORT = String(port)
+    // The tool's check sees a public address; every later answer is loopback on the daemon port.
+    dnsScript.set('rebind.adf-test.invalid', ['93.184.216.34', '127.0.0.1'])
+    const r = await new SysFetchTool().execute({ url: `http://rebind.adf-test.invalid:${port}/runtime`, method: 'GET', timeout_ms: 10000 }, workspace)
     expect(r.isError).toBe(true)
+    expect(JSON.parse(r.content).error).toMatch(/daemon control API/)
     expect(hits).toEqual([])
+  }, 20000)
+})
+
+describe('pinnedFetch keeps fetch semantics', () => {
+  it('sends method, headers and body; decodes gzip; follows a redirect after re-checking it; answers it under manual', async () => {
+    const seen: Array<{ method?: string; url?: string; host?: string; body: string; type?: string }> = []
+    const s: Server = createServer((req, res) => {
+      let body = ''
+      req.on('data', (c) => { body += c })
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, host: req.headers.host, body, type: req.headers['content-type'] })
+        if (req.url === '/moved') { res.writeHead(302, { location: '/gz' }); res.end(); return }
+        if (req.url === '/gz') { res.writeHead(200, { 'content-encoding': 'gzip', 'content-type': 'text/plain' }); res.end(gzipSync('decoded')); return }
+        res.end('ok')
+      })
+    })
+    servers.push(s)
+    await new Promise<void>((done) => s.listen(0, '127.0.0.1', () => done()))
+    const port = (s.address() as { port: number }).port
+    dnsScript.set('semantics.adf-test.invalid', ['127.0.0.1'])
+    const f = pinnedFetch({ daemonPort: 1 })
+    const base = `http://semantics.adf-test.invalid:${port}`
+    const posted = await f(`${base}/echo`, { method: 'POST', body: JSON.stringify({ a: 1 }), headers: { 'content-type': 'application/json' } })
+    expect(await posted.text()).toBe('ok')
+    expect(seen[0]).toEqual({ method: 'POST', url: '/echo', host: `semantics.adf-test.invalid:${port}`, body: '{"a":1}', type: 'application/json' })
+    const followed = await f(`${base}/moved`, { method: 'POST', body: 'x' })
+    expect([followed.status, await followed.text(), followed.url]).toEqual([200, 'decoded', `${base}/gz`])
+    expect(seen.slice(1).map((r) => `${r.method} ${r.url}`)).toEqual(['POST /moved', 'GET /gz'])
+    const manual = await f(`${base}/moved`, { redirect: 'manual' })
+    expect([manual.status, manual.headers.get('location')]).toEqual([302, '/gz'])
+    // A redirect to a refused address is refused before it is sent.
+    const refused = pinnedFetch({ daemonPort: port })
+    await expect(refused(`${base}/x`)).rejects.toThrow(/daemon control API/)
+    const aborted = new AbortController()
+    aborted.abort()
+    await expect(f(`${base}/x`, { signal: aborted.signal })).rejects.toMatchObject({ name: 'AbortError' })
   }, 20000)
 })
 
