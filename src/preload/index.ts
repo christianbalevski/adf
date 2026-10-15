@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
 import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
+import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch } from '../shared/types/backend.types'
@@ -43,16 +44,19 @@ const api: AdfApi = {
 
   // Document
   getDocument: () => ipcRenderer.invoke(IPC.DOC_GET_DOCUMENT),
-  setDocument: (content: string) =>
-    ipcRenderer.invoke(IPC.DOC_SET_DOCUMENT, { content }),
+  // W3-F: `baseRevision` only when given, so a save without one sends what it always sent.
+  setDocument: (content: string, opts?: { baseRevision?: number }) =>
+    ipcRenderer.invoke(IPC.DOC_SET_DOCUMENT, opts?.baseRevision !== undefined ? { content, baseRevision: opts.baseRevision } : { content }),
   getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
-  setAgentConfig: (config: unknown) =>
-    ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
+  setAgentConfig: (config: unknown, opts?: { baseRevision?: number }) =>
+    opts?.baseRevision !== undefined
+      ? ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config, { baseRevision: opts.baseRevision })
+      : ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
   // Runtime-originated config change push. Never fires for this window's own
   // save (that path suppresses the host fan-out), so a subscriber can apply the
   // payload without racing an edit in flight.
-  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string; config: AgentConfig }) =>
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) =>
       callback(data)
     ipcRenderer.on(IPC.DOC_AGENT_CONFIG_CHANGED, handler)
     return () => { ipcRenderer.removeListener(IPC.DOC_AGENT_CONFIG_CHANGED, handler) }
@@ -308,8 +312,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.DOC_SET_FILE_AUTHORIZED, { path, authorized }),
   readInternalFile: (path: string, opts?: { binaryContent?: boolean }) =>
     ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true }),
-  writeInternalFile: (path: string, content: string) =>
-    ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, { path, content }),
+  writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) =>
+    ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, opts?.baseRevision !== undefined ? { path, content, baseRevision: opts.baseRevision } : { path, content }),
   downloadInternalFile: (path: string) =>
     ipcRenderer.invoke(IPC.DOC_DOWNLOAD_INTERNAL_FILE, { path }),
 

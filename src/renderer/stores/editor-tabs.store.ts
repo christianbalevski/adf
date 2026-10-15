@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { ContainerPhase } from '../../shared/types/compute.types'
+import type { ResourceWriter } from '../../shared/types/resource-revision.types'
 
 export interface BrowserTabMeta {
   agentFilePath: string
@@ -29,6 +30,28 @@ export interface EditorTab {
   extension: string
   kind: 'file' | 'browser'
   browserMeta?: BrowserTabMeta
+  /**
+   * W3-F: the revision `savedContent` is (from the read, the last save, or the
+   * last external write applied). A save passes it as `baseRevision`;
+   * undefined saves without one (last write wins, as before revisions).
+   */
+  revision?: number
+  /** W3-F: someone else changed the file while this tab had unsaved text; the tab shows the notice. */
+  conflict?: TabConflict
+}
+
+/** Someone else's change that arrived over unsaved text (or refused a save). */
+export interface TabConflict {
+  /** Their text, when known; null: Reload reads it. */
+  content: string | null
+  revision?: number
+  writer: ResourceWriter | null
+}
+
+/** What an external write says about itself (file_updated / document_updated, W3-F). */
+export interface ExternalWriteMeta {
+  revision?: number
+  writer?: ResourceWriter | null
 }
 
 /** Identifies one external (agent) write so consumers can tell repeats apart. */
@@ -47,7 +70,8 @@ interface EditorTabsState {
    */
   lastExternalWrite: ExternalWriteMark | null
 
-  openTab: (path: string, content: string, isBinary: boolean, mimeType?: string) => void
+  /** `revision` (W3-F): the revision `content` is, from the read that produced it. */
+  openTab: (path: string, content: string, isBinary: boolean, mimeType?: string, revision?: number) => void
   /**
    * `activate: false` adds/refreshes the tab without taking the stage — used
    * by the auto-open on agent startup so it doesn't yank the user off the chat.
@@ -57,8 +81,28 @@ interface EditorTabsState {
   closeTab: (path: string) => void
   setActiveTab: (path: string) => void
   updateTabContent: (path: string, content: string) => void
-  markTabSaved: (path: string) => void
-  updateTabFromExternal: (path: string, content: string) => void
+  /**
+   * `saved` (W3-F): the text the save wrote, when the save layer marks the tab
+   * after the write answered (typing meanwhile keeps the tab dirty). Without
+   * it, the tab's current text, as before.
+   */
+  markTabSaved: (path: string, saved?: string) => void
+  /**
+   * Someone else wrote the file. A clean tab takes their text; a tab with
+   * unsaved text keeps it and gets a `conflict` instead (W3-F), so the user
+   * chooses rather than losing either version.
+   */
+  updateTabFromExternal: (path: string, content: string, meta?: ExternalWriteMeta) => void
+  /** W3-F: the revision a save of this tab produced. */
+  setTabRevision: (path: string, revision: number | undefined) => void
+  /** W3-F: a save was refused; the tab keeps its text and shows the notice. */
+  setTabConflict: (path: string, conflict: TabConflict, mine?: string) => void
+  /**
+   * W3-F: the user's answer to the notice. `reload`: take their text (needs
+   * `conflict.content`). `keep`: keep this text, now based on their revision;
+   * the tab is dirty and the next save overwrites theirs.
+   */
+  resolveTabConflict: (path: string, choice: 'reload' | 'keep', theirs?: { content: string; revision?: number }) => void
   reset: () => void
 }
 
@@ -74,7 +118,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
   activeTabPath: null,
   lastExternalWrite: null,
 
-  openTab: (path, content, isBinary, mimeType) => {
+  openTab: (path, content, isBinary, mimeType, revision) => {
     const { tabs } = get()
     const existing = tabs.find((t) => t.path === path)
     if (existing) {
@@ -89,7 +133,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
         (isBinary && existing.mimeType !== mimeType)
       if (!existing.isDirty && changed) {
         set({
-          tabs: tabs.map((t) => (t.path === path ? { ...t, content, savedContent: content, isBinary, mimeType } : t)),
+          tabs: tabs.map((t) => (t.path === path ? { ...t, content, savedContent: content, isBinary, mimeType, revision } : t)),
           activeTabPath: path
         })
         return
@@ -105,7 +149,8 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
       isBinary,
       mimeType,
       extension: getExtension(path),
-      kind: 'file'
+      kind: 'file',
+      ...(revision !== undefined ? { revision } : {})
     }
     set({ tabs: [...tabs, tab], activeTabPath: path })
   },
@@ -178,26 +223,62 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
     }))
   },
 
-  markTabSaved: (path) => {
+  markTabSaved: (path, saved) => {
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.path === path
-          ? { ...t, savedContent: t.content, isDirty: false }
+          ? saved === undefined
+            ? { ...t, savedContent: t.content, isDirty: false }
+            : { ...t, savedContent: saved, isDirty: t.content !== saved }
           : t
       )
     }))
   },
 
-  updateTabFromExternal: (path, content) => {
+  updateTabFromExternal: (path, content, meta) => {
     set((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.path === path
-          ? { ...t, content, savedContent: content, isDirty: false }
-          : t
-      ),
+      tabs: s.tabs.map((t) => {
+        if (t.path !== path) return t
+        // Unsaved text over a change from elsewhere: keep both (W3-F). The
+        // save layer drops its queued write (lastExternalWrite below), so
+        // nothing reaches the file until the user picks Reload or Keep mine.
+        if (t.isDirty && t.content !== content) {
+          // A repeat of the change already shown (the README path hears it
+          // twice: the event, then the document store) keeps what it knew.
+          if (t.conflict && t.conflict.content === content && meta === undefined) return t
+          return { ...t, conflict: { content, revision: meta?.revision, writer: meta?.writer ?? null } }
+        }
+        return { ...t, content, savedContent: content, isDirty: false, revision: meta ? meta.revision : t.revision, conflict: undefined }
+      }),
       // Marked unconditionally: the save layer needs to know the file changed
       // underneath it even when no tab is currently showing it.
       lastExternalWrite: { path, seq: ++externalWriteSeq }
+    }))
+  },
+
+  setTabRevision: (path, revision) => {
+    set((s) => ({ tabs: s.tabs.map((t) => (t.path === path ? { ...t, revision } : t)) }))
+  },
+
+  setTabConflict: (path, conflict, mine) => {
+    set((s) => ({
+      // The refused text is still unsaved: the tab shows it (again, if their
+      // change replaced it meanwhile), dirty, over their text.
+      tabs: s.tabs.map((t) => (t.path === path ? { ...t, content: mine ?? t.content, conflict, isDirty: true, savedContent: conflict.content ?? t.savedContent } : t))
+    }))
+  },
+
+  resolveTabConflict: (path, choice, theirs) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.path !== path || !t.conflict) return t
+        if (choice === 'reload') {
+          const content = theirs?.content ?? t.conflict.content ?? t.savedContent
+          return { ...t, content, savedContent: content, isDirty: false, revision: theirs ? theirs.revision : t.conflict.revision, conflict: undefined }
+        }
+        // Keep mine: based on their revision now; dirty until the save lands.
+        return { ...t, isDirty: true, revision: t.conflict.revision, conflict: undefined }
+      })
     }))
   },
 

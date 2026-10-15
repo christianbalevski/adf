@@ -14,6 +14,8 @@ import { BrowserViewer } from './BrowserViewer'
 import { ImageViewer } from './ImageViewer'
 import { resolveImageMime } from '../../../shared/utils/image-files'
 import { estimateTokens, formatTokenCount } from '../../utils/token-estimate'
+import { saveTabContent } from '../../utils/edit-conflict'
+import { ChangedElsewhereNotice } from './ChangedElsewhereNotice'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -61,7 +63,6 @@ export function EditorPanel() {
   const setActiveTab = useEditorTabsStore((s) => s.setActiveTab)
   const closeTab = useEditorTabsStore((s) => s.closeTab)
   const updateTabContent = useEditorTabsStore((s) => s.updateTabContent)
-  const markTabSaved = useEditorTabsStore((s) => s.markTabSaved)
   const reloadBrowserTab = useEditorTabsStore((s) => s.reloadBrowserTab)
 
   // Chat-in-center: the Loops panel becomes a pinned first stage tab, peer to
@@ -151,21 +152,65 @@ export function EditorPanel() {
     }, 300)
   }, [])
 
+  // Saves of one file run one after another, so each goes over the revision
+  // the previous one produced (W3-F) instead of refusing its own predecessor.
+  const saveChainRef = useRef(new Map<string, Promise<unknown>>())
+
   // README.md is the only file with a dedicated store/IPC pair — it backs the
   // document store the rest of the UI reads. Every other workspace file,
   // mind.md and soul.md included, round-trips through the generic
   // internal-file path and stays in sync via `file_updated`.
+  //
+  // W3-F: each save goes over the tab's revision. Someone else's write since
+  // then refuses it, and the tab shows the "changed elsewhere" notice with
+  // the user's text kept (saveTabContent).
   const performSave = useCallback((path: string, content: string, owner: string | null) => {
     // The agent moved on between scheduling and delivery. Writing now would put
     // one agent's text into another agent's file.
     if (owner !== useDocumentStore.getState().filePath || isAgentSwitching()) return
-    if (path === 'README.md') {
-      window.adfApi?.setDocument(content)
-    } else {
-      window.adfApi?.writeInternalFile(path, content)
+    // The notice is up: nothing is written until the user picks Reload or Keep mine.
+    if (useEditorTabsStore.getState().tabs.find((t) => t.path === path)?.conflict) return
+    const api = window.adfApi
+    if (!api) return
+    const write = (text: string, baseRevision: number | undefined) => {
+      // Re-checked per attempt: a save queued behind another must not land after a switch.
+      if (owner !== useDocumentStore.getState().filePath || isAgentSwitching()) return Promise.resolve({ success: false })
+      const opts = baseRevision !== undefined ? { baseRevision } : undefined
+      return path === 'README.md' ? api.setDocument(text, opts) : api.writeInternalFile(path, text, opts)
     }
-    markTabSaved(path)
-  }, [markTabSaved])
+    const chains = saveChainRef.current
+    const run = (chains.get(path) ?? Promise.resolve())
+      .then(() => saveTabContent(path, content, write))
+      .catch((err) => console.error(`[Editor] Saving ${path} failed:`, err))
+    chains.set(path, run)
+    void run.finally(() => { if (chains.get(path) === run) chains.delete(path) })
+  }, [])
+
+  // The notice's answers. Reload: their text (read again when the refusal did
+  // not carry it). Keep mine: save this text over their revision now.
+  const reloadTheirs = useCallback(async (path: string) => {
+    const tab = useEditorTabsStore.getState().tabs.find((t) => t.path === path)
+    if (!tab?.conflict) return
+    let theirs: { content: string; revision?: number } | undefined
+    if (tab.conflict.content === null) {
+      const read = path === 'README.md' ? await window.adfApi?.getDocument() : await window.adfApi?.readInternalFile(path)
+      if (read?.content == null) return
+      theirs = { content: read.content, revision: read.revision }
+    }
+    useEditorTabsStore.getState().resolveTabConflict(path, 'reload', theirs)
+    if (path === 'README.md') {
+      const content = useEditorTabsStore.getState().tabs.find((t) => t.path === path)?.content
+      if (content !== undefined) useDocumentStore.getState().setDocumentContent(content)
+    }
+  }, [])
+  const keepMine = useCallback((path: string) => {
+    const store = useEditorTabsStore.getState()
+    store.resolveTabConflict(path, 'keep')
+    const content = store.tabs.find((t) => t.path === path)?.content
+    if (content === undefined) return
+    if (path === 'README.md') useDocumentStore.getState().setDocumentContent(content)
+    performSave(path, content, useDocumentStore.getState().filePath)
+  }, [performSave])
 
   // Handle content changes from editors
   const handleChange = useCallback((path: string, content: string) => {
@@ -193,7 +238,9 @@ export function EditorPanel() {
         const tabStore = useEditorTabsStore.getState()
         const docTab = tabStore.tabs.find((t) => t.path === 'README.md')
         if (docTab && docTab.content !== state.documentContent) {
-          tabStore.updateTabFromExternal('README.md', state.documentContent)
+          // W3-F: the revision and writer document_updated carried, when this change came from one.
+          const meta = state.documentRevision !== prev.documentRevision ? { revision: state.documentRevision, writer: state.documentWriter } : undefined
+          tabStore.updateTabFromExternal('README.md', state.documentContent, meta)
         }
       }
     })
@@ -208,13 +255,14 @@ export function EditorPanel() {
     const tabStore = useEditorTabsStore.getState()
     for (const path of DEFAULT_OPEN_TABS) {
       if (path === 'README.md') {
-        tabStore.openTab('README.md', useDocumentStore.getState().documentContent, false)
+        const doc = useDocumentStore.getState()
+        tabStore.openTab('README.md', doc.documentContent, false, undefined, doc.documentRevision)
         continue
       }
       try {
         const file = await window.adfApi?.readInternalFile(path)
         if (file?.content != null) {
-          tabStore.openTab(path, file.binary ? '' : file.content, file.binary, file.mimeType)
+          tabStore.openTab(path, file.binary ? '' : file.content, file.binary, file.mimeType, file.revision)
         }
       } catch { /* file gone — skip it */ }
     }
@@ -316,6 +364,14 @@ export function EditorPanel() {
   return (
     <div className="h-full flex flex-col">
       <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={closeTab} onReload={reloadBrowserTab} chatTab={chatTab} />
+      {activeTab.conflict && (
+        <ChangedElsewhereNotice
+          what={activeTab.path}
+          writer={activeTab.conflict.writer}
+          onReload={() => { void reloadTheirs(activeTab.path) }}
+          onKeep={() => keepMine(activeTab.path)}
+        />
+      )}
       <div className="flex-1 overflow-hidden relative">
         {activeTab.kind === 'browser' && activeTab.browserMeta ? (
           <BrowserViewer key={activeTab.path} meta={activeTab.browserMeta} reloadNonce={activeTab.browserMeta.reloadNonce} />

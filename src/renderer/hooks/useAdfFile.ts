@@ -20,7 +20,7 @@ export const DEFAULT_OPEN_TABS = ['README.md', 'mind.md', 'soul.md'] as const
 
 // window.adfApi is untyped in the web project, so the batch is too.
 type FileBatch = Awaited<ReturnType<typeof window.adfApi.getBatch>>
-type TabFile = { content: string; binary?: boolean; mimeType?: string }
+type TabFile = { content: string; binary?: boolean; mimeType?: string; revision?: number }
 
 /** Everything an agent switch shows, read before any store changes. */
 export interface FileContents {
@@ -86,7 +86,9 @@ export function useAdfFile() {
   const applyFileContents = useCallback((contents: FileContents) => {
     const { batch, tabFiles } = contents
     const t1 = performance.now()
-    setDocumentContent(batch.document)
+    // W3-F: the revisions the README tab and the config panel save over.
+    setDocumentContent(batch.document, { revision: batch.documentRevision, writer: null })
+    useAgentStore.getState().setConfigRevision(batch.configRevision)
     setConfig(batch.agentConfig)
     setStatusText(batch.statusText ?? '')
     setDirty(false)
@@ -136,12 +138,12 @@ export function useAdfFile() {
     // by fetchFileContents. False for files that no longer exist.
     const openWorkspaceFile = (path: string): boolean => {
       if (path === 'README.md') {
-        tabStore.openTab('README.md', batch.document, false)
+        tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
         return true
       }
       const file = tabFiles.get(path)
       if (!file) return false
-      tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType)
+      tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType, file.revision)
       return true
     }
 
@@ -162,7 +164,7 @@ export function useAdfFile() {
     } else if (!restoredAny && saved && saved.paths.length > 0) {
       // Every saved file is gone. Fall back to the document rather than
       // leaving a blank editor.
-      tabStore.openTab('README.md', batch.document, false)
+      tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
     } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
       tabStore.setActiveTab(saved.active)
     }

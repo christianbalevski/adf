@@ -19,6 +19,9 @@ import { DOCS } from '../../../shared/constants/docs-links'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, PRE_LLM_HOOK_MAIN_TARGET, type PreLlmHookDraft } from './pre-llm-hook-config'
+import { classifyConfigSave } from '../../utils/edit-conflict'
+import { ChangedElsewhereNotice } from '../editor/ChangedElsewhereNotice'
+import type { ResourceWriter } from '../../../shared/types/resource-revision.types'
 
 /**
  * All tools this runtime supports. Any tool listed here will appear
@@ -886,9 +889,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
   const nameInputRef = useRef<HTMLInputElement>(null)
   const savingRef = useRef(false)
-  // Debounced config write — see `save` below.
+  // Debounced config write — see `save` below. `baseRevision` / `baseConfig`
+  // (W3-F): the config revision and config the burst of edits started from,
+  // so the write is refused if someone else changed the config meanwhile.
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingSaveRef = useRef<{ config: AgentConfigType; owner: string | null } | null>(null)
+  const pendingSaveRef = useRef<{ config: AgentConfigType; owner: string | null; baseRevision?: number; baseConfig: AgentConfigType | null } | null>(null)
+  /** W3-F: a save refused because the config changed elsewhere; the notice offers Reload or Keep mine. */
+  const [configConflict, setConfigConflict] = useState<{ mine: AgentConfigType; theirs: AgentConfigType | null; revision: number; writer: ResourceWriter | null; owner: string | null } | null>(null)
+  useEffect(() => { setConfigConflict(null) }, [filePath])
 
   useEffect(() => {
     if (savingRef.current) {
@@ -1099,7 +1107,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   /** The actual write: SQLite + side-loop/MCP reconcile on the main side. */
   const persistConfig = useCallback(
-    (updated: AgentConfigType, owner: string | null) => {
+    (updated: AgentConfigType, owner: string | null, baseRevision?: number, baseConfig: AgentConfigType | null = null) => {
       // The agent moved on between scheduling and delivery — writing now would
       // put one agent's config into another agent's workspace.
       if (owner !== useDocumentStore.getState().filePath) return
@@ -1108,8 +1116,27 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       // panel showing state that was never persisted — e.g. a tool displayed
       // as enabled while the runtime's shell gate still sees it disabled.
       // On failure, re-sync the panel from the backend's authoritative config.
-      void Promise.resolve(window.adfApi?.setAgentConfig(updated))
+      void Promise.resolve(window.adfApi?.setAgentConfig(updated, baseRevision !== undefined ? { baseRevision } : undefined))
         .then((res) => {
+          // W3-F: someone else saved the config since this edit started.
+          // Only the revision moved (the config is what the edit started
+          // from): save again over it. Otherwise keep this version and ask.
+          const outcome = classifyConfigSave(res, baseConfig, updated)
+          if (outcome.kind === 'retry') {
+            console.info(`[Config] Revision moved without a change to the config; saving over ${outcome.baseRevision}`)
+            persistConfig(updated, owner, outcome.baseRevision)
+            return
+          }
+          if (outcome.kind === 'conflict') {
+            if (owner !== useDocumentStore.getState().filePath) return
+            setConfigConflict({ mine: updated, theirs: outcome.conflict.theirs as AgentConfigType | null, revision: outcome.conflict.revision, writer: outcome.conflict.writer, owner })
+            return
+          }
+          if (res?.success !== false && owner === useDocumentStore.getState().filePath) {
+            if (outcome.revision !== undefined) useAgentStore.getState().setConfigRevision(outcome.revision)
+            // A later edit saved over the current config: an older notice no longer applies.
+            setConfigConflict(null)
+          }
           if (res && (res as { success?: boolean }).success === false) {
             return window.adfApi?.getAgentConfig().then((authoritative) => {
               if (authoritative) setConfig(authoritative as AgentConfigType)
@@ -1143,7 +1170,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     }
     const pending = pendingSaveRef.current
     pendingSaveRef.current = null
-    if (pending) persistConfig(pending.config, pending.owner)
+    if (pending) persistConfig(pending.config, pending.owner, pending.baseRevision, pending.baseConfig)
   }, [persistConfig])
   const flushSaveRef = useRef(flushSave)
   flushSaveRef.current = flushSave
@@ -1160,14 +1187,20 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         templateRef.current.onChange(updated)
         return
       }
+      // The base of a burst of edits is the config before its first edit.
+      const previous = pendingSaveRef.current
+      const agentStore = useAgentStore.getState()
+      const base = previous && previous.owner === filePath
+        ? { baseRevision: previous.baseRevision, baseConfig: previous.baseConfig }
+        : { baseRevision: agentStore.configRevision, baseConfig: agentStore.config }
       setConfig(updated)
-      pendingSaveRef.current = { config: updated, owner: filePath }
+      pendingSaveRef.current = { config: updated, owner: filePath, ...base }
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       saveTimerRef.current = setTimeout(() => {
         saveTimerRef.current = null
         const pending = pendingSaveRef.current
         pendingSaveRef.current = null
-        if (pending) persistConfig(pending.config, pending.owner)
+        if (pending) persistConfig(pending.config, pending.owner, pending.baseRevision, pending.baseConfig)
       }, SAVE_DEBOUNCE_MS)
     },
     [setConfig, filePath, persistConfig]
@@ -1341,6 +1374,30 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     {/* Leaving any field writes the pending edit through immediately, so a
         click that switches agent or starts one never races the debounce. */}
     <div ref={scrollRef} className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
+      {!template && configConflict && configConflict.owner === filePath && (
+        <ChangedElsewhereNotice
+          what="The config"
+          writer={configConflict.writer}
+          onReload={() => {
+            const theirs = configConflict.theirs
+            setConfigConflict(null)
+            if (theirs) {
+              useAgentStore.getState().setConfigRevision(configConflict.revision)
+              setConfig(theirs)
+            } else {
+              void window.adfApi?.getAgentConfig().then((c) => { if (c) setConfig(c as AgentConfigType) })
+            }
+          }}
+          onKeep={() => {
+            const { mine, revision, owner } = configConflict
+            setConfigConflict(null)
+            savingRef.current = true
+            setLocal(mine)
+            setConfig(mine)
+            persistConfig(mine, owner, revision)
+          }}
+        />
+      )}
       <MaybeConfigNav enabled={!template} scrollRef={scrollRef}>
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}

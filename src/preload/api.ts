@@ -8,6 +8,7 @@ import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalle
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
+import type { ResourceConflict, ResourceWriter } from '../shared/types/resource-revision.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
@@ -60,10 +61,17 @@ export interface AdfApi {
   revealInFolder: (filePath: string) => Promise<void>
 
   // Document content
-  getDocument: () => Promise<{ content: string }>
-  setDocument: (content: string) => Promise<{ success: boolean }>
+  /** `revision` (W3-F): what a save of this content passes as `baseRevision`. */
+  getDocument: () => Promise<{ content: string; revision?: number }>
+  /**
+   * W3-F: with `baseRevision`, the save is refused when the document changed
+   * since that revision (`success: false` with `conflict`: who changed it and
+   * its text now); without, it replaces whatever is there.
+   */
+  setDocument: (content: string, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   getAgentConfig: () => Promise<AgentConfig | null>
-  setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
+  /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.config` is the config now. */
+  setAgentConfig: (config: unknown, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   /**
    * The runtime changed the open agent's config on its own — `sys_update_config`,
    * `loop_manage` (inner loops added/removed), or any other write that goes
@@ -71,7 +79,7 @@ export interface AdfApi {
    * window's own `setAgentConfig` save, so subscribers can apply the payload
    * directly. `filePath` identifies the agent the config belongs to.
    */
-  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => () => void
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) => void) => () => void
   /** `loop` selects which loop's stream to read; omitted/'main' = the host loop. */
   getChat: (loop?: string) => Promise<{ chatHistory: ChatHistory | null }>
   getChatOlder: (beforeSeq: number, limit?: number, loop?: string) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
@@ -83,6 +91,9 @@ export interface AdfApi {
   getBatch: () => Promise<{
     document: string
     agentConfig: AgentConfig | null
+    /** W3-F: the revisions the config panel and the document tab save over. */
+    configRevision?: number
+    documentRevision?: number
     chat: ChatHistory | null
     statusText?: string
     /** Newest assistant row's billing breakdown (breakdown modal). */
@@ -383,8 +394,11 @@ export interface AdfApi {
     mimeType?: string
     size?: number
     tooLarge?: boolean
+    /** W3-F: a text file's revision, what writeInternalFile passes as `baseRevision`. */
+    revision?: number
   }>
-  writeInternalFile: (path: string, content: string) => Promise<{ success: boolean }>
+  /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.content` is the file's text now. */
+  writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   downloadInternalFile: (path: string) => Promise<{ success: boolean; error?: string }>
 
   // Meta
