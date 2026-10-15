@@ -136,4 +136,18 @@ describe('after a handover, and Settings → Backend', () => {
       localProof: { available: false, problem: expect.stringContaining('icacls') },
     })
   })
+
+  it('status(): after `adf daemon restart` the row names the new daemon and who started it, not "started by this Studio" (DMN-14)', async () => {
+    const { handle, session, daemon, logs } = await boot({ keep: false })
+    expect(handle.status()).toMatchObject({ pid: 4242, startedBy: 'studio', how: 'spawned' })
+    // The CLI restarted the daemon: the stream reattaches on a new epoch, and /version names another process.
+    daemon.routes.set('GET /version', () => versionInfo({ pid: 5151, startedBy: 'cli' }))
+    await session.listener!.onReattached?.({ epochChanged: true })
+    await vi.waitFor(() => expect(handle.status()).toMatchObject({ pid: 5151, startedBy: 'cli', how: 'attached' }))
+    expect(logs).toContain('[Backend] The ADF daemon is now pid 5151, version 0.8.0, started by cli (was pid 4242)')
+    // The same process again (a plain reconnect): the launch's answer holds.
+    daemon.routes.set('GET /version', () => versionInfo())
+    await session.listener!.onReattached?.({ epochChanged: false })
+    await vi.waitFor(() => expect(handle.status()).toMatchObject({ pid: 4242, startedBy: 'studio', how: 'spawned' }))
+  })
 })

@@ -429,6 +429,18 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       versionInfo = v
     }).catch(() => {})
   }
+  /**
+   * How Studio got the daemon that answers now: the launch's answer while the
+   * same process (pid) answers, else attached (`adf daemon restart`, another
+   * start). Re-derived from /version, which every reattach and epoch change
+   * re-reads (refreshVersion), never kept from the launch.
+   */
+  const currentHow = (): 'attached' | 'spawned' | null => {
+    const endpoint = connection.endpointInfo
+    if (!endpoint?.how) return null
+    const launched = endpoint.daemon?.pid
+    return versionInfo && launched !== undefined && versionInfo.pid !== launched ? 'attached' : endpoint.how
+  }
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
     void leases.registerClient(deps.mode, { ...clientRecord, ...(connection.baseUrl ? { controlUrl: connection.baseUrl } : {}) })
     versionInfo = connection.endpointInfo?.daemon ?? null
@@ -596,7 +608,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         if (deps.mode === 'local' && clientSession?.quit) answer = await clientSession.quit(stopDaemon)
         else await clientSession?.end()
         // No session was ever opened on a daemon this Studio started: the orphan rule cannot stop it, so ask directly.
-        if (!answer && stopDaemon && connection.endpointInfo?.how === 'spawned' && connection.current) {
+        if (!answer && stopDaemon && currentHow() === 'spawned' && connection.current) {
           answer = await connection.current.withTimeout(5_000).request<ClientQuitAnswer>('POST', '/client/sessions/none/quit', { body: { stopDaemon: true } })
         }
       } catch (err) {
@@ -630,7 +642,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       pid: info?.pid ?? null,
       version: info?.version ?? null,
       startedBy: info?.startedBy ?? null,
-      how: endpoint?.how ?? null,
+      how: currentHow(),
       localProof: info?.localProof ?? null,
       logFile: connection.logFile,
     }
