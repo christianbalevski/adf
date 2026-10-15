@@ -571,6 +571,23 @@ App-level MCP OAuth mapping (`DaemonAppOAuthStore`, `src/main/services/mcp-oauth
 
 Rationale: ChatGPT and MCP OAuth refresh tokens rotate. A copied session is invalidated in one place the first time the other refreshes it, so one-way import on first switch would sign the user out after switching back. Moving the session with the backend role keeps exactly one live copy.
 
+#### 11.1 As built (W4-A)
+
+Code: `src/main/backend/handover.ts` (moves, Electron-free), `mode-switch.ts` (dialogs, restart), `daemon-secrets.ts` (the keychain the daemon reads), `daemon/routes/client-lifecycle-routes.ts`. Tests: `tests/backend/handover.test.ts` (round trip with a rotating-refresh fake, crash mid-move, accounts conflict), `tests/daemon-client-lifecycle-routes.test.ts`, `tests/daemon-quit-e2e.test.ts`.
+
+| Item | Behaviour |
+|---|---|
+| When | The handover runs at Studio's boot in the new mode, before any backend handler, store or daemon exists, and on every boot (idempotent; a no-op when everything is in place). Settings → Backend shows the switch dialog, saves `studio-backend.json` and restarts Studio. A summary dialog lists what moved. |
+| Order of a move | Write the destination, read it back, then delete the source. A crash leaves both copies; the next boot keeps the destination copy (equal refresh token), or the more recently refreshed one for one account. |
+| Marker | `<userData>/studio-handover.json` `{v:1, holder}`. Credentials move back to embedded only while `holder` is `daemon`, so a CLI daemon's own `adf auth login` session is never taken. Client keys always follow the active mode. |
+| Accounts conflict | Different accounts on both sides: a dialog names both; the other is signed out. |
+| Keychain | Opened only when something goes through it. Without one the daemon can share (`ADF_SECRET_STORE=file`, `ADF_KEYCHAIN=0`, no OS keychain), MCP sign-ins and the runtime identity stay with Studio; the dialog states the fallback. |
+| Runtime entry | Written on every local boot when it differs; after an owner import in local mode Studio re-signs the delegation with the new phrase and rewrites it. Deleted on the way back. Studio also mirrors its owner phrase into `ADF / owner-mnemonic` when absent, as embedded Studio does. |
+| Running daemon | After a handover, `POST /client/reload-credentials` (local-only): the daemon re-reads the runtime entry, re-runs the unlock of degraded agents and recovers subscription auth errors. |
+| Quit (§8.3) | `POST /client/sessions/:id/quit {stopDaemon}`: the daemon ends the session and stops only when `startedBy` is `studio` and no other session is open; it answers and logs the reason. `keepDaemonRunning` is read at quit. A switch to embedded waits up to 22 s for that daemon to exit. |
+| Version mismatch (§8.2) | Dialog: restart the daemon with Studio's version (stops whoever started it, then spawns), or embedded for this launch only (`--adf-session-backend=embedded`, not persisted). |
+| Remote | Client keys only. Switching to remote stays disabled until W4-B sets `REMOTE_SWITCH_AVAILABLE`. |
+
 ## 12. Testing
 
 1. **Channel map test** (D2): every channel classified; every `proxied` channel has a handler; every `push` topic has a bridge mapping.
