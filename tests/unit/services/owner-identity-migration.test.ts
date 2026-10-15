@@ -428,3 +428,30 @@ describe('owner switched outside Studio', () => {
     }
   })
 })
+
+describe('owner switched on disk while Studio runs (adf identity import)', () => {
+  it('ensureIdentity mirrors the phrase only for the owner the settings file names now', () => {
+    h.encryptionAvailable = true
+    const settings = new SettingsService()
+    const svc = settings.getOwnerIdentity()
+    let keychain: string | null = null
+    svc.setSharedMnemonicStore({ read: () => keychain, write: (m) => { keychain = m } })
+    svc.ensureIdentity()
+    const mine = svc.revealMnemonic()!
+    expect(keychain).toBe(mine)
+
+    // The daemon's switch: the new phrase in the keychain, the new owner in the settings file.
+    const next = generateMnemonic()
+    keychain = next
+    const path = join(h.userDataDir, 'adf-settings.json')
+    const disk = JSON.parse(readFileSync(path, 'utf-8'))
+    disk.ownerDid = deriveOwnerIdentity(next).did
+    disk.legacyOwnerDids = [deriveOwnerIdentity(mine).did]
+    writeFileSync(path, JSON.stringify(disk), 'utf-8')
+
+    // A later ensureIdentity in the same Studio run (IPC handlers call it).
+    svc.ensureIdentity()
+    // Characterization (before W5-D1): Studio's in-memory owner is the old one, so its phrase is mirrored back over the new owner's.
+    expect(keychain).toBe(mine)
+  })
+})
