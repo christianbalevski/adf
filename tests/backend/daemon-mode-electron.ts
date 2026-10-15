@@ -93,8 +93,9 @@ export function createElectronStub(): ElectronStub {
     // ApprovalsUi creates the macOS menu bar icon (MenuBarController) on darwin.
     Tray: class {
       private destroyed = false
+      constructor() { call('Tray.new', []) }
       on(): this { return this }
-      setTitle(): void {}
+      setTitle(title: string): void { call('Tray.setTitle', [title]) }
       setToolTip(): void {}
       popUpContextMenu(): void {}
       isDestroyed(): boolean { return this.destroyed }

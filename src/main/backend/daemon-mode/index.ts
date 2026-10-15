@@ -380,15 +380,18 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   // eslint-disable-next-line prefer-const
   let bridge: EventBridge
+  // The macOS menu bar's first refresh runs inside the ApprovalsUi
+  // constructor, before the bridge exists: no agents yet.
+  const runningAgents = () => (bridge ? bridge.runningAgents() : [])
   const approvals = new ApprovalsUi({
     notificationsEnabled: () => clientSettings.get('nativeNotificationsEnabled') !== false,
     menuBarEnabled: () => clientSettings.get('menuBarEnabled') !== false,
-    agents: () => bridge.runningAgents()
+    agents: () => runningAgents()
       .filter((a) => !session.isFocused(a.agentId, a.filePath))
       .map((a) => ({ filePath: a.filePath, state: a.mapping.state, activeLoops: a.mapping.activeLoops })),
     foreground: () => {
       const id = session.agentId
-      const agent = id ? bridge.runningAgents().find((a) => a.agentId === id) : undefined
+      const agent = id ? runningAgents().find((a) => a.agentId === id) : undefined
       return agent ? { filePath: agent.filePath, state: agent.mapping.state } : null
     },
     tokensToday: () => tokensToday,
