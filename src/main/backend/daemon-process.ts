@@ -335,6 +335,8 @@ export class DaemonProcessController {
     const started = Date.now()
     const log = await open(paths.logFile, 'a')
     let child: ReturnType<SpawnFn>
+    let exited: number | null = null
+    let spawnError: Error | null = null
     try {
       child = this.spawnFn(this.config.execPath, [this.config.daemonEntry], {
         cwd: paths.dataDir,
@@ -343,14 +345,13 @@ export class DaemonProcessController {
         stdio: ['ignore', log.fd, log.fd],
         env,
       })
+      // Before any await: a child that exits at once must not be missed (it would read as "did not answer").
+      child.once('exit', (code: number | null) => { exited = code ?? -1 })
+      child.once('error', (err: Error) => { spawnError = err })
     } finally {
       // The child holds its own copy of the descriptor.
       await log.close()
     }
-    let exited: number | null = null
-    let spawnError: Error | null = null
-    child.once('exit', (code: number | null) => { exited = code ?? -1 })
-    child.once('error', (err: Error) => { spawnError = err })
     child.unref()
     const childPid = child.pid ?? -1
     const up = await this.waitHealthy(() => exited === null && spawnError === null)

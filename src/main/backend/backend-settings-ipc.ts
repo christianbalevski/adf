@@ -1,6 +1,6 @@
 import { ipcMain, safeStorage } from 'electron'
 import { IPC } from '../../shared/constants/ipc-channels'
-import type { BackendDaemonStatus, BackendSettingsPatch, StudioBackendMode } from '../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../shared/types/backend.types'
 import { createBackendSettingsStore, type BackendSettingsStore, type BootBackend, type SecretCodec } from './backend-config'
 
 const SAFE_PREFIX = 'safe:'
@@ -44,6 +44,9 @@ export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
   confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
   applyModeSwitch?: (target: StudioBackendMode) => string | void
   onKeepDaemonRunningChange?: (keep: boolean) => void
+  pendingSwitch?: () => BackendSettingsView['pendingSwitch']
+  finishSwitchNow?: () => string | null
+  cancelSwitch?: () => StudioBackendMode | null
 } = {}): BackendSettingsStore {
   const store = createBackendSettingsStore({ boot, codec: safeStorageCodec, ...hooks })
   ipcMain.handle(IPC.BACKEND_SETTINGS_GET, () => store.get())

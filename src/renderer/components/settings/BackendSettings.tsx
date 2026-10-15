@@ -95,15 +95,16 @@ export function BackendSettings() {
     return () => { cancelled = true }
   }, [])
 
-  // While Studio waits for its daemon, follow the progress ("Waiting for the ADF daemon (pid N)…").
+  // While Studio waits for its daemon ("Waiting for the ADF daemon (pid N)…") or a switch waits for turns in flight, follow it.
   const daemonState = view?.daemon?.connection
+  const switchWaiting = !!view?.pendingSwitch
   useEffect(() => {
-    if (daemonState !== 'connecting' && daemonState !== 'disconnected') return
+    if (daemonState !== 'connecting' && daemonState !== 'disconnected' && !switchWaiting) return
     const timer = setInterval(() => {
-      window.adfApi?.getBackendSettings().then((next) => setView((prev) => prev ? { ...prev, daemon: next.daemon } : next)).catch(() => {})
+      window.adfApi?.getBackendSettings().then((next) => setView((prev) => prev ? { ...prev, daemon: next.daemon, pendingSwitch: next.pendingSwitch } : next)).catch(() => {})
     }, 1500)
     return () => clearInterval(timer)
-  }, [daemonState])
+  }, [daemonState, switchWaiting])
 
   const save = async (group: MessageGroup, patch: BackendSettingsPatch, okText = 'Saved. Applies at the next launch.', resetDrafts = false) => {
     setSaving(true)
@@ -112,7 +113,7 @@ export function BackendSettings() {
       const result = await window.adfApi.setBackendSettings(patch)
       if (result.ok) {
         adopt(result.view, resetDrafts)
-        setMessage({ group, kind: 'ok', text: [okText, ...result.notices].join(' ') })
+        setMessage({ group, kind: 'ok', text: [okText, ...result.notices].filter(Boolean).join(' ') })
       } else {
         setMessage({ group, kind: result.code === 'switch_cancelled' ? 'ok' : 'error', text: result.error })
       }
@@ -176,6 +177,20 @@ export function BackendSettings() {
             ariaLabel="Backend"
           />
         </SettingsRow>
+        {view.pendingSwitch && (
+          <SettingsRow
+            separator
+            label={`Switching to ${MODE_LABELS[view.pendingSwitch.target]}`}
+            description={view.pendingSwitch.gaveUp
+              ? `Still waiting for ${view.pendingSwitch.waitingFor.join(', ') || 'a turn'} after 30 minutes. Finish the switch now (the turns are stopped), or cancel it and stay in ${MODE_LABELS[view.active.mode]}.`
+              : `Studio restarts once the turns in flight finish (${view.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
+          >
+            <div className="flex items-center gap-2">
+              <Button variant="primary" disabled={saving} onClick={() => void save('backend', { switchAction: 'finish-now' }, '')}>Finish Switch Now</Button>
+              <Button disabled={saving} onClick={() => void save('backend', { switchAction: 'cancel' }, '')}>Cancel Switch</Button>
+            </div>
+          </SettingsRow>
+        )}
         {view.daemon && (
           <SettingsRow
             separator

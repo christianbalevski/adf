@@ -212,7 +212,13 @@ export function readRemoteToken(config: StudioBackendConfig, codec: SecretCodec)
   return config.remote.token ? codec.decrypt(config.remote.token) : null
 }
 
-export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<BootBackend, 'mode' | 'source'>, codec: SecretCodec, daemon: BackendDaemonStatus | null = null): BackendSettingsView {
+export function toBackendSettingsView(
+  config: StudioBackendConfig,
+  boot: Pick<BootBackend, 'mode' | 'source'>,
+  codec: SecretCodec,
+  daemon: BackendDaemonStatus | null = null,
+  pendingSwitch: BackendSettingsView['pendingSwitch'] = null,
+): BackendSettingsView {
   return {
     active: { mode: boot.mode, source: boot.source },
     configured: {
@@ -225,6 +231,7 @@ export function toBackendSettingsView(config: StudioBackendConfig, boot: Pick<Bo
     modeSwitchAvailable: MODE_SWITCH_AVAILABLE,
     remoteSwitchAvailable: REMOTE_SWITCH_AVAILABLE,
     daemon,
+    pendingSwitch,
     encryptionAvailable: codec.available(),
     encryptionUnavailableReason: codec.available() ? null : (codec.unavailableReason?.() ?? null),
   }
@@ -392,13 +399,35 @@ export function createBackendSettingsStore(deps: {
   applyModeSwitch?: (target: StudioBackendMode) => string | void
   /** keepDaemonRunning was saved with a new value (the running session follows it). */
   onKeepDaemonRunningChange?: (keep: boolean) => void
+  /** A saved switch waiting for turns in flight (mode-switch.ts createModeSwitcher). */
+  pendingSwitch?: () => BackendSettingsView['pendingSwitch']
+  /** Restart into the waiting switch now; a notice, or null when none waits. */
+  finishSwitchNow?: () => string | null
+  /** Stop waiting; the target it was waiting for, or null when none waits. */
+  cancelSwitch?: () => StudioBackendMode | null
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
   let queue: Promise<unknown> = Promise.resolve()
 
-  const save = async (patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
+  const view = (): BackendSettingsView => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null, deps.pendingSwitch?.() ?? null)
+
+  const save = async (input: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
+    const { switchAction, ...rest } = input
+    let patch: BackendSettingsPatch = rest
+    if (switchAction !== undefined) {
+      if (switchAction === 'finish-now') {
+        const notice = deps.finishSwitchNow?.() ?? null
+        return { ok: true, view: view(), notices: [notice ?? 'No switch is waiting.'] }
+      }
+      if (switchAction !== 'cancel') return fail('invalid_patch', 'Unknown switch action.') as BackendSettingsSaveResult
+      const target = deps.cancelSwitch?.() ?? null
+      if (!target) return { ok: true, view: view(), notices: ['No switch is waiting.'] }
+      // The waiting switch had saved its mode: the running mode is saved again.
+      log.log(`[Backend] Switch to ${target} cancelled; saving ${deps.boot.mode} as the mode again`)
+      patch = { ...rest, mode: deps.boot.mode }
+    }
     const previous = current
     const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE, allowRemoteSwitch: deps.allowRemoteSwitch })
     if (!result.ok) return result
@@ -423,11 +452,12 @@ export function createBackendSettingsStore(deps: {
     if (switching) notices.push((deps.applyModeSwitch?.(result.config.mode)) || 'Studio restarts now.')
     else if (result.config.mode !== previous.mode) notices.push('Studio already runs this mode; no restart is needed.')
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
-    return { ok: true, view: toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null), notices }
+    if (switchAction === 'cancel') notices.splice(0, notices.length, 'Switch cancelled; Studio stays in this mode.')
+    return { ok: true, view: view(), notices }
   }
 
   return {
-    get: () => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null),
+    get: view,
     set: (patch) => {
       const run = queue.then(() => save(patch))
       queue = run.catch(() => {})

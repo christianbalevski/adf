@@ -162,6 +162,38 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(h.notifications[0]).toMatch(/Running again after the switch: agent-1\. Not started: agent-2/)
   })
 
+  it('embedded resume waits for the backend to be ready (the mesh boot), as autostart does', async () => {
+    writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'local', to: 'embedded', agents: [agent1], at: new Date().toISOString() }))
+    let meshUp!: () => void
+    const ready = new Promise<void>((r) => { meshUp = r })
+    const start = vi.fn(async () => ({ success: true }))
+    const resuming = resumeSwitchedAgents('embedded', dir, start, { ready })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(start).not.toHaveBeenCalled()
+    meshUp()
+    await resuming
+    expect(start).toHaveBeenCalledWith(agent1)
+  })
+
+  it('a waiting switch can be finished now or cancelled from Settings → Backend', async () => {
+    const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: true }])
+    h.responses.push(0)
+    await s.confirm('local')
+    s.apply('local')
+    expect(s.pendingSwitch()).toEqual({ target: 'local', waitingFor: ['agent-1'], gaveUp: false })
+    expect(s.cancel()).toBe('local')
+    expect(s.pendingSwitch()).toBeNull()
+    await new Promise((r) => setTimeout(r, 1200))
+    expect(relaunched).toEqual([])
+    h.responses.push(0)
+    await s.confirm('local')
+    s.apply('local')
+    expect(s.finishNow()).toBe('Studio restarts now.')
+    await vi.waitFor(() => expect(relaunched).toEqual(['local']))
+    expect(s.pendingSwitch()).toBeNull()
+    expect(s.finishNow()).toBeNull()
+  })
+
   it('a launch in another mode (a session-only override) leaves the record for the switch\'s own launch', async () => {
     writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'embedded', to: 'local', agents: [agent1], at: new Date().toISOString() }))
     const start = vi.fn()

@@ -194,6 +194,7 @@ interface ResumeRecord { v: 1; from: StudioBackendMode; to: StudioBackendMode; a
  */
 export function createModeSwitcher(ctx: SwitchContext) {
   let choice: { target: StudioBackendMode; wait: boolean; agents: string[] } | null = null
+  let pending: { target: StudioBackendMode; gaveUp: boolean; waitingFor: () => string[]; finish: () => void; cancel: () => void } | null = null
 
   const confirm = async (target: StudioBackendMode): Promise<boolean> => {
     const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }))
@@ -272,19 +273,47 @@ export function createModeSwitcher(ctx: SwitchContext) {
     const poll = setInterval(() => {
       const still = busyNames()
       if (still.length === 0) {
-        clearInterval(poll)
         console.log(`[Backend] Switch to ${target}: the turns finished; restarting`)
-        void restart()
-      } else if (Date.now() > deadline) {
+        finish()
+      } else if (pending && !pending.gaveUp && Date.now() > deadline) {
+        // Waiting stops here; Settings → Backend offers "Finish Switch Now" and "Cancel Switch" (the mode is already saved).
         clearInterval(poll)
-        console.warn(`[Backend] Switch to ${target}: ${still.join(', ')} still busy after ${WAIT_FOR_TURNS_MAX_MS / 60_000} min; not restarting. Switch again to stop them.`)
-        notify(`The switch to ${MODE_LABELS[target]} did not happen: ${still.join(', ')} still had a turn in flight. Choose it again in Settings → Backend.`)
+        pending.gaveUp = true
+        console.warn(`[Backend] Switch to ${target}: ${still.join(', ')} still busy after ${WAIT_FOR_TURNS_MAX_MS / 60_000} min; not restarting until the user finishes or cancels the switch`)
+        notify(`The switch to ${MODE_LABELS[target]} is waiting: ${still.join(', ')} still has a turn in flight. Settings → Backend: Finish Switch Now (stops the turns) or Cancel Switch.`)
       }
     }, 1000)
+    const finish = (): void => {
+      clearInterval(poll)
+      pending = null
+      void restart()
+    }
+    pending = { target, gaveUp: false, waitingFor: busyNames, finish, cancel: () => { clearInterval(poll); pending = null } }
     return `Studio restarts once the turns in flight finish (${busyNames().join(', ')}).`
   }
 
-  return { confirm, apply }
+  /** A switch waiting for turns in flight (Settings → Backend shows it with its two buttons). */
+  const pendingSwitch = (): { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null =>
+    pending ? { target: pending.target, waitingFor: pending.waitingFor(), gaveUp: pending.gaveUp } : null
+
+  /** "Finish Switch Now": restart now; the quit interrupts the turns still in flight. */
+  const finishNow = (): string | null => {
+    if (!pending) return null
+    console.log(`[Backend] Switch to ${pending.target}: finished now by the user (turns in flight are interrupted)`)
+    pending.finish()
+    return 'Studio restarts now.'
+  }
+
+  /** "Cancel Switch": stop waiting. The caller saves the running mode again. */
+  const cancel = (): StudioBackendMode | null => {
+    if (!pending) return null
+    const target = pending.target
+    console.log(`[Backend] Switch to ${target} cancelled by the user; this mode stays`)
+    pending.cancel()
+    return target
+  }
+
+  return { confirm, apply, pendingSwitch, finishNow, cancel }
 }
 
 function notify(body: string): void {
@@ -299,7 +328,12 @@ function notify(body: string): void {
  * already running (autostart, or still in a daemon that kept running) is
  * left as it is. Logged, and shown as one notification.
  */
-export async function resumeSwitchedAgents(mode: StudioBackendMode, userDataDir: string, start: (filePath: string) => Promise<{ success: boolean; error?: string }>): Promise<void> {
+export async function resumeSwitchedAgents(
+  mode: StudioBackendMode,
+  userDataDir: string,
+  start: (filePath: string) => Promise<{ success: boolean; error?: string }>,
+  opts: { ready?: Promise<unknown> } = {},
+): Promise<void> {
   const file = join(userDataDir, SWITCH_RESUME_FILE)
   let record: ResumeRecord | null = null
   try {
@@ -315,6 +349,8 @@ export async function resumeSwitchedAgents(mode: StudioBackendMode, userDataDir:
     console.log(`[Backend] Not resuming the agents of a switch: the record ${file} is malformed or older than ${RESUME_MAX_AGE_MS / 60_000} min`)
     return
   }
+  // The backend's own boot (embedded: the mesh) finishes first, as autostart waits for it.
+  await opts.ready?.catch(() => {})
   const started: string[] = []
   const failed: string[] = []
   for (const filePath of record.agents) {

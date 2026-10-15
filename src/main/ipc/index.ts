@@ -1749,6 +1749,8 @@ function setLiveAgentName(filePath: string, name: string): void {
 export const hostActions: {
   startBackgroundAgent?: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>
   agentActivity?: () => Array<{ filePath: string; busy: boolean }>
+  /** Resolves when the mesh boot finished: autostart waits for it, and so must any other boot-time start (null wsConnectionManager otherwise). */
+  ready?: Promise<void>
 } = {}
 
 export interface IpcHostHooks {
@@ -2023,6 +2025,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     : enableMeshInMain().then((result) => {
         if (!result.success) console.error('[Mesh] Boot enablement failed:', result.error)
       }).catch((err) => console.error('[Mesh] Boot enablement failed:', err))
+  hostActions.ready = meshBoot.then(() => undefined)
 
   // Autostart agents from tracked directories (fire-and-forget, after mesh)
   const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []

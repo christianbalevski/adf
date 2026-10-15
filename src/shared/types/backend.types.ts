@@ -38,6 +38,12 @@ export interface BackendSettingsView {
   remoteSwitchAvailable?: boolean
   /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
   daemon?: BackendDaemonStatus | null
+  /**
+   * A switch saved but waiting for turns in flight to finish ("Wait for Them
+   * to Finish"); `gaveUp` once the wait limit passed. Settings → Backend
+   * offers Finish Switch Now and Cancel Switch.
+   */
+  pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
   /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
@@ -76,6 +82,8 @@ export interface BackendSettingsPatch {
    * counts for a new address only when this names that address's origin.
    */
   insecureHttpOrigin?: string
+  /** A switch waiting for turns in flight: restart now (`finish-now`), or stay in this mode (`cancel`). */
+  switchAction?: 'finish-now' | 'cancel'
 }
 
 export type BackendSettingsErrorCode =

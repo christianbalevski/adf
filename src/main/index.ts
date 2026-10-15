@@ -570,10 +570,11 @@ app.whenReady().then(async () => {
     embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
     // A daemon that keeps running on these settings re-reads the stores the handover emptied.
     if (handover?.changed && !sessionOnly) void notifyDaemonOfHandover(getUserDataPath())
-    // The agents that ran before a switch run again here (§11.1).
+    // The agents that ran before a switch run again here (§11.1), once the
+    // mesh is up, as autostart waits for it (a null wsConnectionManager otherwise).
     const embedded = embeddedIpc
     void resumeSwitchedAgents('embedded', getUserDataPath(), async (filePath) =>
-      embedded.hostActions.startBackgroundAgent?.(filePath) ?? { success: false, error: 'the embedded backend is not ready' })
+      embedded.hostActions?.startBackgroundAgent?.(filePath) ?? { success: false, error: "the embedded backend is not ready" }, { ready: embedded.hostActions?.ready })
   } else {
     const userDataDir = getUserDataPath()
     daemonMode = registerDaemonModeHandlers({
@@ -607,7 +608,7 @@ app.whenReady().then(async () => {
     userDataDir: getUserDataPath(),
     agentActivity: () => daemonMode
       ? daemonMode.agentActivity()
-      : embeddedIpc?.hostActions.agentActivity?.() ?? processAgentLeases().heldPaths().map((filePath) => ({ filePath, busy: false })),
+      : embeddedIpc?.hostActions?.agentActivity?.() ?? processAgentLeases().heldPaths().map((filePath) => ({ filePath, busy: false })),
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
     daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
     window: () => mainWindow,
@@ -620,6 +621,9 @@ app.whenReady().then(async () => {
     daemonStatus: () => daemonMode?.status() ?? null,
     confirmModeSwitch: switcher.confirm,
     applyModeSwitch: switcher.apply,
+    pendingSwitch: switcher.pendingSwitch,
+    finishSwitchNow: switcher.finishNow,
+    cancelSwitch: switcher.cancel,
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
   registerOrbitalCacheHandlers(app.getPath('userData'))
