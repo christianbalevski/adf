@@ -781,7 +781,7 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps): 
     }
     items.push(deps.daemonSecrets
       ? { id: 'runtime-identity', label: 'Runtime identity', detail: 'Studio\'s runtime key is written to the OS keychain so the daemon signs as this runtime' }
-      : { id: 'runtime-identity', label: 'Runtime identity', detail: `not shared: ${deps.daemonSecretsUnavailable ?? 'no keychain'}. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review` })
+      : { id: 'runtime-identity', label: 'Runtime identity', detail: `not shared: ${deps.daemonSecretsUnavailable ?? 'no keychain'}. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review. Agents made in Studio unlock their credentials in the daemon only through the owner phrase, which stays in Studio: restore it there (adf identity restore); adf identity trust-daemon then lets them unlock without it` })
   } else {
     const store = daemonOAuthStore(deps)
     if (store?.available()) {

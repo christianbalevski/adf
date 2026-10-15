@@ -76,6 +76,8 @@ export interface BackendDaemonStatus {
   how: 'attached' | 'spawned' | null
   /** The daemon's local proof (stored-value reveal, owner import); null when unknown (remote, older daemon). */
   localProof: { available: boolean; problem: string | null } | null
+  /** K12: whether the owner trusts the daemon's key (adf identity trust-daemon); null when unknown or not reported. */
+  trust: { state: 'trusted' | 'not-trusted' | 'not-applicable'; label: string | null; message: string } | null
   logFile: string | null
 }
 

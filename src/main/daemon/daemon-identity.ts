@@ -91,12 +91,26 @@ export interface DaemonRuntimeAdoption {
   message: string
 }
 
+/**
+ * K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`),
+ * so ADF Studio wraps agent credentials to it. `not-applicable`: the daemon
+ * reads the OS keychain and shares Studio's runtime identity instead.
+ */
+export interface DaemonTrustStatus {
+  state: 'trusted' | 'not-trusted' | 'not-applicable'
+  /** `daemon:<fingerprint>`, the slot label; null without a key file. */
+  label: string | null
+  message: string
+}
+
 export interface DaemonIdentityStatus {
   status: DaemonIdentityState
   ownerDid: string | null
   /** The runtime DID the daemon signs and stamps with: Studio's when adopted, else its own. */
   runtimeDid: string | null
   runtime: DaemonRuntimeAdoption
+  /** K12: the owner's trust in this daemon's key (adf identity trust-daemon). */
+  trust?: DaemonTrustStatus
   storage: 'keychain' | 'file'
   /** The user confirmed they wrote the phrase down (shared with Studio). */
   backupConfirmed: boolean
@@ -118,6 +132,7 @@ export type DaemonIdentityErrorCode =
   | 'not_ready'
   | 'switch_unconfirmed'
   | 'backup_unconfirmed'
+  | 'keychain_available'
 
 export class DaemonIdentityError extends Error {
   constructor(
@@ -392,7 +407,7 @@ export class DaemonIdentity {
   }
 
   private withRuntime(status: DaemonIdentityStatus): DaemonIdentityStatus {
-    return { ...status, runtimeDid: this.runtimeDid(), runtime: this.adoption }
+    return { ...status, runtimeDid: this.runtimeDid(), runtime: this.adoption, trust: this.trustStatus() }
   }
 
   /**
@@ -574,36 +589,106 @@ export class DaemonIdentity {
   unlockWorkspaceEnvelopes(workspace: AdfWorkspace): void {
     this.unlockWithLocalRuntimeKeys(workspace)
     this.service.unlockWorkspaceEnvelopes(workspace)
-    this.enrollWithoutKeychain(workspace)
+    this.reconcileTrustedSlot(workspace)
   }
 
   /**
-   * K12 (design §5.3 "Fallback"): without a usable keychain the daemon cannot
-   * adopt Studio's runtime identity, so Studio-made agents open only through
-   * the owner key, which a daemon on a passphrase file holds only while it is
-   * unlocked. While it holds the owner key (proof of the owner's authority),
-   * the daemon enrolls itself: its key goes into `trustedDaemonEncKeys` (once,
-   * logged), so embedded Studio wraps every agent's credentials to it from
-   * then on, and the open file gets its trusted-daemon slot. Credentials then
-   * unlock after a restart without the passphrase. Not with a keychain
-   * (adoption is the answer there), not without the owner key.
+   * K12 (design §5.3 "Fallback"): the trusted-daemon slot of this daemon's
+   * key on an open agent. While the owner trusts this daemon (trustDaemon, an
+   * explicit owner action: the key is in `trustedDaemonEncKeys`) and it has
+   * no keychain, an unlocked credentials envelope gets a working slot. The
+   * daemon never adds its key to the list by itself, and never removes a slot
+   * here: a daemon on its own settings file does not see the list Studio
+   * enrolled it in (Phase C). Revocation: untrustDaemon.
    */
-  private enrollWithoutKeychain(workspace: AdfWorkspace): void {
+  private reconcileTrustedSlot(workspace: AdfWorkspace): void {
     const key = this.encKey
-    if (!key || this.adoption.state !== 'unavailable' || this.readyOwnerDid === null) return
-    if (workspace.getEnvelopeState('credentials') !== 'unlocked') return
-    try {
-      const trusted = this.store.get('trustedDaemonEncKeys')
-      const list = Array.isArray(trusted) ? trusted.filter((k): k is string => typeof k === 'string') : []
-      if (!list.includes(key.publicKeyB64)) {
-        this.store.set('trustedDaemonEncKeys', [...list, key.publicKeyB64])
-        console.log(`[ADF Daemon] No usable OS keychain: enrolled this daemon's key ${key.label} in trustedDaemonEncKeys with the owner key, so agent credentials unlock here without the passphrase (ADF Studio adds the slot to each agent it opens)`)
-      }
-    } catch (err) {
-      console.error('[ADF Daemon] Enrolling this daemon in trustedDaemonEncKeys failed:', err instanceof Error ? err.message : err)
-      return
-    }
+    if (!key || !workspace.hasEnvelopes() || this.backend.kind === 'keychain' || !this.isTrusted()) return
     this.service.enrollTrustedDaemonSlot(workspace, key)
+  }
+
+  private trustedKeys(): string[] {
+    const trusted = this.store.get('trustedDaemonEncKeys')
+    return Array.isArray(trusted) ? trusted.filter((k): k is string => typeof k === 'string') : []
+  }
+
+  private isTrusted(): boolean {
+    return !!this.encKey && this.trustedKeys().includes(this.encKey.publicKeyB64)
+  }
+
+  /** Whether the owner trusts this daemon's key (`trustedDaemonEncKeys`): GET /identity, GET /version, `adf daemon status`. */
+  trustStatus(): DaemonTrustStatus {
+    const label = this.encKey?.label ?? null
+    if (this.backend.kind === 'keychain') {
+      return this.isTrusted()
+        ? { state: 'trusted', label, message: 'This daemon\'s key is in trustedDaemonEncKeys although the daemon reads the OS keychain, where it shares ADF Studio\'s runtime identity. Remove it: adf identity untrust-daemon.' }
+        : { state: 'not-applicable', label, message: 'The daemon reads the OS keychain, so it shares ADF Studio\'s runtime identity instead of a trusted key.' }
+    }
+    if (this.isTrusted()) {
+      return { state: 'trusted', label, message: `The owner trusts this daemon's key ${label}: ADF Studio wraps each agent's credentials to it, so they unlock here without the owner passphrase. Revoke: adf identity untrust-daemon.` }
+    }
+    return { state: 'not-trusted', label, message: 'No OS keychain here: agents made in ADF Studio unlock only through the owner key (adf identity unlock). adf identity trust-daemon lets them unlock without it.' }
+  }
+
+  /**
+   * Owner action (`adf identity trust-daemon`, POST /identity/trust-daemon):
+   * add this daemon's key to `trustedDaemonEncKeys`, so embedded Studio wraps
+   * every agent's credentials to it (Phase C) and they unlock here without
+   * the owner passphrase. Refused with a keychain (Studio's runtime identity
+   * is shared there; trusting the key file would let a plain file unlock what
+   * the keychain protects) and without the owner key. The grant is an
+   * unsigned settings entry.
+   */
+  trustDaemon(): DaemonTrustStatus {
+    if (this.backend.kind === 'keychain') {
+      throw new DaemonIdentityError('keychain_available', 'This daemon reads the OS keychain, where it shares ADF Studio\'s runtime identity (switch Studio to local mode). Trusting its key file would let a plain file unlock what the keychain protects, so it is refused.', 409)
+    }
+    const key = this.encKey
+    if (!key) throw new DaemonIdentityError('not_ready', 'The daemon runtime encryption key (runtime-enc-key) is unreadable; fix or remove it and restart the daemon.', 409)
+    if (!this.isReady()) {
+      throw new DaemonIdentityError('not_ready', 'Trusting this daemon is an owner action: unlock or restore the owner identity first (adf identity unlock, adf identity restore).', 409)
+    }
+    if (!this.isTrusted()) {
+      this.store.set('trustedDaemonEncKeys', [...this.trustedKeys(), key.publicKeyB64])
+      console.log(`[ADF Daemon] The owner trusted this daemon's key ${key.label} (trustedDaemonEncKeys): ADF Studio wraps agent credentials to it from now on`)
+    }
+    return this.trustStatus()
+  }
+
+  /**
+   * Owner action (`adf identity untrust-daemon`, POST /identity/untrust-daemon):
+   * remove this daemon's key from `trustedDaemonEncKeys`. Its slot comes off
+   * each agent this daemon opens (reconcileTrustedSlot) and each one embedded
+   * Studio unlocks (Phase C revocation). The daemon never adds it back.
+   */
+  untrustDaemon(): DaemonTrustStatus {
+    const key = this.encKey
+    if (key && this.isTrusted()) {
+      this.store.set('trustedDaemonEncKeys', this.trustedKeys().filter((k) => k !== key.publicKeyB64))
+      console.log(`[ADF Daemon] The owner revoked this daemon's key ${key.label} (trustedDaemonEncKeys): its slot comes off each agent this daemon or ADF Studio opens`)
+    }
+    return this.trustStatus()
+  }
+
+  /**
+   * Apply the trust state to a loaded agent now (POST /identity/trust-daemon
+   * and /identity/untrust-daemon): trusted, its slot is (re)wrapped; not
+   * trusted, this daemon's slot comes off. True when the file changed.
+   */
+  applyTrustToLoadedAgent(workspace: AdfWorkspace): boolean {
+    const key = this.encKey
+    if (!key || !workspace.hasEnvelopes()) return false
+    if (this.backend.kind !== 'keychain' && this.isTrusted()) {
+      return this.service.enrollTrustedDaemonSlot(workspace, key) === 'added'
+    }
+    try {
+      const removed = workspace.removeEnvelopeKeySlot('credentials', key.label)
+      if (removed) console.log(`[ADF Daemon] Removed this daemon's trusted-daemon slot ${key.label} from ${workspace.getFilePath() ?? 'an agent'} (revoked by the owner)`)
+      return removed
+    } catch (err) {
+      console.warn('[ADF Daemon] Removing the trusted-daemon slot failed:', err instanceof Error ? err.message : err)
+      return false
+    }
   }
 
   /** The daemon's workspace identity hooks (setWorkspaceIdentityHooks). */
@@ -615,7 +700,7 @@ export class DaemonIdentity {
         this.unlockWithLocalRuntimeKeys(workspace)
         if (ready) this.service.ensureWorkspaceIdentity(workspace)
         else this.service.unlockWorkspaceEnvelopes(workspace)
-        this.enrollWithoutKeychain(workspace)
+        this.reconcileTrustedSlot(workspace)
       },
       unlockEnvelopes: (workspace) => this.unlockWorkspaceEnvelopes(workspace),
       canProvision: () => this.isReady(),

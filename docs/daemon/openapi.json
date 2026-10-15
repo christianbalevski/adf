@@ -4227,6 +4227,185 @@
         ]
       }
     },
+    "/identity/trust-daemon": {
+      "post": {
+        "tags": [
+          "Owner identity"
+        ],
+        "summary": "Trust this daemon's key (owner action, no OS keychain)",
+        "description": "K12. Adds the daemon's key (runtime-enc-key) to `trustedDaemonEncKeys`, so ADF Studio wraps every agent's credentials to it and they unlock here without the owner passphrase; loaded agents get their slot at once. An explicit owner action, never automatic: the body must say `confirm: true`. Refused when the daemon reads the OS keychain (`keychain_available`) and without the owner key (`not_ready`). The grant is a settings entry, not a signed statement. Local callers only, always with the local proof (see Local-only routes).",
+        "operationId": "trustDaemonKey",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "confirm"
+                ],
+                "properties": {
+                  "confirm": {
+                    "type": "boolean",
+                    "enum": [
+                      true
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The trust state after the call, and how many loaded agents got or lost their slot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "trust",
+                    "agentsUpdated"
+                  ],
+                  "properties": {
+                    "trust": {
+                      "type": "object",
+                      "description": "K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`). `not-applicable`: the daemon reads the OS keychain and shares ADF Studio's runtime identity instead.",
+                      "required": [
+                        "state",
+                        "label",
+                        "message"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "trusted",
+                            "not-trusted",
+                            "not-applicable"
+                          ]
+                        },
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Slot label `daemon:<fingerprint>` of the daemon key; null without a key file."
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "agentsUpdated": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No `confirm: true` (`confirm_required`); the error says what trusting means",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "409": {
+            "description": "The daemon reads the OS keychain (`keychain_available`) or the owner key is not available (`not_ready`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No owner identity service on this daemon"
+          }
+        }
+      }
+    },
+    "/identity/untrust-daemon": {
+      "post": {
+        "tags": [
+          "Owner identity"
+        ],
+        "summary": "Revoke the owner's trust in this daemon's key",
+        "description": "K12. Removes the daemon's key from `trustedDaemonEncKeys`; loaded agents lose its slot at once, other agents when ADF Studio next opens them. The daemon never adds the key back by itself. Local callers only, always with the local proof.",
+        "operationId": "untrustDaemonKey",
+        "responses": {
+          "200": {
+            "description": "The trust state after the call, and how many loaded agents got or lost their slot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "trust",
+                    "agentsUpdated"
+                  ],
+                  "properties": {
+                    "trust": {
+                      "type": "object",
+                      "description": "K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`). `not-applicable`: the daemon reads the OS keychain and shares ADF Studio's runtime identity instead.",
+                      "required": [
+                        "state",
+                        "label",
+                        "message"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "trusted",
+                            "not-trusted",
+                            "not-applicable"
+                          ]
+                        },
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Slot label `daemon:<fingerprint>` of the daemon key; null without a key file."
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "agentsUpdated": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackOnly"
+          },
+          "503": {
+            "description": "No owner identity service on this daemon"
+          }
+        }
+      }
+    },
     "/identity/unlock": {
       "post": {
         "tags": [
@@ -18772,6 +18951,35 @@
           "code_access": false
         }
       },
+      "DaemonTrustStatus": {
+        "type": "object",
+        "description": "K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`). `not-applicable`: the daemon reads the OS keychain and shares ADF Studio's runtime identity instead.",
+        "required": [
+          "state",
+          "label",
+          "message"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "trusted",
+              "not-trusted",
+              "not-applicable"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Slot label `daemon:<fingerprint>` of the daemon key; null without a key file."
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
       "DaemonVersionInfo": {
         "type": "object",
         "required": [
@@ -18825,6 +19033,9 @@
               "service"
             ],
             "description": "Who launched this daemon run (`ADF_DAEMON_STARTED_BY`)"
+          },
+          "trust": {
+            "$ref": "#/components/schemas/DaemonTrustStatus"
           },
           "localProof": {
             "type": "object",
@@ -19784,6 +19995,9 @@
               "null"
             ],
             "description": "The runtime DID the daemon signs and stamps with: ADF Studio's when `runtime.state` is `adopted`, else the daemon's own"
+          },
+          "trust": {
+            "$ref": "#/components/schemas/DaemonTrustStatus"
           },
           "runtime": {
             "$ref": "#/components/schemas/DaemonRuntimeAdoption"

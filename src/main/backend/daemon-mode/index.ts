@@ -632,6 +632,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       startedBy: info?.startedBy ?? null,
       how: endpoint?.how ?? null,
       localProof: info?.localProof ?? null,
+      trust: info?.trust ?? null,
       logFile: connection.logFile,
     }
   }
