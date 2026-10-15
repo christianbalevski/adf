@@ -450,8 +450,11 @@ describe('owner switched on disk while Studio runs (adf identity import)', () =>
     writeFileSync(path, JSON.stringify(disk), 'utf-8')
 
     // A later ensureIdentity in the same Studio run (IPC handlers call it).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     svc.ensureIdentity()
-    // Characterization (before W5-D1): Studio's in-memory owner is the old one, so its phrase is mirrored back over the new owner's.
-    expect(keychain).toBe(mine)
+    // W5-D1 (E3): the owner on disk is re-read first; the new owner's phrase is left in place.
+    expect(keychain).toBe(next)
+    expect(warn.mock.calls.some((c) => String(c[0]).includes(`the settings file now names the owner ${deriveOwnerIdentity(next).did}`))).toBe(true)
+    warn.mockRestore()
   })
 })

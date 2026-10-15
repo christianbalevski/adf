@@ -981,14 +981,15 @@ export class DaemonIdentity {
    * keychain at its next start instead of mirroring the old one back over it,
    * and the old phrase stays recoverable.
    */
-  importOwner(opts: DaemonOwnerImportOptions): DaemonOwnerImportResult {
+  importOwner(opts: DaemonOwnerImportOptions, restampOpts: { leasedElsewhere?: Iterable<string> } = {}): DaemonOwnerImportResult {
     const { ownerDid, previousOwnerDid } = this.checkImport(opts)
     const switched = previousOwnerDid !== null && previousOwnerDid !== ownerDid
+    const leased = restampOpts.leasedElsewhere ? new Set([...restampOpts.leasedElsewhere].map(pathKey)) : null
     this.identitySettings.clearCache()
     this.identitySettings.allowOwnerChange = true
     let result: { ownerDid: string } & RestampResult
     try {
-      result = this.service.importMnemonic(normalizeMnemonic(opts.mnemonic))
+      result = this.service.importMnemonic(normalizeMnemonic(opts.mnemonic), leased ? { skipRestamp: (filePath) => leased.has(pathKey(filePath)) } : {})
     } finally {
       this.identitySettings.allowOwnerChange = false
     }
@@ -1016,12 +1017,13 @@ export class DaemonIdentity {
     const identity = this.refresh()
     console.log(
       `[ADF Daemon] Imported owner identity ${ownerDid}${switched ? ` (replaced ${previousOwnerDid})` : ''}: ` +
-        `restamped ${result.restamped} agent file(s), attested ${result.attested}, ${result.failures.length} failure(s)`,
+        `restamped ${result.restamped} agent file(s), attested ${result.attested}, ${result.failures.length} failure(s)` +
+        (result.skipped?.length ? `; ${result.skipped.length} run by another runtime, restamped when next opened (${result.skipped.join(', ')})` : ''),
     )
     return {
       identity,
       previousOwnerDid,
-      restamp: { restamped: result.restamped, attested: result.attested, failures: result.failures },
+      restamp: { restamped: result.restamped, attested: result.attested, failures: result.failures, ...(result.skipped ? { skipped: result.skipped } : {}) },
     }
   }
 
@@ -1046,6 +1048,16 @@ export class DaemonIdentity {
     } catch (err) {
       console.error(`[ADF Daemon] Owner import: could not rewrite the OS keychain entry ${this.studioRuntimeAccount} (${err instanceof Error ? err.message : String(err)}); the daemon uses its own runtime until ADF Studio rewrites it`)
     }
+  }
+
+  /** The .adf files in the tracked folders (the restamp's scope), for the import route's lease check. */
+  async trackedAdfFiles(): Promise<string[]> {
+    const tracked = this.store.get('trackedDirectories')
+    const dirs = Array.isArray(tracked) ? tracked.filter((d): d is string => typeof d === 'string') : []
+    const depth = this.store.get('maxDirectoryScanDepth')
+    const files: string[] = []
+    for (const dir of dirs) await collectAdfFilesAsync(dir, typeof depth === 'number' ? depth : 5, 0, files)
+    return files
   }
 
   /** File storage only: unlock with the passphrase. */

@@ -18,6 +18,9 @@ import { DaemonIdentityError, type DaemonOwnerImportOptions } from '../daemon-id
 import { requireLocalCaller } from '../identity-routes'
 import { LOCAL_PROOF_HEADER } from '../local-access'
 import { tokensEqual } from '../daemon-token'
+import { leaseHolderElsewhere } from '../file-ops'
+import { canonicalSettingsPath } from '../studio-runtime-entry'
+import { listRuntimeHosts, processAgentLeases, type LiveRuntimeHost } from '../../runtime/agent-lease'
 import type { DaemonRouteContext } from './index'
 
 const OWNER_SECRETS = 'Owner identity secrets can be handled'
@@ -65,6 +68,18 @@ export function registerIdentityImportRoutes(server: FastifyInstance, ctx: Daemo
     }
 
     return serialized(async () => {
+      // Embedded Studio on these settings holds its own copy of the owner and
+      // runtime identity in memory: a switch under it would be undone or
+      // half-applied by its next write. Refuse, and say what to do.
+      const settingsPath = ctx.options.settingsStore?.filePath ?? null
+      const studio = settingsPath ? await embeddedStudioOn(settingsPath) : null
+      if (studio) {
+        console.warn(`[ADF Daemon] Owner import refused: ADF Studio (pid ${studio.pid}) runs agents in embedded mode on the same settings file ${settingsPath}`)
+        return reply.code(409).send({
+          error: `ADF Studio (pid ${studio.pid}) is running agents itself on the same settings file (${settingsPath}). Importing an identity here would change the owner under it. Quit ADF Studio, or import the identity in ADF Studio (Settings → Identity → Import identity), then try again.`,
+          code: 'studio_running',
+        })
+      }
       let plan: { ownerDid: string; previousOwnerDid: string | null }
       try {
         plan = identity.checkImport(input)
@@ -89,10 +104,22 @@ export function registerIdentityImportRoutes(server: FastifyInstance, ctx: Daemo
       }
       await unloadAll('for the restamp')
 
+      // Files another runtime runs: that runtime is the one writer of the
+      // file, so the restamp leaves them; they are restamped when next opened.
+      const leases = ctx.runtime.agentLeaseRegistry ?? processAgentLeases()
+      const leasedElsewhere: string[] = []
+      for (const filePath of await identity.trackedAdfFiles()) {
+        const holder = await leaseHolderElsewhere(leases, filePath)
+        if (holder) {
+          leasedElsewhere.push(filePath)
+          console.log(`[ADF Daemon] Owner import: not restamping ${filePath} now (${holder})`)
+        }
+      }
+
       let result: ReturnType<typeof identity.importOwner> | null = null
       let failure: unknown = null
       try {
-        result = identity.importOwner(input)
+        result = identity.importOwner(input, { leasedElsewhere })
       } catch (err) {
         failure = err
       }
@@ -145,6 +172,18 @@ export function requireLocalProof(request: FastifyRequest, reply: FastifyReply, 
   if (presented && localProof && tokensEqual(presented, localProof)) return true
   void reply.code(403).send({ error: refusal, code: 'loopback_only' })
   return false
+}
+
+/** A live embedded-mode Studio (runtime host registry) on `settingsPath`, other than this process. */
+async function embeddedStudioOn(settingsPath: string): Promise<LiveRuntimeHost | null> {
+  const target = canonicalSettingsPath(settingsPath)
+  try {
+    const hosts = await listRuntimeHosts()
+    return hosts.find((h) => h.alive && h.kind === 'studio-embedded' && h.pid !== process.pid && !!h.settingsPath && canonicalSettingsPath(h.settingsPath) === target) ?? null
+  } catch (err) {
+    console.warn('[ADF Daemon] Owner import: could not read the runtime host registry:', err instanceof Error ? err.message : err)
+    return null
+  }
 }
 
 function sendImportError(reply: FastifyReply, err: unknown) {

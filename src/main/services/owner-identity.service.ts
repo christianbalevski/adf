@@ -79,11 +79,14 @@ export interface RestampResult {
   restamped: number
   attested: number
   failures: string[]
+  /** Files `skip` left out (another runtime runs them); restamped when next opened. Present only when a `skip` was given. */
+  skipped?: string[]
 }
 
 export class OwnerIdentityService {
   private sharedMnemonic: SharedMnemonicStore | null = null
   private readonly manageTrustedDaemonSlots: boolean
+  private readonly ownerDidOnDisk: (() => unknown) | null
 
   constructor(
     private settings: OwnerIdentitySettings,
@@ -94,9 +97,16 @@ export class OwnerIdentityService {
        * file would otherwise strip slots Studio added.
        */
       manageTrustedDaemonSlots?: boolean
+      /**
+       * `ownerDid` as the settings file on disk holds it now (Studio: another
+       * writer, the daemon's owner import, may have changed it since this
+       * process read it). Checked before the phrase is mirrored.
+       */
+      ownerDidOnDisk?: () => unknown
     } = {}
   ) {
     this.manageTrustedDaemonSlots = opts.manageTrustedDaemonSlots ?? true
+    this.ownerDidOnDisk = opts.ownerDidOnDisk ?? null
   }
 
   /**
@@ -115,10 +125,17 @@ export class OwnerIdentityService {
    * throws. A phrase that does not derive the owner DID on record is never
    * mirrored: after an owner switch made outside this app (adf identity
    * import) it would overwrite the new owner's phrase, the only copy on this
-   * machine.
+   * machine. The owner on record is re-read from disk first: a switch made
+   * while this process runs is not in its copy of the settings yet.
    */
   private mirrorToSharedStore(mnemonic: string): void {
     if (!this.sharedMnemonic) return
+    let onDisk: unknown
+    try { onDisk = this.ownerDidOnDisk?.() } catch { onDisk = undefined }
+    if (typeof onDisk === 'string' && onDisk !== '' && onDisk !== this.getOwnerDid()) {
+      console.warn(`[OwnerIdentity] Not mirroring this install's owner phrase into the OS keychain: the settings file now names the owner ${onDisk}, not ${this.getOwnerDid()} (switched outside this app, e.g. adf identity import). Restart ADF Studio to follow the switch.`)
+      return
+    }
     if (!phraseDerives(mnemonic, this.getOwnerDid())) {
       console.warn(`[OwnerIdentity] Not mirroring this install's owner phrase into the OS keychain: it does not belong to this machine's owner ${this.getOwnerDid()}`)
       return
@@ -513,7 +530,7 @@ export class OwnerIdentityService {
    * The current owner DID joins the legacy list so local files converge to the
    * imported identity via restamp. Runtime delegation is re-signed.
    */
-  importMnemonic(mnemonic: string, opts: { expectedOwnerDid?: string } = {}): { ownerDid: string } & RestampResult {
+  importMnemonic(mnemonic: string, opts: { expectedOwnerDid?: string; skipRestamp?: (filePath: string) => boolean } = {}): { ownerDid: string } & RestampResult {
     const normalized = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ')
     if (!validateMnemonic(normalized)) {
       throw new Error('Invalid mnemonic phrase')
@@ -560,8 +577,8 @@ export class OwnerIdentityService {
     // No runtime key yet (headless restore on a fresh machine): mint one.
     this.ensureRuntimeKey()
 
-    const result = this.restampLocalAdfs()
-    console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)`)
+    const result = this.restampLocalAdfs(opts.skipRestamp ? { skip: opts.skipRestamp } : {})
+    console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)${result.skipped?.length ? `, ${result.skipped.length} left for their next open (another runtime runs them)` : ''}`)
     return { ownerDid: owner.did, ...result }
   }
 
@@ -900,9 +917,12 @@ export class OwnerIdentityService {
    * is a legacy DID, and re-issue owner attestations for files with an agent
    * DID. Idempotent (membership test against legacy lists). Files that are
    * busy or unreadable are reported and retried on next launch / lazy open.
+   * Files `skip` names (the daemon: leased by another runtime, which is the
+   * one writer of the file) are not opened; they are restamped when next
+   * opened (restampAndAttest).
    */
-  restampLocalAdfs(): RestampResult {
-    const result: RestampResult = { restamped: 0, attested: 0, failures: [] }
+  restampLocalAdfs(opts: { skip?: (filePath: string) => boolean } = {}): RestampResult {
+    const result: RestampResult = { restamped: 0, attested: 0, failures: [], ...(opts.skip ? { skipped: [] } : {}) }
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
     const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []
 
@@ -916,6 +936,10 @@ export class OwnerIdentityService {
     }
 
     for (const filePath of files) {
+      if (opts.skip?.(filePath)) {
+        result.skipped!.push(filePath)
+        continue
+      }
       try {
         const workspace = AdfWorkspace.open(filePath)
         try {

@@ -45,6 +45,7 @@ import { settingsScope } from '../src/main/services/provider-key-store'
 import { DaemonAppOAuthStore, SECRET_CHUNK_CHARS, daemonAppOAuthAccount, splitOnCodePoints } from '../src/main/services/mcp-oauth-store'
 import { createAttestation, readAdfAttestations, verifyAttestation } from '../src/main/services/attestation.service'
 import { deriveReviewIdentity, markConfigReviewed } from '../src/main/services/agent-review'
+import { AgentLeaseRegistry } from '../src/main/runtime/agent-lease'
 import { deriveOwnerIdentity, generateMnemonic } from '../src/main/crypto/mnemonic-identity'
 import { generateEd25519KeyPair } from '../src/main/crypto/identity-crypto'
 import { generateX25519KeyPair } from '../src/main/crypto/envelope-crypto'
@@ -707,6 +708,58 @@ describe('POST /identity/import', () => {
     // Serialized: the second unload starts after the first reload.
     const steps = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('[ADF Daemon] Owner import:'))
     expect(steps.map((l) => (l.includes('unloading') ? 'u' : 'r')).join('')).toBe('urur')
+  }, 60_000)
+
+  it('refused while an embedded Studio on the same settings file is in the host registry, naming it; another settings file does not count', async () => {
+    const keychain = fakeKeychain()
+    const s = makeStudio(keychain)
+    s.svc.confirmBackup()
+    const { server, settings } = makeDaemon(keychain.backend)
+    // Another process's host record (its pid and endpoint are alive): an embedded Studio on these settings.
+    const studio = new AgentLeaseRegistry({ kind: 'studio-embedded', pid: process.ppid, settingsPath, sweepDeadEntries: false })
+    try {
+      await studio.configure({ kind: 'studio-embedded', settingsPath })
+      const payload = { mnemonic: generateMnemonic(), switchOwner: true }
+      const refused = await server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload })
+      expect(refused.statusCode).toBe(409)
+      expect(refused.json().code).toBe('studio_running')
+      expect(refused.json().error).toContain(`ADF Studio (pid ${process.ppid})`)
+      expect(refused.json().error).toContain(settingsPath)
+      expect(settings.get('ownerDid')).toBe(s.ownerDid)
+
+      await studio.configure({ kind: 'studio-embedded', settingsPath: join(root, 'other', 'adf-settings.json') })
+      expect((await server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload })).statusCode).toBe(200)
+    } finally {
+      await studio.close()
+    }
+  }, 60_000)
+
+  it('the restamp leaves files another runtime runs (restamped when next opened) and lists them', async () => {
+    const keychain = fakeKeychain()
+    const s = makeStudio(keychain)
+    s.svc.confirmBackup()
+    const mine = join(agentsDir, 'agent-1.adf')
+    const theirs = join(agentsDir, 'agent-2.adf')
+    studioAgent(s.svc, mine)
+    studioAgent(s.svc, theirs)
+    const { server, settings } = makeDaemon(keychain.backend)
+    settings.set('trackedDirectories', [agentsDir])
+    const other = new AgentLeaseRegistry({ kind: 'daemon', pid: process.ppid, settingsPath: join(root, 'other', 'adf-settings.json'), controlUrl: 'http://127.0.0.1:1', sweepDeadEntries: false })
+    try {
+      expect((await other.acquire(theirs)).ok).toBe(true)
+      const before = AdfWorkspace.open(theirs)
+      const ownerBefore = before.getMeta('adf_owner_did')
+      before.close()
+      const next = generateMnemonic()
+      const res = await server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload: { mnemonic: next, switchOwner: true } })
+      expect(res.statusCode).toBe(200)
+      expect(res.json().restamp).toMatchObject({ restamped: 1, skipped: [theirs] })
+      const check = (file: string) => { const ws = AdfWorkspace.open(file); try { return ws.getMeta('adf_owner_did') } finally { ws.close() } }
+      expect(check(mine)).toBe(deriveOwnerIdentity(next).did)
+      expect(check(theirs)).toBe(ownerBefore) // untouched while the other runtime holds it
+    } finally {
+      await other.close()
+    }
   }, 60_000)
 
   it('the same owner acts as a restore (no switch, no backup check)', async () => {

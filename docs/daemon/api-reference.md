@@ -5665,7 +5665,7 @@ Example 200 (`application/json`):
 
 **Import an owner seed phrase, switching owners when confirmed (loopback only)**
 
-Studio's Import identity. The phrase of this machine's owner acts as a restore. The phrase of another owner answers 409 `switch_unconfirmed`, naming both DIDs, unless `switchOwner` is true; then that owner replaces this machine's owner and the agents of the previous owner in tracked directories are restamped. Loaded agents are unloaded before the restamp and loaded again after it; the response lists both. A Studio runtime identity the daemon had adopted is re-certified by the new owner on a switch, and the daemon rewrites its OS keychain entry (same keys, new delegation), so `identity.runtime.state` stays `adopted` and agents made in Studio keep unlocking without Studio running. Unlike the other local-only routes, this one always requires X-ADF-Local-Proof (the daemon writes the proof file on every run), not only in proxy mode. Every refusal (phrase, confirmations, file-storage passphrase) happens before an agent is unloaded; imports run one at a time. On a switch the daemon also moves ADF Studio's stored copy of the previous phrase, still encrypted, from `ownerMnemonic` to `ownerMnemonicSuperseded:<previous owner DID>` in the settings file, so Studio takes the new phrase from the OS keychain at its next start. The phrase never appears in a response, log or error. Local callers only (see Local-only routes).
+Studio's Import identity. The phrase of this machine's owner acts as a restore. The phrase of another owner answers 409 `switch_unconfirmed`, naming both DIDs, unless `switchOwner` is true; then that owner replaces this machine's owner and the agents of the previous owner in tracked directories are restamped, except files another runtime runs (`restamp.skipped`; restamped when next opened). Loaded agents are unloaded before the restamp and loaded again after it; the response lists both. A Studio runtime identity the daemon had adopted is re-certified by the new owner on a switch, and the daemon rewrites its OS keychain entry (same keys, new delegation), so `identity.runtime.state` stays `adopted` and agents made in Studio keep unlocking without Studio running. Unlike the other local-only routes, this one always requires X-ADF-Local-Proof (the daemon writes the proof file on every run), not only in proxy mode. Every refusal (phrase, confirmations, file-storage passphrase) happens before an agent is unloaded; imports run one at a time. On a switch the daemon also moves ADF Studio's stored copy of the previous phrase, still encrypted, from `ownerMnemonic` to `ownerMnemonicSuperseded:<previous owner DID>` in the settings file, so Studio takes the new phrase from the OS keychain at its next start. The phrase never appears in a response, log or error. Local callers only (see Local-only routes).
 
 Operation `importOwnerIdentity` · bearer token
 
@@ -5701,7 +5701,7 @@ Operation `importOwnerIdentity` · bearer token
 | 400 | [IdentityErrorResponse](#schema-identityerrorresponse) | Invalid phrase, passphrase or field type (`invalid_mnemonic`, `passphrase_required`, `weak_passphrase`, `bad_request`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-| 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | The phrase belongs to another owner and `switchOwner` is not true (`switch_unconfirmed`), or the previous owner's backup is unconfirmed and `previousOwnerBackupConfirmed` is not true (`backup_unconfirmed`; the switch overwrites the daemon's copy of that phrase) |
+| 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | The phrase belongs to another owner and `switchOwner` is not true (`switch_unconfirmed`), or the previous owner's backup is unconfirmed and `previousOwnerBackupConfirmed` is not true (`backup_unconfirmed`; the switch overwrites the daemon's copy of that phrase), or ADF Studio runs agents in embedded mode on the same settings file (`studio_running`, naming its pid and the file: quit it or import in Studio; checked first, from the runtime host registry) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
@@ -5733,6 +5733,9 @@ Example 200 (`application/json`):
     "restamped": 0,
     "attested": 0,
     "failures": [
+      "string"
+    ],
+    "skipped": [
       "string"
     ]
   },
@@ -18377,7 +18380,7 @@ The ONLY response that carries the seed phrase (sent with Cache-Control: no-stor
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string | yes |  |
-| `code` | `"invalid_mnemonic"` \| `"owner_mismatch"` \| `"identity_exists"` \| `"passphrase_required"` \| `"weak_passphrase"` \| `"wrong_passphrase"` \| `"not_file_storage"` \| `"nothing_to_unlock"` \| `"not_ready"` \| `"loopback_only"` \| `"switch_unconfirmed"` \| `"bad_request"` \| `"backup_unconfirmed"` | yes |  |
+| `code` | `"invalid_mnemonic"` \| `"owner_mismatch"` \| `"identity_exists"` \| `"passphrase_required"` \| `"weak_passphrase"` \| `"wrong_passphrase"` \| `"not_file_storage"` \| `"nothing_to_unlock"` \| `"not_ready"` \| `"loopback_only"` \| `"switch_unconfirmed"` \| `"bad_request"` \| `"backup_unconfirmed"` \| `"studio_running"` | yes |  |
 
 <a id="schema-identitylistresponse"></a>
 
@@ -18501,6 +18504,7 @@ Whose runtime identity the daemon uses. `adopted`: ADF Studio's, from a verified
 | `restamp.restamped` | integer | yes |  |
 | `restamp.attested` | integer | yes |  |
 | `restamp.failures` | string[] | yes |  |
+| `restamp.skipped` | string[] |  | Tracked files another runtime runs (agent lease): not restamped now; restamped when next opened. |
 | `reloaded` | object[] | yes |  |
 | `reloaded[].agentId` | string | yes |  |
 | `reloaded[].name` | string | yes |  |
