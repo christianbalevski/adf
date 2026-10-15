@@ -114,6 +114,23 @@ The owner's daily use does not replace the 24 h soak or the Defender check. It r
 
 The lead builds the daily-use installer from `feat/daemon-backend` after all merges, versioned `0.8.0-daemon.N`. It is not built from this branch.
 
+### Build 0.8.0-daemon.1 (2026-10-15)
+
+| Item | Value |
+|---|---|
+| Source | `feat/daemon-backend` at `8a8a3e0a` (W5-D2 merge). The feat sha for this build is recorded as `57f1507e`: it differs from `8a8a3e0a` only in `tests/daemon-identity.test.ts`, no app code |
+| Version | `0.8.0-daemon.1`, set in the build copy's `package.json` and `package-lock.json` only (not committed) |
+| Installer | `%TEMP%\adf-daemon-dist\ADF Studio Setup 0.8.0-daemon.1.exe`, unsigned |
+| Size | 171,185,373 bytes |
+| SHA-256 | `413026e07c80a6225090ccf4dee77aae512291e96a2f81a3b02ba84917987f32` |
+| Recipe | `git archive` into `%TEMP%`, `npm ci`, `npm run package` (as in "Build under test"); the copy was deleted afterwards |
+
+Checks on this build:
+
+- asar: `out/main/daemon.js`, 7 daemon chunks, `luxon`, `bindings`, `file-uri-to-path`, `better-sqlite3` (binding unpacked), `@napi-rs/keyring`, `sqlite-vec`; all 56 bare imports of the daemon bundle resolve; `package.json` in the asar reads `0.8.0-daemon.1`.
+- Smoke, isolated as in "Isolation" (`--instance=d8`, port 7495, `CONTAINER_HOST` blocked): started in Embedded (`active.mode: embedded`, source default); About shows "Version 0.8.0-daemon.1"; Settings → Backend → Local daemon showed the switch dialog, "Switch and Restart" restarted Studio in local mode with the handover (11 client settings moved) and a daemon reporting 0.8.0-daemon.1; `agent-1` answered a chat from the mock LLM; after `taskkill /T /F` of the daemon Studio logged "The ADF daemon (pid 17600) exited … Studio starts it again", started it again within 3 s, sent the notification "Studio started the ADF daemon again (pid 33672). Agents running again: 1 of 1." (an OS notification; no send failure logged), and the next chat turn was answered; closing the window stopped the daemon (`keepDaemonRunning` off) and left no `ADF Studio.exe` process. The owner's containers were the same before and after. F1 recurred harmlessly (`podman machine start failed: … VM does not exist`).
+- Updater: `app-updater.service.ts` sets `allowPrerelease = false` and leaves `allowDowngrade` at electron-updater's default `false`; no channel is set. It reads the GitHub "latest" release (0.7.8), and 0.7.8 < 0.8.0-daemon.1 in semver, so no update is offered. Logged at start: "Update for version 0.8.0-daemon.1 is not available (latest version: 0.7.8, downgrade is disallowed)"; About → Check for updates shows "v0.8.0-daemon.1 is the latest version." A later 0.8.x or higher release would be offered.
+
 1. Keep the v0.7.8 release installer (`ADF-Studio-Setup-0.7.8.exe` from the GitHub release) for the way back. NSIS installs over the existing install in place.
 2. Quit Studio and stop any running daemon (`adf daemon stop`, or quit Studio with "Keep the daemon running when Studio quits" off). A daemon left running is `ADF Studio.exe` from the install folder and keeps `better_sqlite3.node` open, so the installer cannot replace it.
 3. Run the installer. Start Studio, open Settings → Backend → Local daemon, and confirm the switch (the handover moves client settings, ChatGPT/Grok sessions, MCP sign-ins and the runtime identity entry).
