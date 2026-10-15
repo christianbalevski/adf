@@ -23,7 +23,7 @@ import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
 import { TrackedDirWatcher } from './dir-watcher'
-import { createMeshControls } from './mesh-controls'
+import { createMeshControls, createMeshServerBinder } from './mesh-controls'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
 import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof, noteLocalProofProblem } from './local-access'
@@ -245,6 +245,8 @@ meshManager.setWsConnectionManager(wsConnectionManager)
 // /ping advertises the runtime DID + delegation the daemon signs with (Studio's
 // only when adopted), not whatever the shared settings file holds.
 const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
+// When the mesh server binds, and a stop on request that holds (mesh-controls.ts).
+const meshServerBinder = createMeshServerBinder({ settings, mesh: meshManager, server: meshServer })
 meshServer.setMeshManager(meshManager)
 meshServer.setWsConnectionManager(wsConnectionManager)
 if (settings.get('meshEnabled') !== false) {
@@ -421,6 +423,7 @@ const daemon = new DaemonHost({
       server: meshServer,
       ws: wsConnectionManager,
       registerLoaded: () => { for (const event of meshWiring.loaded()) registerAgentWithMesh(event) },
+      onServerSwitch: (state) => meshServerBinder.serverSwitched(state),
     }),
     getRecentTools: (limit) => meshManager.getRecentTools(limit),
     getServerStatus: () => ({
@@ -582,6 +585,7 @@ withSource('system:daemon', () => {
       }
 
       if (trackedDirs.length > 0) {
+        meshServerBinder.autostartSettling(true)
         withSource('system:daemon', () => runtime.autostartFromDirectories(trackedDirs, { maxDepth }))
           .then(report => {
             console.log('[ADF Daemon] Autostart report:', JSON.stringify(report))
@@ -591,7 +595,10 @@ withSource('system:daemon', () => {
             })
           })
           .catch(err => console.error('[ADF Daemon] Autostart failed:', err))
-          .finally(scheduleWalSweep)
+          .finally(() => {
+            meshServerBinder.autostartSettling(false)
+            scheduleWalSweep()
+          })
       } else {
         // No tracked dirs: still schedule the sweep (Studio parity) — it
         // covers sessionAdfDirs, so HTTP-API loads outside tracked dirs get
@@ -633,35 +640,8 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
   ensureMeshServer()
 }
 
-// The mesh server serves agent web/API routes and mesh delivery, and is on by
-// default (Studio parity). MeshServer.start() skips while no reachable agent is
-// registered — true at boot, before autostart loads anything — so (re)try as
-// agents register. The first bind is not delayed: until it lands, the mesh
-// names the default port 7295 in reply_to, return_path and cards, so a
-// message sent in that window could reach another runtime on 7295 (Studio
-// binds at boot). Later checks are debounced so an autostart burst rebinds
-// once; a LAN/public agent arriving while bound to loopback rebinds to all
-// interfaces.
-let meshServerTimer: ReturnType<typeof setTimeout> | null = null
-let meshServerFirstStart: Promise<void> | null = null
 function ensureMeshServer(): void {
-  if (settings.get('meshServerEnabled') === false) return
-  if (!meshServer.isRunning() && !meshServerFirstStart && meshManager.hasAnyReachableAgent()) {
-    meshServerFirstStart = meshServer.start()
-      .catch(err => console.error('[MeshServer] Failed to start:', err))
-      .finally(() => { meshServerFirstStart = null })
-  }
-  if (meshServerTimer) clearTimeout(meshServerTimer)
-  meshServerTimer = setTimeout(() => {
-    meshServerTimer = null
-    if (meshServerFirstStart) { ensureMeshServer(); return }
-    const wantsLan = !process.env.MESH_HOST && (meshManager.hasAgentOfTier('lan') || meshManager.hasAgentOfTier('public'))
-    const rebind = meshServer.isRunning() && wantsLan && meshServer.getHost() === '127.0.0.1'
-    if (meshServer.isRunning() && !rebind) return
-    const run = rebind ? meshServer.stop().then(() => meshServer.start()) : meshServer.start()
-    run.catch(err => console.error('[MeshServer] Failed to start:', err))
-  }, 500)
-  meshServerTimer.unref?.()
+  meshServerBinder.ensure()
 }
 
 // Compute defaults come from the shared single source of truth — a local copy
