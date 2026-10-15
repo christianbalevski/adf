@@ -77,8 +77,6 @@ export const emergencyStopScenario: ParityScenario = {
  * model's streamed replies).
  */
 const INBOX_DEBOUNCE_MS = 3000
-/** Longer than the daemon's 500 ms mesh-server debounce plus the bind. */
-const MESH_SERVER_BIND_MS = 1500
 /** agent-1's requests carry the chat; every other one is agent-2's inbox turn. */
 const fromAgent1 = (req: LlmRequestView) => req.messages.some((m) => m.text.includes('Tell agent-2 hello.'))
 
@@ -106,12 +104,9 @@ export const meshMessageTurnScenario: ParityScenario = {
     const a1 = ctx.agent('agent-1').filePath
     await openAndStart(ctx, a1)
     await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 runs in the background', batchHas('agent_started', a2))
-    // The daemon binds its mesh server 500 ms after the last agent registers
-    // (daemon/index.ts ensureMeshServer); a message built before that names
-    // the default port 7295 in reply_to, return_path and card instead of the
-    // bound one (a daemon bug, reported in tracker §7). Waited out here, so
-    // the comparison is about the message and the turn it triggers.
-    await new Promise((resolve) => setTimeout(resolve, MESH_SERVER_BIND_MS))
+    // No wait for the mesh server: the daemon binds it when the first agent
+    // registers (daemon/index.ts ensureMeshServer), so the message names the
+    // bound port in reply_to, return_path and card, as Studio's does.
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Tell agent-2 hello.', filePath: a1 })
     await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 answered the message', batchHas('turn_complete', a2))
   },

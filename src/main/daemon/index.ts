@@ -636,15 +636,25 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
 // The mesh server serves agent web/API routes and mesh delivery, and is on by
 // default (Studio parity). MeshServer.start() skips while no reachable agent is
 // registered — true at boot, before autostart loads anything — so (re)try as
-// agents register. Debounced so an autostart burst binds once, after the agents
-// that decide the host (loopback vs LAN) are known. A LAN/public agent arriving
-// while bound to loopback rebinds to all interfaces.
+// agents register. The first bind is not delayed: until it lands, the mesh
+// names the default port 7295 in reply_to, return_path and cards, so a
+// message sent in that window could reach another runtime on 7295 (Studio
+// binds at boot). Later checks are debounced so an autostart burst rebinds
+// once; a LAN/public agent arriving while bound to loopback rebinds to all
+// interfaces.
 let meshServerTimer: ReturnType<typeof setTimeout> | null = null
+let meshServerFirstStart: Promise<void> | null = null
 function ensureMeshServer(): void {
   if (settings.get('meshServerEnabled') === false) return
+  if (!meshServer.isRunning() && !meshServerFirstStart && meshManager.hasAnyReachableAgent()) {
+    meshServerFirstStart = meshServer.start()
+      .catch(err => console.error('[MeshServer] Failed to start:', err))
+      .finally(() => { meshServerFirstStart = null })
+  }
   if (meshServerTimer) clearTimeout(meshServerTimer)
   meshServerTimer = setTimeout(() => {
     meshServerTimer = null
+    if (meshServerFirstStart) { ensureMeshServer(); return }
     const wantsLan = !process.env.MESH_HOST && (meshManager.hasAgentOfTier('lan') || meshManager.hasAgentOfTier('public'))
     const rebind = meshServer.isRunning() && wantsLan && meshServer.getHost() === '127.0.0.1'
     if (meshServer.isRunning() && !rebind) return
