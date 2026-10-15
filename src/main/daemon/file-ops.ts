@@ -234,8 +234,12 @@ function checkpointBeforeMove(filePath: string): boolean {
   if (!hasSidecars(filePath)) return true
   try {
     const ws = AdfWorkspace.open(filePath)
-    ws.checkpoint()
-    ws.close()
+    // Closed even when the checkpoint throws: an open handle keeps the .adf locked on Windows.
+    try {
+      ws.checkpoint()
+    } finally {
+      ws.close()
+    }
   } catch (err) {
     console.warn(`[FileOps] Pre-move checkpoint of ${basename(filePath)} failed:`, err)
   }

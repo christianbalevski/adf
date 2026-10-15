@@ -110,6 +110,8 @@ export type BackendSettingsErrorCode =
   | 'file_unreadable'
   | 'write_failed'
   | 'remote_not_configured'
+  /** A switch's restart has started: no mode change or switch action is taken. */
+  | 'restarting'
 
 export type BackendSettingsSaveResult =
   | { ok: true; view: BackendSettingsView; notices: string[] }

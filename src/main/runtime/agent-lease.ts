@@ -228,8 +228,16 @@ function agentNameOf(path: string): string {
   return basename(path).replace(/\.adf$/i, '')
 }
 
-function samePath(a: string, b: string): boolean {
-  const norm = (p: string) => (process.platform === 'linux' ? resolve(p) : resolve(p).toLowerCase())
+/**
+ * Two paths name one agent file, folded as the lease key folds them
+ * (leaseKeyForCanonicalPath): NFC on macOS, whose APFS/HFS+ names may come
+ * back decomposed, and case-insensitive except on Linux.
+ */
+export function samePath(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  const norm = (p: string) => {
+    const abs = platform === 'darwin' ? resolve(p).normalize('NFC') : resolve(p)
+    return platform === 'linux' ? abs : abs.toLowerCase()
+  }
   return norm(a) === norm(b)
 }
 

@@ -35,6 +35,7 @@ import {
   listRuntimeHosts,
   machineId,
   processAgentLeases,
+  samePath,
   type AgentLeaseRecord,
 } from '../../src/main/runtime/agent-lease'
 import { RuntimeLoopError, RuntimeService } from '../../src/main/runtime/runtime-service'
@@ -474,6 +475,18 @@ describe('agent lease across processes', () => {
 // --- one process, several registries ---------------------------------------
 
 describe('agent lease semantics', () => {
+  it('samePath folds paths as the lease key does: NFC and case on macOS, case on Windows, neither on Linux (W5-F)', () => {
+    const composed = '/Users/agent-1/Caf\u00e9.adf'
+    const decomposed = '/Users/agent-1/Cafe\u0301.adf'
+    expect(samePath(composed, decomposed, 'darwin')).toBe(true)
+    expect(samePath(composed, decomposed.toUpperCase(), 'darwin')).toBe(true)
+    expect(leaseKeyForCanonicalPath(composed, 'darwin')).toBe(leaseKeyForCanonicalPath(decomposed, 'darwin'))
+    expect(samePath(composed, decomposed, 'linux')).toBe(false)
+    expect(samePath(composed, composed.toUpperCase(), 'linux')).toBe(false)
+    // resolve() is the host's: separators fold only when the test runs on Windows.
+    expect(samePath('C:\\agents\\agent-1.adf', 'c:/AGENTS/agent-1.adf', 'win32')).toBe(process.platform === 'win32')
+  })
+
   it('a live holder is never displaced; a race between two acquirers has one winner', async () => {
     const leases = tempDir('adf-lease-race-')
     const work = tempDir('adf-lease-race-work-')

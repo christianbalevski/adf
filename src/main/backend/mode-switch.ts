@@ -15,7 +15,7 @@ import {
   handoverNeedsKeychain,
   planHandover,
   runHandover,
-  REPLACED_TOKEN_FILE,
+  DAEMON_TOKEN_FILE,
   REPLACED_TOKEN_MAX_AGE_DAYS,
   type HandoverDeps,
   type HandoverReport,
@@ -151,7 +151,7 @@ async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' 
     type: 'question',
     title: `${conflict.label}: two accounts`,
     message: `Studio and the ADF daemon are signed in to ${conflict.label.replace(/ session$/, '')} with different accounts.`,
-    detail: `Studio: ${conflict.studio.account}\nDaemon: ${conflict.daemon.account}\n\nOnly one session can move with the backend: its refresh token is renewed on use, so a copy left behind stops working. The other account is signed out here and saved once, encrypted, as ${conflict.replacedFile}; to use it in the daemon instead, stop the daemon and rename that file to ${REPLACED_TOKEN_FILE.replace('replaced', 'daemon')}. That copy is deleted after ${REPLACED_TOKEN_MAX_AGE_DAYS} days, or when you next sign in to that account.`,
+    detail: `Studio: ${conflict.studio.account}\nDaemon: ${conflict.daemon.account}\n\nOnly one session can move with the backend: its refresh token is renewed on use, so a copy left behind stops working. The other account is signed out here and saved, encrypted, in ${conflict.replacedDir} as auth.replaced.<time>.json (one file per account; the summary names it); to use it in the daemon instead, stop the daemon and rename that file to ${DAEMON_TOKEN_FILE}, replacing it. Each copy set aside is deleted after ${REPLACED_TOKEN_MAX_AGE_DAYS} days, or when you next sign in to its account.`,
     buttons,
     defaultId: 0,
     cancelId: 0,
@@ -239,6 +239,8 @@ interface ResumeRecord { v: 1; from: StudioBackendMode; to: StudioBackendMode; a
 export function createModeSwitcher(ctx: SwitchContext) {
   let choice: { target: StudioBackendMode; wait: boolean; agents: string[] } | null = null
   let pending: { target: StudioBackendMode; gaveUp: boolean; waitingFor: () => string[]; finish: () => void; cancel: () => void } | null = null
+  /** Set once a restart has started (now, or a waiting switch finished): no later switch or cancel can change it. */
+  let restarting: StudioBackendMode | null = null
 
   const confirm = async (target: StudioBackendMode): Promise<boolean> => {
     const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }))
@@ -260,6 +262,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       : target === 'local'
         ? 'Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.'
         : `Studio restarts and uses the ADF daemon at ${remoteUrl ?? 'the remote URL'}.`)
+    if (pending) lines.push(`This replaces the waiting switch to ${MODE_LABELS[pending.target]}.`)
     if (plan.length > 0) {
       // "Back to Studio" only for credentials that come back (from this computer's daemon stores), not for client keys alone.
       lines.push('', target === 'embedded' && plan.some((item) => item.id !== 'client-settings') ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
@@ -321,10 +324,21 @@ export function createModeSwitcher(ctx: SwitchContext) {
   }
 
   const apply = (target: StudioBackendMode): string => {
+    if (restarting) {
+      console.warn(`[Backend] Switch to ${target} refused: Studio is already restarting into ${restarting}`)
+      return restartingMessage(restarting)
+    }
+    // A switch still waiting for its turns is replaced: the latest choice wins, and its poll must not restart Studio too.
+    const replaced = pending ? `Replaces the waiting switch to ${MODE_LABELS[pending.target]}. ` : ''
+    if (pending) {
+      console.log(`[Backend] Switch to ${pending.target} replaced by a switch to ${target}`)
+      pending.cancel()
+    }
     const chosen = choice?.target === target ? choice : { target, wait: false, agents: resumesAgents(ctx.activeMode, target) ? ctx.agentActivity().map((a) => a.filePath) : [] }
     choice = null
     const record: ResumeRecord = { v: 1, from: ctx.activeMode, to: target, agents: chosen.agents, at: new Date().toISOString() }
     const restart = async (): Promise<void> => {
+      restarting = target
       try {
         await writeJsonAtomicAsync(join(ctx.userDataDir, SWITCH_RESUME_FILE), record)
       } catch (err) {
@@ -334,7 +348,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
     }
     if (!chosen.wait) {
       void restart()
-      return 'Studio restarts now.'
+      return `${replaced}Studio restarts now.`
     }
     const busyNames = () => agentNames(ctx.agentActivity().filter((a) => a.busy).map((a) => a.filePath))
     console.log(`[Backend] Switch to ${target}: waiting for the turns in flight (${busyNames().join(', ')}) to finish`)
@@ -358,8 +372,11 @@ export function createModeSwitcher(ctx: SwitchContext) {
       void restart()
     }
     pending = { target, gaveUp: false, waitingFor: busyNames, finish, cancel: () => { clearInterval(poll); pending = null } }
-    return `Studio restarts once the turns in flight finish (${busyNames().join(', ')}).`
+    return `${replaced}Studio restarts once the turns in flight finish (${busyNames().join(', ')}).`
   }
+
+  /** The mode Studio is restarting into, once a restart has started; null before. */
+  const restartingInto = (): StudioBackendMode | null => restarting
 
   /** A switch waiting for turns in flight (Settings → Backend shows it with its two buttons). */
   const pendingSwitch = (): { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null =>
@@ -375,6 +392,10 @@ export function createModeSwitcher(ctx: SwitchContext) {
 
   /** "Cancel Switch": stop waiting. The caller saves the running mode again. */
   const cancel = (): StudioBackendMode | null => {
+    if (restarting) {
+      console.warn(`[Backend] Cancel Switch refused: Studio is already restarting into ${restarting}`)
+      return null
+    }
     if (!pending) return null
     const target = pending.target
     console.log(`[Backend] Switch to ${target} cancelled by the user; this mode stays`)
@@ -382,7 +403,12 @@ export function createModeSwitcher(ctx: SwitchContext) {
     return target
   }
 
-  return { confirm, apply, pendingSwitch, finishNow, cancel }
+  return { confirm, apply, pendingSwitch, finishNow, cancel, restartingInto }
+}
+
+/** Settings → Backend's refusal of a switch, a cancel or a mode save once the restart has started. */
+export function restartingMessage(target: StudioBackendMode): string {
+  return `Studio is restarting into ${MODE_LABELS[target]}. Nothing changed.`
 }
 
 function notify(body: string): void {
@@ -413,8 +439,13 @@ export async function resumeSwitchedAgents(
     return
   }
   const stale = !record || record.v !== 1 || !Array.isArray(record.agents) || !(Date.now() - Date.parse(record.at) <= RESUME_MAX_AGE_MS)
-  // A launch in another mode (a session-only override) leaves the record for the switch's own launch.
-  if (!stale && record!.to !== mode) return
+  // A launch in another mode (a session-only override) leaves the record for the switch's own launch; said, never silent.
+  if (!stale && record!.to !== mode) {
+    const names = agentNames(record!.agents)
+    console.log(`[Backend] Not resuming the agents of the switch to ${record!.to}: this launch runs ${mode}${names.length ? ` (not started: ${names.join(', ')})` : ''}; ${file} is kept for a launch in ${record!.to}`)
+    if (names.length > 0) notify(`Not started after the switch: ${names.join(', ')}. The switch was to ${MODE_LABELS[record!.to] ?? record!.to}, but Studio runs ${MODE_LABELS[mode]}.`)
+    return
+  }
   await fsp.unlink(file).catch(() => {})
   if (!record || stale) {
     console.log(`[Backend] Not resuming the agents of a switch: the record ${file} is malformed or older than ${RESUME_MAX_AGE_MS / 60_000} min`)
