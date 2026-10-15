@@ -6,14 +6,17 @@
  * The home folder is a temp folder here (HOME / USERPROFILE), and the OS temp
  * folder is moved inside it, so the agents folder setting is not refused as
  * a temp location and the real Documents folder is never looked up.
+ * On Linux `/tmp` is always a temp location, so there the setting is refused
+ * and the default, <home>/Documents/adf-agents, is the same folder: the
+ * Documents lookup is reset per test so it names this test's home.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { browse, browseRoots, BROWSE_ROOTS_ENV } from '../src/main/daemon/file-ops'
+import { browse, browseRoots, BROWSE_ROOTS_ENV, resetDocumentsDirCache } from '../src/main/daemon/file-ops'
 
-const ENV_KEYS = [BROWSE_ROOTS_ENV, 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'TMPDIR'] as const
+const ENV_KEYS = [BROWSE_ROOTS_ENV, 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'TMPDIR', 'XDG_CONFIG_HOME'] as const
 const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
 let home: string
 
@@ -24,12 +27,15 @@ beforeEach(() => {
   delete process.env[BROWSE_ROOTS_ENV]
   process.env.HOME = home
   process.env.USERPROFILE = home
+  process.env.XDG_CONFIG_HOME = join(home, '.config')
   const temp = join(home, '.tmp')
   mkdirSync(temp)
   process.env.TEMP = process.env.TMP = process.env.TMPDIR = temp
+  resetDocumentsDirCache()
 })
 afterEach(() => {
   for (const k of ENV_KEYS) restore(k, saved[k])
+  resetDocumentsDirCache()
   rmSync(home, { recursive: true, force: true })
 })
 
