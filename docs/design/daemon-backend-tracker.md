@@ -385,6 +385,13 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W5-A2 | Parity: the daemon's agent lease recorded `agentId` null (`w0c:daemon-lease-agent-id`) | done e621d75e |
 | W5-A2 | The daemon bound its mesh server 500 ms after an agent registered; a message sent before named port 7295 in `reply_to`, `return_path` and the card | done 42ebd118 |
 | W5-A2 | Install end on the 15 s no-gap timeout: when the stream stalls past `END_WAIT_MS`, Studio sends the end from the job result; if that install's own progress lines then arrive late before its own end, the first line ends the drop (57a881cb treats it as another install), so the late end is shown a second time. Telling them apart needs a job id on the install pushes (the daemon's `withInstallProgress` has no job context) | deferred: rare (a stream stalled over 15 s mid-install); the renderer shows "installed" twice, nothing else |
+| W5-D3 | Remote `recentFiles` reached `adf-settings.json` on a switch to embedded; the boot WAL sweep then ran `readdirSync` on `\\host\share` (NTLM leak) | done 9959cbeb (E3, characterization be94d754: the sweep skips every path `unsafeLocalPath` refuses), 3bdd8f76 (remote mode keeps its recent files in `remoteRecentFiles`, never moved back) |
+| W5-D3 | Embedded Settings → Compute never named other runtimes using a container; Stop did not ask | done 3cf0ee19 (E3, characterization 08b0fa74: `listContainersWithUsers`; Stop asks in both modes) |
+| W5-D3 | Leases keyed by path only: a copied or restored `.adf` ran next to the original (one Telegram bot polled twice) | done 56acbc7f (E2: a live lease of the same agent id at another path refuses with `agent_leased`, naming both paths) |
+| W5-D3 | A switch to embedded waits 22 s for the daemon; resumed starts that hit `agent_leased` were never retried | done 641eb630 (retried every 5 s for up to 60 s, then reported) |
+| W5-D3 | Settings → Providers key field showed the placeholder in local mode | done 3fcd2d50 (`POST /settings/providers/keys/reveal`, local proof; remote keeps the placeholder) |
+| W5-D3 | Autostart after a switch to embedded also hits `agent_leased` while the daemon exits, and is not retried (only the resumed agents are) | open: Lead |
+| W5-D3 | A `recentFiles` list written by remote mode before 3bdd8f76 still holds the server's paths and moves to embedded once; the sweep (9959cbeb) and the menu skip network paths, other server paths show as missing | accepted (one-time) |
 
 ## 7. Parity triage (filled in W5-A)
 
