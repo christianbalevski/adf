@@ -34,6 +34,8 @@ import { withSource } from '../runtime/execution-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 import { withAuthorization } from '../runtime/authorization-context'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
+import { addressCheck, guardedLookup } from '../utils/guarded-fetch'
+import type { FetchGuardOptions } from '../utils/ssrf-guard'
 
 // =============================================================================
 // Delegate Interface
@@ -186,6 +188,8 @@ export class WsConnectionManager {
   private reconnectStates = new Map<string, ReconnectState>()
   /** key = `${agentFilePath}\u0000${lambdaFilePath}` → transpiled source + expiry. */
   private lambdaSourceCache = new Map<string, { code: string; expiresAt: number }>()
+  /** The egress policy an ad-hoc config's URL passed (connectOutbound `guard`); its reconnects keep it. */
+  private egressGuards = new WeakMap<WsConnectionConfig, FetchGuardOptions>()
   private delegate: WsManagerDelegate
 
   constructor(delegate: WsManagerDelegate) {
@@ -270,10 +274,18 @@ export class WsConnectionManager {
   // Outbound Connections
   // ===========================================================================
 
+  /**
+   * `guard`: the egress policy the URL passed (ws_connect's check). The
+   * socket then connects only to addresses it allows, so a DNS answer that
+   * changes after the check is refused (W4-B follow-up); the config's
+   * reconnects keep it. Without one (stored configs) the socket resolves
+   * the host itself, as before.
+   */
   async connectOutbound(
     agentFilePath: string,
     configOrId: string | WsConnectionConfig,
-    inheritedAttempts?: number
+    inheritedAttempts?: number,
+    guard?: FetchGuardOptions
   ): Promise<{ connection_id?: string; error?: string }> {
     let config: WsConnectionConfig
     if (typeof configOrId === 'string') {
@@ -284,13 +296,17 @@ export class WsConnectionManager {
     } else {
       config = configOrId
     }
+    if (guard) this.egressGuards.set(config, guard)
+    const pinnedTo = this.egressGuards.get(config)
 
     const connectionId = nanoid(10)
 
     return new Promise<{ connection_id?: string; error?: string }>((resolve) => {
       let resolved = false
 
-      const socket = new WebSocket(config.url)
+      const socket = pinnedTo
+        ? new WebSocket(config.url, { lookup: guardedLookup(addressCheck(new URL(config.url), pinnedTo, 'connect')) } as WebSocket.ClientOptions)
+        : new WebSocket(config.url)
       const conn: ManagedConnection = {
         id: connectionId,
         agentFilePath,

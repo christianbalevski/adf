@@ -23,6 +23,7 @@ import { checkConnectTarget, checkFetchTarget, envProxyFor, isCloudMetadataIp } 
 import { SysFetchTool } from '../../../src/main/tools/built-in/sys-fetch.tool'
 import { pinnedFetch } from '../../../src/main/utils/guarded-fetch'
 import { WsConnectionManager, type WsManagerDelegate } from '../../../src/main/services/ws-connection-manager'
+import { WsConnectTool } from '../../../src/main/tools/built-in/ws-connect.tool'
 import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 
 const servers: Array<{ close(cb: () => void): void }> = []
@@ -191,16 +192,38 @@ async function wsServer(): Promise<{ port: number; connections: number[] }> {
   return { port: (wss.address() as { port: number }).port, connections }
 }
 
-describe('ws_connect: the guard and the connection resolve the host separately', () => {
-  it('before: a name only the guard\'s lookup knows passes the guard, then the socket\'s own lookup fails', async () => {
+describe('ws_connect: the socket uses the addresses the guard checked', () => {
+  it('after: a name only the checked lookup knows is reached', async () => {
     const { port, connections } = await wsServer()
     dnsScript.set('pinned.adf-test.invalid', ['127.0.0.1'])
     const url = `ws://pinned.adf-test.invalid:${port}/`
-    expect(await checkConnectTarget(url)).toBeNull()
     const mgr = wsManager()
-    const result = await mgr.connectOutbound('agent-1.adf', { id: 'c1', url, enabled: true, auth: 'none', auto_reconnect: false })
-    expect(result.error).toBeTruthy()
+    const result = await mgr.connectOutbound('agent-1.adf', { id: 'c1', url, enabled: true, auth: 'none', auto_reconnect: false }, undefined, { daemonPort: 1 })
+    expect(result.error).toBeUndefined()
+    expect(result.connection_id).toBeTruthy()
+    expect(connections).toHaveLength(1)
+    mgr.unregisterAgent('agent-1.adf')
+  }, 20000)
+
+  it('after: an answer that changes to the daemon port after the check is refused, never reached', async () => {
+    const { port, connections } = await wsServer()
+    dnsScript.set('rebind.adf-test.invalid', ['93.184.216.34', '127.0.0.1'])
+    const url = `ws://rebind.adf-test.invalid:${port}/`
+    const guard = { daemonPort: port }
+    expect(await checkConnectTarget(url, guard)).toBeNull() // the tool's check sees the public address
+    const mgr = wsManager()
+    const result = await mgr.connectOutbound('agent-1.adf', { id: 'c1', url, enabled: true, auth: 'none', auto_reconnect: false }, undefined, guard)
+    expect(result.error).toMatch(/daemon control API/)
     expect(connections).toEqual([])
     mgr.unregisterAgent('agent-1.adf')
   }, 20000)
+
+  it('the tool hands its policy to the connection with the ad-hoc URL, not with a stored id', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const tool = new WsConnectTool(async (opts) => { calls.push(opts); return { connection_id: 'c1' } }, () => ({ allow_local_fetch: true }) as never)
+    await tool.execute({ url: 'ws://127.0.0.1:9999/' }, workspace)
+    await tool.execute({ id: 'stored' }, workspace)
+    expect(calls[0].guard).toEqual({ allowLocal: true, daemonPort: Number(process.env.ADF_DAEMON_PORT) || 7385 })
+    expect('guard' in calls[1]).toBe(false)
+  })
 })
