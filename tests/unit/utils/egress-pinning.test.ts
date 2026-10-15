@@ -141,6 +141,31 @@ describe('a host name behind an HTTP proxy (NODE_USE_ENV_PROXY)', () => {
     expect(await checkFetchTarget('https://no-such-host.invalid/')).toBeNull() // ENOTFOUND: the proxy resolves it
   })
 
+  it('pinnedFetch behind the proxy checks every hop, literal addresses included, and follows no redirect unchecked', async () => {
+    const daemon = await httpServer()
+    const hits: string[] = []
+    const s: Server = createServer((req, res) => {
+      hits.push(req.url ?? '')
+      if (req.url === '/to-daemon') { res.writeHead(307, { location: `http://127.0.0.1:${daemon.port}/agents` }); res.end(); return }
+      if (req.url === '/to-metadata') { res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data' }); res.end(); return }
+      res.end('ok')
+    })
+    servers.push(s)
+    await new Promise<void>((done) => s.listen(0, '127.0.0.1', () => done()))
+    const port = (s.address() as { port: number }).port
+    proxyEnv({ NODE_USE_ENV_PROXY: '1', HTTP_PROXY: 'http://127.0.0.1:9' })
+    expect(envProxyFor(`http://127.0.0.1:${port}/`)).toBe('http://127.0.0.1:9')
+    const f = pinnedFetch({ daemonPort: daemon.port, allowLocal: true })
+    await expect(f(`http://127.0.0.1:${port}/to-daemon`)).rejects.toThrow(/daemon control API/)
+    await expect(f(`http://127.0.0.1:${port}/to-metadata`)).rejects.toThrow(/cloud-metadata/)
+    await expect(f('http://169.254.169.254/latest/meta-data')).rejects.toThrow(/cloud-metadata/)
+    expect(hits).toEqual(['/to-daemon', '/to-metadata'])
+    expect(daemon.hits).toEqual([])
+    // A redirect the caller wants to see (manual) is answered, not followed.
+    const manual = await f(`http://127.0.0.1:${port}/to-daemon`, { redirect: 'manual' })
+    expect(manual.status).toBe(307)
+  }, 20000)
+
   it('only what Node honours turns the proxy on: NODE_USE_ENV_PROXY=1 or --use-env-proxy', async () => {
     const base = { HTTP_PROXY: 'http://proxy:3128' }
     for (const value of ['true', 'yes', 'on', ' 1']) {

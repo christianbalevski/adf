@@ -216,8 +216,10 @@ function pinnedRequest(url: URL, method: string, headers: Headers, body: Buffer 
  * Fetch semantics kept: request bodies and headers as `Request` builds
  * them, fetch's default headers, a decoded body (gzip, deflate, br), a
  * streamed body (SSE), `redirect` (`follow` re-checks every hop; `manual`
- * answers the 3xx), the abort reason. A URL that goes through an env proxy
- * (ssrf-guard envProxyFor) uses Node's fetch: the proxy looks the host up.
+ * answers the 3xx), the abort reason. A hop that goes through an env proxy
+ * (ssrf-guard envProxyFor) is checked the same way, then sent with Node's
+ * fetch (the proxy connects, and resolves a name this machine cannot), one
+ * hop at a time: its redirects are checked here, not followed by Node.
  * `guard` is read per call.
  */
 export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)): typeof fetch {
@@ -231,12 +233,15 @@ export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)
     const headers = new Headers(request.headers)
     let body: Buffer | null = request.body ? Buffer.from(await request.arrayBuffer()) : null
     for (let hop = 0; ; hop++) {
-      if (envProxyFor(url)) {
-        return NATIVE_FETCH(url, { method, headers, ...(body ? { body: body as unknown as BodyInit } : {}), signal, redirect: request.redirect })
-      }
+      // Every hop is checked first, literal addresses included, whoever connects.
       const refusal = await checkFetchTarget(url.toString(), policy)
       if (refusal) throw new Error(refusal)
-      const response = await pinnedRequest(url, method, headers, body, signal, policy)
+      // Behind the env proxy the proxy connects (a name this machine could
+      // not look up is the proxy's to resolve); its redirects come back here
+      // and are checked as every other hop.
+      const response = envProxyFor(url)
+        ? await NATIVE_FETCH(url, { method, headers, ...(body ? { body: body as unknown as BodyInit } : {}), signal, redirect: 'manual' })
+        : await pinnedRequest(url, method, headers, body, signal, policy)
       const location = response.headers.get('location')
       if (!REDIRECTS.has(response.status) || !location || request.redirect === 'manual') return response
       try { await response.body?.cancel() } catch { /* best effort */ }
