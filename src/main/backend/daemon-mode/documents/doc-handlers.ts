@@ -6,6 +6,8 @@ import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client
 import type { AgentConfig, InboxMessage, OutboxMessage, TaskEntry, Timer } from '../../../../shared/types/adf-v02.types'
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { errorString, isAgentGone, onOpenFile } from './open-file'
+import { baseRevisionArg, conflictAnswer } from '../../edit-conflicts'
+import type { ResourceWriter } from '../../../../shared/types/resource-revision.types'
 
 /**
  * Daemon-mode DOC_* handlers: the open file's document, config, chat pages,
@@ -163,6 +165,16 @@ async function importPaths(client: DaemonClient, agentId: string, paths: string[
   }
 }
 
+/** The daemon's `409 stale_revision` body (W3-F): the current revision and who made it. */
+interface StaleRevision { revision: number; writer: ResourceWriter | null }
+
+function staleRevisionOf(err: unknown): StaleRevision | null {
+  if (!(err instanceof DaemonError) || err.status !== 409) return null
+  const body = err.body as { code?: unknown; revision?: unknown; writer?: unknown } | null
+  if (body?.code !== 'stale_revision' || typeof body.revision !== 'number') return null
+  return { revision: body.revision, writer: (body.writer as ResourceWriter | null | undefined) ?? null }
+}
+
 /** Embedded's local-table names: `local_*` (and `adf_audit` for reads), word characters only. */
 function invalidTable(table: string, allowAudit: boolean): boolean {
   return (!table.startsWith('local_') && !(allowAudit && table === 'adf_audit')) || /[^a-zA-Z0-9_]/.test(table)
@@ -171,22 +183,33 @@ function invalidTable(table: string, allowAudit: boolean): boolean {
 export const DOC_HANDLERS: DaemonHandlerTable = {
   // --- Document and config ------------------------------------------------------
 
-  [IPC.DOC_GET_DOCUMENT]: (ctx) => onOpenFile(ctx, 'Reading the open agent\'s document', { content: '' }, async (client, id) => {
-    const { content } = await client.request<{ content: string }>('GET', `/agents/${enc(id)}/document`)
-    return { content }
+  [IPC.DOC_GET_DOCUMENT]: (ctx) => onOpenFile<{ content: string; revision?: number }>(ctx, 'Reading the open agent\'s document', { content: '' }, async (client, id) => {
+    const { content, revision } = await client.request<{ content: string; revision?: number }>('GET', `/agents/${enc(id)}/document`)
+    return { content, revision }
   }),
 
   // The daemon fires the running agent's document-edit trigger (setAgentDocument), as embedded does.
-  [IPC.DOC_SET_DOCUMENT]: (ctx, _event, args: { content: string }) => onOpenFile(ctx, 'Writing the open agent\'s document', () => {
+  // W3-F: a save over a stale revision is refused (409 stale_revision) with what is there now.
+  [IPC.DOC_SET_DOCUMENT]: (ctx, _event, args: { content: string; baseRevision?: number }) => onOpenFile(ctx, 'Writing the open agent\'s document', () => {
     ctx.log.error('[IPC] DOC_SET_DOCUMENT: No workspace open')
     return { success: false }
   }, async (client, id) => {
-    await client.request('PUT', `/agents/${enc(id)}/document`, { body: { content: args.content } })
-    return { success: true }
+    const baseRevision = baseRevisionArg(args.baseRevision)
+    try {
+      const saved = await client.request<{ revision?: number }>('PUT', `/agents/${enc(id)}/document`, { body: { content: args.content, ...(baseRevision !== undefined ? { baseRevision } : {}) } })
+      return { success: true, revision: saved.revision }
+    } catch (err) {
+      const stale = staleRevisionOf(err)
+      if (!stale) throw err
+      const now = await client.request<{ content: string }>('GET', `/agents/${enc(id)}/document`).catch(() => null)
+      return conflictAnswer({ resource: 'document', ...stale, content: now?.content ?? null })
+    }
   }),
 
-  [IPC.DOC_GET_AGENT_CONFIG]: (ctx) => onOpenFile<AgentConfig | null>(ctx, 'Reading the open agent\'s config', null, async (client, id) => {
-    return (await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(id)}/config`)).config
+  // W3-F: `withRevision` answers { config, revision }, as embedded.
+  [IPC.DOC_GET_AGENT_CONFIG]: (ctx, _event, opts?: { withRevision?: boolean }) => onOpenFile<unknown>(ctx, 'Reading the open agent\'s config', opts?.withRevision ? { config: null } : null, async (client, id) => {
+    const read = await client.request<{ config: AgentConfig; revision?: number }>('GET', `/agents/${enc(id)}/config`)
+    return opts?.withRevision ? { config: read.config, revision: read.revision } : read.config
   }),
 
   /**
@@ -197,22 +220,33 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
    * is scheduled by its config-change hook, so the deferral is read back
    * from GET /files/agent `pendingName`.
    */
-  [IPC.DOC_SET_AGENT_CONFIG]: (ctx, _event, config: AgentConfig) => onOpenFile(ctx, 'Saving the open agent\'s config', { success: false, error: 'No file open' }, async (client, id) => {
+  [IPC.DOC_SET_AGENT_CONFIG]: (ctx, _event, config: AgentConfig, opts?: { baseRevision?: number }) => onOpenFile(ctx, 'Saving the open agent\'s config', { success: false, error: 'No file open' }, async (client, id) => {
     const previous = (await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(id)}/config`)).config
     if (config?.id && previous.id && config.id !== previous.id) {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
-    const saved = await client.request<{ filePath?: string; renameDeferred?: boolean }>('PUT', `/agents/${enc(id)}/config`, { body: config })
+    // W3-F: a save over a stale revision is refused (409 stale_revision) with the current config.
+    const baseRevision = baseRevisionArg(opts?.baseRevision)
+    let saved: { filePath?: string; renameDeferred?: boolean; revision?: number }
+    try {
+      saved = await client.request<{ filePath?: string; renameDeferred?: boolean; revision?: number }>('PUT', `/agents/${enc(id)}/config`, { body: config, ...(baseRevision !== undefined ? { query: { baseRevision } } : {}) })
+    } catch (err) {
+      const stale = staleRevisionOf(err)
+      if (!stale) throw err
+      const now = await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(id)}/config`).catch(() => null)
+      return conflictAnswer({ resource: 'config', ...stale, config: now?.config ?? null })
+    }
+    const revision = saved.revision
     const filePath = ctx.session.filePath
-    if (!filePath || config.name === previous.name) return { success: true }
+    if (!filePath || config.name === previous.name) return { success: true, revision }
     if (saved.filePath) {
       ctx.session.rekey(filePath, saved.filePath)
-      return { success: true, filePath: saved.filePath }
+      return { success: true, filePath: saved.filePath, revision }
     }
-    if (saved.renameDeferred) return { success: true, renameDeferred: true }
+    if (saved.renameDeferred) return { success: true, renameDeferred: true, revision }
     const info = await client.request<{ pendingName?: string }>('GET', '/files/agent', { query: { path: filePath } })
-    if (info.pendingName === config.name) return { success: true, renameDeferred: true }
-    return { success: true }
+    if (info.pendingName === config.name) return { success: true, renameDeferred: true, revision }
+    return { success: true, revision }
   }),
 
   // --- Chat -----------------------------------------------------------------------
@@ -413,9 +447,18 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
     return { success: set.success }
   }),
 
-  [IPC.DOC_WRITE_INTERNAL_FILE]: (ctx, _event, args: { path: string; content: string }) => onOpenFile(ctx, 'Writing a file of the open agent', { success: false }, async (client, id) => {
-    await client.request('PUT', `/agents/${enc(id)}/files/content`, { query: { path: args.path }, body: { content: args.content } })
-    return { success: true }
+  // W3-F: a save over a stale revision is refused (409 stale_revision) with the file's text now.
+  [IPC.DOC_WRITE_INTERNAL_FILE]: (ctx, _event, args: { path: string; content: string; baseRevision?: number }) => onOpenFile<unknown>(ctx, 'Writing a file of the open agent', { success: false }, async (client, id) => {
+    const baseRevision = baseRevisionArg(args.baseRevision)
+    try {
+      const saved = await client.request<{ revision?: number }>('PUT', `/agents/${enc(id)}/files/content`, { query: { path: args.path }, body: { content: args.content, ...(baseRevision !== undefined ? { baseRevision } : {}) } })
+      return { success: true, revision: saved.revision }
+    } catch (err) {
+      const stale = staleRevisionOf(err)
+      if (!stale) throw err
+      const now = await client.request<{ content?: string; encoding?: string }>('GET', `/agents/${enc(id)}/files/content`, { query: { path: args.path } }).catch(() => null)
+      return conflictAnswer({ resource: args.path, ...stale, content: now && now.encoding !== 'base64' ? now.content ?? null : null })
+    }
   }),
 
   // The bytes come from the daemon; the save dialog and the write stay in Studio main.

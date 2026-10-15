@@ -26,6 +26,7 @@ import { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
+import { currentResourceWriter, fileRevisionKey, observeRevision } from './resource-revisions'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
 import { runDispatchDropCompensation } from './system-dispatch-limits'
@@ -605,9 +606,13 @@ export function assembleAgent<P extends AgentProfileName>(
       change.path !== 'README.md' &&
       change.path !== 'document.md'
     ) {
+      // W3-F: the revision this write took and its writer (the API request
+      // that made it, else the agent), so an editor holding unsaved text can
+      // name who changed the file instead of replacing that text.
+      const { revision, writer } = observeRevision(workspace, fileRevisionKey(change.path), change.content, currentResourceWriter())
       const fileEvent: AgentExecutionEvent = {
         type: 'file_updated',
-        payload: { path: change.path, content: change.content, previousContent: change.previousContent },
+        payload: { path: change.path, content: change.content, previousContent: change.previousContent, revision, writer },
         timestamp: Date.now(),
       }
       for (const bindings of hostBindings()) bindings.onEvent?.(fileEvent)

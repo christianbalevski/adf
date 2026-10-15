@@ -6,13 +6,12 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { vi } from 'vitest'
-import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
-import { serializeStudioRuntimeEntry, studioRuntimeAccount, studioRuntimeScope } from '../../../src/main/daemon/studio-runtime-entry'
+import { runHandover, type HandoverReport, type StudioSecretCodec } from '../../../src/main/backend/handover'
+import { openDaemonSecrets } from '../../../src/main/backend/daemon-secrets'
+import { decryptCredential, encryptCredential } from '../../../src/main/utils/credential-cipher'
 import { createRunResources, installEnvironmentStubs, releaseRunResources, srcPath, type BootedBackend, type ParityBackend } from './backend'
 import type { FakeElectron } from './electron-fake'
 import { FENCE_PATH, removeTreeWithoutLinks, type ParityEnv } from './env'
-import { IDENTITY } from './fixtures'
-import identityFixture from './identity.fixture.json'
 
 /**
  * Daemon-mode backend (README "Daemon backend (W2-C)"): the built daemon
@@ -21,11 +20,11 @@ import identityFixture from './identity.fixture.json'
  * main's daemon-mode handlers in this process against the same fake
  * `electron`.
  *
- * What a switch to local mode does before Studio first attaches (W4-A,
- * design §4.3, §5.3) is done here the same way: the client keys of
- * adf-settings.json are copied into studio-client-settings.json, and the
- * owner phrase plus the `studio-runtime:<scope>` entry are in the "OS
- * keychain" (the plaintext test keychain file, ADF_TEST_KEYCHAIN_FILE).
+ * The switch to local mode runs before Studio first attaches: W4-A's
+ * handover (switchToLocalMode below), which moves the client keys of
+ * adf-settings.json into studio-client-settings.json and puts the owner
+ * phrase and the `studio-runtime:<scope>` entry into the "OS keychain" (the
+ * plaintext test keychain file, ADF_TEST_KEYCHAIN_FILE).
  *
  * Shutdown runs Studio's daemon-mode quit path (end the client session),
  * then kills the daemon with `taskkill /T /F` (a process-group SIGKILL
@@ -71,26 +70,15 @@ async function freePort(): Promise<number> {
 }
 
 /** `safe:` values of the identity fixture use the electron fake's encoding (electron-fake.ts). */
-function unsafe(value: unknown): string {
-  const text = Buffer.from(String(value).replace(/^safe:/, ''), 'base64').toString('utf-8')
-  if (!text.startsWith('parity-safe:')) throw new Error('parity harness: identity fixture value is not in the fake safeStorage encoding')
-  return text.slice('parity-safe:'.length)
-}
-
-/** The test keychain a local-mode switch leaves behind: owner phrase (Studio mirrors it) and Studio's runtime entry. */
-function writeTestKeychain(file: string, settingsPath: string): void {
-  const f = identityFixture as Record<string, unknown>
-  const values: Record<string, string> = {
-    'owner-mnemonic': unsafe(f.ownerMnemonic),
-    [studioRuntimeAccount(studioRuntimeScope(settingsPath))]: serializeStudioRuntimeEntry({
-      runtimeDid: IDENTITY.runtimeDid,
-      runtimeDelegation: f.runtimeDelegation as never,
-      runtimePrivateKey: unsafe(f.runtimePrivateKey),
-      runtimeEncPrivateKey: unsafe(f.runtimeEncPrivateKey),
-      runtimeEncPublicKey: String(f.runtimeEncPublicKey),
-    }),
-  }
-  writeFileSync(file, JSON.stringify(values, null, 2))
+const PARITY_SAFE = 'parity-safe:'
+const paritySafeStorage: StudioSecretCodec = {
+  available: () => true,
+  encrypt: (plain) => 'safe:' + Buffer.from(PARITY_SAFE + plain, 'utf-8').toString('base64'),
+  decrypt: (stored) => {
+    if (!stored.startsWith('safe:')) return null
+    const text = Buffer.from(stored.slice('safe:'.length), 'base64').toString('utf-8')
+    return text.startsWith(PARITY_SAFE) ? text.slice(PARITY_SAFE.length) : null
+  },
 }
 
 /**
@@ -125,37 +113,28 @@ async function waitForLog(logFile: string, text: string, timeoutMs: number, from
 }
 
 /**
- * The harness emulates W4-A's switch to local mode (below). Set to false
- * once W4-A ships the switch: the allowlist entry `w4a:local-mode-switch`
- * matches only while this is true, so it cannot outlive the emulation.
+ * The switch to local mode before Studio first attaches: W4-A's real
+ * handover (src/main/backend/handover.ts), as Studio's boot runs it. It
+ * moves the client keys into studio-client-settings.json, mirrors the owner
+ * phrase and writes the `studio-runtime:<scope>` entry into the "OS
+ * keychain" (the plaintext test keychain file the daemon child reads), with
+ * the electron fake's safeStorage encoding for Studio's secrets.
  */
-export const EMULATE_W4A = true
-
-/**
- * W4-A EMULATION: what the switch from embedded to local mode does before
- * Studio first attaches (design §4.3, §5.3, tracker W4-A). Until W4-A ships
- * it, the harness does it the same way:
- *
- * - the client keys MOVE from adf-settings.json into
- *   studio-client-settings.json (none stays in both files);
- * - the owner phrase and the `studio-runtime:<scope>` entry go into the "OS
- *   keychain" (the plaintext test keychain file), so the daemon adopts the
- *   fixture's runtime identity.
- *
- * The allowlist entry `w4a:local-mode-switch` (harness/gaps.ts) names it.
- */
-export function emulateLocalModeSwitch(env: ParityEnv, keychainFile: string): void {
-  const settingsPath = join(env.userDataDir, 'adf-settings.json')
-  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
-  const client: Record<string, unknown> = {}
-  for (const key of CLIENT_SETTINGS_KEYS) {
-    if (!(key in settings)) continue
-    client[key] = settings[key]
-    delete settings[key]
-  }
-  writeFileSync(join(env.userDataDir, 'studio-client-settings.json'), JSON.stringify(client, null, 2))
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
-  writeTestKeychain(keychainFile, settingsPath)
+export async function switchToLocalMode(env: ParityEnv, keychainFile: string): Promise<HandoverReport> {
+  // The daemon child's environment: the test keychain file instead of the run's file store (startChild below).
+  const { ADF_SECRET_STORE: _store, ADF_KEYCHAIN: _keychain, ...childLike } = process.env
+  const secrets = openDaemonSecrets({ ...childLike, ADF_TEST_SEAMS: '1', ADF_TEST_KEYCHAIN_FILE: keychainFile })
+  if (!secrets.backend) throw new Error(`parity harness: the test keychain is not available to the handover (${secrets.unavailable})`)
+  const report = await runHandover('local', {
+    userDataDir: env.userDataDir,
+    settingsPath: join(env.userDataDir, 'adf-settings.json'),
+    studioSecrets: paritySafeStorage,
+    daemonCipher: { encrypt: encryptCredential, decrypt: (raw) => decryptCredential(raw, '[parity]') },
+    daemonSecrets: secrets.backend,
+    log: () => {},
+  })
+  if (report.failed) throw new Error(`parity harness: the switch to local mode failed: ${JSON.stringify(report.items)}`)
+  return report
 }
 
 async function waitHealthy(url: string, child: ChildProcess, exited: () => number | null, logFile: string): Promise<void> {
@@ -308,7 +287,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       const logFile = join(outside, 'adf-daemon.log')
       const keychainFile = join(outside, 'keychain.json')
       const settingsPath = join(env.userDataDir, 'adf-settings.json')
-      if (EMULATE_W4A) emulateLocalModeSwitch(env, keychainFile)
+      await switchToLocalMode(env, keychainFile)
 
       const startChild = async (): Promise<DaemonChild> => {
         const stdlibDir = writeStdlibManifest(env)

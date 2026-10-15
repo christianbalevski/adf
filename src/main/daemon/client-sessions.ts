@@ -56,6 +56,7 @@ import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../.
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
+import { configRevision, type ResourceWriter, type RevisionedWorkspace } from '../runtime/resource-revisions'
 import type {
   RuntimeAgentEvent,
   RuntimeAgentFileRenamedEvent,
@@ -195,8 +196,11 @@ export interface ClientInstallProgress {
  * the open file are sent for every agent; the client filters.
  */
 export interface ClientPushPayloads {
-  /** DOC_AGENT_CONFIG_CHANGED. Runtime-originated changes; a session's own PUT /agents/:id/config is not echoed to it (header X-ADF-Client-Session). */
-  config_changed: { filePath: string | null; config: AgentConfig }
+  /**
+   * DOC_AGENT_CONFIG_CHANGED. Runtime-originated changes; a session's own PUT /agents/:id/config is not echoed to it (header X-ADF-Client-Session).
+   * W3-F: `revision` is the config's revision after the change and `writer` who made it (absent on the mesh's persisted defaults).
+   */
+  config_changed: { filePath: string | null; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }
   /**
    * INBOX_UPDATED: mesh delivery, adapter inbound, DELETE /agents/:id/inbox
    * (empty). Sessions not focused on the agent get only the counts (frame
@@ -451,7 +455,8 @@ class ClientSession {
     readonly id: string,
     readonly client: string,
     readonly version: string,
-    readonly exitDaemonWhenClosed: boolean,
+    /** Changed by its client when its quit behaviour changes (PUT …/exit-when-closed). */
+    public exitDaemonWhenClosed: boolean,
     ringFrames: number,
     ringChars: number,
   ) {
@@ -514,6 +519,8 @@ export class ClientSessionRegistry {
   /** §8.3: the owning Studio session expired while others were open; the daemon stops when the last one ends. */
   private orphanPending: string | null = null
   private disposed = false
+  /** A quit decided to stop the daemon: no new session opens before it stops (W4-A). */
+  private closing = false
 
   constructor(private readonly options: ClientSessionRegistryOptions = {}) {
     this.ringFrames = options.ringFrames ?? CLIENT_RING_FRAMES
@@ -527,7 +534,7 @@ export class ClientSessionRegistry {
   // --- sessions ---------------------------------------------------------------
 
   create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean }): { sessionId: string; epoch: string } {
-    if (this.disposed) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
+    if (this.disposed || this.closing) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
     const session = new ClientSession(randomUUID(), input.client, input.version, input.exitDaemonWhenClosed === true, this.ringFrames, this.ringChars)
     session.umbilical = input.umbilical === true
     this.sessions.set(session.id, session)
@@ -550,9 +557,48 @@ export class ClientSessionRegistry {
     return this.sessions.size
   }
 
+  /** Every open session, for clients deciding whether others are connected (no ids of other sessions). */
+  list(): Array<{ client: string; version: string; exitDaemonWhenClosed: boolean }> {
+    return [...this.sessions.values()].map((s) => ({ client: s.client, version: s.version, exitDaemonWhenClosed: s.exitDaemonWhenClosed }))
+  }
+
+  /** Its client's quit behaviour changed (Studio's keepDaemonRunning). */
+  setExitDaemonWhenClosed(sessionId: string, value: boolean): void {
+    const session = this.require(sessionId)
+    if (session.exitDaemonWhenClosed === value) return
+    session.exitDaemonWhenClosed = value
+    this.log(`Client session ${sessionId} (${session.client}) ${value ? 'now stops the daemon when it expires' : 'no longer stops the daemon when it expires'}`)
+  }
+
+  /**
+   * A quit asked to stop a Studio-started daemon while other sessions are
+   * open (§8.3): stop once the last one ends, as the orphan rule does after
+   * a crash; they get `daemon_orphan_hold`.
+   */
+  holdForQuit(why: string): void {
+    this.orphanPending = why
+    const clients = [...this.sessions.values()].map((s) => s.client).join(', ')
+    this.log(`Not stopping the daemon yet: ${why}, but ${this.sessions.size} other client session(s) are open (${clients}); it stops when the last one ends`)
+    this.publishPush('daemon_orphan_hold', {
+      holding: true,
+      reason: 'Studio quit; the daemon it started keeps running while you are connected and stops when the last client disconnects',
+      sessions: this.sessions.size,
+    })
+  }
+
+  /** The daemon is about to stop (a quit decided it): refuse new sessions from now on. */
+  markClosing(): void {
+    this.closing = true
+  }
+
   /** The agent a session follows, or undefined for an unknown session. */
   focusOf(sessionId: string): string | null | undefined {
     return this.sessions.get(sessionId)?.focus
+  }
+
+  /** The client name a session was created with (`studio`, `tui`, …), or undefined for an unknown session. */
+  clientOf(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.client
   }
 
   /** End a session now (DELETE /client/sessions/:id): its documents are released; a pending orphan shutdown is re-checked. */
@@ -933,7 +979,7 @@ export class ClientSessionRegistry {
     this.log(`Client session ${session.id} (${session.client}) ${reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
     this.notifyEnded(session, reason, documents)
     if (reason === 'expired' && session.exitDaemonWhenClosed) this.applyOrphanRule(session)
-    else if (this.orphanPending) this.recheckOrphan(`${session.client} session ${session.id} ${reason}`)
+    else if (this.orphanPending) this.recheckOrphan(reason !== 'expired', `${session.client} session ${session.id} ${reason}`)
   }
 
   /** §8.3: an expired exitDaemonWhenClosed session stops a Studio-started daemon when nobody else is connected. */
@@ -958,20 +1004,28 @@ export class ClientSessionRegistry {
     this.shutDown(why)
   }
 
-  private recheckOrphan(trigger: string): void {
+  /** `deferred`: a request ended the session; it is answered before the shutdown closes the server. */
+  private recheckOrphan(deferred: boolean, trigger: string): void {
     if (!this.orphanPending || this.sessions.size > 0) return
     const why = `${this.orphanPending}; the last other client session ended (${trigger})`
     this.orphanPending = null
-    this.shutDown(why)
+    this.shutDown(why, deferred)
   }
 
-  private shutDown(why: string): void {
+  private shutDown(why: string, deferred = false): void {
     if (!this.options.requestShutdown) {
       this.log(`Not stopping the daemon: ${why}, but shutdown is not available`)
       return
     }
     this.log(`Stopping the daemon: ${why}, and no other client session is open`)
-    this.options.requestShutdown()
+    this.closing = true
+    if (!deferred) {
+      this.options.requestShutdown()
+      return
+    }
+    // As the quit route does: the request that ended the last session (a DELETE) gets its answer first.
+    const requestShutdown = this.options.requestShutdown
+    setTimeout(() => requestShutdown(), 50)
   }
 
   private notifyEnded(session: ClientSession, reason: ClientSessionEndReason, documents: string[] = []): void {
@@ -1307,7 +1361,14 @@ function attachLoadedAgent(sessions: ClientSessionRegistry, event: RuntimeAgentL
 
   undo.push(watchWorkspaceData(sessions, agent.workspace, target))
   undo.push(subscribeAgentRuntimeSignals(agent.workspace, {
-    onConfigChanged: (config) => sessions.publishPush('config_changed', { filePath: filePath(), config }, target()),
+    onConfigChanged: (config) => {
+      // W3-F: the revision this change took (an API write took it with its
+      // writer; otherwise it was the agent's). A workspace that cannot say
+      // still gets its frame, without them.
+      let revision: { revision: number; writer: ResourceWriter | null } | null = null
+      try { revision = configRevision(agent.workspace as unknown as RevisionedWorkspace) } catch { revision = null }
+      sessions.publishPush('config_changed', { filePath: filePath(), config, ...(revision ? { revision: revision.revision, writer: revision.writer } : {}) }, target())
+    },
   }))
 
   return () => { for (const fn of undo) fn() }

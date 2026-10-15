@@ -9,6 +9,7 @@ import { createSettingsDefaults } from '../../shared/constants/settings-defaults
 import { applySettingsMigrations, mergeSettingsValue } from '../../shared/utils/settings-migrations'
 import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
 import { SECRET_STORE_KEY_STORAGE, type ProviderKeyVault } from './provider-key-vault'
+import { CLIENT_SETTINGS_KEYS } from '../../shared/constants/client-settings-keys'
 
 export interface SettingsQuarantineInfo {
   originalPath: string
@@ -49,6 +50,14 @@ function fileFingerprint(path: string): FileFingerprint {
 
 const SAVE_RETRY_DELAY_MS = 1000
 
+/**
+ * Studio's client keys (§4.1). Their defaults are merged in memory like every
+ * other key, but a write never puts a default into the file: in daemon mode
+ * they live in Studio's studio-client-settings.json and MUST NOT end up in
+ * both files. One the file holds, or one written here, is kept.
+ */
+const CLIENT_KEYS: readonly string[] = CLIENT_SETTINGS_KEYS
+
 export class FileSettingsStore implements ProviderSettingsStore {
   private data: Record<string, unknown>
   private lastSynced: FileFingerprint = { mtimeMs: 0, size: 0 }
@@ -63,11 +72,14 @@ export class FileSettingsStore implements ProviderSettingsStore {
   private writeBlocked = false
   /** Holds the keys of providers marked `apiKeyStorage: 'secret-store'` (see provider-key-vault.ts). */
   private providerKeys: ProviderKeyVault | null = null
+  /** Client keys present in the file (read or written here); others are defaults only and never written. */
+  private readonly clientKeysOnDisk = new Set<string>()
 
   constructor(readonly filePath?: string) {
     if (filePath) {
       const { data, quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<Record<string, unknown>>(filePath)
       if (quarantinedTo) recordQuarantine(filePath, quarantinedTo)
+      this.noteClientKeys(data)
       this.writeBlocked = corruptUnpreserved
       // Merge the same defaults SettingsService uses (file values win) so the
       // daemon never runs agents with an empty system prompt or bare compute
@@ -80,7 +92,9 @@ export class FileSettingsStore implements ProviderSettingsStore {
     // Same migrations SettingsService runs, so stale values (e.g. a partial
     // compute.containerPackages missing VNC packages) never survive in the daemon.
     const { changedKeys } = applySettingsMigrations(this.data)
-    if (changedKeys.length > 0) this.save(changedKeys)
+    // A migration of a client key the file does not hold is Studio's to run on its own file.
+    const toSave = changedKeys.filter((key) => !CLIENT_KEYS.includes(key) || this.clientKeysOnDisk.has(key))
+    if (toSave.length > 0) this.save(toSave)
   }
 
   /**
@@ -98,6 +112,7 @@ export class FileSettingsStore implements ProviderSettingsStore {
     const { data, quarantinedTo } = readJsonOrQuarantine<Record<string, unknown>>(this.filePath)
     if (quarantinedTo) recordQuarantine(this.filePath, quarantinedTo)
     if (!data) return
+    this.noteClientKeys(data)
     const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...data }
     for (const key of this.pendingKeys) merged[key] = this.data[key]
     applySettingsMigrations(merged)
@@ -252,6 +267,7 @@ export class FileSettingsStore implements ProviderSettingsStore {
       }
       this.writeBlocked = false
       if (onDisk) {
+        this.noteClientKeys(onDisk)
         const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...onDisk }
         for (const key of this.pendingKeys) {
           if (key in this.data) merged[key] = this.data[key]
@@ -261,9 +277,23 @@ export class FileSettingsStore implements ProviderSettingsStore {
       }
     }
 
-    writeJsonAtomic(this.filePath, this.data)
+    for (const key of this.pendingKeys) {
+      if (!CLIENT_KEYS.includes(key)) continue
+      if (key in this.data) this.clientKeysOnDisk.add(key)
+      else this.clientKeysOnDisk.delete(key)
+    }
+    const out: Record<string, unknown> = { ...this.data }
+    for (const key of CLIENT_KEYS) if (!this.clientKeysOnDisk.has(key)) delete out[key]
+    writeJsonAtomic(this.filePath, out)
     this.lastSynced = fileFingerprint(this.filePath)
     this.pendingKeys.clear()
+  }
+
+  /** Track which client keys the file holds (a refresh replaces the set: a key Studio moved out is gone). */
+  private noteClientKeys(data: Record<string, unknown> | null | undefined): void {
+    if (!data) return
+    this.clientKeysOnDisk.clear()
+    for (const key of CLIENT_KEYS) if (key in data) this.clientKeysOnDisk.add(key)
   }
 }
 

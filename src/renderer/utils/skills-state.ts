@@ -38,12 +38,13 @@ export function agentChanged(owner: string | null): string | null {
  * would sit on pre-toggle text until it was closed and reopened. Dirty tabs are
  * left alone: unsaved human edits outrank a refresh.
  */
-export function syncOpenTab(path: string, content: string | null | undefined): void {
+export function syncOpenTab(path: string, content: string | null | undefined, revision?: number): void {
   if (content == null) return
   const store = useEditorTabsStore.getState()
   const tab = store.tabs.find((t) => t.path === path)
   if (!tab || tab.kind !== 'file' || tab.isDirty || tab.content === content) return
-  store.updateTabFromExternal(path, content)
+  // W3-F: the tab's next save goes over the revision this write produced.
+  store.updateTabFromExternal(path, content, revision !== undefined ? { revision, writer: { kind: 'client', client: 'studio' } } : undefined)
 }
 
 /** One promise chain for every skills-state.json write in the renderer. */
@@ -69,13 +70,21 @@ export function setSkillMuted(name: string, enabled: boolean, owner: string | nu
   return enqueueStateWrite(async () => {
     const blocked = agentChanged(owner)
     if (blocked) return blocked
-    const stateFile = await window.adfApi?.readInternalFile(SKILLS_STATE_PATH)
-    const blockedAfterRead = agentChanged(owner)
-    if (blockedAfterRead) return blockedAfterRead
-    const next = mergeDisabledList(stateFile?.content, name, enabled)
-    const written = await window.adfApi?.writeInternalFile(SKILLS_STATE_PATH, next)
-    if (!written?.success) return `Could not write ${SKILLS_STATE_PATH}.`
-    syncOpenTab(SKILLS_STATE_PATH, next)
-    return null
+    // W3-F: the write goes over the revision read; someone else's write in
+    // between (the agent, another window) refuses it, and the merge runs
+    // again on their version, so neither change is lost.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stateFile = await window.adfApi?.readInternalFile(SKILLS_STATE_PATH)
+      const blockedAfterRead = agentChanged(owner)
+      if (blockedAfterRead) return blockedAfterRead
+      const next = mergeDisabledList(stateFile?.content, name, enabled)
+      const base = stateFile?.revision
+      const written = await window.adfApi?.writeInternalFile(SKILLS_STATE_PATH, next, base !== undefined ? { baseRevision: base } : undefined)
+      if (written?.conflict) continue
+      if (!written?.success) return `Could not write ${SKILLS_STATE_PATH}.`
+      syncOpenTab(SKILLS_STATE_PATH, next, written.revision)
+      return null
+    }
+    return `${SKILLS_STATE_PATH} kept changing while it was being written; try again.`
   })
 }

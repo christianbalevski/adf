@@ -410,7 +410,7 @@ describe('daemon file routes: raw internal files', () => {
 
     const put = await server.inject({ method: 'PUT', url: `/agents/${ref.id}/files/raw?path=${q('data/blob.bin')}`, payload, headers: { 'content-type': 'application/octet-stream' } })
     expect(put.statusCode).toBe(200)
-    expect(put.json()).toEqual({ agentId: ref.id, success: true, path: 'data/blob.bin', size: 20 * MIB })
+    expect(put.json()).toEqual({ agentId: ref.id, success: true, path: 'data/blob.bin', size: 20 * MIB, revision: expect.any(Number) })
 
     const meta = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/meta?path=${q('data/blob.bin')}` })).json()
     expect(meta).toMatchObject({ agentId: ref.id, path: 'data/blob.bin', size: 20 * MIB, text: false })

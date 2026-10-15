@@ -1,8 +1,21 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readDaemonToken, daemonTokenPath } from '../../daemon/daemon-token'
-import { DaemonProcessController } from '../daemon-process'
+import { readRemoteToken, type SecretCodec, type StudioBackendConfig } from '../backend-config'
+import { DaemonProcessController, type AttachDecision, type DaemonProcessDeps } from '../daemon-process'
+import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
 import type { DaemonConnector } from './connection'
+
+/** §8.2 step 3: the user's answer to a daemon of another client API version. */
+export type VersionMismatchChoice = 'restart' | 'embedded'
+
+/** Thrown when the user chose embedded mode for this session; Studio restarts into it. */
+export class SwitchToEmbeddedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SwitchToEmbeddedError'
+  }
+}
 
 export { remoteDaemonConnector } from './remote/connector'
 
@@ -38,6 +51,20 @@ export function localDaemonConnector(opts: {
   daemonEntry: string
   env?: NodeJS.ProcessEnv
   log?: (line: string) => void
+  /**
+   * A daemon of another client API version runs (§8.2 step 3): ask the user.
+   * `restart` stops it and starts Studio's; `embedded` makes this session
+   * embedded (the caller restarts Studio). Without it the connector fails
+   * with the decision's sentence.
+   */
+  onVersionMismatch?: (
+    decision: Extract<AttachDecision, { kind: 'version-mismatch' }>,
+    running: DaemonVersionInfo,
+    /** The clients connected to it (the dialog names them: a restart disconnects them); null when it cannot say. */
+    clients: Array<{ client: string; version: string }> | null,
+  ) => Promise<VersionMismatchChoice>
+  /** Tests: the controller's process and network seams. */
+  processDeps?: DaemonProcessDeps
 }): DaemonConnector {
   const env = opts.env ?? process.env
   // Built before it runs: the log path is known even when the start fails.
@@ -47,13 +74,16 @@ export function localDaemonConnector(opts: {
     daemonEntry: opts.daemonEntry,
     execPath: opts.execPath,
     env,
-  }, opts.log ? { log: opts.log } : {})
+  }, { ...opts.processDeps, ...(opts.log ? { log: opts.log } : {}) })
   const connect = async (progress: (text: string) => void) => {
-    const result = await controller.ensure(progress)
-    if (result.kind === 'refused') {
-      // Version mismatch: the restart-or-embedded choice of §8.2 ships with the mode switch (W4-A).
-      throw new Error(result.decision.message)
+    let result = await controller.ensure(progress)
+    if (result.kind === 'refused' && result.decision.kind === 'version-mismatch' && opts.onVersionMismatch) {
+      const choice = await opts.onVersionMismatch(result.decision, result.info, await controller.listClientSessions())
+      ;(opts.log ?? console.log)(`[Backend] ${result.decision.message} The user chose: ${choice === 'restart' ? "restart the daemon with Studio's version" : 'embedded mode for this session'}`)
+      if (choice === 'embedded') throw new SwitchToEmbeddedError(`${result.decision.message} Studio restarts in embedded mode for this session.`)
+      result = await controller.restart(result.info, progress)
     }
+    if (result.kind === 'refused') throw new Error(result.decision.message)
     if (result.kind === 'unidentified') throw new Error(result.message)
     const { handle } = result
     const dataDir = controller.paths.dataDir
@@ -62,6 +92,8 @@ export function localDaemonConnector(opts: {
       baseUrl: handle.url,
       logFile: controller.paths.logFile,
       description: `the ADF daemon pid ${handle.pid} on ${handle.url} (${result.kind}; version ${handle.info.version}, started by ${handle.info.startedBy})`,
+      daemon: handle.info,
+      how: result.kind,
       source: {
         token: () => token ?? undefined,
         // A 401 after the daemon minted a new token: re-read the file once.

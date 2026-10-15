@@ -672,6 +672,9 @@ describe('client sessions: review fixes', () => {
       expect.objectContaining({ payload: expect.objectContaining({ holding: true, sessions: 1 }) }),
     ])
     await sessions.end(tui.sessionId)
+    // Deferred a moment, so the TUI's own DELETE is answered before the server closes (W4-A).
+    expect(shutdown).not.toHaveBeenCalled()
+    await new Promise(r => setTimeout(r, 80))
     expect(shutdown).toHaveBeenCalledOnce()
   })
 

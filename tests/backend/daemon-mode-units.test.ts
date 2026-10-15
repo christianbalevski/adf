@@ -253,7 +253,7 @@ describe('native notifier and approvals reveal fed from the stream', () => {
   })
 })
 
-describe('reattach, seeding, defaults (review fixes)', () => {
+describe('reattach, defaults (review fixes)', () => {
   it('reattach re-holds the open and the unlocked documents and re-sends the focus', async () => {
     const ids: Record<string, string> = { 'C:/a/agent-1.adf': 'id-1', 'C:/a/agent-2.adf': 'id-2' }
     const client = createFakeClientSession((p) => ids[p] ?? (p.toLowerCase().includes('agent-1') ? 'id-1' : p.toLowerCase().includes('agent-2') ? 'id-2' : null))
@@ -267,33 +267,6 @@ describe('reattach, seeding, defaults (review fixes)', () => {
     await session.reattach()
     expect(client.held.sort()).toEqual(['id-1', 'id-2'])
     expect(client.focus).toEqual(['id-2'])
-  })
-
-  it('seeds studio-client-settings.json once from the client keys of adf-settings.json', () => {
-    const settingsPath = join(dir, 'adf-settings.json')
-    const clientPath = clientSettingsPath(dir)
-    writeFileSync(settingsPath, JSON.stringify({ theme: 'dark', recentFiles: ['C:/a/x.adf'], providers: [{ id: 'p' }] }))
-    const logs: string[] = []
-    const log = { log: (m: string) => { logs.push(m) }, warn: () => {}, error: () => {} }
-    ClientSettingsStore.seedOnce(clientPath, settingsPath, log)
-    expect(JSON.parse(readFileSync(clientPath, 'utf8'))).toEqual({ theme: 'dark', recentFiles: ['C:/a/x.adf'] })
-    expect(logs.join('\n')).toContain('First daemon-mode boot')
-    writeFileSync(settingsPath, JSON.stringify({ theme: 'light' }))
-    ClientSettingsStore.seedOnce(clientPath, settingsPath, log)
-    expect(JSON.parse(readFileSync(clientPath, 'utf8')).theme).toBe('dark')
-    expect(logs).toHaveLength(1)
-  })
-
-  it('the seed never renames a corrupt adf-settings.json (the daemon\'s file)', () => {
-    const sub = mkdtempSync(join(dir, 'seed-corrupt-'))
-    const settingsPath = join(sub, 'adf-settings.json')
-    const clientPath = clientSettingsPath(sub)
-    writeFileSync(settingsPath, '{ not json')
-    const errors: string[] = []
-    ClientSettingsStore.seedOnce(clientPath, settingsPath, { log: () => {}, warn: () => {}, error: (m: string) => { errors.push(m) } })
-    expect(readdirSync(sub)).toEqual(['adf-settings.json'])
-    expect(readFileSync(settingsPath, 'utf8')).toBe('{ not json')
-    expect(errors.join('\n')).toContain('Could not read')
   })
 
   it('computes the client defaults once', () => {

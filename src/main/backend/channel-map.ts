@@ -541,6 +541,12 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_FS_BROWSE]: proxied('invoke', ['GET /fs/browse'], { note: 'Answers { error, code } instead of rejecting, so the picker shows it. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
   [IPC.REMOTE_FS_MKDIR]: proxied('invoke', ['POST /fs/folders'], { note: 'The picker\'s New folder. Answers { error, code } instead of rejecting. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
 
+  // --- Recovery copies of unsaved text (W3-F) ---------------------------------
+  [IPC.RECOVERY_STASH]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes; writes <userData>/recovered.'),
+  [IPC.RECOVERY_LIST]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes.'),
+  [IPC.RECOVERY_ARCHIVE]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes.'),
+  [IPC.RECOVERY_REVEAL]: local('invoke', 'Registered in backend/edit-recovery.ts in both modes; opens the folder on this machine.'),
+
   // --- Overview, emergency stop, identity drafts -----------------------------
   [IPC.AGENT_VITALS]: proxied('invoke', ['GET /fleet/vitals']),
   [IPC.AGENT_ACTIVITY]: proxied('invoke', ['GET /fleet/activity']),

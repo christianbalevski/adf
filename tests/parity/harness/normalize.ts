@@ -59,6 +59,8 @@ const ISO_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\
 const UTC_STAMP_RE = /\b(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC\b/g
 const EPOCH_IN_STRING_RE = /(?<!\d)\d{13}(?!\d)/g
 const EPOCH_US_IN_STRING_RE = /(?<!\d)\d{16}(?!\d)/g
+/** Rule R18: keys holding W3-F revisions (clock-seeded). */
+const REVISION_KEYS = new Set(['revision', 'baseRevision', 'configRevision', 'documentRevision'])
 
 function isPlain(value: object): boolean {
   const proto = Object.getPrototypeOf(value)
@@ -270,6 +272,14 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
       return replaceString(value, floor, seen)
     }
     if (typeof value === 'number') {
+      // Rule R18 — W3-F resource revisions under `revision`, `baseRevision`,
+      // `configRevision` and `documentRevision`: drawn from a counter that
+      // starts at the wall clock in microseconds, so the numbers differ every
+      // run. Numbered by first appearance (`<rev#n>`): the same revision
+      // twice and two different ones stay distinguishable, so a save that
+      // went over the wrong revision shows. Hides: the number only. The
+      // `writer` of a change is compared as is.
+      if (key && REVISION_KEYS.has(key)) return numbered('rev', String(value))
       // Rule R8 (numeric form): epoch-ms numbers in the run window.
       if (Number.isInteger(value) && inWindow(value)) {
         seen.push(value)

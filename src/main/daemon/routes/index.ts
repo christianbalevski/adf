@@ -38,6 +38,7 @@ import { registerFleetClientRoutes } from './fleet-client-routes'
 import { registerPackageJobRoutes } from './package-job-routes'
 import { registerAgentFileConfigRoutes } from './agent-file-config-routes'
 import { registerTemplateFileRoutes } from './template-file-routes'
+import { registerClientLifecycleRoutes } from './client-lifecycle-routes'
 import { registerOAuthRelayRoutes } from './oauth-relay-routes'
 import { registerFsFolderRoutes } from './fs-folder-routes'
 
@@ -88,6 +89,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerPackageJobRoutes,
   registerAgentFileConfigRoutes,
   registerTemplateFileRoutes,
+  registerClientLifecycleRoutes,
   registerOAuthRelayRoutes,
   registerFsFolderRoutes,
 ]

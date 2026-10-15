@@ -139,6 +139,21 @@ export interface ClientSession {
   reconnect(): void
   /** End the session (DELETE /client/sessions/:id) and close the stream. */
   end(): Promise<void>
+  /**
+   * Studio's quit (§8.3): close the stream and end the session through
+   * POST /client/sessions/:id/quit, which stops the daemon when `stopDaemon`
+   * and the daemon allows it. Null when no session was open.
+   */
+  quit?(stopDaemon: boolean): Promise<ClientQuitAnswer | null>
+}
+
+/** POST /client/sessions/:id/quit answer (daemon/routes/client-lifecycle-routes.ts). */
+export interface ClientQuitAnswer {
+  sessionId: string
+  ended: boolean
+  stopping: boolean
+  reason: string
+  otherSessions: number
 }
 
 /** POST /client/sessions/:id/documents answer (W2-A's open answer: `running`, `needsPassword`, `readOnly`, …). */
@@ -396,6 +411,23 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
     },
     reconnect() {
       stream?.reconnect()
+    },
+    async quit(stopDaemon) {
+      ended = true
+      if (retryTimer) clearTimeout(retryTimer)
+      stream?.close()
+      stream = null
+      const id = sessionId
+      sessionId = null
+      if (!id) return null
+      try {
+        return await client.withTimeout(5_000).request<ClientQuitAnswer>('POST', `/client/sessions/${encodeURIComponent(id)}/quit`, { body: { stopDaemon } })
+      } catch (err) {
+        // A daemon from before the quit route: end the session the old way (it keeps running).
+        if (!isGone(err)) throw err
+        await client.withTimeout(5_000).endClientSession(id).catch(() => {})
+        return { sessionId: id, ended: true, stopping: false, reason: 'the daemon has no quit route (older build); it keeps running', otherSessions: 0 }
+      }
     },
     async end() {
       ended = true

@@ -20,11 +20,17 @@ vi.mock('../../src/main/ipc/index', async () => {
     getCurrentWorkspace: () => null,
     readAppSetting: () => undefined,
     writeAppSetting: () => {},
+    // W4-A: the backend switch's view of the embedded backend (resume after a switch, the switch dialog).
+    hostActions: {},
   }
 })
 vi.mock('../../src/main/ipc/orbital-cache', async () => {
   const { h } = await import('./main-boot-harness')
   return { registerOrbitalCacheHandlers: () => { h.calls.push('registerOrbitalCacheHandlers') } }
+})
+vi.mock('../../src/main/backend/edit-recovery', async () => {
+  const { h } = await import('./main-boot-harness')
+  return { registerEditRecoveryHandlers: () => { h.calls.push('registerEditRecoveryHandlers') } }
 })
 vi.mock('../../src/main/utils/main-log-file', () => ({ installMainLogFile: () => null }))
 vi.mock('../../src/main/utils/stall-monitor', () => ({ startStallMonitor: () => null, stopStallMonitor: () => {} }))
@@ -65,6 +71,8 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'ipcMain.handle(adf:remote:fs-browse)',
     'ipcMain.handle(adf:remote:fs-mkdir)',
     'registerOrbitalCacheHandlers',
+    // W3-F (919b9a7c): the recovery channels, local in both modes.
+    'registerEditRecoveryHandlers',
     'ipcMain.handle(adf:app:get-fullscreen)',
     'ipcMain.handle(adf:app:set-fullscreen)',
     'protocol.handle(adf-file)',

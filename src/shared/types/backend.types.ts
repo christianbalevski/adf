@@ -16,6 +16,8 @@ export type StudioBackendSource =
   | 'file'
   /** `ADF_STUDIO_BACKEND` set in the environment (recovery override). */
   | 'env'
+  /** Embedded for this launch only: the user chose it when the daemon's version did not match (§8.2). */
+  | 'session'
 
 export interface BackendSettingsView {
   /** The backend this Studio process booted with. Fixed until restart. */
@@ -41,14 +43,40 @@ export interface BackendSettingsView {
     /** The user confirmed sending the token over plain HTTP to `remoteUrl`. */
     allowInsecureHttp: boolean
   }
-  /** False until mode switching ships; the renderer disables mode choices. */
+  /** Switching between embedded and local daemon from Settings (W4-A). */
   modeSwitchAvailable: boolean
   /** Switching to Remote daemon is available (it moves nothing, design §5.5). */
   remoteSwitchAvailable: boolean
+  /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
+  daemon?: BackendDaemonStatus | null
+  /**
+   * A switch saved but waiting for turns in flight to finish ("Wait for Them
+   * to Finish"); `gaveUp` once the wait limit passed. Settings → Backend
+   * offers Finish Switch Now and Cancel Switch.
+   */
+  pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
   /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
   encryptionUnavailableReason: string | null
+}
+
+/** Settings → Backend's daemon line (MODE-02): what Studio is connected to. */
+export interface BackendDaemonStatus {
+  connection: 'connecting' | 'connected' | 'disconnected' | 'failed'
+  /** While connecting: "Waiting for the ADF daemon (pid N)…" and the like. */
+  progress: string | null
+  /** Failed or disconnected: the reason. */
+  message: string | null
+  url: string | null
+  pid: number | null
+  version: string | null
+  startedBy: 'studio' | 'cli' | 'service' | null
+  /** Local mode: Studio started this daemon run, or attached to a running one. */
+  how: 'attached' | 'spawned' | null
+  /** The daemon's local proof (stored-value reveal, owner import); null when unknown (remote, older daemon). */
+  localProof: { available: boolean; problem: string | null } | null
+  logFile: string | null
 }
 
 export interface BackendSettingsPatch {
@@ -65,10 +93,14 @@ export interface BackendSettingsPatch {
    * counts for a new address only when this names that address's origin.
    */
   insecureHttpOrigin?: string
+  /** A switch waiting for turns in flight: restart now (`finish-now`), or stay in this mode (`cancel`). */
+  switchAction?: 'finish-now' | 'cancel'
 }
 
 export type BackendSettingsErrorCode =
   | 'mode_switch_unavailable'
+  /** The user cancelled the switch dialog; nothing changed. */
+  | 'switch_cancelled'
   | 'invalid_mode'
   | 'invalid_url'
   | 'insecure_url_unconfirmed'

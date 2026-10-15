@@ -1321,6 +1321,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
           }
         ],
         "requestBody": {
@@ -1355,6 +1361,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -2728,6 +2737,15 @@
           },
           {
             "$ref": "#/components/parameters/FilePathQuery"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatchHeader"
           }
         ],
         "requestBody": {
@@ -2746,7 +2764,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentSuccess"
+                  "$ref": "#/components/schemas/RevisionedSuccess"
                 }
               }
             }
@@ -2762,6 +2780,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -3059,6 +3080,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
           }
         ],
         "requestBody": {
@@ -3077,7 +3104,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentSuccess"
+                  "$ref": "#/components/schemas/RevisionedSuccess"
                 }
               }
             }
@@ -3093,6 +3120,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -3143,6 +3173,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
           }
         ],
         "requestBody": {
@@ -3161,7 +3197,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentSuccess"
+                  "$ref": "#/components/schemas/RevisionedSuccess"
                 }
               }
             }
@@ -3177,6 +3213,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -12972,6 +13011,14 @@
                   "format": "binary"
                 }
               }
+            },
+            "headers": {
+              "X-ADF-Revision": {
+                "description": "W3-F: the file's revision (the base of a write of these bytes through PUT …/files/content)",
+                "schema": {
+                  "type": "string"
+                }
+              }
             }
           },
           "400": {
@@ -14449,6 +14496,40 @@
             "$ref": "#/components/responses/Unavailable"
           }
         }
+      },
+      "get": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "List the open client sessions",
+        "description": "Which clients are connected (client name, version, whether its session stops the daemon when it expires), without session ids. ADF Studio names them before it offers to restart a daemon of another version (design daemon-backend.md §8.2).",
+        "operationId": "listClientSessions",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "The open sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSessionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/client/sessions/{id}": {
@@ -15097,6 +15178,206 @@
         }
       }
     },
+    "/client/sessions/{id}/quit": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "End a client session as its client quits",
+        "description": "ADF Studio's quit (design daemon-backend.md §8.3). Ends the session like DELETE /client/sessions/{id}, then, with `stopDaemon: true`, stops the daemon only when this run was started by Studio (GET /version `startedBy: studio`); with other client sessions open the stop is pending until the last one ends or expires (they get `daemon_orphan_hold`). A daemon the CLI or a service started keeps running. When it stops, new sessions are refused before the answer is sent, so none can open between the decision and the stop. The answer and the daemon log give the reason. The shutdown is the daemon's own bounded one (the same as POST /daemon/shutdown), started after the answer. An unknown or expired session id is not an error (`ended: false`): the stop decision still applies. With `stopDaemon: true` the caller must be local (loopback, no proxy headers; the local proof behind a proxy), as for POST /daemon/shutdown.",
+        "operationId": "quitClientSession",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientQuitInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session ended; whether the daemon stops",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientQuitResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "stopDaemon is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "stopDaemon must be a boolean",
+                  "code": "bad_request"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/reload-credentials": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Re-read the credential stores a client changed",
+        "description": "ADF Studio moved credentials into or out of this daemon's stores while it ran (the mode-switch handover, design daemon-backend.md §11): ChatGPT and Grok sessions (auth.daemon.json), app-level MCP sign-ins and the `studio-runtime:<scope>` keychain entry. No secret crosses HTTP: the daemon re-reads the runtime identity entry (as GET /identity does), re-runs the credential unlock of every agent degraded on locked credentials, and brings loops that failed on a subscription's auth out of `error` for each subscription whose session is now in its store. Local callers only (loopback, no proxy headers; the local proof behind a proxy).",
+        "operationId": "reloadClientCredentials",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "What the reload found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialReloadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/exit-when-closed": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Change a session's orphan behaviour",
+        "description": "The client's quit behaviour changed (ADF Studio's keepDaemonRunning): with `exitDaemonWhenClosed: true` the session's expiry stops a Studio-started daemon when no other session is open (the orphan rule, §8.3); with false it does not.",
+        "operationId": "setClientSessionExitWhenClosed",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "exitDaemonWhenClosed"
+                ],
+                "properties": {
+                  "exitDaemonWhenClosed": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "sessionId",
+                    "exitDaemonWhenClosed"
+                  ],
+                  "properties": {
+                    "sessionId": {
+                      "type": "string"
+                    },
+                    "exitDaemonWhenClosed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "exitDaemonWhenClosed is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such client session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/oauth/relay": {
       "post": {
         "tags": [
@@ -15550,6 +15831,38 @@
         "schema": {
           "type": "string"
         }
+      },
+      "BaseRevisionQuery": {
+        "name": "baseRevision",
+        "in": "query",
+        "required": false,
+        "description": "W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "IfMatchHeader": {
+        "name": "If-Match",
+        "in": "header",
+        "required": false,
+        "description": "W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field.",
+        "schema": {
+          "type": "string",
+          "example": "\"1792000000000001\""
+        }
+      },
+      "IfNoneMatchHeader": {
+        "name": "If-None-Match",
+        "in": "header",
+        "required": false,
+        "description": "W3-F: `*` makes the write a create: refused with 409 `stale_revision` when the file exists. As the body's `mustNotExist`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "*"
+          ]
+        }
       }
     },
     "responses": {
@@ -15801,6 +16114,28 @@
             "example": {
               "error": "Settings store is not configured.",
               "code": "unavailable"
+            }
+          }
+        }
+      },
+      "StaleRevision": {
+        "description": "W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/StaleRevisionError"
+            },
+            "example": {
+              "error": "The document changed by the agent since revision 1792000000000001 (now 1792000000000007). Reload it, or save again with baseRevision 1792000000000007 to overwrite.",
+              "code": "stale_revision",
+              "resource": "document",
+              "revision": 1792000000000007,
+              "baseRevision": 1792000000000001,
+              "writer": {
+                "kind": "agent"
+              },
+              "size": 42,
+              "hash": "3c8f1c1e2b0d4a9f8e7d6c5b4a39281706f5e4d3"
             }
           }
         }
@@ -16543,6 +16878,10 @@
           },
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         }
       },
@@ -16577,6 +16916,10 @@
           "renameError": {
             "type": "string",
             "description": "Open document only: why the file did not follow the name change (saved anyway)"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         }
       },
@@ -18482,6 +18825,26 @@
               "service"
             ],
             "description": "Who launched this daemon run (`ADF_DAEMON_STARTED_BY`)"
+          },
+          "localProof": {
+            "type": "object",
+            "required": [
+              "available",
+              "problem"
+            ],
+            "description": "Whether this run has a local proof (X-ADF-Local-Proof). Without one, every route that needs it refuses (POST /identity/import, the stored-value reveal routes); on Windows that happens when icacls cannot restrict the proof file. Absent in daemons before this field.",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "problem": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why there is no proof; null when available."
+              }
+            }
           }
         },
         "example": {
@@ -18840,6 +19203,10 @@
           "content_base64": {
             "type": "string",
             "description": "Binary files"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         },
         "example": {
@@ -18953,6 +19320,14 @@
           },
           "protection": {
             "$ref": "#/components/schemas/FileProtection"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter"
+          },
+          "mustNotExist": {
+            "type": "boolean",
+            "description": "W3-F: create only: refused (409 stale_revision, with the existing file's revision) when the file exists. As `If-None-Match: *`."
           }
         },
         "additionalProperties": false,
@@ -23613,6 +23988,10 @@
         "properties": {
           "content": {
             "type": "string"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter"
           }
         },
         "example": {
@@ -23633,6 +24012,10 @@
           },
           "content": {
             "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         }
       },
@@ -27422,6 +27805,10 @@
           },
           "size": {
             "type": "integer"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the revision of the written file (the writer is the request's client session, or cli)"
           }
         }
       },
@@ -27690,6 +28077,14 @@
                     "type": "integer"
                   }
                 }
+              },
+              "configRevision": {
+                "type": "integer",
+                "description": "W3-F: the revision of `agentConfig`"
+              },
+              "documentRevision": {
+                "type": "integer",
+                "description": "W3-F: the revision of `document`"
               }
             }
           }
@@ -28193,6 +28588,269 @@
             "type": "object",
             "additionalProperties": true,
             "description": "The agent's AgentConfig"
+          }
+        }
+      },
+      "ResourceWriter": {
+        "type": "object",
+        "description": "W3-F: who made a change. `agent`: the agent's own runtime, or a change no client announced. `client`: a client session, by its client name (`studio`, `tui`, …; never the session id). `cli`: a request that named no client session.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "client",
+              "cli"
+            ]
+          },
+          "client": {
+            "type": "string",
+            "description": "`client` only"
+          }
+        }
+      },
+      "StaleRevisionError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "resource",
+              "revision",
+              "baseRevision",
+              "writer",
+              "hash"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "const": "stale_revision"
+              },
+              "resource": {
+                "type": "string",
+                "description": "`config`, `document`, or the internal file path"
+              },
+              "revision": {
+                "type": "integer",
+                "description": "The current revision: a write with it as the base overwrites"
+              },
+              "baseRevision": {
+                "type": "integer",
+                "description": "The base the write named"
+              },
+              "writer": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceWriter"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who made the current revision (null: nobody known since the daemon first saw it)"
+              },
+              "size": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Current size in bytes (null for config)"
+              },
+              "hash": {
+                "type": "string",
+                "description": "sha1 of the current content (`absent` for a missing file)"
+              }
+            }
+          }
+        ]
+      },
+      "RevisionedSuccess": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgentSuccess"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
+              }
+            }
+          }
+        ]
+      },
+      "ClientQuitInput": {
+        "type": "object",
+        "properties": {
+          "stopDaemon": {
+            "type": "boolean",
+            "description": "Stop the daemon when allowed (Studio: `keepDaemonRunning` off). Default false: only the session ends."
+          }
+        }
+      },
+      "ClientQuitResult": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "ended",
+          "stopping",
+          "reason",
+          "otherSessions"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "ended": {
+            "type": "boolean",
+            "description": "False when the session had already ended or expired."
+          },
+          "stopping": {
+            "type": "boolean",
+            "description": "True when the daemon shuts down because of this request."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the daemon stops or keeps running."
+          },
+          "otherSessions": {
+            "type": "integer",
+            "description": "Client sessions still open."
+          }
+        }
+      },
+      "CredentialReloadResult": {
+        "type": "object",
+        "required": [
+          "runtime",
+          "unlocked",
+          "stillLocked",
+          "sessions",
+          "recovered"
+        ],
+        "properties": {
+          "runtime": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Runtime identity adoption after the re-read (GET /identity `runtime`); null without an owner identity service.",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "adopted",
+                  "absent",
+                  "rejected",
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "unlocked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "description": "Agents whose credentials unlocked now."
+          },
+          "stillLocked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "description": "Agents still degraded on locked credentials."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "chatgpt",
+                "grok"
+              ]
+            },
+            "description": "Subscription sessions in this daemon's stores."
+          },
+          "recovered": {
+            "type": "integer",
+            "description": "Loops that left an auth error."
+          }
+        }
+      },
+      "ClientSessionList": {
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "client",
+                "version",
+                "exitDaemonWhenClosed"
+              ],
+              "properties": {
+                "client": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "exitDaemonWhenClosed": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         }
       }

@@ -19,11 +19,19 @@
 //     raises is not echoed to that session (origin dedup);
 //   - DELETE /agents/:id/inbox: `inbox` with an empty inbox (DOC_CLEAR_INBOX);
 //   - POST /registry/agents/:id/bring-home: `adf_file_created`;
-//   - template writes (/templates*): `templates`.
+//   - template writes (/templates*): `templates`;
+//   - W3-F: PUT /agents/:id/{config,files/content,mind} of an open document
+//     that is not running (no runtime raises their frames): `config_changed`
+//     / `file_updated`, with the write's revision and writer.
+// Every write to /agents/:id/* runs as its writer (runAsWriter): the client
+// session's client, or `cli` without one, so the revision it takes and the
+// frames it raises name who wrote (W3-F).
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { approvalHub } from '../../runtime/approval-hub'
 import { DOCUMENT_HOLDER_FORMAT } from '../../runtime/runtime-service'
+import { runAsWriter, type ResourceWriter } from '../../runtime/resource-revisions'
+import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 import {
   ClientSessionError,
   ClientSessionRegistry,
@@ -170,6 +178,9 @@ function defaultRegistry(server: FastifyInstance, ctx: DaemonRouteContext): Clie
 
 const AGENT_ROUTE = /^\/agents\/([^/?]+)\//
 const AGENT_DOCUMENT = /^\/agents\/([^/?]+)\/document(?:\?|$)/
+const AGENT_CONFIG = /^\/agents\/([^/?]+)\/config(?:\?|$)/
+const AGENT_FILE_CONTENT = /^\/agents\/([^/?]+)\/files\/content(?:\?|$)/
+const AGENT_MIND = /^\/agents\/([^/?]+)\/mind(?:\?|$)/
 const AGENT_INBOX = /^\/agents\/([^/?]+)\/inbox(?:\?|$)/
 const BRING_HOME = /^\/registry\/agents\/[^/?]+\/bring-home(?:\?|$)/
 
@@ -182,12 +193,16 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
   // inherits the stamp. This MUST stay the last preHandler hook, so done()
   // calls the handler itself (W2-A's async guard is registered before it).
   server.addHook('preHandler', (request, _reply, done) => {
-    const sessionId = clientSessionOf(request.headers)
-    if (sessionId && sessions.has(sessionId) && request.method !== 'GET' && request.method !== 'HEAD' && AGENT_ROUTE.test(request.url)) {
-      runAsClientWrite(sessionId, () => done())
+    if (request.method === 'GET' || request.method === 'HEAD' || !AGENT_ROUTE.test(request.url)) {
+      done()
       return
     }
-    done()
+    const sessionId = clientSessionOf(request.headers)
+    const live = sessionId && sessions.has(sessionId) ? sessionId : null
+    runAsWriter(writerOf(sessions, live), () => {
+      if (live) runAsClientWrite(live, () => done())
+      else done()
+    })
   })
 
   server.addHook('onSend', (request, reply, payload, done) => {
@@ -199,14 +214,43 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
       const url = request.url
       const inbox = request.method === 'DELETE' ? AGENT_INBOX.exec(url) : null
       const document = request.method === 'PUT' ? AGENT_DOCUMENT.exec(url) : null
+      const put = request.method === 'PUT'
+      const config = put ? AGENT_CONFIG.exec(url) : null
+      const fileContent = put ? (AGENT_FILE_CONTENT.exec(url) ?? AGENT_MIND.exec(url)) : null
       if (document) {
         // What an agent's own fs_write of document.md raises (agent-executor),
         // so every other client refreshes through the same renderer path.
         const ref = ctx.runtime.getAgentOrDocument(decodeSegment(document[1]))
         const content = (request.body as { content?: unknown } | undefined)?.content
         if (ref && typeof content === 'string') {
-          const origin = clientSessionOf(request.headers)
-          sessions.publishExecutor({ agentId: ref.id, filePath: ref.filePath ?? null, event: { type: 'document_updated', payload: { content }, timestamp: Date.now() } }, origin && sessions.has(origin) ? origin : null)
+          const origin = liveSession(sessions, request.headers)
+          sessions.publishExecutor({ agentId: ref.id, filePath: ref.filePath ?? null, event: { type: 'document_updated', payload: { content, ...revisionOf(payload), writer: writerOf(sessions, origin) }, timestamp: Date.now() } }, origin)
+        }
+      } else if (config || fileContent) {
+        // A running agent raises these itself (its config-change choke point,
+        // its workspace's file-change callback). An open document runs
+        // nothing, so the write announces itself, or the other clients would
+        // learn of it only through a refused save.
+        const ref = ctx.runtime.getAgentOrDocument(decodeSegment((config ?? fileContent)![1]))
+        if (ref && !ctx.runtime.getAgent(ref.id)) {
+          const origin = liveSession(sessions, request.headers)
+          const target = { agentId: ref.id, filePath: ref.filePath ?? null }
+          const extra = { ...revisionOf(payload), writer: writerOf(sessions, origin) }
+          if (config) {
+            const result = parseJson(payload) as { config?: AgentConfig; filePath?: string } | null
+            if (result?.config) {
+              const filePath = result.filePath ?? ref.filePath ?? null
+              const publish = () => sessions.publishPush('config_changed', { filePath, config: result.config!, ...extra }, { agentId: ref.id, filePath })
+              if (origin) runAsClientWrite(origin, publish)
+              else publish()
+            }
+          } else {
+            const content = (request.body as { content?: unknown } | undefined)?.content
+            const path = AGENT_MIND.test(url) ? 'mind.md' : (request.query as { path?: unknown } | undefined)?.path
+            if (typeof content === 'string' && typeof path === 'string' && path !== 'README.md' && path !== 'document.md') {
+              sessions.publishExecutor({ ...target, event: { type: 'file_updated', payload: { path, content, ...extra }, timestamp: Date.now() } }, origin)
+            }
+          }
         }
       } else if (inbox) {
         const ref = ctx.runtime.getAgentOrDocument(decodeSegment(inbox[1]))
@@ -232,6 +276,35 @@ function send(reply: FastifyReply, run: () => unknown): unknown {
   } catch (err) {
     return sendError(reply, err)
   }
+}
+
+/**
+ * The writer of a request (W3-F), for a route whose write runs after an
+ * await (the preHandler's runAsWriter covers only the synchronous part):
+ * the route wraps its write in runAsWriter(requestWriter(…)) itself.
+ */
+export function requestWriter(request: { server: FastifyInstance; headers: Record<string, string | string[] | undefined> }): ResourceWriter {
+  const sessions = (request.server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
+  if (!sessions) return { kind: 'cli' }
+  return writerOf(sessions, liveSession(sessions, request.headers))
+}
+
+/** The live client session a request names, or null. */
+function liveSession(sessions: ClientSessionRegistry, headers: Record<string, string | string[] | undefined>): string | null {
+  const sessionId = clientSessionOf(headers)
+  return sessionId && sessions.has(sessionId) ? sessionId : null
+}
+
+/** Who a write to /agents/:id/* is (W3-F): its live session's client, or the CLI. Never the session id. */
+function writerOf(sessions: ClientSessionRegistry, sessionId: string | null): ResourceWriter {
+  if (!sessionId) return { kind: 'cli' }
+  return { kind: 'client', client: sessions.clientOf(sessionId) ?? 'client' }
+}
+
+/** `{revision}` of a write answer, when it has one. */
+function revisionOf(payload: unknown): { revision?: number } {
+  const revision = (parseJson(payload) as { revision?: unknown } | null)?.revision
+  return typeof revision === 'number' ? { revision } : {}
 }
 
 /** The client session a request names (X-ADF-Client-Session), when it is a session id. */

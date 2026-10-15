@@ -756,8 +756,9 @@ export class EventBridge {
         }
       })
       await step('focused config', async () => {
-        const { config } = await client.request<{ config: unknown }>('GET', `/agents/${encodeURIComponent(focusedId)}/config`)
-        this.deps.output.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath: focusedPath, config })
+        const { config, revision } = await client.request<{ config: unknown; revision?: number }>('GET', `/agents/${encodeURIComponent(focusedId)}/config`)
+        // W3-F: the revision the config panel saves over from now on (a resync names no writer).
+        this.deps.output.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath: focusedPath, config, ...(revision !== undefined ? { revision } : {}) })
       })
     } else if (focusedPath) {
       this.log.warn('[Backend] Resync: the open file has no agent id in the daemon; its chat and config are read when it opens again')

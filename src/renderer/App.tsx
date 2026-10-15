@@ -3,6 +3,8 @@ import { AppShell } from './components/layout/AppShell'
 import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
+import { saveActiveEditorTab } from './utils/editor-save'
+import { startEditRecovery } from './utils/edit-recovery'
 import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
@@ -87,20 +89,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save)
+  // W3-F: copies of unsaved text a "changed elsewhere" notice holds, so a quit keeps them.
+  useEffect(() => startEditRecovery(), [])
+
+  // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save).
+  // The tab is saved through the editor's own save path (W3-F): over its
+  // revision, never while its "changed elsewhere" notice is up (the notice
+  // gets focus instead).
   const saveActiveDocument = useCallback(() => {
-    const tabStore = useEditorTabsStore.getState()
-    const activeTab = tabStore.tabs.find((t) => t.path === tabStore.activeTabPath)
-    if (activeTab && activeTab.isDirty) {
-      const path = activeTab.path
-      const content = activeTab.content
-      if (path === 'README.md') {
-        window.adfApi?.setDocument(content)
-      } else {
-        window.adfApi?.writeInternalFile(path, content)
-      }
-      tabStore.markTabSaved(path)
-    }
+    saveActiveEditorTab()
     window.adfApi?.saveFile().then((result) => {
       if (result?.success) {
         useDocumentStore.getState().setDirty(false)

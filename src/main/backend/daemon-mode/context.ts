@@ -37,6 +37,12 @@ export interface DaemonModeContext {
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
   hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }
+  /**
+   * Local mode, after an owner import in the daemon (§5.3.1): rewrite the
+   * `studio-runtime:<scope>` entry with a delegation the new owner signs
+   * (handover.ts syncStudioRuntimeEntry). Returns a line for the log.
+   */
+  afterOwnerImport?: (phrase: string) => Promise<string>
   /** Remote mode's picker, OAuth relay and upload (remote/, W4-B); null or absent in local mode. */
   remote?: RemoteServices | null
   log: Pick<Console, 'log' | 'warn' | 'error'>

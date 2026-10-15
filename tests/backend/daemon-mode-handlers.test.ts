@@ -56,8 +56,10 @@ afterAll(async () => {
 })
 
 describe('daemon-mode boot', () => {
-  it('registers Studio as a local lease-registry client, not a runtime host', () => {
-    expect(clientRegistrations).toEqual([['local', expect.objectContaining({ settingsPath: join(dir, 'adf-settings.json') })]])
+  it('registers Studio as a local lease-registry client, not a runtime host; the daemon URL once connected (W4-A)', () => {
+    expect(clientRegistrations[0]).toEqual(['local', expect.objectContaining({ settingsPath: join(dir, 'adf-settings.json') })])
+    expect(clientRegistrations[0][1]).not.toHaveProperty('controlUrl')
+    expect(clientRegistrations.at(-1)).toEqual(['local', expect.objectContaining({ settingsPath: join(dir, 'adf-settings.json'), controlUrl: BASE })])
   })
 })
 

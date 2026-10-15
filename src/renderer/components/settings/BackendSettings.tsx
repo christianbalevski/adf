@@ -1,17 +1,19 @@
 /**
  * Settings → Backend: where agents run (embedded in Studio, a local ADF
  * daemon, or a remote one). Stored in studio-backend.json by main and read at
- * launch, so every change applies at the next start.
+ * launch.
  *
- * Switching the backend ships with the handover (later build); until then the
- * mode choice is shown but disabled. The remote token is write-only here:
- * main never returns it, and this component never logs it.
+ * Choosing another mode opens main's switch dialog (what moves, what happens
+ * to running agents); confirming restarts Studio into it, and the handover
+ * runs at that start (design §11); a switch to or from Remote daemon moves
+ * client settings only. The remote token is write-only here: main never
+ * returns it, and this component never logs it.
  */
 
 import { useEffect, useState } from 'react'
 import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextInput } from '../ui'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../../shared/utils/remote-backend-url'
-import type { BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
 
 type MessageGroup = 'backend' | 'remote'
 
@@ -30,8 +32,26 @@ const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
 function activeLine(view: BackendSettingsView): string {
   const mode = MODE_LABELS[view.active.mode]
   if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
+  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   return `This launch runs ${mode}.`
+}
+
+const CONNECTION_LABELS: Record<BackendDaemonStatus['connection'], string> = {
+  connecting: 'Connecting',
+  connected: 'Connected',
+  disconnected: 'Not connected, retrying',
+  failed: 'Not connected',
+}
+
+/** MODE-02: the daemon this launch uses (local: pid, version, who started it). */
+function daemonLine(daemon: BackendDaemonStatus): string {
+  const parts = [daemon.progress ?? CONNECTION_LABELS[daemon.connection]]
+  if (daemon.url) parts.push(daemon.url)
+  if (daemon.pid) parts.push(`pid ${daemon.pid}`)
+  if (daemon.version) parts.push(`version ${daemon.version}`)
+  if (daemon.startedBy) parts.push(daemon.how === 'spawned' ? 'started by this Studio' : `started by ${daemon.startedBy === 'studio' ? 'Studio' : daemon.startedBy === 'cli' ? 'the ADF CLI' : 'a service'}`)
+  return parts.join(' · ')
 }
 
 function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: string } | null }) {
@@ -78,6 +98,17 @@ export function BackendSettings() {
     return () => { cancelled = true }
   }, [])
 
+  // While Studio waits for its daemon ("Waiting for the ADF daemon (pid N)…") or a switch waits for turns in flight, follow it.
+  const daemonState = view?.daemon?.connection
+  const switchWaiting = !!view?.pendingSwitch
+  useEffect(() => {
+    if (daemonState !== 'connecting' && daemonState !== 'disconnected' && !switchWaiting) return
+    const timer = setInterval(() => {
+      window.adfApi?.getBackendSettings().then((next) => setView((prev) => prev ? { ...prev, daemon: next.daemon, pendingSwitch: next.pendingSwitch } : next)).catch(() => {})
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [daemonState, switchWaiting])
+
   const save = async (group: MessageGroup, patch: BackendSettingsPatch, okText = 'Saved. Applies at the next launch.', resetDrafts = false) => {
     setSaving(true)
     setMessage(null)
@@ -85,9 +116,9 @@ export function BackendSettings() {
       const result = await window.adfApi.setBackendSettings(patch)
       if (result.ok) {
         adopt(result.view, resetDrafts)
-        setMessage({ group, kind: 'ok', text: [okText, ...result.notices].join(' ') })
+        setMessage({ group, kind: 'ok', text: [okText, ...result.notices].filter(Boolean).join(' ') })
       } else {
-        setMessage({ group, kind: 'error', text: result.error })
+        setMessage({ group, kind: result.code === 'switch_cancelled' ? 'ok' : 'error', text: result.error })
       }
     } catch {
       setMessage({ group, kind: 'error', text: 'Could not save the backend settings.' })
@@ -121,7 +152,7 @@ export function BackendSettings() {
     void save('remote', patch, undefined, true)
   }
 
-  // Remote daemon actions (W4-B): test the draft, switch to the saved daemon, restart.
+  // Remote daemon actions (W4-B): test the draft, switch to the saved daemon (main's switch dialog, then the restart).
   const testRemote = async () => {
     setChecking(true)
     setCheck(null)
@@ -137,13 +168,12 @@ export function BackendSettings() {
   const remoteConfigured = view.configured.mode === 'remote'
   const remoteActive = view.active.mode === 'remote'
   const restart = () => { void window.adfApi.restartStudio() }
-  /** A saved mode this launch does not run (not when ADF_STUDIO_BACKEND decides the mode). */
-  const pendingRestart = view.active.source !== 'env' && view.configured.mode !== view.active.mode
-  const runsNow = view.active.mode === 'embedded'
-    ? 'Agents running in Studio stop when it quits.'
-    : view.active.mode === 'local'
-      ? 'The local daemon keeps or stops its agents as "Keep the daemon running" says.'
-      : 'Studio disconnects from the remote daemon it uses now.'
+  /**
+   * A saved mode this launch does not run outside a switch (a launch that fell
+   * back, a hand-edited file). Not for ADF_STUDIO_BACKEND or a session-only
+   * launch, which say so above, nor a switch waiting for turns in flight.
+   */
+  const pendingRestart = view.active.source !== 'env' && view.active.source !== 'session' && !view.pendingSwitch && view.configured.mode !== view.active.mode
 
   const messageFor = (group: MessageGroup) =>
     message?.group === group ? message : null
@@ -168,7 +198,9 @@ export function BackendSettings() {
         <SettingsRow
           label="Run agents in"
           description={MODE_DESCRIPTIONS[view.configured.mode]}
-          help={view.modeSwitchAvailable ? activeLine(view) : `${activeLine(view)} Switching the backend is available in a later build.`}
+          help={view.modeSwitchAvailable
+            ? `${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`
+            : `${activeLine(view)} Switching the backend is available in a later build.`}
         >
           <SegmentedControl
             value={view.configured.mode}
@@ -176,30 +208,56 @@ export function BackendSettings() {
               value: mode,
               label: MODE_LABELS[mode],
               // Embedded stays selectable: it is how a hand-edited file is undone.
-              disabled: !view.modeSwitchAvailable && mode !== view.configured.mode && mode !== 'embedded',
+              disabled: saving || (mode !== view.configured.mode && mode !== 'embedded' &&
+                (!view.modeSwitchAvailable || (mode === 'remote' && !view.remoteSwitchAvailable))),
             }))}
-            onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }) }}
+            onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved.') }}
             ariaLabel="Backend"
           />
         </SettingsRow>
-        <SettingsRow
+        {view.pendingSwitch && (
+          <SettingsRow
+            separator
+            label={`Switching to ${MODE_LABELS[view.pendingSwitch.target]}`}
+            description={view.pendingSwitch.gaveUp
+              ? `Still waiting for ${view.pendingSwitch.waitingFor.join(', ') || 'a turn'} after 30 minutes. Finish the switch now (the turns are stopped), or cancel it and stay in ${MODE_LABELS[view.active.mode]}.`
+              : `Studio restarts once the turns in flight finish (${view.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
+          >
+            <div className="flex items-center gap-2">
+              <Button variant="primary" disabled={saving} onClick={() => void save('backend', { switchAction: 'finish-now' }, '')}>Finish Switch Now</Button>
+              <Button disabled={saving} onClick={() => void save('backend', { switchAction: 'cancel' }, '')}>Cancel Switch</Button>
+            </div>
+          </SettingsRow>
+        )}
+        {view.daemon && (
+          <SettingsRow
+            separator
+            label="ADF daemon"
+            description={daemonLine(view.daemon)}
+            help={view.daemon.message ?? undefined}
+            error={view.daemon.localProof && !view.daemon.localProof.available
+              ? `The daemon runs without its local proof (${view.daemon.localProof.problem ?? 'unknown reason'}), so revealing stored values and importing an identity are refused. Restart the daemon after fixing the file's permissions.`
+              : undefined}
+          />
+        )}
+        {(view.configured.mode === 'local' || view.active.mode === 'local') && <SettingsRow
           separator
           label="Keep the daemon running when Studio quits"
-          description="Applies to Local daemon. Off: quitting Studio stops a daemon that Studio started, as quitting stops agents in embedded mode. On: the daemon keeps running your agents, and the ADF CLI manages it (adf daemon stop)."
+          description="Off: quitting Studio stops a daemon that Studio started, as quitting stops agents in embedded mode; with another client (the terminal app) connected it stops when that one disconnects; after a crash it stops 60 seconds later. A daemon started with adf daemon start is never stopped by Studio. On: the daemon keeps running your agents, and the ADF CLI manages it (adf daemon stop)."
         >
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={view.configured.keepDaemonRunning}
               disabled={saving}
-              onChange={(event) => void save('backend', { keepDaemonRunning: event.target.checked }, 'Saved. Applies at the next launch.')}
+              onChange={(event) => void save('backend', { keepDaemonRunning: event.target.checked }, 'Saved. Applies from now on.')}
               className="rounded text-blue-500"
             />
             <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
               {view.configured.keepDaemonRunning ? 'On' : 'Off'}
             </span>
           </label>
-        </SettingsRow>
+        </SettingsRow>}
         {messageFor('backend') && (
           <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5">
             <MessageLine message={messageFor('backend')} />
@@ -288,18 +346,18 @@ export function BackendSettings() {
         <SettingsRow
           separator
           label="Use this daemon"
-          description={remoteActive && remoteConfigured
-            ? 'Studio is using this remote daemon. Choose Embedded above to run agents in Studio again.'
+          description={remoteActive
+            ? 'Studio is using this remote daemon. Choose another mode above to switch back.'
             : remoteConfigured
-              ? 'Saved as the backend for the next launch. Restart Studio to connect.'
-              : `Saves Remote daemon as the backend for the next launch; Restart now then connects. ${runsNow} Agents in the remote daemon keep running there.`}
+              ? 'Saved as the backend; this launch does not run it.'
+              : 'Shows what moves (client settings only; sign-ins and keys stay on this computer) and what happens to running agents, then restarts Studio connected to this daemon.'}
         >
           {!remoteConfigured && (
             <Button
               disabled={!view.remoteSwitchAvailable || !remoteReady || saving}
-              onClick={() => void save('remote', { mode: 'remote' }, 'Saved. Restart Studio to connect to the remote daemon.')}
+              onClick={() => void save('remote', { mode: 'remote' }, '')}
             >
-              Use for next launch
+              Switch to This Daemon
             </Button>
           )}
         </SettingsRow>

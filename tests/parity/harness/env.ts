@@ -81,7 +81,7 @@ function realStatePaths(): { files: string[]; trees: string[] } {
     for (const product of ['ADF Studio', 'adf-studio']) {
       const dir = join(base, product)
       for (const name of [
-        'adf-settings.json', 'studio-backend.json', 'studio-client-settings.json', 'daemon-token',
+        'adf-settings.json', 'studio-backend.json', 'studio-client-settings.json', 'studio-handover.json', 'daemon-token',
         'owner-secrets.json', 'runtime-enc-key',
         join('chatgpt-subscription', 'auth.json'), join('chatgpt-subscription', 'auth.daemon.json'),
         join('grok-subscription', 'auth.json'), join('grok-subscription', 'auth.daemon.json'),

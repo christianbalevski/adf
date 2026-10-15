@@ -1,9 +1,10 @@
-import { app, ipcMain, safeStorage } from 'electron'
+import { ipcMain, safeStorage } from 'electron'
 import { IPC } from '../../shared/constants/ipc-channels'
-import type { BackendSettingsPatch, RemoteCheckRequest, RemoteCheckResult } from '../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckRequest, RemoteCheckResult, StudioBackendMode } from '../../shared/types/backend.types'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import { createBackendSettingsStore, readRemoteToken, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { remoteHandshake, RemoteConnectError } from './daemon-mode/remote/connector'
+import { relaunchStudio } from './mode-switch'
 
 const SAFE_PREFIX = 'safe:'
 
@@ -41,18 +42,24 @@ export const safeStorageCodec: SecretCodec = {
  * mode, outside `registerAllIpcHandlers`, so both backends share them.
  * The patch may carry a new token; it is never logged and never returned.
  */
-export function registerBackendSettingsHandlers(boot: BootBackend): BackendSettingsStore {
-  const store = createBackendSettingsStore({ boot, codec: safeStorageCodec })
+export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
+  daemonStatus?: () => BackendDaemonStatus | null
+  confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
+  applyModeSwitch?: (target: StudioBackendMode) => string | void
+  onKeepDaemonRunningChange?: (keep: boolean) => void
+  pendingSwitch?: () => BackendSettingsView['pendingSwitch']
+  finishSwitchNow?: () => string | null
+  cancelSwitch?: () => StudioBackendMode | null
+} = {}): BackendSettingsStore {
+  const store = createBackendSettingsStore({ boot, codec: safeStorageCodec, ...hooks })
   ipcMain.handle(IPC.BACKEND_SETTINGS_GET, () => store.get())
   ipcMain.handle(IPC.BACKEND_SETTINGS_SET, (_event, patch: BackendSettingsPatch) =>
     store.set(patch && typeof patch === 'object' ? patch : {}))
   ipcMain.handle(IPC.BACKEND_REMOTE_CHECK, (_event, request: RemoteCheckRequest) =>
     checkRemoteBackend(store.config(), safeStorageCodec, request && typeof request === 'object' ? request : {}))
-  ipcMain.handle(IPC.BACKEND_RESTART_STUDIO, () => {
-    console.log('[Backend] Restarting Studio (Settings → Backend), so the saved backend applies')
-    app.relaunch()
-    app.quit()
-  })
+  // The saved mode differs from the running one outside a switch (a boot that fell back, a
+  // hand-edited file): restart into it, dropping a session-only override (mode-switch.ts).
+  ipcMain.handle(IPC.BACKEND_RESTART_STUDIO, () => { relaunchStudio('Restart Studio in Settings → Backend, so the saved backend applies') })
   // The daemon-side picker exists in daemon mode only (daemon-mode/remote/,
   // registered with the other daemon-mode channels). Embedded Studio never
   // asks for a pick; a stray call gets an answer, not "no handler".
