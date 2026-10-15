@@ -729,26 +729,29 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       if (d.steps.length !== e.steps.length) return 0
       let n = 0
       const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
-      let confirmRefused = false
+      // The backup stays unconfirmed only because of a refused step that confirmed it in embedded
+      // (confirm-backup, or a restore that succeeded): before one, backupConfirmed must match.
+      let unconfirmedByRefusal = false
       d.steps.forEach((step, i) => {
         const base = e.steps[i]
         if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
         const r = step.result
         let ok = false
         switch (step.channel) {
-          case IPC.IDENTITY_OWNER_STATUS:
-            ok = obj(r) && obj(base.result) && r.hasMnemonic === false && base.result.hasMnemonic === true
-              && same({ ...r, hasMnemonic: true, backupConfirmed: base.result.backupConfirmed }, base.result)
+          case IPC.IDENTITY_OWNER_STATUS: {
+            if (!obj(r) || !obj(base.result) || r.hasMnemonic !== false || base.result.hasMnemonic !== true) break
+            const backupDiffers = r.backupConfirmed !== base.result.backupConfirmed
+            if (backupDiffers && !(unconfirmedByRefusal && r.backupConfirmed === false && base.result.backupConfirmed === true)) break
+            ok = same({ ...r, hasMnemonic: true, backupConfirmed: base.result.backupConfirmed }, base.result)
             break
+          }
           case IPC.IDENTITY_OWNER_REVEAL_MNEMONIC:
             ok = same(r, { mnemonic: null, reason: REMOTE_OWNER_BACKUP_SENTENCE })
             break
           case IPC.IDENTITY_OWNER_CONFIRM_BACKUP:
-            ok = same(r, { success: false, error: REMOTE_OWNER_IDENTITY_SENTENCE })
-            if (ok) confirmRefused = true
-            break
           case IPC.IDENTITY_OWNER_IMPORT:
             ok = same(r, { success: false, error: REMOTE_OWNER_IDENTITY_SENTENCE })
+            if (ok && obj(base.result) && base.result.success === true) unconfirmedByRefusal = true
             break
         }
         if (!ok) return
@@ -757,8 +760,8 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       })
       const settings = d.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
       const baseSettings = e.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
-      if (settings && baseSettings && settings.ownerSeedBackupConfirmed !== baseSettings.ownerSeedBackupConfirmed && baseSettings.ownerSeedBackupConfirmed === true && (confirmRefused || d.scenario === 'owner-import')) {
-        settings.ownerSeedBackupConfirmed = baseSettings.ownerSeedBackupConfirmed
+      if (unconfirmedByRefusal && settings && baseSettings && settings.ownerSeedBackupConfirmed === false && baseSettings.ownerSeedBackupConfirmed === true) {
+        settings.ownerSeedBackupConfirmed = true
         n++
       }
       return n
@@ -780,6 +783,21 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         return true
       })
       return n
+    },
+  },
+  {
+    id: 'remote:no-os-recent-documents',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background'],
+    path: 'local calls: app.addRecentDocument',
+    what: 'In remote mode an opened file is a path on the daemon\'s machine: it goes into Open Recent (client settings) but not into the OS recent documents, where the Windows shell may contact a UNC host (W4-B review).',
+    apply(d, e) {
+      const recents = e.local.filter((c) => c.api === 'app.addRecentDocument').length
+      if (recents === 0 || d.local.some((c) => c.api === 'app.addRecentDocument')) return 0
+      if (!same(d.local, e.local.filter((c) => c.api !== 'app.addRecentDocument'))) return 0
+      d.local = clone(e.local)
+      return recents
     },
   },
 ]
