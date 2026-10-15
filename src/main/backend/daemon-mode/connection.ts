@@ -71,6 +71,12 @@ export class DaemonConnection {
         return this.daemonClient
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
+        if (err instanceof Error && err.name === 'SwitchToEmbeddedError') {
+          // The user chose embedded for this session (§8.2): Studio is restarting, no failure dialog.
+          this.log.log(`[Backend] ${message}`)
+          this.set({ state: 'connecting', progress: 'Restarting Studio in embedded mode…' })
+          throw new BackendNotConnectedError(message)
+        }
         this.log.error(`[Backend] No ADF daemon for this session: ${message}`)
         this.set({ state: 'failed', message })
         throw new BackendNotConnectedError(`Studio is not connected to an ADF daemon: ${message}`)

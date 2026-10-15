@@ -447,6 +447,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         await session.releaseAll()
         if (deps.mode === 'local' && clientSession?.quit) answer = await clientSession.quit(stopDaemon)
         else await clientSession?.end()
+        // No session was ever opened on a daemon this Studio started: the orphan rule cannot stop it, so ask directly.
+        if (!answer && stopDaemon && connection.endpointInfo?.how === 'spawned' && connection.current) {
+          answer = await connection.current.withTimeout(5_000).request<ClientQuitAnswer>('POST', '/client/sessions/none/quit', { body: { stopDaemon: true } })
+        }
       } catch (err) {
         log.warn('[Backend] Ending the client session failed:', err)
       }
