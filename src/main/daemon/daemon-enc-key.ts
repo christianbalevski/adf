@@ -21,6 +21,7 @@ import {
   generateX25519KeyPair,
   extractRawX25519PublicKey,
 } from '../crypto/envelope-crypto'
+import { protectSecretFile } from '../utils/secret-file'
 
 export interface DaemonEncKey {
   /** X25519 private key, PKCS8 DER — feeds AdfWorkspace.unlockEnvelopes. */
@@ -83,8 +84,11 @@ export function ensureDaemonEncKey(settingsDir: string): DaemonEncKey {
         'backup, or delete it deliberately to start over (agents will need re-provisioning in Studio).',
       )
     }
-    // Enforce permissions even if the file predates this check or was copied.
-    try { chmodSync(keyPath, 0o600) } catch { /* windows / read-only fs */ }
+    // Enforce permissions even if the file predates this check or was copied
+    // (on Windows its own ACL, W5-D1), and on the revocation list next to it.
+    protectSecretFile(keyPath)
+    const revokedPath = join(settingsDir, REVOKED_FILENAME)
+    if (existsSync(revokedPath)) protectSecretFile(revokedPath)
   } else {
     const kp = generateX25519KeyPair()
     privateKeyPkcs8 = kp.privateKey
@@ -94,6 +98,7 @@ export function ensureDaemonEncKey(settingsDir: string): DaemonEncKey {
       public_key: extractRawX25519PublicKey(kp.publicKey).toString('base64'),
     }
     writeFileSync(keyPath, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 })
+    protectSecretFile(keyPath)
   }
 
   const publicKeyRaw = publicFromPrivate(privateKeyPkcs8)
@@ -144,6 +149,7 @@ export function rotateDaemonEncKey(settingsDir: string): { key: DaemonEncKey; re
   if (!revoked.includes(current.label)) {
     const revokedPath = join(settingsDir, REVOKED_FILENAME)
     writeFileSync(revokedPath + '.tmp', JSON.stringify({ v: 1, labels: [...revoked, current.label] }, null, 2) + '\n', { mode: 0o600 })
+    protectSecretFile(revokedPath + '.tmp') // the ACL moves with the rename
     renameSync(revokedPath + '.tmp', revokedPath)
   }
   const kp = generateX25519KeyPair()
@@ -153,6 +159,7 @@ export function rotateDaemonEncKey(settingsDir: string): { key: DaemonEncKey; re
     public_key: extractRawX25519PublicKey(kp.publicKey).toString('base64'),
   }
   writeFileSync(current.keyPath + '.tmp', JSON.stringify(record, null, 2) + '\n', { mode: 0o600 })
+  protectSecretFile(current.keyPath + '.tmp') // the ACL moves with the rename
   renameSync(current.keyPath + '.tmp', current.keyPath)
   try { chmodSync(current.keyPath, 0o600) } catch { /* windows / read-only fs */ }
   return { key: ensureDaemonEncKey(settingsDir), retiredLabel: current.label }

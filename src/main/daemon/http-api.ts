@@ -56,6 +56,7 @@ import { convertOwnLegacyPassword } from '../services/envelope-actions'
 import { readFileProviderConfig } from './path-agent-ops'
 import { parseBaseRevision } from '../runtime/resource-revisions'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
+import { SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -659,21 +660,42 @@ function redactProviders(providers: unknown): unknown {
  * redaction placeholder back (clients round-tripping a GET response must not
  * clobber real keys). Entries with a placeholder but no stored match drop the
  * apiKey field entirely rather than persisting the placeholder.
+ *
+ * The stored key is restored only to the endpoint it was entered for: same
+ * id, same `type` and same `baseUrl` (W5-D1). A placeholder on an entry whose
+ * address or type changed is refused (`refused` names the provider): a client
+ * that only holds the placeholder must not redirect the key to a server of
+ * its choosing. The key has to be entered again.
  */
-function restoreRedactedProviderKeys(incoming: unknown, existing: unknown): unknown {
-  if (!Array.isArray(incoming)) return incoming
+function restoreRedactedProviderKeys(incoming: unknown, existing: unknown): { value: unknown; refused: string | null } {
+  if (!Array.isArray(incoming)) return { value: incoming, refused: null }
   const existingProviders = Array.isArray(existing) ? existing : []
-  return incoming.map((entry) => {
+  let refused: string | null = null
+  const value = incoming.map((entry) => {
     if (!entry || typeof entry !== 'object') return entry
     const provider = entry as Record<string, unknown>
-    if (provider.apiKey !== REDACTED_API_KEY) return provider
     const match = existingProviders.find(
       (candidate) => !!candidate && typeof candidate === 'object' && (candidate as Record<string, unknown>).id === provider.id
     ) as Record<string, unknown> | undefined
-    if (match && typeof match.apiKey === 'string') return { ...provider, apiKey: match.apiKey }
+    const sameEndpoint = !!match && (match.baseUrl ?? '') === (provider.baseUrl ?? '') && (match.type ?? '') === (provider.type ?? '')
+    const name = typeof provider.name === 'string' && provider.name ? provider.name : String(provider.id)
+    const changedEndpoint = `The address or type of provider "${name}" changed, so its stored API key is not sent to the new endpoint. Enter the API key again.`
+    if (provider.apiKey !== REDACTED_API_KEY) {
+      // A secret-store entry with no key is filled from the vault by id
+      // (FileSettingsStore.withVaultKey): the same rule applies to it.
+      const vaultFilled = provider.apiKeyStorage === SECRET_STORE_KEY_STORAGE && !provider.apiKey
+      if (vaultFilled && match && typeof match.apiKey === 'string' && match.apiKey && !sameEndpoint) refused ??= changedEndpoint
+      return provider
+    }
+    if (match && typeof match.apiKey === 'string') {
+      if (sameEndpoint) return { ...provider, apiKey: match.apiKey }
+      refused ??= changedEndpoint
+      return provider
+    }
     const { apiKey: _apiKey, ...rest } = provider
     return rest
   })
+  return { value, refused }
 }
 
 function redactSettings(all: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -748,7 +770,9 @@ export function createDaemonHttpApi(
 
   server.get('/openapi.json', async () => getOpenApiSpec())
 
-  server.get('/health', async () => ({ ok: true }))
+  // `pid` lets a local client check, before it sends the token, that the
+  // process answering is the one its pid file names (daemon-process.ts).
+  server.get('/health', async () => ({ ok: true, pid: process.pid }))
 
   const localAccess: LocalAccessOptions = {
     behindProxy: opts.security?.behindProxy ?? behindProxyFromEnv(),
@@ -859,7 +883,9 @@ export function createDaemonHttpApi(
       return forbidden(reply, `Settings key "${deniedKey}" cannot be written through the daemon API.`, 'setting_not_writable')
     }
     if ('providers' in patch) {
-      patch.providers = restoreRedactedProviderKeys(patch.providers, opts.settingsStore.get('providers'))
+      const restored = restoreRedactedProviderKeys(patch.providers, opts.settingsStore.get('providers'))
+      if (restored.refused) return badRequest(reply, restored.refused, 'api_key_required')
+      patch.providers = restored.value
     }
     opts.settingsStore.update(patch)
     return {
@@ -889,9 +915,12 @@ export function createDaemonHttpApi(
     if (!request.body || !Object.prototype.hasOwnProperty.call(request.body, 'value')) {
       return badRequest(reply, 'Request body must contain a value field.')
     }
-    const incoming = request.params.key === 'providers'
-      ? restoreRedactedProviderKeys(request.body.value, opts.settingsStore.get('providers'))
-      : request.body.value
+    let incoming = request.body.value
+    if (request.params.key === 'providers') {
+      const restored = restoreRedactedProviderKeys(request.body.value, opts.settingsStore.get('providers'))
+      if (restored.refused) return badRequest(reply, restored.refused, 'api_key_required')
+      incoming = restored.value
+    }
     opts.settingsStore.set(request.params.key, incoming)
     const stored = isSecretSettingsKey(request.params.key)
       ? null

@@ -187,13 +187,24 @@ export class FileSettingsStore implements ProviderSettingsStore {
   /**
    * A write never puts a secret-store provider's key in the file: a key that
    * arrives (echoed back from a read, or a new one) goes to the vault and the
-   * entry keeps an empty apiKey.
+   * entry keeps an empty apiKey. A secret-store entry written without a key
+   * whose `type` or `baseUrl` changed loses its vault key (logged): withVaultKey
+   * fills the key by id, and it must never reach an endpoint it was not
+   * entered for (W5-D1).
    */
   private sealProviderKeys(value: unknown): unknown {
     if (!Array.isArray(value)) return value
+    const before = new Map(((this.data.providers as ProviderConfig[] | undefined) ?? []).filter(p => p && typeof p === 'object').map(p => [p.id, p]))
     return value.map(entry => {
       if (!entry || typeof entry !== 'object') return entry
       const provider = entry as ProviderConfig
+      if (provider.apiKeyStorage === SECRET_STORE_KEY_STORAGE && !provider.apiKey && this.providerKeys) {
+        const old = before.get(provider.id)
+        if (old && ((old.baseUrl ?? '') !== (provider.baseUrl ?? '') || (old.type ?? '') !== (provider.type ?? '')) && this.providerKeys.get(provider.id) !== null) {
+          this.providerKeys.delete(provider.id)
+          console.warn(`[FileSettingsStore] Provider "${provider.id}" changed its address or type without a new key: its stored key was removed, so it is never sent to the new endpoint. Enter the key again.`)
+        }
+      }
       if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || !provider.apiKey) return entry
       const vault = this.providerKeys
       if (vault?.available()) {

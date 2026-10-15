@@ -528,12 +528,47 @@ export interface TempSnapshot {
 }
 
 /**
+ * Identity rows an export without `includeSecrets` keeps although they are
+ * stored plain: public or wrapped material only (the agent's public key,
+ * envelope descriptors, KDF parameters). Every other plain row is a secret:
+ * a legacy agent's `crypto:signing:private_key`, credential values.
+ */
+const EXPORT_KEPT_PLAIN = /^crypto:(signing:public_key$|envelope:|kdf:)/
+
+/**
+ * Remove the plain secrets from a snapshot copy (export without
+ * `includeSecrets`): plain `crypto:*` key rows and plain credential rows.
+ * Sealed rows stay (they open only with a key the receiver holds).
+ * `secure_delete` zeroes the removed values, and a VACUUM rewrites the copy
+ * so no freed page keeps an older value of any row. Returns how many rows
+ * were removed.
+ */
+export function stripPlainSecrets(file: string): number {
+  const db = new Database(file, { fileMustExist: true })
+  try {
+    db.pragma('journal_mode = DELETE')
+    db.pragma('secure_delete = ON')
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'adf_identity'").get()) return 0
+    const rows = db.prepare('SELECT purpose, encryption_algo FROM adf_identity').all() as Array<{ purpose: string; encryption_algo: string | null }>
+    const drop = rows.filter((r) => (r.encryption_algo ?? 'plain') === 'plain' && !EXPORT_KEPT_PLAIN.test(r.purpose)).map((r) => r.purpose)
+    const del = db.prepare('DELETE FROM adf_identity WHERE purpose = ?')
+    db.transaction(() => { for (const purpose of drop) del.run(purpose) })()
+    // Freed pages can still hold earlier versions of rows (an overwritten key, an older credential).
+    db.exec('VACUUM')
+    return drop.length
+  } finally {
+    try { db.close() } catch { /* closed */ }
+  }
+}
+
+/**
  * A consistent copy of `filePath` in a fresh temp folder: `export` is the
- * whole file (SQLite online backup, safe while the agent runs and writes);
+ * whole file (SQLite online backup, safe while the agent runs and writes),
+ * minus its plain secrets unless `includeSecrets` (stripPlainSecrets);
  * `share` is the identity-free copy Studio's Share and Save a copy… make
  * (AdfDatabase.snapshotForSend).
  */
-export async function snapshotToTemp(filePath: string, mode: SnapshotMode): Promise<TempSnapshot> {
+export async function snapshotToTemp(filePath: string, mode: SnapshotMode, opts: { includeSecrets?: boolean } = {}): Promise<TempSnapshot & { secretsRemoved: number }> {
   const dir = await mkdtemp(join(tmpdir(), 'adf-snapshot-'))
   const file = join(dir, basename(filePath))
   const cleanup = async () => {
@@ -543,13 +578,52 @@ export async function snapshotToTemp(filePath: string, mode: SnapshotMode): Prom
     try { await rmdir(dir) } catch { /* not empty: leave it */ }
   }
   try {
+    let secretsRemoved = 0
     if (mode === 'share') await AdfDatabase.snapshotForSend(filePath, file)
-    else await AdfDatabase.snapshotTo(filePath, file)
-    return { file, size: (await stat(file)).size, cleanup }
+    else {
+      await AdfDatabase.snapshotTo(filePath, file)
+      if (!opts.includeSecrets) secretsRemoved = stripPlainSecrets(file)
+    }
+    return { file, size: (await stat(file)).size, cleanup, secretsRemoved }
   } catch (err) {
     await cleanup()
     throw err
   }
+}
+
+/** Snapshot folders older than this were left by a daemon that died mid-download (a download takes minutes at most). */
+export const STALE_SNAPSHOT_MS = 60 * 60 * 1000
+const SNAPSHOT_PREFIX = 'adf-snapshot-'
+
+/**
+ * Daemon boot: remove `adf-snapshot-*` folders in the temp dir that a
+ * previous run left behind (killed while a snapshot streamed). Only folders
+ * older than STALE_SNAPSHOT_MS (another daemon on this machine may be
+ * streaming one now) that hold plain files only: anything else (a link, a
+ * subfolder) is left alone and never followed. Returns the folders removed.
+ */
+export async function sweepStaleSnapshots(opts: { dir?: string; now?: number } = {}): Promise<string[]> {
+  const root = opts.dir ?? tmpdir()
+  const cutoff = (opts.now ?? Date.now()) - STALE_SNAPSHOT_MS
+  const removed: string[] = []
+  let names: string[]
+  try { names = await readdir(root) } catch { return removed }
+  for (const name of names) {
+    if (!name.startsWith(SNAPSHOT_PREFIX)) continue
+    const dir = join(root, name)
+    try {
+      const st = await lstat(dir)
+      if (!st.isDirectory() || st.isSymbolicLink() || st.mtimeMs > cutoff) continue
+      const entries = await readdir(dir, { withFileTypes: true })
+      if (!entries.every((e) => e.isFile())) continue
+      for (const e of entries) await unlink(join(dir, e.name))
+      await rmdir(dir)
+      removed.push(dir)
+    } catch (err) {
+      console.warn(`[FileOps] Could not remove the leftover snapshot folder ${dir}:`, err instanceof Error ? err.message : err)
+    }
+  }
+  return removed
 }
 
 /** A read stream of a temp snapshot that removes it once the stream closes. */

@@ -1,5 +1,5 @@
 import { app, safeStorage } from 'electron'
-import { existsSync, mkdirSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
@@ -394,10 +394,25 @@ export class SettingsService {
     return { ownerDid, runtimeDid }
   }
 
+  /**
+   * `key` as the settings file on disk holds it now, ignoring this process's
+   * copy (another writer, such as the daemon's owner import, may have changed
+   * it). Undefined when the file cannot be read. A small sync read: identity
+   * checks only, never a hot path.
+   */
+  readOnDisk(key: string): unknown {
+    try {
+      const data = JSON.parse(readFileSync(getSettingsPath(), 'utf-8')) as Record<string, unknown>
+      return data && typeof data === 'object' ? data[key] : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Owner identity service (owner-identity only type-imports this file — no cycle). */
   getOwnerIdentity(): OwnerIdentityService {
     if (!this.ownerIdentity) {
-      this.ownerIdentity = new OwnerIdentityService(this)
+      this.ownerIdentity = new OwnerIdentityService(this, { ownerDidOnDisk: () => this.readOnDisk('ownerDid') })
     }
     return this.ownerIdentity
   }

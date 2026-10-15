@@ -605,7 +605,7 @@ describe('daemon HTTP API', () => {
 
     const health = await server.inject({ method: 'GET', url: '/health' })
     expect(health.statusCode).toBe(200)
-    expect(health.json()).toEqual({ ok: true })
+    expect(health.json()).toEqual({ ok: true, pid: process.pid })
 
     const list = await server.inject({ method: 'GET', url: '/agents' })
     expect(list.statusCode).toBe(200)

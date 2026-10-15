@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
@@ -33,7 +33,7 @@ import Database from 'better-sqlite3'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { clearPeekCache } from '../src/main/daemon/tracked-dirs'
 import { TrackedDirWatcher, type TrackedDirsPush, type FileRenamedPush } from '../src/main/daemon/dir-watcher'
-import { AgentFileOps } from '../src/main/daemon/file-ops'
+import { AgentFileOps, STALE_SNAPSHOT_MS, snapshotToTemp, sweepStaleSnapshots } from '../src/main/daemon/file-ops'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
@@ -91,6 +91,10 @@ function memorySettings(initial: Record<string, unknown> = {}) {
   }
 }
 
+/** This run's local proof: a full export (mode export) needs it. */
+const PROOF = 'test-local-proof-0123456789abcdefghijklmnopqrstuvwxyz'
+const withProof = { 'x-adf-local-proof': PROOF }
+
 function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeService; rawFileBodyLimit?: number; identity?: unknown } = {}) {
   const settings = memorySettings(initial)
   const runtime = opts.runtime ?? new RuntimeService({
@@ -109,6 +113,7 @@ function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeS
     ...(opts.identity ? { identity: opts.identity as never } : {}),
     onTrackedDirectoriesChanged: dirs => changes.push(dirs),
     routes: { trackedDirWatcher: watcher, ...(opts.rawFileBodyLimit ? { rawFileBodyLimit: opts.rawFileBodyLimit } : {}) },
+    security: { localProof: PROOF },
   })
   servers.push(server)
   return { runtime, server, settings, changes, pushes, renames, watcher }
@@ -297,7 +302,7 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     }
     for (const side of ['-wal', '-shm']) { try { unlinkSync(mainOnly + side) } catch { /* none */ } }
 
-    const res = await server.inject({ method: 'GET', url: `/agents/${ref.id}/export` })
+    const res = await server.inject({ method: 'GET', url: `/agents/${ref.id}/export`, headers: withProof })
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toBe('application/octet-stream')
     expect(res.headers['content-disposition']).toContain('agent-1.adf')
@@ -315,8 +320,109 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     }
     // A tracked file that is not loaded exports by id too; unknown ids are 404.
     await runtime.unloadAgent(ref.id)
-    expect((await server.inject({ method: 'GET', url: `/agents/${a.id}/export` })).statusCode).toBe(200)
-    expect((await server.inject({ method: 'GET', url: '/agents/no-such-agent/export' })).statusCode).toBe(404)
+    expect((await server.inject({ method: 'GET', url: `/agents/${a.id}/export`, headers: withProof })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'GET', url: '/agents/no-such-agent/export', headers: withProof })).statusCode).toBe(404)
+  })
+
+  it('daemon boot sweeps leftover adf-snapshot-* folders older than an hour, plain files only, never through a link', async () => {
+    const tmp = tempDir('adf-sweep-test-')
+    const now = Date.now()
+    const aged = (now - STALE_SNAPSHOT_MS - 60_000) / 1000
+    const make = (name: string, files: string[], old = true) => {
+      const d = join(tmp, name)
+      mkdirSync(d)
+      for (const f of files) writeFileSync(join(d, f), 'x')
+      if (old) utimesSync(d, aged, aged)
+      return d
+    }
+    const stale = make('adf-snapshot-aaaa', ['agent-1.adf', 'agent-1.adf-journal'])
+    const fresh = make('adf-snapshot-bbbb', ['agent-2.adf'], false) // another daemon may be streaming it
+    const other = make('not-a-snapshot', ['keep.txt'])
+    const nested = make('adf-snapshot-cccc', [])
+    mkdirSync(join(nested, 'sub'))
+    utimesSync(nested, aged, aged)
+    const target = tempDir('adf-sweep-target-')
+    writeFileSync(join(target, 'keep.adf'), 'keep')
+    const linked = make('adf-snapshot-dddd', [])
+    symlinkSync(target, join(linked, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    links.push(join(linked, 'link'))
+    utimesSync(linked, aged, aged)
+
+    expect(await sweepStaleSnapshots({ dir: tmp, now })).toEqual([stale])
+    expect(existsSync(stale)).toBe(false)
+    for (const kept of [fresh, other, nested, linked]) expect(existsSync(kept)).toBe(true)
+    expect(readFileSync(join(target, 'keep.adf'), 'utf-8')).toBe('keep')
+    // A real snapshot's folder has the prefix the sweep looks for.
+    const root = tempDir('adf-files-')
+    const snap = await snapshotToTemp(seedAgent(root, 'agent-1').filePath, 'share')
+    try { expect(basename(dirname(snap.file)).startsWith('adf-snapshot-')).toBe(true) } finally { await snap.cleanup() }
+  })
+
+  it('a full export needs the local proof and leaves plain secrets out unless includeSecrets', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    // A legacy agent: no envelopes, so its signing key and credentials are stored plain.
+    const ws = AdfWorkspace.open(a.filePath)
+    try {
+      ws.generateIdentityKeys(null)
+      ws.setIdentity('provider:p1:apiKey', 'sk-older-value-of-the-key')
+      ws.setIdentity('provider:p1:apiKey', 'sk-plain-secret')
+      expect(ws.getIdentityRow('crypto:signing:private_key')).not.toBeNull()
+    } finally {
+      ws.close()
+    }
+    const { server } = setup({ trackedDirectories: [root] })
+    const exportUrl = `/agents/${a.id}/export`
+    const snapshotUrl = `/files/snapshot?path=${q(a.filePath)}&mode=export`
+
+    // The token alone: refused, naming the proof; a remote caller too, with the proof.
+    for (const url of [exportUrl, snapshotUrl]) {
+      const bare = await server.inject({ method: 'GET', url })
+      expect(bare.statusCode).toBe(403)
+      expect(bare.json()).toMatchObject({ code: 'loopback_only' })
+      expect(bare.json().error).toContain('X-ADF-Local-Proof')
+      expect((await server.inject({ method: 'GET', url, headers: { 'x-adf-local-proof': 'wrong'.repeat(10) } })).statusCode).toBe(403)
+      expect((await server.inject({ method: 'GET', url, headers: withProof, remoteAddress: '10.1.2.3' })).statusCode).toBe(403)
+    }
+    // The share copy stays token-only; includeSecrets is for exports only.
+    expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(a.filePath)}&mode=share` })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(a.filePath)}&includeSecrets=true`, headers: withProof })).statusCode).toBe(400)
+    expect((await server.inject({ method: 'GET', url: `${exportUrl}?includeSecrets=yes`, headers: withProof })).statusCode).toBe(400)
+
+    const identityRows = (payload: Buffer) => {
+      const out = join(tempDir('adf-export-'), 'agent-1.adf')
+      writeFileSync(out, payload)
+      const db = new Database(out, { readonly: true })
+      try {
+        return Object.fromEntries((db.prepare('SELECT purpose, value FROM adf_identity').all() as Array<{ purpose: string; value: Buffer | string }>)
+          .map((r) => [r.purpose, Buffer.isBuffer(r.value) ? r.value.toString('utf-8') : String(r.value)]))
+      } finally {
+        db.close()
+      }
+    }
+    for (const url of [exportUrl, snapshotUrl]) {
+      const stripped = await server.inject({ method: 'GET', url, headers: withProof })
+      expect(stripped.statusCode).toBe(200)
+      expect(stripped.headers['x-adf-export-secrets']).toBe('removed')
+      const rows = identityRows(stripped.rawPayload)
+      expect(rows['crypto:signing:private_key']).toBeUndefined()
+      expect(rows['provider:p1:apiKey']).toBeUndefined()
+      expect(rows['crypto:signing:public_key']).toBeDefined() // public material stays
+      // secure_delete + VACUUM: neither the removed value nor an older version of it is left in free pages.
+      expect(stripped.rawPayload.includes(Buffer.from('sk-plain-secret'))).toBe(false)
+      expect(stripped.rawPayload.includes(Buffer.from('sk-older-value-of-the-key'))).toBe(false)
+      const copy = join(tempDir('adf-export-'), 'vacuumed.adf')
+      writeFileSync(copy, stripped.rawPayload)
+      const vdb = new Database(copy, { readonly: true })
+      try { expect(vdb.pragma('freelist_count', { simple: true })).toBe(0) } finally { vdb.close() }
+
+      const full = await server.inject({ method: 'GET', url: `${url}${url.includes('?') ? '&' : '?'}includeSecrets=true`, headers: withProof })
+      expect(full.statusCode).toBe(200)
+      expect(full.headers['x-adf-export-secrets']).toBe('included')
+      const all = identityRows(full.rawPayload)
+      expect(all['crypto:signing:private_key']).toBeDefined()
+      expect(all['provider:p1:apiKey']).toBe('sk-plain-secret')
+    }
   })
 
   it('serves an identity-free share snapshot and writes a copy with save-as (never over the source)', async () => {
@@ -682,7 +788,7 @@ describe('daemon file routes: path safety', () => {
     try { symlinkSync(victim, evil, 'file'); links.push(evil) } catch { fileLinks = false } // needs Developer Mode on Windows
     if (fileLinks) {
       expect((await server.inject({ method: 'DELETE', url: `/files?path=${q(evil)}` })).json().code).toBe('not_an_adf')
-      expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(evil)}&mode=export` })).json().code).toBe('not_an_adf')
+      expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(evil)}&mode=export`, headers: withProof })).json().code).toBe('not_an_adf')
       expect(readFileSync(victim, 'utf-8')).toBe('keep me')
     }
 

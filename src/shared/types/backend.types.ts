@@ -74,6 +74,8 @@ export interface BackendDaemonStatus {
   localProof: { available: boolean; problem: string | null } | null
   /** K12: whether the owner trusts the daemon's key (adf identity trust-daemon); null when unknown or not reported. */
   trust: { state: 'trusted' | 'not-trusted' | 'not-applicable'; label: string | null; message: string } | null
+  /** The daemon could not read this machine's OS keychain at start and runs on its passphrase file: why; null when not (or unknown). */
+  keychainProblem: string | null
   logFile: string | null
 }
 

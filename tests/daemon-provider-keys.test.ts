@@ -87,6 +87,51 @@ describe('POST /runtime/providers', () => {
     expect(readFileSync(file, 'utf8')).not.toContain('sk-rotated-key-1234')
   })
 
+  it('an echoed __redacted__ key is restored only to the same type and baseUrl; a changed endpoint needs the key again (W5-D1)', async () => {
+    const { server, settings, vault } = setup()
+    const made = (await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'openai-compatible', name: 'agent-1 LLM', preset: 'custom', baseUrl: 'https://llm.example.com/v1', apiKey: KEY } })).json().provider
+    const echoed = (await server.inject({ method: 'GET', url: '/settings/providers' })).json().value as Array<Record<string, unknown>>
+    expect(echoed[0].apiKey).toBe('__redacted__')
+
+    for (const [label, change] of [['baseUrl', { baseUrl: 'https://attacker.example/v1' }], ['type', { type: 'anthropic' }]] as const) {
+      for (const write of [
+        () => server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change }] } }),
+        () => server.inject({ method: 'PUT', url: '/settings/providers', payload: { value: [{ ...echoed[0], ...change }] } }),
+      ]) {
+        const res = await write()
+        expect(res.statusCode, label).toBe(400)
+        expect(res.json(), label).toMatchObject({ code: 'api_key_required' })
+        expect(res.json().error, label).toContain('"agent-1 LLM"')
+        expect(res.body, label).not.toContain(KEY)
+        // Nothing written: the stored entry and key are as they were.
+        expect(settings.getProvider(made.id), label).toMatchObject({ baseUrl: 'https://llm.example.com/v1', type: 'openai-compatible', apiKey: KEY })
+      }
+    }
+
+    // A secret-store entry with an empty key is filled from the vault by id: the same rule (bypass found in review).
+    for (const change of [{ baseUrl: 'https://attacker.example/v1' }, { type: 'anthropic' }]) {
+      const res = await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change, apiKeyStorage: 'secret-store', apiKey: '' }] } })
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({ code: 'api_key_required' })
+      expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://llm.example.com/v1', apiKey: KEY })
+    }
+    // Any other writer of the store: the vault key is dropped (logged), never filled into the new endpoint.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    settings.update({ providers: [{ ...echoed[0], baseUrl: 'https://attacker.example/v1', apiKeyStorage: 'secret-store', apiKey: '' }] })
+    expect(settings.getProvider(made.id)?.apiKey).toBe('')
+    expect(vault.values.has(made.id)).toBe(false)
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('its stored key was removed'))).toBe(true)
+    warn.mockRestore()
+    settings.update({ providers: [{ ...echoed[0], apiKeyStorage: 'secret-store', apiKey: KEY }] })
+
+    // A new key with the new address is accepted; the same endpoint keeps the stored key.
+    expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }] } })).statusCode).toBe(200)
+    expect(settings.getProvider(made.id)?.apiKey).toBe(KEY)
+    expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], baseUrl: 'https://other.example.com/v1', apiKey: 'sk-new-endpoint-key-1' }] } })).statusCode).toBe(200)
+    expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://other.example.com/v1', apiKey: 'sk-new-endpoint-key-1' })
+    expect(vault.values.get(made.id)).toBe('sk-new-endpoint-key-1')
+  })
+
   it('refuses while the secret store is locked, subscriptions, and missing keys or URLs', async () => {
     const { server } = setup(new MemoryProviderKeyVault(false))
     const locked = await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'anthropic', apiKey: KEY } })

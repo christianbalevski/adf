@@ -8,7 +8,7 @@
  * (subscription-token-store under Node, credential-cipher, DaemonAppOAuthStore)
  * on an in-memory keychain. Never touches the real keychain.
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -19,6 +19,7 @@ import {
   readCredentialHolder,
   readHandoverMarker,
   REPLACED_TOKEN_FILE,
+  REPLACED_TOKEN_MAX_AGE_DAYS,
   runHandover,
   syncStudioRuntimeEntry,
   type HandoverDeps,
@@ -379,6 +380,35 @@ describe('accounts conflict and ownership', () => {
     await runHandover('embedded', deps())
     expect(studioTokens(sub).read().account_id).toBe('acct-signed-in-local')
     expect(existsSync(daemonTokens(sub).path)).toBe(false)
+  })
+})
+
+describe('auth.replaced.json lifetime (W5-D1)', () => {
+  it(`is deleted at the next handover once older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days (logged); a newer one stays`, async () => {
+    const [old, recent] = SUBS
+    for (const sub of SUBS) {
+      mkdirSync(join(dir, sub.dir), { recursive: true })
+      writeFileSync(join(dir, sub.dir, REPLACED_TOKEN_FILE), encryptCredential(JSON.stringify(auth.issue(sub.subject))))
+    }
+    const aged = (Date.now() - (REPLACED_TOKEN_MAX_AGE_DAYS * 24 + 1) * 3600_000) / 1000
+    utimesSync(join(dir, old.dir, REPLACED_TOKEN_FILE), aged, aged)
+    const lines: string[] = []
+    await runHandover('embedded', deps({ log: (line) => lines.push(line) }))
+    expect(existsSync(join(dir, old.dir, REPLACED_TOKEN_FILE))).toBe(false)
+    expect(existsSync(join(dir, recent.dir, REPLACED_TOKEN_FILE))).toBe(true)
+    expect(lines.some((l) => l.includes(`Deleted ${join(dir, old.dir, REPLACED_TOKEN_FILE)}`) && l.includes(`older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days`))).toBe(true)
+  })
+
+  it('is deleted when its account signs in again; another account\'s sign-in leaves it', () => {
+    const sub = SUBS[0]
+    const path = join(dir, sub.dir, REPLACED_TOKEN_FILE)
+    mkdirSync(join(dir, sub.dir), { recursive: true })
+    writeFileSync(path, encryptCredential(JSON.stringify({ ...auth.issue(sub.subject), account_id: 'acct-set-aside' })))
+    const store = createSubscriptionTokenStore(sub.dir)
+    store.signedIn('acct-other')
+    expect(existsSync(path)).toBe(true)
+    store.signedIn('acct-set-aside')
+    expect(existsSync(path)).toBe(false)
   })
 })
 
