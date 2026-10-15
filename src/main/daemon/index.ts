@@ -48,6 +48,7 @@ import { approvalHub } from '../runtime/approval-hub'
 import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
 import { processAgentLeases } from '../runtime/agent-lease'
+import { createBootEnvelopeSweep } from './boot-envelope-sweep'
 import { testSeamsAllowed } from '../utils/test-seams'
 import { sweepStaleSnapshots } from './file-ops'
 
@@ -537,12 +538,32 @@ runtime.on('agent-loaded', (event) => {
   if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
 })
 
+// --- Boot envelope sweep (spec §8) -------------------------------------------
+// As Studio (registerAllIpcHandlers), 2 s after boot: boot-envelope-sweep.ts.
+// Test seam ADF_TEST_ENVELOPE_SWEEP (ADF_TEST_SEAMS=1, unpackaged), the
+// daemon side of the parity harness's switch: `off` never runs it, `boot`
+// runs it before the daemon listens.
+const envelopeSweepSeam = testSeamsAllowed() ? process.env.ADF_TEST_ENVELOPE_SWEEP : undefined
+const envelopeSweep = createBootEnvelopeSweep({
+  identity: ownerIdentity,
+  leases: processAgentLeases(),
+  openHere: () => [
+    ...runtime.listAgents().map((ref) => ref.filePath).filter((p): p is string => !!p),
+    ...runtime.listOpenDocuments().map((doc) => doc.filePath),
+  ],
+})
+const runEnvelopeSweep = () => envelopeSweep.run()
+let bootEnvelopeSweep: Promise<void> = Promise.resolve()
+if (envelopeSweepSeam === 'boot') bootEnvelopeSweep = runEnvelopeSweep()
+else if (envelopeSweepSeam !== 'off') setTimeout(() => { void runEnvelopeSweep() }, 2_000).unref?.()
+if (envelopeSweepSeam) console.log(`[ADF Daemon] Test seam: boot envelope sweep ${envelopeSweepSeam} (ADF_TEST_ENVELOPE_SWEEP)`)
+
 withSource('system:daemon', () => {
   // Clean up scratch dirs left by previous processes that exited uncleanly
   // (parity with Studio boot).
   try { purgeStaleProcessDirs() } catch (err) { console.warn('[ADF Daemon] Stale scratch purge failed:', err) }
 
-  daemon.start()
+  bootEnvelopeSweep.then(() => daemon.start())
     .then(address => {
       console.log(`[ADF Daemon] Listening on http://${address.host}:${address.port}`)
       console.log(`[ADF Daemon] Settings: ${settings.filePath ?? '(memory)'}`)

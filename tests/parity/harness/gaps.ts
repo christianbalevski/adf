@@ -70,7 +70,9 @@ const W5D2_RAN = ['w5d2-studio-write-source'] as const
 const AGENT_OAUTH = ['w2c2-agent-mcp-oauth'] as const
 /** The mesh scenario with a message between two running agents (tests/parity/mesh): leaves both running. */
 const MESH_MESSAGE = ['mesh-message-turn'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...W5D2_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
+/** W5-G: the boot envelope sweep (tests/parity/boot-sweep); no agent runs. */
+const W5G_NO_AGENT = ['w5g-boot-envelope-sweep'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...W5D2_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE, ...W5G_NO_AGENT] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const

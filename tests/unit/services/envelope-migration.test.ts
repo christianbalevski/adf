@@ -15,6 +15,8 @@ vi.mock('electron', () => ({
 }))
 
 import { SettingsService } from '../../../src/main/services/settings.service'
+import { describeEnvelopeSweep } from '../../../src/main/services/owner-identity.service'
+import { AgentLeaseRegistry, openHereOrLeasedElsewhere } from '../../../src/main/runtime/agent-lease'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { readAdfAttestations, verifyAttestation } from '../../../src/main/services/attestation.service'
 
@@ -132,7 +134,7 @@ describe('ensureWorkspaceIdentity (spec D1)', () => {
 })
 
 describe('sweepEnvelopeMigration (spec §8)', () => {
-  it('provisions key-less files and seals legacy plain rows across a tracked dir', () => {
+  it('provisions key-less files and seals legacy plain rows across a tracked dir', async () => {
     const settings = makeSettings()
     const svc = settings.getOwnerIdentity()
 
@@ -148,14 +150,14 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     b.close()
     settings.set('reviewedAgents', { [aId]: 'accepted', [bId]: 'accepted' })
 
-    const sweep = svc.sweepEnvelopeMigration()
+    const sweep = await svc.sweepEnvelopeMigration()
     expect(sweep.failures).toEqual([])
     expect(sweep.provisioned).toBe(1) // A got keys (sealed at generation, not counted here)
     expect(sweep.sealed).toBe(2) // B's private key + B's token
 
     // Second sweep is a no-op (fast path)
-    const again = svc.sweepEnvelopeMigration()
-    expect(again).toEqual({ provisioned: 0, sealed: 0, failures: [] })
+    const again = await svc.sweepEnvelopeMigration()
+    expect(again).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
 
     // Both files unlock with this install's runtime key
     for (const name of ['a', 'b']) {
@@ -169,14 +171,14 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     }
   })
 
-  it('leaves unreviewed files untouched — no ownership stamp before review', () => {
+  it('leaves unreviewed files untouched — no ownership stamp before review', async () => {
     const settings = makeSettings()
     const svc = settings.getOwnerIdentity()
 
     AdfWorkspace.create(join(trackedDir, 'dropped.adf'), { name: 'dropped' }).close()
 
-    const sweep = svc.sweepEnvelopeMigration()
-    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [] })
+    const sweep = await svc.sweepEnvelopeMigration()
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
 
     const ws = AdfWorkspace.open(join(trackedDir, 'dropped.adf'))
     try {
@@ -184,6 +186,193 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
       expect(ws.hasEnvelopes()).toBe(false)
       expect(ws.getMeta('adf_owner_did')).toBeNull()
     } finally {
+      ws.close()
+    }
+  })
+})
+
+describe('sweepEnvelopeMigration: files another runtime runs (W5-G)', () => {
+  it('never opens a file `skip` names; the others are provisioned', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ids: string[] = []
+    for (const name of ['agent-1', 'agent-2']) {
+      const ws = AdfWorkspace.create(join(trackedDir, `${name}.adf`), { name })
+      ids.push(ws.getAgentConfig().id)
+      ws.close()
+    }
+    settings.set('reviewedAgents', Object.fromEntries(ids.map((id) => [id, 'accepted'])))
+    const leased = join(trackedDir, 'agent-2.adf')
+    const asked: string[] = []
+
+    const sweep = await svc.sweepEnvelopeMigration({ skip: async (filePath) => { asked.push(filePath); return filePath === leased } })
+    expect(asked.sort()).toEqual([join(trackedDir, 'agent-1.adf'), leased].sort())
+    expect(sweep).toEqual({ provisioned: 1, sealed: 0, failures: [], skipped: [leased] })
+    for (const [name, provisioned] of [['agent-1', true], ['agent-2', false]] as const) {
+      const ws = AdfWorkspace.open(join(trackedDir, `${name}.adf`))
+      try {
+        expect(ws.getDid() !== null, name).toBe(provisioned)
+        expect(readAdfAttestations(ws).length, name).toBe(provisioned ? 2 : 0)
+      } finally {
+        ws.close()
+      }
+    }
+  })
+
+  it('does nothing without an owner identity (no envelope recipients)', async () => {
+    const settings = new SettingsService()
+    settings.set('trackedDirectories', [trackedDir])
+    const ws = AdfWorkspace.create(join(trackedDir, 'agent-1.adf'), { name: 'agent-1' })
+    settings.set('reviewedAgents', { [ws.getAgentConfig().id]: 'accepted' })
+    ws.close()
+    const svc = settings.getOwnerIdentity()
+    vi.spyOn(svc, 'getEnvelopeRecipients').mockReturnValue(null)
+    const sweep = await svc.sweepEnvelopeMigration()
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true })
+    // Said, not silent.
+    expect(describeEnvelopeSweep(sweep, 1)).toMatch(/Envelope sweep skipped: the owner identity is not ready/)
+  })
+
+  it('the log line names each failed file', () => {
+    const line = describeEnvelopeSweep({ provisioned: 1, sealed: 0, failures: ['/agents/agent-2.adf: database disk image is malformed'], skipped: ['/agents/agent-3.adf'] }, 12)
+    expect(line).toContain('1 provisioned')
+    expect(line).toContain('1 open here or run by another runtime')
+    expect(line).toContain('/agents/agent-2.adf: database disk image is malformed')
+  })
+})
+
+describe('the sweep skip rule (openHereOrLeasedElsewhere, both modes)', () => {
+  it('skips a file open here, one this process holds the lease of, and one another live runtime leases; not the others', async () => {
+    const leases = new AgentLeaseRegistry({ dir: join(rootDir, 'leases'), kind: 'daemon', settingsPath: join(rootDir, 's.json'), sweepDeadEntries: false })
+    const other = new AgentLeaseRegistry({ dir: join(rootDir, 'leases'), kind: 'studio-embedded', settingsPath: join(rootDir, 'o.json'), sweepDeadEntries: false })
+    try {
+      const file = (name: string) => { const p = join(trackedDir, `${name}.adf`); AdfWorkspace.create(p, { name }).close(); return p }
+      const [openFile, heldHere, heldThere, free] = [file('agent-1'), file('agent-2'), file('agent-3'), file('agent-4')]
+      expect((await leases.acquire(heldHere)).ok).toBe(true)
+      expect((await other.acquire(heldThere)).ok).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, openFile, [openFile])).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, heldHere, [openFile])).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, heldThere, [openFile])).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, free, [openFile])).toBe(false)
+    } finally {
+      await leases.close()
+      await other.close()
+    }
+  })
+})
+
+describe('ensureWorkspaceIdentity: atomic per file (W5-G)', () => {
+  it('a second connection provisioning the same file meanwhile cannot interleave; afterwards it is a no-op', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    AdfWorkspace.create(filePath, { name: 'agent-1' }).close()
+    const a = AdfWorkspace.open(filePath)
+    const b = AdfWorkspace.open(filePath)
+    try {
+      // B gives up at once instead of after 5 s when the file is write-locked.
+      ;(b.getDatabase() as unknown as { db: { pragma(s: string): unknown } }).db.pragma('busy_timeout = 0')
+      // Between A's check (no signing key) and its key generation, B runs its whole provisioning.
+      const generate = a.generateIdentityKeys.bind(a)
+      let bResult: unknown = null
+      vi.spyOn(a, 'generateIdentityKeys').mockImplementation((...args: Parameters<typeof a.generateIdentityKeys>) => {
+        try { bResult = svc.ensureWorkspaceIdentity(b) } catch (err) { bResult = err }
+        return generate(...args)
+      })
+      expect(svc.ensureWorkspaceIdentity(a).keysGenerated).toBe(true)
+      // A held the write lock from its first check: B could not write in between.
+      expect(String(bResult)).toContain('agent-1.adf is busy (another program is writing it); try again.')
+      // Now B finds A's envelopes and keys: nothing to do, and it opens them.
+      expect(svc.ensureWorkspaceIdentity(b)).toEqual({ keysGenerated: false, sealed: 0 })
+      expect(b.getSigningKeys(null)).not.toBeNull()
+      expect(b.getDid()).toBe(a.getDid())
+      const atts = readAdfAttestations(b)
+      expect(atts.map((x) => x.role).sort()).toEqual(['operator', 'owner'])
+      expect(atts.every((x) => x.subject === a.getDid())).toBe(true)
+    } finally {
+      a.close()
+      b.close()
+    }
+  })
+})
+
+describe('ensureWorkspaceIdentity: no write lock on the open of a provisioned file (W5-G re-review)', () => {
+  /** Another connection holding the file's write lock (RESERVED) until released. */
+  function holdWriteLock(filePath: string): { release(): void } {
+    const other = AdfWorkspace.open(filePath)
+    const raw = (other.getDatabase() as unknown as { db: { exec(sql: string): unknown } }).db
+    raw.exec('BEGIN IMMEDIATE')
+    return { release() { try { raw.exec('ROLLBACK') } finally { other.close() } } }
+  }
+
+  it('an already provisioned file opens while another connection writes it: no lock taken, no wait', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const first = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    expect(svc.ensureWorkspaceIdentity(first).keysGenerated).toBe(true)
+    first.close()
+    // Opened first (the open's own maintenance writes are not under test), then another connection starts writing.
+    const ws = AdfWorkspace.open(filePath)
+    const lock = holdWriteLock(filePath)
+    try {
+      ;(ws.getDatabase() as unknown as { db: { pragma(s: string): unknown } }).db.pragma('busy_timeout = 0')
+      const t0 = performance.now()
+      expect(svc.ensureWorkspaceIdentity(ws)).toEqual({ keysGenerated: false, sealed: 0 })
+      expect(performance.now() - t0).toBeLessThan(1_000)
+      expect(ws.getSigningKeys(null)).not.toBeNull()
+    } finally {
+      ws.close()
+      lock.release()
+    }
+  })
+
+  it('the sweep against a file another connection is writing fails fast, named in its log line', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    settings.set('reviewedAgents', { [ws.getAgentConfig().id]: 'accepted' })
+    ws.close()
+    const lock = holdWriteLock(filePath)
+    try {
+      const t0 = performance.now()
+      const sweep = await svc.sweepEnvelopeMigration()
+      expect(performance.now() - t0).toBeLessThan(2_000)
+      expect(sweep.provisioned).toBe(0)
+      expect(sweep.failures).toHaveLength(1)
+      expect(sweep.failures[0]).toMatch(/agent-1[.]adf: busy/)
+      expect(describeEnvelopeSweep(sweep, performance.now() - t0)).toContain(filePath)
+    } finally {
+      lock.release()
+    }
+    // Retried at the next sweep (or open): provisioned then.
+    expect((await svc.sweepEnvelopeMigration()).provisioned).toBe(1)
+  })
+})
+
+describe('immediateTransaction restores busy_timeout (W5-G)', () => {
+  it('after the minting window: on commit, when the work throws, and when BEGIN itself fails busy', () => {
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    const other = AdfWorkspace.open(filePath)
+    const raw = (w: AdfWorkspace) => (w.getDatabase() as unknown as { db: { pragma(s: string, o?: { simple: boolean }): unknown; exec(sql: string): unknown } }).db
+    const timeout = () => raw(ws).pragma('busy_timeout', { simple: true })
+    try {
+      expect(timeout()).toBe(5000)
+      expect(ws.immediateTransaction(() => 'done', 20)).toBe('done')
+      expect(timeout()).toBe(5000)
+      expect(() => ws.immediateTransaction(() => { throw new Error('work failed') }, 20)).toThrow('work failed')
+      expect(timeout()).toBe(5000)
+      raw(other).exec('BEGIN IMMEDIATE')
+      try {
+        expect(() => ws.immediateTransaction(() => 'never', 20)).toThrow(/busy|locked/i)
+      } finally {
+        raw(other).exec('ROLLBACK')
+      }
+      expect(timeout()).toBe(5000)
+    } finally {
+      other.close()
       ws.close()
     }
   })

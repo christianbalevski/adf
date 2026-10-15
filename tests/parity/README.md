@@ -50,7 +50,7 @@ Push times are recorded as well, but they are used only by the streaming asserti
 
 ## Isolation and fences
 
-Every run gets its own root for user data, leases, temp, home and app data. Inherited `ADF_*` variables are removed. `ADF_KEYCHAIN=0` and `ADF_SECRET_STORE=file` are set. A run fails when:
+Every run gets its own root for user data, leases, temp, home and app data. Inherited `ADF_*` variables are removed. `ADF_KEYCHAIN=0` and `ADF_SECRET_STORE=file` are set, and `ADF_MACHINE_ID` is a random id per run (lease records never wait on reg.exe or ioreg). A run fails when:
 
 - `fence.cjs` refused something, in this process, a worker or a child process: a podman or wsl spawn (argv, shell line, `cmd /c`, `sh -c`), a TCP or UDP connection to a port other than the run's own loopback ports, port 7385, a non-loopback host, or a multicast join;
 - `@napi-rs/keyring` was loaded;

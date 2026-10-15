@@ -2554,4 +2554,9 @@ export class AdfWorkspace {
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)
   }
+
+  /** AdfDatabase.immediateTransaction: an atomic check-then-write against other connections to the file. */
+  immediateTransaction<T>(fn: () => T, busyTimeoutMs?: number): T {
+    return this.db.immediateTransaction(fn, busyTimeoutMs)
+  }
 }

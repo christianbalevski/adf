@@ -14,9 +14,11 @@
  */
 
 import { readdirSync } from 'fs'
-import { join } from 'path'
+import { readdir } from 'fs/promises'
+import { basename, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
+import { AdfDatabase } from '../adf/adf-database'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey, openKeySlot, type KeySlotRecord } from '../crypto/envelope-crypto'
@@ -81,6 +83,58 @@ export interface RestampResult {
   failures: string[]
   /** Files `skip` left out (another runtime runs them); restamped when next opened. Present only when a `skip` was given. */
   skipped?: string[]
+}
+
+/** How long minting an agent's identity waits for another connection's write lock (an interactive open). */
+export const PROVISION_BUSY_TIMEOUT_MS = 100
+/** The boot sweep's wait: a busy file is a named failure, retried at the next boot or open. */
+export const SWEEP_BUSY_TIMEOUT_MS = 25
+
+/**
+ * Minting an agent's identity found the file's write lock held by another
+ * connection past PROVISION_BUSY_TIMEOUT_MS. The message is for the user and
+ * names the file; nothing was written.
+ */
+export class AgentFileBusyError extends Error {
+  readonly code = 'agent_file_busy'
+  constructor(readonly filePath: string) {
+    super(`${basename(filePath)} is busy (another program is writing it); try again.`)
+    this.name = 'AgentFileBusyError'
+  }
+}
+
+/**
+ * `err` as the user-facing AgentFileBusyError for `filePath` when it is one,
+ * or SQLite's own SQLITE_BUSY (another connection held the write lock past
+ * busy_timeout); null for anything else.
+ */
+export function agentFileBusy(err: unknown, filePath: string): AgentFileBusyError | null {
+  if (err instanceof AgentFileBusyError) return err
+  const code = (err as { code?: unknown } | null)?.code
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY') ? new AgentFileBusyError(filePath) : null
+}
+
+/** What one boot envelope sweep did (sweepEnvelopeMigration). */
+export interface EnvelopeSweepResult {
+  /** Files that got signing keys (and a DID and attestations). */
+  provisioned: number
+  /** Plain secret rows sealed under their envelope. */
+  sealed: number
+  /** `<path>: <error>` per file (or folder) that failed; retried at the next boot or open. */
+  failures: string[]
+  /** Files left alone: open or running in this process, or run by another runtime. */
+  skipped: string[]
+  /** No owner identity to provision with: nothing was opened. */
+  ownerNotReady?: true
+}
+
+/** The sweep's log line, the same in both modes; null when it did nothing. Failures are named with their paths. */
+export function describeEnvelopeSweep(sweep: EnvelopeSweepResult, ms: number): string | null {
+  if (sweep.ownerNotReady) return '[OwnerIdentity] Envelope sweep skipped: the owner identity is not ready, so no tracked agent was provisioned'
+  if (!sweep.provisioned && !sweep.sealed && !sweep.failures.length && !sweep.skipped.length) return null
+  return `[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s)` +
+    `${sweep.skipped.length ? `, ${sweep.skipped.length} open here or run by another runtime (provisioned when next opened)` : ''} in ${ms.toFixed(0)}ms` +
+    `${sweep.failures.length ? ` — failed (retried at the next boot or open): ${sweep.failures.join('; ')}` : ''}`
 }
 
 export class OwnerIdentityService {
@@ -729,7 +783,12 @@ export class OwnerIdentityService {
    */
   ensureWorkspaceIdentity(
     workspace: AdfWorkspace,
-    opts: { mintKeys?: boolean; adoptKeys?: { privateKey: Buffer; publicKey: Buffer } } = {}
+    opts: {
+      mintKeys?: boolean
+      adoptKeys?: { privateKey: Buffer; publicKey: Buffer }
+      /** How long a mint waits for another connection's write lock (default PROVISION_BUSY_TIMEOUT_MS). */
+      busyTimeoutMs?: number
+    } = {}
   ): { keysGenerated: boolean; sealed: number } {
     if (workspace.isPasswordProtected()) {
       // Still run the unlock-only step: envelope unwrap is X25519 against
@@ -746,54 +805,76 @@ export class OwnerIdentityService {
       return { keysGenerated: false, sealed: 0 }
     }
 
-    const recipients = this.getEnvelopeRecipients()
-    if (recipients) {
-      if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
-      else this.unlockWorkspaceEnvelopes(workspace)
-      // Heal files claimed before the dead-envelope purge existed: identity
-      // is ours (unlocked) but the credentials envelope is dead-foreign —
-      // drop it and re-provision so new credentials seal again.
-      if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
-        workspace.provisionEnvelopes(recipients)
+    const provision = (): { keysGenerated: boolean; sealed: number } => {
+      const recipients = this.getEnvelopeRecipients()
+      if (recipients) {
+        if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
+        else this.unlockWorkspaceEnvelopes(workspace)
+        // Heal files claimed before the dead-envelope purge existed: identity
+        // is ours (unlocked) but the credentials envelope is dead-foreign —
+        // drop it and re-provision so new credentials seal again.
+        if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
+          workspace.provisionEnvelopes(recipients)
+        }
+        // Fresh-provision path caches the DEK without going through
+        // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
+        this.ensureTrustedDaemonSlots(workspace)
+      } else {
+        console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
       }
-      // Fresh-provision path caches the DEK without going through
-      // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
-      this.ensureTrustedDaemonSlots(workspace)
-    } else {
-      console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
+
+      let keysGenerated = false
+      const stampAndAttest = () => {
+        if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+        if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+        issueOwnerAttestation(workspace, {
+          ownerDid: this.getOwnerDid(),
+          ownerPrivateKey: this.getOwnerSigningKey(),
+          runtimeDid: this.getRuntimeDid(),
+          runtimePrivateKey: this.getRuntimeSigningKey()
+        })
+      }
+      const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
+      if (signingRow === null) {
+        workspace.generateIdentityKeys(null, opts.adoptKeys)
+        keysGenerated = true
+        stampAndAttest()
+      } else if (
+        signingRow.encryption_algo === 'plain' &&
+        workspace.getDid() &&
+        !workspace.getMeta('adf_owner_did') &&
+        this.getOwnerSigningKey()
+      ) {
+        // A plain key minted where no owner key was available (a headless
+        // child from an older daemon, generate-keys without an owner): it is
+        // sealed below like any plain row, and gets the owner stamps and
+        // attestations it never received. Only reached for own/reviewed files.
+        stampAndAttest()
+      }
+
+      const sealed = workspace.sealPlainRowsIntoEnvelopes()
+      return { keysGenerated, sealed }
     }
 
-    let keysGenerated = false
-    const stampAndAttest = () => {
-      if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
-      if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
-      issueOwnerAttestation(workspace, {
-        ownerDid: this.getOwnerDid(),
-        ownerPrivateKey: this.getOwnerSigningKey(),
-        runtimeDid: this.getRuntimeDid(),
-        runtimePrivateKey: this.getRuntimeSigningKey()
-      })
+    // Read-only pre-check, outside any write transaction: every open of an
+    // agent comes through here, and an already provisioned file must not take
+    // the file's write lock (or wait on another connection's). Only minting
+    // (no envelopes yet, no signing key) is a check-then-write two runtimes
+    // can race on; the rest is as before.
+    const mints = (!workspace.hasEnvelopes() && this.getEnvelopeRecipients() !== null) ||
+      workspace.getIdentityRow('crypto:signing:private_key') === null
+    if (!mints) return provision()
+    // Minting: one BEGIN IMMEDIATE transaction, the checks repeated inside it,
+    // so two runtimes provisioning the same file at once (the boot sweep and a
+    // lazy open elsewhere) cannot each mint envelopes or keys with the last
+    // writer winning; the second finds them and is a no-op. A file another
+    // connection is writing fails after a short wait (SQLITE_BUSY), never the
+    // 5 s busy_timeout: the caller reports it, and the next open retries.
+    try {
+      return workspace.immediateTransaction(provision, opts.busyTimeoutMs ?? PROVISION_BUSY_TIMEOUT_MS)
+    } catch (err) {
+      throw agentFileBusy(err, workspace.getFilePath()) ?? err
     }
-    const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
-    if (signingRow === null) {
-      workspace.generateIdentityKeys(null, opts.adoptKeys)
-      keysGenerated = true
-      stampAndAttest()
-    } else if (
-      signingRow.encryption_algo === 'plain' &&
-      workspace.getDid() &&
-      !workspace.getMeta('adf_owner_did') &&
-      this.getOwnerSigningKey()
-    ) {
-      // A plain key minted where no owner key was available (a headless
-      // child from an older daemon, generate-keys without an owner): it is
-      // sealed below like any plain row, and gets the owner stamps and
-      // attestations it never received. Only reached for own/reviewed files.
-      stampAndAttest()
-    }
-
-    const sealed = workspace.sealPlainRowsIntoEnvelopes()
-    return { keysGenerated, sealed }
   }
 
   /**
@@ -865,17 +946,31 @@ export class OwnerIdentityService {
    * Unreviewed files are left untouched: a file someone dropped into a
    * tracked directory must go through review + claim before we stamp
    * ownership or seal anything into our envelopes.
+   *
+   * One sweep for both modes (embedded Studio and the daemon run it 2 s
+   * after boot). The folder walk is async and the sweep yields after every
+   * file, so a large tracked tree does not block the event loop. Files
+   * `skip` names (open or running in this process, which provisioned them
+   * on open; or run by another runtime, the one writer of the file) are not
+   * opened; they are provisioned when next opened.
+   * `provision` replaces ensureWorkspaceIdentity (the daemon's recipe adds
+   * its own unlock cascade and trusted slot around it).
    */
-  sweepEnvelopeMigration(): { provisioned: number; sealed: number; failures: string[] } {
-    const result = { provisioned: 0, sealed: 0, failures: [] as string[] }
-    if (!this.getEnvelopeRecipients()) return result
+  async sweepEnvelopeMigration(
+    opts: {
+      skip?: (filePath: string) => Promise<boolean>
+      provision?: (workspace: AdfWorkspace, opts: { busyTimeoutMs: number }) => { keysGenerated: boolean; sealed: number }
+    } = {},
+  ): Promise<EnvelopeSweepResult> {
+    const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [] }
+    if (!this.getEnvelopeRecipients()) return { ...result, ownerNotReady: true }
 
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
     const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []
     const files: string[] = []
     for (const dir of tracked) {
       try {
-        collectAdfFiles(dir, maxDepth, 0, files)
+        await collectAdfFilesAsync(dir, maxDepth, 0, files)
       } catch (err) {
         result.failures.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -884,7 +979,19 @@ export class OwnerIdentityService {
     const reviewedIds = new Set(getReviewedIds(this.settings.get('reviewedAgents')))
 
     for (const filePath of files) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
       try {
+        if (await opts.skip?.(filePath)) {
+          result.skipped.push(filePath)
+          continue
+        }
+        // Another connection is writing it: opening would block in the open's
+        // own writes for up to 5 s. A named failure, retried at the next boot
+        // or open.
+        if (!AdfDatabase.writeLockFree(filePath, SWEEP_BUSY_TIMEOUT_MS)) {
+          result.failures.push(`${filePath}: busy (another connection is writing it)`)
+          continue
+        }
         const workspace = AdfWorkspace.open(filePath)
         try {
           if (workspace.isPasswordProtected()) continue
@@ -895,7 +1002,8 @@ export class OwnerIdentityService {
             !workspace.hasUnsealedSecrets()
           ) continue
           if (!reviewedIds.has(workspace.getAgentConfig().id)) continue
-          const { keysGenerated, sealed } = this.ensureWorkspaceIdentity(workspace)
+          const busy = { busyTimeoutMs: SWEEP_BUSY_TIMEOUT_MS }
+          const { keysGenerated, sealed } = opts.provision ? opts.provision(workspace, busy) : this.ensureWorkspaceIdentity(workspace, busy)
           if (keysGenerated) result.provisioned++
           result.sealed += sealed
         } finally {
@@ -1010,6 +1118,19 @@ function derivedDid(mnemonic: string): string | null {
     return deriveOwnerIdentity(mnemonic).did
   } catch {
     return null
+  }
+}
+
+/** collectAdfFiles, reading directories asynchronously (the boot envelope sweep). */
+async function collectAdfFilesAsync(dir: string, maxDepth: number, depth: number, out: string[]): Promise<void> {
+  if (depth > maxDepth) return
+  const entries = await readdir(dir, { withFileTypes: true })
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.adf')) {
+      out.push(join(dir, e.name))
+    } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+      await collectAdfFilesAsync(join(dir, e.name), maxDepth, depth + 1, out)
+    }
   }
 }
 

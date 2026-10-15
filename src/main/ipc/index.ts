@@ -98,7 +98,8 @@ import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
-import { LeasedStartTracker, processAgentLeases } from '../runtime/agent-lease'
+import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
+import { agentFileBusy, describeEnvelopeSweep } from '../services/owner-identity.service'
 import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
@@ -1754,6 +1755,50 @@ export const hostActions: {
   ready?: Promise<void>
 } = {}
 
+/** The boot envelope sweep's timer until it fires (registerAllIpcHandlers). */
+let pendingEnvelopeSweep: NodeJS.Timeout | null = null
+
+/**
+ * The boot envelope sweep (spec §8), as the daemon runs it. Skipped: the
+ * open file and the agents this process runs (provisioned when opened), and
+ * files another runtime runs.
+ */
+async function runEnvelopeSweep(): Promise<void> {
+  try {
+    const t0 = performance.now()
+    const leases = processAgentLeases()
+    const sweep = await settings.getOwnerIdentity().sweepEnvelopeMigration({
+      skip: (filePath) => openHereOrLeasedElsewhere(leases, filePath, currentFilePath ? [currentFilePath] : []),
+    })
+    const line = describeEnvelopeSweep(sweep, performance.now() - t0)
+    if (line) console.log(line)
+  } catch (err) {
+    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  }
+}
+
+/**
+ * Tests (parity harness): drop the boot envelope sweep before it runs; true
+ * when it was pending. A recording captures the backend's first seconds,
+ * before the sweep. On its 2 s timer it ran inside any scenario that
+ * outlasted 2 s on a loaded runner and provisioned the reviewed agents of the
+ * tracked folders (keys, DID, owner and operator attestations), so the
+ * recording depended on the run's speed. The daemon's switch is
+ * ADF_TEST_ENVELOPE_SWEEP (daemon/index.ts).
+ */
+export function cancelDeferredEnvelopeSweep(): boolean {
+  if (!pendingEnvelopeSweep) return false
+  clearTimeout(pendingEnvelopeSweep)
+  pendingEnvelopeSweep = null
+  return true
+}
+
+/** Tests (parity harness): run the boot envelope sweep now instead of on its timer; resolves when it is done. */
+export async function runDeferredEnvelopeSweepNow(): Promise<void> {
+  if (!cancelDeferredEnvelopeSweep()) return
+  await runEnvelopeSweep()
+}
+
 export interface IpcHostHooks {
   /** Show the main window, creating it when none exists (see main/index.ts). */
   showMainWindow?: () => BrowserWindow | null
@@ -1824,18 +1869,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
   // Deferred — it opens every tracked .adf, which must not block window
-  // creation. Behavior is otherwise identical to the old synchronous sweep.
-  setTimeout(() => {
-    try {
-      const t0 = performance.now()
-      const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
-      if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
-        console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
-      }
-    } catch (err) {
-      console.warn('[OwnerIdentity] Envelope sweep failed:', err)
-    }
-  }, 2_000).unref?.()
+  // creation. The daemon runs the same sweep the same way (daemon/index.ts).
+  pendingEnvelopeSweep = setTimeout(() => {
+    pendingEnvelopeSweep = null
+    void runEnvelopeSweep()
+  }, 2_000)
+  pendingEnvelopeSweep.unref?.()
 
   // Global approvals menu: every pending HIL approval, from every agent and
   // loop, plus the recently-resolved tail, pushed as a full snapshot to EVERY
@@ -2343,6 +2382,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           owner.ensureWorkspaceIdentity(workspace)
         }
       } catch (err) {
+        const busy = agentFileBusy(err, filePath)
+        if (busy) {
+          // Another program is writing the new file: the create fails with a
+          // sentence naming it. The file is kept (it may have replaced one);
+          // its identity is provisioned when it is next opened.
+          workspace.close()
+          throw new Error(`${busy.message} The new agent file is kept at ${filePath}; its identity is set up when it is next opened.`)
+        }
         console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
       } finally {
         draft?.privateKey.fill(0)
@@ -2722,6 +2769,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { success: true, ...persistAcceptedAgent() }
     } catch (err) {
       console.warn('[IPC] FILE_REVIEW_ACCEPT error:', err)
+      // Another program writing the file: the sentence names it; accepting again retries.
+      const busy = agentFileBusy(err, currentFilePath ?? args?.expectedPath ?? 'The agent file')
+      if (busy) return { success: false, code: busy.code, error: busy.message }
       return { success: false, error: String(err) }
     }
   })

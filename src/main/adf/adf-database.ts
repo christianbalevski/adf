@@ -728,6 +728,30 @@ export class AdfDatabase {
    *   'reaped'      — WAL folded into the main file, sidecars removed
    *   'error'       — open/checkpoint/unlink failed; sidecars left in place
    */
+  /**
+   * True when no other connection holds `filePath`'s write lock: a probe
+   * connection takes it with BEGIN IMMEDIATE (waiting at most
+   * `busyTimeoutMs`) and gives it back at once. False on SQLITE_BUSY. Lets a
+   * background job (the boot envelope sweep) pass over a file another
+   * connection is writing instead of blocking in AdfWorkspace.open, whose
+   * maintenance writes wait the full busy_timeout. Other errors throw.
+   */
+  static writeLockFree(filePath: string, busyTimeoutMs: number): boolean {
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { fileMustExist: true })
+      db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`)
+      db.exec('BEGIN IMMEDIATE; ROLLBACK')
+      return true
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code
+      if (typeof code === 'string' && code.startsWith('SQLITE_BUSY')) return false
+      throw err
+    } finally {
+      try { db?.close() } catch { /* ignore */ }
+    }
+  }
+
   static reapSidecars(filePath: string): 'reaped' | 'busy' | 'no-sidecars' | 'error' {
     const walPath = `${filePath}-wal`
     const shmPath = `${filePath}-shm`
@@ -3751,6 +3775,25 @@ export class AdfDatabase {
 
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)()
+  }
+
+  /**
+   * `fn` in a BEGIN IMMEDIATE transaction: the file's write lock is taken
+   * before `fn` reads, so a check-then-write in it is atomic against every
+   * other connection (another process provisioning the same file). Inside a
+   * transaction already, a savepoint. `busyTimeoutMs`: how long BEGIN waits
+   * for another connection's write lock before SQLITE_BUSY (the connection's
+   * own busy_timeout, 5 s, otherwise).
+   */
+  immediateTransaction<T>(fn: () => T, busyTimeoutMs?: number): T {
+    if (busyTimeoutMs === undefined || this.db.inTransaction) return this.db.transaction(fn).immediate()
+    const before = this.db.pragma('busy_timeout', { simple: true }) as number
+    this.db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`)
+    try {
+      return this.db.transaction(fn).immediate()
+    } finally {
+      this.db.pragma(`busy_timeout = ${before}`)
+    }
   }
 
   // ===========================================================================

@@ -38,7 +38,7 @@ import { dirname, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { deriveOwnerIdentity, validateMnemonic } from '../crypto/mnemonic-identity'
-import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, ownerMnemonicSupersededKey, type OwnerIdentitySettings, type RestampResult } from '../services/owner-identity.service'
+import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, ownerMnemonicSupersededKey, type OwnerIdentitySettings, type RestampResult, type EnvelopeSweepResult } from '../services/owner-identity.service'
 import { DaemonAppOAuthStore, daemonAppOAuthAccount } from '../services/mcp-oauth-store'
 import { settingsScope } from '../services/provider-key-store'
 import type { WorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -874,6 +874,25 @@ export class DaemonIdentity {
    */
   applyTrustToLoadedAgent(workspace: AdfWorkspace): boolean {
     return this.reconcileTrustedSlot(workspace)
+  }
+
+  /**
+   * The boot envelope sweep (spec §8), Studio's sweepEnvelopeMigration with
+   * the daemon's provisioning recipe (workspaceHooks().ensureIdentity). Only
+   * with a ready owner identity, as the hooks mint only then (otherwise
+   * `ownerNotReady`, nothing opened). Files `skip` names are not opened.
+   */
+  async sweepEnvelopes(skip?: (filePath: string) => Promise<boolean>): Promise<EnvelopeSweepResult> {
+    if (!this.isReady()) return { provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true }
+    return this.service.sweepEnvelopeMigration({
+      skip,
+      provision: (workspace, busy) => {
+        this.unlockWithLocalRuntimeKeys(workspace)
+        const result = this.service.ensureWorkspaceIdentity(workspace, busy)
+        this.reconcileTrustedSlot(workspace)
+        return result
+      },
+    })
   }
 
   /** The daemon's workspace identity hooks (setWorkspaceIdentityHooks). */

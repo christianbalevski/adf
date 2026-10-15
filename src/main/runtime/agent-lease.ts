@@ -47,7 +47,8 @@
  * only in the exact local form this module creates (never a UNC/SMB path).
  *
  * Machines. Records carry a machine id (Linux /etc/machine-id, macOS
- * IOPlatformUUID, Windows MachineGuid; ADF_MACHINE_ID overrides). A record
+ * IOPlatformUUID, Windows MachineGuid; ADF_MACHINE_ID overrides it in tests,
+ * ADF_TEST_SEAMS=1 and unpackaged only). A record
  * from another machine (a network home shared by two machines) is never
  * judged by this machine's pids: it counts as alive and is never swept.
  *
@@ -73,6 +74,7 @@ import { createConnection, createServer, type Server, type Socket } from 'node:n
 import { homedir, hostname as osHostname, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { getUserDataPath } from '../utils/user-data-path'
+import { testSeamsAllowed } from '../utils/test-seams'
 
 export const AGENT_LEASED_CODE = 'agent_leased'
 
@@ -318,48 +320,158 @@ function errCode(err: unknown): string | undefined {
   return (err as NodeJS.ErrnoException | undefined)?.code
 }
 
-let machineIdLookup: Promise<string | null> | null = null
+/**
+ * Per-attempt timeouts of the machine id lookup. reg.exe / ioreg can take
+ * seconds on a loaded machine; a second, longer attempt rides that out.
+ */
+const MACHINE_ID_ATTEMPT_TIMEOUTS_MS = [3_000, 10_000]
+/** A failed lookup (timeout, spawn error) is remembered this long; the next caller after it asks again. */
+const MACHINE_ID_RETRY_MS = 15_000
+/**
+ * How long anything that needs the id waits for it (a registry's first
+ * write, an agent start, a liveness check): the old lookup timeout. A slower
+ * lookup goes on in the background, and the records are rewritten once it
+ * answers.
+ */
+const MACHINE_ID_WAIT_MS = 3_000
 
-/** A stable id of this machine (cached), or null when it cannot be read. */
+/** One lookup: an id, a definite "this platform has none", or a failure worth asking again about. */
+type MachineIdOutcome = { id: string } | { none: true } | { failed: true }
+type MachineIdReader = (timeoutMs: number) => Promise<string | null>
+let machineIdReader: MachineIdReader = readMachineId
+let machineIdRetryMs = MACHINE_ID_RETRY_MS
+let machineIdWaitMs = MACHINE_ID_WAIT_MS
+let machineIdLookup: { promise: Promise<string | null>; failedAt: number | null } | null = null
+
+/**
+ * A stable id of this machine, or null when there is none or it cannot be
+ * read. A read id, and a definite none (no /etc/machine-id in a container),
+ * are cached for the process; a failed lookup only for MACHINE_ID_RETRY_MS,
+ * so one slow reg.exe does not leave every record of this process without it.
+ */
 export function machineId(): Promise<string | null> {
-  machineIdLookup ??= readMachineId().then((id) => id?.trim().toLowerCase() || null, () => null)
-  return machineIdLookup
+  const cached = machineIdLookup
+  if (cached && (cached.failedAt === null || Date.now() - cached.failedAt < machineIdRetryMs)) return cached.promise
+  const entry: { promise: Promise<string | null>; failedAt: number | null } = { promise: Promise.resolve(null), failedAt: null }
+  entry.promise = lookupMachineId().then((outcome) => {
+    if ('failed' in outcome) entry.failedAt = Date.now()
+    return 'id' in outcome ? outcome.id : null
+  })
+  machineIdLookup = entry
+  return entry.promise
 }
 
-function run(cmd: string, args: string[]): Promise<string> {
+/** The last lookup failed (and is asked again after MACHINE_ID_RETRY_MS); false for an id or a definite none. */
+function machineIdLookupFailed(): boolean {
+  return machineIdLookup?.failedAt != null
+}
+
+/** machineId(), waiting at most MACHINE_ID_WAIT_MS: null meanwhile, the lookup goes on. */
+export function machineIdWithin(waitMs: number = machineIdWaitMs): Promise<string | null> {
+  const lookup = machineId()
+  let timer: NodeJS.Timeout | undefined
+  const waited = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), waitMs); timer.unref?.() })
+  return Promise.race([lookup, waited]).finally(() => clearTimeout(timer))
+}
+
+/** Tests: replace the platform reader, the retry interval and the wait (undefined restores them) and forget the cached id. */
+export function __setMachineIdReaderForTests(reader?: MachineIdReader, opts: { retryMs?: number; waitMs?: number } = {}): void {
+  machineIdReader = reader ?? readMachineId
+  machineIdRetryMs = opts.retryMs ?? MACHINE_ID_RETRY_MS
+  machineIdWaitMs = opts.waitMs ?? MACHINE_ID_WAIT_MS
+  machineIdLookup = null
+}
+
+async function lookupMachineId(): Promise<MachineIdOutcome> {
+  let lastError: unknown = null
+  for (const timeoutMs of MACHINE_ID_ATTEMPT_TIMEOUTS_MS) {
+    try {
+      const id = (await machineIdReader(timeoutMs))?.trim().toLowerCase() || null
+      if (id) return { id }
+      // Read, and the platform has none: cached for the process, said once.
+      console.warn("[AgentLease] This machine has no machine id (e.g. no /etc/machine-id in a container); this process's records carry none, and records of other runtimes are judged by this machine's pids")
+      return { none: true }
+    } catch (err) {
+      lastError = err
+    }
+  }
+  console.warn(`[AgentLease] Could not read this machine's id (${lastError instanceof Error ? lastError.message : String(lastError)}); asked again after ${Math.ceil(machineIdRetryMs / 1000)} s. Until then this process's records carry no machine id and records of other runtimes are judged by this machine's pids`)
+  return { failed: true }
+}
+
+function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
   return new Promise((ok, fail) => {
     try {
-      execFile(cmd, args, { timeout: 3000, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => (err ? fail(err) : ok(stdout)))
+      execFile(cmd, args, { timeout: timeoutMs, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => (err ? fail(err) : ok(stdout)))
     } catch (err) {
       fail(err)
     }
   })
 }
 
-async function readMachineId(): Promise<string | null> {
-  if (process.env.ADF_MACHINE_ID) return process.env.ADF_MACHINE_ID
+async function readMachineId(timeoutMs: number): Promise<string | null> {
+  // Test seam (ADF_TEST_SEAMS=1, unpackaged): a made-up machine id.
+  if (process.env.ADF_MACHINE_ID && testSeamsAllowed()) return process.env.ADF_MACHINE_ID
   if (process.platform === 'linux') {
     for (const file of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
-      try { return await fsp.readFile(file, 'utf-8') } catch { /* next */ }
+      try {
+        const id = (await fsp.readFile(file, 'utf-8')).trim()
+        if (id) return id
+      } catch { /* next */ }
     }
     return null
   }
   if (process.platform === 'darwin') {
-    return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']))?.[1] ?? null
+    return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(await run('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], timeoutMs))?.[1] ?? null
   }
   if (process.platform === 'win32') {
     // By full path: never a reg.exe found first on PATH.
     const reg = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe')
-    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']))?.[1] ?? null
+    return /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(await run(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'], timeoutMs))?.[1] ?? null
   }
   return null
 }
 
-/** Both ids known and different: the record was written on another machine. */
+/** Both ids known and different: the record was written on another machine. Waits at most MACHINE_ID_WAIT_MS for ours. */
 export async function fromOtherMachine(record: { machineId?: string | null }): Promise<boolean> {
   if (!record.machineId) return false
-  const ours = await machineId()
+  const ours = await machineIdWithin()
   return !!ours && record.machineId !== ours
+}
+
+/**
+ * The sentence naming the live runtime that holds `filePath`'s agent lease
+ * (W0-C), or null when nobody else does. A file another runtime runs must not
+ * be written, moved or deleted from here.
+ */
+export async function leaseHolderElsewhere(leases: AgentLeaseRegistry | null, filePath: string): Promise<string | null> {
+  if (!leases) return null
+  try {
+    if (await leases.isHeld(filePath)) return null
+    const canonical = await canonicalLeasePath(filePath)
+    let raw: string
+    try { raw = await fsp.readFile(join(leases.dir, `${leaseKeyForCanonicalPath(canonical)}.json`), 'utf-8') } catch { return null }
+    const record = JSON.parse(raw) as AgentLeaseRecord
+    if (record?.v !== 1 || typeof record.holder?.pid !== 'number' || typeof record.holder.runtimeId !== 'string') return null
+    if (record.holder.runtimeId === leases.runtimeId) return null
+    const liveness = await holderLiveness(record.holder, leases.dir)
+    return liveness.alive ? agentLeasedMessage(record, undefined, liveness.otherMachine) : null
+  } catch (err) {
+    console.warn(`[AgentLease] Lease check of ${agentNameOf(filePath)} failed:`, err)
+    return null
+  }
+}
+
+/**
+ * The boot envelope sweep's skip rule, the same in both modes: a file open
+ * or running in this process (`openHere`, or a lease this process holds;
+ * provisioned when it was opened), or one another live runtime runs (its one
+ * writer).
+ */
+export async function openHereOrLeasedElsewhere(leases: AgentLeaseRegistry, filePath: string, openHere: Iterable<string>): Promise<boolean> {
+  for (const p of openHere) if (samePath(p, filePath)) return true
+  if (await leases.isHeld(filePath)) return true
+  return (await leaseHolderElsewhere(leases, filePath)) !== null
 }
 
 /** process.kill(pid, 0), plus the Linux zombie check (an exited, unreaped pid is not alive). */
@@ -586,6 +698,8 @@ export class AgentLeaseRegistry {
   private readonly hostnameOverride: string | undefined
   private machineIdValue: string | null = null
   private readonly machineIdOverride: string | null | undefined
+  /** Pending retry of a failed machine id lookup (scheduleMachineIdRetry). */
+  private machineIdRetry: NodeJS.Timeout | null = null
   private readonly takeoverLockTtlMs: number
   private readonly beforeTakeoverReplace?: () => Promise<void>
   private readonly sweepEntries: boolean
@@ -785,6 +899,8 @@ export class AgentLeaseRegistry {
   /** Test / shutdown helper: release everything, remove host entries, close the endpoint. */
   async close(): Promise<void> {
     await this.ready?.catch(() => {})
+    if (this.machineIdRetry) clearTimeout(this.machineIdRetry)
+    this.machineIdRetry = null
     for (const key of [...this.held.keys()]) await this.withKey(key, () => this.releaseLocked(key))
     await this.removeOwnEntries()
     const server = this.server
@@ -855,10 +971,15 @@ export class AgentLeaseRegistry {
     const record: AgentLeaseRecord = { v: 1, path: target.canonical, agentId, holder: this.holder(), acquiredAt: Date.now() }
     const body = JSON.stringify(record, null, 2)
     const deadline = Date.now() + ACQUIRE_BUDGET_MS
-    const won = (): AgentLeaseResult => {
-      this.held.set(target.key, { file: target.file, record, generation: ++this.generation })
+    const won = async (): Promise<AgentLeaseResult> => {
+      const entry: HeldLease = { file: target.file, record, generation: ++this.generation }
+      this.held.set(target.key, entry)
       this.unusable = null
       this.installExitHook()
+      // The machine id arrived while this acquire was under way (stampMachineId
+      // rewrote only the leases held then): this one gets it now.
+      const id = this.machineIdValue
+      if (id && record.holder.machineId !== id) await this.stampLease(entry, id)
       return { ok: true, leaseFile: target.file }
     }
     let lastError: unknown = null
@@ -870,7 +991,7 @@ export class AgentLeaseRegistry {
     while (Date.now() < deadline) {
       try {
         await fsp.writeFile(target.file, body, { flag: 'wx', mode: FILE_MODE })
-        return won()
+        return await won()
       } catch (err) {
         const code = errCode(err)
         if (code !== 'EEXIST') {
@@ -891,7 +1012,7 @@ export class AgentLeaseRegistry {
         const age = Date.now() - existing.mtimeMs
         if (age < PARTIAL_WRITE_GRACE_MS) { await delay(Math.min(250, PARTIAL_WRITE_GRACE_MS - age + 10)); continue }
         console.warn(`[AgentLease] ${name}: replacing an unreadable lease file ${target.file}`)
-        if (await this.takeOver(target.file, existing.raw, body)) return won()
+        if (await this.takeOver(target.file, existing.raw, body)) return await won()
         continue
       }
       const holder = existing.record.holder
@@ -913,7 +1034,7 @@ export class AgentLeaseRegistry {
         }
       }
       console.warn(`[AgentLease] ${name}: replacing a stale lease held by ${describeHolder(holder)} (${liveness.reason})`)
-      if (await this.takeOver(target.file, existing.raw, body)) return won()
+      if (await this.takeOver(target.file, existing.raw, body)) return await won()
     }
     // Contention that never settled (or a lease file that cannot be replaced).
     // Refuse rather than risk running the agent twice; the message says where
@@ -1198,13 +1319,87 @@ export class AgentLeaseRegistry {
 
   private ensureReady(rewriteEntry: boolean): Promise<void> {
     if (!this.ready) {
+      let lookup: Promise<string | null> | undefined
       this.ready = this.startEndpoint()
-        .then(async () => { this.machineIdValue = this.machineIdOverride !== undefined ? this.machineIdOverride : await machineId() })
+        .then(async () => {
+          if (this.machineIdOverride !== undefined) { this.machineIdValue = this.machineIdOverride; return }
+          lookup = machineId()
+          this.machineIdValue = await machineIdWithin()
+        })
         .then(() => this.writeEntry())
+        .then(() => this.scheduleMachineIdRetry(lookup))
     } else if (rewriteEntry) {
       this.ready = this.ready.then(() => this.writeEntry())
     }
     return this.ready
+  }
+
+  /**
+   * The machine id was not read when the host record was first written: wait
+   * for the lookup still running (`pending`), else, after a failed lookup,
+   * ask again every MACHINE_ID_RETRY_MS (15 s), and once read rewrite the
+   * host record and every lease this process holds. A platform with no
+   * machine id at all is not asked again. A record without a machine id is judged
+   * by the reader's own pids, so a runtime on another machine sharing the
+   * lease folder could take a live agent from this one.
+   */
+  private scheduleMachineIdRetry(pending?: Promise<string | null>): void {
+    if (this.machineIdValue || this.machineIdOverride !== undefined || this.machineIdRetry || !this.ready) return
+    const settle = (lookup: Promise<string | null>): void => {
+      void lookup.then(async (id) => {
+        if (!this.ready || this.machineIdValue) return // closed meanwhile, or already stamped
+        if (!id) { if (machineIdLookupFailed()) this.scheduleMachineIdRetry(); return }
+        this.machineIdValue = id
+        await this.stampMachineId(id)
+      })
+    }
+    if (pending) { settle(pending); return }
+    this.machineIdRetry = setTimeout(() => {
+      this.machineIdRetry = null
+      settle(machineId())
+    }, machineIdRetryMs)
+    this.machineIdRetry.unref?.()
+  }
+
+  /** Write `id` into the host record and into every held lease that still names this runtime. */
+  private async stampMachineId(id: string): Promise<void> {
+    if (this.ready) await this.ensureReady(true)
+    let leases = 0
+    for (const [key, entry] of [...this.held]) {
+      await this.withKey(key, async () => {
+        if (this.held.get(key) === entry && await this.stampLease(entry, id)) leases++
+      })
+    }
+    console.log(`[AgentLease] Read this machine's id late; added it to the host record and ${leases} held lease(s)`)
+  }
+
+  /**
+   * Rewrite one held lease with machine id `id`. The caller holds the key's
+   * chain. The read and the write run under the lease's takeover lock, and
+   * only a lease that still names this runtime is rewritten: a taker that
+   * judged it stale and replaced it keeps its own.
+   */
+  private async stampLease(entry: HeldLease, id: string): Promise<boolean> {
+    const lock = `${entry.file}.takeover`
+    try {
+      if (!(await this.lockTakeover(lock))) return false
+    } catch (err) {
+      console.warn(`[AgentLease] ${agentNameOf(entry.record.path)}: could not add the machine id to its lease:`, err instanceof Error ? err.message : err)
+      return false
+    }
+    try {
+      const current = await readLease(entry.file)
+      if (!current?.record || current.record.holder.runtimeId !== this.runtimeId) return false
+      const record: AgentLeaseRecord = { ...current.record, holder: { ...current.record.holder, machineId: id } }
+      await writeAtomic(entry.file, JSON.stringify(record, null, 2))
+      entry.record = record
+      return true
+    } catch (err) {
+      console.warn(`[AgentLease] ${agentNameOf(entry.record.path)}: could not add the machine id to its lease:`, err instanceof Error ? err.message : err)
+      return false
+    } finally {
+      await unlockTakeover(lock)
+    }
   }
 
   private async startEndpoint(): Promise<void> {
