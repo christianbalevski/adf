@@ -94,6 +94,7 @@ describe('mesh server binder', () => {
       mesh: { hasAnyReachableAgent: () => state.reachable, hasAgentOfTier: (tier) => tier === 'lan' && state.lan },
       server,
       debounceMs: 20,
+      maxSettleMs: 120,
       log: { log: () => {}, error: () => {} },
     })
     const controls = createMeshControls({
@@ -128,6 +129,17 @@ describe('mesh server binder', () => {
     b.autostartSettling(false)
     await settle()
     expect(calls).toEqual(['start 0.0.0.0'])
+    b.dispose()
+  })
+
+  it('an autostart that never settles still binds, no later than maxSettleMs after the first registration', async () => {
+    const { calls, b } = binder()
+    b.autostartSettling(true)
+    b.ensure()
+    await settle()
+    expect(calls).toEqual([])
+    await new Promise(r => setTimeout(r, 120))
+    expect(calls).toEqual(['start 127.0.0.1'])
     b.dispose()
   })
 

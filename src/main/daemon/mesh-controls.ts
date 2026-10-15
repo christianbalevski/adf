@@ -85,6 +85,8 @@ export interface MeshServerBinderDeps {
   server: { isRunning(): boolean; getHost(): string; start(): Promise<void>; stop(): Promise<void> }
   /** Default 500 ms. */
   debounceMs?: number
+  /** Longest wait for autostart to settle after the first registration before the first bind. Default 2 s. */
+  maxSettleMs?: number
   log?: Pick<Console, 'log' | 'error'>
 }
 
@@ -99,7 +101,9 @@ export interface MeshServerBinderDeps {
  *   in that window could reach another runtime on 7295 (Studio binds at
  *   boot). During autostart (`autostartSettling(true)`) it waits for the
  *   burst to settle, so the host (loopback vs LAN) is decided once and the
- *   server is not bound to loopback and then rebound to 0.0.0.0.
+ *   server is not bound to loopback and then rebound to 0.0.0.0; but no
+ *   longer than `maxSettleMs` after the first registration (an autostart
+ *   held up by a slow MCP connect must not leave messages naming 7295).
  * - Later checks are debounced; a LAN/public agent arriving while bound to
  *   loopback rebinds to all interfaces.
  * - A stop on request (POST /network/server/stop, Studio's MESH_SERVER_STOP
@@ -111,14 +115,30 @@ export function createMeshServerBinder(deps: MeshServerBinderDeps) {
   const debounceMs = deps.debounceMs ?? 500
   let timer: ReturnType<typeof setTimeout> | null = null
   let firstStart: Promise<void> | null = null
+  const maxSettleMs = deps.maxSettleMs ?? 2_000
   let settling = false
+  let settleCap: ReturnType<typeof setTimeout> | null = null
   let stoppedOnRequest = false
+  const endSettling = (): void => {
+    if (settleCap) { clearTimeout(settleCap); settleCap = null }
+    settling = false
+  }
 
   const blocked = () => deps.settings.get('meshServerEnabled') === false || stoppedOnRequest
   const ensure = (): void => {
     if (blocked()) {
       if (timer) { clearTimeout(timer); timer = null }
       return
+    }
+    if (settling && !settleCap && !deps.server.isRunning() && deps.mesh.hasAnyReachableAgent()) {
+      settleCap = setTimeout(() => {
+        settleCap = null
+        if (!settling) return
+        log.log(`[MeshServer] Autostart has not settled ${maxSettleMs} ms after the first agent registered; binding now`)
+        settling = false
+        ensure()
+      }, maxSettleMs)
+      settleCap.unref?.()
     }
     if (!settling && !deps.server.isRunning() && !firstStart && deps.mesh.hasAnyReachableAgent()) {
       firstStart = deps.server.start()
@@ -143,8 +163,12 @@ export function createMeshServerBinder(deps: MeshServerBinderDeps) {
     ensure,
     /** Autostart running (true) or settled (false: binds now if agents registered meanwhile). */
     autostartSettling(value: boolean): void {
-      settling = value
-      if (!value) ensure()
+      if (!value) {
+        endSettling()
+        ensure()
+        return
+      }
+      settling = true
     },
     /** A stop or start on request (mesh-controls `onServerSwitch`). */
     serverSwitched(state: 'started' | 'stopped'): void {
@@ -155,6 +179,10 @@ export function createMeshServerBinder(deps: MeshServerBinderDeps) {
       }
     },
     get stoppedOnRequest(): boolean { return stoppedOnRequest },
-    dispose(): void { if (timer) clearTimeout(timer); timer = null },
+    dispose(): void {
+      if (timer) clearTimeout(timer)
+      timer = null
+      endSettling()
+    },
   }
 }
