@@ -186,6 +186,22 @@ export interface ActiveParityEnv extends ParityEnv {
   violations(): string[]
 }
 
+/**
+ * Where run roots are made: os.tmpdir() on Windows, /var/tmp on macOS and
+ * Linux. Studio and the daemon refuse an agents folder setting under `/tmp`
+ * (a temp location; Linux's os.tmpdir()), and macOS's os.tmpdir() is so long
+ * that `<root>/leases/hosts/<runtimeId>.sock` passes the socket path limit
+ * and the lease endpoint moves out of the root.
+ */
+function rootParent(): string {
+  if (process.platform !== 'win32') {
+    try {
+      if (statSync('/var/tmp').isDirectory()) return '/var/tmp'
+    } catch { /* no /var/tmp */ }
+  }
+  return tmpdir()
+}
+
 function rootSpellingsOf(rawRoot: string, root: string): { spelling: string; token: string }[] {
   const out: { spelling: string; token: string }[] = []
   const add = (spelling: string, token: string) => {
@@ -210,7 +226,7 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     ...real.files.map((p) => [p, fingerprintFile(p)] as [string, string]),
     ...real.trees.map((p) => [p, fingerprintTree(p)] as [string, string]),
   ])
-  const rawRoot = mkdtempSync(join(tmpdir(), `adf-parity-${label}-`))
+  const rawRoot = mkdtempSync(join(rootParent(), `adf-parity-${label}-`))
   const root = realpathSync.native(rawRoot)
   const dir = (...parts: string[]) => {
     const p = join(root, ...parts)
