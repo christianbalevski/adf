@@ -2215,7 +2215,8 @@ export class MeshManager extends EventEmitter {
               ...(opts.keepalive_interval_ms !== undefined && { keepalive_interval_ms: opts.keepalive_interval_ms })
             }
 
-            const result = await wsm.connectOutbound(fp, cfg)
+            // The tool's egress policy pins the socket to checked addresses (and its reconnects).
+            const result = await wsm.connectOutbound(fp, cfg, undefined, opts.guard)
             if (result.error) return result
 
             // `persist` defaults to true (see the ws_connect schema). Make the

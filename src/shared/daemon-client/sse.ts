@@ -439,10 +439,10 @@ function errorMessage(err: unknown): string {
 }
 
 /** A client-session frame (`GET /client/sessions/:id/events`): an object with a `kind` and a cursor. */
-export function isClientFrame(value: unknown): value is StreamFrame & { kind: 'executor' | 'host' | 'push' | 'umbilical' } {
+export function isClientFrame(value: unknown): value is StreamFrame & { kind: 'executor' | 'host' | 'push' | 'umbilical' | 'turn' } {
   if (!value || typeof value !== 'object') return false
   const { kind, cursor } = value as { kind?: unknown; cursor?: unknown }
-  return (kind === 'executor' || kind === 'host' || kind === 'push' || kind === 'umbilical') && typeof cursor === 'number'
+  return (kind === 'executor' || kind === 'host' || kind === 'push' || kind === 'umbilical' || kind === 'turn') && typeof cursor === 'number'
 }
 
 /** Client-session frames dedupe by their cursor alone: one cursor space per session. */

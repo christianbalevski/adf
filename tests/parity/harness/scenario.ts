@@ -5,7 +5,7 @@ import { createFakeElectron, type DialogScript, type PushRecord } from './electr
 import { createParityEnv, writeSettingsFile, type ParityEnv } from './env'
 import { baseSettings, createFixtureAgents, IDENTITY, type FixtureAgent, type FixtureName, type FixtureSpec } from './fixtures'
 import { diffRendered, renderRecording } from './format'
-import { defaultScript, recordedRequest, startMockLlm, type LlmScript, type MockLlm, type StreamTiming } from './mock-llm'
+import { defaultScript, recordedRequest, startMockLlm, type LlmRequestView, type LlmScript, type MockLlm, type StreamTiming } from './mock-llm'
 import { normalizeRecording, type NormalizationContext } from './normalize'
 import { toComparable, type ComparableRecording, type RawRecording, type StepRecord } from './recording'
 import { verifySignatures } from './signatures'
@@ -37,6 +37,12 @@ export interface ParityScenario {
    * check has nothing to measure and is skipped.
    */
   backgroundStreamsOnly?: boolean
+  /**
+   * Which streamed replies go to the open file's agent, by their request;
+   * default every one. Replies to a background agent push no text deltas
+   * (in either mode), so the streaming check measures only these.
+   */
+  shownStream?: (request: LlmRequestView) => boolean
   run(ctx: ScenarioContext): Promise<void>
 }
 
@@ -234,7 +240,8 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     await llm.close()
     llmOpen = false
     problems.push(...(await leakedHandles(handlesBefore)))
-    const report = streamingReport(electron.pushes, llm.streams)
+    const shown = scenario.shownStream
+    const report = streamingReport(electron.pushes, shown ? llm.streams.filter((st) => shown(llm.requests[st.request])) : llm.streams)
     // Tolerant runs record the category and counts only: a golden must hold no timing.
     if (scenario.backgroundStreamsOnly) { /* no foreground stream to measure */ }
     else if (opts.tolerant) behaviour.push(...streamingSummary(report))

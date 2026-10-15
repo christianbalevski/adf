@@ -72,7 +72,7 @@ import { MAIN_LOOP, listAvailableLoopTools, validateLoopToolList } from '../adf/
 import { DEFAULT_NEW_LOOP_TOOLS } from '../../shared/types/adf-v02.types'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
-import { withSource } from './execution-context'
+import { currentAgentId, currentTurnId, withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
 import { issueOwnerAttestation } from '../services/attestation.service'
@@ -666,6 +666,19 @@ export interface RuntimeAgentEvent {
    * Every other client still gets the event.
    */
   echoOrigin?: string
+  /**
+   * Turn bookkeeping (design D5): the turn the event belongs to, the
+   * `turnId` of the chat that started it (POST /agents/:id/chat) or else
+   * the executor's own id; the umbilical envelope's `turn_id` for the same
+   * event. Absent for events outside a turn.
+   */
+  turnId?: string
+  /**
+   * On `error` and on a `turn_complete` that was not interrupted: the chats
+   * this turn answered besides its own (interrupted turns it replayed,
+   * queued chats delivered into it); the umbilical `absorbed_turn_ids`.
+   */
+  absorbedTurnIds?: string[]
 }
 
 export interface RuntimeAgentLoadedEvent {
@@ -894,7 +907,7 @@ export class RuntimeService extends EventEmitter {
     if (moving) this.assertNotMoving(moving)
     // AdfWorkspace.open creates a missing database: a load never makes a file.
     else if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
-    const lease = await this.agentLeases?.acquire(canonicalPath)
+    const lease = await this.agentLeases?.acquire(canonicalPath, { agentId: this.documents.get(canonicalPath)?.agentId ?? null })
     if (lease && !lease.ok) {
       throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
     }
@@ -924,6 +937,8 @@ export class RuntimeService extends EventEmitter {
       }
       let config = workspace.getAgentConfig() as AgentConfig
       progress.agentId = config.id
+      // The lease was taken before the file was read: it names the agent now, as Studio's start does.
+      if (lease?.ok) await this.agentLeases?.noteAgentId(canonicalPath, config.id)
       // Before anything is built: a second file with a loaded agent's id
       // would otherwise start its MCP servers and adapters only to be refused.
       this.assertNoDuplicateId(config.id, canonicalPath)
@@ -3878,8 +3893,10 @@ export class RuntimeService extends EventEmitter {
   private hostBindings(managed: ManagedRuntimeAgent): AgentHostBindings {
     return {
       onEvent: (event) => {
+        // Read before the executor's own umbilical emit takes the absorbed ids (agent-executor.ts emitEvent).
+        const turn = this.turnStampOf(managed, event)
         const echoOrigin = this.takeEchoOrigin(managed, event)
-        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event, ...(echoOrigin ? { echoOrigin } : {}) } satisfies RuntimeAgentEvent)
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event, ...turn, ...(echoOrigin ? { echoOrigin } : {}) } satisfies RuntimeAgentEvent)
         if (event.type === 'state_changed') this.foldDisplayState(managed, event)
       },
       // `trigger_message` and the like: Studio sends them on AGENT_EVENT too.
@@ -3894,6 +3911,26 @@ export class RuntimeService extends EventEmitter {
         if (managed.filePath) this.syncAgentFileToName(managed.filePath, updatedConfig.name)
       },
     }
+  }
+
+  /**
+   * `turnId` and `absorbedTurnIds` of an executor event, by the umbilical's
+   * rules (emit-umbilical.ts, agent-executor.ts emitEvent): the turn of the
+   * async context when the context is this agent's; absorbed ids on `error`
+   * and on a `turn_complete` that was not interrupted (an interrupted turn's
+   * ids ride on to the replay).
+   */
+  private turnStampOf(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): Pick<RuntimeAgentEvent, 'turnId' | 'absorbedTurnIds'> {
+    const turnId = currentAgentId() === managed.id ? currentTurnId() : undefined
+    let absorbedTurnIds: string[] | undefined
+    const interrupted = (event.payload as { interrupted?: unknown } | undefined)?.interrupted === true
+    if (event.type === 'error' || (event.type === 'turn_complete' && !interrupted)) {
+      const loop = event.loop ?? MAIN_LOOP
+      const executor = loop === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loop)?.executor
+      const ids = executor?.getAbsorbedTurnIds() ?? []
+      if (ids.length > 0) absorbedTurnIds = [...ids]
+    }
+    return { ...(turnId ? { turnId } : {}), ...(absorbedTurnIds ? { absorbedTurnIds } : {}) }
   }
 
   /** Main's display state and the inner-loop count, through the background mapping (BAM parity). */

@@ -339,6 +339,38 @@ describe('client sessions: expiry, documents and the orphan rule', () => {
     expect(log.some(m => m.startsWith('Stopping the daemon:'))).toBe(true)
   })
 
+  it('a Studio relaunched after a crash ends the dead Studio\'s session at once: no orphan hold, no shutdown, not counted as another client', async () => {
+    const shutdown = vi.fn()
+    const log: string[] = []
+    const alive = new Set([2222, 3333])
+    const sessions = registry({ expiryMs: 60_000, startedBy: 'studio', requestShutdown: shutdown, log: (m) => log.push(m), pidAlive: (pid) => alive.has(pid) })
+    const ended = vi.fn()
+    sessions.onSessionEnded(ended)
+    // The crashed Studio (pid 1111): its stream dropped, its expiry is a minute away.
+    const crashed = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true, pid: 1111 })
+    const crashedSink = new FakeSink()
+    sessions.attach(crashed.sessionId, crashedSink)
+    sessions.detach(crashed.sessionId, crashedSink)
+    // A live terminal app and a live second Studio are left alone.
+    const tui = sessions.create({ client: 'tui', version: '1', pid: 1111 })
+    const otherStudio = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true, pid: 3333 })
+    const relaunched = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true, pid: 2222 })
+    const sink = new FakeSink()
+    sessions.attach(relaunched.sessionId, sink)
+    await tick()
+    expect(sessions.has(crashed.sessionId)).toBe(false)
+    expect(ended).toHaveBeenCalledWith({ sessionId: crashed.sessionId, client: 'studio', reason: 'expired', documents: [] })
+    expect(sessions.has(tui.sessionId)).toBe(true)
+    expect(sessions.has(otherStudio.sessionId)).toBe(true)
+    expect(sink.frames().filter(f => f.kind === 'push' && f.topic === 'daemon_orphan_hold')).toEqual([])
+    expect(shutdown).not.toHaveBeenCalled()
+    expect(log.some(m => m.includes(`Client session ${crashed.sessionId} (studio, pid 1111) ends now`))).toBe(true)
+    // Without a pid (an older client, or one the daemon cannot check) nothing is ended early.
+    const noPid = sessions.create({ client: 'studio', version: '1' })
+    sessions.create({ client: 'studio', version: '1', pid: 4444 })
+    expect(sessions.has(noPid.sessionId)).toBe(true)
+  })
+
   it('orphan rule: not while another session is open, not for a CLI-started daemon, not on DELETE', async () => {
     const shutdown = vi.fn()
     const log: string[] = []
@@ -543,6 +575,31 @@ describe('client sessions: producers', () => {
     sessions.disconnect(sessionId)
     expect(sink.destroyed).toBe(true)
     expect(sessions.stats(sessionId).connected).toBe(false)
+  })
+
+  it('turn bookkeeping (D5): executor frames carry turnId and absorbedTurnIds, focused or not; chat.discarded is a turn frame for every session', async () => {
+    const sessions = registry()
+    const focused = open(sessions, { focus: AGENT_1 })
+    const other = open(sessions)
+    sessions.indexAgent(FILE_1, AGENT_1)
+    sessions.publishExecutor({ ...exec(AGENT_1, 'tool_call_result', { result: { content: 'x' } }), turnId: 'turn_1' })
+    sessions.publishExecutor({ ...exec(AGENT_1, 'turn_complete', {}), turnId: 'turn_1', absorbedTurnIds: ['turn_0'] })
+    sessions.publishExecutor(exec(AGENT_1, 'state_changed', { state: 'idle' }))
+    sessions.publishUmbilical({ seq: 2, event_type: 'chat.discarded', timestamp: 1, source: 'agent:x', agent_id: AGENT_1, loop: 'side', payload: { reason: 'stopped', count: 1, turn_ids: ['turn_q'], unanswered_turn_ids: ['turn_c'] } })
+    sessions.publishUmbilical({ seq: 3, event_type: 'chat.discarded', timestamp: 1, source: 'agent:x', agent_id: AGENT_1, payload: { reason: 'stopped', count: 0, turn_ids: [] } })
+    await tick()
+    for (const { sink } of [focused, other]) {
+      const frames = sink.frames()
+      expect(frames.map(f => f.kind === 'executor' ? [f.event.type, f.turnId ?? null, f.absorbedTurnIds ?? null] : f.kind)).toEqual([
+        ['tool_call_result', 'turn_1', null],
+        ['turn_complete', 'turn_1', ['turn_0']],
+        ['state_changed', null, null],
+        'turn',
+      ])
+      expect(frames[3]).toEqual({ cursor: 4, kind: 'turn', agentId: AGENT_1, filePath: FILE_1, loop: 'side', outcome: 'discarded', turnIds: ['turn_q'], unansweredTurnIds: ['turn_c'] })
+    }
+    // The unfocused session's tool result is stripped, its turn id kept.
+    expect(other.sink.frames()[0]).toMatchObject({ stripped: 'tool_result', turnId: 'turn_1' })
   })
 
   it('no session: producers do no serialization work', () => {

@@ -7,7 +7,6 @@ import {
   type EventStream,
   type StreamGap as WireGap,
 } from '../../../shared/daemon-client'
-import type { UmbilicalEvent } from '../../runtime/umbilical-bus'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 
 /**
@@ -21,11 +20,10 @@ import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
  * the payload of its IPC push channel, exactly as embedded Studio sends it
  * (PUSH_TOPICS in event-bridge.ts names the channel).
  *
- * Turn bookkeeping (D5): executor frames carry no turn ids yet, so the
- * session is opened with `umbilical: true` and only the umbilical envelopes
- * that end chats (`turn.completed`, `agent.error` with their `turn_id` and
- * `absorbed_turn_ids`, `chat.discarded`) are read, as `turn` frames. Every
- * other umbilical envelope is dropped here.
+ * Turn bookkeeping (D5): executor frames carry the `turnId` of their turn
+ * and, on `turn_complete` and `error`, the ids it absorbed; a stop that
+ * drops chats sends a `turn` frame (`discarded`). `turnEndOf` reads a
+ * turn's end from its executor frame; AGENT_INVOKE waits settle on both.
  */
 
 /** Host events (D5 `host` frames, W1-A's lifecycle events). */
@@ -54,6 +52,10 @@ export interface ExecutorFrame {
    * `stub` (scalars only). Never sent on AGENT_EVENT.
    */
   stripped?: 'tool_result' | 'tool_input' | 'stub'
+  /** The turn the event belongs to (the chat's `turnId`); absent outside a turn. */
+  turnId?: string
+  /** On `error` and a `turn_complete` that was not interrupted: the other chats the turn answered. */
+  absorbedTurnIds?: string[]
 }
 
 export interface HostFrame {
@@ -173,30 +175,28 @@ function stringList(value: unknown): string[] {
 }
 
 /**
- * The umbilical envelopes that end chats, as `turn` frames; null for every
- * other envelope (Studio reads the umbilical stream for turn bookkeeping only).
+ * The chats an executor frame ends: `turn_complete` (an interrupted one
+ * too; its replay ends the id again) and `error` end their turn and the ids
+ * it absorbed. Null for every other frame and for a turn with no id.
  */
-export function turnFrameOf(event: UmbilicalEvent): TurnFrame | null {
-  const agentId = event.agent_id
-  if (!agentId) return null
-  const payload = (event.payload ?? {}) as Record<string, unknown>
-  const filePath = typeof payload.filePath === 'string' ? payload.filePath : null
-  const base = { kind: 'turn' as const, agentId, filePath, ...(event.loop ? { loop: event.loop } : {}) }
-  switch (event.event_type) {
-    case 'turn.completed':
-    case 'agent.error': {
-      const turnIds = [...(event.turn_id ? [event.turn_id] : []), ...stringList(payload.absorbed_turn_ids)]
-      if (turnIds.length === 0) return null
-      return { ...base, outcome: event.event_type === 'turn.completed' ? 'completed' : 'error', turnIds, unansweredTurnIds: [] }
-    }
-    case 'chat.discarded':
-      return { ...base, outcome: 'discarded', turnIds: stringList(payload.turn_ids), unansweredTurnIds: stringList(payload.unanswered_turn_ids) }
-    default:
-      return null
+export function turnEndOf(frame: ExecutorFrame): TurnFrame | null {
+  const type = frame.event.type
+  if (type !== 'turn_complete' && type !== 'error') return null
+  const turnIds = [...(frame.turnId ? [frame.turnId] : []), ...(frame.absorbedTurnIds ?? [])]
+  if (turnIds.length === 0) return null
+  const loop = frame.event.loop
+  return {
+    kind: 'turn',
+    agentId: frame.agentId,
+    filePath: frame.filePath,
+    ...(loop ? { loop } : {}),
+    outcome: type === 'turn_complete' ? 'completed' : 'error',
+    turnIds,
+    unansweredTurnIds: [],
   }
 }
 
-/** One wire frame as the bridge's frame, or null (umbilical envelopes that are not turn ends). */
+/** One wire frame as the bridge's frame, or null (a kind Studio does not read). */
 export function translateClientFrame(frame: WireFrame): ClientFrame | null {
   switch (frame.kind) {
     case 'executor':
@@ -206,6 +206,8 @@ export function translateClientFrame(frame: WireFrame): ClientFrame | null {
         filePath: frame.filePath,
         event: frame.event,
         ...(frame.stripped ? { stripped: frame.stripped } : {}),
+        ...(typeof frame.turnId === 'string' ? { turnId: frame.turnId } : {}),
+        ...(Array.isArray(frame.absorbedTurnIds) && frame.absorbedTurnIds.length > 0 ? { absorbedTurnIds: stringList(frame.absorbedTurnIds) } : {}),
       }
     case 'host':
       return { kind: 'host', agentId: frame.agentId, filePath: frame.filePath, type: frame.type as HostEventType, payload: frame.payload ?? {}, timestamp: frame.timestamp }
@@ -218,8 +220,16 @@ export function translateClientFrame(frame: WireFrame): ClientFrame | null {
         payload: frame.payload,
         ...(frame.stripped ? { stripped: frame.stripped } : {}),
       }
-    case 'umbilical':
-      return turnFrameOf(frame.event)
+    case 'turn':
+      return {
+        kind: 'turn',
+        agentId: frame.agentId,
+        filePath: frame.filePath,
+        ...(frame.loop ? { loop: frame.loop } : {}),
+        outcome: 'discarded',
+        turnIds: stringList(frame.turnIds),
+        unansweredTurnIds: stringList(frame.unansweredTurnIds),
+      }
     default:
       return null
   }
@@ -235,6 +245,8 @@ export interface DaemonClientSessionOptions {
   version: string
   /** §8.3: the daemon stops when this session expires and no other is open (local mode, keepDaemonRunning off). */
   exitDaemonWhenClosed: boolean
+  /** Local mode: this Studio's pid, so a relaunch after a crash ends the dead Studio's session at once (it is not "another client"). */
+  pid?: number
   log?: Pick<Console, 'log' | 'warn'>
   /** Retry delay while the daemon cannot be reached to open the session. */
   retryMs?: number
@@ -277,7 +289,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
           listener?.onFatal?.(message)
           return null
         }
-        const created = await client.createClientSession({ client: STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed, umbilical: true })
+        const created = await client.createClientSession({ client: STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed, ...(options.pid ? { pid: options.pid } : {}) })
         log.log(`[Backend] Client session ${created.sessionId} opened${options.exitDaemonWhenClosed ? ' (the daemon stops when it expires and no other client is open)' : ''}`)
         return created.sessionId
       } catch (err) {

@@ -245,7 +245,7 @@
           "Daemon"
         ],
         "summary": "Identify this daemon run",
-        "description": "What a client needs before it attaches to a running daemon: the build version, the internal client API version (`clientApiVersion`; a client refuses to attach on a different number), the settings file and data directory it runs on, the mesh `runtimeId`, its pid, and who launched it (`startedBy`: `studio` when ADF Studio spawned it, `cli` for `adf daemon` / `adf daemon start`, `service` for a service manager). ADF Studio stops only a daemon that reports `startedBy: studio`. `startedBy` comes from `ADF_DAEMON_STARTED_BY` at launch; unset means `cli`.",
+        "description": "What a client needs before it attaches to a running daemon: the build version, the internal client API version (`clientApiVersion`; ADF Studio refuses to attach on a different number, the terminal app on one outside the range it reads), the settings file and data directory it runs on, the mesh `runtimeId`, its pid, and who launched it (`startedBy`: `studio` when ADF Studio spawned it, `cli` for `adf daemon` / `adf daemon start`, `service` for a service manager). ADF Studio stops only a daemon that reports `startedBy: studio`. `startedBy` comes from `ADF_DAEMON_STARTED_BY` at launch; unset means `cli`.",
         "operationId": "getVersion",
         "responses": {
           "200": {
@@ -13235,7 +13235,7 @@
           "Files"
         ],
         "summary": "Upload an internal file's bytes",
-        "description": "The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type.",
+        "description": "The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type. W3-F, as PUT /agents/{id}/files/content: a base revision (`If-Match` or `baseRevision`) that is not current, or a create (`If-None-Match: *` or `mustNotExist=true`) of a file that exists, answers 409 `stale_revision` and writes nothing; neither is taken with `unique=true`. The `file_updated` the write raises is not sent to the session named by X-ADF-Client-Session.",
         "operationId": "putAgentFileRaw",
         "parameters": [
           {
@@ -13256,6 +13256,28 @@
             "name": "unique",
             "in": "query",
             "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatchHeader"
+          },
+          {
+            "name": "mustNotExist",
+            "in": "query",
+            "required": false,
+            "description": "W3-F: create only, as If-None-Match: *: refused (409 stale_revision) when the file exists",
             "schema": {
               "type": "string",
               "enum": [
@@ -14782,7 +14804,7 @@
           "Client (internal)"
         ],
         "summary": "Stream the session's frames (Server-Sent Events)",
-        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
+        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical | turn`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). `turn` = a stop dropped queued chats (`outcome: discarded`). Executor frames of a turn carry its `turnId`; `turn_complete` and `error` also the `absorbedTurnIds` that end with it. Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
         "operationId": "streamClientSessionEvents",
         "x-adf-stability": "internal",
         "parameters": [
@@ -18999,7 +19021,7 @@
           },
           "clientApiVersion": {
             "type": "integer",
-            "description": "Version of the internal client API (`/client/*`)"
+            "description": "Version of the internal client API (`/client/*` and its frames). 2 since executor frames carry turn ids and the `turn` frame exists. ADF Studio needs exactly its own number; the terminal app reads 1 and 2."
           },
           "settingsPath": {
             "type": [
@@ -19061,7 +19083,7 @@
         },
         "example": {
           "version": "0.7.8",
-          "clientApiVersion": 1,
+          "clientApiVersion": 2,
           "settingsPath": "/Users/me/Library/Application Support/ADF Studio/adf-settings.json",
           "dataDir": "/Users/me/Library/Application Support/ADF Studio",
           "runtimeId": "V1StGXR8_Z5jdHi6B-myT",
@@ -28368,6 +28390,11 @@
           "umbilical": {
             "type": "boolean",
             "description": "Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false."
+          },
+          "pid": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The client's process id, kept only from a caller on this machine (local proof). A new session of the same client ends that client's sessions whose pid is no longer running and whose stream is closed (a relaunch after a crash), without the orphan rule."
           }
         }
       },
@@ -28514,7 +28541,7 @@
       },
       "ClientFrame": {
         "type": "object",
-        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
+        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
         "required": [
           "cursor",
           "kind"
@@ -28530,8 +28557,39 @@
               "executor",
               "host",
               "push",
-              "umbilical"
+              "umbilical",
+              "turn"
             ]
+          },
+          "turnId": {
+            "type": "string",
+            "description": "`executor`: the turn the event belongs to (the `turnId` POST …/chat answered); absent outside a turn."
+          },
+          "absorbedTurnIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`executor` `turn_complete` (not interrupted) and `error`: the other chats this turn answered; they end with it."
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "discarded"
+            ],
+            "description": "`turn`: a stop or `off` dropped queued chats (`turnIds`) and cut off the turn answering `unansweredTurnIds`."
+          },
+          "turnIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unansweredTurnIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "agentId": {
             "type": [

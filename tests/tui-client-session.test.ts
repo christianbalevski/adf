@@ -128,6 +128,18 @@ describe('the terminal app on a client session', () => {
     expect(SUPPORTED_CLIENT_API_VERSION).toBe(CLIENT_API_VERSION)
   })
 
+  it('a daemon of client API 1 (no turn ids in executor frames) still gets a session; the TUI reads umbilical frames', async () => {
+    const { baseUrl, fetchLog } = await daemon()
+    const asV1: typeof fetch = async (input, init) => {
+      const res = await fetchLog(input, init)
+      if (new URL(String(input)).pathname !== '/version') return res
+      const body = { ...(await res.json() as Record<string, unknown>), clientApiVersion: 1 }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const store = await tui(baseUrl, asV1)
+    expect(store.liveMode).toBe('session')
+  })
+
   it('streams the chat view\'s agent token by token with umbilical.stream_deltas off; other agents update live without deltas', async () => {
     const { runtime, sessions, bus, one, two, baseUrl, fetchLog } = await daemon()
     const store = await tui(baseUrl, fetchLog)

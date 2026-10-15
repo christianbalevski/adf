@@ -19,7 +19,7 @@ import type { DaemonTrustStatus } from '../daemon-identity'
  * Bump it on any change a client of the previous number cannot handle;
  * Studio refuses to attach to a daemon with another number (§8.2).
  */
-export const CLIENT_API_VERSION = 1
+export const CLIENT_API_VERSION = 2
 
 export type DaemonStartedBy = 'studio' | 'cli' | 'service'
 

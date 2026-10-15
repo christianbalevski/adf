@@ -604,6 +604,7 @@ export type {
   ClientPushPayloads,
   ClientPushTopic,
   ClientStreamGap,
+  ClientTurnFrame,
   ClientUmbilicalFrame,
 } from '../../main/daemon/client-sessions'
 
@@ -614,6 +615,8 @@ export interface ClientSessionInput {
   exitDaemonWhenClosed?: boolean
   /** Also stream the umbilical envelopes GET /events carries (without turn.delta): the terminal app's state model is built on them. */
   umbilical?: boolean
+  /** The client's process id. A local client gives it: after a crash, its relaunch ends the dead process's sessions at once instead of counting them as other clients. */
+  pid?: number
 }
 
 /** POST /client/sessions answer. `epoch` names the session's cursor space (resume with `?since=&epoch=`). */
@@ -647,4 +650,4 @@ export type DaemonVersion = import('../../main/daemon/routes/meta-routes').Daemo
  * speaks: GET /version `clientApiVersion` must equal it before a client uses
  * client sessions. Equal to the daemon's CLIENT_API_VERSION (meta-routes.ts).
  */
-export const SUPPORTED_CLIENT_API_VERSION = 1
+export const SUPPORTED_CLIENT_API_VERSION = 2

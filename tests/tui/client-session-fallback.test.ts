@@ -3,7 +3,8 @@
 // and logs why once, in the activity log.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DaemonClient } from '../../src/main/tui/api/client'
-import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
+import { SUPPORTED_CLIENT_API_VERSION } from '../../src/shared/daemon-client'
+import { createTuiStore, TUI_MIN_CLIENT_API_VERSION, type TuiStore } from '../../src/main/tui/state/store'
 import { startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
 
 let mock: MockDaemon
@@ -56,7 +57,7 @@ describe('client sessions: old-daemon fallback', () => {
     store = createTuiStore({ client: new DaemonClient({ baseUrl: mock.url, fetch: fetchImpl }) })
     await store.start()
     expect(store.liveMode).toBe('events')
-    expect(notes(store)).toEqual([expect.objectContaining({ summary: expect.stringContaining('the daemon speaks client API 99, this app 1') })])
+    expect(notes(store)).toEqual([expect.objectContaining({ summary: expect.stringContaining(`the daemon speaks client API 99, this app ${TUI_MIN_CLIENT_API_VERSION}-${SUPPORTED_CLIENT_API_VERSION}`) })])
   })
 
   it('clientSessions: false never asks', async () => {

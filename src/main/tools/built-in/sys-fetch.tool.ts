@@ -8,6 +8,7 @@ import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AdfCallHandler } from '../../runtime/adf-call-handler'
 import { executeMiddlewareChain } from '../../services/middleware-executor'
 import { checkFetchTarget, type FetchGuardOptions } from '../../utils/ssrf-guard'
+import { egressFetch } from '../../utils/guarded-fetch'
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024 // 25 MB response body limit
 const MAX_REDIRECTS = 5
@@ -196,12 +197,15 @@ export class SysFetchTool implements Tool {
       let reqBody = params.body
       let hops = 0
       let response: Response
+      // Each hop connects only to an address the guard checked (the guard
+      // above resolved the host; a changed answer is refused, W4-B follow-up).
+      const send = egressFetch(guardOpts)
 
       for (;;) {
-        response = await fetch(currentUrl, {
+        response = await send(currentUrl, {
           method: reqMethod,
           headers: reqHeaders,
-          body: reqBody,
+          body: reqBody as BodyInit | undefined,
           signal: controller.signal,
           redirect: 'manual'
         })

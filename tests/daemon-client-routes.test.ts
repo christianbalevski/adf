@@ -122,6 +122,17 @@ describe('client session routes', () => {
 
     expect((await server.inject({ method: 'POST', url: '/client/sessions', payload: { client: 'studio' } })).json()).toMatchObject({ code: 'bad_request' })
     expect((await server.inject({ method: 'POST', url: '/client/sessions', payload: { client: 'studio', version: '1', exitDaemonWhenClosed: 'yes' } })).statusCode).toBe(400)
+    expect((await server.inject({ method: 'POST', url: '/client/sessions', payload: { client: 'studio', version: '1', pid: 'x' } })).statusCode).toBe(400)
+    // A pid is kept only from this machine: a gone Studio's session is ended by its relaunch only then.
+    const DEAD_PID = 2 ** 31 - 3
+    const studios = async () => ((await server.inject({ method: 'GET', url: '/client/sessions' })).json() as { sessions: Array<{ client: string }> }).sessions.filter(s => s.client === 'pid-test').length
+    const createAs = async (pid: number, headers: Record<string, string> = {}) => (await server.inject({ method: 'POST', url: '/client/sessions', headers, payload: { client: 'pid-test', version: '1', pid } })).statusCode
+    expect(await createAs(DEAD_PID, { 'x-forwarded-for': '10.0.0.5' })).toBe(201)
+    expect(await createAs(process.pid)).toBe(201)
+    expect(await studios()).toBe(2)
+    expect(await createAs(DEAD_PID)).toBe(201)
+    expect(await createAs(process.pid)).toBe(201)
+    expect(await studios()).toBe(3)
     const created = await client.createClientSession({ client: 'studio', version: '0.7.0', exitDaemonWhenClosed: false })
     expect(created).toEqual({ sessionId: expect.any(String), epoch: expect.any(String) })
 

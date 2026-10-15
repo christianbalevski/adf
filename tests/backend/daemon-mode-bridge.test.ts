@@ -1,7 +1,7 @@
 /**
  * The daemon-mode event bridge (design D6): frames → IPC pushes, the shared
  * background mapping, push topics, `stream.gap` resync; and the interim
- * client-session frame translation (W2-B wire frames, the umbilical turn ends).
+ * client-session frame translation (W2-B wire frames, the turn ends executor frames carry).
  */
 import { describe, expect, it } from 'vitest'
 import { IPC } from '../../src/shared/constants/ipc-channels'
@@ -10,7 +10,7 @@ import type { BackgroundAgentEvent } from '../../src/shared/types/ipc.types'
 import { applyBackgroundEvent, type BackgroundMappingState } from '../../src/main/runtime/background-event-mapping'
 import { EventBridge } from '../../src/main/backend/daemon-mode/event-bridge'
 import { DaemonModeSession } from '../../src/main/backend/daemon-mode/session'
-import { translateClientFrame, turnFrameOf } from '../../src/main/backend/daemon-mode/client-stream'
+import { translateClientFrame, turnEndOf } from '../../src/main/backend/daemon-mode/client-stream'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 
 const AGENT_1 = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
@@ -43,9 +43,15 @@ function setup() {
   return { pushes, batched, daemon, session, bridge, approvals }
 }
 
-/** The umbilical turn end Studio reads for its waits (client-stream.ts turnFrameOf). */
-const ended = (outcome: 'completed' | 'error', turnIds: string[]) =>
-  ({ kind: 'turn' as const, agentId: AGENT_1, filePath: FILE_1, outcome, turnIds, unansweredTurnIds: [] })
+/** A turn's end as the daemon sends it (D5): the executor frame carries its turnId and the ids it absorbed. */
+const ended = (outcome: 'completed' | 'error', [turnId, ...absorbedTurnIds]: string[]) => ({
+  kind: 'executor' as const,
+  agentId: AGENT_1,
+  filePath: FILE_1,
+  event: { type: outcome === 'completed' ? 'turn_complete' as const : 'error' as const, payload: outcome === 'completed' ? {} : { error: 'x' }, timestamp: 1 },
+  turnId,
+  ...(absorbedTurnIds.length > 0 ? { absorbedTurnIds } : {}),
+})
 
 async function focus(session: DaemonModeSession, filePath: string, agentId: string | null) {
   await session.openFile(filePath, async () => agentId)
@@ -280,7 +286,7 @@ describe('client-session frames (W2-B)', () => {
   const umbilical = (event_type: string, payload: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
     ({ seq: 1, event_type, timestamp: 42, source: 'agent', agent_id: AGENT_1, payload, ...extra }) as never
 
-  it('executor, host and push frames pass through; umbilical envelopes only as turn ends', () => {
+  it('executor, host, push and turn frames pass through; umbilical envelopes are not read', () => {
     const event = { type: 'state_changed', payload: { state: 'idle' }, timestamp: 1 }
     expect(translateClientFrame({ kind: 'executor', cursor: 3, agentId: AGENT_1, filePath: FILE_1, event } as never)).toEqual({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event })
     expect(translateClientFrame({ kind: 'executor', cursor: 4, agentId: AGENT_1, filePath: FILE_1, event, stripped: 'stub' } as never)).toMatchObject({ stripped: 'stub' })
@@ -288,17 +294,22 @@ describe('client-session frames (W2-B)', () => {
       .toEqual({ kind: 'host', agentId: null, filePath: FILE_1, type: 'agent_starting', payload: { filePath: FILE_1 }, timestamp: 2 })
     expect(translateClientFrame({ kind: 'push', cursor: 6, topic: 'templates', agentId: null, filePath: null, payload: {} } as never))
       .toEqual({ kind: 'push', topic: 'templates', agentId: null, filePath: null, payload: {} })
-    expect(translateClientFrame({ kind: 'umbilical', cursor: 7, agentId: AGENT_1, event: umbilical('tool.started', { name: 'fs_read' }) } as never)).toBeNull()
+    expect(translateClientFrame({ kind: 'umbilical', cursor: 7, agentId: AGENT_1, event: umbilical('turn.completed', { filePath: FILE_1 }, { turn_id: 'turn_1' }) } as never)).toBeNull()
+    expect(translateClientFrame({ kind: 'executor', cursor: 8, agentId: AGENT_1, filePath: FILE_1, event, turnId: 'turn_1', absorbedTurnIds: ['x'] } as never))
+      .toEqual({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event, turnId: 'turn_1', absorbedTurnIds: ['x'] })
+    expect(translateClientFrame({ kind: 'turn', cursor: 9, agentId: AGENT_1, filePath: FILE_1, outcome: 'discarded', turnIds: ['q'], unansweredTurnIds: ['c'] } as never))
+      .toEqual({ kind: 'turn', agentId: AGENT_1, filePath: FILE_1, outcome: 'discarded', turnIds: ['q'], unansweredTurnIds: ['c'] })
   })
 
-  it('turn ends: turn.completed / agent.error with turn_id and absorbed_turn_ids, chat.discarded', () => {
-    expect(turnFrameOf(umbilical('turn.completed', { filePath: FILE_1, absorbed_turn_ids: ['x'] }, { turn_id: 'turn_1', loop: 'side' }))).toEqual({
+  it('turn ends: executor turn_complete / error with turnId and absorbedTurnIds', () => {
+    const exec = (type: string, extra: Record<string, unknown> = {}, loop?: string) =>
+      ({ kind: 'executor' as const, agentId: AGENT_1, filePath: FILE_1, event: { type, payload: {}, timestamp: 1, ...(loop ? { loop } : {}) } as never, ...extra })
+    expect(turnEndOf(exec('turn_complete', { turnId: 'turn_1', absorbedTurnIds: ['x'] }, 'side'))).toEqual({
       kind: 'turn', agentId: AGENT_1, filePath: FILE_1, loop: 'side', outcome: 'completed', turnIds: ['turn_1', 'x'], unansweredTurnIds: [],
     })
-    expect(turnFrameOf(umbilical('agent.error', { event: { type: 'error' }, absorbed_turn_ids: ['y'] }, { turn_id: 'turn_2' }))).toMatchObject({ outcome: 'error', turnIds: ['turn_2', 'y'] })
-    expect(turnFrameOf(umbilical('turn.completed', { filePath: FILE_1 }))).toBeNull()
-    expect(turnFrameOf(umbilical('chat.discarded', { turn_ids: ['q'], unanswered_turn_ids: ['c'] }))).toMatchObject({ outcome: 'discarded', turnIds: ['q'], unansweredTurnIds: ['c'] })
-    expect(turnFrameOf(umbilical('agent.state.changed', { state: 'idle' }))).toBeNull()
+    expect(turnEndOf(exec('error', { turnId: 'turn_2', absorbedTurnIds: ['y'] }))).toMatchObject({ outcome: 'error', turnIds: ['turn_2', 'y'] })
+    expect(turnEndOf(exec('turn_complete'))).toBeNull()
+    expect(turnEndOf(exec('state_changed', { turnId: 'turn_3' }))).toBeNull()
   })
 })
 
@@ -309,12 +320,10 @@ describe('event bridge: AGENT_INVOKE waits never hang', () => {
   it('a turn that ended before the wait registered (fast turn, POST answered late) is found in the ring', async () => {
     const { session, bridge } = setup()
     await focus(session, FILE_1, AGENT_1)
-    exec(bridge, 'turn_complete', {})
     bridge.handleFrame(ended('completed', ['turn_fast']))
     exec(bridge, 'state_changed', { state: 'idle' })
     await expect(bridge.waitForTurn(AGENT_1, 'turn_fast')).resolves.toBe('completed')
     // Ended, but the state change not seen yet: the wait still settles on it.
-    exec(bridge, 'error', { error: 'x' })
     bridge.handleFrame(ended('error', ['turn_err']))
     const pending = bridge.waitForTurn(AGENT_1, 'turn_err')
     exec(bridge, 'state_changed', { state: 'idle' })
@@ -325,7 +334,6 @@ describe('event bridge: AGENT_INVOKE waits never hang', () => {
     const { session, bridge } = setup()
     await focus(session, FILE_1, AGENT_1)
     const absorbed = bridge.waitForTurn(AGENT_1, 'turn_b')
-    exec(bridge, 'turn_complete', {})
     bridge.handleFrame(ended('completed', ['turn_a', 'turn_b']))
     exec(bridge, 'state_changed', { state: 'idle' })
     await expect(absorbed).resolves.toBe('completed')
@@ -337,7 +345,6 @@ describe('event bridge: AGENT_INVOKE waits never hang', () => {
     exec(bridge, 'state_changed', { state: 'thinking' })
     const waiting = bridge.waitForTurn(AGENT_1, 'turn_giveup')
     exec(bridge, 'state_changed', { state: 'idle' })
-    exec(bridge, 'error', { error: 'gave up' })
     bridge.handleFrame(ended('error', ['turn_giveup']))
     // No state change follows; the wait does not sit until the 30-minute timeout.
     await expect(waiting).resolves.toBe('error')

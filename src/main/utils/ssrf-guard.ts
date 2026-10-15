@@ -17,49 +17,62 @@ import { networkInterfaces } from 'node:os'
 // link-local/cloud-metadata addresses stay blocked even when it is set.
 // =============================================================================
 
-/** IPv4-mapped / -compatible IPv6, dotted (`::ffff:169.254.169.254`). */
-const MAPPED_DOTTED = /^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/
-/** The same, in the hex form the URL parser writes (`[::ffff:a9fe:a9fe]`). */
-const MAPPED_HEX = /^::(?:ffff:(?:0{1,4}:)?)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
-
 /**
- * The IPv4 address inside an IPv4-mapped or -compatible IPv6 address, as
- * `[match, dotted]`, in either spelling; null otherwise. `new URL()` turns
- * `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`, so the hex form must
- * classify the same as the dotted one. NAT64 (`64:ff9b::/96`, RFC 6052) and
- * 6to4 (`2002::/16`, RFC 3056) addresses carry an IPv4 address too and are
- * classified as it (W1-D follow-up): a NAT64 gateway turns
- * `64:ff9b::a9fe:a9fe` into a connection to 169.254.169.254.
+ * Every IPv4 address an IPv6 address carries, as dotted quads; empty for
+ * none. A connection to such an address can reach the IPv4 host through a
+ * translator or relay, so the guard classifies it as each of them (any one
+ * refused refuses the address):
+ *
+ * - IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96` and SIIT
+ *   `::ffff:0:0:0/96`, in either spelling (`new URL()` turns
+ *   `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`);
+ * - NAT64 `64:ff9b::/96` (RFC 6052) and 6to4 `2002::/16` (RFC 3056), W1-D
+ *   follow-up: a NAT64 gateway turns `64:ff9b::a9fe:a9fe` into a
+ *   connection to 169.254.169.254;
+ * - local-use NAT64 `64:ff9b:1::/48` (RFC 8215), whose prefix length the
+ *   network chooses: the RFC 6052 embedding for a /48, /56 and /64 prefix
+ *   (bits 64-71, the u-octet, zero; the suffix after the address zero) and
+ *   for a /96 prefix (the last 32 bits; not when they are all zero and a
+ *   shorter prefix's reading exists);
+ * - Teredo `2001::/32` (RFC 4380): the client address, inverted, in the
+ *   last 32 bits;
+ * - ISATAP (RFC 5214): any prefix with the interface id `0:5efe:a.b.c.d`
+ *   or `200:5efe:a.b.c.d`.
  */
-function mappedIPv4Match(addr: string): [string, string] | null {
-  const dotted = addr.match(MAPPED_DOTTED)
-  if (dotted) return [dotted[0], dotted[1]]
-  const hex = addr.match(MAPPED_HEX)
-  if (hex) {
-    const hi = parseInt(hex[1], 16)
-    const lo = parseInt(hex[2], 16)
-    return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
-  }
-  const embedded = translatedIPv4(addr)
-  return embedded ? [addr, embedded] : null
-}
-
-/** The IPv4 address of a NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address, either spelling; null otherwise. */
-function translatedIPv4(raw: string): string | null {
-  let addr = raw.toLowerCase()
+export function embeddedIPv4s(raw: string): string[] {
+  let addr = raw.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
   // A dotted IPv4 tail (64:ff9b::169.254.169.254) as two hex groups.
   const tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr)
   if (tail) {
     const o = tail.slice(2, 6).map(Number)
-    if (o.some((n) => n > 255)) return null
+    if (o.some((n) => n > 255)) return []
     addr = `${tail[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`
   }
-  if (isIP(addr) !== 6) return null
-  const groups = expandIPv6(addr).split(':').map((g) => parseInt(g, 16))
-  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) return v4(groups[6], groups[7])
-  if (groups[0] === 0x2002) return v4(groups[1], groups[2])
-  return null
+  if (isIP(addr) !== 6) return []
+  const g = expandIPv6(addr).split(':').map((x) => parseInt(x, 16))
+  const hi = (x: number) => x >> 8
+  const lo = (x: number) => x & 255
+  const quad = (a: number, b: number, c: number, d: number) => `${a}.${b}.${c}.${d}`
+  const fromGroups = (x: number, y: number) => quad(hi(x), lo(x), hi(y), lo(y))
+  const out: string[] = []
+  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0)
+  // ::a.b.c.d (not :: and ::1, which are IPv6's own), ::ffff:a.b.c.d, ::ffff:0:a.b.c.d
+  if (zero(0, 4) && ((g[4] === 0 && ((g[5] === 0 && g[6] !== 0) || g[5] === 0xffff)) || (g[4] === 0xffff && g[5] === 0))) out.push(fromGroups(g[6], g[7]))
+  if (g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)) out.push(fromGroups(g[6], g[7]))
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) {
+    const local: string[] = []
+    if (hi(g[4]) === 0) {
+      if (lo(g[5]) === 0 && zero(6, 8)) local.push(quad(hi(g[3]), lo(g[3]), lo(g[4]), hi(g[5]))) // /48
+      if (zero(6, 8)) local.push(quad(lo(g[3]), lo(g[4]), hi(g[5]), lo(g[5]))) // /56
+      if (lo(g[6]) === 0 && g[7] === 0) local.push(quad(lo(g[4]), hi(g[5]), lo(g[5]), hi(g[6]))) // /64
+      if (!(g[6] === 0 && g[7] === 0 && local.length > 0)) local.push(fromGroups(g[6], g[7])) // /96
+    }
+    out.push(...local)
+  }
+  if (g[0] === 0x2002) out.push(fromGroups(g[1], g[2]))
+  if (g[0] === 0x2001 && g[1] === 0) out.push(fromGroups(g[6] ^ 0xffff, g[7] ^ 0xffff))
+  if ((g[4] === 0 || g[4] === 0x200) && g[5] === 0x5efe) out.push(fromGroups(g[6], g[7]))
+  return [...new Set(out)]
 }
 
 const ALLOWED_FETCH_PROTOCOLS = new Set(['http:', 'https:'])
@@ -102,8 +115,7 @@ export function isCloudMetadataIp(ip: string): boolean {
   const version = isIP(bare)
   if (version === 4) return METADATA_IPV4.has(bare)
   if (version === 6) {
-    const mapped = mappedIPv4Match(bare)
-    if (mapped) return METADATA_IPV4.has(mapped[1])
+    if (embeddedIPv4s(bare).some((v4) => METADATA_IPV4.has(v4))) return true
     return METADATA_IPV6.has(expandIPv6(bare))
   }
   return false
@@ -169,8 +181,7 @@ export function isBlockedIPv6(raw: string): boolean {
   const addr = raw.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0]
   if (addr === '::' || addr === '::1') return true
   if (/^(0:){7}[01]$/.test(addr)) return true
-  const mapped = mappedIPv4Match(addr)
-  if (mapped) return isBlockedIPv4(mapped[1])
+  if (embeddedIPv4s(addr).some(isBlockedIPv4)) return true
   const head = addr.split(':')[0]
   if (!head) return false
   const h = parseInt(head, 16)
@@ -199,11 +210,7 @@ export function isLinkLocalIp(ip: string): boolean {
   }
   if (version === 6) {
     const addr = bare.toLowerCase()
-    const mapped = mappedIPv4Match(addr)
-    if (mapped) {
-      const o = mapped[1].split('.').map(Number)
-      return o[0] === 169 && o[1] === 254
-    }
+    if (embeddedIPv4s(addr).some((v4) => v4.startsWith('169.254.'))) return true
     const head = addr.split(':')[0]
     const h = parseInt(head, 16)
     if (Number.isNaN(h)) return false
@@ -221,9 +228,7 @@ export function isLoopbackIp(ip: string): boolean {
     const addr = bare.toLowerCase()
     if (addr === '::1') return true
     if (/^(0:){7}1$/.test(addr)) return true
-    const mapped = mappedIPv4Match(addr)
-    if (mapped) return mapped[1].split('.').map(Number)[0] === 127
-    return false
+    return embeddedIPv4s(addr).some((v4) => v4.startsWith('127.'))
   }
   return false
 }
@@ -244,9 +249,7 @@ export function isUnspecifiedIp(ip: string): boolean {
   if (bare === '0.0.0.0') return true
   if (bare === '::') return true
   if (/^(0{1,4}:){7}0{1,4}$/.test(bare)) return true
-  const mapped = mappedIPv4Match(bare)
-  if (mapped) return mapped[1] === '0.0.0.0'
-  return false
+  return embeddedIPv4s(bare).includes('0.0.0.0')
 }
 
 function blockedMessage(target: string): string {
@@ -265,14 +268,14 @@ function connectBlockedMessage(target: string): string {
   )
 }
 
-/** Normalized form for comparing addresses: IPv4 dotted (also from mapped/NAT64/6to4 IPv6), IPv6 expanded. */
-function comparableIp(ip: string): string | null {
+/** Normalized forms for comparing addresses: IPv4 dotted; IPv6 expanded, plus every IPv4 address it carries (embeddedIPv4s). */
+function comparableIps(ip: string): string[] {
   const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
   const version = isIP(bare)
-  if (version === 4) return bare
-  if (version !== 6) return null
-  const mapped = mappedIPv4Match(bare)
-  return mapped ? mapped[1] : expandIPv6(bare)
+  if (version === 4) return [bare]
+  if (version !== 6) return []
+  const v4s = embeddedIPv4s(bare)
+  return bare.includes('.') ? v4s : [expandIPv6(bare), ...v4s]
 }
 
 const OWN_ADDRESSES_TTL_MS = 30_000
@@ -290,15 +293,86 @@ export function isOwnInterfaceIp(ip: string, now = Date.now()): boolean {
     try {
       for (const list of Object.values(networkInterfaces())) {
         for (const entry of list ?? []) {
-          const c = comparableIp(entry.address)
-          if (c) set.add(c)
+          for (const c of comparableIps(entry.address)) set.add(c)
         }
       }
     } catch { /* no interface list: loopback and unspecified still count */ }
     ownAddressCache = { at: now, set }
   }
-  const c = comparableIp(ip)
-  return c !== null && ownAddressCache.set.has(c)
+  return comparableIps(ip).some((c) => ownAddressCache!.set.has(c))
+}
+
+/**
+ * Node routes fetch through the env proxy only when `NODE_USE_ENV_PROXY` is
+ * exactly `1` or `--use-env-proxy` is given (on the command line or in
+ * NODE_OPTIONS). Any other value (`true`, `yes`) is not honoured: Node then
+ * connects directly, so the guard must check and pin as usual.
+ */
+export function envProxyEnabled(env: NodeJS.ProcessEnv = process.env, execArgv: readonly string[] = process.execArgv): boolean {
+  if (env.NODE_USE_ENV_PROXY === '1') return true
+  if (execArgv.includes('--use-env-proxy')) return true
+  return (env.NODE_OPTIONS ?? '').split(/\s+/).includes('--use-env-proxy')
+}
+
+/**
+ * The proxy Node's fetch sends `target` through when the env proxy is on
+ * (envProxyEnabled), else null: `HTTPS_PROXY` (falling back to `HTTP_PROXY`) for https,
+ * `HTTP_PROXY` for http, none for a host `NO_PROXY` names. NO_PROXY is read
+ * as undici's EnvHttpProxyAgent reads it: `*` exempts every host; an entry
+ * names an exact host, or a domain and its subdomains with a leading `.` or
+ * `*.`; `host:port` limits it to that port. Other schemes (ws, wss) never go
+ * through it.
+ */
+export function envProxyFor(target: URL | string, env: NodeJS.ProcessEnv = process.env, execArgv: readonly string[] = process.execArgv): string | null {
+  if (!envProxyEnabled(env, execArgv)) return null
+  let url: URL
+  try { url = typeof target === 'string' ? new URL(target) : target } catch { return null }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  const httpProxy = env.http_proxy || env.HTTP_PROXY || ''
+  const proxy = url.protocol === 'https:' ? env.https_proxy || env.HTTPS_PROXY || httpProxy : httpProxy
+  if (!proxy) return null
+  const noProxy = (env.no_proxy ?? env.NO_PROXY ?? '').trim()
+  if (noProxy === '*') return null
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+  for (const raw of noProxy.split(/[,\s]+/)) {
+    if (!raw) continue
+    const m = /^(.*?)(?::(\d+))?$/.exec(raw.toLowerCase())!
+    const entryHost = m[1].replace(/^\[|\]$/g, '')
+    if (m[2] && m[2] !== port) continue
+    if (!/^[.*]/.test(entryHost)) {
+      if (host === entryHost) return null
+    } else if (host.endsWith(entryHost.replace(/^\*/, ''))) {
+      return null
+    }
+  }
+  return proxy
+}
+
+let proxySkipLogged = false
+
+/** Lookup failures that mean "this machine cannot resolve the name", not "the name does not exist anywhere". */
+const PROXY_RESOLVES = new Set(['ENOTFOUND', 'EAI_AGAIN'])
+
+/**
+ * A host name behind an env proxy (envProxyFor) that this machine cannot
+ * look up (ENOTFOUND, EAI_AGAIN): the proxy looks it up, and this machine
+ * may have no DNS of its own, so the guard leaves the name to the proxy
+ * (W4-B follow-up). A name that does resolve here is checked as any other
+ * (its metadata, daemon and private answers are refused), and literal
+ * addresses and loopback names are always checked. Logged once per process.
+ */
+function proxiedHostName(url: URL, host: string): boolean {
+  if (isIP(host) || isLoopbackHostname(host) || parseLooseIPv4(host)) return false
+  const proxy = envProxyFor(url)
+  if (!proxy) return false
+  if (!proxySkipLogged) {
+    proxySkipLogged = true
+    let via = proxy
+    try { via = new URL(proxy).host } catch { /* shown as given */ }
+    console.log(`[Egress] The env proxy is on and this machine cannot look up ${url.hostname}: it is left to the proxy (${via}) to resolve, unchecked (logged once)`)
+  }
+  return true
 }
 
 function unresolvedMessage(target: string, reason: string): string {
@@ -323,28 +397,28 @@ interface HostClass {
  * the caller refuses it with the resolver's reason.
  */
 async function classifyHost(host: string): Promise<HostClass | { unresolved: string }> {
-  let loopbackHost = false
-  let candidates: string[] = []
-
-  if (isIP(host)) {
-    candidates = [host]
-  } else if (isLoopbackHostname(host)) {
-    loopbackHost = true // no DNS — the name itself is loopback
-  } else {
-    const loose = parseLooseIPv4(host)
-    if (loose) {
-      candidates = [loose]
-    } else {
-      try {
-        const addresses = await lookup(host, { all: true, verbatim: true })
-        candidates = addresses.map((a) => a.address)
-      } catch (err) {
-        return { unresolved: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err)) }
-      }
-      if (candidates.length === 0) return { unresolved: 'no addresses' }
-    }
+  const literal = classifyLiteralHost(host)
+  if (literal) return literal
+  let candidates: string[]
+  try {
+    const addresses = await lookup(host, { all: true, verbatim: true })
+    candidates = addresses.map((a) => a.address)
+  } catch (err) {
+    return { unresolved: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err)) }
   }
+  if (candidates.length === 0) return { unresolved: 'no addresses' }
+  return classifyCandidates(candidates, false)
+}
 
+/** The class of a host that needs no lookup (an IP literal, a loose IPv4 spelling, a loopback name); null for a host name. */
+function classifyLiteralHost(host: string): HostClass | null {
+  if (isIP(host)) return classifyCandidates([host], false)
+  if (isLoopbackHostname(host)) return classifyCandidates([], true) // no DNS — the name itself is loopback
+  const loose = parseLooseIPv4(host)
+  return loose ? classifyCandidates([loose], false) : null
+}
+
+function classifyCandidates(candidates: string[], loopbackHost: boolean): HostClass {
   return {
     anyMetadata: candidates.some(isCloudMetadataIp),
     anyLinkLocal: candidates.some(isLinkLocalIp),
@@ -353,7 +427,9 @@ async function classifyHost(host: string): Promise<HostClass | { unresolved: str
     anyOwnAddress: candidates.some((ip) => isOwnInterfaceIp(ip)),
     // Blocked classes minus loopback (private, CGNAT, unspecified, multicast, …)
     // — loopback itself is allowed by default and only tier-gated per-port.
-    anyNonLoopbackBlocked: candidates.some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
+    // Each IPv4 reading of an address counts on its own: one reading being
+    // loopback must not let another, private one through.
+    anyNonLoopbackBlocked: candidates.flatMap((ip) => [ip, ...embeddedIPv4s(ip)]).some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
   }
 }
 
@@ -432,8 +508,37 @@ export async function checkFetchTarget(
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
 
   const cls = await classifyHost(host)
-  if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
+  if ('unresolved' in cls) {
+    if (PROXY_RESOLVES.has(cls.unresolved) && proxiedHostName(url, host)) return null
+    return unresolvedMessage(url.hostname, cls.unresolved)
+  }
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, blockedMessage)
+}
+
+/**
+ * checkConnectTarget without a lookup, for a socket created synchronously:
+ * the refusal (or null) for a URL whose host needs no lookup (an IP
+ * literal, a loose IPv4 spelling, a loopback name); `undefined` for a host
+ * name, whose answers the connection's own lookup must check (guardedLookup
+ * in utils/guarded-fetch.ts).
+ */
+export function checkLiteralConnectTarget(rawUrl: string, opts: FetchGuardOptions = { allowLocal: false }): string | null | undefined {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    return `Invalid URL: ${rawUrl}`
+  }
+  if (!ALLOWED_CONNECT_PROTOCOLS.has(url.protocol)) {
+    return `Blocked by the ws_connect guard: only ws, wss, http and https URLs may be connected (got "${url.protocol}").`
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  if (!host) return `Invalid URL: ${rawUrl}`
+  const cls = classifyLiteralHost(host)
+  if (!cls) return undefined
+  const secure = url.protocol === 'wss:' || url.protocol === 'https:'
+  const port = url.port ? Number(url.port) : secure ? 443 : 80
+  return applyPolicy(url.hostname, port, url.pathname, cls, opts, connectBlockedMessage)
 }
 
 /**

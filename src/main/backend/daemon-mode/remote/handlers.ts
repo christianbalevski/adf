@@ -183,7 +183,7 @@ export const REMOTE_MODE_HANDLERS: DaemonHandlerTable = {
           // Say only what is known: this computer was looked at only for a path it handed over itself.
           return { success: false, error: location.lookedHere
             ? `No agent file at ${filePath} on ${remote(ctx).host()} (${location.why}), and none on this computer.`
-            : `No agent file at ${filePath} on ${remote(ctx).host()} (${location.why}). To upload a file of this computer, open it from the file manager or Open Recent.` }
+            : `No agent file at ${filePath} on ${remote(ctx).host()} (${location.why}). To upload a file of this computer, open it with ADF Studio from the file manager, or start ADF Studio with its path on the command line.` }
         }
       }
       return await open(ctx, event, { ...(args ?? {}), filePath })

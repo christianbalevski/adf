@@ -527,7 +527,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         .then((r) => log.log(`[Backend] The ADF daemon reloaded the moved credentials: runtime identity ${r.runtime?.state ?? 'n/a'}, ${r.unlocked.length} agent(s) unlocked, ${r.stillLocked.length} still locked, sessions [${r.sessions.join(', ')}]`))
         .catch((err) => log.warn(`[Backend] Asking the ADF daemon to reload the moved credentials failed: ${err instanceof Error ? err.message : String(err)}`))
     }
-    clientSession = (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed, log })))(client)
+    clientSession = (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed, log, ...(deps.mode === 'local' ? { pid: process.pid } : {}) })))(client)
     session.attach(clientSession)
     // Learn what already runs and what is pending, without pushing: the
     // renderer pulls its initial state itself.
@@ -549,7 +549,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[Backend] Could not read the daemon's approvals at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     clientSession.start({
-      onFrame: (frame) => { installs.observe(frame); bridge.handleFrame(frame) },
+      onFrame: (frame) => { if (installs.observe(frame)) bridge.handleFrame(frame) },
       onGap: (gap) => { installs.onGap(); void bridge.handleGap(gap) },
       onConnection: (c) => {
         if (c.state === 'open') connection.markConnected()

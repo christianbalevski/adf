@@ -25,6 +25,13 @@ export interface FakeMcpServer {
   port: number
   /** JSON-RPC methods and OAuth endpoints received, in order. */
   methods: string[]
+  /**
+   * Requests the server holds until the gate resolves (null: none). A
+   * scenario sets them to pin where a backend's asynchronous pushes land
+   * against the flow (agent-oauth.test.ts): `register` holds dynamic client
+   * registration, `connect` an authorized MCP `initialize`.
+   */
+  gates: { register?: () => Promise<void>; connect?: () => Promise<void> } | null
   close(): Promise<void>
 }
 
@@ -45,6 +52,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 
 export async function startFakeMcpServer(): Promise<FakeMcpServer> {
   const methods: string[] = []
+  let gates: FakeMcpServer['gates'] = null
   let base = ''
   const server: Server = createServer((req, res) => {
     // One request per connection: no keep-alive socket outlives a scenario (the harness counts open handles).
@@ -75,6 +83,7 @@ export async function startFakeMcpServer(): Promise<FakeMcpServer> {
         return
       }
       if (req.method === 'POST' && path === '/register') {
+        await gates?.register?.()
         methods.push('POST register')
         const metadata = JSON.parse(await readBody(req)) as Record<string, unknown>
         return json(res, 201, { ...metadata, client_id: 'parity-client', client_id_issued_at: 1 })
@@ -99,6 +108,7 @@ export async function startFakeMcpServer(): Promise<FakeMcpServer> {
         return
       }
       const message = JSON.parse(await readBody(req)) as { id?: number | string; method?: string; params?: { protocolVersion?: string } }
+      if (path === '/oauth-mcp' && message.method === 'initialize') await gates?.connect?.()
       methods.push(message.method ?? '?')
       if (message.id === undefined) { res.writeHead(202).end(); return }
       switch (message.method) {
@@ -121,6 +131,8 @@ export async function startFakeMcpServer(): Promise<FakeMcpServer> {
     oauthUrl: `${base}/oauth-mcp`,
     port,
     methods,
+    get gates() { return gates },
+    set gates(value) { gates = value },
     close: () => new Promise<void>((resolve) => { server.closeAllConnections?.(); server.close(() => resolve()) }),
   }
 }

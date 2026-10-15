@@ -161,7 +161,7 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     const shown = electronStub.calls.length
     const answer = await invoke(IPC.FILE_OPEN, { filePath: localAdf })
     // It says only what is known: this computer was not looked at.
-    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at .*To upload a file of this computer, open it from the file manager or Open Recent\.$/) })
+    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at .*To upload a file of this computer, open it with ADF Studio from the file manager, or start ADF Studio with its path on the command line.$/) })
     expect(answer.error).not.toMatch(/none on this computer/)
     expect(statCalls).toEqual([])
     expect(electronStub.calls.slice(shown).filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])

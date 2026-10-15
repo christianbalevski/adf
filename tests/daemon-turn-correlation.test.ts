@@ -26,7 +26,7 @@ vi.mock('electron', () => {
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { DaemonEventBus, type DaemonEventEnvelope } from '../src/main/daemon/event-bus'
 import { registerDaemonEventBus } from '../src/main/runtime/emit-umbilical'
-import { RuntimeService } from '../src/main/runtime/runtime-service'
+import { RuntimeService, type RuntimeAgentEvent } from '../src/main/runtime/runtime-service'
 import { MockLLMProvider } from '../src/main/runtime/headless'
 
 const cleanups: Array<() => Promise<unknown>> = []
@@ -124,6 +124,28 @@ describe('chat turn correlation', () => {
     const loop = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/loop?limit=50` })).json() as { entries?: Array<{ role: string; content_json: Array<{ text?: string }> }> }
     const texts = (loop.entries ?? []).filter(r => r.role === 'user').map(r => r.content_json.map(b => b.text ?? '').join(''))
     expect(texts.filter(t => ['first', 'second', 'third', 'fourth'].includes(t))).toEqual(['first', 'second', 'third', 'fourth'])
+  })
+
+  it('runtime agent-events (executor frames, D5) carry the turn ids the umbilical turn ends carry', async () => {
+    const { ref, server, events } = setup(300)
+    const runtime = runtimes[runtimes.length - 1]
+    const execEvents: RuntimeAgentEvent[] = []
+    const onEvent = (e: RuntimeAgentEvent) => { if (e.agentId === ref.id) execEvents.push(e) }
+    runtime.on('agent-event', onEvent)
+    cleanups.push(async () => { runtime.off('agent-event', onEvent) })
+    const post = async (text: string) =>
+      (await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text } })).json().turnId as string
+    const first = await post('first')
+    await waitFor(() => events.some(e => e.event_type === 'agent.state.changed' && e.payload.state === 'thinking' && e.turn_id === first))
+    const rest = await Promise.all([post('second'), post('third')])
+    const ends = () => events.filter(e => e.event_type === 'turn.completed' || e.event_type === 'agent.error')
+    await waitFor(() => [first, ...rest].every(id => ends().some(e => e.turn_id === id || ((e.payload.absorbed_turn_ids as string[] | undefined) ?? []).includes(id))))
+    // Each umbilical turn end has its executor event, with the same turn id and absorbed ids, in the same order.
+    const fromUmbilical = ends().map(e => [e.event_type === 'turn.completed' ? 'turn_complete' : 'error', e.turn_id ?? null, (e.payload.absorbed_turn_ids as string[] | undefined) ?? []])
+    const fromExecutor = execEvents.filter(e => e.event.type === 'turn_complete' || e.event.type === 'error').map(e => [e.event.type, e.turnId ?? null, e.absorbedTurnIds ?? []])
+    expect(fromExecutor).toEqual(fromUmbilical)
+    // Every event of the first turn carries its id.
+    expect(execEvents.filter(e => e.event.type === 'state_changed' && (e.event.payload as { state?: string }).state === 'thinking')[0]?.turnId).toBe(first)
   })
 
   it('chats sent during a compaction queue and replay as one turn with chat.delivered ids', async () => {
