@@ -24,21 +24,18 @@ Added beyond that list: the §6 recipe rows for every start path (W1-B: full mes
 ## Ownership notes for the lead
 
 - W2-A gaps that change existing routes edit `src/main/daemon/http-api.ts`, which W2-A owns in wave 2.
-- The W1-B discovery gap is wired in `src/main/daemon/index.ts`, which W1-B does not own.
+- The W1-B discovery gap was wired in `src/main/daemon/index.ts` (closed: `RuntimeDiscovery`).
 - The W2-C gap (client-key migrations on `studio-client-settings.json`) followed from `uiFontSystemDefaultApplied` being a client key; closed by W2-C.
 ## W1-A
 All W1-A gaps are closed.
 ## W1-B
-| Need | Channels |
-|---|---|
-| MCP reconcile on config change | `DOC_SET_AGENT_CONFIG` |
-| mesh config update on config change (meshManager.updateAgentConfig) | `DOC_SET_AGENT_CONFIG` |
-| main-loop clear resets the mesh session (meshManager.resetAgentSession) | `DOC_CLEAR_CHAT` |
-| full mesh registration: message bus subscription, isMessageTriggered, config updates (registerAgent) | `AGENT_START`, `BACKGROUND_AGENT_START` |
-| umbilical taps on, or a written reason | `AGENT_START`, `BACKGROUND_AGENT_START` |
-| shared ensureCoreToolDeclarations (delete the private copy, agent-runtime-builder.ts:350) | `AGENT_START`, `BACKGROUND_AGENT_START` |
-| interactive MCP OAuth as a HIL request carrying the authorize URL; keep the MCP manager on setup failure | `AGENT_START`, `BACKGROUND_AGENT_START` |
-| mDNS and tailnet discovery in the daemon (the route returns [], daemon/index.ts:343), with directory cards, /ping meta and trust decoration | `MESH_DISCOVERED_RUNTIMES` |
+All W1-B gaps are closed (verified in W5-D3 against the code):
+
+- Full mesh registration for every start path: `MeshManager.registerServableAgent` (message-bus subscription, `isMessageTriggered` read live, config updates and the derived key through `agent-runtime-signals`), wired by `daemon/runtime-mesh-wiring.ts`.
+- MCP reconcile and the mesh config update on a config change: `AgentRuntimeBuilder` `onConfigChanged` (`agent-runtime-builder.ts`, `mcpRuntime.reconcile`) and the registration's `onConfigChanged` → `updateAgentConfig`.
+- Main-loop clear: the daemon's mesh registration holds the runtime agent's own session, workspace and executor, and `RuntimeService` clear resets that session and the context state in the clear's `onCommitted` hook, which is what embedded `meshManager.resetAgentSession` does for Studio's separate registration.
+- Umbilical taps (`getTapManager` from the umbilical lifecycle), the shared `ensureCoreToolDeclarations` (`runtime/core-tool-declarations.ts`; the private copy is gone), interactive MCP OAuth as the `mcp_oauth_authorize` HIL request, and the MCP manager kept on a setup failure.
+- Peer discovery: `services/runtime-discovery.ts` (mDNS announce and browse, tailnet sweep, manual peers, directory cards, `/ping` metadata, trust verification), started in `daemon/index.ts` and answering `GET /network/mesh/discovered-runtimes`.
 ## W1-C
 All W1-C gaps are closed.
 ## W1-D
