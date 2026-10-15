@@ -250,6 +250,14 @@ describe('attach and detach on agent files', () => {
     expect(await invoke(IPC.MCP_DETACH_SERVER, { filePath: FILE, serverName: 'acme', credentialNamespace: '@acme/server' })).toEqual({ success: true })
   })
 
+  it('MCP_ATTACH_SERVER of an OAuth server sends oauth in the entry (E3)', async () => {
+    const bodies: unknown[] = []
+    daemon.routes.set('POST /files/agent/mcp/servers', ({ body }) => { bodies.push(body); return { success: true, alreadyAttached: false } })
+    await invoke(IPC.MCP_ATTACH_SERVER, { filePath: FILE, serverConfig: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true, bearerTokenEnvVar: 'REMOTE_TOKEN', credentialStorage: 'agent' } })
+    expect(bodies).toEqual([{ server: expect.objectContaining({ name: 'remote', transport: 'http', oauth: true }) }])
+    expect((bodies[0] as { server: Record<string, unknown> }).server.bearer_token_env_var).toBeUndefined()
+  })
+
   it('ADAPTER_ATTACH: on stays as it is, off is turned on with its policy, new gets the config', async () => {
     const posted: unknown[] = []
     let adapters: Record<string, unknown> = {}

@@ -455,17 +455,17 @@
   result:
     agentRunning: true
     filePath: "<ROOT>/agents/agent-1.adf"
-10. invoke adf:agent:stop  [pushes 0→2]
+10. invoke adf:agent:stop  [pushes 0→1]
   args: []
   result:
     success: true
-11. wait adf:file:renamed — file moved after the stop  [matched push 2]
-12. invoke adf:file:get-current  [pushes 2→2]
+11. wait adf:file:renamed — file moved after the stop  [matched push 1]
+12. invoke adf:file:get-current  [pushes 1→1]
   args: []
   result:
     agentRunning: false
     filePath: "<ROOT>/agents/agent-1-renamed.adf"
-13. invoke adf:doc:get-agent-config  [pushes 2→2]
+13. invoke adf:doc:get-agent-config  [pushes 1→1]
   args: []
   result:
     adapters: {}
@@ -794,7 +794,7 @@
         enabled: false
         targets: []
     ws_connections: []
-14. shutdown  [pushes 2→2]
+14. shutdown  [pushes 1→1]
 
 ## timeline <ROOT>/agents/agent-1-renamed.adf
 > 1 adf:file:open
@@ -845,7 +845,6 @@
 > 9 adf:file:get-current
 < 9
 > 10 adf:agent:stop
-  adf:agent:event error
   adf:file:renamed
 < 10
 > 12 adf:file:get-current
@@ -854,13 +853,6 @@
 < 13
 > 14 shutdown
 < 14
-
-## push adf:agent:event (1)
-#1:
-  payload:
-    error: "Error: Cannot dispatch startup while agent lifecycle is disposed"
-  timestamp: "<t>"
-  type: "error"
 
 ## push adf:file:renamed (1)
 #1:

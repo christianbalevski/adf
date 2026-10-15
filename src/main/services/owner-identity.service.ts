@@ -19,7 +19,7 @@ import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
-import { generateX25519KeyPair, extractRawX25519PublicKey, type KeySlotRecord } from '../crypto/envelope-crypto'
+import { generateX25519KeyPair, extractRawX25519PublicKey, openKeySlot, type KeySlotRecord } from '../crypto/envelope-crypto'
 import { daemonEncKeyLabel } from '../daemon/daemon-enc-key'
 import { appendAdfAttestation, createAttestation, issueOwnerAttestation, readAdfAttestations, verifyAttestation } from './attestation.service'
 import { getReviewedIds } from './agent-review'
@@ -659,6 +659,35 @@ export class OwnerIdentityService {
       }
     } catch (err) {
       console.warn('[OwnerIdentity] Trusted-daemon slot provisioning failed:', err)
+    }
+  }
+
+  /**
+   * K12 (design daemon-backend.md §5.3 "Fallback"): make sure the unlocked
+   * CREDENTIALS envelope has a working trusted-daemon slot for one daemon key
+   * (the daemon enrolling itself). A slot with the key's label that this key
+   * opens is left alone, so the common case writes nothing; a missing or junk
+   * one (label squat) is (re)wrapped. Never the identity envelope. Returns
+   * what happened; never throws.
+   */
+  enrollTrustedDaemonSlot(
+    workspace: AdfWorkspace,
+    key: { label: string; publicKeyRaw: Buffer; privateKeyPkcs8: Buffer },
+  ): 'added' | 'present' | 'locked' | 'failed' {
+    try {
+      if (workspace.getEnvelopeState('credentials') !== 'unlocked') return 'locked'
+      const slot = (workspace.readEnvelopeSlots('credentials') ?? []).find(
+        (s) => s.type !== 'password' && (s as KeySlotRecord).recipient_did === key.label,
+      ) as KeySlotRecord | undefined
+      if (slot && openKeySlot(slot, 'credentials', key.privateKeyPkcs8)) return 'present'
+      workspace.addEnvelopeKeySlot('credentials', 'runtime', key.label, key.publicKeyRaw)
+      const msg = `Trusted-daemon credentials slot added: ${key.label}`
+      console.log(`[OwnerIdentity] ${msg} (${workspace.getFilePath() ?? 'unknown file'})`)
+      try { workspace.insertLog('info', 'identity', 'daemon_slot', null, msg) } catch { /* non-fatal */ }
+      return 'added'
+    } catch (err) {
+      console.warn('[OwnerIdentity] Trusted-daemon slot enrollment failed:', err)
+      return 'failed'
     }
   }
 

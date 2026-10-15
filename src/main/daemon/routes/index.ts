@@ -41,6 +41,7 @@ import { registerTemplateFileRoutes } from './template-file-routes'
 import { registerClientLifecycleRoutes } from './client-lifecycle-routes'
 import { registerOAuthRelayRoutes } from './oauth-relay-routes'
 import { registerFsFolderRoutes } from './fs-folder-routes'
+import { registerIdentityTrustRoutes } from './identity-trust-routes'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -92,6 +93,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerClientLifecycleRoutes,
   registerOAuthRelayRoutes,
   registerFsFolderRoutes,
+  registerIdentityTrustRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

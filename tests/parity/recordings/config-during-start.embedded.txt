@@ -1420,11 +1420,11 @@
   result:
     running: true
     state: "idle"
-10. invoke adf:agent:stop  [pushes 0→1]
+10. invoke adf:agent:stop  [pushes 0→0]
   args: []
   result:
     success: true
-11. invoke adf:doc:get-agent-config  [pushes 1→1]
+11. invoke adf:doc:get-agent-config  [pushes 0→0]
   args: []
   result:
     adapters: {}
@@ -1753,7 +1753,7 @@
         enabled: false
         targets: []
     ws_connections: []
-12. shutdown  [pushes 1→1]
+12. shutdown  [pushes 0→0]
 
 ## timeline <ROOT>/agents/agent-1.adf
 > 1 adf:file:open
@@ -1775,19 +1775,11 @@
 > 9 adf:agent:status
 < 9
 > 10 adf:agent:stop
-  adf:agent:event error
 < 10
 > 11 adf:doc:get-agent-config
 < 11
 > 12 shutdown
 < 12
-
-## push adf:agent:event (1)
-#1:
-  payload:
-    error: "Error: Cannot dispatch startup while agent lifecycle is disposed"
-  timestamp: "<t>"
-  type: "error"
 
 ## local calls (3)
 #1 Menu.setApplicationMenu:

@@ -2,8 +2,6 @@ import { basename } from 'node:path'
 import { dialog } from 'electron'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
-import { buildMcpServerConfigFromRegistration } from '../../../../shared/utils/mcp-config'
-import type { McpServerRegistration } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
 import { atPath, errorText, isEditedPlaceholder, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
@@ -18,6 +16,7 @@ import {
   McpNameArgs,
   McpPackageArgs,
   McpUninstallArgs,
+  mcpAttachEntry,
   validateMcpArgs,
 } from '../mcp/schemas'
 
@@ -235,23 +234,8 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
     const v = validateMcpArgs(McpAttachArgs, rawArgs)
     if ('error' in v) return { success: false, error: v.error }
     const { filePath, serverConfig } = v.data
-    // The entry embedded builds (the same fields; the oauth flags are not among them).
-    const server = buildMcpServerConfigFromRegistration({
-      id: `mcp:${serverConfig.name}`,
-      name: serverConfig.name,
-      type: serverConfig.type,
-      npmPackage: serverConfig.npmPackage,
-      pypiPackage: serverConfig.pypiPackage,
-      command: serverConfig.command,
-      args: serverConfig.args,
-      url: serverConfig.url,
-      env: serverConfig.envKeys?.map((key) => ({ key, value: '' })),
-      headers: serverConfig.headers,
-      headerEnv: serverConfig.headerEnv,
-      bearerTokenEnvVar: serverConfig.bearerTokenEnvVar,
-      credentialStorage: serverConfig.credentialStorage,
-      runLocation: serverConfig.runLocation,
-    } as McpServerRegistration)
+    // The entry embedded writes (rule E1).
+    const server = mcpAttachEntry(serverConfig)
     try {
       const answer = await (await ctx.ready()).request<{ alreadyAttached: boolean }>('POST', '/files/agent/mcp/servers', { query: atPath(filePath), body: { server } })
       return { success: true, alreadyAttached: answer.alreadyAttached === true }

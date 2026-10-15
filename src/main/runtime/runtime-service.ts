@@ -1415,6 +1415,12 @@ export class RuntimeService extends EventEmitter {
   async startAgent(agentId: string, opts: { hasUserMessage?: boolean } = {}): Promise<boolean> {
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
+    // A start that raced a stop (the agent is stopping or already torn down)
+    // starts nothing: say so instead of answering success without a startup.
+    const lifecycle = managed.agent.getLifecycleState()
+    if (lifecycle !== 'running') {
+      throw new RuntimeLoopError(`Cannot start ${managed.id}: the agent is ${lifecycle}. Start it again.`, 409, 'agent_not_running')
+    }
     // Studio parity: dispatch the startup turn fire-and-forget instead of
     // blocking the caller on the agent's entire first LLM turn
     // (BackgroundAgentManager fires it via process.nextTick and does not await).

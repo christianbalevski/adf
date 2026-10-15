@@ -128,6 +128,11 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     booted = await backend.boot(env, electron)
 
     const waitCursor = new Map<string, number>()
+    // A real invoke answers the renderer, and the renderer's next invoke
+    // reaches main, each as a macrotask: work main queued with process.nextTick
+    // or a promise (AGENT_START's startup dispatch) runs in between. Yield one
+    // macrotask after each invoke so a scenario's next step cannot run before it.
+    const ipcTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
     const ctx: ScenarioContext = {
       env,
       llm,
@@ -147,6 +152,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
             result: result === undefined ? result : structuredClone(result),
             pushes: { before, after: electron.pushes.length },
           })
+          await ipcTurn()
           return result as T
         } catch (err) {
           const e = err as { name?: unknown; message?: unknown; code?: unknown }
@@ -155,6 +161,7 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
             error: { name: String(e?.name ?? 'Error'), message: String(e?.message ?? err), ...(e?.code !== undefined ? { code: e.code } : {}) },
             pushes: { before, after: electron.pushes.length },
           })
+          await ipcTurn()
           if (opts.tolerant) return undefined as T
           throw err
         }
