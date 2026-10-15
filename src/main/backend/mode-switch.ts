@@ -209,7 +209,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
   let pending: { target: StudioBackendMode; gaveUp: boolean; waitingFor: () => string[]; finish: () => void; cancel: () => void } | null = null
 
   const confirm = async (target: StudioBackendMode): Promise<boolean> => {
-    const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }))
+    const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }), ctx.activeMode)
       .catch((err) => [{ id: 'client-settings' as const, label: 'Handover', detail: `could not be planned: ${err instanceof Error ? err.message : String(err)}` }])
     const activity = ctx.agentActivity()
     const running = activity.map((a) => a.filePath)
@@ -223,7 +223,8 @@ export function createModeSwitcher(ctx: SwitchContext) {
         ? 'Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.'
         : `Studio restarts and uses the ADF daemon at ${remoteUrl ?? 'the remote URL'}.`)
     if (plan.length > 0) {
-      lines.push('', target === 'embedded' ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
+      // "Back to Studio" only for credentials that come back (from this computer's daemon stores), not for client keys alone.
+      lines.push('', target === 'embedded' && plan.some((item) => item.id !== 'client-settings') ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
       for (const item of plan) lines.push(`• ${item.label}: ${item.detail}`)
     }
     if (target === 'remote') {
