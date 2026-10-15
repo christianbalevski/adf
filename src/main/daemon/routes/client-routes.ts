@@ -278,6 +278,17 @@ function send(reply: FastifyReply, run: () => unknown): unknown {
   }
 }
 
+/**
+ * The writer of a request (W3-F), for a route whose write runs after an
+ * await (the preHandler's runAsWriter covers only the synchronous part):
+ * the route wraps its write in runAsWriter(requestWriter(…)) itself.
+ */
+export function requestWriter(request: { server: FastifyInstance; headers: Record<string, string | string[] | undefined> }): ResourceWriter {
+  const sessions = (request.server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
+  if (!sessions) return { kind: 'cli' }
+  return writerOf(sessions, liveSession(sessions, request.headers))
+}
+
 /** The live client session a request names, or null. */
 function liveSession(sessions: ClientSessionRegistry, headers: Record<string, string | string[] | undefined>): string | null {
   const sessionId = clientSessionOf(headers)

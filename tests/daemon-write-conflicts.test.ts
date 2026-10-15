@@ -169,6 +169,11 @@ describe('revisions over HTTP', () => {
     await client.request('PUT', `${a}/files/content`, { query: { path: 'notes.md' }, body: { content: 'v2', baseRevision: read.revision } })
     expect(await refusal(client.request('PUT', `${a}/files/content`, { query: { path: 'notes.md' }, body: { content: 'v3', baseRevision: read.revision } })))
       .toMatchObject({ code: 'stale_revision', resource: 'notes.md' })
+    // If-Match: * is no base; a create (If-None-Match: *, or mustNotExist) refuses an existing file.
+    expect((await server.inject({ method: 'PUT', url: `${a}/files/content?path=notes.md`, headers: { 'if-match': '*' }, payload: { content: 'v4' } })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'PUT', url: `${a}/files/content?path=notes.md`, headers: { 'if-none-match': '*' }, payload: { content: 'v5' } })).json()).toMatchObject({ code: 'stale_revision', resource: 'notes.md', writer: { kind: 'cli' } })
+    expect(await refusal(client.request('PUT', `${a}/files/content`, { query: { path: 'notes.md' }, body: { content: 'v5', mustNotExist: true } }))).toMatchObject({ code: 'stale_revision' })
+    expect(await client.request('PUT', `${a}/files/content`, { query: { path: 'brand-new.md' }, body: { content: 'new', mustNotExist: true } })).toMatchObject({ success: true })
     // mind.md through its own route.
     const mind = await client.request<{ revision: number }>('GET', `${a}/mind`)
     await client.request('PUT', `${a}/mind`, { body: { content: 'remember', baseRevision: mind.revision } })
@@ -190,6 +195,36 @@ describe('revisions over HTTP', () => {
 
     const stale = await refusal(client.withClientSession(tui.sessionId).request('PUT', `${a}/files/content`, { query: { path: 'notes.md' }, body: { content: 'from the tui', baseRevision: held.revision } }))
     expect(stale).toMatchObject({ revision: agentFrame.revision, writer: { kind: 'agent' } })
+  })
+})
+
+describe('writers of writes that run after an await', () => {
+  it('PUT files/raw from a client session is that client\'s write, not the agent\'s', async () => {
+    const { client, server, one } = await daemon()
+    const tui = await reader(client, 'tui', one.agentId)
+    const a = `/agents/${one.agentId}`
+    const before = await client.request<{ revision: number }>('GET', `${a}/files/content`, { query: { path: 'data.txt' } }).catch(() => null)
+    expect(before).toBeNull()
+    const absent = (await server.inject({ method: 'GET', url: `${a}/files/meta?path=data.txt` })).statusCode
+    expect(absent).toBe(404)
+
+    const put = await server.inject({
+      method: 'PUT',
+      url: `${a}/files/raw?path=data.txt`,
+      headers: { 'content-type': 'application/octet-stream', 'x-adf-client-session': tui.sessionId },
+      payload: Buffer.from('uploaded by the terminal app'),
+    })
+    expect(put.statusCode).toBe(200)
+    const uploaded = put.json() as { revision: number }
+    expect(uploaded.revision).toEqual(expect.any(Number))
+    // A stale write names who made the current revision: the terminal app.
+    const stale = await refusal(client.request('PUT', `${a}/files/content`, { query: { path: 'data.txt' }, body: { content: 'x', baseRevision: uploaded.revision - 1 } }))
+    expect(stale).toMatchObject({ revision: uploaded.revision, writer: { kind: 'client', client: 'tui' } })
+    // And so does the change frame another session gets.
+    const studio = await reader(client, 'studio', one.agentId)
+    await server.inject({ method: 'PUT', url: `${a}/files/raw?path=data.txt`, headers: { 'content-type': 'application/octet-stream', 'x-adf-client-session': tui.sessionId }, payload: Buffer.from('again') })
+    await waitFor(() => changes(studio).some(c => c.what === 'file:data.txt'), 5000, 'raw frame')
+    expect(changes(studio).find(c => c.what === 'file:data.txt')?.writer).toEqual({ kind: 'client', client: 'tui' })
   })
 })
 

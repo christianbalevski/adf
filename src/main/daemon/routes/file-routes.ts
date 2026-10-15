@@ -28,7 +28,8 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { withSource } from '../../runtime/execution-context'
-import { fileRevisionKey, observeRevision } from '../../runtime/resource-revisions'
+import { fileRevisionKey, observeRevision, runAsWriter } from '../../runtime/resource-revisions'
+import { requestWriter } from './client-routes'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
 import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
@@ -301,19 +302,24 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     try {
       const bytes = await readCapped(request.body, rawLimit)
       const mimeType = request.query.mimeType || AdfWorkspace.mimeTypeForPath(path)
+      // W3-F: the write runs after the body was read (an await), past the
+      // preHandler's writer: it names its writer itself.
+      const writer = requestWriter(request)
       let saved = path
+      let revision: number | undefined
       if (agent.workspace) {
         const ws = agent.workspace
-        saved = withSource('system:runtime-api', agent.ref.id, () => {
+        saved = runAsWriter(writer, () => withSource('system:runtime-api', agent.ref.id, () => {
           if (unique) return ws.writeFileBufferUnique(path, bytes, mimeType)
           ws.writeFileBuffer(path, bytes, mimeType)
           return path
-        })
+        }))
+        revision = observeRevision(ws, fileRevisionKey(saved), ws.readFileBuffer(saved), writer).revision
       } else {
         if (unique) return reply.code(409).send({ error: 'unique naming needs a file-backed agent', code: 'not_file_backed' })
-        runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType })
+        revision = runAsWriter(writer, () => runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType })).revision
       }
-      return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length }
+      return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length, ...(revision !== undefined ? { revision } : {}) }
     } catch (err) {
       return fail(reply, err, request)
     }

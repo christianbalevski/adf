@@ -110,6 +110,7 @@ describe('resource revisions', () => {
     expect(parseBaseRevision('1792000000000001')).toBe(1792000000000001)
     expect(parseBaseRevision('"1792000000000001"')).toBe(1792000000000001)
     expect(parseBaseRevision('W/"17"')).toBe(17)
+    expect(parseBaseRevision('*')).toBeUndefined() // If-Match: * names any current version: no base
     expect(parseBaseRevision('abc')).toBeNull()
     expect(parseBaseRevision(-1)).toBeNull()
     expect(parseBaseRevision(1.5)).toBeNull()

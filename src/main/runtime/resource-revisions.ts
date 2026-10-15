@@ -142,10 +142,12 @@ export function fileRevision(workspace: RevisionedWorkspace, path: string, write
 /**
  * A base revision from a request: an integer, or a string of digits (an
  * `If-Match` header, optionally quoted, or a query parameter). `undefined`
- * when none was sent; `null` when one was sent but is not a revision.
+ * when none was sent, and for `*` (any current version: no base); `null`
+ * when one was sent but is not a revision.
  */
 export function parseBaseRevision(value: unknown): number | undefined | null {
   if (value === undefined || value === null || value === '') return undefined
+  if (typeof value === 'string' && value.trim() === '*') return undefined
   if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : null
   if (typeof value !== 'string') return null
   const text = value.trim().replace(/^W\//, '').replace(/^"(.*)"$/, '$1')
@@ -169,6 +171,16 @@ export function staleRevision(resource: string, current: ResourceRevision, base:
   return { resource, revision: current.revision, baseRevision: base, writer: current.writer, size, hash: current.hash }
 }
 
+/**
+ * A create that must not replace anything (`If-None-Match: *`, or
+ * `mustNotExist`): null while the file is absent; the refusal details,
+ * as for a stale base, once it exists.
+ */
+export function existsAlready(resource: string, current: ResourceRevision, size: number | null): StaleRevisionDetails | null {
+  if (current.hash === 'absent') return null
+  return { resource, revision: current.revision, baseRevision: -1, writer: current.writer, size, hash: current.hash }
+}
+
 /** The refusal sentence: what changed, by whom. */
 export function staleRevisionMessage(details: StaleRevisionDetails): string {
   const what = details.resource === 'config' ? 'The config' : details.resource === 'document' ? 'The document' : `"${details.resource}"`
@@ -176,5 +188,6 @@ export function staleRevisionMessage(details: StaleRevisionDetails): string {
     : details.writer?.kind === 'cli' ? ' by the CLI or another API client'
       : details.writer?.kind === 'client' ? ` by a ${details.writer.client} client`
         : ''
+  if (details.baseRevision < 0) return `${what} already exists (created${by}, revision ${details.revision}). Read it, or save with baseRevision ${details.revision} to overwrite.`
   return `${what} changed${by} since revision ${details.baseRevision} (now ${details.revision}). Reload it, or save again with baseRevision ${details.revision} to overwrite.`
 }

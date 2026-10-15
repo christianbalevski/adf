@@ -432,6 +432,8 @@ interface FileWriteBody {
   mime_type?: string
   protection?: FileProtectionLevel
   baseRevision?: number
+  /** W3-F: create only: refused (409 stale_revision) when the file exists. As `If-None-Match: *`. */
+  mustNotExist?: boolean
 }
 
 /** W3-F: a write's base revision query parameter (the config body is the config itself). */
@@ -1768,8 +1770,11 @@ export function createDaemonHttpApi(
     }
     const baseRevision = requestBaseRevision(request)
     if (baseRevision === null) return badRequest(reply, BASE_REVISION_INVALID)
+    const noneMatch = request.headers['if-none-match']
+    const mustNotExist = request.body.mustNotExist === true || (Array.isArray(noneMatch) ? noneMatch[0] : noneMatch)?.trim() === '*'
     try {
       return runtime.writeAgentFile(request.params.id, path, {
+        mustNotExist,
         content: request.body.content,
         contentBase64,
         mimeType: request.body.mimeType ?? request.body.mime_type,

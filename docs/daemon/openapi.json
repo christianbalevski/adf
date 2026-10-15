@@ -2743,6 +2743,9 @@
           },
           {
             "$ref": "#/components/parameters/IfMatchHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatchHeader"
           }
         ],
         "requestBody": {
@@ -15421,10 +15424,22 @@
         "name": "If-Match",
         "in": "header",
         "required": false,
-        "description": "W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted). Takes precedence over the query parameter and the body field.",
+        "description": "W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field.",
         "schema": {
           "type": "string",
           "example": "\"1792000000000001\""
+        }
+      },
+      "IfNoneMatchHeader": {
+        "name": "If-None-Match",
+        "in": "header",
+        "required": false,
+        "description": "W3-F: `*` makes the write a create: refused with 409 `stale_revision` when the file exists. As the body's `mustNotExist`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "*"
+          ]
         }
       }
     },
@@ -18867,6 +18882,10 @@
           "baseRevision": {
             "type": "integer",
             "description": "W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter"
+          },
+          "mustNotExist": {
+            "type": "boolean",
+            "description": "W3-F: create only: refused (409 stale_revision, with the existing file's revision) when the file exists. As `If-None-Match: *`."
           }
         },
         "additionalProperties": false,
@@ -27344,6 +27363,10 @@
           },
           "size": {
             "type": "integer"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the revision of the written file (the writer is the request's client session, or cli)"
           }
         }
       },

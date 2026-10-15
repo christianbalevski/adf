@@ -81,8 +81,8 @@ import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/s
 import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
 import { DocumentHost, type OpenDocument } from './document-host'
 import {
-  configRevision, currentResourceWriter, documentRevision, fileRevision,
-  staleRevision, staleRevisionMessage, type ResourceRevision,
+  configRevision, currentResourceWriter, documentRevision, fileRevision, fileRevisionKey, observeRevision,
+  existsAlready, staleRevision, staleRevisionMessage, type ResourceRevision,
 } from './resource-revisions'
 import type { ContentBlock } from '../../shared/types/provider.types'
 
@@ -2579,7 +2579,8 @@ export class RuntimeService extends EventEmitter {
     const textLike = isTextLike(meta.mime_type, path)
     return {
       agentId: target.id,
-      revision: fileRevision(target.workspace, path).revision,
+      // The bytes just read, hashed once (no second read).
+      revision: observeRevision(target.workspace, fileRevisionKey(path), content).revision,
       path: meta.path,
       mime_type: meta.mime_type,
       size: meta.size,
@@ -2594,9 +2595,14 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel; baseRevision?: number }): { agentId: string; success: true; revision: number } {
+  writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel; baseRevision?: number; mustNotExist?: boolean }): { agentId: string; success: true; revision: number } {
     const target = this.requireTarget(agentId)
-    this.assertBaseRevision(path, fileRevision(target.workspace, path), opts.baseRevision, target.workspace.getFileMeta(path)?.size ?? null)
+    const current = fileRevision(target.workspace, path)
+    const size = target.workspace.getFileMeta(path)?.size ?? null
+    // W3-F: a create refuses to replace a file someone else made meanwhile.
+    const exists = opts.mustNotExist ? existsAlready(path, current, size) : null
+    if (exists) throw new RuntimeLoopError(staleRevisionMessage(exists), 409, 'stale_revision', { ...exists })
+    this.assertBaseRevision(path, current, opts.baseRevision, size)
     if (opts.contentBase64 !== undefined) {
       withSource('system:runtime-api', target.id, () => {
         target.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64!, 'base64'), opts.mimeType)
