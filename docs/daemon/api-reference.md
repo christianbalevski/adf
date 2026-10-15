@@ -13495,7 +13495,7 @@ Example 200 (`application/json`):
 
 **Merge settings values**
 
-Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key.
+Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.
 
 Operation `patchSettings` · bearer token
 
@@ -13567,7 +13567,7 @@ Example 200 (`application/json`):
 
 **Write one setting**
 
-Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key.
+Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.
 
 Operation `putSetting` · bearer token
 
@@ -19570,7 +19570,7 @@ What the agent can do, as the review dialog shows it (Studio's AgentConfigSummar
 
 ### SettingsPatchBody
 
-Keys to merge. Secret and identity keys are refused (403); providers[].apiKey `__redacted__` keeps the stored key.
+Keys to merge. Secret and identity keys are refused (403); providers[].apiKey `__redacted__` keeps the stored key when the entry's `type` and `baseUrl` are unchanged, else 400 `api_key_required`.
 
 Type: object
 

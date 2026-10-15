@@ -10345,7 +10345,7 @@
           "Settings"
         ],
         "summary": "Merge settings values",
-        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key.",
+        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.",
         "operationId": "patchSettings",
         "requestBody": {
           "required": true,
@@ -10429,7 +10429,7 @@
           "Settings"
         ],
         "summary": "Write one setting",
-        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key.",
+        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.",
         "operationId": "putSetting",
         "parameters": [
           {
@@ -23360,7 +23360,7 @@
       "SettingsPatchBody": {
         "type": "object",
         "additionalProperties": true,
-        "description": "Keys to merge. Secret and identity keys are refused (403); providers[].apiKey `__redacted__` keeps the stored key."
+        "description": "Keys to merge. Secret and identity keys are refused (403); providers[].apiKey `__redacted__` keeps the stored key when the entry's `type` and `baseUrl` are unchanged, else 400 `api_key_required`."
       },
       "SettingsResponse": {
         "type": "object",
