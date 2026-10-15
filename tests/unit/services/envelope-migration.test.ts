@@ -351,6 +351,33 @@ describe('ensureWorkspaceIdentity: no write lock on the open of a provisioned fi
   })
 })
 
+describe('immediateTransaction restores busy_timeout (W5-G)', () => {
+  it('after the minting window: on commit, when the work throws, and when BEGIN itself fails busy', () => {
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    const other = AdfWorkspace.open(filePath)
+    const raw = (w: AdfWorkspace) => (w.getDatabase() as unknown as { db: { pragma(s: string, o?: { simple: boolean }): unknown; exec(sql: string): unknown } }).db
+    const timeout = () => raw(ws).pragma('busy_timeout', { simple: true })
+    try {
+      expect(timeout()).toBe(5000)
+      expect(ws.immediateTransaction(() => 'done', 20)).toBe('done')
+      expect(timeout()).toBe(5000)
+      expect(() => ws.immediateTransaction(() => { throw new Error('work failed') }, 20)).toThrow('work failed')
+      expect(timeout()).toBe(5000)
+      raw(other).exec('BEGIN IMMEDIATE')
+      try {
+        expect(() => ws.immediateTransaction(() => 'never', 20)).toThrow(/busy|locked/i)
+      } finally {
+        raw(other).exec('ROLLBACK')
+      }
+      expect(timeout()).toBe(5000)
+    } finally {
+      other.close()
+      ws.close()
+    }
+  })
+})
+
 describe('review gating (mintKeys) + claimWorkspace (spec D11)', () => {
   it('mintKeys: false is unlock-only — an unreviewed file is not mutated', () => {
     const settings = makeSettings()
