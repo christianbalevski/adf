@@ -59,6 +59,7 @@ export function registerBackendSettingsHandlers(boot: BootBackend): BackendSetti
   if (boot.mode === 'embedded') {
     ipcMain.handle(IPC.REMOTE_PICKER_RESPOND, () => false)
     ipcMain.handle(IPC.REMOTE_FS_BROWSE, () => ({ error: 'Browsing a daemon\'s folders needs Studio in daemon mode (Settings → Backend).', code: 'not_daemon_mode' }))
+    ipcMain.handle(IPC.REMOTE_FS_MKDIR, () => ({ error: 'Creating a folder on a daemon\'s host needs Studio in daemon mode (Settings → Backend).', code: 'not_daemon_mode' }))
   }
   return store
 }

@@ -427,6 +427,7 @@ export const IPC = {
   REMOTE_PICKER_REQUEST: 'adf:remote:picker-request',
   REMOTE_PICKER_RESPOND: 'adf:remote:picker-respond',
   REMOTE_FS_BROWSE: 'adf:remote:fs-browse',
+  REMOTE_FS_MKDIR: 'adf:remote:fs-mkdir',
   // Settings → Backend, remote daemon: test a URL and token (handshake only),
   // and restart Studio so a saved backend applies. Registered in every mode.
   BACKEND_REMOTE_CHECK: 'adf:backend:remote-check',

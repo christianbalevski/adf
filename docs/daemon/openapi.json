@@ -15202,6 +15202,88 @@
           }
         }
       }
+    },
+    "/fs/folders": {
+      "post": {
+        "tags": [
+          "Agent files"
+        ],
+        "summary": "Create a folder for a daemon-side picker",
+        "description": "Creates one folder named `name` in `parent`. The parent (after resolving links) must be inside a browse root, as for GET /fs/browse; `name` is one path segment (no separators, not `.` or `..`, no characters Windows refuses, no device name, at most 255 characters). An existing name is refused, never reused. 400 `bad_request` / `invalid_name` / `not_a_directory`, 403 `outside_roots`, 404 `not_found`, 409 `exists`.",
+        "operationId": "createFolder",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "parent",
+                  "name"
+                ],
+                "properties": {
+                  "parent": {
+                    "type": "string",
+                    "description": "Absolute folder path"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "example": {
+                "parent": "/srv/agents",
+                "name": "research"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "example": {
+                  "path": "/srv/agents/research"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "The parent is outside the browse roots (`outside_roots`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
     }
   },
   "components": {

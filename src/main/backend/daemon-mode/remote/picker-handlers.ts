@@ -1,6 +1,6 @@
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
-import type { RemoteBrowseResult } from '../../../../shared/types/backend.types'
+import type { RemoteBrowseResult, RemoteMkdirResult } from '../../../../shared/types/backend.types'
 import type { DaemonHandlerTable } from '../context'
 import { errorMessage } from '../documents/open-file'
 
@@ -16,6 +16,18 @@ export const REMOTE_PICKER_HANDLERS: DaemonHandlerTable = {
     try {
       const client = await ctx.ready()
       return await client.request('GET', '/fs/browse', { query: { path, showHidden: args?.showHidden === true ? 'true' : undefined } })
+    } catch (err) {
+      const body = err instanceof DaemonError ? err.body as { code?: unknown } | null : null
+      return { error: errorMessage(err), ...(typeof body?.code === 'string' ? { code: body.code } : {}) }
+    }
+  },
+
+  [IPC.REMOTE_FS_MKDIR]: async (ctx, _event, args?: { parent?: unknown; name?: unknown }): Promise<RemoteMkdirResult> => {
+    try {
+      const client = await ctx.ready()
+      const made = await client.request<{ path: string }>('POST', '/fs/folders', { body: { parent: args?.parent, name: args?.name } })
+      ctx.log.log(`[Remote] Created folder ${made.path} on the daemon host (picker)`)
+      return { path: made.path }
     } catch (err) {
       const body = err instanceof DaemonError ? err.body as { code?: unknown } | null : null
       return { error: errorMessage(err), ...(typeof body?.code === 'string' ? { code: body.code } : {}) }

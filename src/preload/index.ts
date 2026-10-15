@@ -722,6 +722,7 @@ const api: AdfApi = {
   },
   respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => ipcRenderer.invoke(IPC.REMOTE_PICKER_RESPOND, requestId, answer),
   browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_FS_BROWSE, args),
+  createRemoteFolder: (args: { parent: string; name: string }) => ipcRenderer.invoke(IPC.REMOTE_FS_MKDIR, args),
 
   // Platform identifier ('darwin' | 'win32' | 'linux' | ...)
   platform: process.platform

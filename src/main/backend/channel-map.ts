@@ -539,6 +539,7 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),
   [IPC.REMOTE_PICKER_RESPOND]: local('invoke', 'Settles the pick remote/picker.ts is waiting for; reads no daemon state. Outside daemon mode it answers false (backend-settings-ipc.ts).'),
   [IPC.REMOTE_FS_BROWSE]: proxied('invoke', ['GET /fs/browse'], { note: 'Answers { error, code } instead of rejecting, so the picker shows it. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
+  [IPC.REMOTE_FS_MKDIR]: proxied('invoke', ['POST /fs/folders'], { note: 'The picker\'s New folder. Answers { error, code } instead of rejecting. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
 
   // --- Overview, emergency stop, identity drafts -----------------------------
   [IPC.AGENT_VITALS]: proxied('invoke', ['GET /fleet/vitals']),

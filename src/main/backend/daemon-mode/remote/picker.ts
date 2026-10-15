@@ -42,9 +42,13 @@ export class RemotePicker {
   constructor(private readonly deps: RemotePickerDeps) {}
 
   /** Ask for a pick. Resolves with the answer, or null (cancelled, no window, timed out). */
-  pick(kind: RemotePickKind, title: string, opts: { defaultName?: string } = {}): Promise<RemotePickAnswer | null> {
+  pick(kind: RemotePickKind, title: string, opts: { defaultName?: string; within?: 'import' } = {}): Promise<RemotePickAnswer | null> {
     const requestId = randomUUID()
-    const request: RemotePickRequest = { requestId, kind, title, host: this.deps.host(), ...(opts.defaultName ? { defaultName: opts.defaultName } : {}) }
+    const request: RemotePickRequest = {
+      requestId, kind, title, host: this.deps.host(),
+      ...(opts.defaultName ? { defaultName: opts.defaultName } : {}),
+      ...(opts.within ? { within: opts.within } : {}),
+    }
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(requestId)) return

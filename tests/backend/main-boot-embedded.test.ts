@@ -63,6 +63,7 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'ipcMain.handle(adf:backend:restart-studio)',
     'ipcMain.handle(adf:remote:picker-respond)',
     'ipcMain.handle(adf:remote:fs-browse)',
+    'ipcMain.handle(adf:remote:fs-mkdir)',
     'registerOrbitalCacheHandlers',
     'ipcMain.handle(adf:app:get-fullscreen)',
     'ipcMain.handle(adf:app:set-fullscreen)',

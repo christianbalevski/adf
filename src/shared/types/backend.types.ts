@@ -112,6 +112,8 @@ export interface RemotePickRequest {
   host: string
   /** save-adf: the proposed file name, without `.adf`. */
   defaultName?: string
+  /** `import`: only folders the daemon imports into (tracked folders and the agents folder). */
+  within?: 'import'
 }
 
 export type RemotePickAnswer =
@@ -128,3 +130,6 @@ export interface RemoteBrowseListing {
 }
 
 export type RemoteBrowseResult = RemoteBrowseListing | { error: string; code?: string }
+
+/** POST /fs/folders through REMOTE_FS_MKDIR. */
+export type RemoteMkdirResult = { path: string } | { error: string; code?: string }

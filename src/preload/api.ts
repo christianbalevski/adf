@@ -12,7 +12,7 @@ import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, Cont
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
-import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
+import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -710,6 +710,8 @@ export interface AdfApi {
   respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => Promise<boolean>
   /** One folder on the daemon's machine (GET /fs/browse); no path lists the browse roots. */
   browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => Promise<RemoteBrowseResult>
+  /** New folder in a listed daemon folder (POST /fs/folders). */
+  createRemoteFolder: (args: { parent: string; name: string }) => Promise<RemoteMkdirResult>
 
   // Platform ('darwin' | 'win32' | 'linux' | ...)
   platform: NodeJS.Platform
