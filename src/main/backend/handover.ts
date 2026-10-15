@@ -476,9 +476,19 @@ async function moveSubscription(
   let note = ''
   if (dest && dest.refresh_token !== source.refresh_token) {
     if (dest.account_id && dest.account_id === source.account_id) {
-      // One account, two token sets: only the most recently refreshed one is still valid.
+      if (toDaemon && marker?.daemonOwn.sessions[sub.id] === dest.account_id) {
+        // The daemon signed in to this account itself before the switch: two
+        // independent logins, two refresh-token families, both valid. Each
+        // side keeps its own; Studio's stays with Studio for the way back.
+        return result('kept', `Studio and the daemon are each signed in to ${sessionAccountLabel(source)} on their own; the daemon uses its session, Studio's stays with Studio for the switch back`)
+      }
+      // One account, two token sets of one family (a move resumed after the
+      // other side refreshed): the more recently refreshed one is current.
+      // The other is saved once anyway, in case it was a separate login.
       keep = dest.expires_at > source.expires_at ? dest : source
-      note = `; both sides held ${sessionAccountLabel(source)}, the more recently refreshed session kept`
+      const dropped = keep === source ? dest : source
+      await writeTokenFile(replacedPath, deps.daemonCipher.encrypt(JSON.stringify(dropped)))
+      note = `; both sides held ${sessionAccountLabel(source)}, the more recently refreshed session kept (the other saved encrypted in ${replacedPath})`
     } else {
       const studio = toDaemon ? source : dest
       const daemon = toDaemon ? dest : source

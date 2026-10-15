@@ -63,15 +63,16 @@ const studioCodec: StudioSecretCodec = {
 
 /** An OAuth server whose refresh tokens rotate: each refresh token works once. */
 class RotatingAuthServer {
-  private live = new Map<string, string>() // subject → current refresh token
-  issue(subject: string): { access_token: string; refresh_token: string; expires_at: number; account_id: string } {
+  /** subject#login → current refresh token: each login (sign-in) is its own refresh-token family. */
+  private live = new Map<string, string>()
+  issue(subject: string, login = 'default'): { access_token: string; refresh_token: string; expires_at: number; account_id: string } {
     const refresh = `rt-${randomBytes(6).toString('hex')}`
-    this.live.set(subject, refresh)
+    this.live.set(`${subject}#${login}`, refresh)
     return { access_token: `at-${randomBytes(6).toString('hex')}`, refresh_token: refresh, expires_at: Date.now() + 3_600_000 + this.live.size, account_id: subject }
   }
-  refresh(subject: string, refreshToken: string) {
-    if (this.live.get(subject) !== refreshToken) throw new Error(`invalid_grant: ${subject} refresh token was already used (session lost)`)
-    return this.issue(subject)
+  refresh(subject: string, refreshToken: string, login = 'default') {
+    if (this.live.get(`${subject}#${login}`) !== refreshToken) throw new Error(`invalid_grant: ${subject} refresh token was already used (session lost)`)
+    return this.issue(subject, login)
   }
 }
 
@@ -326,15 +327,40 @@ describe('accounts conflict and ownership', () => {
     expect(daemonTokens(sub).read()?.refresh_token).toBe(daemonOwn.refresh_token)
   })
 
-  it('one account on both sides: the more recently refreshed session is kept, without asking', async () => {
+  it('probe H: the CLI daemon signed in to the same account on its own; both logins survive the round trip', async () => {
+    const sub = SUBS[0]
+    const studioLogin = auth.issue(sub.subject, 'studio')
+    // The daemon's own login, more recently refreshed than Studio's.
+    const cliLogin = { ...auth.issue(sub.subject, 'cli'), expires_at: studioLogin.expires_at + 60_000 }
+    studioTokens(sub).write(studioLogin)
+    daemonTokens(sub).write(cliLogin)
+    const toLocal = await runHandover('local', deps({ chooseSession: async () => { throw new Error('must not ask') } }))
+    expect(toLocal.failed).toBe(false)
+    expect(toLocal.items.find((i) => i.id === 'chatgpt')).toMatchObject({ outcome: 'kept' })
+    expect(studioTokens(sub).read().refresh_token).toBe(studioLogin.refresh_token)
+    // The daemon refreshes its own login meanwhile.
+    const daemon = daemonTokens(sub)
+    daemon.write(auth.refresh(sub.subject, daemon.read()!.refresh_token, 'cli'))
+    await runHandover('embedded', deps())
+    expect(await readCredentialHolder(dir)).toBe('studio')
+    // Neither side was signed out.
+    expect(() => studioTokens(sub).write(auth.refresh(sub.subject, studioTokens(sub).read().refresh_token, 'studio'))).not.toThrow()
+    expect(() => daemon.write(auth.refresh(sub.subject, daemon.read()!.refresh_token, 'cli'))).not.toThrow()
+  })
+
+  it('one login on both sides after a resumed move: the more recently refreshed set is kept, the other saved', async () => {
     const sub = SUBS[1]
-    const old = auth.issue(sub.subject)
-    const newer = { ...auth.refresh(sub.subject, old.refresh_token), expires_at: old.expires_at + 10_000 }
-    studioTokens(sub).write(newer)
-    daemonTokens(sub).write(old)
+    studioTokens(sub).write(auth.issue(sub.subject))
+    await runHandover('local', deps({ beforeSourceDelete: (id) => { if (id === 'grok') throw new Error('simulated crash') } }))
+    // The daemon refreshed its copy before the move resumed: Studio's copy is the stale one of the same login.
+    const daemon = daemonTokens(sub)
+    const refreshed = { ...auth.refresh(sub.subject, daemon.read()!.refresh_token), expires_at: Date.now() + 7_200_000 }
+    daemon.write(refreshed)
     const report = await runHandover('local', deps({ chooseSession: async () => { throw new Error('must not ask') } }))
     expect(report.failed).toBe(false)
-    expect(daemonTokens(sub).read()?.refresh_token).toBe(newer.refresh_token)
+    expect(studioTokens(sub).exists()).toBe(false)
+    expect(daemon.read()?.refresh_token).toBe(refreshed.refresh_token)
+    expect(existsSync(join(dir, sub.dir, REPLACED_TOKEN_FILE))).toBe(true)
   })
 
   it('back in embedded, a daemon session Studio never handed over (adf auth login on a CLI daemon) stays with the daemon', async () => {
