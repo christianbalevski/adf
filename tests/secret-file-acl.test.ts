@@ -3,13 +3,13 @@
 // credential.key. Mode 0600 on POSIX; on Windows an explicit ACL (icacls,
 // inheritance removed), as the local proof file has had since W3-B.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureDaemonToken } from '../src/main/daemon/daemon-token'
 import { ensureDaemonEncKey, rotateDaemonEncKey } from '../src/main/daemon/daemon-enc-key'
-import { getCredentialKey } from '../src/main/utils/credential-cipher'
+import { getCredentialKey, resetCredentialKeyCache } from '../src/main/utils/credential-cipher'
 import { protectSecretFile } from '../src/main/utils/secret-file'
 
 const dirs: string[] = []
@@ -60,6 +60,38 @@ describe('secret files: current user only on every write', () => {
     process.env.ADF_USER_DATA_DIR = dir
     getCredentialKey()
     expectOwnerOnly(join(dir, 'credential.key'))
+  })
+
+  it('existing files (from before W5-D1, or copied in) are restricted at boot too', () => {
+    const dir = tempDir()
+    const loosen = (path: string) => {
+      if (process.platform === 'win32') execFileSync('icacls', [path, '/reset'], { windowsHide: true, stdio: 'ignore' })
+      else chmodSync(path, 0o644)
+    }
+    const token = join(dir, 'daemon-token')
+    writeFileSync(token, `${'t'.repeat(43)}
+`)
+    loosen(token)
+    expect(ensureDaemonToken(dir).created).toBe(false)
+    expectOwnerOnly(token)
+
+    const key = ensureDaemonEncKey(dir)
+    rotateDaemonEncKey(dir)
+    const revoked = join(dir, 'runtime-enc-key.revoked')
+    for (const p of [key.keyPath, revoked]) loosen(p)
+    ensureDaemonEncKey(dir)
+    expectOwnerOnly(key.keyPath)
+    expectOwnerOnly(revoked)
+
+    const userData = tempDir()
+    process.env.ADF_USER_DATA_DIR = userData
+    const credKey = join(userData, 'credential.key')
+    writeFileSync(credKey, Buffer.alloc(32, 7).toString('base64'))
+    loosen(credKey)
+    resetCredentialKeyCache()
+    getCredentialKey()
+    expectOwnerOnly(credKey)
+    resetCredentialKeyCache()
   })
 
   it('a failed restriction is logged with the path and never throws', () => {
