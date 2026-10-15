@@ -178,6 +178,18 @@ export interface SwitchContext {
   window: () => BrowserWindow | null
   /** Restart Studio now (the quit runs the usual cleanup). */
   relaunch: (target: StudioBackendMode) => void
+  /** The saved remote daemon URL, named in a switch to Remote daemon. */
+  remoteUrl?: () => string | null
+}
+
+/**
+ * F9 across machines (W4-B): agents are resumed after a switch only between
+ * Studio and a daemon on this computer. A remote daemon runs its own agents:
+ * the agents running here are not started on it, and its agents keep running
+ * there and are not started here.
+ */
+export function resumesAgents(from: StudioBackendMode, to: StudioBackendMode): boolean {
+  return from !== 'remote' && to !== 'remote'
 }
 
 /** Agent names for the dialogs, from agent file paths. */
@@ -201,24 +213,38 @@ export function createModeSwitcher(ctx: SwitchContext) {
       .catch((err) => [{ id: 'client-settings' as const, label: 'Handover', detail: `could not be planned: ${err instanceof Error ? err.message : String(err)}` }])
     const activity = ctx.agentActivity()
     const running = activity.map((a) => a.filePath)
-    const busy = activity.filter((a) => a.busy).map((a) => a.filePath)
+    // Turns on a remote daemon are not interrupted by Studio's restart: nothing to wait for.
+    const busy = ctx.activeMode === 'remote' ? [] : activity.filter((a) => a.busy).map((a) => a.filePath)
+    const remoteUrl = ctx.remoteUrl?.() ?? null
     const lines: string[] = []
     lines.push(target === 'embedded'
       ? 'Studio restarts and runs agents itself.'
       : target === 'local'
         ? 'Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.'
-        : 'Studio restarts and uses the ADF daemon at the remote URL.')
+        : `Studio restarts and uses the ADF daemon at ${remoteUrl ?? 'the remote URL'}.`)
     if (plan.length > 0) {
       lines.push('', target === 'embedded' ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
       for (const item of plan) lines.push(`• ${item.label}: ${item.detail}`)
     }
+    if (target === 'remote') {
+      lines.push('', 'Stays on this computer: ChatGPT, Grok and MCP sign-ins, provider keys, the owner phrase and the runtime identity. The remote daemon uses its own; nothing is sent to it.')
+    } else if (ctx.activeMode === 'remote') {
+      lines.push('', 'Nothing comes from the remote daemon: its agents, sign-ins and keys stay on it.')
+    }
     lines.push('')
     const names = agentNames(running).join(', ')
+    const localDaemonStays = ctx.activeMode === 'local' && (ctx.keepDaemonRunning() || ctx.daemonStartedBy() !== 'studio')
     if (running.length === 0) {
       lines.push('No agent runs now.')
-    } else if (ctx.activeMode === 'local' && target === 'embedded' && (ctx.keepDaemonRunning() || ctx.daemonStartedBy() !== 'studio')) {
+    } else if (ctx.activeMode === 'remote') {
+      lines.push(`The remote daemon keeps running its agents (${names}). Studio does not start them ${target === 'embedded' ? 'itself' : 'in the local daemon'}.`)
+    } else if (localDaemonStays && target !== 'local') {
       const startedBy = ctx.daemonStartedBy()
-      lines.push(`The ADF daemon keeps running (${startedBy && startedBy !== 'studio' ? `started by ${startedBy}` : '"Keep the daemon running" is on'}), and so do its agents (${names}) there. Studio does not start an agent the daemon runs; stop it there first (adf daemon stop) to run it in Studio.`)
+      lines.push(`The ADF daemon on this computer keeps running (${startedBy && startedBy !== 'studio' ? `started by ${startedBy}` : '"Keep the daemon running" is on'}), and so do its agents (${names}) there. ${target === 'embedded'
+        ? 'Studio does not start an agent the daemon runs; stop it there first (adf daemon stop) to run it in Studio.'
+        : 'They are not started on the remote daemon.'}`)
+    } else if (target === 'remote') {
+      lines.push(`Running agents stop: ${names} stop here and are not started on the remote daemon, which runs its own agents.`)
     } else {
       lines.push(`Running agents keep running: ${names} stop here and Studio starts them ${target === 'embedded' ? 'itself' : 'in the daemon'} after the restart.`)
     }
@@ -246,13 +272,13 @@ export function createModeSwitcher(ctx: SwitchContext) {
     const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
     const confirmed = response < buttons.length - 1
     const wait = confirmed && busy.length > 0 && response === 0
-    choice = confirmed ? { target, wait, agents: running } : null
+    choice = confirmed ? { target, wait, agents: resumesAgents(ctx.activeMode, target) ? running : [] } : null
     console.log(`[Backend] Switch dialog ${MODE_LABELS[ctx.activeMode]} → ${MODE_LABELS[target]}: ${confirmed ? (wait ? 'confirmed, after the turns in flight' : busy.length > 0 ? 'confirmed, turns in flight stopped' : 'confirmed') : 'cancelled'} (${plan.map((p) => p.label).join(', ') || 'nothing to move'}${names ? `; running: ${names}` : ''})`)
     return confirmed
   }
 
   const apply = (target: StudioBackendMode): string => {
-    const chosen = choice?.target === target ? choice : { target, wait: false, agents: ctx.agentActivity().map((a) => a.filePath) }
+    const chosen = choice?.target === target ? choice : { target, wait: false, agents: resumesAgents(ctx.activeMode, target) ? ctx.agentActivity().map((a) => a.filePath) : [] }
     choice = null
     const record: ResumeRecord = { v: 1, from: ctx.activeMode, to: target, agents: chosen.agents, at: new Date().toISOString() }
     const restart = async (): Promise<void> => {

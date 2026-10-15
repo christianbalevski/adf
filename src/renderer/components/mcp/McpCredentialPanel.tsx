@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import type { McpServerRegistration, McpCredentialFileInfo, TrackedDirEntry } from '../../../shared/types/ipc.types'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { isOAuthEntry, isDualModeOAuthEntry } from './McpAddServerModal'
+import { editPlaceholderField } from '../../utils/placeholder-field'
 
 /** Flatten a TrackedDirEntry tree into a list of .adf file entries. */
 function flattenAdfFiles(entries: TrackedDirEntry[]): { filePath: string; fileName: string }[] {
@@ -174,7 +175,8 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   const handleAdfCredentialChange = (filePath: string, envKey: string, value: string) => {
     setAdfCredentials((prev) => ({
       ...prev,
-      [filePath]: { ...(prev[filePath] ?? {}), [envKey]: value }
+      // A stored value shown as a placeholder (remote daemon) is replaced by what is typed, never edited.
+      [filePath]: { ...(prev[filePath] ?? {}), [envKey]: editPlaceholderField(prev[filePath]?.[envKey] ?? '', value) }
     }))
   }
 

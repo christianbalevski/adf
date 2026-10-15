@@ -14,7 +14,14 @@ import type { ClientFrame, PushTopic } from '../client-stream'
  * install ran (`stream.gap`). Once the job has ended, an end push that has
  * not arrived within END_GRACE_MS is sent from the job's result, and logged.
  *
- * Otherwise it sends nothing: the stream's own pushes are the record.
+ * Otherwise it sends nothing: the stream's own pushes are the record. The
+ * install's answer still waits for them (W4-B review): the job poll can see
+ * the job end before the stream has delivered its last progress lines (a
+ * remote daemon, a proxy), and embedded answers only after its last push.
+ * Each package's end push is the stream's watermark for that install (the
+ * daemon sends it after the install's progress lines, in order on one
+ * connection); the answer waits for every end, up to END_WAIT_MS, then sends
+ * a missing one from the result as after a gap.
  */
 
 export type InstallChannel = typeof IPC.MCP_INSTALL_PROGRESS | typeof IPC.ADAPTER_INSTALL_PROGRESS | typeof IPC.SANDBOX_INSTALL_PROGRESS
@@ -27,6 +34,8 @@ export const INSTALL_TOPIC: Readonly<Record<InstallChannel, PushTopic>> = {
 
 /** How long an end push may trail the job's end after a gap before the relay sends it. */
 export const END_GRACE_MS = 1500
+/** How long the answer waits for the stream to deliver an install's end push when no gap was seen. */
+export const END_WAIT_MS = 15_000
 
 export interface InstallEnd {
   package: string
@@ -39,7 +48,7 @@ type Send = (channel: string, payload: unknown) => void
 export class InstallProgressRelay {
   private readonly watches = new Set<InstallWatch>()
 
-  constructor(private readonly send: Send, private readonly log: Pick<Console, 'log' | 'warn'> = console, private readonly graceMs = END_GRACE_MS) {}
+  constructor(private readonly send: Send, private readonly log: Pick<Console, 'log' | 'warn'> = console, private readonly graceMs = END_GRACE_MS, private readonly waitMs = END_WAIT_MS) {}
 
   /** Every frame of the client stream, before the event bridge maps it. */
   observe(frame: ClientFrame): void {
@@ -77,6 +86,11 @@ export class InstallProgressRelay {
   }
 
   /** @internal */
+  get wait(): number {
+    return this.waitMs
+  }
+
+  /** @internal */
   get logger(): Pick<Console, 'log' | 'warn'> {
     return this.log
   }
@@ -103,11 +117,12 @@ export class InstallWatch {
   /** The install ended (or Studio stopped waiting on it): each package's end push, where the stream cannot deliver it. */
   async finish(ends: readonly InstallEnd[]): Promise<void> {
     try {
-      if (!this.gapped) return
       const missing = () => ends.filter((end) => !this.ended.has(end.package))
+      // No gap: the stream delivers every end; wait for it, so the answer comes after the install's pushes.
+      const gappedAtStart = this.gapped
       if (missing().length > 0) {
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(done, this.relay.grace)
+          const timer = setTimeout(done, gappedAtStart ? this.relay.grace : this.relay.wait)
           const wake = (): void => { if (missing().length === 0) done() }
           function done(): void { clearTimeout(timer); resolve() }
           this.waiters.add(wake)
@@ -115,7 +130,9 @@ export class InstallWatch {
         })
       }
       for (const end of missing()) {
-        this.relay.logger.log(`[Backend] The end of the ${end.package} install was lost in a client stream gap; sending it from the install's job result (${end.status})`)
+        this.relay.logger.log(this.gapped
+          ? `[Backend] The end of the ${end.package} install was lost in a client stream gap; sending it from the install's job result (${end.status})`
+          : `[Backend] The end of the ${end.package} install did not arrive on the client stream within ${Math.round(this.relay.wait / 1000)} s of the job's end; sending it from the install's job result (${end.status})`)
         this.relay.relay(this.channel, endPayload(end))
       }
     } finally {

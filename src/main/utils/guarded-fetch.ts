@@ -20,13 +20,80 @@
  *    precheck. A chunked response with no length header must not be buffered
  *    in full before being measured.
  *
- * Headless-safe: no Electron imports, plain global fetch. Backs the
- * SKILLS_CATALOG_GET / SKILLS_PACKAGE_GET IPC handlers, which is how Studio's
- * catalog browser reaches a remote catalog at all — the renderer's CSP blocks
- * remote origins, so every hop it makes lands here.
+ * 5. **The connection uses the addresses the guard checked.** The guard
+ *    resolves the host, then the connection used to resolve it again: a
+ *    DNS answer that changes in between (rebinding, TTL 0) reached a
+ *    refused address. Each hop now connects through node:http(s) with a
+ *    lookup that checks every address it answers against the same policy
+ *    (W1-D follow-up).
+ *
+ * Headless-safe: no Electron imports. Backs the SKILLS_CATALOG_GET /
+ * SKILLS_PACKAGE_GET IPC handlers, which is how Studio's catalog browser
+ * reaches a remote catalog at all — the renderer's CSP blocks remote
+ * origins, so every hop it makes lands here. A replaced global fetch (unit
+ * tests stub it) is used as it is.
  */
 
-import { checkFetchTarget } from './ssrf-guard'
+import { lookup as dnsLookup } from 'node:dns/promises'
+import { request as httpRequest, type IncomingMessage } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import type { LookupFunction } from 'node:net'
+import { Readable } from 'node:stream'
+import { checkFetchTarget, type FetchGuardOptions } from './ssrf-guard'
+
+/** The process's own fetch, as loaded; a stub that replaced it (tests) is used without the pinned connection. */
+const NATIVE_FETCH = globalThis.fetch
+
+/**
+ * A lookup for the connection that checks what it connects to: every
+ * address the resolver answers must pass `check` (the guard's policy for
+ * that address as a literal), else the connection fails with the guard's
+ * reason.
+ */
+export function guardedLookup(check: (address: string) => Promise<string | null>): LookupFunction {
+  return ((hostname: string, options: { all?: boolean }, callback: (...args: unknown[]) => void) => {
+    void (async () => {
+      const addresses = await dnsLookup(hostname, { all: true, verbatim: true })
+      if (addresses.length === 0) throw Object.assign(new Error(`No address for ${hostname}`), { code: 'ENOTFOUND' })
+      for (const entry of addresses) {
+        const refusal = await check(entry.address)
+        if (refusal) throw Object.assign(new Error(refusal), { code: 'EGUARD' })
+      }
+      return addresses
+    })().then((addresses) => {
+      if (options?.all) callback(null, addresses)
+      else callback(null, addresses[0].address, addresses[0].family)
+    }, (err) => callback(err))
+  }) as unknown as LookupFunction
+}
+
+/** Statuses whose Response has no body. */
+const NULL_BODY = new Set([101, 103, 204, 205, 304])
+
+/** One GET over node:http(s), connecting only to addresses `guardedLookup` checked. */
+function pinnedGet(url: string, signal: AbortSignal, guard: FetchGuardOptions): Promise<Response> {
+  const target = new URL(url)
+  const port = target.port || (target.protocol === 'https:' ? '443' : '80')
+  const check = (address: string) => {
+    const literal = address.includes(':') ? `[${address}]` : address
+    return checkFetchTarget(`${target.protocol}//${literal}:${port}${target.pathname}`, guard)
+  }
+  const send = target.protocol === 'https:' ? httpsRequest : httpRequest
+  return new Promise<Response>((resolve, reject) => {
+    const req = send(target, { method: 'GET', signal, lookup: guardedLookup(check) }, (res: IncomingMessage) => {
+      const headers = new Headers()
+      for (const [name, value] of Object.entries(res.headers)) {
+        if (value === undefined) continue
+        for (const one of Array.isArray(value) ? value : [value]) headers.append(name, one)
+      }
+      const status = res.statusCode ?? 502
+      if (NULL_BODY.has(status)) res.resume()
+      resolve(new Response(NULL_BODY.has(status) ? null : (Readable.toWeb(res) as unknown as ReadableStream<Uint8Array>), { status, headers }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
 
 /** Port the local daemon control API listens on when nothing overrides it. */
 export const DEFAULT_DAEMON_PORT = 7385
@@ -150,10 +217,13 @@ export async function guardedFetch(
       // through: it is a decision about the agent's OWN fetches, not about
       // where a third-party catalog may redirect us. Callers that fetch from
       // LAN peers opt in per call (options.allowLocal).
-      const blocked = await checkFetchTarget(current, { allowLocal: options.allowLocal === true, daemonPort, ...(options.allowLinkLocal ? { allowLinkLocal: true } : {}) })
+      const guard: FetchGuardOptions = { allowLocal: options.allowLocal === true, daemonPort, ...(options.allowLinkLocal ? { allowLinkLocal: true } : {}) }
+      const blocked = await checkFetchTarget(current, guard)
       if (blocked) return { error: blocked }
 
-      const response = await fetch(current, { signal: controller.signal, redirect: 'manual' })
+      const response = globalThis.fetch === NATIVE_FETCH
+        ? await pinnedGet(current, controller.signal, guard)
+        : await fetch(current, { signal: controller.signal, redirect: 'manual' })
       if (response.status >= 300 && response.status <= 399) {
         const location = response.headers.get('location')
         if (!location) return { error: `redirect without a location header (HTTP ${response.status})` }

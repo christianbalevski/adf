@@ -17,6 +17,8 @@ export class SwitchToEmbeddedError extends Error {
   }
 }
 
+export { remoteDaemonConnector } from './remote/connector'
+
 /**
  * The two ways Studio finds its daemon (design §8.2, §9).
  *
@@ -25,7 +27,8 @@ export class SwitchToEmbeddedError extends Error {
  * daemon on other settings or another client API version). The token is the
  * daemon's token file in that data dir, or ADF_DAEMON_TOKEN.
  *
- * Remote: the URL and the `safe:` token from studio-backend.json.
+ * Remote: the URL and the `safe:` token from studio-backend.json, after the
+ * transport rule and a version handshake (remote/connector.ts, W4-B).
  *
  * Both throw with a sentence the status dialog shows; neither message
  * contains the token.
@@ -108,17 +111,3 @@ export function localDaemonConnector(opts: {
   return Object.assign(connect, { logFile: controller.paths.logFile })
 }
 
-export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec): DaemonConnector {
-  return Object.assign(async () => {
-    const url = config.remote.url
-    if (!url) throw new Error('Remote mode has no daemon URL (Settings → Backend).')
-    const token = readRemoteToken(config, codec)
-    if (!token) throw new Error(`No token is saved for ${url}, or it cannot be decrypted on this machine (Settings → Backend).`)
-    return {
-      baseUrl: url,
-      logFile: null,
-      description: `the remote ADF daemon at ${url}`,
-      source: { token: () => token },
-    }
-  }, { logFile: null })
-}

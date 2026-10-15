@@ -13,7 +13,7 @@ import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, Cont
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
-import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView } from '../shared/types/backend.types'
+import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -623,7 +623,7 @@ export interface AdfApi {
     runtimeDelegation: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string } | null
     runtimeDelegationValid: boolean
   }>
-  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null }>
+  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null; reason?: string }>
   confirmOwnerBackup: () => Promise<{ success: boolean }>
   /** `expectedOwnerDid`: restore only that owner (a different phrase is refused, not switched to). */
   importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) => Promise<{ success: boolean; ownerDid?: string; restamped?: number; attested?: number; failures?: string[]; error?: string }>
@@ -715,6 +715,19 @@ export interface AdfApi {
   /** The view never contains the remote token, only whether one is saved. */
   getBackendSettings: () => Promise<BackendSettingsView>
   setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
+  /** Remote daemon: the handshake only (reachable, token accepted, client API version). Never returns the token. */
+  checkRemoteBackend: (request: RemoteCheckRequest) => Promise<RemoteCheckResult>
+  /** Quit and start Studio again, so a saved backend applies (design D9). */
+  restartStudio: () => Promise<void>
+
+  // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
+  onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void
+  /** Answer a pick; `null` cancels. */
+  respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => Promise<boolean>
+  /** One folder on the daemon's machine (GET /fs/browse); no path lists the browse roots. */
+  browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => Promise<RemoteBrowseResult>
+  /** New folder in a listed daemon folder (POST /fs/folders). */
+  createRemoteFolder: (args: { parent: string; name: string }) => Promise<RemoteMkdirResult>
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */

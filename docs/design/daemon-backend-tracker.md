@@ -68,7 +68,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-E | TUI on client sessions — folded into W2-B (owner, 2026-10-14) | 2 | — | IN W2-B |
 | W3-F | MERGED. Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | TODO |
 | W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | MERGED |
-| W4-B | Remote mode | 4 | W3-A … W3-D | TODO |
+| W4-B | Remote mode | 4 | W3-A … W3-D | DONE on ws/w4-b (review pending) |
 | W4-C | Documentation | 4 | W4-A | TODO |
 | W5-A | Full parity run and triage | 5 | W4-A | TODO |
 | W5-B | OS matrix, packaging, Defender, soak | 5 | W4-A | TODO |
@@ -294,8 +294,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 
 | From | Item | Owner |
 |---|---|---|
-| W0-E | Remote→embedded fallback at boot (unconfirmed http URL dropped) is logged but not shown in Settings → Backend; a later unrelated save rewrites the file without the dropped fields, silently | W4-B |
-| W0-E | A confirmed plain-http URL cannot be un-confirmed without changing the URL | W4-B |
+| W0-E | Remote→embedded fallback at boot (unconfirmed http URL dropped) is logged but not shown in Settings → Backend; a later unrelated save rewrites the file without the dropped fields, silently | W4-B (done 5a3dbad7: the URL is kept and never used; `active.notices` in Settings; the save that drops ignored fields says so) |
+| W0-E | A confirmed plain-http URL cannot be un-confirmed without changing the URL | W4-B (done 5a3dbad7) |
 | W0-B | Template types copied into `src/shared/daemon-client/types.ts` and `src/main/tui/templates/model.ts`; make `model.ts` re-export | W2-B |
 | W0-B | `credentialsFor` implementations MUST honour the explicit `token` argument; document for Studio's implementation | W2-C |
 | W0-B | `api-guide.md` lines 11, 518 and `src/main/tui/CONTRACT.md` 287, 294 still name `src/main/tui/api/*` | W4-C |
@@ -328,8 +328,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-C | POSIX: "socket missing = dead" also applies to the `tmpdir()` fallback socket (hosts path > 100 chars), which tmp cleaners may delete under a live holder; treat missing as dead only for the 0700 hosts-dir socket | W5-B |
 | W1-D | Unknown/expired identity draft id on create silently mints a fresh DID (console.warn only); report it in the create response | W2-A (done: `identityDraft`, `warnings`) |
 | W1-D | Job cancel only abandons work: OAuth loopback listener lives to its 5 min timeout; an in-flight stdio connect may outlive `disconnectAll` (orphan server process); running jobs unbounded, Python install not deduped | W3-C |
-| W1-D | Peer fetch: DNS rebinding between guard lookup and fetch (pre-existing); daemon port blocked only on loopback | W4-B |
-| W1-D | SSRF guard: map NAT64 `64:ff9b::/96` and 6to4 `2002::/16` back to IPv4 before checks (pre-existing gap, all callers); extend always-blocked metadata list (EKS `169.254.170.23`/`fd00:ec2::23`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192`); DNS-lookup failure currently passes through | W4-B |
+| W1-D | Peer fetch: DNS rebinding between guard lookup and fetch (pre-existing); daemon port blocked only on loopback | W4-B (done, E3: fd137041 pinned lookup in `guardedFetch`; 3f412789 every interface address; design §3.2) |
+| W1-D | SSRF guard: map NAT64 `64:ff9b::/96` and 6to4 `2002::/16` back to IPv4 before checks (pre-existing gap, all callers); extend always-blocked metadata list (EKS `169.254.170.23`/`fd00:ec2::23`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192`); DNS-lookup failure currently passes through | W4-B (done, E3: 1e5ec44b, cf03f371, e6b223f7; characterization b4722440) |
 | W1-A | Key drop (remove/wipe) restarts every running adapter, not only those using the key | W3-B |
 | W1-A | Daemon-mode client must prompt for the file password before start, using the preflight `credentials_locked` code (design §6.1 row 27) | W3-A (done: FILE_OPEN asks for held and running agents; AGENT_START refuses a locked held document with code credentials_locked, which opens the dialog) |
 | Lead | Regenerate `docs/daemon/api-reference.md`/`.html` once after Wave 1 merges (`npm run docs:api`) | Lead |
@@ -349,7 +349,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-C2 | `w3a:chat-echo`: in daemon mode Studio shows its own chat twice (`POST /agents/:id/chat` lacks `echoed`). W3-A acceptance criterion | W3-A (done: the sending session alone skips its trigger_message) |
 | W2-C2 | Version-mismatch refusal only offers `ADF_STUDIO_BACKEND=embedded`/hand edit as the way back; needs the §8.2 dialog | W4-A |
 | W3-B | If `icacls` fails to restrict the proof file on Windows, the daemon runs without a local proof, so every local-only route (reveal, owner import) refuses; make that state visible in Studio and `adf daemon status` | W4-A |
-| W3-C | Remote placeholder check is `startsWith('__redacted__')`; a backspaced or mid-edited placeholder is saved as the secret. Compare exact placeholder + track "field touched" | W4-B |
+| W3-C | Remote placeholder check is `startsWith('__redacted__')`; a backspaced or mid-edited placeholder is saved as the secret. Compare exact placeholder + track "field touched" | W4-B (done 26af1a15: exact placeholder; a value made from it is refused; the form replaces the placeholder with what is typed) |
 | W3-C | E3 candidate: `closeConnection` orphans a shim-launched (cmd /c) MCP server that ignores stdin EOF on Windows | W5-A |
 | Lead | MERGE GATE for W3-A: `tests/parity/documents` green on the daemon side with real W2-C2 sessions (no skip, no `PARITY_W3A_HOLDS`) | Lead (W3-A merge; met on ws/w3-a: all 8 documents scenarios green on both sides) |
 | W3-A | E3 candidate: stopping an agent started idle sends "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT in embedded (allowlist `e3:stop-startup-dispatch-error`, same cause as `e3:emergency-stop-startup-dispatch-error`) | W5-A |
@@ -369,6 +369,10 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W2-A | An open document of a file leased elsewhere still gets AdfWorkspace.open's maintenance writes (migration, clean-close marker, skills registry); a read-only AdfDatabase open would remove them | Lead |
 | W2-A | Wire `setDocumentHolderCheck` and the hold/release/expiry calls to W2-B's `setDocumentHost` | W2-B merge (done: `wireDocumentsToClientSessions`; gate test `tests/daemon-client-documents-gate.test.ts`) |
 | W2-B | Templates folder watcher: `daemon-agent-factory.ts` creates AgentTemplatesService with `notifyChanged: () => {}` and never starts its watcher, so templates added or removed in the folder outside the daemon's routes push no `templates` frame; pass a `notifyTemplatesChanged` hook (→ `clientSessions.publishPush('templates', {})`) and start the watcher | W3-A (done) |
+| W4-B | The Mode control in Settings → Backend still disables Remote while `modeSwitchAvailable` is false; the Remote group's "Switch to remote daemon" is the way in. When W4-A enables the control it keeps `remote` allowed through `REMOTE_SWITCH_AVAILABLE`, and its switch flow reuses `BACKEND_RESTART_STUDIO` | W4-A |
+| W4-B | Provider app keys: the provider form gets `__redacted__` from the daemon (§4.2); a backspaced placeholder (`__redacted_`) is saved as the key, in local and remote mode. Same fix as the MCP form: `editPlaceholderField` in the provider key field, and refuse values made from the placeholder in the settings write | W5-A |
+| W4-B | `POST /oauth/relay` cannot tell whether a sign-in waits at the target (pending flows live in `mcp-admin-routes` and the approvals hub, not shared); it is bounded instead (§9.4). A shared registry of pending loopback callbacks would let it refuse every other port | Lead |
+| W4-B | Docs: remote Studio (Settings → Backend actions, daemon-side picker, upload of a local file, OAuth relay, `tailscale serve`, `ADF_DAEMON_BROWSE_ROOTS`) in `docs/cli/remote-daemon.md` and the Studio guide; user-testing DMN-20 expects owner routes through an SSH tunnel, which Studio refuses by design (§9.4) | W4-C |
 
 ## 7. Parity triage (filled in W5-A)
 

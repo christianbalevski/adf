@@ -24,6 +24,7 @@ vi.mock('electron', () => {
 })
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { request as httpRequest } from 'node:http'
 import { uptime as osUptime } from 'node:os'
 import { DaemonHost } from '../src/main/daemon/daemon-host'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
@@ -173,5 +174,27 @@ describe('DaemonHost', () => {
 
     await expect(host.start()).rejects.toThrow(/already running as PID/)
     rmSync(pidFile, { force: true })
+  })
+})
+
+describe('DaemonHost Host allow-list behind a proxy on a loopback bind (W4-B review)', () => {
+  const get = (port: number, host: string) => new Promise<number>((resolve, reject) => {
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/health', headers: { Host: host } }, (res) => { res.resume(); resolve(res.statusCode ?? 0) })
+    req.on('error', reject)
+    req.end()
+  })
+
+  it('accepts ADF_DAEMON_ALLOWED_HOSTS names on a 127.0.0.1 bind, as a TLS proxy or tailscale serve forwards them', async () => {
+    const host = new DaemonHost({ runtime: new RuntimeService({ enforceReviewGate: false }), host: '127.0.0.1', port: 0, token: 'w'.repeat(43), allowedHosts: ['adf.tail1234.ts.net'] })
+    await host.start()
+    try {
+      const address = host.getServer()!.server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      expect(await get(port, 'adf.tail1234.ts.net')).toBe(200)
+      expect(await get(port, `127.0.0.1:${port}`)).toBe(200)
+      expect(await get(port, 'evil.example')).toBe(403)
+    } finally {
+      await host.stop()
+    }
   })
 })

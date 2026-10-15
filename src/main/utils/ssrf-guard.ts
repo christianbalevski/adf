@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { networkInterfaces } from 'node:os'
 
 // =============================================================================
 // SSRF / egress guard (shared)
@@ -25,16 +26,40 @@ const MAPPED_HEX = /^::(?:ffff:(?:0{1,4}:)?)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
  * The IPv4 address inside an IPv4-mapped or -compatible IPv6 address, as
  * `[match, dotted]`, in either spelling; null otherwise. `new URL()` turns
  * `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`, so the hex form must
- * classify the same as the dotted one.
+ * classify the same as the dotted one. NAT64 (`64:ff9b::/96`, RFC 6052) and
+ * 6to4 (`2002::/16`, RFC 3056) addresses carry an IPv4 address too and are
+ * classified as it (W1-D follow-up): a NAT64 gateway turns
+ * `64:ff9b::a9fe:a9fe` into a connection to 169.254.169.254.
  */
 function mappedIPv4Match(addr: string): [string, string] | null {
   const dotted = addr.match(MAPPED_DOTTED)
   if (dotted) return [dotted[0], dotted[1]]
   const hex = addr.match(MAPPED_HEX)
-  if (!hex) return null
-  const hi = parseInt(hex[1], 16)
-  const lo = parseInt(hex[2], 16)
-  return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
+  if (hex) {
+    const hi = parseInt(hex[1], 16)
+    const lo = parseInt(hex[2], 16)
+    return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
+  }
+  const embedded = translatedIPv4(addr)
+  return embedded ? [addr, embedded] : null
+}
+
+/** The IPv4 address of a NAT64 (64:ff9b::/96) or 6to4 (2002::/16) address, either spelling; null otherwise. */
+function translatedIPv4(raw: string): string | null {
+  let addr = raw.toLowerCase()
+  // A dotted IPv4 tail (64:ff9b::169.254.169.254) as two hex groups.
+  const tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr)
+  if (tail) {
+    const o = tail.slice(2, 6).map(Number)
+    if (o.some((n) => n > 255)) return null
+    addr = `${tail[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`
+  }
+  if (isIP(addr) !== 6) return null
+  const groups = expandIPv6(addr).split(':').map((g) => parseInt(g, 16))
+  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) return v4(groups[6], groups[7])
+  if (groups[0] === 0x2002) return v4(groups[1], groups[2])
+  return null
 }
 
 const ALLOWED_FETCH_PROTOCOLS = new Set(['http:', 'https:'])
@@ -55,21 +80,31 @@ export interface FetchGuardOptions {
   allowLinkLocal?: boolean
 }
 
+/** IPv4 instance-metadata and credential endpoints (see isCloudMetadataIp). */
+const METADATA_IPV4 = new Set([
+  '169.254.169.254', // AWS, GCP, Azure IMDS, OCI, DigitalOcean, …
+  '169.254.170.2', // AWS ECS task credentials
+  '169.254.170.23', // AWS EKS Pod Identity agent
+  '100.100.100.200', // Alibaba Cloud metadata
+  '168.63.129.16', // Azure WireServer (host agent, platform keys)
+  '192.0.0.192', // Oracle Cloud (OCI) metadata
+])
+/** IPv6 ones, expanded: AWS IMDS and the EKS Pod Identity agent. */
+const METADATA_IPV6 = new Set(['fd00:0ec2:0000:0000:0000:0000:0000:0254', 'fd00:0ec2:0000:0000:0000:0000:0000:0023'])
+
 /**
- * Cloud instance-metadata and credential endpoints: AWS/GCP/Azure/OCI
- * 169.254.169.254, AWS ECS task credentials 169.254.170.2, AWS IPv6 IMDS
- * fd00:ec2::254 (incl. IPv4-mapped forms). Never fetchable, whatever the
- * options.
+ * Cloud instance-metadata and credential endpoints (METADATA_IPV4,
+ * METADATA_IPV6; incl. IPv4-mapped, NAT64 and 6to4 forms). Never
+ * fetchable, whatever the options.
  */
 export function isCloudMetadataIp(ip: string): boolean {
   const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
   const version = isIP(bare)
-  const v4 = (addr: string) => addr === '169.254.169.254' || addr === '169.254.170.2'
-  if (version === 4) return v4(bare)
+  if (version === 4) return METADATA_IPV4.has(bare)
   if (version === 6) {
     const mapped = mappedIPv4Match(bare)
-    if (mapped) return v4(mapped[1])
-    return expandIPv6(bare) === 'fd00:0ec2:0000:0000:0000:0000:0000:0254'
+    if (mapped) return METADATA_IPV4.has(mapped[1])
+    return METADATA_IPV6.has(expandIPv6(bare))
   }
   return false
 }
@@ -230,21 +265,64 @@ function connectBlockedMessage(target: string): string {
   )
 }
 
+/** Normalized form for comparing addresses: IPv4 dotted (also from mapped/NAT64/6to4 IPv6), IPv6 expanded. */
+function comparableIp(ip: string): string | null {
+  const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
+  const version = isIP(bare)
+  if (version === 4) return bare
+  if (version !== 6) return null
+  const mapped = mappedIPv4Match(bare)
+  return mapped ? mapped[1] : expandIPv6(bare)
+}
+
+const OWN_ADDRESSES_TTL_MS = 30_000
+let ownAddressCache: { at: number; set: Set<string> } | null = null
+
+/**
+ * The addresses of this machine's network interfaces. A daemon bound to the
+ * network (`adf daemon --host 0.0.0.0`) answers on every one of them, not
+ * only on loopback (W1-D follow-up). Cached briefly: interfaces change
+ * rarely, and the lookup is synchronous.
+ */
+export function isOwnInterfaceIp(ip: string, now = Date.now()): boolean {
+  if (!ownAddressCache || now - ownAddressCache.at > OWN_ADDRESSES_TTL_MS) {
+    const set = new Set<string>()
+    try {
+      for (const list of Object.values(networkInterfaces())) {
+        for (const entry of list ?? []) {
+          const c = comparableIp(entry.address)
+          if (c) set.add(c)
+        }
+      }
+    } catch { /* no interface list: loopback and unspecified still count */ }
+    ownAddressCache = { at: now, set }
+  }
+  const c = comparableIp(ip)
+  return c !== null && ownAddressCache.set.has(c)
+}
+
+function unresolvedMessage(target: string, reason: string): string {
+  return `Blocked: the address of "${target}" could not be looked up (${reason}), so the egress guard could not check it. Check the host name and the network.`
+}
+
 interface HostClass {
   anyMetadata: boolean
   anyLinkLocal: boolean
   anyLoopback: boolean
   anyUnspecified: boolean
+  /** Any candidate is an address of this machine's interfaces (where a network-bound daemon listens). */
+  anyOwnAddress: boolean
   /** Any candidate in a blocked class OTHER than loopback (private, CGNAT, unspecified, …). */
   anyNonLoopbackBlocked: boolean
 }
 
 /**
- * Resolve `host` to candidate IPs and classify them. Returns null when a
- * hostname fails to resolve — the caller lets the network layer surface the
- * real error instead of masking it as a security denial.
+ * Resolve `host` to candidate IPs and classify them. A host name that does
+ * not resolve answers `{ unresolved }` (W1-D follow-up): the guard cannot
+ * check it, and the connection's own lookup could get another answer, so
+ * the caller refuses it with the resolver's reason.
  */
-async function classifyHost(host: string): Promise<HostClass | null> {
+async function classifyHost(host: string): Promise<HostClass | { unresolved: string }> {
   let loopbackHost = false
   let candidates: string[] = []
 
@@ -260,9 +338,10 @@ async function classifyHost(host: string): Promise<HostClass | null> {
       try {
         const addresses = await lookup(host, { all: true, verbatim: true })
         candidates = addresses.map((a) => a.address)
-      } catch {
-        return null
+      } catch (err) {
+        return { unresolved: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err)) }
       }
+      if (candidates.length === 0) return { unresolved: 'no addresses' }
     }
   }
 
@@ -271,6 +350,7 @@ async function classifyHost(host: string): Promise<HostClass | null> {
     anyLinkLocal: candidates.some(isLinkLocalIp),
     anyLoopback: loopbackHost || candidates.some(isLoopbackIp),
     anyUnspecified: candidates.some(isUnspecifiedIp),
+    anyOwnAddress: candidates.some((ip) => isOwnInterfaceIp(ip)),
     // Blocked classes minus loopback (private, CGNAT, unspecified, multicast, …)
     // — loopback itself is allowed by default and only tier-gated per-port.
     anyNonLoopbackBlocked: candidates.some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
@@ -301,8 +381,9 @@ function applyPolicy(
   }
   // Tier 2 — the local ADF daemon control API: never reachable, ignores
   // allowLocal. The unspecified address (0.0.0.0 / ::) reaches loopback
-  // listeners on most stacks, so it counts as loopback here.
-  if ((cls.anyLoopback || cls.anyUnspecified) && opts.daemonPort && port === opts.daemonPort) {
+  // listeners on most stacks, so it counts as loopback here; so does every
+  // address of this machine, where a network-bound daemon also answers.
+  if ((cls.anyLoopback || cls.anyUnspecified || cls.anyOwnAddress) && opts.daemonPort && port === opts.daemonPort) {
     return `Blocked: "${target}" (port ${port}) is the local ADF daemon control API, which is never fetchable, even with allow_local_fetch.`
   }
   // Tier 3 — own served origin: allowed unconditionally. Redundant while
@@ -351,7 +432,7 @@ export async function checkFetchTarget(
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
 
   const cls = await classifyHost(host)
-  if (!cls) return null
+  if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, blockedMessage)
 }
 
@@ -379,6 +460,6 @@ export async function checkConnectTarget(
   const port = url.port ? Number(url.port) : secure ? 443 : 80
 
   const cls = await classifyHost(host)
-  if (!cls) return null
+  if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, connectBlockedMessage)
 }

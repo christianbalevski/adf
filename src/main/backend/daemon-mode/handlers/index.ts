@@ -7,6 +7,7 @@ import { FLEET_HANDLERS } from './fleet'
 import { MCP_HANDLERS } from './mcp'
 import { ADAPTER_HANDLERS } from './adapters'
 import { REGISTRY_HANDLERS } from './registries'
+import { REMOTE_PICKER_HANDLERS } from '../remote/picker-handlers'
 
 /**
  * Every implemented daemon-mode invoke handler. Wave 3 workstreams add their
@@ -20,6 +21,7 @@ export const DAEMON_MODE_HANDLERS: DaemonHandlerTable = {
   ...FLEET_HANDLERS,
   ...MCP_HANDLERS, ...ADAPTER_HANDLERS, ...REGISTRY_HANDLERS,
   ...DOCUMENT_HANDLERS,
+  ...REMOTE_PICKER_HANDLERS,
 }
 
 /** Every implemented daemon-mode `send` handler (renderer `ipcRenderer.send`); the rest log "not available yet". */

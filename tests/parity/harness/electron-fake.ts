@@ -62,6 +62,8 @@ export interface FakeElectron {
   closeWindow(): void
   /** The `event` argument handlers receive. */
   ipcEvent(): unknown
+  /** Called after every recorded push (the harness answers the remote picker this way, as the renderer would). */
+  onPush(listener: (record: PushRecord) => void): void
 }
 
 const SAFE_MARK = 'parity-safe:'
@@ -91,6 +93,7 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
   const missing: string[] = []
   let window: FakeWindow | null = null
   const state: { dialogs: DialogScript } = { dialogs: {} }
+  const pushListeners: Array<(record: PushRecord) => void> = []
 
   class FakeWebContents {
     readonly id = 1
@@ -99,12 +102,14 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
       if (this.destroyed) return
       // Structured clone, as Electron's IPC does: a payload object mutated
       // after the send must not change what the renderer received.
-      pushes.push({
+      const record: PushRecord = {
         seq: pushes.length + 1,
         t: Date.now() - env.startedAt,
         channel,
         args: args.map((a) => (a === undefined ? a : structuredClone(a))),
-      })
+      }
+      pushes.push(record)
+      for (const listener of pushListeners) listener(record)
     }
     isDestroyed(): boolean { return this.destroyed }
     isLoading(): boolean { return false }
@@ -288,6 +293,9 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
     },
     ipcEvent(): unknown {
       return { sender: window?.webContents ?? null, senderFrame: null, processId: 1, frameId: 1 }
+    },
+    onPush(listener: (record: PushRecord) => void): void {
+      pushListeners.push(listener)
     },
   }
 }

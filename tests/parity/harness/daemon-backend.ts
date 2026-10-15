@@ -1,5 +1,6 @@
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs'
+import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -163,9 +164,95 @@ async function killTree(child: ChildProcess, exited: () => number | null): Promi
   while (exited() === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
 }
 
+/**
+ * The renderer's daemon-side picker, as the harness answers it: the
+ * scenario's native dialog script decides (what the user would pick there),
+ * so one scenario drives both a native dialog (local, embedded) and the
+ * picker (remote). Answered with REMOTE_PICKER_RESPOND, as the renderer does.
+ */
+function answerRemotePicker(electron: FakeElectron): void {
+  electron.onPush((push) => {
+    if (push.channel !== 'adf:remote:picker-request') return
+    const request = push.args[0] as { requestId: string; kind: 'open-adf' | 'folder' | 'save-adf'; title: string }
+    let answer: unknown = null
+    if (request.kind === 'save-adf') {
+      const saved = electron.dialogs.showSaveDialog?.({ title: request.title }) ?? { canceled: true }
+      if (!saved.canceled && saved.filePath) {
+        const file = saved.filePath.replace(/\\/g, '/')
+        const slash = file.lastIndexOf('/')
+        // The native save dialog asked before it returned an existing file.
+        answer = { directory: saved.filePath.slice(0, slash), name: file.slice(slash + 1).replace(/\.adf$/i, ''), replace: true }
+      }
+    } else {
+      const opened = electron.dialogs.showOpenDialog?.({ title: request.title, properties: [request.kind === 'folder' ? 'openDirectory' : 'openFile'] }) ?? { canceled: true, filePaths: [] }
+      if (!opened.canceled && opened.filePaths[0]) answer = { path: opened.filePaths[0] }
+    }
+    const respond = electron.handlers.get('adf:remote:picker-respond')
+    void Promise.resolve(respond?.(electron.ipcEvent(), request.requestId, answer)).catch(() => {})
+  })
+}
+
 export interface DaemonBackendOptions {
   /** Default `built` (out/main/daemon.js). `source` runs src/main/daemon/index.ts through tsx: development loop only. */
   entry?: 'built' | 'source'
+  /**
+   * Remote mode (W4-B): Studio runs `mode: 'remote'` with the real remote
+   * connector (transport rule, handshake) and reaches the daemon through a
+   * loopback proxy that behaves like another machine's: it adds
+   * X-Forwarded-For (the daemon then treats no request as local) and strips
+   * X-ADF-Local-Proof. A proof seen by the proxy is a leak (Studio must
+   * never send one remotely). No interface but loopback is bound.
+   */
+  remote?: boolean
+}
+
+/** Header names the remote proxy drops on the way to the daemon. */
+const LOCAL_PROOF = 'x-adf-local-proof'
+/**
+ * The public name the remote proxy forwards as Host, as a TLS proxy or
+ * `tailscale serve` does; the daemon allows it through
+ * ADF_DAEMON_ALLOWED_HOSTS on its loopback bind (W4-B review).
+ */
+export const REMOTE_PROXY_HOST = 'adf-remote.parity.test'
+
+/**
+ * The "other machine": forwards every request to the daemon port, streaming
+ * both ways (the client event stream is SSE), as a reverse proxy on another
+ * host would. Records the requests that carried a local proof.
+ */
+async function startRemoteProxy(daemonPort: number): Promise<{ server: Server; port: number; proofsSeen: string[] }> {
+  const proofsSeen: string[] = []
+  const server = createHttpServer((req, res) => {
+    const headers = { ...req.headers }
+    if (headers[LOCAL_PROOF] !== undefined) {
+      proofsSeen.push(`${req.method} ${req.url}`)
+      delete headers[LOCAL_PROOF]
+    }
+    headers.host = REMOTE_PROXY_HOST
+    headers['x-forwarded-for'] = '198.51.100.7'
+    const upstream = httpRequest({ host: '127.0.0.1', port: daemonPort, method: req.method, path: req.url, headers }, (answer) => {
+      res.writeHead(answer.statusCode ?? 502, answer.headers)
+      // PARITY_REMOTE_STREAM_DELAY_MS: the event stream arrives late, as over a slow link, while
+      // requests answer at once (W4-B review: install answers must wait for their pushes).
+      const delay = Number(process.env.PARITY_REMOTE_STREAM_DELAY_MS) || 0
+      if (delay > 0 && /\/events(\?|$)/.test(req.url ?? '')) {
+        let chain = Promise.resolve()
+        answer.on('data', (chunk: Buffer) => { chain = chain.then(() => new Promise<void>((r) => setTimeout(() => { if (!res.destroyed) res.write(chunk); r() }, delay))) })
+        answer.on('end', () => { void chain.then(() => res.end()) })
+        return
+      }
+      answer.pipe(res)
+    })
+    upstream.on('error', () => {
+      if (!res.headersSent) res.writeHead(502)
+      res.end()
+    })
+    req.pipe(upstream)
+    res.on('close', () => upstream.destroy())
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', () => done()))
+  const address = server.address()
+  return { server, port: typeof address === 'object' && address ? address.port : 0, proofsSeen }
 }
 
 /** The daemon backend's booted form: also lets a test kill and restart the daemon child. */
@@ -187,7 +274,7 @@ export type DaemonParityBackend = ParityBackend & { boot(env: ParityEnv, electro
 
 export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityBackend {
   return {
-    name: 'daemon',
+    name: options.remote ? 'remote' : 'daemon',
     async boot(env, electron) {
       if ((options.entry ?? 'built') === 'built' && !existsSync(DAEMON_BUNDLE)) {
         throw new Error(`parity harness: ${DAEMON_BUNDLE} is missing; build it first (npx electron-vite build)`)
@@ -213,6 +300,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
           ADF_DAEMON_PIDFILE: join(outside, 'daemon.pid'),
           ADF_DAEMON_TOKEN: token,
           ADF_DAEMON_STARTED_BY: 'studio',
+          ...(options.remote ? { ADF_DAEMON_ALLOWED_HOSTS: REMOTE_PROXY_HOST } : {}),
           ADF_TEST_SEAMS: '1',
           ADF_COMPUTE: 'fake',
           ADF_TEST_KEYCHAIN_FILE: keychainFile,
@@ -255,6 +343,16 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
 
       let daemon = await startChild()
       const pids: Array<number | undefined> = [daemon.child.pid]
+      let proxy: Awaited<ReturnType<typeof startRemoteProxy>> | null = null
+      if (options.remote) {
+        try {
+          proxy = await startRemoteProxy(port)
+          env.allowPort(proxy.port)
+        } catch (err) {
+          await killTree(daemon.child, daemon.exited)
+          throw err
+        }
+      }
 
       let handle: import('../../../src/main/backend/daemon-mode/index').DaemonModeHandle
       let leases: LeaseModule
@@ -265,12 +363,25 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
         installEnvironmentStubs(electron, resources)
         const daemonMode = (await import(/* @vite-ignore */ srcPath('main/backend/daemon-mode/index.ts'))) as DaemonModeModule
         leases = (await import(/* @vite-ignore */ srcPath('main/runtime/agent-lease.ts'))) as LeaseModule
+        let connect: import('../../../src/main/backend/daemon-mode/connection').DaemonConnector = Object.assign(
+          async () => ({ baseUrl: url, logFile, description: `the parity daemon pid ${daemon.child.pid} on ${url}`, source: { token: () => token } }),
+          { logFile })
+        if (proxy) {
+          // The real remote connector, on a studio-backend.json config whose token is "safe:" in a stand-in codec.
+          const remoteConnector = (await import(/* @vite-ignore */ srcPath('main/backend/daemon-mode/remote/connector.ts'))) as typeof import('../../../src/main/backend/daemon-mode/remote/connector')
+          const codec = { available: () => true, encrypt: (p: string) => `safe:${Buffer.from(p).toString('base64')}`, decrypt: (s: string) => Buffer.from(s.slice(5), 'base64').toString() }
+          connect = remoteConnector.remoteDaemonConnector({
+            v: 1, mode: 'remote', keepDaemonRunning: false,
+            remote: { url: `http://127.0.0.1:${proxy.port}`, token: codec.encrypt(token), allowInsecureHttp: false },
+          }, codec)
+        }
         handle = daemonMode.registerDaemonModeHandlers({
-          mode: 'local',
+          mode: proxy ? 'remote' : 'local',
           userDataDir: env.userDataDir,
-          connect: Object.assign(
-            async () => ({ baseUrl: url, logFile, description: `the parity daemon pid ${daemon.child.pid} on ${url}`, source: { token: () => token } }),
-            { logFile }),
+          connect,
+          // Remote: the OAuth relay listens on 127.0.0.2, as on another computer's loopback (the
+          // daemon's callback server holds 127.0.0.1); the fake MCP server's https page is on 127.0.0.1.
+          ...(proxy ? { remoteOAuth: { bindHost: '127.0.0.2', allowPage: (url: URL) => url.hostname === '127.0.0.1' } } : {}),
           // The OS keychain's shared owner-phrase entry is the test keychain file here, as for the daemon child.
           sharedMnemonic: () => ({
             read: () => {
@@ -283,12 +394,16 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
             openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },
           },
         })
+        if (proxy) answerRemotePicker(electron)
         electron.openWindow()
         if (!(await handle.ready)) throw new Error('parity harness: Studio daemon mode could not connect to the daemon child')
         booted = true
       } finally {
         // Whatever failed after the child started, the child goes with it.
-        if (!booted) await killTree(daemon.child, daemon.exited)
+        if (!booted) {
+          await killTree(daemon.child, daemon.exited)
+          proxy?.server.close()
+        }
       }
 
       const known = () => pids.filter((p): p is number => p !== undefined)
@@ -309,8 +424,13 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
             await leases.resetProcessAgentLeases()
           } finally {
             await killTree(daemon.child, daemon.exited)
+            if (proxy) {
+              proxy.server.closeAllConnections()
+              await new Promise<void>((done) => proxy!.server.close(() => done()))
+            }
           }
           leaks = await releaseRunResources(resources, env)
+          if (proxy && proxy.proofsSeen.length > 0) leaks.push(`remote mode sent the local proof to the daemon: ${proxy.proofsSeen.join(', ')}`)
           if (daemon.exited() === null) leaks.push(`daemon child pid ${daemon.child.pid} still running after taskkill`)
           // Debugging aid: PARITY_DAEMON_LOG_DIR=<dir> keeps a copy of each run's daemon log.
           if (process.env.PARITY_DAEMON_LOG_DIR) {
@@ -323,7 +443,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
         // The daemon's compute calls are inside the child (ADF_COMPUTE=fake); none reach this process.
         computeCalls: () => resources.compute.calls,
         normalization: () => ({
-          ports: [{ value: String(port), name: 'DAEMON_PORT' }],
+          ports: [{ value: String(port), name: 'DAEMON_PORT' }, ...(proxy ? [{ value: String(proxy.port), name: 'REMOTE_PROXY_PORT' }] : [])],
           pids: known().map((value, i) => ({ value, name: i === 0 ? 'pid:daemon' : `pid:daemon#${i + 1}` })),
           named: [
             ...known().map((p, i) => ({ value: `adf-scratch-${p}`, name: i === 0 ? 'scratch-root:daemon' : `scratch-root:daemon#${i + 1}` })),

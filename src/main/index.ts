@@ -19,6 +19,7 @@ import { shutdownSandboxHosts } from './runtime/sandbox-host'
 import { getUserDataPath } from './utils/user-data-path'
 import { backendConfigPath, resolveBootBackend, type BackendSettingsStore } from './backend/backend-config'
 import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/backend-settings-ipc'
+import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
@@ -285,7 +286,8 @@ if (!instanceId) {
   } else {
     app.on('second-instance', (_event, argv) => {
       const secondAdfArg = argv.find((arg) => arg.endsWith('.adf') && !arg.startsWith('-'))
-      if (secondAdfArg) requestOpenFile(secondAdfArg)
+      // The OS handed this path: remote mode may read and upload it (local-open-grants.ts).
+      if (secondAdfArg) { grantLocalOpen(secondAdfArg); requestOpenFile(secondAdfArg) }
       else showMainWindow()
     })
   }
@@ -335,6 +337,7 @@ function requestOpenFile(filePath: string): void {
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!filePath.endsWith('.adf')) return
+  grantLocalOpen(filePath)
   requestOpenFile(filePath)
 })
 
@@ -352,7 +355,10 @@ ipcMain.handle(IPC.OPEN_FILE_GET_PENDING, () => {
 const adfArg = process.argv.find(
   (arg) => arg.endsWith('.adf') && !arg.startsWith('-')
 )
-if (adfArg) fileToOpen = adfArg
+if (adfArg) {
+  grantLocalOpen(adfArg)
+  fileToOpen = adfArg
+}
 
 function getOverlayColors(): { color: string; symbolColor: string } {
   return nativeTheme.shouldUseDarkColors
@@ -613,6 +619,7 @@ app.whenReady().then(async () => {
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
     daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
     window: () => mainWindow,
+    remoteUrl: () => backendStore?.config().remote.url ?? backend.config.remote.url,
     relaunch: (target) => {
       switchingTo = target
       relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)

@@ -56,20 +56,33 @@ describe('stored values with a remote daemon', () => {
     }
   })
 
-  it('each answers with the sentence and asks the daemon nothing', async () => {
+  it('each answers without a value and never asks for one', async () => {
     await handle.session.openFile(FILE, async () => AGENT)
     daemon.requests.length = 0
+    daemon.routes.set(`GET /agents/${AGENT}/identity`, ({ query }) => ({ purposes: query.prefix === 'app:token' ? ['app:token'] : [] }))
     expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })).toEqual({ value: null, reason: REMOTE_VALUES_UNSUPPORTED })
-    await expect(invoke(IPC.IDENTITY_GET, { purpose: 'app:token' })).rejects.toThrow(REMOTE_VALUES_UNSUPPORTED)
+    // IDENTITY_GET: the placeholder for a stored value, null for none (W4-B review: a form that saves what it read keeps the value).
+    expect(await invoke(IPC.IDENTITY_GET, { purpose: 'app:token' })).toBe('__redacted__')
+    expect(await invoke(IPC.IDENTITY_GET, { purpose: 'app:other' })).toBeNull()
     expect(await invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath: FILE, providerId: 'p1' })).toEqual({ credentials: {}, error: REMOTE_VALUES_UNSUPPORTED })
+    expect(daemon.requests.map((r) => r.path)).toEqual([`/agents/${AGENT}/identity`, `/agents/${AGENT}/identity`])
+  })
+
+  it('IDENTITY_SET keeps the stored value for the untouched placeholder and refuses an edited one', async () => {
+    await handle.session.openFile(FILE, async () => AGENT)
+    daemon.requests.length = 0
+    expect(await invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: '__redacted__' })).toBeUndefined()
+    await expect(invoke(IPC.IDENTITY_SET, { purpose: 'app:token', value: '__redacted_' })).rejects.toThrow(/shown as a placeholder/)
     expect(daemon.requests).toEqual([])
   })
 
-  it('a remote request never carries a local proof', async () => {
+  it('a remote request never carries a local proof; owner import does not even send the phrase (W4-B)', async () => {
     daemon.routes.set('POST /identity/import', () => ({ status: 403, body: { error: 'refused', code: 'loopback_only' } }))
-    await invoke(IPC.IDENTITY_OWNER_IMPORT, 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about')
-    const sent = daemon.requests.find((r) => r.path === '/identity/import')
-    expect(sent).toBeTruthy()
-    expect(Object.keys(sent!.headers).map((k) => k.toLowerCase())).not.toContain('x-adf-local-proof')
+    const answer = await invoke(IPC.IDENTITY_OWNER_IMPORT, 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about') as { success: boolean; error: string }
+    expect(answer.success).toBe(false)
+    expect(answer.error).toMatch(/changed on its machine: run `adf identity restore`/)
+    expect(daemon.requests.find((r) => r.path === '/identity/import')).toBeUndefined()
+    // Every request this remote session made carries no proof (tests/backend/remote-connector.test.ts covers the local-only routes).
+    for (const request of daemon.requests) expect(Object.keys(request.headers).map((k) => k.toLowerCase())).not.toContain('x-adf-local-proof')
   })
 })

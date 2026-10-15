@@ -433,6 +433,19 @@ describe('remote target', () => {
     expect(report.items.map((i) => i.id)).toEqual(['client-settings'])
     expect(studioTokens(SUBS[0]).exists()).toBe(true)
   })
+
+  it('never moves local credentials (W4-B): identity, MCP sign-ins and sessions stay where they are; the dialog plans client keys only', async () => {
+    writeStudioIdentity()
+    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
+    const settingsBefore = JSON.parse(readFileSync(join(dir, 'adf-settings.json'), 'utf-8'))
+    expect((await planHandover('remote', deps())).map((i) => i.id)).toEqual(['client-settings'])
+    await runHandover('remote', deps())
+    const settingsAfter = JSON.parse(readFileSync(join(dir, 'adf-settings.json'), 'utf-8'))
+    for (const key of ['ownerMnemonic', 'runtimePrivateKey', 'runtimeDid']) expect(settingsAfter[key]).toEqual(settingsBefore[key])
+    expect(studioTokens(SUBS[0]).exists()).toBe(true)
+    expect(daemonMcp().listServerUrls()).toEqual([])
+  })
 })
 
 // --- review fixes: the marker only flips when everything is back -------------------------
