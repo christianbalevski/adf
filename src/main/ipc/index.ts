@@ -12,6 +12,7 @@ import {
   McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, mcpAttachEntry, validateMcpArgs,
 } from './mcp-adapter-args'
 import { initApplicationMenu, recordRecentFile } from '../menu'
+import { recentFileSweepDirs } from '../utils/boot-wal-sweep'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
 import { identityDrafts } from '../services/identity-drafts'
@@ -2055,13 +2056,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           try { cleanupWalFilesRecursive(resolve(dir), sweepDepth, openDbPaths) }
           catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
         }
-        const recentDirs = new Set<string>()
-        try {
-          const recent = settings.get('recentFiles')
-          if (Array.isArray(recent)) {
-            for (const f of recent) if (typeof f === 'string' && f) recentDirs.add(resolve(dirname(f)))
-          }
-        } catch { /* ignore */ }
+        let recentDirs: string[] = []
+        try { recentDirs = recentFileSweepDirs(settings.get('recentFiles')) } catch { /* ignore */ }
         for (const dir of recentDirs) {
           try { AdfDatabase.cleanupOrphanedWalFiles(dir, openDbPaths) }
           catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
