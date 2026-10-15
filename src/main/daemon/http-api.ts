@@ -55,6 +55,7 @@ import { convertOwnLegacyPassword } from '../services/envelope-actions'
 import { readFileProviderConfig } from './path-agent-ops'
 import { parseBaseRevision } from '../runtime/resource-revisions'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
+import { SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -672,15 +673,22 @@ function restoreRedactedProviderKeys(incoming: unknown, existing: unknown): { va
   const value = incoming.map((entry) => {
     if (!entry || typeof entry !== 'object') return entry
     const provider = entry as Record<string, unknown>
-    if (provider.apiKey !== REDACTED_API_KEY) return provider
     const match = existingProviders.find(
       (candidate) => !!candidate && typeof candidate === 'object' && (candidate as Record<string, unknown>).id === provider.id
     ) as Record<string, unknown> | undefined
+    const sameEndpoint = !!match && (match.baseUrl ?? '') === (provider.baseUrl ?? '') && (match.type ?? '') === (provider.type ?? '')
+    const name = typeof provider.name === 'string' && provider.name ? provider.name : String(provider.id)
+    const changedEndpoint = `The address or type of provider "${name}" changed, so its stored API key is not sent to the new endpoint. Enter the API key again.`
+    if (provider.apiKey !== REDACTED_API_KEY) {
+      // A secret-store entry with no key is filled from the vault by id
+      // (FileSettingsStore.withVaultKey): the same rule applies to it.
+      const vaultFilled = provider.apiKeyStorage === SECRET_STORE_KEY_STORAGE && !provider.apiKey
+      if (vaultFilled && match && typeof match.apiKey === 'string' && match.apiKey && !sameEndpoint) refused ??= changedEndpoint
+      return provider
+    }
     if (match && typeof match.apiKey === 'string') {
-      const sameEndpoint = (match.baseUrl ?? '') === (provider.baseUrl ?? '') && (match.type ?? '') === (provider.type ?? '')
       if (sameEndpoint) return { ...provider, apiKey: match.apiKey }
-      const name = typeof provider.name === 'string' && provider.name ? provider.name : String(provider.id)
-      refused ??= `The address or type of provider "${name}" changed, so its stored API key is not sent to the new endpoint. Enter the API key again.`
+      refused ??= changedEndpoint
       return provider
     }
     const { apiKey: _apiKey, ...rest } = provider

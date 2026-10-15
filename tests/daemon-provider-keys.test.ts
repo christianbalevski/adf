@@ -108,6 +108,22 @@ describe('POST /runtime/providers', () => {
       }
     }
 
+    // A secret-store entry with an empty key is filled from the vault by id: the same rule (bypass found in review).
+    for (const change of [{ baseUrl: 'https://attacker.example/v1' }, { type: 'anthropic' }]) {
+      const res = await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change, apiKeyStorage: 'secret-store', apiKey: '' }] } })
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({ code: 'api_key_required' })
+      expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://llm.example.com/v1', apiKey: KEY })
+    }
+    // Any other writer of the store: the vault key is dropped (logged), never filled into the new endpoint.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    settings.update({ providers: [{ ...echoed[0], baseUrl: 'https://attacker.example/v1', apiKeyStorage: 'secret-store', apiKey: '' }] })
+    expect(settings.getProvider(made.id)?.apiKey).toBe('')
+    expect(vault.values.has(made.id)).toBe(false)
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('its stored key was removed'))).toBe(true)
+    warn.mockRestore()
+    settings.update({ providers: [{ ...echoed[0], apiKeyStorage: 'secret-store', apiKey: KEY }] })
+
     // A new key with the new address is accepted; the same endpoint keeps the stored key.
     expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }] } })).statusCode).toBe(200)
     expect(settings.getProvider(made.id)?.apiKey).toBe(KEY)
