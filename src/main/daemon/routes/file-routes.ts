@@ -28,6 +28,7 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { withSource } from '../../runtime/execution-context'
+import { fileRevisionKey, observeRevision } from '../../runtime/resource-revisions'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
 import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
@@ -268,13 +269,18 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       return reply.code(413).send({ error: `${path} is ${found.meta.size} bytes, more than maxBytes (${maxBytes})`, code: 'too_large', size: found.meta.size, maxBytes })
     }
     let bytes: Buffer | null
+    let revision: number | undefined
     if (found.agent.workspace) {
       bytes = found.agent.workspace.readFileBuffer(path)
+      if (bytes) revision = observeRevision(found.agent.workspace, fileRevisionKey(path), bytes).revision
     } else {
       const file = runtime.getAgentFile(found.agent.ref.id, path)
       bytes = file ? (file.content_base64 !== undefined ? Buffer.from(file.content_base64, 'base64') : Buffer.from(file.content ?? '', 'utf-8')) : null
+      revision = file?.revision
     }
     if (!bytes) return notFound(reply, `Unknown file "${path}"`)
+    // W3-F: the revision a write of these bytes saves over (PUT …/files/content baseRevision).
+    if (revision !== undefined) reply.header('X-ADF-Revision', String(revision))
     return reply
       .header('Content-Type', found.meta.mime_type || 'application/octet-stream')
       .header('Content-Disposition', attachment(basename(path)))

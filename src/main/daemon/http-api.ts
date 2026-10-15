@@ -53,6 +53,7 @@ import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import { FileOpError, leaseHolderElsewhere, requireAdfPath } from './file-ops'
 import { convertOwnLegacyPassword } from '../services/envelope-actions'
 import { readFileProviderConfig } from './path-agent-ops'
+import { parseBaseRevision } from '../runtime/resource-revisions'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
 
 export interface DaemonHttpApiOptions {
@@ -419,6 +420,8 @@ interface TriggerBody {
 
 interface ContentBody {
   content?: string
+  /** W3-F: write only over this revision (else 409 stale_revision). */
+  baseRevision?: number
 }
 
 interface FileWriteBody {
@@ -428,7 +431,30 @@ interface FileWriteBody {
   mimeType?: string
   mime_type?: string
   protection?: FileProtectionLevel
+  baseRevision?: number
 }
+
+/** W3-F: a write's base revision query parameter (the config body is the config itself). */
+interface BaseRevisionQuery {
+  baseRevision?: string
+}
+
+/**
+ * The base revision of a write (W3-F): `If-Match`, else the `baseRevision`
+ * query parameter, else the body's `baseRevision`. `undefined`: none sent
+ * (last write wins); `null`: one was sent and is not a revision.
+ */
+function requestBaseRevision(request: { headers: Record<string, string | string[] | undefined>; query?: unknown; body?: unknown }): number | undefined | null {
+  const header = request.headers['if-match']
+  const fromHeader = parseBaseRevision(Array.isArray(header) ? header[0] : header)
+  if (fromHeader !== undefined) return fromHeader
+  const fromQuery = parseBaseRevision((request.query as BaseRevisionQuery | undefined)?.baseRevision)
+  if (fromQuery !== undefined) return fromQuery
+  const body = request.body
+  return body && typeof body === 'object' && !Array.isArray(body) ? parseBaseRevision((body as { baseRevision?: unknown }).baseRevision) : undefined
+}
+
+const BASE_REVISION_INVALID = 'baseRevision (or If-Match) must be a revision number from a read of this resource'
 
 interface FileRenameBody {
   oldPath?: string
@@ -1620,11 +1646,15 @@ export function createDaemonHttpApi(
     return runtime.getAgentConfig(request.params.id)
   })
 
-  server.put<{ Params: AgentIdParams; Body: AgentConfig }>('/agents/:id/config', async (request, reply) => {
+  server.put<{ Params: AgentIdParams; Body: AgentConfig; Querystring: BaseRevisionQuery }>('/agents/:id/config', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isRecord(request.body)) return badRequest(reply, 'Request body must be an agent config object.')
+    // The body is the config: its base revision comes as If-Match or ?baseRevision only.
+    const header = request.headers['if-match']
+    const baseRevision = parseBaseRevision(Array.isArray(header) ? header[0] : header) ?? parseBaseRevision(request.query.baseRevision)
+    if (baseRevision === null) return badRequest(reply, BASE_REVISION_INVALID)
     try {
-      return await runtime.setAgentConfig(request.params.id, request.body as AgentConfig)
+      return await runtime.setAgentConfig(request.params.id, request.body as AgentConfig, { baseRevision })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1661,11 +1691,13 @@ export function createDaemonHttpApi(
     return runtime.getAgentDocument(request.params.id)
   })
 
-  server.put<{ Params: AgentIdParams; Body: ContentBody }>('/agents/:id/document', async (request, reply) => {
+  server.put<{ Params: AgentIdParams; Body: ContentBody; Querystring: BaseRevisionQuery }>('/agents/:id/document', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.content !== 'string') return badRequest(reply, 'content is required')
+    const baseRevision = requestBaseRevision(request)
+    if (baseRevision === null) return badRequest(reply, BASE_REVISION_INVALID)
     try {
-      return runtime.setAgentDocument(request.params.id, request.body.content)
+      return runtime.setAgentDocument(request.params.id, request.body.content, { baseRevision })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1676,11 +1708,13 @@ export function createDaemonHttpApi(
     return runtime.getAgentMind(request.params.id)
   })
 
-  server.put<{ Params: AgentIdParams; Body: ContentBody }>('/agents/:id/mind', async (request, reply) => {
+  server.put<{ Params: AgentIdParams; Body: ContentBody; Querystring: BaseRevisionQuery }>('/agents/:id/mind', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (typeof request.body?.content !== 'string') return badRequest(reply, 'content is required')
+    const baseRevision = requestBaseRevision(request)
+    if (baseRevision === null) return badRequest(reply, BASE_REVISION_INVALID)
     try {
-      return runtime.setAgentMind(request.params.id, request.body.content)
+      return runtime.setAgentMind(request.params.id, request.body.content, { baseRevision })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -1724,7 +1758,7 @@ export function createDaemonHttpApi(
     return file
   })
 
-  server.put<{ Params: AgentIdParams; Querystring: FileContentQuery; Body: FileWriteBody }>('/agents/:id/files/content', async (request, reply) => {
+  server.put<{ Params: AgentIdParams; Querystring: FileContentQuery & BaseRevisionQuery; Body: FileWriteBody }>('/agents/:id/files/content', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const path = request.query.path
     if (!path) return badRequest(reply, 'path is required')
@@ -1732,12 +1766,15 @@ export function createDaemonHttpApi(
     if (typeof request.body?.content !== 'string' && typeof contentBase64 !== 'string') {
       return badRequest(reply, 'content or content_base64 is required')
     }
+    const baseRevision = requestBaseRevision(request)
+    if (baseRevision === null) return badRequest(reply, BASE_REVISION_INVALID)
     try {
       return runtime.writeAgentFile(request.params.id, path, {
         content: request.body.content,
         contentBase64,
         mimeType: request.body.mimeType ?? request.body.mime_type,
         protection: request.body.protection,
+        baseRevision,
       })
     } catch (err) {
       return handleRuntimeError(reply, err)
