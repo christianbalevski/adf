@@ -448,6 +448,94 @@ describe('remote target', () => {
   })
 })
 
+describe('the switch dialog\'s plan for every pair of modes (REM-19)', () => {
+  /** Studio holds an identity, a ChatGPT session and an MCP sign-in; the client keys are in adf-settings.json (beforeEach). */
+  function studioHoldsEverything(): void {
+    writeStudioIdentity()
+    studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
+    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+  }
+  const ids = (items: Array<{ id: string }>) => items.map((i) => i.id).sort()
+  /** What a boot handover actually changed. */
+  const changed = (report: Awaited<ReturnType<typeof runHandover>>) => report.items.filter((i) => ['moved', 'written', 'deleted'].includes(i.outcome)).map((i) => i.id).sort()
+
+  it('E→L: the client keys and everything Studio holds move to the daemon, exactly as the boot handover does', async () => {
+    studioHoldsEverything()
+    const plan = await planHandover('local', deps())
+    expect(ids(plan)).toEqual(['chatgpt', 'client-settings', 'mcp-oauth', 'owner-phrase', 'runtime-identity'])
+    expect(changed(await runHandover('local', deps()))).toEqual(ids(plan))
+  })
+
+  it('E→R and L→R: client keys only', async () => {
+    studioHoldsEverything()
+    expect(ids(await planHandover('remote', deps()))).toEqual(['client-settings'])
+    await runHandover('local', deps())
+    // The client keys already moved with the switch to local: nothing is left to move.
+    expect(ids(await planHandover('remote', deps()))).toEqual([])
+    expect(changed(await runHandover('remote', deps()))).toEqual([])
+  })
+
+  it('L→E: what the daemon holds for Studio moves back', async () => {
+    studioHoldsEverything()
+    await runHandover('local', deps())
+    const plan = await planHandover('embedded', deps())
+    expect(ids(plan)).toEqual(['chatgpt', 'client-settings', 'mcp-oauth', 'runtime-identity'])
+    expect(changed(await runHandover('embedded', deps()))).toEqual(ids(plan))
+  })
+
+  it('R→E after E→R: only the client keys; credentials stayed in Studio, so nothing "moves back"', async () => {
+    studioHoldsEverything()
+    await runHandover('remote', deps())
+    const plan = await planHandover('embedded', deps())
+    expect(ids(plan)).toEqual(['client-settings'])
+    expect(changed(await runHandover('embedded', deps()))).toEqual(['client-settings'])
+    expect(studioTokens(SUBS[0]).exists()).toBe(true)
+  })
+
+  it('R→E after E→L→R: what is in this computer\'s daemon stores comes back, as listed', async () => {
+    studioHoldsEverything()
+    await runHandover('local', deps())
+    await runHandover('remote', deps())
+    const plan = await planHandover('embedded', deps())
+    expect(ids(plan)).toEqual(['chatgpt', 'client-settings', 'mcp-oauth', 'runtime-identity'])
+    expect(changed(await runHandover('embedded', deps()))).toEqual(ids(plan))
+  })
+
+  it('R→L after E→R: exactly what moves from Studio to the local daemon', async () => {
+    studioHoldsEverything()
+    await runHandover('remote', deps())
+    const plan = await planHandover('local', deps())
+    expect(ids(plan)).toEqual(['chatgpt', 'mcp-oauth', 'owner-phrase', 'runtime-identity'])
+    expect(changed(await runHandover('local', deps()))).toEqual(ids(plan))
+  })
+
+  it('L→R→L: the runtime entry is current and nothing else is left in Studio, so nothing is listed and nothing changes', async () => {
+    studioHoldsEverything()
+    await runHandover('local', deps())
+    await runHandover('remote', deps())
+    const plan = await planHandover('local', deps())
+    expect(ids(plan)).toEqual([])
+    expect(changed(await runHandover('local', deps()))).toEqual([])
+  })
+
+  it('a missing record: the runtime entry is listed for deletion only while it is in the keychain', async () => {
+    studioHoldsEverything()
+    await runHandover('local', deps())
+    unlinkSync(join(dir, 'studio-handover.json'))
+    expect(ids(await planHandover('embedded', deps()))).toEqual(['client-settings', 'runtime-identity'])
+    expect(changed(await runHandover('embedded', deps()))).toEqual(['client-settings', 'runtime-identity'])
+    unlinkSync(join(dir, 'studio-handover.json'))
+    expect(ids(await planHandover('embedded', deps()))).toEqual([])
+  })
+
+  it('to local without a runtime identity in Studio: the runtime key is not listed (nothing is written)', async () => {
+    studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
+    const plan = await planHandover('local', deps())
+    expect(ids(plan)).toEqual(['chatgpt', 'client-settings'])
+    expect(changed(await runHandover('local', deps()))).toEqual(ids(plan))
+  })
+})
+
 // --- review fixes: the marker only flips when everything is back -------------------------
 
 describe('the way back to embedded (review fixes)', () => {

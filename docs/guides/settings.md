@@ -24,7 +24,7 @@ The first-party skill catalog is a default entry in **Settings → Skills**, fet
 
 ## Identity
 
-The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#owner-and-runtime-identity-app-level) for the full model.
+The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#the-three-identities) for the full model.
 
 ### Owner Identity
 
@@ -97,7 +97,7 @@ Setup:
 4. Select a model from the dropdown (e.g., `gpt-6-sol`, `gpt-5.6-luna`)
 
 Notes:
-- Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
+- Authentication is app-wide within Studio — all agents using this provider share the same session. An Embedded Studio and the daemon keep separate sessions; in Local daemon mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
@@ -117,7 +117,7 @@ Setup:
 5. Select a model from the dropdown (e.g., `grok-4.5`, `grok-4.3`)
 
 Notes:
-- Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
+- Authentication is app-wide within Studio — all agents using this provider share the same session. An Embedded Studio and the daemon keep separate sessions; in Local daemon mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - xAI decides which accounts are eligible for OAuth API tokens — if sign-in succeeds but requests fail with 403, check your subscription tier on xAI's side (or use an `openai-compatible` provider with a `console.x.ai` API key instead)
@@ -162,7 +162,7 @@ Sessions are **per-surface**: Studio and the daemon each own a token file and ne
 
 `<provider>` is `chatgpt-subscription` or `grok-subscription`.
 
-**Signing in to Studio does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case.
+**Signing in to an Embedded Studio does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case. When you switch Studio to the Local daemon backend, Studio moves its session file to `auth.daemon.json` (and back when you switch to Embedded), so one session follows the backend; see [Studio backend › What moves](studio-backend.md#what-moves-during-a-switch).
 
 **Why split them?** `safeStorage` is only callable from inside Electron, so anything it encrypts is opaque to a plain-Node daemon. Sharing one file would mean dropping Studio to an encryption scheme the daemon can also open — trading the OS keychain for a key file sitting beside the ciphertext. The split keeps Studio's keychain protection intact.
 
@@ -462,6 +462,10 @@ ADF Studio monitors directories for `.adf` files. When a new file appears in a t
 
 - **Start all** — Start all agents in a directory
 - **Stop all** — Stop all agents in a directory
+
+## Backend
+
+**Settings → Backend** chooses where agents run: **Embedded** (in Studio, the default), **Local daemon** (an ADF daemon on this computer that Studio starts or attaches to) or **Remote daemon** (a daemon on another computer, by URL and token). A change restarts Studio. The page also shows the daemon Studio uses (state, URL, pid, version, who started it), the setting **Keep the daemon running when Studio quits**, and the remote daemon's URL and token with **Test connection**. See [Studio backend](studio-backend.md).
 
 ## Application Settings
 

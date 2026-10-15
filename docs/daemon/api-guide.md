@@ -7,9 +7,11 @@ the flows. Every endpoint, parameter and response field is in the generated
 [`openapi.json`](openapi.json) (also served by the daemon at
 `GET /openapi.json`).
 
-The ADF CLI and the terminal app are clients of exactly this API
-([`src/main/tui/api/client.ts`](../../src/main/tui/api/client.ts) is a complete
-typed client), so anything they do, your client can do.
+The ADF CLI, the terminal app and ADF Studio in daemon mode are clients of
+exactly this API
+([`src/shared/daemon-client/client.ts`](../../src/shared/daemon-client/client.ts)
+is a complete typed client, shared by the terminal app and Studio), so
+anything they do, your client can do.
 
 - [Quick start](#quick-start)
 - [Base URL and authentication](#base-url-and-authentication)
@@ -137,6 +139,12 @@ otherwise), on top of the token:
   `/identity/lock`, `/identity/confirm-backup` (they move the seed phrase or
   passphrase, or change identity state)
 - `POST /daemon/shutdown`
+- `POST /client/sessions/:id/quit` with `stopDaemon` and
+  `POST /client/reload-credentials` (Studio's quit and backend switch)
+- `POST /identity/import`, `POST /agents/:id/identity/reveal` and
+  `POST /files/agent/identity/reveal`: these also require the local proof
+  (below) in every mode, so a token forwarded to the loopback port
+  (`ssh -L`, socat, a container port map) is not enough
 
 "Local" means the TCP connection comes from loopback **and** the request
 carries no proxy header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,
@@ -514,8 +522,9 @@ export async function follow(onEvent: (e: UmbilicalEvent) => void, resync: () =>
 }
 ```
 
-(Add an idle timer that aborts the fetch in production; the terminal app's
-[`sse.ts`](../../src/main/tui/api/sse.ts) is a complete implementation.)
+(Add an idle timer that aborts the fetch in production;
+[`src/shared/daemon-client/sse.ts`](../../src/shared/daemon-client/sse.ts),
+which the terminal app and Studio use, is a complete implementation.)
 
 For one agent there is also a pull alternative, `GET
 /agents/:id/umbilical/events?since_seq=`, over an opt-in in-memory window
@@ -789,7 +798,7 @@ from Fastify as `{statusCode, code, error, message}`.
 | `403` | Refused by a guard or policy | `host_not_allowed`, `cross_origin`, `loopback_only`, `setting_not_writable`, `wrong_passphrase`, `wrong_password`, `AGENT_REVIEW_REQUIRED` |
 | `404` | Unknown agent (or not loaded), loop, task, file, template, ask | `not_found`, `ask_not_found`, `template_missing` |
 | `405` | Read-only settings store, operation not available | `read_only`, `not_supported` |
-| `409` | Valid, but not in the current state | `credentials_locked` (also a legacy password-locked agent), `ambiguous_agent`, `identity_not_ready`, `identity_exists`, `owner_mismatch`, `name_taken`, `secret_store_locked`, `nothing_to_unlock`, and `conflict` for the rest: task not pending, loop mid-turn or disabled, loops locked by the owner, agent not running |
+| `409` | Valid, but not in the current state | `credentials_locked` (also a legacy password-locked agent), `ambiguous_agent`, `identity_not_ready`, `identity_exists`, `owner_mismatch`, `name_taken`, `secret_store_locked`, `nothing_to_unlock`, `agent_leased` (another runtime on this machine runs the file), `stale_revision` (see [Concurrency](#concurrency)), `duplicate_agent_id` (another loaded file has the same agent id), `agent_not_running` (a runtime action on an open document), `file_moving`, and `conflict` for the rest: task not pending, loop mid-turn or disabled, loops locked by the owner |
 | `422` | Accepted input, but the result could not be produced | `template_unreviewed`, `load_failed` |
 | `502` | An upstream model call failed | (compaction) |
 | `503` | That service is not configured on this daemon | `unavailable` |
@@ -797,29 +806,47 @@ from Fastify as `{statusCode, code, error, message}`.
 
 ## Concurrency
 
-There are no ETags or `If-Match`: the last write wins. The daemon is shared by
-the terminal app, Studio-style clients, scripts and the agents themselves (an
-agent can change its own config with `sys_update_config` and its loops with
-`loop_manage`). So:
+The daemon is shared by the terminal app, ADF Studio, scripts and the agents
+themselves (an agent can change its own config with `sys_update_config` and
+its loops with `loop_manage`). So:
 
 - Prefer the targeted routes (loops, timers, channels, MCP servers, providers,
   credentials, state, files, meta). Each changes one thing, server-side, in one
   step.
-- `PUT /agents/:id/config` replaces the whole config. Re-read it right before,
-  change only the fields you mean to, and write it back at once. Owner writes
-  are not checked against the agent's own locks (`locked`, `locked_fields`);
-  apply those rules in your UI if you show them.
+- `PUT /agents/:id/config` replaces the whole config. Owner writes are not
+  checked against the agent's own locks (`locked`, `locked_fields`); apply
+  those rules in your UI if you show them.
 - After a `202` or a write, re-read what you display (or follow events) rather
   than assuming your local copy is current.
 - `PATCH /settings` and `PUT /settings/:key` replace each named key's whole
   value. Change lists that have their own routes (tracked folders, providers)
   through those routes.
 
+**Revisions.** The config, the document and every internal file have a
+revision. `GET /agents/:id/config`, `/document`, `/mind` and
+`/files/content` answer `revision` (`GET …/files/raw` sends `X-ADF-Revision`).
+Send it back as the base of a write (`If-Match: <revision>`, `?baseRevision=`,
+or `baseRevision` in the body of `PUT …/files/content`). If someone else wrote
+in between, the write answers `409 stale_revision` with the current
+`revision`, the `writer` (`agent`, `client` with its name, or `cli`) and
+writes nothing; show the user both versions. A write without a base replaces
+whatever is there, as before. `mustNotExist` (or `If-None-Match: *`) on
+`PUT …/files/content` creates only. Details:
+[design D5.2](../design/daemon-backend.md#d52-revisions-and-write-conflicts-w3-f).
+
 ## Versioning and compatibility
 
 The API is not versioned by URL. `GET /runtime` returns `daemon.version` (the
 package version, or `null` when unknown), `node` and `platform`; `adf daemon
-status` shows it. `GET /openapi.json` is the contract of the running daemon.
+status` shows it. `GET /version` returns `version`, `clientApiVersion` (the
+version of the internal client-session routes), `settingsPath`, `dataDir`,
+`pid` and `startedBy` (`studio`, `cli` or `service`). `GET /openapi.json` is
+the contract of the running daemon.
+
+The routes tagged `Client (internal)` (`/client/*`, the two identity reveal
+routes) carry `x-adf-stability: internal`: they serve ADF Studio and the
+terminal app, may change in any release, and a client of them MUST check
+`clientApiVersion` first.
 
 Build clients to tolerate drift:
 

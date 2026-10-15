@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 284 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 315 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -14,9 +14,9 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 
 **Errors** are JSON `{ "error": "<message>", "code": "<code>" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ "statusCode": 400, "code": "FST_ERR_CTP_EMPTY_JSON_BODY", "error": "Bad Request", "message": "…" }`: send no Content-Type (or `{}`) on bodiless POSTs.
 
-**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take "local" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (0600), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy.
+**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take "local" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import` and the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.
 
-**Secrets.** Credential and identity reads return metadata only; stored values and key material never leave the daemon. The owner seed phrase appears in exactly one response (`POST /identity/create`).
+**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).
 
 **Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).
 
@@ -25,7 +25,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Health](#tag-health) (1)
 - [Daemon](#tag-daemon) (3)
 - [Events](#tag-events) (2)
-- [Agents](#tag-agents) (30)
+- [Agents](#tag-agents) (33)
 - [Loops](#tag-loops) (8)
 - [Chat](#tag-chat) (7)
 - [Files](#tag-files) (15)
@@ -34,21 +34,22 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Credentials](#tag-credentials) (10)
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (14)
-- [Providers & sign-in](#tag-providers-sign-in) (20)
+- [Providers & sign-in](#tag-providers-sign-in) (21)
 - [Tasks & approvals](#tag-tasks-approvals) (12)
 - [Timers](#tag-timers) (4)
-- [Templates](#tag-templates) (12)
+- [Templates](#tag-templates) (14)
 - [Tracked folders](#tag-tracked-folders) (6)
 - [Runtime](#tag-runtime) (14)
 - [Network](#tag-network) (14)
-- [Compute](#tag-compute) (14)
-- [Admin](#tag-admin) (12)
+- [Compute](#tag-compute) (16)
+- [Admin](#tag-admin) (16)
 - [Settings](#tag-settings) (4)
-- [Fleet](#tag-fleet) (9)
+- [Fleet](#tag-fleet) (13)
 - [Dashboard](#tag-dashboard) (3)
 - [Registries](#tag-registries) (6)
 - [Jobs](#tag-jobs) (2)
-- [Agent files](#tag-agent-files) (25)
+- [Agent files](#tag-agent-files) (28)
+- [Client (internal)](#tag-client-internal) (12)
 - [Schemas](#schemas)
 
 <a id="tag-health"></a>
@@ -309,7 +310,7 @@ Load, start, stop and inspect agents: status, config, tools, metadata, local tab
 | POST | [`/agents/autostart`](#op-autostartagents) | Scan folders and autostart their reviewed agents |
 | GET | [`/agents/review`](#op-getagentreview) | Review information for an .adf file |
 | POST | [`/agents/review/accept`](#op-acceptagentreview) | Mark an .adf file's agent as reviewed |
-| GET | [`/agents/{id}`](#op-getagent) | A loaded agent's reference (id, file, config) |
+| GET | [`/agents/{id}`](#op-getagent) | A running agent's or open document's reference (id, file, config) |
 | GET | [`/agents/{id}/status`](#op-getagentstatus) | Agent runtime status |
 | GET | [`/agents/{id}/vitals`](#op-getagentvitals) | Agent vitals |
 | GET | [`/agents/{id}/activity`](#op-getagentactivity) | Agent activity |
@@ -333,6 +334,9 @@ Load, start, stop and inspect agents: status, config, tools, metadata, local tab
 | DELETE | [`/agents/{id}/logs`](#op-clearagentlogs) | Clear the agent's logs |
 | GET | [`/agents/{id}/logs/after`](#op-getagentlogsafter) | Log rows after an id (tail) |
 | GET | [`/agents/{id}/usage`](#op-getagentusage) | Token usage from the agent's persisted loop rows |
+| GET | [`/agents/{id}/header`](#op-getagentheader) | Header read: document, config, status text |
+| GET | [`/agents/{id}/batch`](#op-getagentbatch) | Batch read: header, token figures and the last 200 chat entries |
+| POST | [`/agents/{id}/checkpoint`](#op-checkpointagent) | Fold the WAL into the .adf (save) |
 
 <a id="op-listagents"></a>
 
@@ -477,7 +481,8 @@ Example 200 (`application/json`):
       "string"
     ],
     "metadata": {}
-  }
+  },
+  "running": true
 }
 ```
 
@@ -487,9 +492,15 @@ Example 200 (`application/json`):
 
 **Create an agent from a template, then load it**
 
-Studio's "new agent", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load.
+Studio's "new agent", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load. With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).
 
 Operation `createAgent` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Client-Session` | header | string |  | The requesting client session (POST /client/sessions). With load: false it holds the new file as an open document. |
 
 **Request body** (optional): [CreateAgentBody](#schema-createagentbody)
 
@@ -501,7 +512,9 @@ Operation `createAgent` · bearer token
 | `provider` | string |  | App provider id (must exist in settings.providers) |
 | `model` | string |  |  |
 | `start` | boolean |  | Default `false`. |
-| `identityDraftId` | string |  | An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity. |
+| `identityDraftId` | string |  | An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity, reported in `identityDraft` and `warnings`. |
+| `load` | boolean |  | false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document. Default `true`. |
+| `replace` | boolean |  | true: a file of that name exists and the user chose to replace it (Studio's save dialog asked): the new agent is written over it. Refused (409 `name_taken`) while that file runs or is open. Without the owner identity the agent is still made, its identity not sealed to an owner; `warnings` says so. Default `false`. |
 
 ```json
 {
@@ -515,10 +528,11 @@ Operation `createAgent` · bearer token
 
 | Status | Body | Description |
 |---|---|---|
-| 201 | [CreateAgentResponse](#schema-createagentresponse) | Created (and loaded; started when `start`) |
+| 201 | [CreateAgentResponse](#schema-createagentresponse) | Created: loaded (started when `start`), left closed (load: false), or held open (load: false + holder) |
 | 400 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Invalid field (`bad_request`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | X-ADF-Client-Session names no live client session |
 | 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Owner identity not ready (`identity_not_ready`) or the name is taken in that directory (`name_taken`) |
 | 422 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | The template was refused (`template_missing`, `template_unreviewed`, `template_invalid`) or the new file could not load (`load_failed`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
@@ -532,6 +546,7 @@ Example 201 (`application/json`):
   "name": "agent-1",
   "filePath": "/home/me/Documents/adf-agents/agent-1.adf",
   "did": "did:key:z6Mk…",
+  "loaded": true,
   "started": true
 }
 ```
@@ -602,6 +617,8 @@ Example 200 (`application/json`):
 
 **Review information for an .adf file**
 
+Studio's FILE_CHECK_REVIEW: identity scenario, provider usability (the automatic provider check, honouring providerChecksEnabled), willRelocate and relocateTo. An open or running file is read through its own workspace.
+
 Operation `getAgentReview` · bearer token
 
 **Parameters**
@@ -657,7 +674,87 @@ Example 200 (`application/json`):
     },
     "network": {},
     "security": {}
-  }
+  },
+  "needsReview": true,
+  "claimed": true,
+  "did": "string",
+  "config": {
+    "adf_version": "0.2",
+    "id": "string",
+    "name": "string",
+    "description": "string",
+    "handle": "string",
+    "icon": "string",
+    "state": "active",
+    "autonomous": true,
+    "autostart": true,
+    "model": {
+      "provider": "anthropic",
+      "model_id": "claude-sonnet-4-5"
+    },
+    "instructions": "string",
+    "context": {},
+    "tools": [
+      {
+        "name": "string",
+        "enabled": true,
+        "visible": true,
+        "restricted": true,
+        "locked": true
+      }
+    ],
+    "triggers": {},
+    "security": {},
+    "limits": {},
+    "messaging": {},
+    "mcp": {
+      "servers": [
+        {
+          "name": "filesystem",
+          "transport": "stdio",
+          "npm_package": "@modelcontextprotocol/server-filesystem"
+        }
+      ],
+      "new_tools_restricted": true
+    },
+    "adapters": {},
+    "providers": [
+      {
+        "id": "custom:ab12cd",
+        "type": "openai-compatible",
+        "name": "Local LLM",
+        "baseUrl": "http://127.0.0.1:11434/v1"
+      }
+    ],
+    "loops": [
+      {
+        "name": "string",
+        "goal": "string",
+        "enabled": true,
+        "autostart": true,
+        "autonomous": true,
+        "model": {
+          "provider": "anthropic",
+          "model_id": "claude-sonnet-4-5"
+        },
+        "compact_threshold": 0,
+        "tools": [
+          "string"
+        ]
+      }
+    ],
+    "ws_connections": [
+      {}
+    ],
+    "serving": {},
+    "locked_fields": [
+      "string"
+    ],
+    "metadata": {}
+  },
+  "lockedFields": [
+    "string"
+  ]
 }
 ```
 
@@ -667,6 +764,8 @@ Example 200 (`application/json`):
 
 **Mark an .adf file's agent as reviewed**
 
+Studio's FILE_REVIEW_ACCEPT: optional model override, claim (or the identity provisioning deferred at open), auto-locked security fields, the reviewed mark. Move an untracked file into the agents folder afterwards with POST /files/relocate. Refused with 409 `agent_leased` while another runtime runs the file.
+
 Operation `acceptAgentReview` · bearer token
 
 **Request body** (required): [ReviewAcceptBody](#schema-reviewacceptbody)
@@ -674,6 +773,10 @@ Operation `acceptAgentReview` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `filePath` | string | yes |  |
+| `claim` | boolean |  | Claim & Open: a fresh identity under this owner. A legacy file password must be unlocked first (409 password_required). |
+| `model` | object |  | The model chosen in the review dialog (provider must be configured; 400 provider_unknown) |
+| `model.provider` | string | yes |  |
+| `model.model_id` | string | yes |  |
 
 ```json
 {
@@ -689,6 +792,7 @@ Operation `acceptAgentReview` · bearer token
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -728,7 +832,87 @@ Example 200 (`application/json`):
     },
     "network": {},
     "security": {}
-  }
+  },
+  "needsReview": true,
+  "claimed": true,
+  "did": "string",
+  "config": {
+    "adf_version": "0.2",
+    "id": "string",
+    "name": "string",
+    "description": "string",
+    "handle": "string",
+    "icon": "string",
+    "state": "active",
+    "autonomous": true,
+    "autostart": true,
+    "model": {
+      "provider": "anthropic",
+      "model_id": "claude-sonnet-4-5"
+    },
+    "instructions": "string",
+    "context": {},
+    "tools": [
+      {
+        "name": "string",
+        "enabled": true,
+        "visible": true,
+        "restricted": true,
+        "locked": true
+      }
+    ],
+    "triggers": {},
+    "security": {},
+    "limits": {},
+    "messaging": {},
+    "mcp": {
+      "servers": [
+        {
+          "name": "filesystem",
+          "transport": "stdio",
+          "npm_package": "@modelcontextprotocol/server-filesystem"
+        }
+      ],
+      "new_tools_restricted": true
+    },
+    "adapters": {},
+    "providers": [
+      {
+        "id": "custom:ab12cd",
+        "type": "openai-compatible",
+        "name": "Local LLM",
+        "baseUrl": "http://127.0.0.1:11434/v1"
+      }
+    ],
+    "loops": [
+      {
+        "name": "string",
+        "goal": "string",
+        "enabled": true,
+        "autostart": true,
+        "autonomous": true,
+        "model": {
+          "provider": "anthropic",
+          "model_id": "claude-sonnet-4-5"
+        },
+        "compact_threshold": 0,
+        "tools": [
+          "string"
+        ]
+      }
+    ],
+    "ws_connections": [
+      {}
+    ],
+    "serving": {},
+    "locked_fields": [
+      "string"
+    ],
+    "metadata": {}
+  },
+  "lockedFields": [
+    "string"
+  ]
 }
 ```
 
@@ -736,7 +920,9 @@ Example 200 (`application/json`):
 
 ### GET `/agents/{id}`
 
-**A loaded agent's reference (id, file, config)**
+**A running agent's or open document's reference (id, file, config)**
+
+Every /agents/{id} resource route (config, document, files, chat, inbox, outbox, timers, logs, tables, identity, meta, tasks) also reaches an open document: a file a client session holds open without running it (design D4). Runtime actions on one that is not running (chat, trigger, abort, interrupt, compact, loop changes, display state, approvals, asks, suspend) answer 409 `agent_not_running`. Writes through it are refused with 409 `agent_leased` while another runtime runs its file. While an open document's file is being moved (accept-relocate) every /agents/{id} route answers 409 `file_moving`.
 
 Operation `getAgent` · bearer token
 
@@ -834,7 +1020,8 @@ Example 200 (`application/json`):
       "string"
     ],
     "metadata": {}
-  }
+  },
+  "running": true
 }
 ```
 
@@ -1131,6 +1318,7 @@ Operation `startAgent` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `preflight` | query | `"1"` \| `"true"` \| `"0"` \| `"false"` |  | `1` or `true`: check the agent's provider (network) before loading it. Ignored for an agent that is already loaded. |
+| `hasUserMessage` | query | `"1"` \| `"true"` \| `"0"` \| `"false"` |  | `1` or `true`: a chat is queued behind this start, so the startup turn skips the active-state greeting (Studio's AGENT_START `hasUserMessage`). |
 
 **Responses**
 
@@ -1483,7 +1671,8 @@ Example 200 (`application/json`):
       "string"
     ],
     "metadata": {}
-  }
+  },
+  "revision": 0
 }
 ```
 
@@ -1502,6 +1691,8 @@ Operation `setAgentConfig` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `baseRevision` | query | integer |  | W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there. |
+| `If-Match` | header | string |  | W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field. |
 
 **Request body** (required): [AgentConfig](#schema-agentconfig)
 
@@ -1626,6 +1817,7 @@ Operation `setAgentConfig` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [StaleRevisionError](#schema-stalerevisionerror) | W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -1707,7 +1899,11 @@ Example 200 (`application/json`):
       "string"
     ],
     "metadata": {}
-  }
+  },
+  "filePath": "string",
+  "renameDeferred": true,
+  "renameError": "string",
+  "revision": 0
 }
 ```
 
@@ -2224,6 +2420,279 @@ Example 200 (`application/json`):
       "rows": 0
     }
   ]
+}
+```
+
+<a id="op-getagentheader"></a>
+
+### GET `/agents/{id}/header`
+
+**Header read: document, config, status text**
+
+Studio's DOC_GET_HEADER in one call, for a running agent or an open document.
+
+Operation `getAgentHeader` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentHeaderResponse](#schema-agentheaderresponse) | Header |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "string",
+  "document": "string",
+  "agentConfig": {
+    "adf_version": "0.2",
+    "id": "string",
+    "name": "string",
+    "description": "string",
+    "handle": "string",
+    "icon": "string",
+    "state": "active",
+    "autonomous": true,
+    "autostart": true,
+    "model": {
+      "provider": "anthropic",
+      "model_id": "claude-sonnet-4-5"
+    },
+    "instructions": "string",
+    "context": {},
+    "tools": [
+      {
+        "name": "string",
+        "enabled": true,
+        "visible": true,
+        "restricted": true,
+        "locked": true
+      }
+    ],
+    "triggers": {},
+    "security": {},
+    "limits": {},
+    "messaging": {},
+    "mcp": {
+      "servers": [
+        {
+          "name": "filesystem",
+          "transport": "stdio",
+          "npm_package": "@modelcontextprotocol/server-filesystem"
+        }
+      ],
+      "new_tools_restricted": true
+    },
+    "adapters": {},
+    "providers": [
+      {
+        "id": "custom:ab12cd",
+        "type": "openai-compatible",
+        "name": "Local LLM",
+        "baseUrl": "http://127.0.0.1:11434/v1"
+      }
+    ],
+    "loops": [
+      {
+        "name": "string",
+        "goal": "string",
+        "enabled": true,
+        "autostart": true,
+        "autonomous": true,
+        "model": {
+          "provider": "anthropic",
+          "model_id": "claude-sonnet-4-5"
+        },
+        "compact_threshold": 0,
+        "tools": [
+          "string"
+        ]
+      }
+    ],
+    "ws_connections": [
+      {}
+    ],
+    "serving": {},
+    "locked_fields": [
+      "string"
+    ],
+    "metadata": {}
+  },
+  "statusText": "string"
+}
+```
+
+<a id="op-getagentbatch"></a>
+
+### GET `/agents/{id}/batch`
+
+**Batch read: header, token figures and the last 200 chat entries**
+
+Studio's DOC_GET_BATCH in one call (a file switch), for a running agent or an open document.
+
+Operation `getAgentBatch` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentBatchResponse](#schema-agentbatchresponse) | Batch |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "string",
+  "document": "string",
+  "agentConfig": {
+    "adf_version": "0.2",
+    "id": "string",
+    "name": "string",
+    "description": "string",
+    "handle": "string",
+    "icon": "string",
+    "state": "active",
+    "autonomous": true,
+    "autostart": true,
+    "model": {
+      "provider": "anthropic",
+      "model_id": "claude-sonnet-4-5"
+    },
+    "instructions": "string",
+    "context": {},
+    "tools": [
+      {
+        "name": "string",
+        "enabled": true,
+        "visible": true,
+        "restricted": true,
+        "locked": true
+      }
+    ],
+    "triggers": {},
+    "security": {},
+    "limits": {},
+    "messaging": {},
+    "mcp": {
+      "servers": [
+        {
+          "name": "filesystem",
+          "transport": "stdio",
+          "npm_package": "@modelcontextprotocol/server-filesystem"
+        }
+      ],
+      "new_tools_restricted": true
+    },
+    "adapters": {},
+    "providers": [
+      {
+        "id": "custom:ab12cd",
+        "type": "openai-compatible",
+        "name": "Local LLM",
+        "baseUrl": "http://127.0.0.1:11434/v1"
+      }
+    ],
+    "loops": [
+      {
+        "name": "string",
+        "goal": "string",
+        "enabled": true,
+        "autostart": true,
+        "autonomous": true,
+        "model": {
+          "provider": "anthropic",
+          "model_id": "claude-sonnet-4-5"
+        },
+        "compact_threshold": 0,
+        "tools": [
+          "string"
+        ]
+      }
+    ],
+    "ws_connections": [
+      {}
+    ],
+    "serving": {},
+    "locked_fields": [
+      "string"
+    ],
+    "metadata": {}
+  },
+  "statusText": "string",
+  "lastTokens": {},
+  "contextBaseline": {},
+  "chat": {
+    "version": 0,
+    "uiLog": [
+      {
+        "id": "string",
+        "type": "user",
+        "content": "string",
+        "timestamp": 0,
+        "metadata": {}
+      }
+    ],
+    "llmMessages": [
+      null
+    ],
+    "earlierCount": 0,
+    "total": 0
+  },
+  "configRevision": 0,
+  "documentRevision": 0
+}
+```
+
+<a id="op-checkpointagent"></a>
+
+### POST `/agents/{id}/checkpoint`
+
+**Fold the WAL into the .adf (save)**
+
+Studio's FILE_SAVE. SQLite persists every write; this folds the write-ahead log into the file.
+
+Operation `checkpointAgent` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessResponse](#schema-successresponse) | Checkpointed |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true
 }
 ```
 
@@ -2761,12 +3230,13 @@ Operation `getAgentChat` · bearer token
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `limit` | query | integer |  | Maximum rows to return |
 | `loop` | query | string |  | Cognition loop to address. Absent = main. Unknown loops answer 404. |
+| `before` | query | integer |  | Keyset scroll-back: the display entries older than this loop seq (answers a ChatPageResponse) |
 
 **Responses**
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [ChatHistoryResponse](#schema-chathistoryresponse) | Chat history (null when none) |
+| 200 | [ChatHistoryResponse](#schema-chathistoryresponse) \| [ChatPageResponse](#schema-chatpageresponse) | Chat history (null when none), or with `before` the page before that seq |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
@@ -2805,7 +3275,7 @@ Example 200 (`application/json`):
 
 **Queue a user chat turn**
 
-The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`.
+The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`. An open document that is not running answers 409 `agent_not_running`.
 
 Operation `chatAgent` · bearer token
 
@@ -2819,8 +3289,11 @@ Operation `chatAgent` · bearer token
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `text` | string | yes |  |
+| `text` | string |  |  |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB. |
+| `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
+| `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
 
 ```json
 {
@@ -2932,6 +3405,7 @@ Operation `triggerAgent` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
 
 Example 202 (`application/json`):
 
@@ -3230,6 +3704,9 @@ Operation `writeAgentFileContent` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `path` | query | string | yes | File path inside the agent |
+| `baseRevision` | query | integer |  | W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there. |
+| `If-Match` | header | string |  | W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field. |
+| `If-None-Match` | header | `"*"` |  | W3-F: `*` makes the write a create: refused with 409 `stale_revision` when the file exists. As the body's `mustNotExist`. |
 
 **Request body** (required): [FileWriteBody](#schema-filewritebody)
 
@@ -3241,6 +3718,8 @@ Operation `writeAgentFileContent` · bearer token
 | `mime_type` | string |  | Alias: mimeType |
 | `mimeType` | string |  |  |
 | `protection` | [FileProtection](#schema-fileprotection) |  |  |
+| `baseRevision` | integer |  | W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter |
+| `mustNotExist` | boolean |  | W3-F: create only: refused (409 stale_revision, with the existing file's revision) when the file exists. As `If-None-Match: *`. |
 
 ```json
 {
@@ -3253,11 +3732,12 @@ Operation `writeAgentFileContent` · bearer token
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [AgentSuccess](#schema-agentsuccess) | Written |
+| 200 | [RevisionedSuccess](#schema-revisionedsuccess) | Written |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [StaleRevisionError](#schema-stalerevisionerror) | W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -3265,7 +3745,8 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "success": true
+  "success": true,
+  "revision": 0
 }
 ```
 
@@ -3525,7 +4006,8 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "content": "string"
+  "content": "string",
+  "revision": 0
 }
 ```
 
@@ -3544,12 +4026,15 @@ Operation `setAgentDocument` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `baseRevision` | query | integer |  | W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there. |
+| `If-Match` | header | string |  | W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field. |
 
 **Request body** (required): [TextContentBody](#schema-textcontentbody)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `content` | string | yes |  |
+| `baseRevision` | integer |  | W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter |
 
 ```json
 {
@@ -3561,11 +4046,12 @@ Operation `setAgentDocument` · bearer token
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [AgentSuccess](#schema-agentsuccess) | Saved |
+| 200 | [RevisionedSuccess](#schema-revisionedsuccess) | Saved |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [StaleRevisionError](#schema-stalerevisionerror) | W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -3573,7 +4059,8 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "success": true
+  "success": true,
+  "revision": 0
 }
 ```
 
@@ -3605,7 +4092,8 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "content": "string"
+  "content": "string",
+  "revision": 0
 }
 ```
 
@@ -3622,12 +4110,15 @@ Operation `setAgentMind` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `baseRevision` | query | integer |  | W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there. |
+| `If-Match` | header | string |  | W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field. |
 
 **Request body** (required): [TextContentBody](#schema-textcontentbody)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `content` | string | yes |  |
+| `baseRevision` | integer |  | W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter |
 
 ```json
 {
@@ -3639,11 +4130,12 @@ Operation `setAgentMind` · bearer token
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [AgentSuccess](#schema-agentsuccess) | Saved |
+| 200 | [RevisionedSuccess](#schema-revisionedsuccess) | Saved |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [StaleRevisionError](#schema-stalerevisionerror) | W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -3651,7 +4143,8 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "success": true
+  "success": true,
+  "revision": 0
 }
 ```
 
@@ -3775,7 +4268,8 @@ Example 200 (`application/json`):
   "agentId": "string",
   "success": true,
   "path": "string",
-  "size": 0
+  "size": 0,
+  "revision": 0
 }
 ```
 
@@ -4025,7 +4519,7 @@ Operation `removeAgentIdentityPassword` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -4042,6 +4536,8 @@ Example 200 (`application/json`):
 ### POST `/agents/{id}/identity/password/unlock`
 
 **Unlock a password-protected identity store**
+
+With the X-ADF-Client-Session header, that client session remembers the key and reopens the file without a prompt; no other session does.
 
 Operation `unlockAgentIdentityPassword` · bearer token
 
@@ -4070,8 +4566,9 @@ Operation `unlockAgentIdentityPassword` · bearer token
 | 200 | [AgentSuccess](#schema-agentsuccess) | Unlocked |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Wrong password (`wrong_password`), or a cross-site request (`forbidden`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The file has no file password (`not_password_protected`), or its file is being moved (`file_moving`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -4351,7 +4848,7 @@ Operation `setAgentIdentityValue` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -5332,7 +5829,7 @@ Operation `setAgentProviderCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -5426,7 +5923,7 @@ Operation `setAgentMcpCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -5521,7 +6018,7 @@ Operation `setAgentAdapterCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -6707,6 +7204,7 @@ Operation `testMcpRegistration` · bearer token
 | 202 | [JobAccepted](#schema-jobaccepted) & object | Started; poll GET /jobs/{jobId}. The finished job's `result` is a McpRegistrationTestResult. |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128). |
 
 Example 202 (`application/json`):
 
@@ -6918,7 +7416,7 @@ Example 200 (`application/json`):
 
 **Ensure uv and Python on the daemon host**
 
-Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes.
+Downloads uv and Python when missing. Runs as a job: answers 202 at once. Cancel stops waiting; a download already running finishes. While one runs, another request joins it (`job.joined`).
 
 Operation `ensureMcpPythonRuntime` · bearer token
 
@@ -6929,6 +7427,7 @@ Operation `ensureMcpPythonRuntime` · bearer token
 | 202 | [JobAccepted](#schema-jobaccepted) & object | Started; poll GET /jobs/{jobId}. The finished job's `result` is a PythonRuntimeResult. |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128). |
 
 Example 202 (`application/json`):
 
@@ -6976,6 +7475,7 @@ App-level LLM providers, model lists, agent provider configs and subscription si
 | POST | [`/agents/{id}/providers`](#op-attachagentprovider) | Attach or update a provider in the agent config |
 | DELETE | [`/agents/{id}/providers/{providerId}`](#op-detachagentprovider) | Detach a provider and delete its credentials |
 | POST | [`/runtime/providers/{id}/test`](#op-testruntimeprovider) | Test an app provider’s connection |
+| POST | [`/oauth/relay`](#op-relayoauthcallback) | Relay an OAuth sign-in callback from a client on another machine |
 
 <a id="op-getruntimeproviders"></a>
 
@@ -7150,6 +7650,7 @@ Operation `listRuntimeProviderModels` · bearer token
 |---|---|---|---|---|
 | `provider` | query | string | yes | Provider id |
 | `agentId` | query | string |  | Resolve the provider in this agent's config |
+| `filePath` | query | string |  | An agent file (absolute .adf) whose own provider entry to use when the provider is not in settings: through the open document or running agent, else read from the closed file |
 
 **Responses**
 
@@ -7898,6 +8399,57 @@ Example 200 (`application/json`):
 ```json
 {
   "status": "ok"
+}
+```
+
+<a id="op-relayoauthcallback"></a>
+
+### POST `/oauth/relay`
+
+**Relay an OAuth sign-in callback from a client on another machine**
+
+For a client whose browser runs on another machine (Studio in remote mode): an OAuth flow the daemon runs (MCP sign-in, the MCP registration test) waits on a loopback callback of the daemon host, but the browser lands on the client's own loopback. The client takes that callback and posts its OAuth parameters here; the daemon delivers them to its own loopback callback with one GET (no redirect followed, the answer body is not returned). `redirectUri` must be http on 127.0.0.1, localhost or [::1] with an explicit port from 1024 to 65535 that is not the daemon's own; `params` may hold only code, state, error, error_description, error_uri and iss (strings of at most 8192 characters), and needs state plus code or error. The callback server checks state against its flow. Values are never logged.
+
+Operation `relayOAuthCallback` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `redirectUri` | string | yes | The authorization URL's redirect_uri, e.g. http://127.0.0.1:53817/callback |
+| `params` | object | yes | The callback query's OAuth parameters |
+| `params.code` | string |  |  |
+| `params.state` | string |  |  |
+| `params.error` | string |  |  |
+| `params.error_description` | string |  |  |
+| `params.error_uri` | string |  |  |
+| `params.iss` | string |  |  |
+
+```json
+{
+  "redirectUri": "http://127.0.0.1:53817/callback",
+  "params": {
+    "code": "c0de",
+    "state": "s7a7e"
+  }
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The callback answered; `delivered` is true for a 2xx answer. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 502 | [ErrorResponse](#schema-errorresponse) | Nothing answers at the redirect URI on the daemon host (the sign-in timed out or ended). `code: relay_unreachable`. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "delivered": true,
+  "status": 200
 }
 ```
 
@@ -8755,6 +9307,8 @@ Agent templates new agents are created from. Every route needs a ready owner ide
 | GET | [`/templates/{id}/review`](#op-gettemplatereview) | The review summary of a template |
 | POST | [`/templates/{id}/review/accept`](#op-accepttemplatereview) | Accept a template: claim it under this owner and mark it reviewed |
 | PUT | [`/templates/{id}/config`](#op-settemplateconfig) | Replace a template's agent config |
+| POST | [`/templates/{id}/files/plan`](#op-plantemplatefiles) | Plan the names of a batch of template files |
+| PUT | [`/templates/{id}/files/raw`](#op-puttemplatefileraw) | Add an extra file to a template as raw bytes |
 | PUT | [`/templates/{id}/files`](#op-settemplatefile) | Write a template file (seed or extra) |
 | DELETE | [`/templates/{id}/files`](#op-removetemplatefile) | Remove an extra file |
 
@@ -8794,7 +9348,10 @@ Example 200 (`application/json`):
   ],
   "defaultId": "string",
   "folder": "string",
-  "defaultDirectory": "string"
+  "defaultDirectory": "string",
+  "migrated": {
+    "id": "string"
+  }
 }
 ```
 
@@ -9174,7 +9731,7 @@ Example 200 (`application/json`):
 
 **The review summary of a template**
 
-The agent review summary (identity scenario, tools, MCP, triggers, network, …). Provider status is `unchecked` or `missing`: credentials are not probed. Someone else's template (foreign or identity-less) shows `reviewed: false`, and POST /agents/create refuses it (422 `template_unreviewed`) until accepted.
+Studio's TEMPLATE_CHECK_REVIEW. While the owner identity is not ready: needsReview false, identityReady false, no summary.
 
 Operation `getTemplateReview` · bearer token
 
@@ -9193,7 +9750,6 @@ Operation `getTemplateReview` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Unknown template (`template_missing`) |
-| 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | No usable owner identity (`identity_not_ready`): set it up or unlock it first. `identity` carries its status. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
@@ -9234,7 +9790,9 @@ Example 200 (`application/json`):
     },
     "network": {},
     "security": {}
-  }
+  },
+  "identityReady": false,
+  "message": "string"
 }
 ```
 
@@ -9416,6 +9974,110 @@ Example 200 (`application/json`):
 ```json
 {
   "id": "string",
+  "success": true
+}
+```
+
+<a id="op-plantemplatefiles"></a>
+
+### POST `/templates/{id}/files/plan`
+
+**Plan the names of a batch of template files**
+
+Studio's TEMPLATE_ADD_FILES is whole batch or nothing: the client sends every picked file (`{name, isFile, size}`, or `{name, statError}` for one it could not read) and gets the path each would get (base name, numbered past a taken one), or the first refusal (not a file, over 25 MiB, a reserved seed name the template lacks), before it uploads any of them with PUT /templates/{id}/files/raw. Writes nothing.
+
+Operation `planTemplateFiles` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Template id (the file stem in the templates folder) |
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `files` | object[] | yes |  |
+| `files[].name` | string | yes |  |
+| `files[].isFile` | boolean |  |  |
+| `files[].size` | integer |  |  |
+| `files[].statError` | string |  |  |
+
+```json
+{
+  "files": [
+    {
+      "name": "string",
+      "isFile": true,
+      "size": 0,
+      "statError": "string"
+    }
+  ]
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The plan, or the refusal |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true,
+  "dests": [
+    "string"
+  ],
+  "error": "string"
+}
+```
+
+<a id="op-puttemplatefileraw"></a>
+
+### PUT `/templates/{id}/files/raw`
+
+**Add an extra file to a template as raw bytes**
+
+The body is one file's content (`application/octet-stream`, any type, up to 25 MiB). It is stored under `name`'s base name, numbered past a name the template already uses (`report-2.pdf`), as Studio's own file picker does; the answer names the path chosen. 413 `too_large`, 415 for another content type.
+
+Operation `putTemplateFileRaw` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Template id (the file stem in the templates folder) |
+| `name` | query | string | yes | The file's name; only its base name is used. |
+
+**Request body** (required): `application/octet-stream`
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | Written |
+| 400 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | No name, or the file was refused (`bad_request`, `template_invalid`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Unknown template (`template_missing`) |
+| 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | No usable owner identity (`identity_not_ready`): set it up or unlock it first. `identity` carries its status. |
+| 413 | [ErrorResponse](#schema-errorresponse) | Larger than 25 MiB (`too_large`) |
+| 415 | [ErrorResponse](#schema-errorresponse) | Not application/octet-stream |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "id": "string",
+  "path": "string",
+  "size": 0,
   "success": true
 }
 ```
@@ -11174,11 +11836,18 @@ Example 200 (`application/json`):
 
 Operation `getDiscoveredRuntimes` · bearer token
 
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `force` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Wait for a full scan (the refresh button): 1/true |
+
 **Responses**
 
 | Status | Body | Description |
 |---|---|---|
 | 200 | [DiscoveredRuntimesResponse](#schema-discoveredruntimesresponse) | Runtimes (the daemon does not discover yet: empty) |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -11227,9 +11896,15 @@ Example 200 (`application/json`):
 
 **Start the mesh HTTP server (persisted)**
 
-The mesh server (port 7295 by default, separate from this API) serves agent cards, health, ALF inbox delivery and agent web/API routes under /agents/{handle}/*. It is on by default; this persists meshServerEnabled: true. No body.
+The mesh server (port 7295 by default, separate from this API) serves agent cards, health, ALF inbox delivery and agent web/API routes under /agents/{handle}/*. It is on by default; this persists meshServerEnabled: true. No body. With `persist=0` the setting is left as it is.
 
 Operation `startMeshServer` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`. |
 
 **Responses**
 
@@ -11259,9 +11934,15 @@ Example 200 (`application/json`):
 
 **Stop the mesh HTTP server (persisted)**
 
-Persists meshServerEnabled: false, so it stays off across restarts until started again. No body.
+Persists meshServerEnabled: false, so it stays off across restarts until started again. No body. With `persist=0` only the running server stops; the setting is left as it is.
 
 Operation `stopMeshServer` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the running server only and leave meshServerEnabled as it is (Studio's start/stop, as embedded Studio). Default `1`. |
 
 **Responses**
 
@@ -11412,6 +12093,8 @@ The Podman compute environment and its containers.
 | POST | [`/compute/containers/{name}/rebuild`](#op-rebuildcomputecontainer) | Rebuild a container |
 | POST | [`/compute/execution-targets/test`](#op-testexecutiontarget) | Probe an external execution target |
 | GET | [`/compute/browser-info`](#op-getcomputebrowserinfo) | Container phase and noVNC port of an agent |
+| POST | [`/compute/shared/stop`](#op-stopsharedcomputecontainer) | Stop the shared container |
+| GET | [`/compute/users`](#op-getcomputeusers) | Other runtimes using containers |
 
 <a id="op-getcomputestatus"></a>
 
@@ -11903,6 +12586,68 @@ Example 200 (`application/json`):
 }
 ```
 
+<a id="op-stopsharedcomputecontainer"></a>
+
+### POST `/compute/shared/stop`
+
+**Stop the shared container**
+
+Studio's COMPUTE_STOP: stops the shared `adf-mcp` container only, and leaves it running while another live runtime on this machine uses it (`GET /compute/status` then lists it in `leftRunning`). `POST /compute/stop` stops every container this runtime started.
+
+Operation `stopSharedComputeContainer` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentSuccessOrError](#schema-agentsuccessorerror) | OK |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true,
+  "error": "string"
+}
+```
+
+<a id="op-getcomputeusers"></a>
+
+### GET `/compute/users`
+
+**Other runtimes using containers**
+
+For the shared container and each container in `names`: the other live runtimes on this machine that use it (`daemon pid 4242`). Containers nobody else uses are left out.
+
+Operation `getComputeUsers` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `names` | query | string |  | Comma-separated container names besides the shared one. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ComputeUsersResponse](#schema-computeusersresponse) | Users |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "users": {}
+}
+```
+
 <a id="tag-admin"></a>
 
 ## Admin
@@ -11914,15 +12659,19 @@ Package installs for MCP servers, channel adapters and the code sandbox.
 | GET | [`/admin/mcp/packages`](#op-listmcppackages) | Installed MCP packages (npm and Python) |
 | POST | [`/admin/mcp/packages/npm`](#op-installmcpnpmpackage) | Install an MCP npm package |
 | DELETE | [`/admin/mcp/packages/npm`](#op-uninstallmcpnpmpackage) | Uninstall an MCP npm package |
+| POST | [`/admin/mcp/packages/npm/jobs`](#op-startmcpnpmpackageinstalljob) | Install an MCP npm package as a job |
 | POST | [`/admin/mcp/packages/python`](#op-installmcppythonpackage) | Install an MCP Python package (uvx) |
 | DELETE | [`/admin/mcp/packages/python`](#op-uninstallmcppythonpackage) | Uninstall an MCP Python package |
+| POST | [`/admin/mcp/packages/python/jobs`](#op-startmcppythonpackageinstalljob) | Install an MCP Python package as a job |
 | GET | [`/admin/adapters/packages`](#op-listadapterpackages) | Installed channel adapter packages |
 | POST | [`/admin/adapters/packages`](#op-installadapterpackage) | Install a channel adapter npm package |
 | DELETE | [`/admin/adapters/packages`](#op-uninstalladapterpackage) | Uninstall a channel adapter package |
+| POST | [`/admin/adapters/packages/jobs`](#op-startadapterpackageinstalljob) | Install a channel adapter package as a job |
 | GET | [`/admin/sandbox/packages`](#op-listsandboxpackages) | Packages available to the code sandbox |
 | POST | [`/admin/sandbox/packages`](#op-installsandboxpackage) | Install a sandbox package |
 | DELETE | [`/admin/sandbox/packages`](#op-uninstallsandboxpackage) | Uninstall a sandbox package |
 | POST | [`/admin/sandbox/packages/check`](#op-checksandboxpackages) | Which of these packages are missing |
+| POST | [`/admin/sandbox/packages/jobs`](#op-startsandboxpackagesinstalljob) | Install sandbox packages as a job |
 
 <a id="op-listmcppackages"></a>
 
@@ -12041,6 +12790,54 @@ Example 200 (`application/json`):
 }
 ```
 
+<a id="op-startmcpnpmpackageinstalljob"></a>
+
+### POST `/admin/mcp/packages/npm/jobs`
+
+**Install an MCP npm package as a job**
+
+The same install as POST /admin/mcp/packages/npm, run as a job so no request is held open. Progress lines are on the job (`progressLog`, `detail.package`). While an install of the same package runs, the request joins it. An install cannot stop half-way: cancel marks the job cancelled and the installer finishes; a new request for the same package then starts a job that waits for it.
+
+Operation `startMcpNpmPackageInstallJob` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `package` | string | yes |  |
+
+```json
+{
+  "package": "@modelcontextprotocol/server-filesystem"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 202 | [JobAccepted](#schema-jobaccepted) & object | Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128). |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 202 (`application/json`):
+
+```json
+{
+  "jobId": "string",
+  "job": {
+    "result": {
+      "success": true,
+      "installed": {},
+      "error": "Error: Invalid npm package name: not a package!"
+    }
+  }
+}
+```
+
 <a id="op-installmcppythonpackage"></a>
 
 ### POST `/admin/mcp/packages/python`
@@ -12121,6 +12918,56 @@ Example 200 (`application/json`):
 ```json
 {
   "success": true
+}
+```
+
+<a id="op-startmcppythonpackageinstalljob"></a>
+
+### POST `/admin/mcp/packages/python/jobs`
+
+**Install an MCP Python package as a job**
+
+The same install as POST /admin/mcp/packages/python (uv and Python are downloaded first when missing), run as a job. Joins a running install of the same package and version.
+
+Operation `startMcpPythonPackageInstallJob` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `package` | string | yes |  |
+| `version` | string |  |  |
+
+```json
+{
+  "package": "mcp-server-fetch",
+  "version": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 202 | [JobAccepted](#schema-jobaccepted) & object | Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128). |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 202 (`application/json`):
+
+```json
+{
+  "jobId": "string",
+  "job": {
+    "result": {
+      "success": true,
+      "installed": {},
+      "error": "Error: Invalid npm package name: not a package!"
+    }
+  }
 }
 ```
 
@@ -12238,6 +13085,54 @@ Example 200 (`application/json`):
 ```json
 {
   "success": true
+}
+```
+
+<a id="op-startadapterpackageinstalljob"></a>
+
+### POST `/admin/adapters/packages/jobs`
+
+**Install a channel adapter package as a job**
+
+The same install as POST /admin/adapters/packages, run as a job. Joins a running install of the same package.
+
+Operation `startAdapterPackageInstallJob` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `package` | string | yes |  |
+
+```json
+{
+  "package": "@modelcontextprotocol/server-filesystem"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 202 | [JobAccepted](#schema-jobaccepted) & object | Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a PackageInstallJobResult. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128). |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 202 (`application/json`):
+
+```json
+{
+  "jobId": "string",
+  "job": {
+    "result": {
+      "success": true,
+      "installed": {},
+      "error": "Error: Invalid npm package name: not a package!"
+    }
+  }
 }
 ```
 
@@ -12408,6 +13303,60 @@ Example 200 (`application/json`):
       "version": "string"
     }
   ]
+}
+```
+
+<a id="op-startsandboxpackagesinstalljob"></a>
+
+### POST `/admin/sandbox/packages/jobs`
+
+**Install sandbox packages as a job**
+
+Installs each package in turn, as Studio's sandbox package dialog does; a failed package does not stop the others. Joins a running job for the same package list.
+
+Operation `startSandboxPackagesInstallJob` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `packages` | object[] | yes |  |
+| `packages[].name` | string | yes |  |
+| `packages[].version` | string |  |  |
+
+```json
+{
+  "packages": [
+    {
+      "name": "lodash",
+      "version": "4.17.21"
+    }
+  ]
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 202 | [JobAccepted](#schema-jobaccepted) & object | Started (or joined); poll GET /jobs/{jobId}. The finished job's `result` is a SandboxInstallJobResult. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many jobs run on this daemon at once (jobs.ts MAX_RUNNING, 128). |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 202 (`application/json`):
+
+```json
+{
+  "jobId": "string",
+  "job": {
+    "result": {
+      "success": true,
+      "results": {}
+    }
+  }
 }
 ```
 
@@ -12587,6 +13536,10 @@ Fleet map: mesh debug view, fleet rows, token burn, the aggregate poll, owner me
 | POST | [`/fleet/message`](#op-messagefleetagents) | Owner message to agents |
 | GET | [`/fleet/adapters`](#op-getfleetadapters) | Adapter states across loaded agents |
 | POST | [`/fleet/adapters/restart`](#op-restartfleetadapter) | Restart one adapter of an agent |
+| GET | [`/fleet/vitals`](#op-getfleetagentvitals) | Agent vitals by file path |
+| GET | [`/fleet/activity`](#op-getfleetagentactivity) | Agent activity by file path |
+| POST | [`/fleet/state`](#op-setfleetagentstate) | Set the state of running agents |
+| POST | [`/fleet/found`](#op-foundfleetagent) | Found an agent from the fleet map |
 
 <a id="op-getfleetmesh"></a>
 
@@ -12985,6 +13938,335 @@ Example 200 (`application/json`):
 }
 ```
 
+<a id="op-getfleetagentvitals"></a>
+
+### GET `/fleet/vitals`
+
+**Agent vitals by file path**
+
+The overview card of any .adf file, addressed by path as Studio's AGENT_VITALS is: a loaded agent is read from its open workspace, any other file with a readonly open, whether or not it is in a tracked folder. Same body and cache rules as `GET /agents/{id}/vitals`; the fleet scan behind `agentsSpawned` is refreshed when older than 30 s.
+
+Operation `getFleetAgentVitals` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `path` | query | string | yes | Absolute path of the .adf file. |
+| `force` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentVitals](#schema-agentvitals) | Vitals |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "filePath": "string",
+  "computedAt": 0,
+  "live": true,
+  "handle": "agent-1",
+  "name": "string",
+  "did": "string",
+  "agentId": "string",
+  "model": "string",
+  "createdAt": "string",
+  "ageDays": 0,
+  "status": "string",
+  "description": "string",
+  "public": true,
+  "ownerVerified": true,
+  "contextTokens": 0,
+  "contextThreshold": 0,
+  "nextWakeAt": 0,
+  "cost7dUsd": 0,
+  "cost7dPartial": true,
+  "metrics": [
+    {
+      "name": "weight",
+      "label": "Weight",
+      "value": 82.4,
+      "unit": "kg",
+      "min": 0,
+      "max": 100,
+      "target": 78,
+      "raw": "{\"value\":82.4,\"label\":\"Weight\",\"unit\":\"kg\",\"target\":78}"
+    }
+  ],
+  "stats": {
+    "reach": {
+      "level": 1,
+      "points": 0,
+      "max": 0,
+      "fill": 0,
+      "open": 0,
+      "gated": 0,
+      "high": true,
+      "rawPoints": 0,
+      "factors": [
+        {
+          "id": "tool:compute_exec",
+          "label": "string",
+          "points": 0,
+          "gated": true,
+          "configPath": "string"
+        }
+      ]
+    },
+    "access": {
+      "level": 1,
+      "points": 0,
+      "max": 0,
+      "fill": 0,
+      "open": 0,
+      "gated": 0,
+      "high": true,
+      "rawPoints": 0,
+      "factors": [
+        {
+          "id": "tool:compute_exec",
+          "label": "string",
+          "points": 0,
+          "gated": true,
+          "configPath": "string"
+        }
+      ]
+    },
+    "autonomy": {
+      "level": 1,
+      "points": 0,
+      "max": 0,
+      "fill": 0,
+      "open": 0,
+      "gated": 0,
+      "high": true,
+      "rawPoints": 0,
+      "factors": [
+        {
+          "id": "tool:compute_exec",
+          "label": "string",
+          "points": 0,
+          "gated": true,
+          "configPath": "string"
+        }
+      ]
+    },
+    "experience": {
+      "level": 1,
+      "progress": 0,
+      "score": 0,
+      "levelStart": 0,
+      "nextLevelAt": 0,
+      "breakdown": [
+        {
+          "id": "contextsWorked",
+          "label": "string",
+          "value": 0,
+          "xp": 0
+        }
+      ],
+      "nextLevel": {
+        "xp": 0,
+        "contexts": 0,
+        "memoryTokens": 0,
+        "skills": 0,
+        "hint": "string"
+      }
+    }
+  },
+  "maturity": {
+    "contextsWorked": 0,
+    "filesWritten": 0,
+    "memoryTokens": 0,
+    "localTables": 0,
+    "localRows": 0,
+    "skills": 0,
+    "agentsSpawned": 0,
+    "messages": 0,
+    "ageDays": 0
+  }
+}
+```
+
+<a id="op-getfleetagentactivity"></a>
+
+### GET `/fleet/activity`
+
+**Agent activity by file path**
+
+The overview's lower sections for any .adf file, addressed by path as Studio's AGENT_ACTIVITY is. Same body and cache rules as `GET /agents/{id}/activity`.
+
+Operation `getFleetAgentActivity` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `path` | query | string | yes | Absolute path of the .adf file. |
+| `force` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Skip the cache: `1` or `true`. `0` and `false` are accepted and change nothing. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentActivity](#schema-agentactivity) | Activity |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "filePath": "string",
+  "computedAt": 0,
+  "live": true,
+  "upcoming": [
+    {
+      "id": 0,
+      "at": 0,
+      "scope": "system",
+      "lambda": "string",
+      "input": "string",
+      "loop": "string",
+      "prompt": "string"
+    }
+  ],
+  "daily": [
+    {
+      "date": "string",
+      "messages": 0,
+      "estimated": true,
+      "costUsd": 0,
+      "costPartial": true
+    }
+  ],
+  "contents": {
+    "mind": {
+      "files": 0,
+      "tokens": 0,
+      "updatedThisWeek": 0,
+      "strata": {
+        "older": 0,
+        "quarter": 0,
+        "month": 0,
+        "week": 0
+      }
+    },
+    "skills": {
+      "count": 0,
+      "tokens": 0
+    },
+    "tables": {
+      "count": 0,
+      "rows": 0
+    }
+  }
+}
+```
+
+<a id="op-setfleetagentstate"></a>
+
+### POST `/fleet/state`
+
+**Set the state of running agents**
+
+Studio's MESH_SET_AGENT_STATE: for each file, end any active turn and enter `idle` or `hibernate`. A file with no loaded agent fails with `agent offline`; a stopped or errored executor with `agent stopped` / `agent error`. Any other state fails every file with `invalid state`.
+
+Operation `setFleetAgentState` · bearer token
+
+**Request body** (required): [FleetStateBody](#schema-fleetstatebody)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filePaths` | string[] | yes |  |
+| `state` | `"idle"` \| `"hibernate"` | yes |  |
+
+```json
+{
+  "filePaths": [
+    "string"
+  ],
+  "state": "idle"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [FleetStateResult](#schema-fleetstateresult) | OK |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "updated": [
+    "string"
+  ],
+  "failed": [
+    {
+      "filePath": "string",
+      "error": "string"
+    }
+  ]
+}
+```
+
+<a id="op-foundfleetagent"></a>
+
+### POST `/fleet/found`
+
+**Found an agent from the fleet map**
+
+Studio's MESH_FOUND_AGENT: `dir` must be inside a tracked folder, or with `newRoot: true` a sibling of a tracked root. The folder is created when missing, the file is `<slug of name>.adf`, made from the default template with its identity, marked reviewed, left closed, and its folder tracked. Failures answer 200 with `success: false` and `error`.
+
+Operation `foundFleetAgent` · bearer token
+
+**Request body** (required): [FleetFoundBody](#schema-fleetfoundbody)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `dir` | string | yes | Absolute folder for the new agent. |
+| `name` | string | yes |  |
+| `newRoot` | boolean |  |  |
+
+```json
+{
+  "dir": "string",
+  "name": "string",
+  "newRoot": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [FleetFoundResult](#schema-fleetfoundresult) | OK |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true,
+  "filePath": "string",
+  "error": "string"
+}
+```
+
 <a id="tag-dashboard"></a>
 
 ## Dashboard
@@ -13338,7 +14620,14 @@ Example 200 (`application/json`):
   "finishedAt": 0,
   "result": null,
   "error": "string",
-  "progress": "string"
+  "progress": "string",
+  "progressLog": [
+    {
+      "seq": 0,
+      "text": "string",
+      "detail": {}
+    }
+  ]
 }
 ```
 
@@ -13380,7 +14669,14 @@ Example 200 (`application/json`):
     "finishedAt": 0,
     "result": null,
     "error": "string",
-    "progress": "string"
+    "progress": "string",
+    "progressLog": [
+      {
+        "seq": 0,
+        "text": "string",
+        "detail": {}
+      }
+    ]
   }
 }
 ```
@@ -13394,6 +14690,7 @@ Agent files on the daemon host: the path → id rule, delete, rename, clone, acc
 | Method | Path | Summary |
 |---|---|---|
 | GET | [`/files/agent`](#op-describeagentfile) | Resolve an agent file path to its agent id |
+| GET | [`/files/agent/config`](#op-getagentfileconfig) | An agent file's config by path |
 | GET | [`/files/agents-folder`](#op-getagentsfolder) | Where new and accepted agents go |
 | DELETE | [`/files`](#op-deleteagentfile) | Delete an agent file |
 | POST | [`/files/rename`](#op-renameagentfileondisk) | Rename an agent file |
@@ -13407,6 +14704,7 @@ Agent files on the daemon host: the path → id rule, delete, rename, clone, acc
 | GET | [`/files/agent/tables`](#op-listagentfiletables) | Tables of an agent file with row counts |
 | PUT | [`/files/agent/model`](#op-setagentfilemodel) | Set the model of a stopped agent file |
 | PUT | [`/files/agent/providers/{providerId}/credential`](#op-setagentfileprovidercredential) | Store a provider API key in an agent file |
+| POST | [`/files/agent/providers/{providerId}/credential/copy-app-key`](#op-copyappproviderkeytoagentfile) | Store the app provider's key as an agent file's provider key |
 | GET | [`/files/agent/providers/{providerId}/credentials`](#op-getagentfileprovidercredentials) | Provider credential metadata of an agent file |
 | POST | [`/files/agent/providers`](#op-attachagentfileprovider) | Attach a provider to an agent file |
 | DELETE | [`/files/agent/providers/{providerId}`](#op-detachagentfileprovider) | Detach a provider from an agent file |
@@ -13418,6 +14716,7 @@ Agent files on the daemon host: the path → id rule, delete, rename, clone, acc
 | PUT | [`/files/agent/adapters/credentials`](#op-setagentfileadaptercredential) | Store an adapter credential in an agent file |
 | POST | [`/files/agent/adapters`](#op-attachagentfileadapter) | Attach a channel adapter to an agent file |
 | DELETE | [`/files/agent/adapters/{adapterType}`](#op-detachagentfileadapter) | Detach a channel adapter from an agent file |
+| POST | [`/fs/folders`](#op-createfolder) | Create a folder for a daemon-side picker |
 
 <a id="op-describeagentfile"></a>
 
@@ -13455,7 +14754,47 @@ Example 200 (`application/json`):
   "loaded": true,
   "tracked": true,
   "pendingName": "string",
+  "reviewed": true,
+  "passwordProtected": true,
   "error": "string"
+}
+```
+
+<a id="op-getagentfileconfig"></a>
+
+### GET `/files/agent/config`
+
+**An agent file's config by path**
+
+The live config of a running agent or open document; any other file is read through one readonly connection (nothing written). Same path rules as the other /files routes. Credential values are identity rows, not config.
+
+Operation `getAgentFileConfig` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `path` | query | string | yes | Absolute path of the .adf file |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [AgentFileConfigResponse](#schema-agentfileconfigresponse) | The config |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "filePath": "string",
+  "agentId": "string",
+  "loaded": true,
+  "config": {}
 }
 ```
 
@@ -14020,7 +15359,61 @@ Operation `setAgentFileProviderCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "Xk3v9QpLm2",
+  "providerId": "string",
+  "success": true,
+  "replaced": true,
+  "filePath": "string",
+  "loaded": true
+}
+```
+
+<a id="op-copyappproviderkeytoagentfile"></a>
+
+### POST `/files/agent/providers/{providerId}/credential/copy-app-key`
+
+**Store the app provider's key as an agent file's provider key**
+
+Studio's "Copy app key": the app provider with this id (Settings → Providers) gives its API key, which a client only ever sees as `__redacted__`, and the daemon stores it as `provider:{providerId}:apiKey` in the file. Same locked-envelope rules as PUT /files/agent/providers/{providerId}/credential (409 `credentials_locked`, `replace: true`); a file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. 409 `no_app_key` when the app provider is unknown or has no key.
+
+Operation `copyAppProviderKeyToAgentFile` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `path` | query | string | yes | Absolute path of the .adf file |
+| `providerId` | path | string | yes | Provider id in the agent config |
+
+**Request body** (optional): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `replace` | boolean |  | Store it although the credentials envelope is locked here (a locked sealed value is discarded). |
+
+```json
+{
+  "replace": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ProviderCredentialWriteResponse](#schema-providercredentialwriteresponse) & [PathAgentFields](#schema-pathagentfields) | Stored |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -14416,7 +15809,7 @@ Operation `setAgentFileMcpCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -14769,7 +16162,7 @@ Operation `setAgentFileAdapterCredential` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock |
+| 409 | [ErrorResponse](#schema-errorresponse) | Bad value (key material cannot be replaced over the API), or the agent's credentials envelope is locked on this daemon (`credentials_locked`): unlock the owner identity, or retry with `replace: true`. A legacy agent locked with a whole-file password answers 409 `credentials_locked` until POST /agents/{id}/identity/password/unlock. An envelope refusal also names `purpose`, `sealed` (a value is stored sealed here: a replace discards it unread) and `envelopeState` (`locked` or `foreign`); choose on these, not on the message. |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -15033,6 +16426,614 @@ Example 200 (`application/json`):
 }
 ```
 
+<a id="op-createfolder"></a>
+
+### POST `/fs/folders`
+
+**Create a folder for a daemon-side picker**
+
+Creates one folder named `name` in `parent`. The parent (after resolving links) must be inside a browse root, as for GET /fs/browse; `name` is one path segment (no separators, not `.` or `..`, no characters Windows refuses, no device name, at most 255 characters). An existing name is refused, never reused. 400 `bad_request` / `invalid_name` / `not_a_directory`, 403 `outside_roots`, 404 `not_found`, 409 `exists`.
+
+Operation `createFolder` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `parent` | string | yes | Absolute folder path |
+| `name` | string | yes |  |
+
+```json
+{
+  "parent": "/srv/agents",
+  "name": "research"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 201 | object | Created |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The parent is outside the browse roots (`outside_roots`). |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
+
+Example 201 (`application/json`):
+
+```json
+{
+  "path": "/srv/agents/research"
+}
+```
+
+<a id="tag-client-internal"></a>
+
+## Client (internal)
+
+Client sessions and the client event stream, for clients that need exact UI parity (ADF Studio in daemon mode, the terminal app): one session per client, one SSE stream per session carrying executor, host and push frames (design daemon-backend.md D5). Internal: these routes MAY change between versions; a client checks `clientApiVersion` (GET /version) first.
+
+| Method | Path | Summary |
+|---|---|---|
+| POST | [`/agents/{id}/identity/reveal`](#op-revealagentidentityvalues) | Read stored values of an agent (local callers only) |
+| POST | [`/files/agent/identity/reveal`](#op-revealagentfileidentityvalues) | Read stored values of an agent file (local callers only) |
+| GET | [`/client/sessions`](#op-listclientsessions) | List the open client sessions |
+| POST | [`/client/sessions`](#op-createclientsession) | Open a client session |
+| DELETE | [`/client/sessions/{id}`](#op-endclientsession) | End a client session |
+| GET | [`/client/sessions/{id}/events`](#op-streamclientsessionevents) | Stream the session's frames (Server-Sent Events) |
+| PUT | [`/client/sessions/{id}/focus`](#op-setclientsessionfocus) | Set the agent the session follows |
+| POST | [`/client/sessions/{id}/documents`](#op-holdclientsessiondocument) | Hold an agent file open for the session |
+| DELETE | [`/client/sessions/{id}/documents/{agentId}`](#op-releaseclientsessiondocument) | Release a held document |
+| POST | [`/client/sessions/{id}/quit`](#op-quitclientsession) | End a client session as its client quits |
+| POST | [`/client/reload-credentials`](#op-reloadclientcredentials) | Re-read the credential stores a client changed |
+| PUT | [`/client/sessions/{id}/exit-when-closed`](#op-setclientsessionexitwhenclosed) | Change a session's orphan behaviour |
+
+<a id="op-revealagentidentityvalues"></a>
+
+### POST `/agents/{id}/identity/reveal`
+
+**Read stored values of an agent (local callers only)**
+
+Local callers that present this run's local proof (`X-ADF-Local-Proof`, the daemon-local-proof file next to the daemon settings) only, in every mode; the token alone gets 403 `loopback_only`. Studio on this machine shows these values in its own window (Identity panel Reveal, provider override key field). The one exception to "values never leave the daemon": key material (`crypto:*`) is never returned, and a value sealed in a locked envelope, or encrypted with a file password the daemon does not hold, is left out. `Cache-Control: no-store`; values are never logged.
+
+Operation `revealAgentIdentityValues` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `purposes` | string[] |  |  |
+| `prefix` | string |  |  |
+
+```json
+{
+  "purposes": [
+    "provider:anthropic:apiKey"
+  ],
+  "prefix": "provider:anthropic:"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | Values |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "string",
+  "values": {}
+}
+```
+
+<a id="op-revealagentfileidentityvalues"></a>
+
+### POST `/files/agent/identity/reveal`
+
+**Read stored values of an agent file (local callers only)**
+
+POST /agents/{id}/identity/reveal by file path; works on a file that is not loaded through one readonly connection (nothing written, no envelope unlocked: its plain values only, as Studio reads a file it does not have open). Local callers that present this run's local proof (`X-ADF-Local-Proof`, the daemon-local-proof file next to the daemon settings) only, in every mode; the token alone gets 403 `loopback_only`. Studio on this machine shows these values in its own window (Identity panel Reveal, provider override key field). The one exception to "values never leave the daemon": key material (`crypto:*`) is never returned, and a value sealed in a locked envelope, or encrypted with a file password the daemon does not hold, is left out. `Cache-Control: no-store`; values are never logged.
+
+Operation `revealAgentFileIdentityValues` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `path` | query | string | yes | Absolute path of the .adf file |
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `purposes` | string[] |  |  |
+| `prefix` | string |  |  |
+
+```json
+{
+  "purposes": [
+    "provider:anthropic:apiKey"
+  ],
+  "prefix": "provider:anthropic:"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object & [PathAgentFields](#schema-pathagentfields) | Values |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "values": {},
+  "filePath": "string",
+  "loaded": true
+}
+```
+
+<a id="op-listclientsessions"></a>
+
+### GET `/client/sessions`
+
+**List the open client sessions**
+
+Which clients are connected (client name, version, whether its session stops the daemon when it expires), without session ids. ADF Studio names them before it offers to restart a daemon of another version (design daemon-backend.md §8.2).
+
+Operation `listClientSessions` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientSessionList](#schema-clientsessionlist) | The open sessions |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 405 | [ErrorResponse](#schema-errorresponse) | This daemon has no client sessions |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "sessions": [
+    {
+      "client": "string",
+      "version": "string",
+      "exitDaemonWhenClosed": true
+    }
+  ]
+}
+```
+
+<a id="op-createclientsession"></a>
+
+### POST `/client/sessions`
+
+**Open a client session**
+
+Opens a session; its stream (GET /client/sessions/{id}/events) holds every frame from now on, so frames between this call and the first connect are not lost. A session expires 60 s after its stream disconnects (or after this call, if it never connects); expiry releases its documents. `exitDaemonWhenClosed: true` (ADF Studio when "Keep the daemon running" is off): when this session expires and no other session is open, a daemon Studio started (GET /version `startedBy: studio`) shuts down and logs why; a daemon the CLI or a service started never does. Ending the session with DELETE does not stop the daemon. A write to /agents/{id}/* that sends the header `X-ADF-Client-Session: <sessionId>` is not echoed back to that session (`config_changed`, `file_updated`, `document_updated` raised by the write itself); every other session gets them, and work the request starts (a turn, a timer) reaches that session too.
+
+Operation `createClientSession` · bearer token
+
+**Request body** (required): [ClientSessionInput](#schema-clientsessioninput)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `client` | string | yes | Client name, for the daemon log (`studio`, `tui`) |
+| `version` | string | yes | Client version, for the daemon log |
+| `exitDaemonWhenClosed` | boolean |  | Stop a Studio-started daemon when this session expires and no other session is open. Default false. |
+| `umbilical` | boolean |  | Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false. |
+
+```json
+{
+  "client": "string",
+  "version": "string",
+  "exitDaemonWhenClosed": true,
+  "umbilical": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 201 | [ClientSessionCreated](#schema-clientsessioncreated) | The new session |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 201 (`application/json`):
+
+```json
+{
+  "sessionId": "string",
+  "epoch": "string"
+}
+```
+
+<a id="op-endclientsession"></a>
+
+### DELETE `/client/sessions/{id}`
+
+**End a client session**
+
+Ends the session now: its stream closes and its documents are released. The orphan rule (exitDaemonWhenClosed) applies only to expiry, not to this call.
+
+Operation `endClientSession` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientSessionEnded](#schema-clientsessionended) | Ended |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such client session (it ended or expired, or the daemon restarted): open a new one. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "sessionId": "string",
+  "ended": true
+}
+```
+
+<a id="op-streamclientsessionevents"></a>
+
+### GET `/client/sessions/{id}/events`
+
+**Stream the session's frames (Server-Sent Events)**
+
+One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.
+
+Operation `streamClientSessionEvents` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+| `since` | query | integer |  | Replay buffered frames whose cursor is greater than this. Process-local; resets on daemon restart. Wins over `Last-Event-ID`. |
+| `epoch` | query | string |  | The session epoch the resume cursor came from (POST /client/sessions, `stream.hello`). Another epoch yields `stream.gap` `epoch_changed` and the whole ring. |
+| `Last-Event-ID` | header | string |  | Standard SSE resume header: the last `id:` (cursor) received. Same as `?since=`, which wins when both are sent. Not an integer: 400. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientFrame](#schema-clientframe) \| [StreamHello](#schema-streamhello) \| [ClientStreamGap](#schema-clientstreamgap)[] | SSE stream (text/event-stream) |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such client session (it ended or expired, or the daemon restarted): open a new one. |
+
+Example 200 (`text/event-stream`):
+
+```json
+[
+  {
+    "cursor": 0,
+    "kind": "executor",
+    "agentId": "string",
+    "filePath": "string",
+    "loop": "string",
+    "event": {},
+    "stripped": "tool_result",
+    "type": "string",
+    "topic": "string",
+    "payload": null,
+    "timestamp": 0,
+    "unserializable": true
+  }
+]
+```
+
+<a id="op-setclientsessionfocus"></a>
+
+### PUT `/client/sessions/{id}/focus`
+
+**Set the agent the session follows**
+
+The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet).
+
+Operation `setClientSessionFocus` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string \| null | yes |  |
+
+```json
+{
+  "agentId": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientSessionFocus](#schema-clientsessionfocus) | The focus |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such client session (it ended or expired, or the daemon restarted): open a new one. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "sessionId": "string",
+  "focus": "string"
+}
+```
+
+<a id="op-holdclientsessiondocument"></a>
+
+### POST `/client/sessions/{id}/documents`
+
+**Hold an agent file open for the session**
+
+Opens the agent file (by `filePath` or `agentId`) as an open document held by this session (design D4): a closed file opens without starting, a running agent's file joins its runtime. The holder is the session id from the path, never the body; answers never list holders. Released by DELETE …/documents/{agentId}, by ending the session or by its expiry; while the session is live the holder sweep keeps the document open.
+
+Operation `holdClientSessionDocument` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | string |  |  |
+| `agentId` | string |  |  |
+
+```json
+{
+  "filePath": "string",
+  "agentId": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientHeldDocument](#schema-clienthelddocument) | The held document |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such client session (it ended or expired, or the daemon restarted): open a new one. |
+| 405 | [ErrorResponse](#schema-errorresponse) | Not available on this daemon (the subsystem is read-only or lacks this operation) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The file cannot be opened here (for example another file with the same agent id is open) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "string",
+  "filePath": "string",
+  "running": true
+}
+```
+
+<a id="op-releaseclientsessiondocument"></a>
+
+### DELETE `/client/sessions/{id}/documents/{agentId}`
+
+**Release a held document**
+
+Operation `releaseClientSessionDocument` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+| `agentId` | path | string | yes | Agent id of the held document |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientDocumentReleased](#schema-clientdocumentreleased) | Released |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such session, or the session does not hold that agent |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "sessionId": "string",
+  "agentId": "string",
+  "released": true
+}
+```
+
+<a id="op-quitclientsession"></a>
+
+### POST `/client/sessions/{id}/quit`
+
+**End a client session as its client quits**
+
+ADF Studio's quit (design daemon-backend.md §8.3). Ends the session like DELETE /client/sessions/{id}, then, with `stopDaemon: true`, stops the daemon only when this run was started by Studio (GET /version `startedBy: studio`); with other client sessions open the stop is pending until the last one ends or expires (they get `daemon_orphan_hold`). A daemon the CLI or a service started keeps running. When it stops, new sessions are refused before the answer is sent, so none can open between the decision and the stop. The answer and the daemon log give the reason. The shutdown is the daemon's own bounded one (the same as POST /daemon/shutdown), started after the answer. An unknown or expired session id is not an error (`ended: false`): the stop decision still applies. With `stopDaemon: true` the caller must be local (loopback, no proxy headers; the local proof behind a proxy), as for POST /daemon/shutdown.
+
+Operation `quitClientSession` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+
+**Request body** (optional): [ClientQuitInput](#schema-clientquitinput)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `stopDaemon` | boolean |  | Stop the daemon when allowed (Studio: `keepDaemonRunning` off). Default false: only the session ends. |
+
+```json
+{
+  "stopDaemon": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClientQuitResult](#schema-clientquitresult) | The session ended; whether the daemon stops |
+| 400 | [ErrorResponse](#schema-errorresponse) | stopDaemon is not a boolean |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 405 | [ErrorResponse](#schema-errorresponse) | This daemon has no client sessions |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "sessionId": "string",
+  "ended": true,
+  "stopping": true,
+  "reason": "string",
+  "otherSessions": 0
+}
+```
+
+<a id="op-reloadclientcredentials"></a>
+
+### POST `/client/reload-credentials`
+
+**Re-read the credential stores a client changed**
+
+ADF Studio moved credentials into or out of this daemon's stores while it ran (the mode-switch handover, design daemon-backend.md §11): ChatGPT and Grok sessions (auth.daemon.json), app-level MCP sign-ins and the `studio-runtime:<scope>` keychain entry. No secret crosses HTTP: the daemon re-reads the runtime identity entry (as GET /identity does), re-runs the credential unlock of every agent degraded on locked credentials, and brings loops that failed on a subscription's auth out of `error` for each subscription whose session is now in its store. Local callers only (loopback, no proxy headers; the local proof behind a proxy).
+
+Operation `reloadClientCredentials` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [CredentialReloadResult](#schema-credentialreloadresult) | What the reload found |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "runtime": {
+    "state": "adopted",
+    "reason": "string",
+    "message": "string"
+  },
+  "unlocked": [
+    {
+      "agentId": "string",
+      "filePath": "string"
+    }
+  ],
+  "stillLocked": [
+    {
+      "agentId": "string",
+      "filePath": "string"
+    }
+  ],
+  "sessions": [
+    "chatgpt"
+  ],
+  "recovered": 0
+}
+```
+
+<a id="op-setclientsessionexitwhenclosed"></a>
+
+### PUT `/client/sessions/{id}/exit-when-closed`
+
+**Change a session's orphan behaviour**
+
+The client's quit behaviour changed (ADF Studio's keepDaemonRunning): with `exitDaemonWhenClosed: true` the session's expiry stops a Studio-started daemon when no other session is open (the orphan rule, §8.3); with false it does not.
+
+Operation `setClientSessionExitWhenClosed` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Client session id (POST /client/sessions) |
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `exitDaemonWhenClosed` | boolean | yes |  |
+
+```json
+{
+  "exitDaemonWhenClosed": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | Changed |
+| 400 | [ErrorResponse](#schema-errorresponse) | exitDaemonWhenClosed is not a boolean |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such client session |
+| 405 | [ErrorResponse](#schema-errorresponse) | This daemon has no client sessions |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "sessionId": "string",
+  "exitDaemonWhenClosed": true
+}
+```
+
 <a id="schemas"></a>
 
 ## Schemas
@@ -15292,6 +17293,7 @@ The agent's ADF v0.2 config (adf_config). Only the most used fields are listed; 
 |---|---|---|---|
 | `agentId` | string | yes | Agent id |
 | `config` | [AgentConfig](#schema-agentconfig) | yes |  |
+| `revision` | integer |  | W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write. |
 
 <a id="schema-agentconfigupdateresponse"></a>
 
@@ -15302,6 +17304,10 @@ The agent's ADF v0.2 config (adf_config). Only the most used fields are listed; 
 | `agentId` | string | yes | Agent id |
 | `success` | `true` | yes |  |
 | `config` | [AgentConfig](#schema-agentconfig) | yes |  |
+| `filePath` | string |  | Open document only: the file followed a name change to this path |
+| `renameDeferred` | boolean |  | Open document only: a start is building; the file is renamed when it stops |
+| `renameError` | string |  | Open document only: why the file did not follow the name change (saved anyway) |
+| `revision` | integer |  | W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write. |
 
 <a id="schema-agentcontextresponse"></a>
 
@@ -15426,6 +17432,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `id` | string | yes |  |
 | `filePath` | string \| null | yes |  |
 | `config` | [AgentConfig](#schema-agentconfig) | yes |  |
+| `running` | boolean |  | GET /agents/{id} only: false for an open document (a file a client holds open without running it; design D4). |
 
 <a id="schema-agentruntimediagnostics"></a>
 
@@ -15457,6 +17464,8 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `targetState` | string \| null | yes |  |
 | `loopCount` | integer | yes | Persisted entries in main's loop stream |
 | `degraded` | string |  | Set when the agent loaded but cannot fully function (CREDENTIALS_LOCKED: its credentials envelope is locked); cleared once the owner identity unlocks it |
+| `running` | boolean |  | GET /agents/{id}/status: false for an open document that is not running (runtimeState `stopped`). |
+| `sessionId` | string |  | GET /agents/{id}/status of a running agent: its runtime session id (Studio's AGENT_START answers it). |
 
 <a id="schema-agentsuccess"></a>
 
@@ -15648,10 +17657,15 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 
 ### ChatBody
 
+`text`, or `content` (content blocks, which win when both are given).
+
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `text` | string | yes |  |
+| `text` | string |  |  |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB. |
+| `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
+| `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
 
 <a id="schema-chatclearresponse"></a>
 
@@ -15883,7 +17897,9 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `provider` | string |  | App provider id (must exist in settings.providers) |
 | `model` | string |  |  |
 | `start` | boolean |  | Default `false`. |
-| `identityDraftId` | string |  | An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity. |
+| `identityDraftId` | string |  | An identity draft (POST /identity/drafts): the new agent gets its DID. Consumed; an unknown or expired draft falls back to a fresh identity, reported in `identityDraft` and `warnings`. |
+| `load` | boolean |  | false: create the file and load nothing (Studio's FILE_CREATE, MESH_FOUND_AGENT). With `holder`, the file is held as an open document. Default `true`. |
+| `replace` | boolean |  | true: a file of that name exists and the user chose to replace it (Studio's save dialog asked): the new agent is written over it. Refused (409 `name_taken`) while that file runs or is open. Without the owner identity the agent is still made, its identity not sealed to an owner; `warnings` says so. Default `false`. |
 
 <a id="schema-createagentresponse"></a>
 
@@ -15896,6 +17912,10 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `filePath` | string | yes |  |
 | `did` | string | yes |  |
 | `started` | boolean | yes |  |
+| `loaded` | boolean | yes | Loaded in the runtime (false with load: false) |
+| `document` | [OpenDocument](#schema-opendocument) |  |  |
+| `identityDraft` | `"adopted"` \| `"unknown"` \| `"adopt_failed"` |  | What became of identityDraftId; unknown and adopt_failed mint a fresh DID |
+| `warnings` | string[] |  | Sentences to show (a draft identity that was not used) |
 
 <a id="schema-credentialmeta"></a>
 
@@ -15926,6 +17946,9 @@ What the API reveals about one stored identity value: never the value.
 | `runtimeId` | string \| null | yes | Mesh runtime id from settings; null until one was minted |
 | `pid` | integer | yes | Daemon process id |
 | `startedBy` | `"studio"` \| `"cli"` \| `"service"` | yes | Who launched this daemon run (`ADF_DAEMON_STARTED_BY`) |
+| `localProof` | object |  | Whether this run has a local proof (X-ADF-Local-Proof). Without one, every route that needs it refuses (POST /identity/import, the stored-value reveal routes); on Windows that happens when icacls cannot restrict the proof file. Absent in daemons before this field. |
+| `localProof.available` | boolean | yes |  |
+| `localProof.problem` | string \| null | yes | Why there is no proof; null when available. |
 
 <a id="schema-diagnosticsresponse"></a>
 
@@ -16064,6 +18087,7 @@ The `data` of one SSE frame. The SSE `id` is the cursor, the SSE `event` is even
 | `encoding` | `"utf-8"` \| `"base64"` | yes |  |
 | `content` | string |  | utf-8 files |
 | `content_base64` | string |  | Binary files |
+| `revision` | integer |  | W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write. |
 
 <a id="schema-filelistentry"></a>
 
@@ -16117,6 +18141,8 @@ One of content / content_base64 is required.
 | `mime_type` | string |  | Alias: mimeType |
 | `mimeType` | string |  |  |
 | `protection` | [FileProtection](#schema-fileprotection) |  |  |
+| `baseRevision` | integer |  | W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter |
+| `mustNotExist` | boolean |  | W3-F: create only: refused (409 stale_revision, with the existing file's revision) when the file exists. As `If-None-Match: *`. |
 
 <a id="schema-folderagent"></a>
 
@@ -17215,6 +19241,10 @@ An app-level provider as clients see it: never the key.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `filePath` | string | yes |  |
+| `claim` | boolean |  | Claim & Open: a fresh identity under this owner. A legacy file password must be unlocked first (409 password_required). |
+| `model` | object |  | The model chosen in the review dialog (provider must be configured; 400 provider_unknown) |
+| `model.provider` | string | yes |  |
+| `model.model_id` | string | yes |  |
 
 <a id="schema-reviewinfo"></a>
 
@@ -17226,6 +19256,11 @@ An app-level provider as clients see it: never the key.
 | `filePath` | string | yes |  |
 | `reviewed` | boolean | yes |  |
 | `summary` | [ReviewSummary](#schema-reviewsummary) | yes |  |
+| `needsReview` | boolean |  | Studio's FILE_CHECK_REVIEW: not reviewed yet |
+| `claimed` | boolean |  | Accept only: the file was claimed (a fresh identity under this owner) |
+| `did` | string \| null |  | Accept only: the agent DID afterwards |
+| `config` | [AgentConfig](#schema-agentconfig) |  |  |
+| `lockedFields` | string[] |  | Accept only: the security-sensitive fields this accept locked against the agent's own edits |
 
 <a id="schema-reviewrequiredresponse"></a>
 
@@ -17450,6 +19485,7 @@ Type: object
 | `success` | `true` | yes |  |
 | `loaded` | boolean | yes | The agent was loaded from a tracked folder first |
 | `startupTriggered` | boolean | yes |  |
+| `sessionId` | string |  | The started agent's runtime session id |
 | `agent` | [AgentStatus](#schema-agentstatus) |  |  |
 
 <a id="schema-subscriptionauthstatus"></a>
@@ -17698,6 +19734,8 @@ Type: `"pending"` \| `"pending_approval"` \| `"running"` \| `"completed"` \| `"f
 | `defaultId` | string | yes |  |
 | `folder` | string | yes |  |
 | `defaultDirectory` | string | yes | Where POST /agents/create puts agents without `directory` |
+| `migrated` | object |  | Present once after the legacy settings snapshot became a template, until `templatesMigrationSeen` is set (Studio shows a one-time notice) |
+| `migrated.id` | string | yes |  |
 
 <a id="schema-templatepatchbody"></a>
 
@@ -17727,7 +19765,9 @@ Type: `"pending"` \| `"pending_approval"` \| `"running"` \| `"completed"` \| `"f
 | `id` | string | yes |  |
 | `needsReview` | boolean | yes |  |
 | `reviewed` | boolean | yes |  |
-| `summary` | [ReviewSummary](#schema-reviewsummary) | yes |  |
+| `summary` | [ReviewSummary](#schema-reviewsummary) |  |  |
+| `identityReady` | `false` |  | Present (false) when the owner identity is not ready: no summary, needsReview false (Studio parity) |
+| `message` | string |  |  |
 
 <a id="schema-templatereviewacceptbody"></a>
 
@@ -17774,6 +19814,7 @@ Type: `"pending"` \| `"pending_approval"` \| `"running"` \| `"completed"` \| `"f
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `content` | string | yes |  |
+| `baseRevision` | integer |  | W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter |
 
 <a id="schema-textcontentresponse"></a>
 
@@ -17783,6 +19824,7 @@ Type: `"pending"` \| `"pending_approval"` \| `"running"` \| `"completed"` \| `"f
 |---|---|---|---|
 | `agentId` | string | yes | Agent id |
 | `content` | string | yes |  |
+| `revision` | integer |  | W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write. |
 
 <a id="schema-timer"></a>
 
@@ -18998,7 +21040,8 @@ ExternalExecutionService.probe result
 | `finishedAt` | number |  |  |
 | `result` | any |  | The work's answer (state `succeeded`): the route's documented result shape |
 | `error` | string |  | Why it failed or was cancelled |
-| `progress` | string |  |  |
+| `progress` | string |  | The latest progress line the work reported |
+| `progressLog` | [JobProgressEntry](#schema-jobprogressentry)[] |  | The last 50 progress lines, oldest first |
 
 <a id="schema-jobaccepted"></a>
 
@@ -19007,7 +21050,17 @@ ExternalExecutionService.probe result
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `jobId` | string | yes |  |
-| `job` | [Job](#schema-job) | yes |  |
+| `job` | [Job](#schema-job) & object | yes |  |
+| `job.id` | string | yes |  |
+| `job.kind` | string | yes | What the job does, e.g. `mcp.registration-test` |
+| `job.state` | `"running"` \| `"succeeded"` \| `"failed"` \| `"cancelled"` | yes |  |
+| `job.createdAt` | number | yes | Epoch ms |
+| `job.finishedAt` | number |  |  |
+| `job.result` | any |  | The work's answer (state `succeeded`): the route's documented result shape |
+| `job.error` | string |  | Why it failed or was cancelled |
+| `job.progress` | string |  | The latest progress line the work reported |
+| `job.progressLog` | [JobProgressEntry](#schema-jobprogressentry)[] |  | The last 50 progress lines, oldest first |
+| `job.joined` | boolean |  | True when the request joined a job of the same kind and key that was already running |
 
 <a id="schema-jobcancelresponse"></a>
 
@@ -19043,6 +21096,8 @@ The path → id rule. `loaded`: the /agents/{id} routes take `agentId` now. Not 
 | `loaded` | boolean | yes |  |
 | `tracked` | boolean | yes | Under a tracked folder |
 | `pendingName` | string |  | A rename waiting for the running agent to stop |
+| `reviewed` | boolean |  | Not loaded: the agent's id is in reviewedAgents (Studio's background-start review gate) |
+| `passwordProtected` | boolean |  | Not loaded: the file has a legacy whole-file password (Studio's background-start password gate) |
 | `error` | string |  | Why the file could not be read |
 
 <a id="schema-agentsfolderinfo"></a>
@@ -19220,6 +21275,7 @@ The path → id rule. `loaded`: the /agents/{id} routes take `agentId` now. Not 
 | `success` | `true` | yes |  |
 | `path` | string | yes | Where it was saved (numbered with unique=true when the name was taken) |
 | `size` | integer | yes |  |
+| `revision` | integer |  | W3-F: the revision of the written file (the writer is the request's client session, or cli) |
 
 <a id="schema-browseroot"></a>
 
@@ -19274,3 +21330,349 @@ The path → id rule. `loaded`: the /agents/{id} routes take `agentId` now. Not 
 |---|---|---|---|
 | `path` | string | yes |  |
 | `files` | [TrackedTreeEntry](#schema-trackedtreeentry)[] | yes |  |
+
+<a id="schema-chatpageresponse"></a>
+
+### ChatPageResponse
+
+GET /agents/{id}/chat with `before`: a keyset page of display entries older than that seq (Studio's DOC_GET_CHAT_OLDER).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes |  |
+| `loop` | string | yes |  |
+| `uiLog` | [DisplayEntry](#schema-displayentry)[] | yes |  |
+| `earlierCount` | integer | yes | Rows of this loop before the page |
+
+<a id="schema-agentheaderresponse"></a>
+
+### AgentHeaderResponse
+
+Studio's DOC_GET_HEADER: what the header shows, in one read.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes |  |
+| `document` | string | yes | The primary document |
+| `agentConfig` | [AgentConfig](#schema-agentconfig) | yes |  |
+| `statusText` | string | yes | adf_meta `status` (empty when unset) |
+
+<a id="schema-agentbatchresponse"></a>
+
+### AgentBatchResponse
+
+Studio's DOC_GET_BATCH: the header, the token figures and main's last 200 display entries.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes |  |
+| `document` | string | yes | The primary document |
+| `agentConfig` | [AgentConfig](#schema-agentconfig) | yes |  |
+| `statusText` | string | yes | adf_meta `status` (empty when unset) |
+| `lastTokens` | object |  | The newest assistant row's token breakdown (absent when none) |
+| `contextBaseline` | object \| null |  | What the context gauge shows (null when none); after a compaction it differs from lastTokens and wins |
+| `chat` | object | yes |  |
+| `chat.version` | integer | yes |  |
+| `chat.uiLog` | [DisplayEntry](#schema-displayentry)[] | yes |  |
+| `chat.llmMessages` | any[] | yes |  |
+| `chat.earlierCount` | integer | yes |  |
+| `chat.total` | integer | yes |  |
+| `configRevision` | integer |  | W3-F: the revision of `agentConfig` |
+| `documentRevision` | integer |  | W3-F: the revision of `document` |
+
+<a id="schema-opendocument"></a>
+
+### OpenDocument
+
+An open document (design D4): an .adf held open by client sessions, with or without a runtime on it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes |  |
+| `filePath` | string | yes |  |
+| `name` | string | yes |  |
+| `running` | boolean | yes |  |
+| `needsPassword` | boolean | yes | Legacy whole-file password, not unlocked: prompt, then POST /agents/{id}/identity/password/unlock |
+| `holders` | integer | yes |  |
+| `nameChangedFrom` | string |  |  |
+| `readOnly` | string |  | Another runtime runs the file: it opened read-only (no open step wrote it), writes are refused; the sentence names the holder |
+
+<a id="schema-clientsessioninput"></a>
+
+### ClientSessionInput
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `client` | string | yes | Client name, for the daemon log (`studio`, `tui`) |
+| `version` | string | yes | Client version, for the daemon log |
+| `exitDaemonWhenClosed` | boolean |  | Stop a Studio-started daemon when this session expires and no other session is open. Default false. |
+| `umbilical` | boolean |  | Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false. |
+
+<a id="schema-clientsessioncreated"></a>
+
+### ClientSessionCreated
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | yes |  |
+| `epoch` | string | yes | The session's cursor space; resume with `?since=&epoch=` |
+
+<a id="schema-clientsessionfocus"></a>
+
+### ClientSessionFocus
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | yes |  |
+| `focus` | string \| null | yes | The focused agent id, or null |
+
+<a id="schema-clienthelddocument"></a>
+
+### ClientHeldDocument
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes |  |
+| `filePath` | string \| null | yes |  |
+| `running` | boolean |  |  |
+
+<a id="schema-clientdocumentreleased"></a>
+
+### ClientDocumentReleased
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | yes |  |
+| `agentId` | string | yes |  |
+| `released` | `true` | yes |  |
+
+<a id="schema-clientsessionended"></a>
+
+### ClientSessionEnded
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | yes |  |
+| `ended` | `true` | yes |  |
+
+<a id="schema-clientstreamgap"></a>
+
+### ClientStreamGap
+
+Data of the `stream.gap` control frame on a client session stream: frames were lost; reload state.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | `"evicted"` \| `"epoch_changed"` \| `"oversized"` | yes | `evicted`: frames after `requestedCursor` were dropped before they were written (slow reader, long disconnect). `epoch_changed`: the cursor is from another session; the whole ring follows. `oversized`: one frame was larger than the 4 Mi-character frame limit and was not kept (this session only). |
+| `epoch` | string | yes |  |
+| `requestedCursor` | integer \| null | yes |  |
+| `oldestCursor` | integer \| null | yes |  |
+| `latestCursor` | integer | yes |  |
+| `dropped` | integer |  | Frames lost (`evicted`, `oversized`) |
+| `size` | integer |  | Serialized size of the oversized frame |
+
+<a id="schema-clientframe"></a>
+
+### ClientFrame
+
+One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes "[Circular]". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cursor` | integer | yes | Resume cursor, per session |
+| `kind` | `"executor"` \| `"host"` \| `"push"` \| `"umbilical"` | yes |  |
+| `agentId` | string \| null |  |  |
+| `filePath` | string \| null |  |  |
+| `loop` | string |  |  |
+| `event` | object |  |  |
+| `stripped` | `"tool_result"` \| `"tool_input"` \| `"stub"` |  | Reduced for a session not focused on the agent: `tool_result` (result content dropped, `resultSize` added), `tool_input` (`tool_call_start` with each input field cut to 2048 characters, `inputTruncated: true`), `stub` (only short scalar fields plus `size`). |
+| `type` | string |  |  |
+| `topic` | string |  |  |
+| `payload` | any |  |  |
+| `timestamp` | number |  |  |
+| `unserializable` | `true` |  | The payload could not be serialized; it is `{unserializable: reason}`. |
+
+<a id="schema-fleetstatebody"></a>
+
+### FleetStateBody
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filePaths` | string[] | yes |  |
+| `state` | `"idle"` \| `"hibernate"` | yes |  |
+
+<a id="schema-fleetstateresult"></a>
+
+### FleetStateResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `updated` | string[] | yes |  |
+| `failed` | object[] | yes |  |
+| `failed[].filePath` | string | yes |  |
+| `failed[].error` | string | yes |  |
+
+<a id="schema-fleetfoundbody"></a>
+
+### FleetFoundBody
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `dir` | string | yes | Absolute folder for the new agent. |
+| `name` | string | yes |  |
+| `newRoot` | boolean |  |  |
+
+<a id="schema-fleetfoundresult"></a>
+
+### FleetFoundResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `success` | boolean | yes |  |
+| `filePath` | string |  |  |
+| `error` | string |  |  |
+
+<a id="schema-agentsuccessorerror"></a>
+
+### AgentSuccessOrError
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `success` | boolean | yes |  |
+| `error` | string |  |  |
+
+<a id="schema-computeusersresponse"></a>
+
+### ComputeUsersResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `users` | map<string, string[]> | yes |  |
+
+<a id="schema-jobprogressentry"></a>
+
+### JobProgressEntry
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `seq` | integer | yes | Numbered from 1 per job |
+| `text` | string | yes |  |
+| `detail` | object |  | What the line is about, e.g. `{ "package": "@scope/name" }` for an install |
+
+<a id="schema-packageinstalljobresult"></a>
+
+### PackageInstallJobResult
+
+Studio's install answer: the installed package, or the installer's error as String(error)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `success` | boolean | yes |  |
+| `installed` | object |  |  |
+| `error` | string |  |  |
+
+<a id="schema-sandboxinstalljobresult"></a>
+
+### SandboxInstallJobResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `success` | `true` | yes |  |
+| `results` | map<string, object> | yes | Per package name |
+
+<a id="schema-agentfileconfigresponse"></a>
+
+### AgentFileConfigResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `filePath` | string | yes | Canonical path |
+| `agentId` | string \| null | yes |  |
+| `loaded` | boolean | yes | Running here or an open document: the live config |
+| `config` | object | yes | The agent's AgentConfig |
+
+<a id="schema-resourcewriter"></a>
+
+### ResourceWriter
+
+W3-F: who made a change. `agent`: the agent's own runtime, or a change no client announced. `client`: a client session, by its client name (`studio`, `tui`, …; never the session id). `cli`: a request that named no client session.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"agent"` \| `"client"` \| `"cli"` | yes |  |
+| `client` | string |  | `client` only |
+
+<a id="schema-stalerevisionerror"></a>
+
+### StaleRevisionError
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `error` | string | yes | Human-readable message |
+| `code` | `"stale_revision"` | yes |  |
+| `resource` | string | yes | `config`, `document`, or the internal file path |
+| `revision` | integer | yes | The current revision: a write with it as the base overwrites |
+| `baseRevision` | integer | yes | The base the write named |
+| `writer` | [ResourceWriter](#schema-resourcewriter) \| null | yes | Who made the current revision (null: nobody known since the daemon first saw it) |
+| `size` | integer \| null |  | Current size in bytes (null for config) |
+| `hash` | string | yes | sha1 of the current content (`absent` for a missing file) |
+
+<a id="schema-revisionedsuccess"></a>
+
+### RevisionedSuccess
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes | Agent id |
+| `success` | boolean | yes |  |
+| `revision` | integer |  | W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write. |
+
+<a id="schema-clientquitinput"></a>
+
+### ClientQuitInput
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `stopDaemon` | boolean |  | Stop the daemon when allowed (Studio: `keepDaemonRunning` off). Default false: only the session ends. |
+
+<a id="schema-clientquitresult"></a>
+
+### ClientQuitResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | yes |  |
+| `ended` | boolean | yes | False when the session had already ended or expired. |
+| `stopping` | boolean | yes | True when the daemon shuts down because of this request. |
+| `reason` | string | yes | Why the daemon stops or keeps running. |
+| `otherSessions` | integer | yes | Client sessions still open. |
+
+<a id="schema-credentialreloadresult"></a>
+
+### CredentialReloadResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `runtime` | object \| null | yes | Runtime identity adoption after the re-read (GET /identity `runtime`); null without an owner identity service. |
+| `runtime.state` | `"adopted"` \| `"absent"` \| `"rejected"` \| `"unavailable"` |  |  |
+| `runtime.reason` | string \| null |  |  |
+| `runtime.message` | string |  |  |
+| `unlocked` | object[] | yes | Agents whose credentials unlocked now. |
+| `unlocked[].agentId` | string | yes |  |
+| `unlocked[].filePath` | string \| null | yes |  |
+| `stillLocked` | object[] | yes | Agents still degraded on locked credentials. |
+| `stillLocked[].agentId` | string | yes |  |
+| `stillLocked[].filePath` | string \| null | yes |  |
+| `sessions` | `"chatgpt"` \| `"grok"`[] | yes | Subscription sessions in this daemon's stores. |
+| `recovered` | integer | yes | Loops that left an auth error. |
+
+<a id="schema-clientsessionlist"></a>
+
+### ClientSessionList
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessions` | object[] | yes |  |
+| `sessions[].client` | string | yes |  |
+| `sessions[].version` | string | yes |  |
+| `sessions[].exitDaemonWhenClosed` | boolean | yes |  |

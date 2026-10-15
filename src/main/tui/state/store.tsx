@@ -213,7 +213,16 @@ export const PROMPT_PREFILL_KEY = 'shell.prompt.prefill'
 const CHAT_VIEW_ID = 'chat'
 
 export function createTuiStore(options: CreateStoreOptions): TuiStore {
+  /**
+   * This daemon's client. Once a client session is open it names the session
+   * on every request (X-ADF-Client-Session), so the daemon records the TUI's
+   * writes as `client:tui` and does not echo them back on its stream.
+   */
   let client = options.client
+  /** The same daemon without the session header: sessions open and end through it, other daemons derive from it. */
+  let plain = options.client
+  /** `plain` and its session-named copies: a read started through one of them is not stale. */
+  let current = new WeakSet<DaemonClient>([client])
   const pageSize = options.pageSize ?? 100
   let state = initialState(client.baseUrl, options.initialView)
   const listeners = new Set<() => void>()
@@ -284,11 +293,16 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   const selectedLoopOf = (agentId: string) => state.selectedLoop[agentId] ?? MAIN_LOOP
   /** Reads started against a daemon we have since switched away from are dropped. */
-  const stale = (c: DaemonClient) => c !== client
+  const stale = (c: DaemonClient) => !current.has(c)
+  /** Requests name session `id` from now on (null: none). */
+  const useSession = (id: string | null) => {
+    client = id ? plain.withClientSession(id) : plain
+    current.add(client)
+  }
 
   const actions: TuiActions = {
     async setDaemonUrl(url, token) {
-      const next = client.withBaseUrl(url, token)
+      const next = plain.withBaseUrl(url, token)
       if (next.baseUrl === client.baseUrl && token === undefined) {
         toast(`Already connected to ${next.baseUrl}`, 'info')
         return true
@@ -308,6 +322,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       for (const timer of debounced.values()) clearTimeout(timer)
       debounced.clear()
       client = next
+      plain = next
+      current = new WeakSet([next])
       dispatch({ type: 'daemon/switch', url: next.baseUrl })
       toast(`Switched from ${previous} to ${next.baseUrl} — agents on the old daemon keep running`, 'success', 6000)
       await start()
@@ -1084,13 +1100,14 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   }
 
   async function openStream() {
-    const c = client
+    const c = plain
     const id = options.clientSessions === false ? null : await openSession(c)
     if (stale(c) || stopped) {
       if (id) void c.endClientSession(id).catch(() => {})
       return
     }
     sessionId = id
+    useSession(id)
     focusSent = undefined
     if (id) {
       stream = c.clientSessionEvents(id, { onEvent: onClientFrame, onState: onStreamState, onResume: onStreamResume, onGap: onStreamGap }).start()
@@ -1109,6 +1126,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       stream?.close()
       stream = null
       sessionId = null
+      useSession(null)
       await openStream()
       if (stopped) return
       if (hadSession) toast('The daemon no longer had this app\'s client session — reopened, reloading', 'warn', 4000)
@@ -1147,6 +1165,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   function endSession(c: DaemonClient): Promise<void> {
     const id = sessionId
     sessionId = null
+    if (c === client) useSession(null)
     focusSent = undefined
     if (!id) return Promise.resolve()
     return c.endClientSession(id).then(() => {}, () => {})

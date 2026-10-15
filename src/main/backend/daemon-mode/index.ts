@@ -11,6 +11,7 @@ import { openSharedMnemonicStore, type SharedMnemonicStore } from '../../service
 import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../../daemon/local-access'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile } from '../../menu'
+import { relaunchEmbeddedForSession, relaunchStudio } from '../mode-switch'
 import { createAdfFileHandler } from './adf-file'
 import { ApprovalsUi } from './approvals-ui'
 import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
@@ -136,6 +137,10 @@ export interface DaemonModeDeps {
   waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
   afterOwnerImport?: (phrase: string) => Promise<string>
+  /** Tests: Studio's restarts after a failed launch. Default: relaunchStudio / relaunchEmbeddedForSession (mode-switch.ts). */
+  relaunch?: { reconnect(reason: string): void; embeddedForSession(reason: string): void }
+  /** How long a restart waits for the window to keep its unsaved editors and restart itself. Default 15 s. */
+  stashWaitMs?: number
 }
 
 export interface DaemonModeHandle {
@@ -159,8 +164,8 @@ export interface DaemonModeHandle {
   setKeepDaemonRunning(keep: boolean): Promise<void>
   /** The gated background start (BACKGROUND_AGENT_START): resumes an agent a switch carried over. */
   startBackgroundAgent(filePath: string): Promise<{ success: boolean; error?: string; code?: string }>
-  /** Agents running in the daemon and whether a turn is in flight (the switch dialog). */
-  agentActivity(): Array<{ filePath: string; busy: boolean }>
+  /** Agents running in the daemon, whether a turn is in flight, and whether one waits on an approval or a question (the switch dialog). */
+  agentActivity(): Array<{ filePath: string; busy: boolean; waiting: boolean }>
   /**
    * Studio's quit path in daemon mode (§8.3): end the client session; in
    * local mode with `keepDaemonRunning` off, the daemon stops when Studio
@@ -393,15 +398,63 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let clientSession: ClientSession | null = null
+  const relaunch = deps.relaunch ?? { reconnect: relaunchStudio, embeddedForSession: relaunchEmbeddedForSession }
+  /**
+   * Restart after the connection failed. The window first keeps every
+   * unsaved editor as a recovery copy (W3-F RECOVERY_STASH, listed at the
+   * next launch), then asks for the restart itself (BACKEND_RESTART_STUDIO);
+   * without a window, or one that does not answer, main restarts.
+   */
+  const restartKeepingEdits = (kind: 'reconnect' | 'embedded-session', reason: string): void => {
+    const restart = () => kind === 'reconnect' ? relaunch.reconnect(reason) : relaunch.embeddedForSession(reason)
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && !w.webContents.isDestroyed())
+    if (!win) { restart(); return }
+    log.log(`[Backend] Asking the window to keep its unsaved editor text as recovery copies, then restarting (${reason})`)
+    win.webContents.send(IPC.MENU_ACTION, kind === 'reconnect' ? 'stash-edits-and-reconnect' : 'stash-edits-and-use-embedded')
+    const fallback = setTimeout(() => {
+      log.warn('[Backend] The window did not restart Studio after keeping its unsaved text; restarting now')
+      restart()
+    }, deps.stashWaitMs ?? 15_000)
+    fallback.unref?.()
+  }
+  /**
+   * After the connection failed during this session (a client session had
+   * opened: documents may be open), a restart is confirmed first. A launch
+   * that never connected restarts at once.
+   */
+  const confirmRestart = async (action: string, failure: string): Promise<boolean> => {
+    if (!clientSession) return true
+    const buttons = ['Restart Studio', 'Cancel']
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      title: 'Restart Studio',
+      message: `${action} restarts Studio.`,
+      detail: `The connection to the ADF daemon failed during this session: ${failure}\n\nUnsaved text in open editors is kept as recovery copies; the next launch lists them.`,
+      buttons,
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    }).catch(() => ({ response: 1 }))
+    if (response !== 0) log.log(`[Backend] ${action} cancelled; Studio stays without a daemon connection`)
+    return response === 0
+  }
   const reconnect = (): void => {
     const state = connection.state
-    if (state.state === 'failed' || !clientSession) {
-      // Nothing to reconnect: the connector itself failed this session.
-      log.warn('[Backend] Reconnect requested, but Studio found no daemon to connect to this session; restart Studio to try again')
+    if (state.state === 'failed') {
+      // The connector failed, or the session became unusable: the connector runs again at Studio's start.
+      void confirmRestart('Reconnect', state.message).then((ok) => {
+        if (!ok) return
+        log.log(`[Backend] Reconnect requested after a failed connection (${state.message}): restarting Studio to connect again`)
+        restartKeepingEdits('reconnect', 'Reconnect after a failed connection to the ADF daemon')
+      })
+      return
+    }
+    if (!clientSession) {
+      log.warn('[Backend] Reconnect requested while Studio is still looking for the ADF daemon; it connects when the daemon answers')
       void dialog.showMessageBox({
-        type: 'warning',
-        message: 'Studio has no ADF daemon to reconnect to.',
-        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
+        type: 'info',
+        message: 'Studio is still connecting to the ADF daemon.',
+        detail: `It connects when the daemon answers. ${deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
         buttons: ['OK'],
       }).catch(() => {})
       return
@@ -409,15 +462,38 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log.log('[Backend] Reconnecting to the ADF daemon (requested)')
     clientSession.reconnect()
   }
+  /**
+   * After a failed launch, local mode only: embedded for this launch only;
+   * the saved mode stays (§8.2 session-only). Not in remote mode: embedded
+   * Studio autostarts this computer's agents, which may run on the server
+   * too (two pollers of one bot, Telegram 409).
+   */
+  const useEmbeddedForSession = deps.mode === 'local' ? (): void => {
+    const state = connection.state
+    void confirmRestart('Use Embedded for This Session', state.state === 'failed' ? state.message : 'not connected').then((ok) => {
+      if (!ok) return
+      log.log('[Backend] Use Embedded for This Session requested after a failed connection to the ADF daemon')
+      restartKeepingEdits('embedded-session', clientSession ? 'the ADF daemon connection failed during the session' : 'no ADF daemon could be reached at launch')
+    })
+  } : undefined
+  /** Remote mode, after a failed launch: Settings → Backend, where the URL and token are fixed and tested. */
+  const openBackendSettings = deps.mode === 'remote' ? (): void => {
+    log.log('[Backend] Opening Settings → Backend after a failed connection to the remote ADF daemon')
+    const win = hooks.showMainWindow?.() ?? BrowserWindow.getAllWindows()[0] ?? null
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.MENU_ACTION, 'open-settings-backend')
+  } : undefined
   initApplicationMenu(clientSettings, {
     logFile: () => connection.logFile,
     problem: () => connectionProblem(connection.state, connection.baseUrl),
-    canReconnect: () => connection.state.state === 'disconnected',
+    canReconnect: () => connection.state.state === 'disconnected' || connection.state.state === 'failed',
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
+    useEmbeddedForSession,
+    openBackendSettings,
+    launchFailed: () => connection.state.state === 'failed',
     remoteRecents: deps.mode === 'remote',
   })
-  const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
+  const statusUi = new ConnectionStatusUi(connection, { reconnect, useEmbeddedForSession, openBackendSettings, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
 
   const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
   let versionInfo: DaemonVersionInfo | null = null
@@ -428,6 +504,18 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       }
       versionInfo = v
     }).catch(() => {})
+  }
+  /**
+   * How Studio got the daemon that answers now: the launch's answer while the
+   * same process (pid) answers, else attached (`adf daemon restart`, another
+   * start). Re-derived from /version, which every reattach and epoch change
+   * re-reads (refreshVersion), never kept from the launch.
+   */
+  const currentHow = (): 'attached' | 'spawned' | null => {
+    const endpoint = connection.endpointInfo
+    if (!endpoint?.how) return null
+    const launched = endpoint.daemon?.pid
+    return versionInfo && launched !== undefined && versionInfo.pid !== launched ? 'attached' : endpoint.how
   }
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
     void leases.registerClient(deps.mode, { ...clientRecord, ...(connection.baseUrl ? { controlUrl: connection.baseUrl } : {}) })
@@ -596,7 +684,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         if (deps.mode === 'local' && clientSession?.quit) answer = await clientSession.quit(stopDaemon)
         else await clientSession?.end()
         // No session was ever opened on a daemon this Studio started: the orphan rule cannot stop it, so ask directly.
-        if (!answer && stopDaemon && connection.endpointInfo?.how === 'spawned' && connection.current) {
+        if (!answer && stopDaemon && currentHow() === 'spawned' && connection.current) {
           answer = await connection.current.withTimeout(5_000).request<ClientQuitAnswer>('POST', '/client/sessions/none/quit', { body: { stopDaemon: true } })
         }
       } catch (err) {
@@ -630,7 +718,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       pid: info?.pid ?? null,
       version: info?.version ?? null,
       startedBy: info?.startedBy ?? null,
-      how: endpoint?.how ?? null,
+      how: currentHow(),
       localProof: info?.localProof ?? null,
       trust: info?.trust ?? null,
       logFile: connection.logFile,
@@ -659,10 +747,17 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     }
   }
 
-  const agentActivity = () => bridge.runningAgents().map((a) => ({
-    filePath: a.filePath,
-    busy: a.mapping.state === 'active' || a.mapping.activeLoops > 0 || (a.lastForegroundState !== undefined && a.lastForegroundState !== 'idle' && a.lastForegroundState !== 'stopped' && a.lastForegroundState !== 'error'),
-  }))
+  const agentActivity = () => {
+    const waiting = new Set(approvals.pendingFilePaths())
+    const running = bridge.runningAgents().map((a) => ({
+      filePath: a.filePath,
+      busy: a.mapping.state === 'active' || a.mapping.activeLoops > 0 || (a.lastForegroundState !== undefined && a.lastForegroundState !== 'idle' && a.lastForegroundState !== 'stopped' && a.lastForegroundState !== 'error'),
+      waiting: waiting.has(a.filePath),
+    }))
+    // An approval names its agent even when the running list has not caught up.
+    for (const filePath of waiting) if (!running.some((a) => a.filePath === filePath)) running.push({ filePath, busy: true, waiting: true })
+    return running
+  }
 
   return {
     registered,

@@ -356,6 +356,18 @@ describe('provider keys shown as the placeholder', () => {
     expect(await invoke(IPC.SETTINGS_SET, { providers: [{ id: 'p1', name: 'OpenAI', apiKey: '__redacted__' }] })).toEqual({ success: true })
     expect(patches).toHaveLength(1)
   })
+
+  it("SETTINGS_SET refuses a Settings → MCP env value made from the placeholder, in the per-agent forms' sentence", async () => {
+    const patches: unknown[] = []
+    daemon.routes.set('PATCH /settings', ({ body }) => { patches.push(body); return {} })
+    const servers = (value: string) => ({ mcpServers: [{ id: 'mcp:acme', name: 'acme', type: 'npm', env: [{ key: 'API_KEY', value }] }] })
+    for (const edited of ['__redacted_', '__redacted__abc', '__redaXcted__']) {
+      await expect(invoke(IPC.SETTINGS_SET, servers(edited)), edited).rejects.toThrow('The value of API_KEY was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.')
+    }
+    expect(patches).toEqual([])
+    expect(await invoke(IPC.SETTINGS_SET, servers('k-2'))).toEqual({ success: true })
+    expect(patches).toEqual([servers('k-2')])
+  })
 })
 
 // Last: it ends the shared connection.

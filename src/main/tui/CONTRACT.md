@@ -284,15 +284,22 @@ non-interrupted `turn.completed` (or `absorbed_turn_ids`) marks it answered.
 
 ## 6. Daemon client (`api/`)
 
-`runtime()` is normalized (`api/normalize.ts`): a partial or older daemon's
-GET /runtime (missing sections, `providers: {}`) reads as empty, never
-crashes a view. Read other responses defensively too.
+The client lives in `src/shared/daemon-client/` (`client.ts`, `sse.ts`,
+`types.ts`, `normalize.ts`), shared with Studio main in daemon mode (design
+D8). `api/*.ts` here are re-exports through the `cjs()` shim (`interop.ts`);
+`api/client.ts` adds the Node credentials (`cli/daemon-url.ts`) and the
+`--url` / `--token` defaults. Change the client in `src/shared/daemon-client/`.
+
+`runtime()` is normalized (`src/shared/daemon-client/normalize.ts`): a partial
+or older daemon's GET /runtime (missing sections, `providers: {}`) reads as
+empty, never crashes a view. Read other responses defensively too.
 
 `new DaemonClient({ baseUrl?, token?, fetch?, timeoutMs? })` — `baseUrl`
 defaults like the CLI (`--url` → `ADF_DAEMON_URL` → `http://127.0.0.1:7385`),
 token from `ADF_DAEMON_TOKEN`. All methods reject with `DaemonError { status,
-body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
-(`RuntimeService` / `http-api.ts`), so they track the real shapes.
+body, unreachable }`. Types in `src/shared/daemon-client/types.ts` are
+type-imported from the daemon (`RuntimeService` / `http-api.ts`), so they
+track the real shapes.
 
 - daemon: `health runtime providers authStatus runtimeSettings runtimeMcp
   runtimeAdapters network usage models settings setting putSetting`
