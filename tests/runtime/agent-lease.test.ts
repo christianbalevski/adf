@@ -703,6 +703,8 @@ describe('RuntimeService lease hooks', () => {
     const runtime = runtimeWith(mine)
     const ref = await runtime.loadAgent(filePath)
     expect(leaseFiles(leases)).toHaveLength(1)
+    // Taken before the file was read, the lease names the agent once it is (as Studio's start records it).
+    expect(readOnlyLease(leases).agentId).toBe(ref.id)
     await runtime.unloadAgent(ref.id)
     expect(leaseFiles(leases)).toEqual([])
 

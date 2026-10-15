@@ -670,6 +670,25 @@ export class AgentLeaseRegistry {
     return result
   }
 
+  /**
+   * Record the agent id in a lease taken before the file was opened (a
+   * daemon load acquires first, then reads the config). No-op when this
+   * process does not hold it or it names that id already. Never throws.
+   */
+  async noteAgentId(filePath: string, agentId: string): Promise<void> {
+    try {
+      const target = await this.target(filePath)
+      await this.withKey(target.key, async () => {
+        const entry = this.held.get(target.key)
+        if (!entry || entry.record.agentId === agentId) return
+        entry.record = { ...entry.record, agentId }
+        await writeAtomic(entry.file, JSON.stringify(entry.record, null, 2))
+      })
+    } catch (err) {
+      console.warn(`[AgentLease] Could not record the agent id in the lease of ${agentNameOf(filePath)}:`, err)
+    }
+  }
+
   /** True when this process holds the lease for `filePath`. */
   async isHeld(filePath: string): Promise<boolean> {
     return this.held.has((await this.target(filePath)).key)

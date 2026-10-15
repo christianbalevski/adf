@@ -907,7 +907,7 @@ export class RuntimeService extends EventEmitter {
     if (moving) this.assertNotMoving(moving)
     // AdfWorkspace.open creates a missing database: a load never makes a file.
     else if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
-    const lease = await this.agentLeases?.acquire(canonicalPath)
+    const lease = await this.agentLeases?.acquire(canonicalPath, { agentId: this.documents.get(canonicalPath)?.agentId ?? null })
     if (lease && !lease.ok) {
       throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
     }
@@ -937,6 +937,8 @@ export class RuntimeService extends EventEmitter {
       }
       let config = workspace.getAgentConfig() as AgentConfig
       progress.agentId = config.id
+      // The lease was taken before the file was read: it names the agent now, as Studio's start does.
+      if (lease?.ok) await this.agentLeases?.noteAgentId(canonicalPath, config.id)
       // Before anything is built: a second file with a loaded agent's id
       // would otherwise start its MCP servers and adapters only to be refused.
       this.assertNoDuplicateId(config.id, canonicalPath)
