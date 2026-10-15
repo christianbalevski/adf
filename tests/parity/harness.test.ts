@@ -11,7 +11,7 @@ import { createComputeLog, createFakePodmanServiceClass } from './harness/fake-c
 import { diffRendered, renderRecording } from './harness/format'
 import { normalizeRecording, toGoldenForm, type NormalizationContext } from './harness/normalize'
 import type { ComparableRecording } from './harness/recording'
-import { runScenario, streamingProblems, streamingReport, type ParityScenario } from './harness/scenario'
+import { runScenario, SLICE_DELTA_BOUND_MS, streamingProblems, streamingReport, type ParityScenario } from './harness/scenario'
 import { verifySignatures } from './harness/signatures'
 import { IDENTITY } from './harness/fixtures'
 import type { PushRecord } from './harness/electron-fake'
@@ -204,8 +204,12 @@ describe('parity harness: streaming check', () => {
     expect(streamingProblems(ok)).toEqual([])
     const merged = streamingReport([push(110, 'text_delta_batch'), push(505, 'text_delta_batch')], streams)
     expect(streamingProblems(merged).join('\n')).toMatch(/3 text slice\(s\) arrived as 2/)
-    const late = streamingReport([push(110, 'text_delta_batch'), push(320, 'text_delta_batch'), push(900, 'text_delta_batch')], streams)
-    expect(streamingProblems(late).join('\n')).toMatch(/slice 3 reached the window after 400 ms/)
+    // Relative to the bound in force: PARITY_SLICE_BOUND_MS widens it on CI.
+    const atBound = streamingReport([push(110, 'text_delta_batch'), push(320, 'text_delta_batch'), push(500 + SLICE_DELTA_BOUND_MS, 'text_delta_batch')], streams)
+    expect(streamingProblems(atBound)).toEqual([])
+    const lateBy = SLICE_DELTA_BOUND_MS + 1
+    const late = streamingReport([push(110, 'text_delta_batch'), push(320, 'text_delta_batch'), push(500 + lateBy, 'text_delta_batch')], streams)
+    expect(streamingProblems(late)).toEqual([`streaming: slice 3 reached the window after ${lateBy} ms (bound ${SLICE_DELTA_BOUND_MS} ms)`])
   })
 })
 
