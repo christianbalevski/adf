@@ -94,6 +94,24 @@ describe('POST /client/sessions/:id/quit (§8.3 quit behaviour)', () => {
     expect(d.requestShutdown).toHaveBeenCalledTimes(1)
   })
 
+  it('the terminal app ending the last session gets its answer before the held stop closes the server', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    let server!: ReturnType<typeof createDaemonHttpApi>
+    let stopped = false
+    // The real shutdown closes this server: the DELETE that triggers it must still be answered.
+    server = createDaemonHttpApi(runtime, { routes: { startedBy: 'studio' }, requestShutdown: () => { stopped = true; void server.close() }, security: { token: TOKEN } })
+    servers.push(server)
+    const open = async (client: string, exit: boolean) => (await server.inject({ method: 'POST', url: '/client/sessions', headers: auth, payload: { client, version: '1.0.0', exitDaemonWhenClosed: exit } })).json().sessionId as string
+    const studio = await open('studio', true)
+    const tui = await open('tui', false)
+    await server.inject({ method: 'POST', url: `/client/sessions/${studio}/quit`, headers: auth, payload: { stopDaemon: true } })
+    const del = await server.inject({ method: 'DELETE', url: `/client/sessions/${tui}`, headers: auth })
+    expect(del.statusCode).toBe(200)
+    expect(del.json()).toEqual({ sessionId: tui, ended: true })
+    await settle()
+    expect(stopped).toBe(true)
+  })
+
   it('a Studio coming back before the terminal app quits clears the held stop', async () => {
     const d = daemon('studio')
     const id = await d.open('studio', true)

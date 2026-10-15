@@ -970,7 +970,7 @@ export class ClientSessionRegistry {
     this.log(`Client session ${session.id} (${session.client}) ${reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
     this.notifyEnded(session, reason, documents)
     if (reason === 'expired' && session.exitDaemonWhenClosed) this.applyOrphanRule(session)
-    else if (this.orphanPending) this.recheckOrphan(`${session.client} session ${session.id} ${reason}`)
+    else if (this.orphanPending) this.recheckOrphan(reason !== 'expired', `${session.client} session ${session.id} ${reason}`)
   }
 
   /** §8.3: an expired exitDaemonWhenClosed session stops a Studio-started daemon when nobody else is connected. */
@@ -995,21 +995,28 @@ export class ClientSessionRegistry {
     this.shutDown(why)
   }
 
-  private recheckOrphan(trigger: string): void {
+  /** `deferred`: a request ended the session; it is answered before the shutdown closes the server. */
+  private recheckOrphan(deferred: boolean, trigger: string): void {
     if (!this.orphanPending || this.sessions.size > 0) return
     const why = `${this.orphanPending}; the last other client session ended (${trigger})`
     this.orphanPending = null
-    this.shutDown(why)
+    this.shutDown(why, deferred)
   }
 
-  private shutDown(why: string): void {
+  private shutDown(why: string, deferred = false): void {
     if (!this.options.requestShutdown) {
       this.log(`Not stopping the daemon: ${why}, but shutdown is not available`)
       return
     }
     this.log(`Stopping the daemon: ${why}, and no other client session is open`)
     this.closing = true
-    this.options.requestShutdown()
+    if (!deferred) {
+      this.options.requestShutdown()
+      return
+    }
+    // As the quit route does: the request that ended the last session (a DELETE) gets its answer first.
+    const requestShutdown = this.options.requestShutdown
+    setTimeout(() => requestShutdown(), 50)
   }
 
   private notifyEnded(session: ClientSession, reason: ClientSessionEndReason, documents: string[] = []): void {
