@@ -1754,21 +1754,21 @@ export const hostActions: {
   ready?: Promise<void>
 } = {}
 
-/** The boot envelope sweep while its 2 s timer has not fired (registerAllIpcHandlers). */
-let pendingEnvelopeSweep: { timer: NodeJS.Timeout; run: () => void } | null = null
+/** The boot envelope sweep's timer until it fires (registerAllIpcHandlers). */
+let pendingEnvelopeSweep: NodeJS.Timeout | null = null
 
 /**
- * Run the deferred boot envelope sweep now, if it has not run yet; true when
- * it ran. The parity harness calls it right after boot, so what a scenario
- * records does not depend on whether the 2 s timer fired before its snapshot
- * (the sweep provisions every reviewed tracked agent that has no keys).
+ * Tests (parity harness): drop the boot envelope sweep before it runs; true
+ * when it was pending. A recording captures the backend's first seconds,
+ * before the sweep, and the daemon has no such sweep. On its 2 s timer it ran
+ * inside any scenario that outlasted 2 s on a loaded runner and provisioned
+ * the reviewed agents of the tracked folders (keys, DID, owner and operator
+ * attestations), so the recording depended on the run's speed.
  */
-export function runDeferredEnvelopeSweepNow(): boolean {
-  const pending = pendingEnvelopeSweep
-  if (!pending) return false
+export function cancelDeferredEnvelopeSweep(): boolean {
+  if (!pendingEnvelopeSweep) return false
+  clearTimeout(pendingEnvelopeSweep)
   pendingEnvelopeSweep = null
-  clearTimeout(pending.timer)
-  pending.run()
   return true
 }
 
@@ -1843,21 +1843,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
   // Deferred — it opens every tracked .adf, which must not block window
   // creation. Behavior is otherwise identical to the old synchronous sweep.
-  pendingEnvelopeSweep = {
-    timer: setTimeout(() => runDeferredEnvelopeSweepNow(), 2_000),
-    run: () => {
-      try {
-        const t0 = performance.now()
-        const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
-        if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
-          console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
-        }
-      } catch (err) {
-        console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  pendingEnvelopeSweep = setTimeout(() => {
+    pendingEnvelopeSweep = null
+    try {
+      const t0 = performance.now()
+      const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
+      if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
+        console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
       }
-    },
-  }
-  pendingEnvelopeSweep.timer.unref?.()
+    } catch (err) {
+      console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+    }
+  }, 2_000)
+  pendingEnvelopeSweep.unref?.()
 
   // Global approvals menu: every pending HIL approval, from every agent and
   // loop, plus the recently-resolved tail, pushed as a full snapshot to EVERY
