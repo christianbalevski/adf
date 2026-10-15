@@ -26,7 +26,7 @@ import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRo
 import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
-import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE } from '../../../shared/constants/remote-owner-identity'
+import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE, REMOTE_OWNER_RESTORE_SENTENCE } from '../../../shared/constants/remote-owner-identity'
 
 /**
  * Hover copy for the "Update available" advisory shown on managed containers
@@ -360,9 +360,10 @@ function IdentityTab() {
             terminal, but Studio cannot read its seed phrase. Enter the same 12 words to use it here. Studio will not
             create a new owner or restamp your agents.
           </p>
-          <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
+          <Button variant="primary" disabled={remoteBackend} onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
             Restore identity
           </Button>
+          {remoteBackend && <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">{REMOTE_OWNER_RESTORE_SENTENCE}</p>}
         </SettingsGroup>
         </div>
       )}

@@ -12,3 +12,7 @@ export const REMOTE_OWNER_BACKUP_SENTENCE =
 /** Import or restore an owner, confirm a backup: run on the server. */
 export const REMOTE_OWNER_IDENTITY_SENTENCE =
   'The owner identity of a remote ADF daemon is changed on its machine: run `adf identity restore` (the same owner) or `adf identity import` (another owner) there. Studio does not send a seed phrase to another machine.'
+
+/** Restore an owner whose phrase the daemon cannot read (the restore banner and section). */
+export const REMOTE_OWNER_RESTORE_SENTENCE =
+  'Restore it on the daemon\'s machine: run `adf identity restore` there. Studio does not send a seed phrase to another machine.'
