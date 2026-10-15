@@ -380,6 +380,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W4-C | Keep-running off: a Studio relaunched within 60 s of a crash was told the daemon keeps running for "1 other client" (its own crashed session) | done 71aff268, 3737ad6a (local Studio sends its pid; a new session ends the same client's sessions whose pid is gone, without the orphan rule) |
 | W5-A2 | Parity: the daemon's agent lease recorded `agentId` null (`w0c:daemon-lease-agent-id`) | done e621d75e |
 | W5-A2 | The daemon bound its mesh server 500 ms after an agent registered; a message sent before named port 7295 in `reply_to`, `return_path` and the card | done 42ebd118 |
+| W5-A2 | Install end on the 15 s no-gap timeout: when the stream stalls past `END_WAIT_MS`, Studio sends the end from the job result; if that install's own progress lines then arrive late before its own end, the first line ends the drop (57a881cb treats it as another install), so the late end is shown a second time. Telling them apart needs a job id on the install pushes (the daemon's `withInstallProgress` has no job context) | deferred: rare (a stream stalled over 15 s mid-install); the renderer shows "installed" twice, nothing else |
 
 ## 7. Parity triage (filled in W5-A)
 
