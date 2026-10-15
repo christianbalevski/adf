@@ -745,10 +745,12 @@ describe('the way back to embedded (review fixes)', () => {
     studioTokens(sub).write(studioSide)
     daemonTokens(sub).write(auth.issue('acct-daemon'))
     let shown: SessionConflict | null = null
-    await runHandover('local', deps({ chooseSession: async (c) => { shown = c; return 'daemon' } }))
-    expect(replacedFiles(sub)).toEqual([shown!.replacedFile])
-    expect(shown!.replacedFile).toMatch(/auth\.replaced\.\d{4}-\d\d-\d\dT[\d-]+Z\.json$/)
-    const saved = readFileSync(shown!.replacedFile, 'utf-8')
+    const report = await runHandover('local', deps({ chooseSession: async (c) => { shown = c; return 'daemon' } }))
+    expect(shown!.replacedDir).toBe(join(dir, sub.dir))
+    const [file] = replacedFiles(sub)
+    expect(file).toMatch(/auth\.replaced\.\d{4}-\d\d-\d\dT[\d-]+Z\.json$/)
+    expect(report.items.find((i) => i.id === 'chatgpt')?.detail).toContain(file)
+    const saved = readFileSync(file, 'utf-8')
     expect(saved.startsWith('aesgcm:')).toBe(true)
     expect(JSON.parse(decryptCredential(saved)!).refresh_token).toBe(studioSide.refresh_token)
     // The daemon's own session won: it stays the daemon's, so it does not move to Studio later.
@@ -767,6 +769,20 @@ describe('the way back to embedded (review fixes)', () => {
     await runHandover('local', deps({ chooseSession: async () => 'daemon' }))
     const saved = replacedFiles(sub).map((path) => JSON.parse(decryptCredential(readFileSync(path, 'utf-8'))!).refresh_token)
     expect(saved.sort()).toEqual([first.refresh_token, second.refresh_token].sort())
+  })
+
+  it('a handover re-run after a crash sets the same session aside in the same file, not a second one (W5-F)', async () => {
+    const sub = SUBS[0]
+    const studioSide = auth.issue('acct-studio')
+    studioTokens(sub).write(studioSide)
+    daemonTokens(sub).write(auth.issue('acct-daemon'))
+    // The first run crashes after the set-aside write, before Studio's copy is deleted.
+    await runHandover('local', deps({ chooseSession: async () => 'daemon', beforeSourceDelete: () => { throw new Error('simulated crash') } }))
+    expect(replacedFiles(sub)).toHaveLength(1)
+    const [first] = replacedFiles(sub)
+    await runHandover('local', deps({ chooseSession: async () => 'daemon' }))
+    expect(replacedFiles(sub)).toEqual([first])
+    expect(JSON.parse(decryptCredential(readFileSync(first, 'utf-8'))!).account_id).toBe('acct-studio')
   })
 
   it('a stale client file from the old one-time seed never overwrites newer values', async () => {

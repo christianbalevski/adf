@@ -196,8 +196,10 @@ accounts, Studio asks "Studio and the ADF daemon are signed in to ChatGPT with
 different accounts." (or Grok). Choose **Keep *account* (Studio)** or **Keep
 *account* (daemon)**. The other account's session is signed out here and saved,
 encrypted with the daemon's key, as `<provider>/auth.replaced.<time>.json` in
-Studio's user data folder (the dialog names the file). Each conflict writes its
-own file, so a later one never overwrites an earlier one. To use that account
+Studio's user data folder (the dialog names the folder, the summary the file).
+Each account set aside has its own file: a later conflict over another account
+never overwrites it, and setting the same account aside again replaces its
+file. To use that account
 in the daemon instead: stop the daemon and replace `auth.daemon.json` with it
 (Windows PowerShell: `Move-Item -Force auth.replaced.<time>.json auth.daemon.json`
 in that provider's folder; `auth.daemon.json` already exists, so a plain rename

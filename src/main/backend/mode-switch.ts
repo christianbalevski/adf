@@ -151,7 +151,7 @@ async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' 
     type: 'question',
     title: `${conflict.label}: two accounts`,
     message: `Studio and the ADF daemon are signed in to ${conflict.label.replace(/ session$/, '')} with different accounts.`,
-    detail: `Studio: ${conflict.studio.account}\nDaemon: ${conflict.daemon.account}\n\nOnly one session can move with the backend: its refresh token is renewed on use, so a copy left behind stops working. The other account is signed out here and saved, encrypted, as ${conflict.replacedFile} (an earlier one set aside stays in its own file); to use it in the daemon instead, stop the daemon and rename that file to ${DAEMON_TOKEN_FILE}, replacing it. Each copy set aside is deleted after ${REPLACED_TOKEN_MAX_AGE_DAYS} days, or when you next sign in to its account.`,
+    detail: `Studio: ${conflict.studio.account}\nDaemon: ${conflict.daemon.account}\n\nOnly one session can move with the backend: its refresh token is renewed on use, so a copy left behind stops working. The other account is signed out here and saved, encrypted, in ${conflict.replacedDir} as auth.replaced.<time>.json (one file per account; the summary names it); to use it in the daemon instead, stop the daemon and rename that file to ${DAEMON_TOKEN_FILE}, replacing it. Each copy set aside is deleted after ${REPLACED_TOKEN_MAX_AGE_DAYS} days, or when you next sign in to its account.`,
     buttons,
     defaultId: 0,
     cancelId: 0,
