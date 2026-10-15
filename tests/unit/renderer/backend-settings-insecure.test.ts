@@ -33,14 +33,14 @@ describe('what main does with that save', () => {
     const current: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: URL_HTTP, token: 'safe:tok_1234567890', allowInsecureHttp: true } }
     expect(remoteTransportRefusal(current)).toBeNull()
     // The renderer's patch for that Save (saveRemote): the URL as saved, unchecked, no token.
-    const result = applyBackendPatch(current, { remoteUrl: URL_HTTP, allowInsecureHttp: false }, { codec, allowModeChange: true })
+    const result = applyBackendPatch(current, { remoteUrl: URL_HTTP, allowInsecureHttp: false }, { codec })
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.config.remote).toEqual({ url: URL_HTTP, token: 'safe:tok_1234567890', allowInsecureHttp: false })
     expect(result.notices.join(' ')).toMatch(/will not send the token to http:\/\/192\.168\.1\.5:7385 until you confirm plain http/)
     expect(remoteTransportRefusal(result.config)).not.toBeNull()
     // Checking the box again restores it.
-    const again = applyBackendPatch(result.config, { remoteUrl: URL_HTTP, allowInsecureHttp: true, insecureHttpOrigin: URL_HTTP }, { codec, allowModeChange: true })
+    const again = applyBackendPatch(result.config, { remoteUrl: URL_HTTP, allowInsecureHttp: true, insecureHttpOrigin: URL_HTTP }, { codec })
     expect(again.ok && again.config.remote.allowInsecureHttp).toBe(true)
   })
 })

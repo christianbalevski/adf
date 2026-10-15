@@ -213,18 +213,14 @@ export function BackendSettings() {
         <SettingsRow
           label="Run agents in"
           description={MODE_DESCRIPTIONS[view.configured.mode]}
-          help={view.modeSwitchAvailable
-            ? `${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`
-            : `${activeLine(view)} Switching the backend is available in a later build.`}
+          help={`${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`}
         >
           <SegmentedControl
             value={view.configured.mode}
             options={(['embedded', 'local', 'remote'] as const).map((mode) => ({
               value: mode,
               label: MODE_LABELS[mode],
-              // Embedded stays selectable: it is how a hand-edited file is undone.
-              disabled: saving || (mode !== view.configured.mode && mode !== 'embedded' &&
-                (!view.modeSwitchAvailable || (mode === 'remote' && !view.remoteSwitchAvailable))),
+              disabled: saving,
             }))}
             onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved.') }}
             ariaLabel="Backend"
@@ -369,7 +365,7 @@ export function BackendSettings() {
         >
           {!remoteConfigured && (
             <Button
-              disabled={!view.remoteSwitchAvailable || !remoteReady || saving}
+              disabled={!remoteReady || saving}
               onClick={() => void save('remote', { mode: 'remote' }, '')}
             >
               Switch to This Daemon
