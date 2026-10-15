@@ -135,6 +135,8 @@ export interface OAuthRelayDeps {
   bindHost?: string
   /** Tests: host-name resolution for the page check. */
   resolve?: HostResolver
+  /** Tests (parity harness): a page exempt from the public-address rule (https and the rest still apply). */
+  allowPage?: (url: URL) => boolean
   timeoutMs?: number
   now?: () => number
 }
@@ -179,7 +181,13 @@ export class OAuthCallbackRelay {
    * relay itself runs until its callback arrives or it times out.
    */
   async open(authorizeUrl: string, label: string): Promise<RelayOpenResult> {
-    const check = await checkRemoteBrowserUrl(authorizeUrl, this.deps.resolve)
+    let check = await checkRemoteBrowserUrl(authorizeUrl, this.deps.resolve)
+    if (!check.ok && this.deps.allowPage) {
+      try {
+        const url = new URL(authorizeUrl)
+        if (url.protocol === 'https:' && !url.username && !url.password && this.deps.allowPage(url)) check = { ok: true, url }
+      } catch { /* not a URL: refused below */ }
+    }
     if (!check.ok) return this.refuse(label, check.reason)
     const redirect = loopbackRedirectOf(check.url)
     if (redirect && 'refused' in redirect) return this.refuse(label, redirect.refused)

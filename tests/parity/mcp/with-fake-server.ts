@@ -18,7 +18,7 @@ export function withFakeServer(fake: () => FakeMcpServer): (backend: ParityBacke
       const open = shell.openExternal.bind(shell)
       shell.openExternal = async (url: string) => {
         await open(url)
-        void completeFakeAuthorization(url, server.port, (p) => env.allowPort(p))
+        void completeFakeAuthorization(url, server.port, (p) => env.allowPort(p), backend.name === 'remote' ? '127.0.0.2' : undefined)
       }
       const booted = await backend.boot(env, electron)
       const own = booted.normalization?.bind(booted)

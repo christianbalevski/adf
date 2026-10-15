@@ -2,6 +2,7 @@ import { IPC } from '../../../src/shared/constants/ipc-channels'
 import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
 import { clientSettingsDefaults } from '../../../src/main/backend/daemon-mode/settings'
 import { EMULATE_W4A } from './daemon-backend'
+import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE } from '../../../src/shared/constants/remote-owner-identity'
 import type { ComparableRecording, RawRecording, StepRecord } from './recording'
 
 /**
@@ -24,17 +25,25 @@ import type { ComparableRecording, RawRecording, StepRecord } from './recording'
 
 export type GapTag = 'W1-A' | 'W2-A' | 'W2-C2' | 'W0-C' | 'W0-D' | 'W3-A' | 'W4-A' | 'E3' | 'W5-A' | 'mode'
 
+/** Which daemon-mode run a recording comes from: local mode, or remote mode behind the remote-acting proxy (W4-B). */
+export type ParityBackendKind = 'daemon' | 'remote'
+
 export interface GapEntry {
   id: string
   ws: GapTag
   scenarios: readonly string[]
+  /** The runs the entry applies to; default both. A by-design difference of remote mode names `['remote']`. */
+  backends?: readonly ParityBackendKind[]
   /** The one place the transform acts on. */
   path: string
   /** The difference, in one sentence. */
   what: string
   /** `raw.daemon`: the daemon run before normalization, for entries that must check a value the normalizer replaced. */
-  apply(daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }): number
+  apply(daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }, backend?: ParityBackendKind): number
 }
+
+/** daemon-mode/handlers/providers.ts REMOTE_VALUES_UNSUPPORTED (not imported: that module pulls in Studio main). A change fails the entry as unmatched. */
+const REMOTE_VALUES_UNSUPPORTED = "Stored credential values stay on the daemon's machine: a remote daemon never sends them to Studio."
 
 const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 /** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
@@ -398,7 +407,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     scenarios: [...ALL, ...MESH],
     path: 'state.leases and their tree lines: runtime host and Studio records',
     what: 'In daemon mode the daemon is the runtime host (hosts/<pid:daemon>.json, lease holder kind daemon, with its controlUrl, §10.2) and Studio a client (clients/<pid>.json, §10.3); mapped to the embedded roles.',
-    apply(d, e) {
+    apply(d, e, _raw, backend) {
       // Checked before anything is rewritten: Studio's client record is the
       // embedded host record in client form, and every daemon record names
       // the daemon's own port.
@@ -406,7 +415,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       const host = e.state.leases['hosts/<pid:this-process>.json'] as Record<string, unknown> | undefined
       if (!client || !host) return 0
       const { containers: _c, ...hostFields } = host
-      const wantClient = { ...hostFields, kind: 'studio-client', mode: 'local', endpoint: '<lease-endpoint:studio-client>', runtimeId: '<lease-runtime-id:studio-client>', controlUrl: client.controlUrl }
+      const wantClient = { ...hostFields, kind: 'studio-client', mode: backend === 'remote' ? 'remote' : 'local', endpoint: '<lease-endpoint:studio-client>', runtimeId: '<lease-runtime-id:studio-client>', controlUrl: client.controlUrl }
       if (typeof client.controlUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(client.controlUrl) || !same(client, wantClient)) return 0
       const daemonRecords = Object.values(d.state.leases).map((rec) => rec as Record<string, unknown>)
         .flatMap((r) => [r, ...(r.holder && typeof r.holder === 'object' ? [r.holder as Record<string, unknown>] : [])])
@@ -639,15 +648,150 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
 
+  // --- remote mode only (W4-B, design §9.4): by-design differences --------------
+
+  {
+    id: 'remote:no-stored-values',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['agent-claim', 'agent-keystore', 'legacy-password-unlock', 'agent-provider-key', 'locked-credentials', 'w3c-adapter-telegram', 'w3c-mcp-attach-credentials'],
+    path: 'results of IDENTITY_REVEAL, IDENTITY_GET, PROVIDER_CREDENTIAL_GET, MCP_CREDENTIAL_GET, ADAPTER_CREDENTIAL_GET',
+    what: 'A remote daemon never sends stored values: reveal answers { value: null, reason }, IDENTITY_GET and the MCP credential form the __redacted__ placeholder, the provider form { credentials: {}, error }, the channel form no values (storedKeys only). Each daemon result must have exactly that shape.',
+    apply(d, e) {
+      let n = 0
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
+        const r = step.result as Record<string, unknown> | string | null | undefined
+        const b = base.result as Record<string, unknown> | string | null | undefined
+        const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+        let redacted = false
+        switch (step.channel) {
+          case IPC.IDENTITY_REVEAL:
+            redacted = same(r, { value: null, reason: REMOTE_VALUES_UNSUPPORTED }) && obj(b) && typeof b.value === 'string'
+            break
+          case IPC.IDENTITY_GET:
+            redacted = r === '__redacted__' && typeof b === 'string'
+            break
+          case IPC.PROVIDER_CREDENTIAL_GET:
+            redacted = same(r, { credentials: {}, error: REMOTE_VALUES_UNSUPPORTED }) && obj(b)
+            break
+          case IPC.MCP_CREDENTIAL_GET: {
+            const rc = obj(r) && obj(r.credentials) ? r.credentials : null
+            const bc = obj(b) && obj(b.credentials) ? b.credentials : null
+            redacted = !!rc && !!bc && Object.keys(rc).length > 0 && same(Object.keys(rc).sort(), Object.keys(bc).sort()) && Object.values(rc).every((v) => v === '__redacted__')
+            break
+          }
+          case IPC.ADAPTER_CREDENTIAL_GET:
+            redacted = obj(r) && obj(b) && same(r.credentials, {}) && same(r.storedKeys, b.storedKeys) && obj(b.credentials) && Object.keys(b.credentials).length > 0
+            break
+        }
+        if (!redacted) return
+        step.result = clone(base.result)
+        n++
+      })
+      return n
+    },
+  },
+
+  {
+    id: 'remote:credentials-locked-on-daemon-machine',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['locked-credentials'],
+    path: 'local calls: the locked-credential question (dialog.showMessageBox message)',
+    what: 'The Replace or Cancel question names where the credentials are locked: "on the daemon\'s machine" in remote mode, "on this machine" in embedded and local mode.',
+    apply(d, e) {
+      if (d.local.length !== e.local.length) return 0
+      let n = 0
+      d.local.forEach((call, i) => {
+        const base = e.local[i]
+        if (call.api !== 'dialog.showMessageBox' || base.api !== 'dialog.showMessageBox') return
+        const msg = (call.args[0] as { message?: unknown })?.message
+        const baseMsg = (base.args[0] as { message?: unknown })?.message
+        if (typeof msg !== 'string' || typeof baseMsg !== 'string') return
+        if (msg.replace("on the daemon's machine.", 'on this machine.') !== baseMsg || msg === baseMsg) return
+        ;(call.args[0] as { message: string }).message = baseMsg
+        n++
+      })
+      return n
+    },
+  },
+
+  {
+    id: 'remote:owner-identity-on-server',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['owner-identity', 'owner-import'],
+    path: 'results of IDENTITY_OWNER_STATUS, _REVEAL_MNEMONIC, _CONFIRM_BACKUP, _IMPORT; adf-settings.json ownerSeedBackupConfirmed',
+    what: 'Owner identity actions happen on the server in remote mode: the status has no mnemonic to show (hasMnemonic false), reveal answers { mnemonic: null, reason }, confirm-backup and import answer the run-on-the-server sentence without a request, so the backup stays unconfirmed.',
+    apply(d, e) {
+      if (d.steps.length !== e.steps.length) return 0
+      let n = 0
+      const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+      let confirmRefused = false
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
+        const r = step.result
+        let ok = false
+        switch (step.channel) {
+          case IPC.IDENTITY_OWNER_STATUS:
+            ok = obj(r) && obj(base.result) && r.hasMnemonic === false && base.result.hasMnemonic === true
+              && same({ ...r, hasMnemonic: true, backupConfirmed: base.result.backupConfirmed }, base.result)
+            break
+          case IPC.IDENTITY_OWNER_REVEAL_MNEMONIC:
+            ok = same(r, { mnemonic: null, reason: REMOTE_OWNER_BACKUP_SENTENCE })
+            break
+          case IPC.IDENTITY_OWNER_CONFIRM_BACKUP:
+            ok = same(r, { success: false, error: REMOTE_OWNER_IDENTITY_SENTENCE })
+            if (ok) confirmRefused = true
+            break
+          case IPC.IDENTITY_OWNER_IMPORT:
+            ok = same(r, { success: false, error: REMOTE_OWNER_IDENTITY_SENTENCE })
+            break
+        }
+        if (!ok) return
+        step.result = clone(base.result)
+        n++
+      })
+      const settings = d.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
+      const baseSettings = e.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
+      if (settings && baseSettings && settings.ownerSeedBackupConfirmed !== baseSettings.ownerSeedBackupConfirmed && baseSettings.ownerSeedBackupConfirmed === true && (confirmRefused || d.scenario === 'owner-import')) {
+        settings.ownerSeedBackupConfirmed = baseSettings.ownerSeedBackupConfirmed
+        n++
+      }
+      return n
+    },
+  },
+  {
+    id: 'remote:asks-before-sign-in-page',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['w3c-mcp-oauth-connect'],
+    path: 'local calls: the question before shell.openExternal of an OAuth page',
+    what: 'In remote mode no sign-in page opens without a click: a native question naming the daemon\'s host and the page\'s host comes right before the page opens (oauth-relay.ts). Embedded and local mode open it directly.',
+    apply(d) {
+      let n = 0
+      d.local = d.local.filter((call, i) => {
+        const message = (call.args[0] as { message?: unknown } | undefined)?.message
+        const question = call.api === 'dialog.showMessageBox' && typeof message === 'string' && /^Open a sign-in page on \S+\?$/.test(message)
+        if (question && d.local[i + 1]?.api === 'shell.openExternal') { n++; return false }
+        return true
+      })
+      return n
+    },
+  },
 ]
 
 /** Apply every entry for `scenario`; the ids of entries that matched nothing are returned. */
-export function applyGapAllowlist(scenario: string, daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }): { unmatched: string[]; counts: Record<string, number> } {
+export function applyGapAllowlist(scenario: string, daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }, backend: ParityBackendKind = 'daemon'): { unmatched: string[]; counts: Record<string, number> } {
   const unmatched: string[] = []
   const counts: Record<string, number> = {}
   for (const entry of GAP_ALLOWLIST) {
     if (!entry.scenarios.includes(scenario)) continue
-    const n = entry.apply(daemon, embedded, raw)
+    if (!(entry.backends ?? ['daemon', 'remote']).includes(backend)) continue
+    const n = entry.apply(daemon, embedded, raw, backend)
     counts[entry.id] = n
     if (n === 0) unmatched.push(entry.id)
   }
@@ -658,7 +802,7 @@ export function applyGapAllowlist(scenario: string, daemon: ComparableRecording,
 export function renderGapTable(): string {
   const lines = ['| Entry | Workstream | Scenarios | Where | Difference |', '|---|---|---|---|---|']
   for (const e of GAP_ALLOWLIST) {
-    lines.push(`| \`${e.id}\` | ${e.ws === 'mode' ? 'by design' : e.ws} | ${e.scenarios.join(', ')} | ${e.path.replace(/\|/g, '\\|')} | ${e.what.replace(/\|/g, '\\|')} |`)
+    lines.push(`| \`${e.id}\` | ${e.ws === 'mode' ? 'by design' : e.ws}${e.backends && e.backends.length === 1 ? ` (${e.backends[0]} only)` : ''} | ${e.scenarios.join(', ')} | ${e.path.replace(/\|/g, '\\|')} | ${e.what.replace(/\|/g, '\\|')} |`)
   }
   return lines.join('\n')
 }

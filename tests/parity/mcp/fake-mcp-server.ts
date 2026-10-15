@@ -130,13 +130,15 @@ export async function startFakeMcpServer(): Promise<FakeMcpServer> {
  * page redirects to the loopback callback with the code. `allowPort` lets the
  * calling process reach the callback (fence). Answers false for any other URL.
  */
-export async function completeFakeAuthorization(authorizeUrl: string, port: number, allowPort: (port: number) => void): Promise<boolean> {
+export async function completeFakeAuthorization(authorizeUrl: string, port: number, allowPort: (port: number) => void, callbackHost?: string): Promise<boolean> {
   let page: URL
   try { page = new URL(authorizeUrl) } catch { return false }
   if (page.protocol !== 'https:' || page.hostname !== '127.0.0.1' || page.port !== String(port) || page.pathname !== '/authorize') return false
   const redirect = new URL(page.searchParams.get('redirect_uri') ?? '')
   redirect.searchParams.set('code', FAKE_AUTH_CODE)
   redirect.searchParams.set('state', page.searchParams.get('state') ?? '')
+  // Remote mode: the browser runs on "another computer", where Studio's relay listens (127.0.0.2).
+  if (callbackHost) redirect.hostname = callbackHost
   allowPort(Number(redirect.port))
   // No keep-alive agent: no socket of this "browser" outlives the scenario.
   return new Promise<boolean>((resolve) => {

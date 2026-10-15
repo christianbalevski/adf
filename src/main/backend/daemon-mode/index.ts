@@ -103,6 +103,8 @@ export interface DaemonModeDeps {
    * quit path itself is W4-A's.
    */
   keepDaemonRunning?: boolean
+  /** Tests (parity harness): where the OAuth relay listens, and pages exempt from the public-address rule. */
+  remoteOAuth?: { bindHost?: string; allowPage?: (url: URL) => boolean }
   /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
   sharedMnemonic?: () => SharedMnemonicStore | null
 }
@@ -263,6 +265,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       },
       openExternal: (url) => shell.openExternal(url),
       daemonHost: host,
+      ...(deps.remoteOAuth?.bindHost ? { bindHost: deps.remoteOAuth.bindHost } : {}),
+      ...(deps.remoteOAuth?.allowPage ? { allowPage: deps.remoteOAuth.allowPage } : {}),
       // Remote mode opens no page without a click (W4-B review); local mode keeps embedded's no-click open.
       confirm: async ({ daemonHost, pageHost, label }) => {
         const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
