@@ -26,6 +26,7 @@ import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRo
 import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
+import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE } from '../../../shared/constants/remote-owner-identity'
 
 /**
  * Hover copy for the "Update available" advisory shown on managed containers
@@ -272,6 +273,10 @@ function IdentityTab() {
   const [copied, setCopied] = useState<string | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
   const [mnemonic, setMnemonic] = useState<string | null>(null)
+  /** Why no phrase is shown (a remote daemon never sends it). */
+  const [mnemonicReason, setMnemonicReason] = useState<string | null>(null)
+  /** Studio runs on a remote ADF daemon: owner actions happen on its machine. */
+  const [remoteBackend, setRemoteBackend] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   // 'restore': only the owner on record is accepted (restoreRequired); 'import' switches owners.
   const [importMode, setImportMode] = useState<'import' | 'restore'>('import')
@@ -284,6 +289,7 @@ function IdentityTab() {
   const [shareOwner, setShareOwner] = useState(false)
 
   const refresh = useCallback(() => {
+    window.adfApi?.getBackendSettings?.().then((b) => setRemoteBackend(b.active.mode === 'remote')).catch(() => {})
     window.adfApi?.getOwnerIdentityStatus().then(setStatus)
     window.adfApi?.getMeshServerStatus().then(setMeshServer)
     window.adfApi?.getSettings?.().then((s: unknown) => {
@@ -306,6 +312,7 @@ function IdentityTab() {
   const openBackup = async () => {
     const r = await window.adfApi?.revealOwnerMnemonic()
     setMnemonic(r?.mnemonic ?? null)
+    setMnemonicReason(r?.reason ?? null)
     setBackupOpen(true)
   }
 
@@ -423,17 +430,24 @@ function IdentityTab() {
         <div className="flex gap-2 mt-3">
           <Button
             onClick={openBackup}
-            disabled={!status?.hasMnemonic}
+            disabled={!status?.hasMnemonic || remoteBackend}
             variant="primary"
           >
             Back up seed phrase
           </Button>
           <Button
             onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}
+            disabled={remoteBackend}
           >
             Import identity
           </Button>
         </div>
+        {remoteBackend && (
+          <div className="mt-2 space-y-1 text-xs text-neutral-500 dark:text-neutral-400">
+            <p>{REMOTE_OWNER_BACKUP_SENTENCE}</p>
+            <p>{REMOTE_OWNER_IDENTITY_SENTENCE}</p>
+          </div>
+        )}
       </SettingsGroup>
 
       {/* Runtime identity */}
@@ -525,7 +539,7 @@ function IdentityTab() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-red-500 mb-4">No seed phrase available.</p>
+          <p className="text-sm text-red-500 mb-4">{mnemonicReason ?? 'No seed phrase available.'}</p>
         )}
         <div className="flex items-center justify-between gap-2">
           <Button

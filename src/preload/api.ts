@@ -607,7 +607,7 @@ export interface AdfApi {
     runtimeDelegation: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string } | null
     runtimeDelegationValid: boolean
   }>
-  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null }>
+  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null; reason?: string }>
   confirmOwnerBackup: () => Promise<{ success: boolean }>
   /** `expectedOwnerDid`: restore only that owner (a different phrase is refused, not switched to). */
   importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) => Promise<{ success: boolean; ownerDid?: string; restamped?: number; attested?: number; failures?: string[]; error?: string }>

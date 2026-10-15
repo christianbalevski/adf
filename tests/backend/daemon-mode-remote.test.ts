@@ -242,7 +242,6 @@ describe('remote-unsupported channels: each shows its sentence, never a raw erro
     [IPC.FILE_REVEAL]: [{ filePath: SERVER_FILE }],
     [IPC.TEMPLATE_REVEAL]: [{ id: 'base' }],
     [IPC.COMPUTE_BROWSER_INFO]: [{ agentName: 'agent-1', agentId: AGENT }],
-    [IPC.IDENTITY_GET]: [{ purpose: 'app:token' }],
     [IPC.IDENTITY_REVEAL]: [{ purpose: 'app:token' }],
     [IPC.IDENTITY_OWNER_IMPORT]: ['abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'],
     [IPC.PROVIDER_CREDENTIAL_GET]: [{ filePath: SERVER_FILE, providerId: 'p1' }],
@@ -255,20 +254,19 @@ describe('remote-unsupported channels: each shows its sentence, never a raw erro
     ].sort())
   })
 
+  // IDENTITY_GET answers a value slot (placeholder or null), covered in daemon-mode-remote-values.test.ts.
   it.each([
-    IPC.FILE_REVEAL, IPC.TEMPLATE_REVEAL, IPC.COMPUTE_BROWSER_INFO, IPC.IDENTITY_GET, IPC.IDENTITY_REVEAL,
+    IPC.FILE_REVEAL, IPC.TEMPLATE_REVEAL, IPC.COMPUTE_BROWSER_INFO, IPC.IDENTITY_REVEAL,
     IPC.IDENTITY_OWNER_REVEAL_MNEMONIC, IPC.IDENTITY_OWNER_CONFIRM_BACKUP, IPC.IDENTITY_OWNER_IMPORT, IPC.PROVIDER_CREDENTIAL_GET,
   ])('%s', async (channel) => {
     await handle.session.openFile(SERVER_FILE, async () => AGENT)
     daemon.routes.set('GET /templates', () => ({ folder: '/srv/adf/templates', templates: [] }))
     daemon.routes.set('GET /compute/browser-info', () => ({ containerName: 'adf-agent-1', hostPort: 6080, phase: 'ready' }))
     const before = electronStub.calls.length
-    let text: string
-    try {
-      text = JSON.stringify(await invoke(channel, ...(ARGS[channel as MappedChannel] ?? [])) ?? null)
-    } catch (err) {
-      text = (err as Error).message
-    }
+    daemon.routes.set(`GET /agents/${AGENT}/identity`, () => ({ purposes: [] }))
+    // An answer, never a rejection: the renderer shows answers; a rejection is a raw error (W4-B review).
+    const answer = await invoke(channel, ...(ARGS[channel as MappedChannel] ?? []))
+    const text = JSON.stringify(answer ?? null)
     const boxes = electronStub.calls.slice(before).filter((c) => c.api === 'dialog.showMessageBox').map((c) => JSON.stringify(c.args[0]))
     const shown = [text, ...boxes].join('\n')
     expect(shown).not.toMatch(/not available in daemon mode yet|W4-B|HTTP \d{3}|Unknown agent/)

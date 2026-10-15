@@ -8,6 +8,7 @@ import { daemonStatus, errorMessage } from '../documents/open-file'
 import { DAEMON_MODE_HANDLERS } from '../handlers'
 import { hasLocalOpenGrant, unsafeLocalPath } from '../../local-open-grants'
 import type { RemoteServices } from './services'
+import { REMOTE_OWNER_IDENTITY_SENTENCE } from '../../../../shared/constants/remote-owner-identity'
 
 /**
  * Remote-mode handlers (design §9.3, tracker W4-B): the `remote-variant`
@@ -22,8 +23,7 @@ import type { RemoteServices } from './services'
  * (a double-clicked file), which FILE_OPEN offers to upload.
  */
 
-export const REMOTE_OWNER_IDENTITY_SENTENCE =
-  'The owner identity of a remote ADF daemon is managed on its machine: run adf identity restore, adf identity import or adf identity backup there. Studio does not send a seed phrase to another machine.'
+export { REMOTE_OWNER_IDENTITY_SENTENCE } from '../../../../shared/constants/remote-owner-identity'
 
 function remote(ctx: DaemonModeContext): RemoteServices {
   if (!ctx.remote) throw new Error('Remote mode is not set up in this Studio session.')
