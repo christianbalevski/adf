@@ -965,12 +965,14 @@ async function importIdentity(io: CliIo, options: CliOptions, args: string[] = [
   const identity = isRecord(result.identity) ? result.identity : {}
   const restamp = isRecord(result.restamp) ? result.restamp : {}
   const failures = Array.isArray(restamp.failures) ? restamp.failures.map(String) : []
+  const skipped = Array.isArray(restamp.skipped) ? restamp.skipped.map(String) : []
   const reloadFailures = Array.isArray(result.reloadFailures) ? result.reloadFailures.filter(isRecord) : []
   io.stdout(
     `${result.switched === true ? `Owner switched from ${String(result.previousOwnerDid ?? '')}.` : 'Owner identity imported.'}\n` +
     formatIdentity(identity) +
     `Restamped ${String(restamp.restamped ?? 0)} agent file(s), ${failures.length} failure(s).\n` +
     failures.map(f => `  ${f}\n`).join('') +
+    (skipped.length ? `Not restamped now, another runtime runs them (restamped when next opened):\n${skipped.map(f => `  ${f}\n`).join('')}` : '') +
     reloadFailures.map(f => `Could not reload ${String(f.name ?? '')} (${String(f.filePath ?? '')}): ${String(f.error ?? '')}\n`).join(''),
   )
   return failures.length > 0 || reloadFailures.length > 0 ? 1 : 0

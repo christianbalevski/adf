@@ -721,6 +721,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       how: currentHow(),
       localProof: info?.localProof ?? null,
       trust: info?.trust ?? null,
+      keychainProblem: info?.keychainProblem ?? null,
       logFile: connection.logFile,
     }
   }

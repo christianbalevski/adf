@@ -40,8 +40,13 @@ function info(over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo {
   }
 }
 
-/** A daemon behind fetch: health, /version and /daemon/shutdown, with every request recorded. */
-function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versionStatus?: number }) {
+/**
+ * A daemon behind fetch: health, /version and /daemon/shutdown, with every
+ * request recorded. /health reports the pid of `info` and, like a real daemon
+ * (which writes it right after it listens), that pid is in the pid file,
+ * unless `pidFile: false` (a listener that is not the daemon the file names).
+ */
+function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versionStatus?: number; pidFile?: boolean; healthPid?: unknown }) {
   const calls: Array<{ method: string; path: string; auth: string | null; proof?: string | null }> = []
   const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -49,7 +54,11 @@ function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versio
     calls.push({ method: init?.method ?? 'GET', path: url.pathname, auth: headers.Authorization ?? null })
     if (!state.up) throw new TypeError('fetch failed')
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
-    if (url.pathname === '/health') return json(200, { ok: true })
+    if (url.pathname === '/health') {
+      const pid = 'healthPid' in state ? state.healthPid : state.info?.pid
+      if (state.pidFile !== false && typeof pid === 'number') writeFileSync(join(dir, `adf-daemon-${PORT}.pid`), JSON.stringify({ pid, startedAt: Date.now() }))
+      return json(200, { ok: true, ...(pid !== undefined ? { pid } : {}) })
+    }
     if (headers.Authorization !== `Bearer ${TOKEN}`) return json(401, { error: 'unauthorized', code: 'unauthorized' })
     if (url.pathname === '/version') {
       if (state.versionStatus) return json(state.versionStatus, { error: 'x' })
@@ -93,13 +102,14 @@ function controller(fetchImpl: typeof fetch, extra: { spawn?: SpawnFn; alive?: (
   }, {
     fetch: fetchImpl,
     spawn: extra.spawn,
-    processAlive: extra.alive ?? (() => false),
+    processAlive: extra.alive ?? (() => true),
     sleep: () => new Promise(r => setTimeout(r, 1)),
     log: (line) => logs.push(line),
     startTimeoutMs: extra.startTimeoutMs ?? 2000,
     stopTimeoutMs: 2000,
     staleWaitMs: 200,
     raceSettleMs: 200,
+    pidFileWaitMs: 200,
   })
   return { ctl, logs }
 }
@@ -180,10 +190,10 @@ describe('DaemonProcessController', () => {
     const state = { up: false, info: info({ pid: 4242 }) }
     const { fetchImpl } = fakeDaemon(state)
     const spawner = fakeSpawner(() => setTimeout(() => { state.up = true }, 0))
-    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 777 })
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 777 || (pid === 4242 && state.up) })
     const result = await ctl.ensure()
     expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
-    expect(existsSync(pidFile)).toBe(false)
+    expect(logs.some(l => l.includes('Pid 777') && l.includes('removing it'))).toBe(true)
     expect(logs.some(l => l.includes('treating the pid file as stale'))).toBe(true)
   })
 
@@ -349,7 +359,7 @@ describe('DaemonProcessController', () => {
       else setTimeout(() => { state.up = true }, 0)
     }, 4242)
     // A generous start budget: a loaded test machine must not turn this into the timeout path.
-    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: () => false, startTimeoutMs: 15_000 })
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 4242 && state.up, startTimeoutMs: 15_000 })
     const result = await ctl.ensure()
     expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
     expect(spawner.spawns).toHaveLength(2)
@@ -372,6 +382,40 @@ describe('DaemonProcessController', () => {
     expect(spawner.spawns[0].options.env?.ADF_DAEMON_STARTED_BY).toBe('cli')
     expect(await ctl.listClientSessions()).toEqual([{ client: 'tui', version: '0.7.8', exitDaemonWhenClosed: false }])
     expect(logs.some(l => l.includes('as the user chose'))).toBe(true)
+  })
+
+  it('sends no token or proof to a listener the pid file does not name, and says why (W5-D1)', async () => {
+    const pidFile = join(dir, `adf-daemon-${PORT}.pid`)
+    const cases: Array<{ name: string; state: Parameters<typeof fakeDaemon>[0]; alive?: (pid: number) => boolean; before?: () => void; message: RegExp }> = [
+      { name: 'no pid file', state: { up: true, info: info({ pid: 4242 }), pidFile: false }, message: /is pid 4242, but the daemon pid file .* does not exist/ },
+      { name: 'another pid in the pid file', state: { up: true, info: info({ pid: 4242 }), pidFile: false }, before: () => writeFileSync(pidFile, JSON.stringify({ pid: 900, startedAt: Date.now() })), message: /is pid 4242, but the daemon pid file .* names pid 900/ },
+      { name: 'the pid is not running', state: { up: true, info: info({ pid: 4242 }) }, alive: () => false, message: /names pid 4242, which is not running/ },
+      { name: 'no pid in /health', state: { up: true, info: info({ pid: 4242 }), pidFile: false, healthPid: undefined }, message: /does not report its pid/ },
+    ]
+    for (const c of cases) {
+      rmSync(pidFile, { force: true })
+      c.before?.()
+      const { fetchImpl, calls } = fakeDaemon(c.state)
+      const { ctl, logs } = controller(fetchImpl, { alive: c.alive })
+      const detected = await ctl.detect()
+      expect(detected, c.name).toMatchObject({ state: 'unidentified' })
+      expect(detected.state === 'unidentified' && detected.message, c.name).toMatch(c.message)
+      expect(calls.filter((call) => call.path !== '/health'), c.name).toEqual([])
+      expect(calls.every((call) => call.auth === null), c.name).toBe(true)
+      expect(await ctl.ensure(), c.name).toMatchObject({ kind: 'unidentified' })
+      expect(logs.some((l) => l.includes('Not sending the token')), c.name).toBe(true)
+      // The local-only call never carries the proof either.
+      writeFileSync(join(dir, `daemon-local-proof-${PORT}`), `${'p'.repeat(43)}\n`)
+      await ctl.notifyCredentialsMoved()
+      expect(calls.filter((call) => call.path !== '/health'), c.name).toEqual([])
+    }
+  })
+
+  it('waits for the pid file a daemon writes right after it listens', async () => {
+    const pidFile = join(dir, `adf-daemon-${PORT}.pid`)
+    const { fetchImpl } = fakeDaemon({ up: true, info: info({ pid: 4242 }), pidFile: false })
+    setTimeout(() => writeFileSync(pidFile, JSON.stringify({ pid: 4242, startedAt: Date.now() })), 50)
+    expect(await controller(fetchImpl).ctl.detect()).toMatchObject({ state: 'running', info: { pid: 4242 } })
   })
 
   it('asks a running daemon to reload its credential stores, with the local proof (W4-A)', async () => {

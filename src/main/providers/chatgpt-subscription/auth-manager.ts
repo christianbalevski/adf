@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { startCallbackServer } from './callback-server'
-import { readTokens, writeTokens, clearTokens } from './token-store'
+import { readTokens, writeTokens, clearTokens, noteSignIn } from './token-store'
 import type { TokenSet, AuthStatus } from './types'
 
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -302,6 +302,7 @@ class ChatGptAuthManager {
       expires_at: Date.now() + tokenData.expires_in * 1000,
       account_id: accountId
     })
+    noteSignIn(accountId)
   }
 
   async getValidAccessToken(): Promise<string> {

@@ -152,6 +152,9 @@ Studio's user data folder. To use that account in the daemon instead: stop the
 daemon and replace `auth.daemon.json` with it (Windows PowerShell:
 `Move-Item -Force auth.replaced.json auth.daemon.json` in that provider's
 folder; `auth.daemon.json` already exists, so a plain rename fails).
+Studio deletes `auth.replaced.json` 30 days after it was written (at its next
+start), or as soon as that account signs in again on either side; the log
+names the file it deleted.
 
 The same account signed in on both sides independently (the daemon signed in
 before your first switch) keeps both sessions, each on its side; no accounts
@@ -371,6 +374,11 @@ Then, in **Settings → Backend → Remote daemon**:
    encrypted with safeStorage and never shown again. Changing the
    address removes a saved token ("The saved token was removed because the
    daemon address changed. Enter the token for the new address.").
+   The token is as powerful as the server's owner seed phrase: a token
+   holder can run code as the daemon (an MCP server or adapter command, then
+   agent start) and read the phrase from the server's keychain. Save it only
+   on a computer you trust with the phrase. Rotation: [The token is as
+   powerful as your seed phrase](../cli/remote-daemon.md#the-token-is-as-powerful-as-your-seed-phrase).
 3. **Test connection**: "Connected to the ADF daemon at *url* (version *V*,
    started by *X*)." or the reason it failed.
 4. **Switch to This Daemon** (or choose **Remote daemon** under **Run agents

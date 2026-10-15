@@ -2,6 +2,7 @@ import { randomBytes, createCipheriv, createDecipheriv } from 'crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { getUserDataPath } from './user-data-path'
+import { protectSecretFile } from './secret-file'
 
 /**
  * Portable at-rest encryption for credentials that BOTH ADF Studio (Electron)
@@ -94,6 +95,7 @@ export function getCredentialKey(): Buffer {
     const generated = randomBytes(KEY_BYTES)
     try {
       writeFileSync(path, generated.toString('base64'), { mode: 0o600, flag: 'wx' })
+      protectSecretFile(path)
       key = generated
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
@@ -101,6 +103,7 @@ export function getCredentialKey(): Buffer {
         if (!key) {
           // Existing file is corrupt and `wx` won't clobber it — force it.
           writeFileSync(path, generated.toString('base64'), { mode: 0o600 })
+          protectSecretFile(path)
           key = generated
         }
       } else {

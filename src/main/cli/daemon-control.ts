@@ -390,7 +390,7 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
       const token = resolveDaemonToken(undefined, env, target.url)
       const res = await fetchImpl(`${target.url}/version`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(3000) })
       if (res.ok) {
-        const info = await res.json() as { startedBy?: string; localProof?: { available?: boolean; problem?: string | null }; trust?: { state?: string; label?: string | null; message?: string } }
+        const info = await res.json() as { startedBy?: string; localProof?: { available?: boolean; problem?: string | null }; trust?: { state?: string; label?: string | null; message?: string }; keychainProblem?: string | null }
         if (info.startedBy) lines.push(`started   by ${info.startedBy}`)
         // K12: the owner's trust in this daemon's key (no keychain), never automatic.
         if (info.trust?.state && info.trust.state !== 'not-applicable') {
@@ -399,6 +399,8 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
         if (info.localProof && !info.localProof.available) {
           lines.push(`proof     unavailable: ${info.localProof.problem ?? 'unknown reason'} (owner import and stored-value reveal refuse until the daemon restarts with a protected proof file)`)
         }
+        // W5-D1: the keychain did not answer at start; the daemon runs on its passphrase file.
+        if (info.keychainProblem) lines.push(`keychain  unavailable: ${info.keychainProblem}`)
       }
     } catch { /* older daemon */ }
   } else if (record && processAlive(record.pid)) {

@@ -14,3 +14,8 @@ export function writeTokens(tokens: TokenSet): void {
 export function clearTokens(): void {
   store.clearTokens()
 }
+
+/** A sign-in to `accountId` succeeded: drop the session set aside for it (auth.replaced.json). */
+export function noteSignIn(accountId: string | undefined): void {
+  store.signedIn(accountId)
+}

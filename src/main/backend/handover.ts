@@ -58,8 +58,14 @@ export const HANDOVER_MARKER_FILE = 'studio-handover.json'
 const CLIENT_FILE = 'studio-client-settings.json'
 const STUDIO_TOKEN_FILE = 'auth.json'
 const DAEMON_TOKEN_FILE = 'auth.daemon.json'
-/** The session the accounts-conflict dialog did not keep, for one restore (credential-cipher, as auth.daemon.json). */
+/**
+ * The session the accounts-conflict dialog did not keep, for one restore
+ * (credential-cipher, as auth.daemon.json). Deleted after
+ * REPLACED_TOKEN_MAX_AGE_DAYS (sweepReplacedSessions, every handover) or at
+ * the next sign-in to its account (subscription-token-store signedIn).
+ */
 export const REPLACED_TOKEN_FILE = 'auth.replaced.json'
+export const REPLACED_TOKEN_MAX_AGE_DAYS = 30
 const SAFE_PREFIX = 'safe:'
 const AES_GCM_PREFIX = 'aesgcm:'
 
@@ -851,8 +857,32 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps): 
  * comment). Never throws: each item's failure is reported, its source kept,
  * and the next start retries.
  */
+/**
+ * Delete each `auth.replaced.json` older than REPLACED_TOKEN_MAX_AGE_DAYS
+ * (by its write time). Logged per file; never throws. Returns the deleted paths.
+ */
+export async function sweepReplacedSessions(userDataDir: string, opts: { now?: number; log?: (line: string) => void } = {}): Promise<string[]> {
+  const log = opts.log ?? ((line: string) => console.log(line))
+  const cutoff = (opts.now ?? Date.now()) - REPLACED_TOKEN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+  const deleted: string[] = []
+  for (const sub of SUBSCRIPTIONS) {
+    const path = join(userDataDir, sub.dir, REPLACED_TOKEN_FILE)
+    try {
+      const st = await fsp.stat(path)
+      if (!st.isFile() || st.mtimeMs > cutoff) continue
+      await fsp.unlink(path)
+      deleted.push(path)
+      log(`[Handover] Deleted ${path}: the ${sub.label} set aside by the accounts dialog is older than ${REPLACED_TOKEN_MAX_AGE_DAYS} days`)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`[Handover] Could not check ${path}: ${errorText(err)}`)
+    }
+  }
+  return deleted
+}
+
 export async function runHandover(target: HandoverTarget, deps: HandoverDeps, opts: HandoverOptions = {}): Promise<HandoverReport> {
   const log = deps.log ?? ((line: string) => console.log(line))
+  await sweepReplacedSessions(deps.userDataDir, { log })
   const items: HandoverItemResult[] = []
   const record = (item: HandoverItemResult): void => {
     items.push(item)

@@ -88,6 +88,9 @@ function memorySettings(initial: Record<string, unknown> = {}) {
   }
 }
 
+/** This run's local proof: GET /agents/{id}/export needs it. */
+const PROOF = 'test-local-proof-0123456789abcdefghijklmnopqrstuvwxyz'
+
 function setup(opts: { settings?: Record<string, unknown>; runtime?: Partial<RuntimeServiceOptions> } = {}) {
   const settings = memorySettings(opts.settings)
   const runtime = new RuntimeService({
@@ -97,7 +100,7 @@ function setup(opts: { settings?: Record<string, unknown>; runtime?: Partial<Run
     ...opts.runtime,
   })
   runtimes.push(runtime)
-  const server = createDaemonHttpApi(runtime, { settingsStore: settings.store })
+  const server = createDaemonHttpApi(runtime, { settingsStore: settings.store, security: { localProof: PROOF } })
   servers.push(server)
   return { runtime, server, settings }
 }
@@ -144,6 +147,7 @@ interface RouteCase {
   url: (c: Ctx) => string
   body?: unknown | ((c: Ctx) => unknown)
   raw?: Buffer
+  headers?: Record<string, string>
   expect: Expect
   after?: (res: { statusCode: number; json: () => any; body: string }, c: Ctx) => void
 }
@@ -194,7 +198,7 @@ const ROUTES: RouteCase[] = [
   { method: 'PATCH', path: `${A}/files/protection`, url: c => `/agents/${c.id}/files/protection`, body: { path: 'archive/b.txt', protection: 'none' }, expect: { ok: 200 } },
   { method: 'PATCH', path: `${A}/files/authorized`, url: c => `/agents/${c.id}/files/authorized`, body: { path: 'archive/b.txt', authorized: false }, expect: { ok: 200 } },
   { method: 'DELETE', path: `${A}/files/content`, url: c => `/agents/${c.id}/files/content?path=archive/b.txt`, expect: { ok: 200 } },
-  { method: 'GET', path: `${A}/export`, url: c => `/agents/${c.id}/export`, expect: { ok: 200 } },
+  { method: 'GET', path: `${A}/export`, url: c => `/agents/${c.id}/export`, headers: { 'x-adf-local-proof': PROOF }, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/inbox`, url: c => `/agents/${c.id}/inbox`, expect: { ok: 200 } },
   { method: 'DELETE', path: `${A}/inbox`, url: c => `/agents/${c.id}/inbox`, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/outbox`, url: c => `/agents/${c.id}/outbox`, expect: { ok: 200 } },
@@ -321,6 +325,7 @@ describe('open documents: every /agents/:id route on an open, not-running docume
         method: route.method,
         url,
         ...(route.raw ? { payload: route.raw, headers: { 'content-type': 'application/octet-stream' } } : body !== undefined ? { payload: body as object } : {}),
+        ...(route.headers ? { headers: route.headers } : {}),
       })
       const json = () => JSON.parse(res.body)
       const label = `${route.method} ${url} → ${res.statusCode} ${res.body.slice(0, 160)}`

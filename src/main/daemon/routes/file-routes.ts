@@ -8,9 +8,9 @@
 //   POST   /files/clone                clone with selected tables + clone-fixup
 //   POST   /files/relocate             accept-relocate into the agents folder
 //   POST   /files/save-as              shareable copy to another path on this host
-//   GET    /files/snapshot             snapshot bytes: share (identity-free) or export
+//   GET    /files/snapshot             snapshot bytes: share (identity-free) or export (local proof)
 //   POST   /files/import               octet-stream upload of an .adf into a tracked folder
-//   GET    /agents/:id/export          consistent snapshot of an agent's file (SQLite backup API)
+//   GET    /agents/:id/export          consistent snapshot of an agent's file (SQLite backup API; local proof)
 //   GET    /agents/:id/files/meta      internal file metadata, no content
 //   GET    /agents/:id/files/raw       internal file bytes (octet-stream, optional size cap)
 //   PUT    /agents/:id/files/raw       internal file upload (octet-stream, own body limit)
@@ -37,8 +37,12 @@ import { PathAgentOps } from '../path-agent-ops'
 import { forgetTrackedFile, scanTrackedTree, TrackedDirError, type TrackedDirsSettings } from '../tracked-dirs'
 import type { DaemonRouteContext } from './index'
 import { resolveAgentWorkspace } from './agent-resolver'
+import { requireLocalCaller } from '../identity-routes'
+import { requireLocalProof } from './identity-import-routes'
 
 const MIB = 1024 * 1024
+const EXPORT_WHAT = 'A full export of an agent file (its identity and keys) can be downloaded'
+const EXPORT_PROOF_REFUSAL = 'A full export of an agent file carries its identity and keys, so it is given only to the daemon\'s own machine: this request lacks the local proof (X-ADF-Local-Proof, the daemon-local-proof file next to the daemon settings). The token alone gets the shareable copy (mode share).'
 /** PUT /agents/:id/files/raw default cap (ADF_DAEMON_RAW_BODY_LIMIT_MB overrides). */
 export const RAW_FILE_BODY_LIMIT = 64 * MIB
 /** POST /files/import default cap (ADF_DAEMON_IMPORT_BODY_LIMIT_MB overrides). */
@@ -182,20 +186,36 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     }
   })
 
-  server.get<{ Querystring: { path?: string; mode?: string } }>('/files/snapshot', async (request, reply) => {
+  // A full export holds the agent's identity (and, for a legacy agent, its
+  // plain signing key and credential values): the daemon's own machine only,
+  // with this run's local proof, as the stored-value reveal routes. The token
+  // alone gets the identity-free share copy. Plain secrets are left out
+  // unless the caller asks for them (includeSecrets=true).
+  const exportAllowed = (request: FastifyRequest, reply: FastifyReply): boolean =>
+    requireLocalCaller(request, reply, ctx.localAccess, EXPORT_WHAT)
+    && requireLocalProof(request, reply, ctx.localAccess.localProof ?? null, EXPORT_PROOF_REFUSAL)
+
+  server.get<{ Querystring: { path?: string; mode?: string; includeSecrets?: string } }>('/files/snapshot', async (request, reply) => {
     const mode = parseMode(request.query.mode, 'share')
     if (!mode) return badRequest(reply, 'mode must be share or export')
+    const includeSecrets = parseBool(request.query.includeSecrets)
+    if (includeSecrets === null) return badRequest(reply, 'includeSecrets must be true or false')
+    if (includeSecrets && mode !== 'export') return badRequest(reply, 'includeSecrets applies to mode export only')
+    if (mode === 'export' && !exportAllowed(request, reply)) return reply
     try {
       const filePath = await files.adfPath(request.query.path)
-      return await sendSnapshot(reply, filePath, mode)
+      return await sendSnapshot(reply, filePath, mode, includeSecrets)
     } catch (err) {
       return fail(reply, err)
     }
   })
 
-  server.get<{ Params: { id: string } }>('/agents/:id/export', async (request, reply) => {
+  server.get<{ Params: { id: string }; Querystring: { includeSecrets?: string } }>('/agents/:id/export', async (request, reply) => {
+    const includeSecrets = parseBool(request.query.includeSecrets)
+    if (includeSecrets === null) return badRequest(reply, 'includeSecrets must be true or false')
+    if (!exportAllowed(request, reply)) return reply
     try {
-      return await sendSnapshot(reply, await files.resolveAgentFile(request.params.id), 'export')
+      return await sendSnapshot(reply, await files.resolveAgentFile(request.params.id), 'export', includeSecrets)
     } catch (err) {
       return fail(reply, err)
     }
@@ -410,8 +430,12 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   })
 }
 
-async function sendSnapshot(reply: FastifyReply, filePath: string, mode: SnapshotMode): Promise<FastifyReply> {
-  const snapshot = await snapshotToTemp(filePath, mode)
+async function sendSnapshot(reply: FastifyReply, filePath: string, mode: SnapshotMode, includeSecrets = false): Promise<FastifyReply> {
+  const snapshot = await snapshotToTemp(filePath, mode, { includeSecrets })
+  if (mode === 'export') {
+    console.log(`[FileRoutes] Exported ${filePath} to a local caller ${includeSecrets ? 'with its plain secrets (includeSecrets)' : `without its plain secrets (${snapshot.secretsRemoved} row(s) left out)`}`)
+    reply.header('X-ADF-Export-Secrets', includeSecrets ? 'included' : 'removed').header('Cache-Control', 'no-store')
+  }
   return reply
     .header('Content-Type', 'application/octet-stream')
     .header('Content-Length', String(snapshot.size))

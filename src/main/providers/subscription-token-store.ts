@@ -28,6 +28,8 @@ import { encryptCredential, decryptCredential, SAFE_STORAGE_PREFIX } from '../ut
 
 const STUDIO_FILE = 'auth.json'
 const DAEMON_FILE = 'auth.daemon.json'
+/** The session the accounts-conflict dialog did not keep (backend/handover.ts REPLACED_TOKEN_FILE), key-file cipher. */
+const REPLACED_FILE = 'auth.replaced.json'
 
 interface ElectronSafeStorage {
   isEncryptionAvailable: () => boolean
@@ -39,6 +41,12 @@ export interface SubscriptionTokenStore<T> {
   readTokens: () => T | null
   writeTokens: (tokens: T) => void
   clearTokens: () => void
+  /**
+   * A sign-in to `accountId` succeeded: the session the accounts-conflict
+   * dialog set aside for that account (auth.replaced.json) is no longer
+   * needed and is deleted (logged). Never throws.
+   */
+  signedIn: (accountId: string | undefined) => void
 }
 
 function getSafeStorage(): ElectronSafeStorage | null {
@@ -166,5 +174,19 @@ export function createSubscriptionTokenStore<T>(dirName: string): SubscriptionTo
     }
   }
 
-  return { readTokens, writeTokens, clearTokens }
+  function signedIn(accountId: string | undefined): void {
+    if (!accountId) return
+    const path = join(getDir(), REPLACED_FILE)
+    if (!existsSync(path)) return
+    try {
+      const saved = JSON.parse(decryptValue(readFileSync(path, 'utf-8')) ?? 'null') as { account_id?: unknown } | null
+      if (saved?.account_id !== accountId) return
+      unlinkSync(path)
+      console.log(`${logTag} Deleted ${REPLACED_FILE}: ${accountId} signed in again, so the session set aside for it is no longer needed`)
+    } catch (err) {
+      console.warn(`${logTag} Could not check ${REPLACED_FILE} after the sign-in:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  return { readTokens, writeTokens, clearTokens, signedIn }
 }

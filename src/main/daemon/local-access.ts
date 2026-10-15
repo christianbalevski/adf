@@ -18,12 +18,14 @@
  *      send it to this machine's daemon only; a caller behind the proxy cannot.
  */
 
-import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { userInfo } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { tokensEqual } from './daemon-token'
+import { restrictToCurrentUserWindows } from '../utils/secret-file'
+
+// Moved to utils/secret-file.ts (W5-D1: the other secret files use it too); re-exported for existing callers.
+export { restrictToCurrentUserWindows }
 
 export const LOCAL_PROOF_FILENAME = 'daemon-local-proof'
 export const LOCAL_PROOF_HEADER = 'x-adf-local-proof'
@@ -56,22 +58,6 @@ const DEFAULT_PORT = 7385
  */
 export function localProofPath(settingsDir: string, port: number = DEFAULT_PORT): string {
   return join(settingsDir, port === DEFAULT_PORT ? LOCAL_PROOF_FILENAME : `${LOCAL_PROOF_FILENAME}-${port}`)
-}
-
-/**
- * Windows: the file's own ACL, granting full control to the current user
- * only, with inheritance removed (mode 0600 means nothing there, and the
- * folder's inherited ACL depends on where the settings live:
- * ADF_USER_DATA_DIR or a custom settings path need not be in the profile).
- * Throws when icacls fails: an unprotected proof must not be used.
- */
-export function restrictToCurrentUserWindows(path: string, run: (file: string, args: string[]) => void = (file, args) => {
-  execFileSync(file, args, { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
-}): void {
-  const user = process.env.USERDOMAIN && process.env.USERNAME
-    ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
-    : userInfo().username
-  run('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`])
 }
 
 /**

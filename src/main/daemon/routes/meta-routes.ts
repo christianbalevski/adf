@@ -65,6 +65,12 @@ export interface DaemonVersionInfo {
   localProof?: { available: boolean; problem: string | null }
   /** K12: whether the owner trusts this daemon's key (adf identity trust-daemon); absent without an owner identity service or in older daemons. */
   trust?: DaemonTrustStatus
+  /**
+   * This machine has an OS keychain the daemon could not read at start, so
+   * it runs on the passphrase file: why and what to do; null when not.
+   * Absent without an owner identity service or in older daemons.
+   */
+  keychainProblem?: string | null
 }
 
 export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
@@ -81,7 +87,7 @@ export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       pid: process.pid,
       startedBy: options.routes?.startedBy ?? 'cli',
       localProof: { available: !!ctx.localAccess.localProof, problem: ctx.localAccess.localProof ? null : localProofProblem() ?? 'no local proof was minted for this run' },
-      ...(options.identity ? { trust: options.identity.trustStatus() } : {}),
+      ...(options.identity ? { trust: options.identity.trustStatus(), keychainProblem: options.identity.keychainProblem() } : {}),
     }
   })
 }
