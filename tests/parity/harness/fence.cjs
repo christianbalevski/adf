@@ -47,7 +47,7 @@ const { syncBuiltinESMExports } = require('node:module')
 /** Always refused, whatever the allow list says: the owner's real daemon. */
 const FORBIDDEN_PORTS = new Set([7385])
 const FORBIDDEN_BINARY = /^(podman|wsl)(\.exe|\.cmd|\.bat)?$/i
-// 127.0.0.2: the remote-mode OAuth relay listens there, as on another computer's loopback (W4-B).
+// 127.0.0.2 (::1 on macOS): the remote-mode OAuth relay listens there, as on another computer's loopback (W4-B, harness/relay-host.ts).
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '127.0.0.2', '::1', '[::1]', 'localhost'])
 
 let state = null

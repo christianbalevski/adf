@@ -35,7 +35,10 @@ jobs:
           npm rebuild better-sqlite3
 
       # `npm test` verifies that the native binding matches the active Node ABI.
+      # tests/parity runs in the daemon-parity job, under Electron-as-Node.
       - name: Test
+        env:
+          PARITY_EXCLUDE: '1'
         run: npm test
 
       # The skill packages ship node:test suites that need the agent sandbox's
@@ -120,6 +123,8 @@ jobs:
           npm rebuild better-sqlite3
 
       - name: Test
+        env:
+          PARITY_EXCLUDE: '1'
         run: npm test
 
       - name: Skill package tests (node:test)

@@ -5,7 +5,7 @@
  * in memory or a temp file; ADF_KEYCHAIN=0 keeps the real one out of reach.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -704,7 +704,8 @@ describe('POST /identity/import', () => {
       server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload: { mnemonic: s.phrase } }),
     ])
     expect([a.statusCode, b.statusCode]).toEqual([200, 200])
-    expect(runtime.listAgents().map((x) => x.filePath)).toEqual([file])
+    // The runtime lists an agent by its realpath (macOS: /var is /private/var).
+    expect(runtime.listAgents().map((x) => x.filePath)).toEqual([realpathSync(file)])
     // Serialized: the second unload starts after the first reload.
     const steps = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith('[ADF Daemon] Owner import:'))
     expect(steps.map((l) => (l.includes('unloading') ? 'u' : 'r')).join('')).toBe('urur')

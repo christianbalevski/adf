@@ -728,7 +728,10 @@ export function createDaemonHttpApi(
 ): FastifyInstance {
   // forceCloseConnections: without it, server.close() waits forever for
   // keep-alive/SSE clients and a SIGTERM with an /events subscriber hangs.
-  const server = Fastify({ logger: opts.logger ?? false, forceCloseConnections: true })
+  // maxParamLength: `/agents/:id` takes an agent's file path, URL-encoded;
+  // Fastify's default (100) answered 414 for an ordinary macOS temp or
+  // Windows profile path. Node's header limit (16 KB) still bounds the URL.
+  const server = Fastify({ logger: opts.logger ?? false, forceCloseConnections: true, routerOptions: { maxParamLength: 16 * 1024 } })
 
   // Hijacked SSE responses are invisible to Fastify's connection tracking —
   // destroy them explicitly when the server closes.

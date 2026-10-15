@@ -26,7 +26,7 @@ import type { ComparableRecording } from './recording'
  * Two layers:
  * - `normalizeRecording` (R1-R13): every comparison, including embedded vs
  *   daemon on the same machine.
- * - `toGoldenForm` (G1): additionally, only before comparing with the
+ * - `toGoldenForm` (G1, G2): additionally, only before comparing with the
  *   committed recordings, which must match on every OS.
  *
  * Values that are not plain objects, arrays or primitives (Map, Date, Buffer,
@@ -112,6 +112,11 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const named = ctx.named
     .filter((n): n is { value: string; name: string } => typeof n.value === 'string' && n.value.length > 0)
     .sort((a, b) => b.value.length - a.value.length)
+  // A named value under the run root is named whole, before R1 rewrites its
+  // root: the lease endpoint is `<root>/leases/hosts/<runtimeId>.sock` on
+  // macOS and Linux (a named pipe outside the root on Windows), and is
+  // `<lease-endpoint:ROLE>` on every platform.
+  const rootedNamed = named.filter((n) => ctx.rootSpellings.some((r) => n.value.includes(r.spelling)))
 
   // Rule R8 — wall-clock instants inside the run window: epoch-ms numbers,
   // 13-digit epoch-ms runs inside strings (`session-1791991172180`),
@@ -169,6 +174,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
 
   const replaceString = (input: string, floor: number, seen: number[]): string => {
     let s = input
+    for (const { value, name } of rootedNamed) s = s.split(value).join(`<${name}>`)
     if (rootRe) s = s.replace(rootRe, (m) => rootToken.get(m) ?? m)
     for (const { re, to } of portRes) s = s.replace(re, to)
     if (s.includes('code_challenge=')) s = oauthAuthorizationUrl(s)
@@ -470,9 +476,23 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
  * on Windows; the host record names the endpoint either way.
  * Applied ONLY for the golden comparison; two backends on one machine are
  * still compared with separators, spellings and sockets intact.
+ *
+ * Rule G2 — on macOS the application menu (Menu.setApplicationMenu) is put
+ * in its Windows and Linux form (menu.ts): the app menu goes, and its
+ * Settings… and Quit return to the end of Edit and File; Window loses
+ * "Bring All to Front". Every other item is compared as recorded.
  */
-export function toGoldenForm(recording: ComparableRecording): ComparableRecording {
-  const fix = (s: string) => s
+export function toGoldenForm(recording: ComparableRecording, platform: NodeJS.Platform = process.platform): ComparableRecording {
+  if (platform === 'darwin') {
+    recording = {
+      ...recording,
+      local: recording.local.map((call) =>
+        call.api === 'Menu.setApplicationMenu' && Array.isArray(call.args[0])
+          ? { ...call, args: [darwinMenuInOtherForm(call.args[0] as MenuShape[]), ...call.args.slice(1)] }
+          : call),
+    }
+  }
+  const fix = (s: string): string => s
     .replace(/<ROOT:fwd>/g, '<ROOT>')
     .replace(/<ROOT>[^\s"'`<>|]*/g, (m) => m.replace(/\\/g, '/'))
   const walk = (value: unknown): unknown => {
@@ -485,4 +505,22 @@ export function toGoldenForm(recording: ComparableRecording): ComparableRecordin
   }
   const out = walk(recording) as ComparableRecording
   return { ...out, state: { ...out.state, tree: out.state.tree.filter((line) => !line.startsWith('s ')) } }
+}
+
+type MenuShape = Record<string, unknown> & { label?: unknown; role?: unknown; type?: unknown; submenu?: unknown }
+
+/** Rule G2: a macOS application menu in the form menu.ts builds on Windows and Linux. */
+export function darwinMenuInOtherForm(items: MenuShape[]): MenuShape[] {
+  const [first, ...rest] = items
+  const isAppMenu = !!first && Array.isArray(first.submenu) && (first.submenu as MenuShape[]).some((i) => i.role === 'about')
+  if (!isAppMenu) return items
+  return rest.map((menu) => {
+    const sub = Array.isArray(menu.submenu) ? (menu.submenu as MenuShape[]) : null
+    if (!sub) return menu
+    if (menu.label === 'File') return { ...menu, submenu: [...sub, { type: 'separator' }, { role: 'quit' }] }
+    if (menu.label === 'Edit') return { ...menu, submenu: [...sub, { type: 'separator' }, { label: 'Settings…', accelerator: 'Ctrl+,' }] }
+    const n = sub.length
+    if (menu.label === 'Window' && n >= 2 && sub[n - 1].role === 'front' && sub[n - 2].type === 'separator') return { ...menu, submenu: sub.slice(0, -2) }
+    return menu
+  })
 }

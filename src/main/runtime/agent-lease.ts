@@ -71,7 +71,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { promises as fsp, readFileSync, unlinkSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { homedir, hostname as osHostname, tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { getUserDataPath } from '../utils/user-data-path'
 
 export const AGENT_LEASED_CODE = 'agent_leased'
@@ -224,8 +224,9 @@ function stripLongPathPrefix(p: string): string {
   return p
 }
 
+/** Either separator: a lease folder shared between machines holds Windows and POSIX paths alike. */
 function agentNameOf(path: string): string {
-  return basename(path).replace(/\.adf$/i, '')
+  return (path.split(/[\\/]/).pop() ?? path).replace(/\.adf$/i, '')
 }
 
 /**
@@ -1060,6 +1061,11 @@ export class AgentLeaseRegistry {
    */
   private async lockTakeover(lock: string): Promise<boolean> {
     const deadline = Date.now() + TAKEOVER_LOCK_WAIT_MS
+    // One liveness check per lock per call, not one per retry: a holder whose
+    // event loop is blocked accepts no probe, each one waits in its socket's
+    // accept queue, and macOS refuses connections once that queue is full
+    // (ECONNREFUSED, which reads as a dead holder).
+    const judged = new Map<string, 'live' | 'dead' | 'unknown'>()
     while (Date.now() < deadline) {
       try {
         await fsp.writeFile(lock, JSON.stringify({ pid: this.pid, runtimeId: this.runtimeId, endpoint: this.endpoint, machineId: this.machineIdValue, at: Date.now() }), { flag: 'wx', mode: FILE_MODE })
@@ -1076,7 +1082,8 @@ export class AgentLeaseRegistry {
         const age = Date.now() - st.mtimeMs
         if (age > TAKEOVER_LOCK_SUSPECT_MS) {
           const raw = await fsp.readFile(lock, 'utf-8')
-          const state = await this.lockHolderState(raw)
+          const state = judged.get(raw) ?? await this.lockHolderState(raw)
+          judged.set(raw, state)
           // A live holder keeps its lock however long it stalls or blocks;
           // the TTL is only for a lock without a readable pid.
           if (state === 'dead' || (state === 'unknown' && age > this.takeoverLockTtlMs)) {

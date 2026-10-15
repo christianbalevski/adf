@@ -149,7 +149,7 @@ export async function completeFakeAuthorization(authorizeUrl: string, port: numb
   const redirect = new URL(page.searchParams.get('redirect_uri') ?? '')
   redirect.searchParams.set('code', FAKE_AUTH_CODE)
   redirect.searchParams.set('state', page.searchParams.get('state') ?? '')
-  // Remote mode: the browser runs on "another computer", where Studio's relay listens (127.0.0.2).
+  // Remote mode: the browser runs on "another computer", where Studio's relay listens (RELAY_URL_HOST).
   if (callbackHost) redirect.hostname = callbackHost
   allowPort(Number(redirect.port))
   // No keep-alive agent: no socket of this "browser" outlives the scenario.

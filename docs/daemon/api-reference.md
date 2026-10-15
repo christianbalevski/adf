@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 317 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 318 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -51,7 +51,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Registries](#tag-registries) (6)
 - [Jobs](#tag-jobs) (2)
 - [Agent files](#tag-agent-files) (28)
-- [Client (internal)](#tag-client-internal) (12)
+- [Client (internal)](#tag-client-internal) (13)
 - [Schemas](#schemas)
 
 <a id="tag-health"></a>
@@ -16574,6 +16574,7 @@ Client sessions and the client event stream, for clients that need exact UI pari
 |---|---|---|
 | POST | [`/agents/{id}/identity/reveal`](#op-revealagentidentityvalues) | Read stored values of an agent (local callers only) |
 | POST | [`/files/agent/identity/reveal`](#op-revealagentfileidentityvalues) | Read stored values of an agent file (local callers only) |
+| POST | [`/settings/providers/keys/reveal`](#op-revealappproviderkeys) | Read the app providers' API keys (local callers only) |
 | GET | [`/client/sessions`](#op-listclientsessions) | List the open client sessions |
 | POST | [`/client/sessions`](#op-createclientsession) | Open a client session |
 | DELETE | [`/client/sessions/{id}`](#op-endclientsession) | End a client session |
@@ -16687,6 +16688,48 @@ Example 200 (`application/json`):
   "values": {},
   "filePath": "string",
   "loaded": true
+}
+```
+
+<a id="op-revealappproviderkeys"></a>
+
+### POST `/settings/providers/keys/reveal`
+
+**Read the app providers' API keys (local callers only)**
+
+The keys of Settings → Providers that GET /settings answers as `__redacted__`: those stored in the daemon's settings file (a key kept in the OS keychain is never returned). Local callers that present this run's local proof (`X-ADF-Local-Proof`) only, in every mode; the token alone gets 403 `loopback_only`. Studio in local mode fills its key field with them, as embedded Studio does; a remote Studio keeps the placeholder. `Cache-Control: no-store`; keys are never logged.
+
+Operation `revealAppProviderKeys` · bearer token
+
+**Request body** (optional): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ids` | string[] |  | Provider ids to answer; all when absent. |
+
+```json
+{
+  "ids": [
+    "anthropic"
+  ]
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | Keys |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "keys": {}
 }
 ```
 

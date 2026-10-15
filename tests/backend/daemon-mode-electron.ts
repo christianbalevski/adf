@@ -90,7 +90,17 @@ export function createElectronStub(): ElectronStub {
       buildFromTemplate: (template: unknown[]) => ({ items: template }),
       setApplicationMenu: (menu: { items: unknown[] }) => { call('Menu.setApplicationMenu', [menu.items]) },
     },
-    Tray: class {},
+    // ApprovalsUi creates the macOS menu bar icon (MenuBarController) on darwin.
+    Tray: class {
+      private destroyed = false
+      constructor() { call('Tray.new', []) }
+      on(): this { return this }
+      setTitle(title: string): void { call('Tray.setTitle', [title]) }
+      setToolTip(): void {}
+      popUpContextMenu(): void {}
+      isDestroyed(): boolean { return this.destroyed }
+      destroy(): void { this.destroyed = true }
+    },
     nativeImage: { createFromPath: () => ({ setTemplateImage: () => {} }) },
   }
   return stub

@@ -79,3 +79,15 @@ describe('POST /agents/:id/start?preflight=1 and the review gate', () => {
     expect(calls).toBe(0)
   })
 })
+
+describe('POST /agents/:id/start with a long file path as the id', () => {
+  it('is looked up, not refused as too long (Fastify answered 414 past 100 characters)', async () => {
+    const { runtime, server, state } = setup()
+    state.providers = [{ id: 'anthropic', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-test' }]
+    const dir = join(process.env.ADF_USER_DATA_DIR!, 'a-folder-name-long-enough-to-pass-one-hundred-encoded-characters', 'and-one-more-level')
+    const res = await server.inject({ method: 'POST', url: `/agents/${encodeURIComponent(join(dir, 'agent-1.adf'))}/start` })
+    expect(encodeURIComponent(join(dir, 'agent-1.adf')).length).toBeGreaterThan(100)
+    expect(res.statusCode).not.toBe(414)
+    expect(runtime.listAgents()).toEqual([])
+  })
+})
