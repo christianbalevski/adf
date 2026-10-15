@@ -98,7 +98,7 @@ import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
-import { LeasedStartTracker, leaseHolderElsewhere, processAgentLeases } from '../runtime/agent-lease'
+import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
 import { describeEnvelopeSweep } from '../services/owner-identity.service'
 import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
@@ -1758,13 +1758,17 @@ export const hostActions: {
 /** The boot envelope sweep's timer until it fires (registerAllIpcHandlers). */
 let pendingEnvelopeSweep: NodeJS.Timeout | null = null
 
-/** The boot envelope sweep (spec §8), as the daemon runs it: files another runtime runs are skipped. */
+/**
+ * The boot envelope sweep (spec §8), as the daemon runs it. Skipped: the
+ * open file and the agents this process runs (provisioned when opened), and
+ * files another runtime runs.
+ */
 async function runEnvelopeSweep(): Promise<void> {
   try {
     const t0 = performance.now()
     const leases = processAgentLeases()
     const sweep = await settings.getOwnerIdentity().sweepEnvelopeMigration({
-      skip: async (filePath) => (await leaseHolderElsewhere(leases, filePath)) !== null,
+      skip: (filePath) => openHereOrLeasedElsewhere(leases, filePath, currentFilePath ? [currentFilePath] : []),
     })
     const line = describeEnvelopeSweep(sweep, performance.now() - t0)
     if (line) console.log(line)

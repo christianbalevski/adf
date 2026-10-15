@@ -90,16 +90,21 @@ export interface EnvelopeSweepResult {
   provisioned: number
   /** Plain secret rows sealed under their envelope. */
   sealed: number
+  /** `<path>: <error>` per file (or folder) that failed; retried at the next boot or open. */
   failures: string[]
-  /** Files left alone because another runtime runs them. */
+  /** Files left alone: open or running in this process, or run by another runtime. */
   skipped: string[]
+  /** No owner identity to provision with: nothing was opened. */
+  ownerNotReady?: true
 }
 
-/** The sweep's log line, the same in both modes; null when it did nothing. */
+/** The sweep's log line, the same in both modes; null when it did nothing. Failures are named with their paths. */
 export function describeEnvelopeSweep(sweep: EnvelopeSweepResult, ms: number): string | null {
+  if (sweep.ownerNotReady) return '[OwnerIdentity] Envelope sweep skipped: the owner identity is not ready, so no tracked agent was provisioned'
   if (!sweep.provisioned && !sweep.sealed && !sweep.failures.length && !sweep.skipped.length) return null
   return `[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s)` +
-    `${sweep.skipped.length ? `, ${sweep.skipped.length} run by another runtime (provisioned when next opened)` : ''} in ${ms.toFixed(0)}ms`
+    `${sweep.skipped.length ? `, ${sweep.skipped.length} open here or run by another runtime (provisioned when next opened)` : ''} in ${ms.toFixed(0)}ms` +
+    `${sweep.failures.length ? ` — failed (retried at the next boot or open): ${sweep.failures.join('; ')}` : ''}`
 }
 
 export class OwnerIdentityService {
@@ -895,8 +900,9 @@ export class OwnerIdentityService {
    * One sweep for both modes (embedded Studio and the daemon run it 2 s
    * after boot). The folder walk is async and the sweep yields after every
    * file, so a large tracked tree does not block the event loop. Files
-   * `skip` names (another runtime runs the agent and is the one writer of
-   * its file) are not opened; they are provisioned when next opened.
+   * `skip` names (open or running in this process, which provisioned them
+   * on open; or run by another runtime, the one writer of the file) are not
+   * opened; they are provisioned when next opened.
    * `provision` replaces ensureWorkspaceIdentity (the daemon's recipe adds
    * its own unlock cascade and trusted slot around it).
    */
@@ -907,7 +913,7 @@ export class OwnerIdentityService {
     } = {},
   ): Promise<EnvelopeSweepResult> {
     const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [] }
-    if (!this.getEnvelopeRecipients()) return result
+    if (!this.getEnvelopeRecipients()) return { ...result, ownerNotReady: true }
 
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
     const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []

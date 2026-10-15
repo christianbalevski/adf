@@ -15,6 +15,8 @@ vi.mock('electron', () => ({
 }))
 
 import { SettingsService } from '../../../src/main/services/settings.service'
+import { describeEnvelopeSweep } from '../../../src/main/services/owner-identity.service'
+import { AgentLeaseRegistry, openHereOrLeasedElsewhere } from '../../../src/main/runtime/agent-lease'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { readAdfAttestations, verifyAttestation } from '../../../src/main/services/attestation.service'
 
@@ -225,7 +227,37 @@ describe('sweepEnvelopeMigration: files another runtime runs (W5-G)', () => {
     ws.close()
     const svc = settings.getOwnerIdentity()
     vi.spyOn(svc, 'getEnvelopeRecipients').mockReturnValue(null)
-    expect(await svc.sweepEnvelopeMigration()).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
+    const sweep = await svc.sweepEnvelopeMigration()
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true })
+    // Said, not silent.
+    expect(describeEnvelopeSweep(sweep, 1)).toMatch(/Envelope sweep skipped: the owner identity is not ready/)
+  })
+
+  it('the log line names each failed file', () => {
+    const line = describeEnvelopeSweep({ provisioned: 1, sealed: 0, failures: ['/agents/agent-2.adf: database disk image is malformed'], skipped: ['/agents/agent-3.adf'] }, 12)
+    expect(line).toContain('1 provisioned')
+    expect(line).toContain('1 open here or run by another runtime')
+    expect(line).toContain('/agents/agent-2.adf: database disk image is malformed')
+  })
+})
+
+describe('the sweep skip rule (openHereOrLeasedElsewhere, both modes)', () => {
+  it('skips a file open here, one this process holds the lease of, and one another live runtime leases; not the others', async () => {
+    const leases = new AgentLeaseRegistry({ dir: join(rootDir, 'leases'), kind: 'daemon', settingsPath: join(rootDir, 's.json'), sweepDeadEntries: false })
+    const other = new AgentLeaseRegistry({ dir: join(rootDir, 'leases'), kind: 'studio-embedded', settingsPath: join(rootDir, 'o.json'), sweepDeadEntries: false })
+    try {
+      const file = (name: string) => { const p = join(trackedDir, `${name}.adf`); AdfWorkspace.create(p, { name }).close(); return p }
+      const [openFile, heldHere, heldThere, free] = [file('agent-1'), file('agent-2'), file('agent-3'), file('agent-4')]
+      expect((await leases.acquire(heldHere)).ok).toBe(true)
+      expect((await other.acquire(heldThere)).ok).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, openFile, [openFile])).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, heldHere, [openFile])).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, heldThere, [openFile])).toBe(true)
+      expect(await openHereOrLeasedElsewhere(leases, free, [openFile])).toBe(false)
+    } finally {
+      await leases.close()
+      await other.close()
+    }
   })
 })
 

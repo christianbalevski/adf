@@ -462,6 +462,18 @@ export async function leaseHolderElsewhere(leases: AgentLeaseRegistry | null, fi
   }
 }
 
+/**
+ * The boot envelope sweep's skip rule, the same in both modes: a file open
+ * or running in this process (`openHere`, or a lease this process holds;
+ * provisioned when it was opened), or one another live runtime runs (its one
+ * writer).
+ */
+export async function openHereOrLeasedElsewhere(leases: AgentLeaseRegistry, filePath: string, openHere: Iterable<string>): Promise<boolean> {
+  for (const p of openHere) if (samePath(p, filePath)) return true
+  if (await leases.isHeld(filePath)) return true
+  return (await leaseHolderElsewhere(leases, filePath)) !== null
+}
+
 /** process.kill(pid, 0), plus the Linux zombie check (an exited, unreaped pid is not alive). */
 export async function pidAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false
