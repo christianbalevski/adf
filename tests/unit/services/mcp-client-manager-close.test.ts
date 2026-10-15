@@ -1,7 +1,8 @@
 // closeConnection (disconnect, restart, agent stop) of a connected stdio
-// server. A server started through a cmd.exe shim (npx, uvx on Windows) that
-// ignores stdin EOF: the SDK's close kills only the shim, so the real server
-// is orphaned, and the tree sweep after close reaches only the dead shim.
+// server. E3: a server started through a cmd.exe shim (npx, uvx on Windows)
+// that ignores stdin EOF was orphaned: the SDK's close killed only the shim,
+// and the tree sweep after close reached only the dead shim. Now it gets the
+// EOF grace, then its tree is killed while the shim still links it.
 // The servers are node scripts speaking just enough MCP to connect (no
 // network, no npx).
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -78,14 +79,25 @@ describe('McpClientManager closeConnection', () => {
     expect(existsSync(`${server.pidFile}.eof`)).toBe(true)
   }, 30_000)
 
-  // Characterization (tracker §6, W3-C E3 candidate): the node grandchild of
-  // the shim outlives the disconnect.
-  it.runIf(process.platform === 'win32')('a server behind a cmd.exe shim that ignores stdin EOF outlives the disconnect', async () => {
+  it.runIf(process.platform === 'win32')('a server behind a cmd.exe shim that ignores stdin EOF is stopped with its tree', async () => {
     const manager = new McpClientManager()
     const server = fakeServer('ignore')
     const pid = await connected(manager, 'shim', 'cmd.exe', ['/d', '/c', 'node', server.script, server.pidFile, 'ignore'], server.pidFile)
+    const messages: string[] = []
+    manager.on('log', (_name, entry) => { messages.push(entry.message) })
     await manager.disconnect('shim')
     for (let i = 0; i < 60 && isAlive(pid); i++) await sleep(50)
-    expect(isAlive(pid), 'the node grandchild of the cmd.exe shim').toBe(true)
+    expect(isAlive(pid), 'the node grandchild of the cmd.exe shim survived the disconnect').toBe(false)
+    expect(messages.some((m) => /did not exit 2s after its input closed/.test(m))).toBe(true)
+  }, 30_000)
+
+  it.runIf(process.platform === 'win32')('a server behind a cmd.exe shim that exits on stdin EOF exits gracefully', async () => {
+    const manager = new McpClientManager()
+    const server = fakeServer('exit')
+    const pid = await connected(manager, 'shim-graceful', 'cmd.exe', ['/d', '/c', 'node', server.script, server.pidFile, 'exit'], server.pidFile)
+    await manager.disconnect('shim-graceful')
+    for (let i = 0; i < 60 && isAlive(pid); i++) await sleep(50)
+    expect(isAlive(pid)).toBe(false)
+    expect(existsSync(`${server.pidFile}.eof`)).toBe(true)
   }, 30_000)
 })
