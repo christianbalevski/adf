@@ -30,7 +30,11 @@ export interface DaemonHostOptions {
    * ADF_DAEMON_TOKEN only.
    */
   token?: string | null
-  /** Extra allowed Host names for non-loopback binds (ADF_DAEMON_ALLOWED_HOSTS; default: that env var). */
+  /**
+   * Extra allowed Host names (ADF_DAEMON_ALLOWED_HOSTS; default: that env
+   * var). Honoured on every bind: a TLS proxy or `tailscale serve` in front
+   * of a loopback daemon forwards its own public name as Host.
+   */
   allowedHosts?: string[]
   /** Proxy mode for the local-only routes (local-access.ts; default: ADF_DAEMON_BEHIND_PROXY). */
   behindProxy?: boolean
@@ -205,7 +209,7 @@ export class DaemonHost {
       onTrackedDirectoriesChanged: this.onTrackedDirectoriesChanged,
       security: {
         token: this.token,
-        allowedHosts: () => daemonHostAllowList(this.host, this.boundPort(), loopback ? [] : this.allowedHosts),
+        allowedHosts: () => daemonHostAllowList(this.host, this.boundPort(), this.allowedHosts),
         ipLiteralPort: () => (loopback ? null : this.boundPort()),
         behindProxy: this.behindProxy,
         localProof: this.localProof,
