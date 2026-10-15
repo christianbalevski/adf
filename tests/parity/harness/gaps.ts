@@ -398,8 +398,9 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       if (!client || !host) return 0
       const { containers: _c, ...hostFields } = host
       const wantClient = { ...hostFields, kind: 'studio-client', mode: backend === 'remote' ? 'remote' : 'local', endpoint: '<lease-endpoint:studio-client>', runtimeId: '<lease-runtime-id:studio-client>', controlUrl: client.controlUrl }
-      // The client record names the daemon Studio uses (W4-A; it named the default port 7385 before).
-      if (client.controlUrl !== 'http://127.0.0.1:<DAEMON_PORT>' || !same(client, wantClient)) return 0
+      // The client record names the daemon Studio uses (W4-A; it named the default port 7385 before): in remote mode its URL, the proxy.
+      const usedUrl = backend === 'remote' ? 'http://127.0.0.1:<REMOTE_PROXY_PORT>' : 'http://127.0.0.1:<DAEMON_PORT>'
+      if (client.controlUrl !== usedUrl || !same(client, wantClient)) return 0
       const daemonRecords = Object.values(d.state.leases).map((rec) => rec as Record<string, unknown>)
         .flatMap((r) => [r, ...(r.holder && typeof r.holder === 'object' ? [r.holder as Record<string, unknown>] : [])])
         .filter((r) => r.kind === 'daemon')
@@ -792,7 +793,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:no-os-recent-documents',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background'],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts'],
     path: 'local calls: app.addRecentDocument',
     what: 'In remote mode an opened file is a path on the daemon\'s machine: it goes into Open Recent (client settings) but not into the OS recent documents, where the Windows shell may contact a UNC host (W4-B review).',
     apply(d, e) {
