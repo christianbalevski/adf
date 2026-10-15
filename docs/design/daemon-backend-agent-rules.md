@@ -13,6 +13,8 @@ Every workstream agent reads this file, `docs/design/daemon-backend.md` and its 
 
 - **Junction safety (incident 2026-10-14).** On Windows, Node's `rmSync`/`rm` with `recursive` follows junctions and deletes the target. Never delete a directory that contains or may contain a junction or symlink (for example a temp copy with a linked `node_modules`) without unlinking the link first (`fs.unlinkSync` on the junction itself) and checking the unlink succeeded. Never create links to the shared `node_modules` from tests.
 
+- **Source CLI/TUI (incident 2026-10-15).** `adf` / `adf tui` from a worktree auto-starts a source daemon that runs `rebuild-for-node` on the shared `node_modules`. Always pass `--no-daemon --url <your test daemon>`.
+
 ## Code
 
 - Embedded-mode code changes only under rules E1-E3 (design §3.2). An E1 extraction lands with a characterization test written first, in the same commit.

@@ -71,7 +71,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W4-B | Remote mode | 4 | W3-A … W3-D | MERGED |
 | W4-C | Documentation | 4 | W4-A | MERGED |
 | W5-C | UX code fixes found by the checklist review | 5 | W4-C review | MERGED |
-| W5-A | Full parity run and triage | 5 | W4-A | TODO |
+| W5-A | Full parity run and triage | 5 | W4-A | MERGED (W5-A1, W5-A2) |
 | W5-B | OS matrix, packaging, Defender, soak | 5 | W4-A | TODO |
 
 ## 4. Workstreams
