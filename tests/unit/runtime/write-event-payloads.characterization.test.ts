@@ -1,9 +1,11 @@
 /**
- * Characterization (rule E3, before W3-F): the payloads of the two events an
- * agent's writes raise for open editors, in both backends. `file_updated`
- * comes from the workspace's file-change choke point (assemble-agent.ts),
- * `document_updated` from the executor's fs_write of the document
- * (agent-executor.ts). Studio's own writes (`system:studio`) raise none.
+ * Characterization (rule E3, written before W3-F): the payloads of the two
+ * events an agent's writes raise for open editors, in both backends.
+ * `file_updated` comes from the workspace's file-change choke point
+ * (assemble-agent.ts), `document_updated` from the executor's fs_write of the
+ * document (agent-executor.ts). Studio's own writes (`system:studio`) raise
+ * none. W3-F added `revision` (the one a read returns from then on) and
+ * `writer` (the agent).
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -11,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createHeadlessAgent } from '../../../src/main/runtime/headless'
+import { documentRevision, fileRevision } from '../../../src/main/runtime/resource-revisions'
 import { withSource } from '../../../src/main/runtime/execution-context'
 import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
@@ -70,11 +73,14 @@ describe('write events an open editor follows', () => {
       withSource('system:studio', studio, () => agent.workspace.writeFile('notes.md', 'from Studio'))
 
       expect(events.map(e => [e.type, Object.keys(e.payload as object).sort()])).toEqual([
-        ['file_updated', ['content', 'path', 'previousContent']],
-        ['document_updated', ['content', 'previousContent']],
+        ['file_updated', ['content', 'path', 'previousContent', 'revision', 'writer']],
+        ['document_updated', ['content', 'previousContent', 'revision', 'writer']],
       ])
-      expect(events[0].payload).toMatchObject({ path: 'notes.md', content: 'from the agent' })
-      expect(events[1].payload).toMatchObject({ content: '# Written by the agent' })
+      expect(events[0].payload).toMatchObject({ path: 'notes.md', content: 'from the agent', writer: { kind: 'agent' } })
+      expect(events[1].payload).toMatchObject({ content: '# Written by the agent', writer: { kind: 'agent' } })
+      // The document's revision is what a read returns now; note.md moved on with Studio's write.
+      expect((events[1].payload as { revision: number }).revision).toBe(documentRevision(agent.workspace).revision)
+      expect(fileRevision(agent.workspace, 'notes.md').revision).toBeGreaterThan((events[0].payload as { revision: number }).revision)
     } finally {
       await agent.disposeAsync()
     }

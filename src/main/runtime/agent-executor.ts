@@ -42,6 +42,7 @@ import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } fr
 import { withLoop, withSource, withTurn } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
+import { currentResourceWriter, documentRevision } from './resource-revisions'
 import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt, mimeToAudioFormat } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
@@ -3118,10 +3119,14 @@ export class AgentExecutor extends EventEmitter {
               const toolInput = toolBlock.input as Record<string, unknown>
               const path = toolInput?.path as string | undefined
               if (path && (path === 'README.md' || path === 'document.md')) {
-                const docContent = this.session.getWorkspace().readDocument()
+                const docWorkspace = this.session.getWorkspace()
+                const docContent = docWorkspace.readDocument()
+                // W3-F: the revision this content took, and who wrote it, so an
+                // editor holding unsaved text can say the agent changed it.
+                const { revision, writer } = documentRevision(docWorkspace, currentResourceWriter())
                 this.emitEvent({
                   type: 'document_updated',
-                  payload: { content: docContent, previousContent: preWriteContent ?? undefined },
+                  payload: { content: docContent, previousContent: preWriteContent ?? undefined, revision, writer },
                   timestamp: Date.now()
                 })
               }

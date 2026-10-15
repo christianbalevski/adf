@@ -59,6 +59,8 @@ const ISO_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\
 const UTC_STAMP_RE = /\b(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC\b/g
 const EPOCH_IN_STRING_RE = /(?<!\d)\d{13}(?!\d)/g
 const EPOCH_US_IN_STRING_RE = /(?<!\d)\d{16}(?!\d)/g
+/** Rule R18: keys holding W3-F revisions (clock-seeded). */
+const REVISION_KEYS = new Set(['revision', 'baseRevision', 'configRevision', 'documentRevision'])
 
 function isPlain(value: object): boolean {
   const proto = Object.getPrototypeOf(value)
@@ -318,7 +320,14 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     // minted at random (nanoid) for the shipped templates seeded during the
     // run. Numbered as `<agent-id#n>`; fixture ids stay as they are.
     const reviewedKeys = path.endsWith('.reviewedAgents')
-    const entries = Object.keys(obj).sort().map((k) => ({
+    // Rule R18 — W3-F resource revisions. `revision`, `baseRevision`,
+    // `configRevision` and `documentRevision` are drawn from a counter that
+    // starts at the wall clock in microseconds, so they differ every run:
+    // the keys are dropped. `writer` (who made a change) is dropped too,
+    // except inside a refused save's `conflict`, so the recordings of flows
+    // without a conflict stay as they were before revisions existed. Hides:
+    // revision numbers everywhere; the writer of change events and pushes.
+    const entries = Object.keys(obj).filter((k) => !REVISION_KEYS.has(k) && !(k === 'writer' && !path.endsWith('.conflict'))).sort().map((k) => ({
       k,
       outKey: reviewedKeys && !fixtureIds.has(k.toLowerCase())
         ? numbered('agent-id', k)

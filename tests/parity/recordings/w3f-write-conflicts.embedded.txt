@@ -459,22 +459,31 @@
 12. invoke adf:doc:write-internal-file  [pushes 25→25]
   args:
     -
-      baseRevision: undefined
       content: "edited in Studio"
       path: "note.md"
   result:
-    success: true
+    conflict:
+      content: "from agent-1"
+      resource: "note.md"
+      writer:
+        kind: "agent"
+    error: "note.md changed (by the agent) since you loaded it. Reload it, or keep your version."
+    success: false
 13. invoke adf:doc:set-document  [pushes 25→25]
   args:
     -
-      baseRevision: undefined
       content: "# Edited in Studio"
   result:
-    success: true
+    conflict:
+      content: "# Rewritten by agent-1"
+      resource: "document"
+      writer:
+        kind: "agent"
+    error: "The document changed (by the agent) since you loaded it. Reload it, or keep your version."
+    success: false
 14. invoke adf:doc:write-internal-file  [pushes 25→25]
   args:
     -
-      baseRevision: undefined
       content: "edited in Studio"
       path: "note.md"
   result:
@@ -1147,8 +1156,7 @@
           enabled: false
           targets: []
       ws_connections: []
-    -
-      baseRevision: undefined
+    - {}
   result:
     success: true
 18. invoke adf:doc:set-agent-config  [pushes 25→25]
@@ -1480,10 +1488,342 @@
           enabled: false
           targets: []
       ws_connections: []
-    -
-      baseRevision: undefined
+    - {}
   result:
-    success: true
+    conflict:
+      config:
+        adapters: {}
+        adf_version: "0.2"
+        audit:
+          files: false
+          inbox: false
+          loop: true
+          outbox: false
+        autonomous: false
+        autostart: false
+        card:
+          endpoints: {}
+        code_execution:
+          attestation_add: true
+          attestation_issue: true
+          attestation_list: true
+          emit_event: true
+          get_identity: true
+          identity_status: true
+          loop_inject: true
+          model_invoke: true
+          network: false
+          restricted_methods:
+            - "attestation_issue"
+          set_identity: true
+          sys_lambda: true
+          task_resolve: true
+        compute:
+          enabled: false
+        context:
+          audit:
+            files: false
+            inbox: false
+            loop: true
+            outbox: false
+          dynamic_instructions:
+            context_warning: true
+            idle_reminder: true
+            inbox_hints: true
+            mesh_updates: true
+        description: "First edit."
+        handle: "agent-1"
+        icon: "🤖"
+        id: "5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01"
+        instructions: ""
+        limits:
+          execution_timeout_ms: 60000
+          max_active_turns: null
+          max_audio_size_bytes: 10485760
+          max_file_read_tokens: 30000
+          max_file_write_bytes: 5000000
+          max_image_size_bytes: 5242880
+          max_tool_result_preview_chars: 5000
+          max_tool_result_tokens: 16000
+          max_video_size_bytes: 20971520
+        locked_fields: []
+        logging:
+          default_level: "info"
+          max_rows: 10000
+          rules: []
+        mcp:
+          servers: []
+        messaging:
+          inbox_mode: true
+          mode: "proactive"
+          receive: true
+          visibility: "localhost"
+        metadata:
+          created_at: "<t:earlier>"
+          updated_at: "<t>"
+        model:
+          model_id: "parity-model"
+          provider: "parity-llm"
+          temperature: 0.7
+          vision: false
+        name: "agent-1"
+        providers: []
+        security:
+          allow_unsigned: true
+          level: 1
+        serving:
+          api: []
+          public:
+            enabled: false
+          shared:
+            enabled: false
+            patterns: []
+        start_in_state: "idle"
+        state: "idle"
+        tools:
+          -
+            enabled: true
+            name: "fs_read"
+            visible: true
+          -
+            enabled: true
+            name: "fs_write"
+            visible: true
+          -
+            enabled: true
+            name: "fs_list"
+            visible: true
+          -
+            enabled: false
+            name: "fs_delete"
+            visible: false
+          -
+            enabled: true
+            name: "msg_send"
+            visible: true
+          -
+            enabled: true
+            name: "agent_discover"
+            visible: true
+          -
+            enabled: true
+            name: "msg_list"
+            visible: true
+          -
+            enabled: true
+            name: "msg_read"
+            visible: true
+          -
+            enabled: true
+            name: "msg_update"
+            visible: true
+          -
+            enabled: true
+            name: "chat_info"
+            visible: false
+          -
+            enabled: true
+            name: "sys_code"
+            visible: true
+          -
+            enabled: true
+            name: "sys_lambda"
+            visible: true
+          -
+            enabled: true
+            name: "sys_set_timer"
+            visible: true
+          -
+            enabled: true
+            name: "sys_list_timers"
+            visible: true
+          -
+            enabled: true
+            name: "sys_delete_timer"
+            visible: true
+          -
+            enabled: true
+            name: "sys_get_config"
+            visible: true
+          -
+            enabled: true
+            name: "sys_update_config"
+            restricted: true
+            visible: true
+          -
+            enabled: false
+            name: "sys_create_adf"
+            restricted: true
+            visible: false
+          -
+            enabled: true
+            name: "db_query"
+            visible: true
+          -
+            enabled: false
+            name: "db_execute"
+            visible: false
+          -
+            enabled: false
+            name: "loop_compact"
+            visible: false
+          -
+            enabled: false
+            name: "loop_clear"
+            visible: false
+          -
+            enabled: true
+            name: "loop_send"
+            visible: true
+          -
+            enabled: true
+            name: "loop_list"
+            visible: true
+          -
+            enabled: true
+            name: "loop_manage"
+            visible: true
+          -
+            enabled: false
+            name: "msg_delete"
+            visible: false
+          -
+            enabled: true
+            name: "say"
+            visible: true
+          -
+            enabled: true
+            name: "ask"
+            visible: true
+          -
+            enabled: true
+            name: "sys_set_state"
+            visible: true
+          -
+            enabled: true
+            name: "sys_get_meta"
+            visible: true
+          -
+            enabled: true
+            name: "sys_set_meta"
+            visible: true
+          -
+            enabled: true
+            name: "sys_delete_meta"
+            visible: true
+          -
+            enabled: true
+            name: "sys_fetch"
+            visible: true
+          -
+            enabled: false
+            name: "adf_shell"
+            visible: false
+          -
+            enabled: false
+            name: "ws_connect"
+            visible: false
+          -
+            enabled: false
+            name: "ws_disconnect"
+            visible: false
+          -
+            enabled: false
+            name: "ws_connections"
+            visible: false
+          -
+            enabled: false
+            name: "ws_send"
+            visible: false
+          -
+            enabled: false
+            name: "stream_bind"
+            visible: false
+          -
+            enabled: false
+            name: "stream_unbind"
+            visible: false
+          -
+            enabled: false
+            name: "stream_bindings"
+            visible: false
+          -
+            enabled: false
+            name: "fs_transfer"
+            visible: false
+          -
+            enabled: false
+            name: "compute_exec"
+            restricted: true
+            visible: false
+          -
+            enabled: false
+            name: "mcp_install"
+            visible: false
+          -
+            enabled: false
+            name: "mcp_restart"
+            visible: false
+          -
+            enabled: false
+            name: "mcp_uninstall"
+            visible: false
+        triggers:
+          on_chat:
+            enabled: true
+            targets:
+              -
+                scope: "agent"
+          on_file_change:
+            enabled: true
+            targets:
+              -
+                debounce_ms: 2000
+                filter:
+                  watch: "README.*"
+                scope: "agent"
+          on_inbox:
+            enabled: true
+            targets:
+              -
+                scope: "agent"
+          on_llm_call:
+            enabled: false
+            targets: []
+          on_logs:
+            enabled: false
+            targets: []
+          on_outbox:
+            enabled: false
+            targets: []
+          on_startup:
+            enabled: false
+            targets: []
+          on_task_complete:
+            enabled: true
+            targets:
+              -
+                scope: "agent"
+          on_task_create:
+            enabled: false
+            targets: []
+          on_timer:
+            enabled: true
+            targets:
+              -
+                scope: "system"
+              -
+                scope: "agent"
+          on_tool_call:
+            enabled: false
+            targets: []
+        ws_connections: []
+      resource: "config"
+      writer:
+        client: "studio"
+        kind: "client"
+    error: "The config changed (by another Studio window) since you loaded it. Reload it, or keep your version."
+    success: false
 19. invoke adf:doc:set-document  [pushes 25→25]
   args:
     -
@@ -3416,7 +3756,7 @@ hosts/<pid:this-process>.json:
 
 ## state: agents/agent-1.adf adf_config (1 rows; id, config_json, updated_at)
 #1:
-  config_json: "{\"adf_version\":\"0.2\",\"name\":\"agent-1\",\"description\":\"Second edit over the old base.\",\"state\":\"idle\",\"autonomous\":false,\"autostart\":false,\"model\":{\"provider\":\"parity-llm\",\"model_id\":\"parity-model\",\"temperature\":0.7,\"vision\":false},\"instructions\":\"\",\"context\":{\"audit\":{\"loop\":true,\"inbox\":false,\"outbox\":false,\"files\":false},\"dynamic_instructions\":{\"inbox_hints\":true,\"context_warning\":true,\"idle_reminder\":true,\"mesh_updates\":true}},\"tools\":[{\"name\":\"fs_read\",\"enabled\":true,\"visible\":true},{\"name\":\"fs_write\",\"enabled\":true,\"visible\":true},{\"name\":\"fs_list\",\"enabled\":true,\"visible\":true},{\"name\":\"fs_delete\",\"enabled\":false,\"visible\":false},{\"name\":\"msg_send\",\"enabled\":true,\"visible\":true},{\"name\":\"agent_discover\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_list\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_read\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_update\",\"enabled\":true,\"visible\":true},{\"name\":\"chat_info\",\"enabled\":true,\"visible\":false},{\"name\":\"sys_code\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_lambda\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_set_timer\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_list_timers\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_delete_timer\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_get_config\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_update_config\",\"enabled\":true,\"visible\":true,\"restricted\":true},{\"name\":\"sys_create_adf\",\"enabled\":false,\"visible\":false,\"restricted\":true},{\"name\":\"db_query\",\"enabled\":true,\"visible\":true},{\"name\":\"db_execute\",\"enabled\":false,\"visible\":false},{\"name\":\"loop_compact\",\"enabled\":false,\"visible\":false},{\"name\":\"loop_clear\",\"enabled\":false,\"visible\":false},{\"name\":\"loop_send\",\"enabled\":true,\"visible\":true},{\"name\":\"loop_list\",\"enabled\":true,\"visible\":true},{\"name\":\"loop_manage\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_delete\",\"enabled\":false,\"visible\":false},{\"name\":\"say\",\"enabled\":true,\"visible\":true},{\"name\":\"ask\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_set_state\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_get_meta\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_set_meta\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_delete_meta\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_fetch\",\"enabled\":true,\"visible\":true},{\"name\":\"adf_shell\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_connect\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_disconnect\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_connections\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_send\",\"enabled\":false,\"visible\":false},{\"name\":\"stream_bind\",\"enabled\":false,\"visible\":false},{\"name\":\"stream_unbind\",\"enabled\":false,\"visible\":false},{\"name\":\"stream_bindings\",\"enabled\":false,\"visible\":false},{\"name\":\"fs_transfer\",\"enabled\":false,\"visible\":false},{\"name\":\"compute_exec\",\"enabled\":false,\"visible\":false,\"restricted\":true},{\"name\":\"mcp_install\",\"enabled\":false,\"visible\":false},{\"name\":\"mcp_restart\",\"enabled\":false,\"visible\":false},{\"name\":\"mcp_uninstall\",\"enabled\":false,\"visible\":false}],\"triggers\":{\"on_inbox\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\"}]},\"on_outbox\":{\"enabled\":false,\"targets\":[]},\"on_file_change\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\",\"filter\":{\"watch\":\"README.*\"},\"debounce_ms\":2000}]},\"on_chat\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\"}]},\"on_timer\":{\"enabled\":true,\"targets\":[{\"scope\":\"system\"},{\"scope\":\"agent\"}]},\"on_tool_call\":{\"enabled\":false,\"targets\":[]},\"on_task_create\":{\"enabled\":false,\"targets\":[]},\"on_task_complete\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\"}]},\"on_logs\":{\"enabled\":false,\"targets\":[]},\"on_llm_call\":{\"enabled\":false,\"targets\":[]},\"on_startup\":{\"enabled\":false,\"targets\":[]}},\"security\":{\"allow_unsigned\":true,\"level\":1},\"limits\":{\"execution_timeout_ms\":60000,\"max_file_read_tokens\":30000,\"max_file_write_bytes\":5000000,\"max_tool_result_tokens\":16000,\"max_tool_result_preview_chars\":5000,\"max_active_turns\":null,\"max_image_size_bytes\":5242880,\"max_audio_size_bytes\":10485760,\"max_video_size_bytes\":20971520},\"messaging\":{\"receive\":true,\"mode\":\"proactive\",\"visibility\":\"localhost\",\"inbox_mode\":true},\"audit\":{\"loop\":true,\"inbox\":false,\"outbox\":false,\"files\":false},\"code_execution\":{\"model_invoke\":true,\"sys_lambda\":true,\"task_resolve\":true,\"loop_inject\":true,\"identity_status\":true,\"get_identity\":true,\"set_identity\":true,\"emit_event\":true,\"attestation_list\":true,\"attestation_add\":true,\"attestation_issue\":true,\"network\":false,\"restricted_methods\":[\"attestation_issue\"]},\"compute\":{\"enabled\":false},\"logging\":{\"default_level\":\"info\",\"rules\":[],\"max_rows\":10000},\"mcp\":{\"servers\":[]},\"adapters\":{},\"serving\":{\"shared\":{\"enabled\":false,\"patterns\":[]},\"public\":{\"enabled\":false},\"api\":[]},\"ws_connections\":[],\"providers\":[],\"locked_fields\":[],\"card\":{\"endpoints\":{}},\"id\":\"5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01\",\"icon\":\"🤖\",\"handle\":\"agent-1\",\"start_in_state\":\"idle\",\"metadata\":{\"created_at\":\"<t>\",\"updated_at\":\"<t>\"}}"
+  config_json: "{\"adf_version\":\"0.2\",\"name\":\"agent-1\",\"description\":\"First edit.\",\"state\":\"idle\",\"autonomous\":false,\"autostart\":false,\"model\":{\"provider\":\"parity-llm\",\"model_id\":\"parity-model\",\"temperature\":0.7,\"vision\":false},\"instructions\":\"\",\"context\":{\"audit\":{\"loop\":true,\"inbox\":false,\"outbox\":false,\"files\":false},\"dynamic_instructions\":{\"inbox_hints\":true,\"context_warning\":true,\"idle_reminder\":true,\"mesh_updates\":true}},\"tools\":[{\"name\":\"fs_read\",\"enabled\":true,\"visible\":true},{\"name\":\"fs_write\",\"enabled\":true,\"visible\":true},{\"name\":\"fs_list\",\"enabled\":true,\"visible\":true},{\"name\":\"fs_delete\",\"enabled\":false,\"visible\":false},{\"name\":\"msg_send\",\"enabled\":true,\"visible\":true},{\"name\":\"agent_discover\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_list\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_read\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_update\",\"enabled\":true,\"visible\":true},{\"name\":\"chat_info\",\"enabled\":true,\"visible\":false},{\"name\":\"sys_code\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_lambda\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_set_timer\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_list_timers\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_delete_timer\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_get_config\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_update_config\",\"enabled\":true,\"visible\":true,\"restricted\":true},{\"name\":\"sys_create_adf\",\"enabled\":false,\"visible\":false,\"restricted\":true},{\"name\":\"db_query\",\"enabled\":true,\"visible\":true},{\"name\":\"db_execute\",\"enabled\":false,\"visible\":false},{\"name\":\"loop_compact\",\"enabled\":false,\"visible\":false},{\"name\":\"loop_clear\",\"enabled\":false,\"visible\":false},{\"name\":\"loop_send\",\"enabled\":true,\"visible\":true},{\"name\":\"loop_list\",\"enabled\":true,\"visible\":true},{\"name\":\"loop_manage\",\"enabled\":true,\"visible\":true},{\"name\":\"msg_delete\",\"enabled\":false,\"visible\":false},{\"name\":\"say\",\"enabled\":true,\"visible\":true},{\"name\":\"ask\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_set_state\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_get_meta\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_set_meta\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_delete_meta\",\"enabled\":true,\"visible\":true},{\"name\":\"sys_fetch\",\"enabled\":true,\"visible\":true},{\"name\":\"adf_shell\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_connect\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_disconnect\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_connections\",\"enabled\":false,\"visible\":false},{\"name\":\"ws_send\",\"enabled\":false,\"visible\":false},{\"name\":\"stream_bind\",\"enabled\":false,\"visible\":false},{\"name\":\"stream_unbind\",\"enabled\":false,\"visible\":false},{\"name\":\"stream_bindings\",\"enabled\":false,\"visible\":false},{\"name\":\"fs_transfer\",\"enabled\":false,\"visible\":false},{\"name\":\"compute_exec\",\"enabled\":false,\"visible\":false,\"restricted\":true},{\"name\":\"mcp_install\",\"enabled\":false,\"visible\":false},{\"name\":\"mcp_restart\",\"enabled\":false,\"visible\":false},{\"name\":\"mcp_uninstall\",\"enabled\":false,\"visible\":false}],\"triggers\":{\"on_inbox\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\"}]},\"on_outbox\":{\"enabled\":false,\"targets\":[]},\"on_file_change\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\",\"filter\":{\"watch\":\"README.*\"},\"debounce_ms\":2000}]},\"on_chat\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\"}]},\"on_timer\":{\"enabled\":true,\"targets\":[{\"scope\":\"system\"},{\"scope\":\"agent\"}]},\"on_tool_call\":{\"enabled\":false,\"targets\":[]},\"on_task_create\":{\"enabled\":false,\"targets\":[]},\"on_task_complete\":{\"enabled\":true,\"targets\":[{\"scope\":\"agent\"}]},\"on_logs\":{\"enabled\":false,\"targets\":[]},\"on_llm_call\":{\"enabled\":false,\"targets\":[]},\"on_startup\":{\"enabled\":false,\"targets\":[]}},\"security\":{\"allow_unsigned\":true,\"level\":1},\"limits\":{\"execution_timeout_ms\":60000,\"max_file_read_tokens\":30000,\"max_file_write_bytes\":5000000,\"max_tool_result_tokens\":16000,\"max_tool_result_preview_chars\":5000,\"max_active_turns\":null,\"max_image_size_bytes\":5242880,\"max_audio_size_bytes\":10485760,\"max_video_size_bytes\":20971520},\"messaging\":{\"receive\":true,\"mode\":\"proactive\",\"visibility\":\"localhost\",\"inbox_mode\":true},\"audit\":{\"loop\":true,\"inbox\":false,\"outbox\":false,\"files\":false},\"code_execution\":{\"model_invoke\":true,\"sys_lambda\":true,\"task_resolve\":true,\"loop_inject\":true,\"identity_status\":true,\"get_identity\":true,\"set_identity\":true,\"emit_event\":true,\"attestation_list\":true,\"attestation_add\":true,\"attestation_issue\":true,\"network\":false,\"restricted_methods\":[\"attestation_issue\"]},\"compute\":{\"enabled\":false},\"logging\":{\"default_level\":\"info\",\"rules\":[],\"max_rows\":10000},\"mcp\":{\"servers\":[]},\"adapters\":{},\"serving\":{\"shared\":{\"enabled\":false,\"patterns\":[]},\"public\":{\"enabled\":false},\"api\":[]},\"ws_connections\":[],\"providers\":[],\"locked_fields\":[],\"card\":{\"endpoints\":{}},\"id\":\"5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01\",\"icon\":\"🤖\",\"handle\":\"agent-1\",\"start_in_state\":\"idle\",\"metadata\":{\"created_at\":\"<t>\",\"updated_at\":\"<t>\"}}"
   id: 1
   updated_at: "<t>"
 
