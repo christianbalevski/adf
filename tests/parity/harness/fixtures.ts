@@ -32,6 +32,16 @@ export const FIXTURE_IDS: Record<FixtureName, string> = {
 
 export const MOCK_PROVIDER_ID = 'parity-llm'
 
+/**
+ * The creation date every fixture's document states. AdfWorkspace.create
+ * writes today's UTC date into README.md (`Created: YYYY-MM-DD`,
+ * getDefaultDocumentContent), a value no normalizer rule sees (a bare date
+ * is no instant) and that changes at 00:00 UTC, so every recording that
+ * shows the document or its bytes would differ from one day to the next.
+ * The fixture builder pins it; the committed recordings were made on this date.
+ */
+export const FIXTURE_CREATED_DATE = '2026-10-14'
+
 /** The fixed owner/runtime identity seeded into every run's settings. */
 export const IDENTITY: { ownerDid: string; runtimeDid: string; runtimeId: string } & Record<string, unknown> = identityFixture
 
@@ -78,6 +88,9 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       model: { provider: MOCK_PROVIDER_ID, model_id: MOCK_MODEL_ID },
     })
     try {
+      const document = workspace.readDocument()
+      const pinned = document.replace(/^Created: \d{4}-\d{2}-\d{2}$/m, `Created: ${FIXTURE_CREATED_DATE}`)
+      if (pinned !== document) workspace.writeDocument(pinned)
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
       for (const name of spec.enableTools ?? []) {
