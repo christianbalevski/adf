@@ -90,12 +90,18 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
   })
 
-  // Characterization (tracker §6, W3-A): embedded stops a running agent it
-  // cannot open without the password (ipc/index.ts FILE_OPEN); daemon mode
-  // leaves it running on the stub provider.
-  it('FILE_OPEN of a running agent whose key the daemon lacks answers needsPassword and leaves it running', async () => {
+  // As embedded stops a running agent it cannot open without the password
+  // (ipc/index.ts FILE_OPEN). It used to keep running on the stub provider.
+  it('FILE_OPEN of a running agent whose key the daemon lacks stops it and answers needsPassword', async () => {
     holdLocked = true
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1))
+    daemon.routes.set(`POST /agents/${AGENT}/stop`, () => ({ success: true }))
+    expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
+    expect(last('POST', `/agents/${AGENT}/stop`)).toBeDefined()
+  })
+
+  it('FILE_OPEN of a locked agent that is not running stops nothing', async () => {
+    holdLocked = true
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
     expect(last('POST', `/agents/${AGENT}/stop`)).toBeUndefined()
   })

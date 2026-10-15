@@ -116,6 +116,19 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const locked = opened.opened ? opened.opened.needsPassword === true : !!opened.agentId && await passwordLocked(ctx, opened.agentId)
       if (locked) {
         ctx.session.forgetUnlocked(filePath)
+        // A running agent the daemon holds no key for runs on the stub
+        // provider (every turn fails credentials_locked). Stop it before the
+        // prompt, as embedded stops a background agent it cannot open without
+        // the password: after the unlock the file opens stopped in both modes,
+        // and the user starts it with its real provider (tracker §6, W5-A1).
+        if (agentWasRunning && opened.agentId) {
+          ctx.log.log(`[Backend] FILE_OPEN: ${basename(filePath)} is running without its password key; stopping it before asking for the password`)
+          try {
+            await (await ctx.ready()).request('POST', `/agents/${enc(opened.agentId)}/stop`, { timeoutMs: 60_000 })
+          } catch (err) {
+            if (!isNotFound(err)) throw err
+          }
+        }
         return { success: true, filePath, needsPassword: true }
       }
       // Self-heal a claimed-but-stranded temp file, as embedded's FILE_OPEN:
