@@ -411,6 +411,27 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
     return blob
   }
 
+  /**
+   * Move the records of an older account of the same settings file (before
+   * the canonical scope, studioRuntimeScope) into this one: write, read back,
+   * then delete the old record. Returns how many moved; a crash leaves the
+   * old copy, and the next call finishes.
+   */
+  adoptLegacyAccount(legacyAccount: string): number {
+    if (legacyAccount === this.account || !this.backend.isUnlocked()) return 0
+    const legacy = new DaemonAppOAuthStore(this.backend, legacyAccount)
+    let moved = 0
+    for (const url of legacy.listServerUrls()) {
+      const record = legacy.readRecord(url)
+      if (record && !this.readRecord(url)) this.writeRecord(url, record)
+      if (record && !this.readRecord(url)) continue
+      legacy.writeRecord(url, undefined)
+      moved++
+    }
+    if (moved > 0) console.log(`[MCP][oauth] Moved ${moved} app-level sign-in(s) from ${legacyAccount} to ${this.account}`)
+    return moved
+  }
+
   /** Store every record of a Studio `mcpOauthCredentials` blob (handover to local mode). */
   importBlob(blob: OAuthBlob): void {
     for (const [url, record] of Object.entries(blob)) {

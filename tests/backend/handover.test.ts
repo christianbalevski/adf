@@ -8,7 +8,7 @@
  * (subscription-token-store under Node, credential-cipher, DaemonAppOAuthStore)
  * on an in-memory keychain. Never touches the real keychain.
  */
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -17,6 +17,8 @@ import {
   handoverNeedsKeychain,
   planHandover,
   readCredentialHolder,
+  readHandoverMarker,
+  REPLACED_TOKEN_FILE,
   runHandover,
   syncStudioRuntimeEntry,
   type HandoverDeps,
@@ -134,7 +136,8 @@ function studioMcp() {
   }
 }
 function daemonMcp(): DaemonAppOAuthStore {
-  return new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount(settingsScope(settingsPath)))
+  // The canonical scope, as the daemon and the studio-runtime entry use it.
+  return new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount(studioRuntimeScope(settingsPath)))
 }
 
 function mcpRecord(tokens: ReturnType<RotatingAuthServer['issue']>): McpOAuthRecord {
@@ -403,6 +406,151 @@ describe('remote target', () => {
     const report = await runHandover('remote', deps())
     expect(report.items.map((i) => i.id)).toEqual(['client-settings'])
     expect(studioTokens(SUBS[0]).exists()).toBe(true)
+  })
+})
+
+// --- review fixes: the marker only flips when everything is back -------------------------
+
+describe('the way back to embedded (review fixes)', () => {
+  async function switchedToLocalWithMcp(): Promise<void> {
+    writeStudioIdentity()
+    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    await runHandover('local', deps())
+    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+  }
+
+  it('a keychain that cannot be opened keeps the marker at daemon: MCP and the runtime entry are retried, never dropped', async () => {
+    await switchedToLocalWithMcp()
+    const report = await runHandover('embedded', deps({ daemonSecrets: null, daemonSecretsUnavailable: 'the OS keychain is turned off (ADF_KEYCHAIN=0)' }))
+    expect(report.failed).toBe(true)
+    expect(report.items.find((i) => i.id === 'mcp-oauth')).toMatchObject({ outcome: 'kept', pending: true })
+    expect(report.items.find((i) => i.id === 'runtime-identity')).toMatchObject({ outcome: 'kept', pending: true })
+    expect(await readCredentialHolder(dir)).toBe('daemon')
+    // The next start with the keychain finishes the move.
+    const later = await runHandover('embedded', deps())
+    expect(later.failed).toBe(false)
+    expect(studioMcp().read()[MCP_URL]).toBeDefined()
+    expect(await readCredentialHolder(dir)).toBe('studio')
+  })
+
+  it('a locked store keeps the marker at daemon', async () => {
+    await switchedToLocalWithMcp()
+    const b = keychain.backend
+    const locked = { isUnlocked: () => false, get: (a: string) => b.get(a), set: (a: string, v: string) => b.set(a, v), delete: (a: string) => b.delete(a) }
+    const report = await runHandover('embedded', deps({ daemonSecrets: locked }))
+    expect(report.items.find((i) => i.id === 'mcp-oauth')).toMatchObject({ pending: true })
+    expect(await readCredentialHolder(dir)).toBe('daemon')
+  })
+
+  it('without safeStorage the MCP sign-ins stay with the daemon and the marker stays', async () => {
+    await switchedToLocalWithMcp()
+    const report = await runHandover('embedded', deps({ studioSecrets: { ...studioCodec, available: () => false } }))
+    expect(report.items.find((i) => i.id === 'mcp-oauth')).toMatchObject({ outcome: 'kept', pending: true })
+    expect(await readCredentialHolder(dir)).toBe('daemon')
+    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+  })
+
+  it('a daemon still running on these settings: nothing moves back, the marker stays, and the user is told to stop it', async () => {
+    const sub = SUBS[0]
+    studioTokens(sub).write(auth.issue(sub.subject))
+    await runHandover('local', deps())
+    const report = await runHandover('embedded', deps({ daemonRunning: async () => 'the ADF daemon pid 4242 (started by cli) still runs on these settings' }))
+    expect(report.items.find((i) => i.id === 'handover-record')).toMatchObject({ outcome: 'kept', pending: true })
+    expect(report.items.find((i) => i.id === 'handover-record')?.detail).toMatch(/adf daemon stop/)
+    expect(existsSync(daemonTokens(sub).path)).toBe(true)
+    expect(studioTokens(sub).exists()).toBe(false)
+    expect(await readCredentialHolder(dir)).toBe('daemon')
+  })
+
+  it('a session-only override moves client keys only: the daemon keeps every credential, the marker is untouched', async () => {
+    const sub = SUBS[0]
+    studioTokens(sub).write(auth.issue(sub.subject))
+    writeStudioIdentity()
+    await runHandover('local', deps())
+    const before = await readHandoverMarker(dir)
+    const report = await runHandover('embedded', deps(), { sessionOnly: true })
+    expect(report.items.map((i) => i.id)).toEqual(['client-settings'])
+    expect(readSettings()).toHaveProperty('theme', 'dark')
+    expect(existsSync(daemonTokens(sub).path)).toBe(true)
+    expect(keychain.backend.get(studioRuntimeAccount(studioRuntimeScope(settingsPath)))).not.toBeNull()
+    expect(await readHandoverMarker(dir)).toEqual(before)
+    expect(await handoverNeedsKeychain('embedded', dir, { sessionOnly: true })).toBe(false)
+  })
+
+  it('a corrupt marker moves no credential, in either direction, and says so', async () => {
+    const sub = SUBS[0]
+    studioTokens(sub).write(auth.issue(sub.subject))
+    writeFileSync(join(dir, 'studio-handover.json'), '{ broken')
+    const toLocal = await runHandover('local', deps())
+    expect(toLocal.items.find((i) => i.id === 'handover-record')).toMatchObject({ outcome: 'kept', pending: true })
+    expect(studioTokens(sub).exists()).toBe(true)
+    const plan = await planHandover('embedded', deps())
+    expect(plan.find((p) => p.id === 'handover-record')?.detail).toMatch(/cannot be read/)
+    expect(readFileSync(join(dir, 'studio-handover.json'), 'utf-8')).toBe('{ broken')
+  })
+
+  it('a deleted marker falls back to the runtime entry: the entry is deleted, sign-ins stay with the daemon (said once)', async () => {
+    const sub = SUBS[0]
+    writeStudioIdentity()
+    studioTokens(sub).write(auth.issue(sub.subject))
+    await runHandover('local', deps())
+    unlinkSync(join(dir, 'studio-handover.json'))
+    expect(await handoverNeedsKeychain('embedded', dir)).toBe(true)
+    const report = await runHandover('embedded', deps())
+    expect(report.items.find((i) => i.id === 'runtime-identity')).toMatchObject({ outcome: 'deleted' })
+    expect(report.items.find((i) => i.id === 'handover-record')?.detail).toMatch(/is missing/)
+    expect(existsSync(daemonTokens(sub).path)).toBe(true)
+    expect(await readCredentialHolder(dir)).toBe('studio')
+  })
+
+  it("moves back only what Studio moved or what was signed in during local mode, never the daemon's own earlier sign-ins", async () => {
+    // A CLI daemon had its own ChatGPT session and an MCP sign-in before the first switch.
+    daemonTokens(SUBS[0]).write(auth.issue('acct-cli'))
+    const cliUrl = 'https://cli-only.example.com/mcp'
+    await daemonMcp().save(cliUrl, { ...mcpRecord(auth.issue('cli-mcp')), serverUrl: cliUrl })
+    // Studio had Grok and another MCP server.
+    studioTokens(SUBS[1]).write(auth.issue(SUBS[1].subject))
+    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    await runHandover('local', deps())
+    expect(await readHandoverMarker(dir)).toMatchObject({ state: 'ok', marker: { daemonOwn: { sessions: { chatgpt: 'acct-cli' }, mcpServers: [cliUrl] }, moved: { sessions: { grok: SUBS[1].subject }, mcpServers: [MCP_URL] } } })
+
+    const report = await runHandover('embedded', deps())
+    expect(report.failed).toBe(false)
+    expect(daemonTokens(SUBS[0]).read()?.account_id).toBe('acct-cli')
+    expect(studioTokens(SUBS[0]).exists()).toBe(false)
+    expect(studioTokens(SUBS[1]).read().account_id).toBe(SUBS[1].subject)
+    expect(daemonMcp().listServerUrls()).toEqual([cliUrl])
+    expect(Object.keys(studioMcp().read())).toEqual([MCP_URL])
+    expect(await readCredentialHolder(dir)).toBe('studio')
+  })
+
+  it('the session the conflict dialog did not keep is saved, encrypted, for one restore', async () => {
+    const sub = SUBS[0]
+    const studioSide = auth.issue('acct-studio')
+    studioTokens(sub).write(studioSide)
+    daemonTokens(sub).write(auth.issue('acct-daemon'))
+    await runHandover('local', deps({ chooseSession: async () => 'daemon' }))
+    const saved = readFileSync(join(dir, sub.dir, REPLACED_TOKEN_FILE), 'utf-8')
+    expect(saved.startsWith('aesgcm:')).toBe(true)
+    expect(JSON.parse(decryptCredential(saved)!).refresh_token).toBe(studioSide.refresh_token)
+    // The daemon's own session won: it stays the daemon's, so it does not move to Studio later.
+    const read = await readHandoverMarker(dir)
+    expect(read.state === 'ok' && read.marker.moved.sessions).toEqual({})
+  })
+
+  it('a stale client file from the old one-time seed never overwrites newer values', async () => {
+    writeFileSync(join(dir, 'studio-client-settings.json'), JSON.stringify({ theme: 'light', uiScale: 1.5 }))
+    const report = await runHandover('local', deps())
+    expect(JSON.parse(readFileSync(join(dir, 'studio-client-settings.json'), 'utf-8'))).toMatchObject({ theme: 'dark', uiScale: 1.5 })
+    expect(report.items[0].detail).toMatch(/older values of theme/)
+  })
+
+  it('MCP sign-ins under the uncanonicalized scope of an earlier build are adopted into the canonical account', async () => {
+    const legacy = new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount(settingsScope(settingsPath)))
+    await legacy.save(MCP_URL, mcpRecord(auth.issue('mcp-user')))
+    await runHandover('local', deps())
+    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+    expect(legacy.listServerUrls()).toEqual([])
   })
 })
 

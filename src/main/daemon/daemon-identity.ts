@@ -323,7 +323,8 @@ export class DaemonIdentity {
     this.studioRuntimeAccount = studioRuntimeAccount(studioRuntimeScope(opts.settingsPath))
     this.legacyStudioRuntimeAccount = studioRuntimeAccount(scope)
     this.providerKeys = new SecretBackendProviderKeyVault(this.backend, scope)
-    this.mcpOAuth = new DaemonAppOAuthStore(this.backend, daemonAppOAuthAccount(scope))
+    // Canonical scope, as the studio-runtime entry: Studio's handover writes here for every spelling of the path.
+    this.mcpOAuth = new DaemonAppOAuthStore(this.backend, daemonAppOAuthAccount(studioRuntimeScope(opts.settingsPath)))
     this.identitySettings = new DaemonIdentitySettings(this.store, this.backend, this.encKey, runtimeAccount)
     this.service = new OwnerIdentityService(this.identitySettings, { manageTrustedDaemonSlots: false })
 
@@ -333,6 +334,12 @@ export class DaemonIdentity {
       } catch (err) {
         console.error(`[ADF Daemon] Owner identity stays locked: ${err instanceof WrongPassphraseError ? 'wrong passphrase in ADF_OWNER_PASSPHRASE' : err instanceof Error ? err.message : String(err)}`)
       }
+    }
+    // Sign-ins stored under the uncanonicalized scope by an earlier build.
+    try {
+      this.mcpOAuth.adoptLegacyAccount(daemonAppOAuthAccount(scope))
+    } catch (err) {
+      console.error('[ADF Daemon] Moving app-level MCP sign-ins to the canonical account failed (kept where they are):', err instanceof Error ? err.message : err)
     }
     this.adoption = this.refreshAdoption()
   }
