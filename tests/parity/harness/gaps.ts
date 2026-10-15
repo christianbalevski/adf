@@ -877,7 +877,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:remote-recent-files',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH, ...MESH_MESSAGE],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...W5D2_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE],
     path: 'state: user-data/studio-client-settings.json (merged view): `remoteRecentFiles` where embedded has `recentFiles`',
     what: 'Remote mode keeps Open Recent (paths on the daemon\'s machine) in its own client key, which a switch back to embedded never moves into adf-settings.json (W5-D3).',
     apply(d, e) {
