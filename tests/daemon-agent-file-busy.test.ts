@@ -2,6 +2,7 @@
 // writing the agent file: a 409 naming the file (code agent_file_busy),
 // nothing crashes, trying again works. Embedded: tests/parity/boot-sweep/embedded-busy.test.ts.
 import Database from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -109,7 +110,7 @@ describe('daemon: an agent file another program is writing', () => {
     AdfWorkspace.create(filePath, { name: 'agent-1' }).close()
     // Open in Studio (held as a document), as when its review dialog is up.
     // (A closed file's own open waits out busy_timeout per write: design §6.)
-    await runtime.openDocument(filePath, { holder: 'client-1' })
+    await runtime.openDocument(filePath, { holder: randomUUID() })
     servers.push({ close: async () => { runtime.closeDocument(filePath, 'released') } })
     const release = holdWriteLock(filePath)
     let busy
