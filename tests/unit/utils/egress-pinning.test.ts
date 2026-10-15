@@ -19,7 +19,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
   }) as typeof real.lookup
   return { ...real, lookup, default: { ...real, lookup } }
 })
-import { checkConnectTarget, checkFetchTarget, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
+import { checkConnectTarget, checkFetchTarget, embeddedIPv4s, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
 import { SysFetchTool } from '../../../src/main/tools/built-in/sys-fetch.tool'
 import { pinnedFetch } from '../../../src/main/utils/guarded-fetch'
 import { WsConnectionManager, type WsManagerDelegate } from '../../../src/main/services/ws-connection-manager'
@@ -59,6 +59,25 @@ describe('NAT64 local-use 64:ff9b:1::/48 and Teredo 2001::/32', () => {
     expect(await checkFetchTarget('http://[64:ff9b:1::5db8:d822]/')).toBeNull() // 93.184.216.34
     expect(await checkFetchTarget('http://[2001:0:4136:e378:8000:63bf:a247:27dd]/')).toBeNull() // 93.184.216.34 inverted
     expect(await checkFetchTarget('http://[2001:db8::1]/')).toBeNull()
+  })
+})
+
+describe('local-use NAT64 prefixes /48 to /64 and ISATAP', () => {
+  it('after: classified as the IPv4 address they carry (RFC 6052 embedding by prefix length; ISATAP interface id)', async () => {
+    const open = { allowLocal: true, allowLinkLocal: true }
+    expect(embeddedIPv4s('64:ff9b:1:a9fe:a9:fe00::')).toContain('169.254.169.254') // /48
+    expect(embeddedIPv4s('64:ff9b:1:12a9:fe:a9fe::')).toContain('169.254.169.254') // /56
+    expect(embeddedIPv4s('64:ff9b:1:1234:a9:fea9:fe00:0')).toContain('169.254.169.254') // /64
+    for (const ip of ['64:ff9b:1:a9fe:a9:fe00::', '64:ff9b:1:12a9:fe:a9fe::', '64:ff9b:1:1234:a9:fea9:fe00:0', '2001:db8:1::5efe:169.254.169.254', '2001:db8:1::200:5efe:a9fe:a9fe', '::5efe:a9fe:a9fe']) {
+      expect(isCloudMetadataIp(ip), ip).toBe(true)
+      expect(await checkFetchTarget(`http://[${ip}]/latest/`, open), ip).toMatch(/cloud-metadata/)
+    }
+    expect(await checkFetchTarget('http://[2001:db8:1::5efe:c0a8:105]/')).toMatch(/private-network/) // ISATAP 192.168.1.5
+    expect(await checkConnectTarget('ws://[64:ff9b:1:7f00:1:100::]:7385/', { daemonPort: 7385 })).toMatch(/daemon/) // /48 127.0.0.1
+    // A public address under each reading stays allowed: 93.184.216.34 in a /48 prefix.
+    expect(await checkFetchTarget('http://[64:ff9b:1:5db8:d8:2200::]/')).toBeNull()
+    // The u-octet (bits 64-71) must be zero for an embedding.
+    expect(embeddedIPv4s('64:ff9b:1:a9fe:ffa9:fe00::')).toEqual([])
   })
 })
 

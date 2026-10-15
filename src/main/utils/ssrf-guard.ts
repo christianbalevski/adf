@@ -17,58 +17,62 @@ import { networkInterfaces } from 'node:os'
 // link-local/cloud-metadata addresses stay blocked even when it is set.
 // =============================================================================
 
-/** IPv4-mapped / -compatible IPv6, dotted (`::ffff:169.254.169.254`). */
-const MAPPED_DOTTED = /^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/
-/** The same, in the hex form the URL parser writes (`[::ffff:a9fe:a9fe]`). */
-const MAPPED_HEX = /^::(?:ffff:(?:0{1,4}:)?)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
-
 /**
- * The IPv4 address inside an IPv4-mapped or -compatible IPv6 address, as
- * `[match, dotted]`, in either spelling; null otherwise. `new URL()` turns
- * `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`, so the hex form must
- * classify the same as the dotted one. NAT64 (`64:ff9b::/96`, RFC 6052;
- * local-use `64:ff9b:1::/48`, RFC 8215), 6to4 (`2002::/16`, RFC 3056) and
- * Teredo (`2001::/32`, RFC 4380) addresses carry an IPv4 address too and are
- * classified as it (W1-D, W4-B follow-ups): a NAT64 gateway turns
- * `64:ff9b::a9fe:a9fe` into a connection to 169.254.169.254.
+ * Every IPv4 address an IPv6 address carries, as dotted quads; empty for
+ * none. A connection to such an address can reach the IPv4 host through a
+ * translator or relay, so the guard classifies it as each of them (any one
+ * refused refuses the address):
+ *
+ * - IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96` and SIIT
+ *   `::ffff:0:0:0/96`, in either spelling (`new URL()` turns
+ *   `::ffff:169.254.169.254` into `::ffff:a9fe:a9fe`);
+ * - NAT64 `64:ff9b::/96` (RFC 6052) and 6to4 `2002::/16` (RFC 3056), W1-D
+ *   follow-up: a NAT64 gateway turns `64:ff9b::a9fe:a9fe` into a
+ *   connection to 169.254.169.254;
+ * - local-use NAT64 `64:ff9b:1::/48` (RFC 8215), whose prefix length the
+ *   network chooses: the RFC 6052 embedding for a /48, /56 and /64 prefix
+ *   (bits 64-71, the u-octet, zero; the suffix after the address zero) and
+ *   for a /96 prefix (the last 32 bits; not when they are all zero and a
+ *   shorter prefix's reading exists);
+ * - Teredo `2001::/32` (RFC 4380): the client address, inverted, in the
+ *   last 32 bits;
+ * - ISATAP (RFC 5214): any prefix with the interface id `0:5efe:a.b.c.d`
+ *   or `200:5efe:a.b.c.d`.
  */
-function mappedIPv4Match(addr: string): [string, string] | null {
-  const dotted = addr.match(MAPPED_DOTTED)
-  if (dotted) return [dotted[0], dotted[1]]
-  const hex = addr.match(MAPPED_HEX)
-  if (hex) {
-    const hi = parseInt(hex[1], 16)
-    const lo = parseInt(hex[2], 16)
-    return [hex[0], `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`]
-  }
-  const embedded = translatedIPv4(addr)
-  return embedded ? [addr, embedded] : null
-}
-
-/**
- * The IPv4 address of a NAT64 (64:ff9b::/96, local-use 64:ff9b:1::/48) or
- * 6to4 (2002::/16) address, or the client address of a Teredo address
- * (2001::/32), either spelling; null otherwise.
- */
-function translatedIPv4(raw: string): string | null {
-  let addr = raw.toLowerCase()
+export function embeddedIPv4s(raw: string): string[] {
+  let addr = raw.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
   // A dotted IPv4 tail (64:ff9b::169.254.169.254) as two hex groups.
   const tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(addr)
   if (tail) {
     const o = tail.slice(2, 6).map(Number)
-    if (o.some((n) => n > 255)) return null
+    if (o.some((n) => n > 255)) return []
     addr = `${tail[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`
   }
-  if (isIP(addr) !== 6) return null
-  const groups = expandIPv6(addr).split(':').map((g) => parseInt(g, 16))
-  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) return v4(groups[6], groups[7])
-  // Local-use NAT64 (RFC 8215): the IPv4 address in the last 32 bits.
-  if (groups[0] === 0x64 && groups[1] === 0xff9b && groups[2] === 1) return v4(groups[6], groups[7])
-  if (groups[0] === 0x2002) return v4(groups[1], groups[2])
-  // Teredo (RFC 4380): the client's IPv4 address, inverted, in the last 32 bits.
-  if (groups[0] === 0x2001 && groups[1] === 0) return v4(groups[6] ^ 0xffff, groups[7] ^ 0xffff)
-  return null
+  if (isIP(addr) !== 6) return []
+  const g = expandIPv6(addr).split(':').map((x) => parseInt(x, 16))
+  const hi = (x: number) => x >> 8
+  const lo = (x: number) => x & 255
+  const quad = (a: number, b: number, c: number, d: number) => `${a}.${b}.${c}.${d}`
+  const fromGroups = (x: number, y: number) => quad(hi(x), lo(x), hi(y), lo(y))
+  const out: string[] = []
+  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0)
+  // ::a.b.c.d, ::ffff:a.b.c.d, ::ffff:0:a.b.c.d
+  if (zero(0, 4) && ((g[4] === 0 && (g[5] === 0 || g[5] === 0xffff)) || (g[4] === 0xffff && g[5] === 0))) out.push(fromGroups(g[6], g[7]))
+  if (g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)) out.push(fromGroups(g[6], g[7]))
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) {
+    const local: string[] = []
+    if (hi(g[4]) === 0) {
+      if (lo(g[5]) === 0 && zero(6, 8)) local.push(quad(hi(g[3]), lo(g[3]), lo(g[4]), hi(g[5]))) // /48
+      if (zero(6, 8)) local.push(quad(lo(g[3]), lo(g[4]), hi(g[5]), lo(g[5]))) // /56
+      if (lo(g[6]) === 0 && g[7] === 0) local.push(quad(lo(g[4]), hi(g[5]), lo(g[5]), hi(g[6]))) // /64
+      if (!(g[6] === 0 && g[7] === 0 && local.length > 0)) local.push(fromGroups(g[6], g[7])) // /96
+    }
+    out.push(...local)
+  }
+  if (g[0] === 0x2002) out.push(fromGroups(g[1], g[2]))
+  if (g[0] === 0x2001 && g[1] === 0) out.push(fromGroups(g[6] ^ 0xffff, g[7] ^ 0xffff))
+  if ((g[4] === 0 || g[4] === 0x200) && g[5] === 0x5efe) out.push(fromGroups(g[6], g[7]))
+  return [...new Set(out)]
 }
 
 const ALLOWED_FETCH_PROTOCOLS = new Set(['http:', 'https:'])
@@ -111,8 +115,7 @@ export function isCloudMetadataIp(ip: string): boolean {
   const version = isIP(bare)
   if (version === 4) return METADATA_IPV4.has(bare)
   if (version === 6) {
-    const mapped = mappedIPv4Match(bare)
-    if (mapped) return METADATA_IPV4.has(mapped[1])
+    if (embeddedIPv4s(bare).some((v4) => METADATA_IPV4.has(v4))) return true
     return METADATA_IPV6.has(expandIPv6(bare))
   }
   return false
@@ -178,8 +181,7 @@ export function isBlockedIPv6(raw: string): boolean {
   const addr = raw.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0]
   if (addr === '::' || addr === '::1') return true
   if (/^(0:){7}[01]$/.test(addr)) return true
-  const mapped = mappedIPv4Match(addr)
-  if (mapped) return isBlockedIPv4(mapped[1])
+  if (embeddedIPv4s(addr).some(isBlockedIPv4)) return true
   const head = addr.split(':')[0]
   if (!head) return false
   const h = parseInt(head, 16)
@@ -208,11 +210,7 @@ export function isLinkLocalIp(ip: string): boolean {
   }
   if (version === 6) {
     const addr = bare.toLowerCase()
-    const mapped = mappedIPv4Match(addr)
-    if (mapped) {
-      const o = mapped[1].split('.').map(Number)
-      return o[0] === 169 && o[1] === 254
-    }
+    if (embeddedIPv4s(addr).some((v4) => v4.startsWith('169.254.'))) return true
     const head = addr.split(':')[0]
     const h = parseInt(head, 16)
     if (Number.isNaN(h)) return false
@@ -230,9 +228,7 @@ export function isLoopbackIp(ip: string): boolean {
     const addr = bare.toLowerCase()
     if (addr === '::1') return true
     if (/^(0:){7}1$/.test(addr)) return true
-    const mapped = mappedIPv4Match(addr)
-    if (mapped) return mapped[1].split('.').map(Number)[0] === 127
-    return false
+    return embeddedIPv4s(addr).some((v4) => v4.startsWith('127.'))
   }
   return false
 }
@@ -253,9 +249,7 @@ export function isUnspecifiedIp(ip: string): boolean {
   if (bare === '0.0.0.0') return true
   if (bare === '::') return true
   if (/^(0{1,4}:){7}0{1,4}$/.test(bare)) return true
-  const mapped = mappedIPv4Match(bare)
-  if (mapped) return mapped[1] === '0.0.0.0'
-  return false
+  return embeddedIPv4s(bare).includes('0.0.0.0')
 }
 
 function blockedMessage(target: string): string {
@@ -274,14 +268,14 @@ function connectBlockedMessage(target: string): string {
   )
 }
 
-/** Normalized form for comparing addresses: IPv4 dotted (also from mapped/NAT64/6to4 IPv6), IPv6 expanded. */
-function comparableIp(ip: string): string | null {
+/** Normalized forms for comparing addresses: IPv4 dotted; IPv6 expanded, plus every IPv4 address it carries (embeddedIPv4s). */
+function comparableIps(ip: string): string[] {
   const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
   const version = isIP(bare)
-  if (version === 4) return bare
-  if (version !== 6) return null
-  const mapped = mappedIPv4Match(bare)
-  return mapped ? mapped[1] : expandIPv6(bare)
+  if (version === 4) return [bare]
+  if (version !== 6) return []
+  const v4s = embeddedIPv4s(bare)
+  return bare.includes('.') ? v4s : [expandIPv6(bare), ...v4s]
 }
 
 const OWN_ADDRESSES_TTL_MS = 30_000
@@ -299,15 +293,13 @@ export function isOwnInterfaceIp(ip: string, now = Date.now()): boolean {
     try {
       for (const list of Object.values(networkInterfaces())) {
         for (const entry of list ?? []) {
-          const c = comparableIp(entry.address)
-          if (c) set.add(c)
+          for (const c of comparableIps(entry.address)) set.add(c)
         }
       }
     } catch { /* no interface list: loopback and unspecified still count */ }
     ownAddressCache = { at: now, set }
   }
-  const c = comparableIp(ip)
-  return c !== null && ownAddressCache.set.has(c)
+  return comparableIps(ip).some((c) => ownAddressCache!.set.has(c))
 }
 
 /**
