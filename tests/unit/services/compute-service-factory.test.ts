@@ -66,14 +66,23 @@ describe('FakeComputeService', () => {
   })
 })
 
+// process.execPath is in the platform's own form, so the Windows rows run on
+// Windows (to a POSIX basename a Windows path is one file name).
 describe('isPackagedExecutable', () => {
-  it.each([
+  it.runIf(process.platform === 'win32').each([
     ['C:\\Program Files\\ADF Studio\\ADF Studio.exe', 'C:\\Program Files\\ADF Studio\\resources\\app.asar\\out\\main\\daemon.js', true],
-    ['/Applications/ADF Studio.app/Contents/MacOS/ADF Studio', '/Applications/ADF Studio.app/Contents/Resources/app.asar/out/main/daemon.js', true],
     ['C:\\tools\\electron.exe', 'C:\\x\\resources\\app.asar\\out\\main\\daemon.js', true],
     ['C:\\repo\\node_modules\\electron\\dist\\electron.exe', 'C:\\repo\\out\\main\\daemon.js', false],
-    ['/usr/local/bin/node', '/repo/out/main/daemon.js', false],
     ['C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\adf\\dist\\cli.js', false],
+  ])('%s %s → %s', (execPath, entry, expected) => {
+    expect(isPackagedExecutable(execPath, entry)).toBe(expected)
+  })
+  it.each([
+    ['/Applications/ADF Studio.app/Contents/MacOS/ADF Studio', '/Applications/ADF Studio.app/Contents/Resources/app.asar/out/main/daemon.js', true],
+    ['/opt/tools/electron', '/x/resources/app.asar/out/main/daemon.js', true],
+    ['/repo/node_modules/electron/dist/electron', '/repo/out/main/daemon.js', false],
+    ['/usr/local/bin/node', '/repo/out/main/daemon.js', false],
+    ['/usr/bin/node', '/usr/lib/node_modules/adf/dist/cli.js', false],
   ])('%s %s → %s', (execPath, entry, expected) => {
     expect(isPackagedExecutable(execPath, entry)).toBe(expected)
   })
