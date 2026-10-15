@@ -469,13 +469,6 @@ export function assembleAgent<P extends AgentProfileName>(
   }
 
   const dispatchStartup = async (startupOptions: { hasUserMessage?: boolean } = {}): Promise<boolean> => {
-    // A start schedules its startup dispatch (Studio on process.nextTick); a
-    // stop or emergency stop can tear the agent down before it runs. The
-    // startup turn of a stopped agent is moot, not an error to show the user.
-    if (state === 'stopping' || state === 'stopped' || state === 'disposed') {
-      console.log(`[AssembleAgent] Startup dispatch skipped: the agent was stopped (lifecycle ${state})`)
-      return false
-    }
     if (state !== 'running') throw new Error(`Cannot dispatch startup while agent lifecycle is ${state}`)
     // Loop-level autostart rides the agent's start, once, and only for an
     // agent that starts active — a hibernating or idle-started agent keeps its

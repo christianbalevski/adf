@@ -1013,7 +1013,7 @@
             "$ref": "#/components/responses/NotFound"
           },
           "409": {
-            "description": "The identifier matches several agent files (`ambiguous_agent`), the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`), another process runs the agent (`agent_leased`) or another loaded file has the same agent id (`duplicate_agent_id`)",
+            "description": "The identifier matches several agent files (`ambiguous_agent`), the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`), another process runs the agent (`agent_leased`), another loaded file has the same agent id (`duplicate_agent_id`) or the agent is being stopped while it starts (`agent_not_running`)",
             "content": {
               "application/json": {
                 "schema": {

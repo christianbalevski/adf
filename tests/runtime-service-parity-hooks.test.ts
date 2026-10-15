@@ -152,6 +152,19 @@ describe('agent-lifecycle events', () => {
     expect(lifecycleTypes(seen)).toEqual(['agent_starting', 'agent_started'])
   })
 
+  it('a start of an agent whose lifecycle is no longer running answers 409 agent_not_running and dispatches nothing', async () => {
+    const { filePath } = seedAgent(tempDir(), 'agent-1')
+    const runtime = runtimeWith()
+    const ref = await runtime.loadAgent(filePath)
+    const agent = runtime.getLoadedAgent(ref.id)!.agent
+    vi.spyOn(agent, 'getLifecycleState').mockReturnValue('stopping')
+    const dispatch = vi.spyOn(agent, 'dispatchStartup')
+    const err = await runtime.startAgent(ref.id).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RuntimeLoopError)
+    expect(err).toMatchObject({ statusCode: 409, code: 'agent_not_running' })
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
   it('a failed load ends in agent_start_failed with the error and its code', async () => {
     const { filePath } = seedAgent(tempDir(), 'agent-1')
     const runtime = runtimeWith({ providerFactory: () => { throw new Error('no provider here') } })
