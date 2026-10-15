@@ -27,6 +27,7 @@ import {
   createModeSwitcher,
   notifyDaemonOfHandover,
   relaunchStudio,
+  restartingMessage,
   resumeSwitchedAgents,
   runBootHandover,
   sessionBackendEnv,
@@ -634,6 +635,7 @@ app.whenReady().then(async () => {
     pendingSwitch: switcher.pendingSwitch,
     finishSwitchNow: switcher.finishNow,
     cancelSwitch: switcher.cancel,
+    restarting: () => { const target = switcher.restartingInto(); return target ? restartingMessage(target) : null },
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
   registerOrbitalCacheHandlers(app.getPath('userData'))

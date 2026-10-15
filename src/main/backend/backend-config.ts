@@ -461,6 +461,8 @@ export function createBackendSettingsStore(deps: {
   finishSwitchNow?: () => string | null
   /** Stop waiting; the target it was waiting for, or null when none waits. */
   cancelSwitch?: () => StudioBackendMode | null
+  /** Once a switch's restart has started: the refusal for any later mode change or switch action. */
+  restarting?: () => string | null
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
@@ -473,6 +475,12 @@ export function createBackendSettingsStore(deps: {
   const save = async (input: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
     const { switchAction, ...rest } = input
+    // Studio is restarting into a switch already: a mode change or a switch action now would not apply (nor be undone).
+    const restarting = deps.restarting?.() ?? null
+    if (restarting && (switchAction !== undefined || (rest.mode !== undefined && rest.mode !== current.mode))) {
+      log.warn(`[Backend] Settings → Backend change refused: ${restarting}`)
+      return { ok: false, code: 'restarting', error: restarting }
+    }
     let patch: BackendSettingsPatch = rest
     if (switchAction !== undefined) {
       if (switchAction === 'finish-now') {
@@ -512,7 +520,11 @@ export function createBackendSettingsStore(deps: {
       log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
     }
     const notices = [...result.notices]
+    // Choosing the running mode while a switch waits for its turns is the latest choice: that switch is cancelled (as Cancel Switch).
+    const replaced = !switching && result.config.mode !== previous.mode && switchAction === undefined ? deps.cancelSwitch?.() ?? null : null
+    if (replaced) log.log(`[Backend] Switch to ${replaced} cancelled: ${result.config.mode} was chosen again`)
     if (switching) notices.push((deps.applyModeSwitch?.(result.config.mode)) || 'Studio restarts now.')
+    else if (replaced) notices.push('Switch cancelled; Studio stays in this mode.')
     else if (result.config.mode !== previous.mode) notices.push('Studio already runs this mode; no restart is needed.')
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
     if (switchAction === 'cancel') notices.splice(0, notices.length, 'Switch cancelled; Studio stays in this mode.')

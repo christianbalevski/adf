@@ -192,6 +192,24 @@ describe('daemon file routes: path → id, delete, rename, clone', () => {
     expect(pushes).toContainEqual({ dirPath: root })
   })
 
+  it('a failed pre-move checkpoint still closes the workspace, and the rename is refused (W5-F)', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    writeFileSync(`${a.filePath}-wal`, '')
+    const { server } = setup({ trackedDirectories: [root] })
+    await server.ready()
+    const close = vi.fn()
+    const original = AdfWorkspace.open.bind(AdfWorkspace)
+    const spy = vi.spyOn(AdfWorkspace, 'open').mockImplementation(((p: string, ...rest: unknown[]) => p === a.filePath
+      ? { checkpoint: () => { throw new Error('disk I/O error') }, close }
+      : (original as (...args: unknown[]) => AdfWorkspace)(p, ...rest)) as never)
+    onTestFinished(() => spy.mockRestore())
+    const res = await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: 'agent-3' } })
+    expect(res.json().code).toBe('file_busy')
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(existsSync(a.filePath)).toBe(true)
+  })
+
   it('renames a running agent without stopping it: same agent, lease and file until it stops, then the file moves', async () => {
     const root = tempDir('adf-files-')
     const a = seedAgent(root, 'agent-1')

@@ -401,6 +401,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W5-D3 | Settings → Providers key field showed the placeholder in local mode | done 3fcd2d50 (`POST /settings/providers/keys/reveal`, local proof; remote keeps the placeholder) |
 | W5-D3 | Autostart after a switch to embedded also hits `agent_leased` while the daemon exits, and is not retried (only the resumed agents are) | open: Lead |
 | W5-D3 | A `recentFiles` list written by remote mode before 3bdd8f76 still holds the server's paths and moves to embedded once; the sweep (9959cbeb) and the menu skip network paths, other server paths show as missing | accepted (one-time) |
+| W5-F | Lease keys and `samePath` (`agent-lease.ts`) fold case on macOS, assuming a case-insensitive volume. On a case-sensitive APFS volume, `Agent-1.adf` and `agent-1.adf` are two files that share one lease (the second is refused with `agent_leased`). NFC folding in `samePath` now matches the key (W5-F) | open: Lead (needs a per-volume case check; behaviour unchanged) |
 
 ## 7. Parity triage (filled in W5-A)
 
