@@ -89,7 +89,7 @@ Inside the implemented handlers, a step whose daemon route has not landed throws
 
 | Step | Workstream |
 |---|---|
-| FILE_OPEN with the native dialog in remote mode | W4-B |
+| none: the native-dialog steps of FILE_OPEN, FILE_CREATE, TRACKED_DIRS_ADD, DIALOG_PICK_DIRECTORY, MCP_PICK_ADF_FILE and FILE_REVEAL are not reached in remote mode, where `remote/handlers.ts` takes these channels (W4-B, design §9.4) | |
 
 Client sessions (W2-C2, `client-stream.ts` `createDaemonClientSession`). Studio opens one session per daemon connection after `GET /version` reports `clientApiVersion` equal to `SUPPORTED_CLIENT_API_VERSION`; another version fails the connection with an "update the daemon" message (no `GET /events` fallback; §8.2's dialog owns version skew). The session is opened with `exitDaemonWhenClosed` in local mode unless `keepDaemonRunning` is set; quitting ends it (`DELETE /client/sessions/:id`) and leaves the daemon running (the R4 stop is W4-A's). Every request carries `X-ADF-Client-Session`, so this window's own config and document writes are not echoed back.
 
@@ -175,7 +175,7 @@ Routes added: `POST /admin/mcp/packages/npm/jobs`, `/admin/mcp/packages/python/j
 - **Install progress.** The daemon publishes the install topics on the client stream (W2-B `withInstallProgress`); the event bridge sends them. `mcp/install-progress.ts` covers what the stream cannot deliver: with the interim GET /events adapter (no push topics) it sends each progress line from the job and each package's end from the job's result; with a client session it sends an end only when a `stream.gap` came during the install and the end push has not arrived 1.5 s after the job ended (logged).
 - **Credential values.** Local mode reads them as embedded shows them: MCP_CREDENTIAL_GET and ADAPTER_CREDENTIAL_GET use `POST /files/agent/identity/reveal` (W3-B; local callers with the local proof only) with the prefix `mcp:<namespace>:` or `adapter:<type>:`; `storedKeys` comes from the metadata route. A remote daemon never sends them: MCP_CREDENTIAL_GET answers `__redacted__` per readable value, and MCP_CREDENTIAL_SET keeps the stored value for the untouched placeholder of a stored key and refuses an edited placeholder or one under a key the file does not store, with a sentence; ADAPTER_CREDENTIAL_GET answers no values (the channel dialog shows "stored"). A refused write (409, envelope locked on this daemon) answers the daemon's sentence.
 - **Interactive OAuth.** The connect test's `open_url` steps open in the browser and its `confirm` steps show embedded's Continue dialog. For agents, `mcp/oauth-authorize.ts` opens each `mcp_oauth_authorize` page once, without a click, from the approvals snapshots (the URL from `GET /approvals/input`); requests already pending when Studio connects are logged, not opened. It fires for a request raised while Studio is connected only once approvals snapshots arrive on the client stream (W2-B; the interim adapter delivers none).
-- **Remote mode** (W4-B): MCP_REGISTRATION_TEST of an OAuth remote and MCP_PICK_ADF_FILE refuse with DaemonModeUnavailableError; the `mcp_oauth_authorize` opener opens nothing and logs why.
+- **Remote mode** (W4-B, design §9.4): the connect test's and the agents' OAuth pages open through the callback relay (`remote/oauth-relay.ts`, `POST /oauth/relay`), https pages only; MCP_PICK_ADF_FILE uses the daemon-side picker.
 
 Left for other workstreams:
 
