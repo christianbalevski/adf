@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from 'react'
 import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextInput } from '../ui'
-import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../../shared/utils/remote-backend-url'
+import { checkRemoteDaemonUrl, remoteUrlOrigin, type RemoteUrlClass } from '../../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
 
 type MessageGroup = 'backend' | 'remote'
@@ -52,6 +52,20 @@ function daemonLine(daemon: BackendDaemonStatus): string {
   if (daemon.version) parts.push(`version ${daemon.version}`)
   if (daemon.startedBy) parts.push(daemon.how === 'spawned' ? 'started by this Studio' : `started by ${daemon.startedBy === 'studio' ? 'Studio' : daemon.startedBy === 'cli' ? 'the ADF CLI' : 'a service'}`)
   return parts.join(' · ')
+}
+
+/**
+ * Why Save is refused for the remote draft, or null. An invalid URL is
+ * refused; so is plain http that is not confirmed, except the saved URL with
+ * its confirmation unchecked and no new token: saving that withdraws the
+ * confirmation (main keeps the token; the transport rule then blocks
+ * connecting until the box is checked again or the URL changes).
+ */
+export function remoteSaveBlocked(draft: { kind: RemoteUrlClass | null; urlChanged: boolean; confirmed: boolean; savedConfirmed: boolean; newToken: boolean }): 'invalid' | 'unconfirmed' | null {
+  if (draft.kind === 'invalid') return 'invalid'
+  if (draft.kind !== 'insecure-http' || draft.confirmed) return null
+  const withdrawing = !draft.urlChanged && draft.savedConfirmed && !draft.newToken
+  return withdrawing ? null : 'unconfirmed'
 }
 
 function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: string } | null }) {
@@ -143,6 +157,7 @@ export function BackendSettings() {
   const insecureConfirmed = draftOrigin !== null && insecureFor === draftOrigin
   const remoteDirty = urlChanged || insecureConfirmed !== view.configured.allowInsecureHttp || tokenDraft.trim() !== ''
   const remoteInvalid = urlCheck?.kind === 'invalid' || (urlCheck?.kind === 'insecure-http' && !insecureConfirmed)
+  const saveBlocked = remoteSaveBlocked({ kind: urlCheck?.kind ?? null, urlChanged, confirmed: insecureConfirmed, savedConfirmed: view.configured.allowInsecureHttp, newToken: tokenDraft.trim() !== '' }) !== null
 
   const saveRemote = () => {
     const patch: BackendSettingsPatch = { remoteUrl: urlDraft.trim() || null, allowInsecureHttp: insecureConfirmed }
@@ -330,7 +345,7 @@ export function BackendSettings() {
             <Button disabled={remoteInvalid || !urlDraft.trim()} loading={checking} onClick={() => void testRemote()}>
               Test connection
             </Button>
-            <Button variant="primary" disabled={!remoteDirty || remoteInvalid} loading={saving} onClick={saveRemote}>
+            <Button variant="primary" disabled={!remoteDirty || saveBlocked} loading={saving} onClick={saveRemote}>
               Save
             </Button>
           </div>
