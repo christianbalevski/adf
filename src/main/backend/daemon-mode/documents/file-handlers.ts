@@ -16,6 +16,7 @@ import type { DaemonHandlerTable, DaemonModeContext, DaemonSendHandlerTable } fr
 import { enc } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
 import { samePath } from '../session'
+import { isValidAgentFileName } from '../../../../shared/utils/agent-file-name'
 import { daemonCode, daemonStatus, errorMessage, errorString, onOpenFile } from './open-file'
 
 /**
@@ -32,11 +33,7 @@ import { daemonCode, daemonStatus, errorMessage, errorString, onOpenFile } from 
 
 // --- helpers ----------------------------------------------------------------
 
-/** Embedded FILE_RENAME / FILE_CREATE_QUICK name rule (ipc/index.ts isValidAgentFileName). */
-const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
-function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
-}
+// Embedded FILE_RENAME / FILE_CREATE_QUICK name rule: isValidAgentFileName (shared/utils/agent-file-name.ts).
 
 const CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin'
 

@@ -85,6 +85,7 @@ import {
   existsAlready, staleRevision, staleRevisionMessage, type ResourceRevision,
 } from './resource-revisions'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -4504,11 +4505,13 @@ async function disposeRuntimeAgent(agent: RuntimeAgent, mode: AgentStopMode, ret
   }
 }
 
-/** Characters not allowed in file names on Windows (a superset of POSIX); as Studio's rename. */
-const INVALID_FILENAME_CHARS = /[<>:"/\|?*\u0000-\u001f]/
-
+/**
+ * Studio's rule for an agent file name (shared/utils/agent-file-name.ts),
+ * plus no Windows device name, as the daemon's create and rename (W5-D2).
+ * The copy here missed the backslash.
+ */
 function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
+  return agentFileNameProblem(name) === null
 }
 
 /** Path comparison key: case-insensitive where the file system usually is (as agent-lease.ts). */

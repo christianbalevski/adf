@@ -23,6 +23,7 @@
 import { constants as fsConstants, createReadStream, createWriteStream, existsSync, type Dirent, type ReadStream } from 'node:fs'
 import { copyFile, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
+import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -91,20 +92,8 @@ export interface FileOpsDeps {
 
 // --- Names and paths -------------------------------------------------------------
 
-/** Characters not allowed in file names on Windows (superset of POSIX). Same rule as Studio's rename. */
-const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
-
-/**
- * A name a rename or import may give a file: no separators or characters
- * Windows refuses, no trailing dot or space, and no Windows device name
- * (CON, NUL, COM1, …, with any extension), on every OS so the file stays
- * openable when it travels.
- */
-export function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && name.length <= 255 && !INVALID_FILENAME_CHARS.test(name) &&
-    !name.endsWith('.') && !name.endsWith(' ') && name !== '.' && name !== '..' &&
-    !RESERVED_NAME.test(name.split('.')[0].trim())
-}
+// A name a rename or import may give a file: embedded Studio's rule, plus no
+// Windows device name (shared/utils/agent-file-name.ts agentFileNameProblem).
 
 export interface AdfPathOptions {
   mustExist?: boolean
@@ -998,9 +987,8 @@ export class AgentFileOps {
   async rename(input: unknown, newNameInput: unknown, opts: { origin?: string } = {}): Promise<RenameResult> {
     const filePath = await this.adfPath(input, { destructive: true })
     const newName = typeof newNameInput === 'string' ? newNameInput.trim() : ''
-    if (!isValidAgentFileName(newName)) {
-      throw new FileOpError('Name contains characters not allowed in file names.', 400, 'invalid_name')
-    }
+    const problem = agentFileNameProblem(newName)
+    if (problem) throw new FileOpError(problem, 400, 'invalid_name')
     const newPath = join(dirname(filePath), `${newName}.adf`)
     if (newPath !== filePath && await pathExists(newPath) && !(await sameFile(newPath, filePath))) {
       throw new FileOpError(`A file named "${newName}.adf" already exists.`, 409, 'name_taken')
@@ -1213,7 +1201,8 @@ export class AgentFileOps {
   async import(body: unknown, opts: { directory?: unknown; name?: unknown; unique?: boolean; maxBytes: number }): Promise<ImportResult> {
     const directory = await this.importDirectory(opts.directory)
     const rawName = typeof opts.name === 'string' ? opts.name.trim().replace(/\.adf$/i, '') : ''
-    if (!isValidAgentFileName(rawName)) throw new FileOpError('name must be a file name (no path separators)', 400, 'invalid_name')
+    const problem = agentFileNameProblem(rawName)
+    if (problem) throw new FileOpError(`name must be a file name: ${problem}`, 400, 'invalid_name')
     let target = join(directory, `${rawName}.adf`)
     if (await pathExists(target)) {
       if (!opts.unique) throw new FileOpError(`An agent named "${rawName}" already exists in ${directory}.`, 409, 'name_taken')

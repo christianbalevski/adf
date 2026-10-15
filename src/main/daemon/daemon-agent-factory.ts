@@ -20,6 +20,7 @@ import type { RuntimeService } from '../runtime/runtime-service'
 import { identityDrafts } from '../services/identity-drafts'
 import type { DaemonIdentity, DaemonIdentityStatus } from './daemon-identity'
 import { documentsDir, resolveAgentsFolderSync } from './file-ops'
+import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 
 export interface CreateAgentInput {
   name?: string
@@ -105,12 +106,6 @@ interface FactorySettings {
   delete(key: string): void
 }
 
-/** Same rule Studio's quick-create and rename use (ipc/index.ts isValidAgentFileName). */
-const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
-function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && name.length <= 64 && !INVALID_FILENAME_CHARS.test(name) &&
-    !name.endsWith('.') && !name.endsWith(' ') && name !== '.' && name !== '..'
-}
 
 /** `<userData>/templates-trash`: where the daemon puts deleted templates (Studio uses the OS trash). */
 export function templatesTrashDir(): string {
@@ -299,8 +294,10 @@ export class DaemonAgentFactory {
 
     // --- input ---
     const typedName = typeof input.name === 'string' ? input.name.trim() : ''
-    if (typedName && !isValidAgentFileName(typedName)) {
-      throw new AgentCreateError('bad_request', 'name must be a file name: at most 64 characters, none of < > : " / \\ | ? *, not ending in a dot or space.', 400)
+    // Embedded Studio's rule (no length limit), plus no Windows device name (shared/utils/agent-file-name.ts).
+    const nameProblem = typedName ? agentFileNameProblem(typedName) : null
+    if (nameProblem) {
+      throw new AgentCreateError('bad_request', `name must be a file name: ${nameProblem === 'Name contains characters not allowed in file names.' ? 'none of < > : " / \\ | ? * or control characters, not ending in a dot or space.' : nameProblem}`, 400)
     }
     let directory: string
     if (typeof input.directory === 'string' && input.directory.trim() !== '') {
