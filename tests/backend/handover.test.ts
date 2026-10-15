@@ -746,7 +746,11 @@ describe('the way back to embedded (review fixes)', () => {
     await legacy.save(MCP_URL, mcpRecord(auth.issue('mcp-user')))
     await runHandover('local', deps())
     expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
-    expect(legacy.listServerUrls()).toEqual([])
+    // On Linux a real, existing path is its own canonical form (no case
+    // folding): both builds used one account and there was nothing to move.
+    const oneAccount = settingsScope(settingsPath) === studioRuntimeScope(settingsPath)
+    expect(oneAccount).toBe(process.platform === 'linux')
+    expect(legacy.listServerUrls()).toEqual(oneAccount ? [MCP_URL] : [])
   })
 })
 
