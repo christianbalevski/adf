@@ -18069,7 +18069,7 @@ K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`). `not-a
 | `localProof` | object |  | Whether this run has a local proof (X-ADF-Local-Proof). Without one, every route that needs it refuses (POST /identity/import, the stored-value reveal routes); on Windows that happens when icacls cannot restrict the proof file. Absent in daemons before this field. |
 | `localProof.available` | boolean | yes |  |
 | `localProof.problem` | string \| null | yes | Why there is no proof; null when available. |
-| `keychainProblem` | string \| null |  | Set when this machine has an OS keychain (Windows, macOS) that the daemon could not read at start (three tries over 5 s), so it runs on its passphrase file: why, and what to do (restart the daemon once the keychain works). Owner create, restore and trust-daemon answer 409 `keychain_unavailable` meanwhile. Null otherwise; absent without an owner identity service or in older daemons. |
+| `keychainProblem` | string \| null |  | Set when this machine has an OS keychain (Windows, macOS) that the daemon could not read at start (three tries over 5 s), so it runs on its passphrase file: why, and what to do (restart the daemon once the keychain works). Owner create, restore, import and trust-daemon answer 409 `keychain_unavailable` meanwhile. Null otherwise; absent without an owner identity service or in older daemons. |
 
 <a id="schema-diagnosticsresponse"></a>
 
@@ -18465,7 +18465,7 @@ The ONLY response that carries the seed phrase (sent with Cache-Control: no-stor
 | `storage` | `"keychain"` \| `"file"` | yes |  |
 | `backupConfirmed` | boolean | yes |  |
 | `passphraseRequired` | boolean | yes | File storage not unlocked: create/restore/unlock take a passphrase |
-| `keychainProblem` | string \| null |  | The daemon could not read this machine's OS keychain at start and runs on its passphrase file: why and what to do; null otherwise. Create, restore and trust-daemon answer 409 `keychain_unavailable` meanwhile (set ADF_SECRET_STORE=file to use the file on purpose). |
+| `keychainProblem` | string \| null |  | The daemon could not read this machine's OS keychain at start and runs on its passphrase file: why and what to do; null otherwise. Create, restore, import and trust-daemon answer 409 `keychain_unavailable` meanwhile (set ADF_SECRET_STORE=file to use the file on purpose). |
 | `message` | string | yes | What to do next |
 
 <a id="schema-daemonruntimeadoption"></a>

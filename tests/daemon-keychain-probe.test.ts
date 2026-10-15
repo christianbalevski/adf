@@ -104,6 +104,7 @@ describe('keychain probe at daemon boot', () => {
       ['/identity/restore', { mnemonic: generateMnemonic(), passphrase: 'a long passphrase' }],
       ['/identity/create', { passphrase: 'a long passphrase' }],
       ['/identity/trust-daemon', { confirm: true }],
+      ['/identity/import', { mnemonic: generateMnemonic(), passphrase: 'a long passphrase', switchOwner: true, previousOwnerBackupConfirmed: true }],
     ] as const) {
       const res = await server.inject({ method: 'POST', url, headers: { 'x-adf-local-proof': PROOF }, payload })
       expect(res.statusCode, url).toBe(409)

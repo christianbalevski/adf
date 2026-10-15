@@ -83,6 +83,8 @@ export function getCredentialKey(): Buffer {
   if (cachedKey && cachedKeyPath === path) return cachedKey
 
   let key = existsSync(path) ? readKeyFile(path) : null
+  // An existing key (from before W5-D1, or copied in): the same protection, once per process.
+  if (key) protectSecretFile(path)
 
   if (!key && existsSync(path)) {
     // A corrupt key can't decrypt anything that was written under it, so
