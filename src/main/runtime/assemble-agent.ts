@@ -26,7 +26,7 @@ import { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
-import { currentResourceWriter, fileRevisionKey, observeRevision } from './resource-revisions'
+import { currentResourceWriter, fileRevisionKey, inApiWrite, observeRevision } from './resource-revisions'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
 import { runDispatchDropCompensation } from './system-dispatch-limits'
@@ -598,11 +598,13 @@ export function assembleAgent<P extends AgentProfileName>(
     // README.md/document.md keep their own `document_updated` event, which also
     // carries the document store; re-emitting them here would double-update.
     // Studio's own edits are skipped: the editor already holds that content, and
-    // echoing it back would fight the user's cursor mid-edit.
+    // echoing it back would fight the user's cursor mid-edit. Through the
+    // daemon (a client session's write, also `system:studio`) the event is
+    // kept: other clients follow it, and the daemon skips the writing session.
     if (
       change.operation !== 'deleted' &&
       change.content !== undefined &&
-      change.source !== 'system:studio' &&
+      (change.source !== 'system:studio' || inApiWrite()) &&
       change.path !== 'README.md' &&
       change.path !== 'document.md'
     ) {

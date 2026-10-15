@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { createHeadlessAgent } from '../../../src/main/runtime/headless'
-import { documentRevision, fileRevision } from '../../../src/main/runtime/resource-revisions'
+import { apiWriteSource, documentRevision, fileRevision, runAsApiWrite, runAsWriter } from '../../../src/main/runtime/resource-revisions'
 import { withSource } from '../../../src/main/runtime/execution-context'
 import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
@@ -81,6 +81,30 @@ describe('write events an open editor follows', () => {
       // The document's revision is what a read returns now; note.md moved on with Studio's write.
       expect((events[1].payload as { revision: number }).revision).toBe(documentRevision(agent.workspace).revision)
       expect(fileRevision(agent.workspace, 'notes.md').revision).toBeGreaterThan((events[0].payload as { revision: number }).revision)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('W5-D2: a write through the Studio client session is `system:studio` and still raises file_updated (other clients follow it); other API writers stay system:runtime-api', async () => {
+    expect(runAsWriter({ kind: 'client', client: 'studio' }, apiWriteSource)).toBe('system:studio')
+    expect(runAsWriter({ kind: 'client', client: 'tui' }, apiWriteSource)).toBe('system:runtime-api')
+    expect(runAsWriter({ kind: 'cli' }, apiWriteSource)).toBe('system:runtime-api')
+    expect(apiWriteSource()).toBe('system:runtime-api')
+
+    const dir = mkdtempSync(join(tmpdir(), 'adf-write-events-'))
+    dirs.push(dir)
+    const agent = createHeadlessAgent({ filePath: join(dir, 'agent-1.adf'), name: 'agent-1', provider: new WritingProvider() })
+    const events: AgentExecutionEvent[] = []
+    agent.attachHost({ onEvent: (event) => { if (event.type === 'file_updated') events.push(event) } })
+    try {
+      const id = agent.workspace.getAgentConfig().id
+      // Embedded Studio (its IPC write: Studio's writer and source): no echo, as before.
+      runAsWriter({ kind: 'client', client: 'studio' }, () => withSource('system:studio', id, () => agent.workspace.writeFile('notes.md', 'embedded')))
+      expect(events).toEqual([])
+      // The daemon's route for Studio's session: same source, the event is kept with its writer.
+      runAsWriter({ kind: 'client', client: 'studio' }, () => runAsApiWrite(id, () => agent.workspace.writeFile('notes.md', 'through the daemon')))
+      expect(events.map((e) => e.payload)).toEqual([expect.objectContaining({ path: 'notes.md', content: 'through the daemon', writer: { kind: 'client', client: 'studio' } })])
     } finally {
       await agent.disposeAsync()
     }
