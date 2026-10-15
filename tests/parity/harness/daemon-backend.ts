@@ -478,7 +478,10 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
           if (daemon.exited() === null) leaks.push(`daemon child pid ${daemon.child.pid} still running after taskkill`)
           // Debugging aid: PARITY_DAEMON_LOG_DIR=<dir> keeps a copy of each run's daemon log.
           if (process.env.PARITY_DAEMON_LOG_DIR) {
-            try { copyFileSync(logFile, join(process.env.PARITY_DAEMON_LOG_DIR, `adf-daemon-${daemon.child.pid}.log`)) } catch { /* no log */ }
+            try {
+              mkdirSync(process.env.PARITY_DAEMON_LOG_DIR, { recursive: true })
+              copyFileSync(logFile, join(process.env.PARITY_DAEMON_LOG_DIR, `adf-daemon-${daemon.child.pid}.log`))
+            } catch { /* no log */ }
           }
           const links = removeTreeWithoutLinks(outside)
           if (links.length) leaks.push(`refusing to delete ${outside}; it contains links: ${links.join(', ')}`)
