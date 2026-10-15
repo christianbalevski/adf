@@ -132,7 +132,12 @@ Finish Switch Now (stops the turns) or Cancel Switch."
 
 While a switch waits, the latest choice wins: choosing another backend
 replaces the waiting switch (after its own switch dialog), and choosing the
-backend Studio runs now cancels it, as **Cancel Switch** does.
+backend Studio runs now cancels it, as **Cancel Switch** does. The switch
+dialog says "This replaces the waiting switch to *B*." Once the restart has
+started, a mode change or a switch button is refused with "Studio is
+restarting into *B*. Nothing changed." If a launch then runs another backend
+than the switch's (for example with `ADF_STUDIO_BACKEND` set), one
+notification names the agents not started: "Not started after the switch: …".
 
 Switching from Local daemon back to Embedded while the daemon keeps running
 (it was started with `adf daemon start`, or **Keep the daemon running** is
@@ -555,6 +560,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Switch the backend from *A* to *B*?" | [Switch the backend](#switch-the-backend) |
 | "A turn is in flight in: …" / Wait for Them to Finish / Stop Them Now | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "The switch to *B* is waiting: …" / Finish Switch Now / Cancel Switch | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
+| "This replaces the waiting switch to *B*." / "Studio is restarting into *B*. Nothing changed." / "Not started after the switch: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "Running again after the switch: …" / "Not started: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "The ADF daemon keeps running (…), and so do its agents (…) there." | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | [Switch the backend](#switch-the-backend), [Troubleshooting](../cli/troubleshooting.md#macos-keeps-asking-for-keychain-access) |
