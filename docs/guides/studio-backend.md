@@ -152,6 +152,9 @@ Studio's user data folder. To use that account in the daemon instead: stop the
 daemon and replace `auth.daemon.json` with it (Windows PowerShell:
 `Move-Item -Force auth.replaced.json auth.daemon.json` in that provider's
 folder; `auth.daemon.json` already exists, so a plain rename fails).
+Studio deletes `auth.replaced.json` 30 days after it was written (at its next
+start), or as soon as that account signs in again on either side; the log
+names the file it deleted.
 
 The same account signed in on both sides independently (the daemon signed in
 before your first switch) keeps both sessions, each on its side; no accounts
