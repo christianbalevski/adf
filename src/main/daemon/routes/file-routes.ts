@@ -28,6 +28,8 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { withSource } from '../../runtime/execution-context'
+import { fileRevisionKey, observeRevision, runAsWriter } from '../../runtime/resource-revisions'
+import { requestWriter } from './client-routes'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
 import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
@@ -268,13 +270,18 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       return reply.code(413).send({ error: `${path} is ${found.meta.size} bytes, more than maxBytes (${maxBytes})`, code: 'too_large', size: found.meta.size, maxBytes })
     }
     let bytes: Buffer | null
+    let revision: number | undefined
     if (found.agent.workspace) {
       bytes = found.agent.workspace.readFileBuffer(path)
+      if (bytes) revision = observeRevision(found.agent.workspace, fileRevisionKey(path), bytes).revision
     } else {
       const file = runtime.getAgentFile(found.agent.ref.id, path)
       bytes = file ? (file.content_base64 !== undefined ? Buffer.from(file.content_base64, 'base64') : Buffer.from(file.content ?? '', 'utf-8')) : null
+      revision = file?.revision
     }
     if (!bytes) return notFound(reply, `Unknown file "${path}"`)
+    // W3-F: the revision a write of these bytes saves over (PUT …/files/content baseRevision).
+    if (revision !== undefined) reply.header('X-ADF-Revision', String(revision))
     return reply
       .header('Content-Type', found.meta.mime_type || 'application/octet-stream')
       .header('Content-Disposition', attachment(basename(path)))
@@ -295,19 +302,25 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     try {
       const bytes = await readCapped(request.body, rawLimit)
       const mimeType = request.query.mimeType || AdfWorkspace.mimeTypeForPath(path)
+      // W3-F: the write runs after the body was read (an await), past the
+      // preHandler's writer: it names its writer itself.
+      const writer = requestWriter(request)
       let saved = path
+      let revision: number | undefined
       if (agent.workspace) {
         const ws = agent.workspace
-        saved = withSource('system:runtime-api', agent.ref.id, () => {
+        saved = runAsWriter(writer, () => withSource('system:runtime-api', agent.ref.id, () => {
           if (unique) return ws.writeFileBufferUnique(path, bytes, mimeType)
           ws.writeFileBuffer(path, bytes, mimeType)
           return path
-        })
+        }))
+        // The bytes in hand are what `saved` holds (a unique write reuses only identical bytes): no re-read.
+        revision = observeRevision(ws, fileRevisionKey(saved), bytes, writer).revision
       } else {
         if (unique) return reply.code(409).send({ error: 'unique naming needs a file-backed agent', code: 'not_file_backed' })
-        runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType })
+        revision = runAsWriter(writer, () => runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType })).revision
       }
-      return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length }
+      return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length, ...(revision !== undefined ? { revision } : {}) }
     } catch (err) {
       return fail(reply, err, request)
     }

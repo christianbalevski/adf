@@ -89,6 +89,8 @@ import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { withSource } from '../runtime/execution-context'
+import { AGENT_WRITER, configRevision, documentRevision, fileRevision, runAsWriter } from '../runtime/resource-revisions'
+import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-conflicts'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
@@ -344,7 +346,11 @@ function notifyRendererConfigChanged(filePath: string, config: AgentConfig): voi
   // Guard on the OPEN file, not on which agent emitted: a change from an agent
   // the user has already navigated away from must not overwrite the store.
   if (currentFilePath !== filePath) return
-  getMainWindow()?.webContents.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath, config })
+  // W3-F: the revision the change took and who made it (the agent: Studio's
+  // own saves never reach here), so a config edit in flight can be refused
+  // instead of silently reverting this change.
+  const revision = currentWorkspace ? configRevision(currentWorkspace, AGENT_WRITER) : null
+  getMainWindow()?.webContents.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath, config, ...(revision ? { revision: revision.revision, writer: revision.writer } : {}) })
 }
 
 /**
@@ -2853,10 +2859,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.DOC_GET_DOCUMENT, async () => {
     if (!currentWorkspace) return { content: '' }
-    return { content: currentWorkspace.readDocument() }
+    return { content: currentWorkspace.readDocument(), revision: documentRevision(currentWorkspace).revision }
   })
 
-  ipcMain.handle(IPC.DOC_SET_DOCUMENT, async (_event, args: { content: string }) => {
+  ipcMain.handle(IPC.DOC_SET_DOCUMENT, async (_event, args: { content: string; baseRevision?: number }) => {
     if (!currentWorkspace) {
       console.error('[IPC] DOC_SET_DOCUMENT: No workspace open')
       return { success: false }
@@ -2864,21 +2870,31 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     // Read current content before writing so triggers can compute a diff
     const previousContent = currentWorkspace.readDocument()
-    currentWorkspace.writeDocument(args.content)
+    // W3-F: a save over a revision someone else replaced is refused, not applied.
+    const current = documentRevision(currentWorkspace)
+    const base = baseRevisionArg(args.baseRevision)
+    if (base !== undefined && base !== current.revision) {
+      return conflictAnswer({ resource: 'document', revision: current.revision, writer: current.writer, content: previousContent })
+    }
+    const workspace = currentWorkspace
+    workspace.writeDocument(args.content)
+    const revision = documentRevision(workspace, STUDIO_WRITER).revision
 
     if (triggerEvaluator) {
       triggerEvaluator.onDocumentEdit(args.content, previousContent)
     }
 
-    return { success: true }
+    return { success: true, revision }
   })
 
-  ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async () => {
+  ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async (_event, opts?: { withRevision?: boolean }) => {
+    // W3-F: `withRevision` answers { config, revision } for a read-modify-write; without it, the config as before.
+    if (opts?.withRevision) return currentWorkspace ? { config: currentWorkspace.getAgentConfig(), revision: configRevision(currentWorkspace).revision } : { config: null }
     if (!currentWorkspace) return null
     return currentWorkspace.getAgentConfig()
   })
 
-  ipcMain.handle(IPC.DOC_SET_AGENT_CONFIG, async (_event, config: AgentConfig) => {
+  ipcMain.handle(IPC.DOC_SET_AGENT_CONFIG, async (_event, config: AgentConfig, opts?: { baseRevision?: number }) => {
     if (!currentWorkspace) return { success: false, error: 'No file open' }
     const previousConfig = currentWorkspace.getAgentConfig()
     // A save racing a file switch must never write one agent's entire config
@@ -2887,11 +2903,18 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (config?.id && previousConfig.id && config.id !== previousConfig.id) {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
+    // W3-F: a save over a revision the agent (or anyone) replaced is refused, not applied.
+    const currentRevision = configRevision(currentWorkspace)
+    const base = baseRevisionArg(opts?.baseRevision)
+    if (base !== undefined && base !== currentRevision.revision) {
+      return conflictAnswer({ resource: 'config', revision: currentRevision.revision, writer: currentRevision.writer, config: previousConfig })
+    }
     // `metadata.loop_name` is a derived-config-only marker; strip BEFORE the
     // save so an imported/hand-edited .adf cannot persist one that would bind
     // main's executor to a side loop's stream on the next open.
     stripLoopNameMarker(config)
     currentWorkspace.setAgentConfig(config)
+    const revision = configRevision(currentWorkspace, STUDIO_WRITER).revision
 
     // The assembled agent's single config-change choke point: re-derives every
     // side loop, reconciles the pool (revoked grants actually leave the loops),
@@ -2945,11 +2968,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Keep the .adf file name in sync with a changed agent name
     if (currentFilePath && config.name !== previousConfig.name) {
       const sync = syncAgentFileToName(currentFilePath, config.name)
-      if (sync.filePath) return { success: true, filePath: sync.filePath }
-      if (sync.deferred) return { success: true, renameDeferred: true }
+      if (sync.filePath) return { success: true, filePath: sync.filePath, revision }
+      if (sync.deferred) return { success: true, renameDeferred: true, revision }
     }
 
-    return { success: true }
+    return { success: true, revision }
   })
 
   // --- Chat/Loop history ---
@@ -3449,7 +3472,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const textExts = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
     const isText = textExts.has(ext)
     if (isText) {
-      return { content: buf.toString('utf-8'), binary: false, ...info }
+      // W3-F: the revision an editor saves over (writeInternalFile's baseRevision).
+      return { content: buf.toString('utf-8'), binary: false, ...info, revision: fileRevision(currentWorkspace, filePath).revision }
     }
     // Binary bytes cross IPC only for a caller that will use them (the image
     // viewer). Every other caller just needs the `binary` flag, and base64 of a
@@ -3461,12 +3485,20 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { content: buf.toString('base64'), binary: true, ...info }
   })
 
-  ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content }: { path: string; content: string }) => {
+  ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content, baseRevision }: { path: string; content: string; baseRevision?: number }) => {
     if (!currentWorkspace) return { success: false }
-    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
-      currentWorkspace!.writeFile(path, content)
-    })
-    return { success: true }
+    const workspace = currentWorkspace
+    // W3-F: a save over a revision someone else replaced is refused, not applied.
+    const current = fileRevision(workspace, path)
+    const base = baseRevisionArg(baseRevision)
+    if (base !== undefined && base !== current.revision) {
+      const now = workspace.readFileBuffer(path)
+      return conflictAnswer({ resource: path, revision: current.revision, writer: current.writer, content: now ? now.toString('utf-8') : null })
+    }
+    runAsWriter(STUDIO_WRITER, () => withSource('system:studio', workspace.getAgentConfig().id, () => {
+      workspace.writeFile(path, content)
+    }))
+    return { success: true, revision: fileRevision(workspace, path, STUDIO_WRITER).revision }
   })
 
   ipcMain.handle(IPC.DOC_DOWNLOAD_INTERNAL_FILE, async (_event, { path: filePath }: { path: string }) => {
@@ -3553,6 +3585,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const result = {
       document,
       agentConfig,
+      // W3-F: the revisions the config panel and the document tab save over.
+      configRevision: configRevision(currentWorkspace).revision,
+      documentRevision: documentRevision(currentWorkspace).revision,
       lastTokens,
       contextBaseline,
       statusText,

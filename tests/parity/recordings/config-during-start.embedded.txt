@@ -344,6 +344,7 @@
       llmMessages: []
       uiLog: []
       version: 1
+    configRevision: "<rev#1>"
     contextBaseline: null
     document: |
       # agent-1
@@ -351,6 +352,7 @@
       Created: 2026-10-14
       Status: New agent, self-configuring.
       
+    documentRevision: "<rev#2>"
     lastTokens: undefined
     statusText: ""
 3. invoke adf:doc:read-internal-file  [pushes 0→0]
@@ -374,6 +376,7 @@
       <!-- One line per page: - [title](adf-file://mind/slug.md) — one-line hook -->
       
     mimeType: "text/markdown"
+    revision: "<rev#3>"
     size: 380
 4. invoke adf:doc:read-internal-file  [pushes 0→0]
   args:
@@ -411,6 +414,7 @@
       <!-- Where I came from, who I work for, what I'm becoming. Fill in as it happens. -->
       
     mimeType: "text/markdown"
+    revision: "<rev#4>"
     size: 1067
 5. invoke adf:doc:get-agent-config  [pushes 0→0]
   args: []
@@ -1071,6 +1075,7 @@
           targets: []
       ws_connections: []
   result:
+    revision: "<rev#5>"
     success: true
 7. invoke adf:agent:start  [pushes 0→0]
   args:

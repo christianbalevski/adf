@@ -1321,6 +1321,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
           }
         ],
         "requestBody": {
@@ -1355,6 +1361,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -2728,6 +2737,15 @@
           },
           {
             "$ref": "#/components/parameters/FilePathQuery"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatchHeader"
           }
         ],
         "requestBody": {
@@ -2746,7 +2764,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentSuccess"
+                  "$ref": "#/components/schemas/RevisionedSuccess"
                 }
               }
             }
@@ -2762,6 +2780,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -3059,6 +3080,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
           }
         ],
         "requestBody": {
@@ -3077,7 +3104,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentSuccess"
+                  "$ref": "#/components/schemas/RevisionedSuccess"
                 }
               }
             }
@@ -3093,6 +3120,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -3143,6 +3173,12 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
           }
         ],
         "requestBody": {
@@ -3161,7 +3197,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AgentSuccess"
+                  "$ref": "#/components/schemas/RevisionedSuccess"
                 }
               }
             }
@@ -3177,6 +3213,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
           },
           "500": {
             "$ref": "#/components/responses/ServerError"
@@ -12972,6 +13011,14 @@
                   "format": "binary"
                 }
               }
+            },
+            "headers": {
+              "X-ADF-Revision": {
+                "description": "W3-F: the file's revision (the base of a write of these bytes through PUT …/files/content)",
+                "schema": {
+                  "type": "string"
+                }
+              }
             }
           },
           "400": {
@@ -15596,6 +15643,38 @@
         "schema": {
           "type": "string"
         }
+      },
+      "BaseRevisionQuery": {
+        "name": "baseRevision",
+        "in": "query",
+        "required": false,
+        "description": "W3-F: write only over this revision of the resource (from a read or the last write). Another current revision answers 409 `stale_revision`. Without it (and without If-Match) the write replaces whatever is there.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "IfMatchHeader": {
+        "name": "If-Match",
+        "in": "header",
+        "required": false,
+        "description": "W3-F: the base revision, as `baseRevision` (quotes and `W/` are accepted; `*` is no base). Takes precedence over the query parameter and the body field.",
+        "schema": {
+          "type": "string",
+          "example": "\"1792000000000001\""
+        }
+      },
+      "IfNoneMatchHeader": {
+        "name": "If-None-Match",
+        "in": "header",
+        "required": false,
+        "description": "W3-F: `*` makes the write a create: refused with 409 `stale_revision` when the file exists. As the body's `mustNotExist`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "*"
+          ]
+        }
       }
     },
     "responses": {
@@ -15847,6 +15926,28 @@
             "example": {
               "error": "Settings store is not configured.",
               "code": "unavailable"
+            }
+          }
+        }
+      },
+      "StaleRevision": {
+        "description": "W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/StaleRevisionError"
+            },
+            "example": {
+              "error": "The document changed by the agent since revision 1792000000000001 (now 1792000000000007). Reload it, or save again with baseRevision 1792000000000007 to overwrite.",
+              "code": "stale_revision",
+              "resource": "document",
+              "revision": 1792000000000007,
+              "baseRevision": 1792000000000001,
+              "writer": {
+                "kind": "agent"
+              },
+              "size": 42,
+              "hash": "3c8f1c1e2b0d4a9f8e7d6c5b4a39281706f5e4d3"
             }
           }
         }
@@ -16589,6 +16690,10 @@
           },
           "config": {
             "$ref": "#/components/schemas/AgentConfig"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         }
       },
@@ -16623,6 +16728,10 @@
           "renameError": {
             "type": "string",
             "description": "Open document only: why the file did not follow the name change (saved anyway)"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         }
       },
@@ -18906,6 +19015,10 @@
           "content_base64": {
             "type": "string",
             "description": "Binary files"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         },
         "example": {
@@ -19019,6 +19132,14 @@
           },
           "protection": {
             "$ref": "#/components/schemas/FileProtection"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter"
+          },
+          "mustNotExist": {
+            "type": "boolean",
+            "description": "W3-F: create only: refused (409 stale_revision, with the existing file's revision) when the file exists. As `If-None-Match: *`."
           }
         },
         "additionalProperties": false,
@@ -23679,6 +23800,10 @@
         "properties": {
           "content": {
             "type": "string"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "description": "W3-F: write only over this revision (else 409 stale_revision); as the `baseRevision` query parameter"
           }
         },
         "example": {
@@ -23699,6 +23824,10 @@
           },
           "content": {
             "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
           }
         }
       },
@@ -27488,6 +27617,10 @@
           },
           "size": {
             "type": "integer"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "W3-F: the revision of the written file (the writer is the request's client session, or cli)"
           }
         }
       },
@@ -27756,6 +27889,14 @@
                     "type": "integer"
                   }
                 }
+              },
+              "configRevision": {
+                "type": "integer",
+                "description": "W3-F: the revision of `agentConfig`"
+              },
+              "documentRevision": {
+                "type": "integer",
+                "description": "W3-F: the revision of `document`"
               }
             }
           }
@@ -28261,6 +28402,101 @@
             "description": "The agent's AgentConfig"
           }
         }
+      },
+      "ResourceWriter": {
+        "type": "object",
+        "description": "W3-F: who made a change. `agent`: the agent's own runtime, or a change no client announced. `client`: a client session, by its client name (`studio`, `tui`, …; never the session id). `cli`: a request that named no client session.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "client",
+              "cli"
+            ]
+          },
+          "client": {
+            "type": "string",
+            "description": "`client` only"
+          }
+        }
+      },
+      "StaleRevisionError": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ErrorResponse"
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "resource",
+              "revision",
+              "baseRevision",
+              "writer",
+              "hash"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "const": "stale_revision"
+              },
+              "resource": {
+                "type": "string",
+                "description": "`config`, `document`, or the internal file path"
+              },
+              "revision": {
+                "type": "integer",
+                "description": "The current revision: a write with it as the base overwrites"
+              },
+              "baseRevision": {
+                "type": "integer",
+                "description": "The base the write named"
+              },
+              "writer": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ResourceWriter"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Who made the current revision (null: nobody known since the daemon first saw it)"
+              },
+              "size": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Current size in bytes (null for config)"
+              },
+              "hash": {
+                "type": "string",
+                "description": "sha1 of the current content (`absent` for a missing file)"
+              }
+            }
+          }
+        ]
+      },
+      "RevisionedSuccess": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgentSuccess"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "description": "W3-F: the resource's revision (monotonic per agent and resource; never reused across daemon restarts). Pass it as `baseRevision` (or `If-Match`) on the next write."
+              }
+            }
+          }
+        ]
       },
       "ClientQuitInput": {
         "type": "object",

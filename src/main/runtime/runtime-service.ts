@@ -80,6 +80,10 @@ import { mapWithConcurrency } from '../utils/concurrency'
 import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/sys-get-config.tool'
 import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
 import { DocumentHost, type OpenDocument } from './document-host'
+import {
+  configRevision, currentResourceWriter, documentRevision, fileRevision, fileRevisionKey, observeRevision,
+  existsAlready, staleRevision, staleRevisionMessage, type ResourceRevision,
+} from './resource-revisions'
 import type { ContentBlock } from '../../shared/types/provider.types'
 
 /** Max agents loading concurrently during autostart. */
@@ -277,6 +281,9 @@ export interface RuntimeAgentHeader {
 
 /** Studio's DOC_GET_BATCH: the header plus the last 200 display entries of main and the token figures. */
 export interface RuntimeAgentBatch extends RuntimeAgentHeader {
+  /** W3-F: the revisions of `agentConfig` and `document`, the base of the client's next save (a file switch reads them; the header, read every turn end, does not hash). */
+  configRevision: number
+  documentRevision: number
   lastTokens: LoopTokenUsage | undefined
   contextBaseline: unknown
   chat: { version: number; uiLog: unknown[]; llmMessages: unknown[]; earlierCount: number; total: number }
@@ -546,6 +553,8 @@ const LOOP_CLEARABLE_FIELDS = new Set<string>(['model', 'compact_threshold'])
 
 export interface RuntimeAgentFileContent {
   agentId: string
+  /** W3-F: the file's revision, the base of the client's next write. */
+  revision: number
   path: string
   mime_type: string | null
   size: number
@@ -2110,6 +2119,8 @@ export class RuntimeService extends EventEmitter {
     const entries = offset > 0 ? workspace.getLoopPaginated(CHAT_DISPLAY_LIMIT, offset) : workspace.getLoop()
     return {
       ...this.getAgentHeader(target.id),
+      configRevision: configRevision(workspace).revision,
+      documentRevision: documentRevision(workspace).revision,
       // lastTokens is the newest assistant row's billing breakdown; the gauge
       // shows contextBaseline (after a compaction the two disagree, and the
       // baseline wins), as Studio's DOC_GET_BATCH.
@@ -2342,13 +2353,14 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  getAgentConfig(agentId: string): { agentId: string; config: AgentConfig } {
+  getAgentConfig(agentId: string): { agentId: string; config: AgentConfig; revision: number } {
     const target = this.requireTarget(agentId)
-    if (target.managed) return { agentId: target.id, config: target.managed.config }
+    const revision = configRevision(target.workspace).revision
+    if (target.managed) return { agentId: target.id, config: target.managed.config, revision }
     // An open document's config is the file's (another handle may have written it).
     const doc = target.doc!
     doc.config = doc.workspace.getAgentConfig() as AgentConfig
-    return { agentId: target.id, config: doc.config }
+    return { agentId: target.id, config: doc.config, revision }
   }
 
   /**
@@ -2357,20 +2369,27 @@ export class RuntimeService extends EventEmitter {
    * the file follows a name change now (Studio's DOC_SET_AGENT_CONFIG →
    * syncAgentFileToName; `filePath` is the new path). A write that lands
    * while a start on the document is building is adopted by that start.
+   *
+   * `baseRevision` (W3-F): save only over that revision of the config; any
+   * other current revision refuses the save with `409 stale_revision`.
+   * Without it the save replaces whatever is there (last write wins).
    */
-  async setAgentConfig(agentId: string, config: AgentConfig): Promise<{ agentId: string; success: true; config: AgentConfig; filePath?: string; renameDeferred?: boolean; renameError?: string }> {
+  async setAgentConfig(agentId: string, config: AgentConfig, opts: { baseRevision?: number } = {}): Promise<{ agentId: string; success: true; config: AgentConfig; revision: number; filePath?: string; renameDeferred?: boolean; renameError?: string }> {
     const target = this.requireTarget(agentId)
+    this.assertBaseRevision('config', configRevision(target.workspace), opts.baseRevision, null)
     if (!target.managed) {
       const doc = target.doc!
       stripLoopNameMarker(config)
       doc.workspace.setAgentConfig(config)
       doc.config = config
       doc.configWrites++
+      const revision = configRevision(doc.workspace, currentResourceWriter()).revision
       const rename = this.syncAgentFileToName(doc.filePath, config.name)
       return {
         agentId: target.id,
         success: true,
         config,
+        revision,
         ...(rename.filePath ? { filePath: rename.filePath } : {}),
         ...(rename.deferred ? { renameDeferred: true } : {}),
         ...(rename.error ? { renameError: rename.error } : {}),
@@ -2389,6 +2408,8 @@ export class RuntimeService extends EventEmitter {
     // executor/evaluator/handler fan-out this replaces did none of those, so a
     // headless config save left side loops running on revoked grants and the
     // next loop_manage write reverted the save (review C2).
+    // Taken before the change fans out, so its config_changed frame names this write's writer.
+    const revision = configRevision(managed.agent.workspace, currentResourceWriter()).revision
     managed.agent.applyConfigChange(config)
 
     if (providerSelectionChanged(previousConfig, config) && this.providerFactory) {
@@ -2396,7 +2417,17 @@ export class RuntimeService extends EventEmitter {
       managed.agent.executor.updateProvider(provider)
     }
 
-    return { agentId: managed.id, success: true, config }
+    return { agentId: managed.id, success: true, config, revision }
+  }
+
+  /**
+   * W3-F: refuse a write whose base revision is not the resource's current
+   * one (409 stale_revision, with the current revision, its writer, size and
+   * hash). No base: nothing to check.
+   */
+  private assertBaseRevision(resource: string, current: ResourceRevision, base: number | undefined, size: number | null): void {
+    const stale = staleRevision(resource, current, base, size)
+    if (stale) throw new RuntimeLoopError(staleRevisionMessage(stale), 409, 'stale_revision', { ...stale })
   }
 
   /**
@@ -2439,29 +2470,33 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true, state }
   }
 
-  getAgentDocument(agentId: string): { agentId: string; content: string } {
+  getAgentDocument(agentId: string): { agentId: string; content: string; revision: number } {
     const target = this.requireTarget(agentId)
-    return { agentId: target.id, content: target.workspace.readDocument() }
+    const content = target.workspace.readDocument()
+    return { agentId: target.id, content, revision: documentRevision(target.workspace).revision }
   }
 
-  setAgentDocument(agentId: string, content: string): { agentId: string; success: true } {
+  setAgentDocument(agentId: string, content: string, opts: { baseRevision?: number } = {}): { agentId: string; success: true; revision: number } {
     const target = this.requireTarget(agentId)
     const previousContent = target.workspace.readDocument()
+    this.assertBaseRevision('document', documentRevision(target.workspace), opts.baseRevision, Buffer.byteLength(previousContent, 'utf-8'))
     target.workspace.writeDocument(content)
+    const revision = documentRevision(target.workspace, currentResourceWriter()).revision
     // Only a running agent has triggers to fire (an open document runs none).
     target.managed?.agent.triggerEvaluator?.onDocumentEdit(content, previousContent)
-    return { agentId: target.id, success: true }
+    return { agentId: target.id, success: true, revision }
   }
 
-  getAgentMind(agentId: string): { agentId: string; content: string } {
+  getAgentMind(agentId: string): { agentId: string; content: string; revision: number } {
     const target = this.requireTarget(agentId)
-    return { agentId: target.id, content: target.workspace.readMind() }
+    return { agentId: target.id, content: target.workspace.readMind(), revision: fileRevision(target.workspace, 'mind.md').revision }
   }
 
-  setAgentMind(agentId: string, content: string): { agentId: string; success: true } {
+  setAgentMind(agentId: string, content: string, opts: { baseRevision?: number } = {}): { agentId: string; success: true; revision: number } {
     const target = this.requireTarget(agentId)
+    this.assertBaseRevision('mind.md', fileRevision(target.workspace, 'mind.md'), opts.baseRevision, target.workspace.getFileMeta('mind.md')?.size ?? null)
     target.workspace.writeMind(content)
-    return { agentId: target.id, success: true }
+    return { agentId: target.id, success: true, revision: fileRevision(target.workspace, 'mind.md', currentResourceWriter()).revision }
   }
 
   getAgentChat(agentId: string, limit = 200, loop?: string): { agentId: string; loop: string; chatHistory: { version: number; uiLog: unknown[]; llmMessages: unknown[]; total: number; earlierCount: number } | null } {
@@ -2557,6 +2592,8 @@ export class RuntimeService extends EventEmitter {
     const textLike = isTextLike(meta.mime_type, path)
     return {
       agentId: target.id,
+      // The bytes just read, hashed once (no second read).
+      revision: observeRevision(target.workspace, fileRevisionKey(path), content).revision,
       path: meta.path,
       mime_type: meta.mime_type,
       size: meta.size,
@@ -2571,8 +2608,14 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel }): { agentId: string; success: true } {
+  writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel; baseRevision?: number; mustNotExist?: boolean }): { agentId: string; success: true; revision: number } {
     const target = this.requireTarget(agentId)
+    const current = fileRevision(target.workspace, path)
+    const size = target.workspace.getFileMeta(path)?.size ?? null
+    // W3-F: a create refuses to replace a file someone else made meanwhile.
+    const exists = opts.mustNotExist ? existsAlready(path, current, size) : null
+    if (exists) throw new RuntimeLoopError(staleRevisionMessage(exists), 409, 'stale_revision', { ...exists })
+    this.assertBaseRevision(path, current, opts.baseRevision, size)
     if (opts.contentBase64 !== undefined) {
       withSource('system:runtime-api', target.id, () => {
         target.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64!, 'base64'), opts.mimeType)
@@ -2583,7 +2626,7 @@ export class RuntimeService extends EventEmitter {
         target.workspace.writeFile(path, content, opts.protection)
       })
     }
-    return { agentId: target.id, success: true }
+    return { agentId: target.id, success: true, revision: fileRevision(target.workspace, path, currentResourceWriter()).revision }
   }
 
   deleteAgentFile(agentId: string, path: string): { agentId: string; success: boolean } {

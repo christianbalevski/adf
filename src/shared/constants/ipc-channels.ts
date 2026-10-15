@@ -424,7 +424,13 @@ export const IPC = {
   // Settings → Backend (studio-backend.json). Registered in every backend
   // mode. GET never returns the remote token; SET may carry a new one.
   BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
-  BACKEND_SETTINGS_SET: 'adf:backend:settings-set'
+  BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
+
+  // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
+  RECOVERY_STASH: 'adf:recovery:stash',
+  RECOVERY_LIST: 'adf:recovery:list',
+  RECOVERY_ARCHIVE: 'adf:recovery:archive',
+  RECOVERY_REVEAL: 'adf:recovery:reveal'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

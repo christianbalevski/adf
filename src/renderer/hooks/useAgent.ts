@@ -3,6 +3,7 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentL
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES, type AgentConfig } from '../../shared/types/adf-v02.types'
+import type { ResourceWriter } from '../../shared/types/resource-revision.types'
 import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
 import { parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
@@ -62,10 +63,11 @@ export function toDisplayState(executorState: string): AgentState {
  * whole AgentConfig plus a re-render of every panel derived from it — and, for
  * the document, marks a file the agent never touched dirty.
  */
-export function applyDocument(content: string): void {
+export function applyDocument(content: string, revision?: number): void {
   const store = useDocumentStore.getState()
   if (store.documentContent === content) return
-  store.setDocumentContent(content)
+  // W3-F: a re-read after an agent tool call; its revision is the README tab's next base.
+  store.setDocumentContent(content, revision !== undefined ? { revision, writer: { kind: 'agent' } } : undefined)
 }
 
 export function applyConfig(config: AgentConfig | null): void {
@@ -317,7 +319,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // refreshes open editor tabs, not the document store.
         if (shouldRefreshDocument(payload)) {
           window.adfApi.getDocument().then((r) => {
-            applyDocument(r.content)
+            applyDocument(r.content, r.revision)
           })
         }
         // If agent changed its own config, refresh it
@@ -482,8 +484,9 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
 
       case 'document_updated': {
         // Agent wrote to README.md — update store immediately with provided content
-        const payload = event.payload as { content: string }
-        useDocumentStore.getState().setDocumentContent(payload.content)
+        const payload = event.payload as { content: string; revision?: number; writer?: ResourceWriter | null }
+        // W3-F: the revision and writer reach the README tab, which keeps unsaved text and names the writer.
+        useDocumentStore.getState().setDocumentContent(payload.content, payload.revision !== undefined ? { revision: payload.revision, writer: payload.writer } : undefined)
         break
       }
 
@@ -659,8 +662,9 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       }
 
       case 'file_updated': {
-        const payload = event.payload as { path: string; content: string }
-        useEditorTabsStore.getState().updateTabFromExternal(payload.path, payload.content)
+        const payload = event.payload as { path: string; content: string; revision?: number; writer?: ResourceWriter | null }
+        // W3-F: an open tab with unsaved text keeps it and shows who changed the file.
+        useEditorTabsStore.getState().updateTabFromExternal(payload.path, payload.content, payload.revision !== undefined ? { revision: payload.revision, writer: payload.writer } : undefined)
         break
       }
     }
@@ -703,7 +707,7 @@ export function useAgentEvents() {
     // cannot clobber an edit the user has in flight. The filePath check is the
     // second guard: a change emitted just before a file switch must not land on
     // the incoming agent.
-    const unsubConfig = api.onAgentConfigChanged?.((data: { filePath: string; config: AgentConfig }) => {
+    const unsubConfig = api.onAgentConfigChanged?.((data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) => {
       const openPath = useDocumentStore.getState().filePath
       if (openPath && data.filePath && openPath !== data.filePath) return
       if (!data.config) return
@@ -717,6 +721,9 @@ export function useAgentEvents() {
       for (const name of Object.keys(store.sideLoops)) {
         if (!liveNames.has(name)) store.dropLoop(name)
       }
+      // W3-F: the config panel saves over this revision from now on; a save
+      // still based on the one before is refused and shows the notice.
+      if (data.revision !== undefined) store.setConfigRevision(data.revision)
       store.setConfig(data.config)
     })
 

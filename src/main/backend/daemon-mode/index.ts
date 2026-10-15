@@ -50,7 +50,7 @@ import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-u
  * daemon mode (tests/backend/daemon-mode-isolation.test.ts).
  */
 
-/** Registered in both modes outside the backend registration (main/index.ts, app-updater, spellcheck, orbital cache, backend settings). */
+/** Registered in both modes outside the backend registration (main/index.ts, app-updater, spellcheck, orbital cache, backend settings, edit recovery). */
 export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.OPEN_FILE_GET_PENDING,
   IPC.APP_GET_FULLSCREEN,
@@ -64,6 +64,10 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.ORBITAL_CACHE_PUT,
   IPC.BACKEND_SETTINGS_GET,
   IPC.BACKEND_SETTINGS_SET,
+  IPC.RECOVERY_STASH,
+  IPC.RECOVERY_LIST,
+  IPC.RECOVERY_ARCHIVE,
+  IPC.RECOVERY_REVEAL,
 ]
 
 export const RECOVERY_HINT = `To run agents in Studio instead, choose Embedded in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
