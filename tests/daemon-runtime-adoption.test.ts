@@ -768,7 +768,8 @@ describe('owner switch from the CLI, then embedded Studio starts', () => {
     const nextOwner = deriveOwnerIdentity(next).did
     const res = await daemon.server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload: { mnemonic: next, switchOwner: true } })
     expect(res.statusCode).toBe(200)
-    expect(res.json().identity.runtime).toMatchObject({ state: 'rejected', reason: 'owner_mismatch' })
+    // The new owner re-signed Studio's runtime and the daemon rewrote the entry: still adopted.
+    expect(res.json().identity.runtime).toMatchObject({ state: 'adopted', source: 'studio' })
     expect(diskSettings().ownerMnemonic).toBeUndefined() // moved aside, still encrypted:
     expect(diskSettings()['ownerMnemonicSuperseded:' + s.ownerDid]).toBe(staleBlob)
     expect((await daemon.server.inject({ method: 'GET', url: '/settings' })).body).not.toContain('ownerMnemonicSuperseded')
@@ -825,11 +826,73 @@ describe('owner switch from the CLI, then embedded Studio starts', () => {
         }
       }
 
-      // W4-A rewrites the entry with Studio's re-signed delegation: adopted again.
+      // W4-A rewrites the entry with Studio's re-signed delegation: still adopted.
       writeStudioRuntimeEntry(keychain.backend, settingsPath, studio)
       expect(daemon.identity.status()).toMatchObject({ status: 'ready', ownerDid: nextOwner, runtimeDid: s.runtimeDid, runtime: { state: 'adopted' } })
     }, 90_000)
   }
+})
+
+describe('owner switch from the CLI with no Studio running', () => {
+  const SECRET = 'mcp:@acme/server:API_KEY'
+
+  it('the daemon re-signs the adopted runtime and rewrites its entry: Studio-made agents unlock (MCP and adapters start) after the switch and after a daemon restart', async () => {
+    const keychain = fakeKeychain()
+    const s = makeStudio(keychain)
+    s.svc.confirmBackup()
+    const account = writeStudioRuntimeEntry(keychain.backend, settingsPath, s.studio)
+    const before = JSON.parse(keychain.backend.get(account)!) as Record<string, unknown>
+    const file = join(agentsDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(file, { name: 'agent-1' })
+    try {
+      s.svc.ensureWorkspaceIdentity(ws)
+      ws.setIdentitySealed(SECRET, 'value-of-agent-1')
+    } finally {
+      ws.close()
+    }
+    const daemon = makeDaemon(keychain.backend)
+    daemon.settings.set('trackedDirectories', [agentsDir])
+    const cfg = AdfWorkspace.open(file)
+    daemon.settings.set('reviewedAgents', markConfigReviewed(daemon.settings.get('reviewedAgents'), cfg.getAgentConfig()))
+    cfg.close()
+    await daemon.runtime.loadAgent(file)
+    expect(daemon.runtime.listAgents()[0].degraded).toBeUndefined()
+
+    const next = generateMnemonic()
+    const nextOwner = deriveOwnerIdentity(next).did
+    const res = await daemon.server.inject({ method: 'POST', url: '/identity/import', headers: withProof, payload: { mnemonic: next, switchOwner: true } })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ switched: true, identity: { ownerDid: nextOwner, runtimeDid: s.runtimeDid, runtime: { state: 'adopted' } }, reloadFailures: [] })
+
+    // The entry: same runtime and keys, delegation now issued by the new owner and valid.
+    const after = JSON.parse(keychain.backend.get(account)!) as Record<string, unknown>
+    for (const key of ['v', 'runtimeDid', 'runtimePrivateKey', 'runtimeEncPrivateKey', 'runtimeEncPublicKey']) expect(after[key]).toEqual(before[key])
+    const delegation = after.runtimeDelegation as Parameters<typeof verifyAttestation>[0]
+    expect(delegation.issuer).toBe(nextOwner)
+    expect(verifyAttestation(delegation, { expectedSubject: s.runtimeDid })).toBe(true)
+    // Studio's own settings are not written by the daemon (Studio re-signs its copy at its next start).
+    expect((diskSettings().runtimeDelegation as { issuer: string }).issuer).toBe(s.ownerDid)
+
+    // The reloaded agent is not degraded: its sealed credentials opened, so MCP servers and adapters start.
+    const reloaded = daemon.runtime.listAgents()
+    expect(reloaded).toHaveLength(1)
+    expect(reloaded[0].degraded).toBeUndefined()
+
+    // Daemon restart, Studio still not running.
+    for (const agent of daemon.runtime.listAgents()) await daemon.runtime.unloadAgent(agent.id, { mode: 'immediate' })
+    const restarted = makeDaemon(keychain.backend)
+    expect(restarted.identity.status()).toMatchObject({ status: 'ready', ownerDid: nextOwner, runtime: { state: 'adopted', source: 'studio' } })
+    await restarted.runtime.loadAgent(file)
+    expect(restarted.runtime.listAgents()[0].degraded).toBeUndefined()
+    const check = AdfWorkspace.open(file)
+    try {
+      restarted.identity.unlockWorkspaceEnvelopes(check)
+      expect(check.getEnvelopeState('credentials')).toBe('unlocked')
+      expect(check.getIdentityDecrypted(SECRET, null)).toBe('value-of-agent-1')
+    } finally {
+      check.close()
+    }
+  }, 90_000)
 })
 
 describe('DaemonAppOAuthStore', () => {

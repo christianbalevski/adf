@@ -57,6 +57,7 @@ import type { SecretStatus } from '../services/settings.service'
 import { readRevokedDaemonKeyLabels, rotateDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import {
   canonicalSettingsPath,
+  serializeStudioRuntimeEntry,
   studioRuntimeAccount,
   studioRuntimeScope,
   verifyStudioRuntimeEntry,
@@ -173,6 +174,12 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
   private adopted: AdoptedStudioRuntime | null = null
   /** Set only by DaemonIdentity.importOwner: the one deliberate owner switch. */
   allowOwnerChange = false
+  /**
+   * The adopted runtime's delegation as re-signed by the new owner during an
+   * owner import (importMnemonic). importOwner writes it into the keychain
+   * entry (takeResignedDelegation), so Studio-made agents keep unlocking.
+   */
+  private resignedDelegation: AlfAttestation | null = null
 
   constructor(
     private readonly store: IdentitySettingsStore,
@@ -195,6 +202,18 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
     this.adopted = runtime
   }
 
+  /** The adopted runtime, for importOwner's entry rewrite. Never log or serialize it. */
+  adoptedRuntime(): AdoptedStudioRuntime | null {
+    return this.adopted
+  }
+
+  /** The delegation re-signed during the current owner import, once; null if none. */
+  takeResignedDelegation(): AlfAttestation | null {
+    const value = this.resignedDelegation
+    this.resignedDelegation = null
+    return value
+  }
+
   isAdopted(): boolean {
     return this.adopted !== null
   }
@@ -214,10 +233,18 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
 
   set(key: string, value: unknown): void {
     if (this.adopted && ADOPTED_SETTINGS_KEYS.has(key)) {
-      // Writing these would change embedded Studio's identity. The adopted
-      // entry is already certified by the owner on record. During an owner
-      // import the re-sign is expected to be skipped (importOwner says so).
-      if (this.allowOwnerChange) return
+      // Writing these would change embedded Studio's identity in the shared
+      // settings file. The adopted entry is already certified by the owner on
+      // record. During an owner import, the new owner's re-signed delegation
+      // of Studio's runtime replaces the adopted one in memory, and
+      // importOwner writes it into the keychain entry (never the settings).
+      if (this.allowOwnerChange) {
+        if (key === 'runtimeDelegation' && isDelegationOf(value, this.adopted.runtimeDid) && value.issuer !== this.adopted.runtimeDelegation.issuer) {
+          this.adopted = { ...this.adopted, runtimeDelegation: value }
+          this.resignedDelegation = value
+        }
+        return
+      }
       console.warn(`[ADF Daemon] Not writing ${key}: the daemon uses ADF Studio's runtime identity and never changes it`)
       return
     }
@@ -939,11 +966,14 @@ export class DaemonIdentity {
    * loaded agents around it.
    *
    * An adopted Studio runtime stays in use for the restamp, so operator
-   * attestations are signed by the runtime the files are stamped with. Its
-   * delegation is certified by the previous owner, so it is not re-signed
-   * here (the daemon never writes Studio's runtime keys) and stops verifying
-   * after a switch: the daemon falls back to its own runtime until ADF
-   * Studio re-delegates and rewrites the keychain entry.
+   * attestations are signed by the runtime the files are stamped with. On a
+   * switch the new owner re-signs that runtime's delegation (importMnemonic),
+   * and the daemon rewrites the `studio-runtime:<scope>` keychain entry with
+   * it (serializeStudioRuntimeEntry; the keys are unchanged), so adoption
+   * still verifies and Studio-made agents keep unlocking with no Studio
+   * running. Studio's own settings (`runtimeDelegation`) are not written:
+   * Studio re-signs its copy at its next start (ensureRuntimeKey). Without
+   * a keychain write the daemon falls back to its own runtime, as before.
    *
    * On a switch, ADF Studio's own copy of the previous phrase (`ownerMnemonic`
    * in the shared settings file) is moved, still encrypted, to
@@ -962,6 +992,8 @@ export class DaemonIdentity {
     } finally {
       this.identitySettings.allowOwnerChange = false
     }
+    const resigned = this.identitySettings.takeResignedDelegation()
+    if (resigned) this.rewriteStudioRuntimeEntry(resigned)
     const studioCopy = this.store.get('ownerMnemonic')
     if (switched && studioCopy !== undefined) {
       const key = ownerMnemonicSupersededKey(previousOwnerDid!)
@@ -990,6 +1022,29 @@ export class DaemonIdentity {
       identity,
       previousOwnerDid,
       restamp: { restamped: result.restamped, attested: result.attested, failures: result.failures },
+    }
+  }
+
+  /**
+   * Write the adopted Studio runtime back into its keychain entry with the
+   * delegation the new owner signed (importOwner). Logged; never throws (a
+   * failed write leaves adoption to fall back to the daemon's own runtime,
+   * which refresh() reports).
+   */
+  private rewriteStudioRuntimeEntry(delegation: AlfAttestation): void {
+    const adopted = this.identitySettings.adoptedRuntime()
+    if (!adopted || this.backend.kind !== 'keychain') return
+    try {
+      this.backend.set(this.studioRuntimeAccount, serializeStudioRuntimeEntry({
+        runtimeDid: adopted.runtimeDid,
+        runtimeDelegation: delegation,
+        runtimePrivateKey: adopted.runtimePrivateKeyB64,
+        runtimeEncPrivateKey: adopted.runtimeEncPrivateKeyB64,
+        runtimeEncPublicKey: adopted.runtimeEncPublicKeyB64,
+      }))
+      console.log(`[ADF Daemon] Owner import: re-signed ADF Studio's runtime ${adopted.runtimeDid} under ${delegation.issuer} and rewrote the OS keychain entry ${this.studioRuntimeAccount}, so agents made in Studio keep unlocking here`)
+    } catch (err) {
+      console.error(`[ADF Daemon] Owner import: could not rewrite the OS keychain entry ${this.studioRuntimeAccount} (${err instanceof Error ? err.message : String(err)}); the daemon uses its own runtime until ADF Studio rewrites it`)
     }
   }
 
@@ -1130,6 +1185,13 @@ export function readBootPassphrase(readFile: (path: string) => string): string |
     console.error(`[ADF Daemon] Could not read ADF_OWNER_PASSPHRASE_FILE: ${err instanceof Error ? err.message : String(err)}`)
     return undefined
   }
+}
+
+/** A runtime delegation certifying `runtimeDid` (shape only; refreshAdoption verifies it). */
+function isDelegationOf(value: unknown, runtimeDid: string): value is AlfAttestation {
+  if (!value || typeof value !== 'object') return false
+  const d = value as Partial<AlfAttestation>
+  return d.role === 'runtime' && d.subject === runtimeDid && typeof d.issuer === 'string' && typeof d.signature === 'string'
 }
 
 function stringOrNull(value: unknown): string | null {
