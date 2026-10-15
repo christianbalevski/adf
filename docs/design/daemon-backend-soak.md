@@ -1,6 +1,6 @@
 # Daemon backend: packaged build, smoke, Defender and soak (W5-B)
 
-**Status: Windows run of 2026-10-14, branch `ws/w5-b` at `949830a1`.** macOS arm64 and Linux AppImage packaged runs, the 24 h soak and the macOS keychain prompts (K11) are not covered yet; see "Not covered".
+**Status: Windows run of 2026-10-14, branch `ws/w5-b` at `949830a1`. W5-B stays open:** of its acceptance items (tracker §4) the macOS arm64 and Linux AppImage packaged smoke, the 24 h soak, the macOS keychain prompts (K11) and a Defender check are not met; see "W5-B acceptance".
 
 ## Summary
 
@@ -10,8 +10,8 @@
 | Daemon from the asar (`ADF Studio.exe`, `ELECTRON_RUN_AS_NODE=1`) | Boots, opens SQLite, serves `/health` and `/version` (0.7.8, `clientApiVersion` 1) |
 | Smoke: packaged Studio in local mode, one turn on `agent-1` | Passed: daemon spawned, chat sent from the UI, mock reply shown |
 | Quit with `keepDaemonRunning` off / on | Off: daemon stopped ("Studio started this daemon run and no other client session is open"). On: daemon kept running |
-| Defender, before and after | No 1116/1117 event since 2026-09-05; none during the run |
-| Soak, 75 min, 5 agents, timers every minute, Studio + TUI attached | 390 timer turns, 0 failed health probes, daemon RSS flat (201-216 MB), handles flat (347-356) |
+| Defender (K1) | Unverified: this machine excludes `ADF Studio.exe` and the install folder from Defender. No 1116/1117 event since 2026-09-05 and none during the run, which proves nothing about the false positive |
+| Soak, 75 min, 5 agents, timers every minute, Studio + TUI attached; mock LLM, no compute, no MCP, no mesh | 390 timer turns, 0 failed health probes, daemon RSS 201-216 MB, handles 347-356 |
 | Parity suite in the clean checkout, `PARITY_REQUIRE_DAEMON=1` | 18 files, 141 passed, 2 todo, 112 s |
 
 ## Build under test
@@ -52,9 +52,11 @@ Podman containers named `adf-*` were listed (read-only, `podman ps`) before and 
 - `Get-MpThreatDetection` and `Get-MpThreat` return nothing for a non-administrator on this machine; the Defender Operational log (events 1116/1117) is readable and was used instead.
 - Before: the last detections are `Behavior:Win32/LummaStealer.CER!MTB` on `…\Programs\adf-studio\ADF Studio.exe` (2026-08-30, 09-01, 09-03, 09-04, 09-05) and on `repos\adf\node_modules\electron\dist\electron.exe` (2026-09-02, twice). None since 2026-09-05 09:45. Signature version 1.461.26.0.
 - During and after the smoke and the soak (checked every 10 minutes and at the end): no 1116/1117 event, `Get-MpThreatDetection` empty.
-- Caveat: since 2026-09-05 this machine has a Defender process exclusion for `ADF Studio.exe` and a path exclusion for the install folder. The packaged daemon is `ADF Studio.exe` too, so this run is not evidence that the false positive is gone. The WDSI submission (`bddcaae2-8ef1-4cb0-9344-f297327793a4`) and a signed build on a machine without exclusions are the real check.
+- **Defender behaviour is unverified on this machine.** Since 2026-09-05 it has a Defender process exclusion for `ADF Studio.exe` and a path exclusion for the install folder. The packaged daemon is `ADF Studio.exe` too, so neither this run nor the owner's daily use can show whether the behaviour detection still fires. K1 stays open: the check needs a signed build on a Windows machine without these exclusions (and the WDSI submission `bddcaae2-8ef1-4cb0-9344-f297327793a4`).
 
 ## Soak
+
+Scope: the mock LLM only (no real provider), no compute (no container ran, no Podman call succeeded), no MCP servers, mesh off. It shows the daemon's own process, scheduling, storage and client streams over time, not the load of real agents.
 
 Setup: the packaged daemon spawned by the packaged Studio (local mode, `keepDaemonRunning: true`), 5 agents (`agent-1` … `agent-5`) on the mock LLM, each with an agent-scope interval timer of 60 s, all started through `POST /agents/:id/start`. Clients: the packaged Studio with `agent-1` open on its Loops tab, and `adf tui` (same commit, run from source in a pseudo-terminal, `--url http://127.0.0.1:7495 --no-daemon`). Both held client sessions for the whole run. Sampling: `GET /health` every 5 s (round-trip on loopback, the stand-in for event-loop lag: the daemon has no lag metric of its own); once a minute `Get-Process` for the daemon and Studio main, each agent's `/status`, the mock's request count, the TUI's output byte count.
 
@@ -78,7 +80,7 @@ Setup: the packaged daemon spawned by the packaged Studio (local mode, `keepDaem
 | 75 | 206 | 220 | 347 | 20 | 192 | 982 | 1.0 / 1.2 | 390 | 3381671 |
 
 - 75 samples, 893 health probes, 0 failed, worst 71.6 ms (first minute, while agents started and the sandbox standard library installed); after that the worst was 25.1 ms.
-- Daemon RSS 201-216 MB, trend over the second half -11.3 MB/h (no growth). Handles 347-356, threads 19-20. Studio main RSS 190-192 MB, handles 980-1012.
+- Daemon RSS 201-216 MB, with no visible growth over 75 minutes. Handles 347-356, threads 19-20. Studio main RSS 190-192 MB, handles 980-1012.
 - One daemon pid and one Studio pid for the whole run: no restart, no crash. All 5 agents `idle` between turns at every sample, 159 loop entries each at the end; the mock received 395 model requests (390 timer turns, 5 startup turns).
 - The minutes 0-12 overlap with a run of the parity suite in the scratch checkout (CPU contention); the numbers show no step at its end.
 - The daemon log has one error line: the shared compute container did not start (see F1). Studio's chat for `agent-1` was current at the end (last entry 11:18 PM, the same as the daemon's loop).
@@ -86,18 +88,23 @@ Setup: the packaged daemon spawned by the packaged Studio (local mode, `keepDaem
 
 ## Findings
 
-- **F1. A packaged daemon cannot be kept away from Podman.** `ADF_COMPUTE=fake` is refused in packaged builds (correct), so the real `PodmanService` runs. With an isolated `USERPROFILE` Podman saw no machine, and starting the agents ran `[Compute] Initializing Podman machine (2 CPUs, 2048MB RAM)…`, then `podman machine start failed: … podman-machine-default: VM does not exist`. Nothing was created (no new WSL distribution; the owner's `podman-machine-default` kept running) and container commands were blocked by `CONTAINER_HOST`. On a machine where the init succeeds, an isolated test would create a VM. A packaged-safe "compute off" setting (agents use host MCP servers, `PodmanService` never constructed) would make packaged test runs safe; until then packaged runs MUST set `CONTAINER_HOST` to a dead address and SHOULD NOT isolate `USERPROFILE` on a machine where `podman machine init` would succeed.
+- **F1. A packaged daemon cannot be kept away from Podman.** `ADF_COMPUTE=fake` is refused in packaged builds (correct), so the real `PodmanService` runs. With an isolated `USERPROFILE` Podman saw no machine, and starting the agents ran `[Compute] Initializing Podman machine (2 CPUs, 2048MB RAM)…`, then `podman machine start failed: … podman-machine-default: VM does not exist`. Nothing was created (no new WSL distribution; the owner's `podman-machine-default` kept running) and container commands were blocked by `CONTAINER_HOST`. On a machine where the init succeeds, an isolated test would create a VM. Tracker §6 has the follow-up: skip the machine init/start when `CONTAINER_HOST` or `CONTAINER_CONNECTION` is set, and a packaged-safe "compute off" setting (agents use host MCP servers, `PodmanService` never constructed). Until then packaged runs MUST set `CONTAINER_HOST` to a dead address and SHOULD NOT isolate `USERPROFILE` on a machine where `podman machine init` would succeed.
 - **F2. `ADF_USER_DATA_DIR` does not move Electron's `userData`.** A packaged Studio started with it alone still takes the real Studio's single-instance lock and Chromium profile. Packaged test runs MUST also pass `--instance=<name>`.
 - **F3. `adf tui` from source starts a source daemon on 7385.** Run without `--url`/`--no-daemon` from a worktree, it started `adf daemon` from source on port 7385, and that runs `scripts/rebuild-for-node.mjs` on the shared `node_modules`. It did here (2026-10-14 21:59:52 local): the shared `better-sqlite3` was switched to the Node ABI for about four minutes, until `.abi-cache/better_sqlite3-abi143.node` was copied back (no rebuild). That source daemon used the isolated settings and the fake compute service and was killed with `taskkill /T /F`. Agent rule to add: a TUI or CLI started from a worktree MUST get `--no-daemon` (or `ADF_NO_AUTOSTART=1`) and an explicit `--url`.
 - **F4.** Without an owner identity every Studio boot in local mode logs `adf:templates:list` failing with 409 `identity_not_ready` (main and renderer error lines). Noise only; the UI works.
 - **F5.** First daemon boot installs the sandbox standard library from npm (about 10 packages). Expected; it is the only network use of an isolated run.
 
-## Not covered
+## W5-B acceptance
 
-- 24 h soak (the owner's daily use is that run; record Defender events 1116/1117 and `%APPDATA%\ADF Studio\logs\adf-daemon.log` after it).
-- Packaged macOS arm64 and Linux AppImage starts in local mode. CI builds both in `release.yml`; neither runs the smoke scenario.
-- K11, macOS keychain prompts for the daemon process: needs a signed macOS build on a Mac. The CI parity job does not exercise it (the harness never reads the login keychain).
-- A Windows machine without Defender exclusions.
+| Item | State |
+|---|---|
+| Windows packaged build starts in `local` mode and runs the smoke scenario | Met (local build; `release.yml` builds the same way on `windows-2022`) |
+| macOS arm64 packaged build: local mode, smoke | Not met |
+| Linux AppImage packaged build: local mode, smoke | Not met |
+| Defender detections checked after a 24 h soak with 5 agents | Not met: 75 minutes, and Defender is excluded for `ADF Studio.exe` on this machine (see Defender) |
+| Keychain prompts on macOS observed and documented (K11) | Not met: needs a signed macOS build on a Mac; the CI parity job never reads the login keychain |
+
+The owner's daily use does not replace the 24 h soak or the Defender check. It runs real agents with compute and MCP, which this soak did not, but on the machine with the exclusions.
 
 ## CI
 
@@ -105,8 +112,20 @@ Setup: the packaged daemon spawned by the packaged Studio (local mode, `keepDaem
 
 ## Installing the build for daily use (Windows)
 
-1. Quit the installed Studio (File → Quit; this stops its containers as every quit does). If the scheduled task "ADF Studio Watchdog" exists, disable it until step 4, or it relaunches Studio during the install.
-2. Run `%TEMP%\adf-w5b-dist\ADF Studio Setup 0.7.8.exe`. It is unsigned: SmartScreen asks; choose More info → Run anyway. It installs over the 0.7.8 release in `%LOCALAPPDATA%\Programs\adf-studio`, so the existing Defender exclusions still apply.
-3. Start Studio, Settings → Backend → Local daemon, and confirm the switch (the handover moves client settings, ChatGPT/Grok sessions, MCP sign-ins and the runtime identity entry). Leave "Keep the daemon running when Studio quits" off unless agents should outlive Studio.
-4. Turn off Settings → Privacy → "Check for updates": the build reports version 0.7.8, and the next GitHub release would be offered as an update over it. Re-enable the watchdog task if it was disabled.
-5. Way back: Settings → Backend → Embedded, or start once with `ADF_STUDIO_BACKEND=embedded`; reinstalling the 0.7.8 release restores the released code.
+The lead builds the daily-use installer from `feat/daemon-backend` after all merges, versioned `0.8.0-daemon.N`. It is not built from this branch.
+
+1. Keep the v0.7.8 release installer (`ADF-Studio-Setup-0.7.8.exe` from the GitHub release) for the way back. NSIS installs over the existing install in place.
+2. Quit Studio and stop any running daemon (`adf daemon stop`, or quit Studio with "Keep the daemon running when Studio quits" off). A daemon left running is `ADF Studio.exe` from the install folder and keeps `better_sqlite3.node` open, so the installer cannot replace it.
+3. Run the installer. Start Studio, open Settings → Backend → Local daemon, and confirm the switch (the handover moves client settings, ChatGPT/Grok sessions, MCP sign-ins and the runtime identity entry).
+4. Turn off Settings → Privacy → "Check for updates" while running a pre-release build, so a GitHub release is not offered over it.
+
+A local watchdog that looks for Studio by process name (`ADF Studio`) also matches the daemon, which is `ADF Studio.exe` too, so it does not notice a dead Studio while the daemon runs.
+
+### Way back
+
+1. Settings → Backend → Embedded, then restart Studio as asked.
+2. After the restart, check the handover summary: no item may be pending. A pending item means a credential is still with the daemon. Fix what it names and restart again before going on.
+3. Stop the daemon: `adf daemon stop`.
+4. Reinstall the v0.7.8 release.
+
+Do not use `ADF_STUDIO_BACKEND=embedded` as the way back. It starts Studio embedded without running the handover, so credentials moved to the daemon stay there.
