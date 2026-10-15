@@ -16,7 +16,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => tmpdir(), on: () => {}, getName: () => 'adf-lease-test', getVersion: () => '0.0.0-test' },
 }))
 
-import { __setMachineIdReaderForTests, AgentLeaseRegistry, machineId, type AgentLeaseRecord } from '../../src/main/runtime/agent-lease'
+import { __setMachineIdReaderForTests, AgentLeaseRegistry, fromOtherMachine, machineId, type AgentLeaseRecord } from '../../src/main/runtime/agent-lease'
 
 const cleanups: Array<() => unknown> = []
 afterEach(async () => {
@@ -24,6 +24,7 @@ afterEach(async () => {
     try { await fn() } catch { /* best effort */ }
   }
   __setMachineIdReaderForTests()
+  vi.restoreAllMocks()
 })
 
 function tempDir(): string {
@@ -32,8 +33,8 @@ function tempDir(): string {
   return dir
 }
 
-function registry(dir: string): AgentLeaseRegistry {
-  const reg = new AgentLeaseRegistry({ dir: join(dir, 'leases'), kind: 'daemon', settingsPath: join(dir, 'adf-settings.json'), sweepDeadEntries: false })
+function registry(dir: string, opts: ConstructorParameters<typeof AgentLeaseRegistry>[0] = {}): AgentLeaseRegistry {
+  const reg = new AgentLeaseRegistry({ dir: join(dir, 'leases'), kind: 'daemon', settingsPath: join(dir, 'adf-settings.json'), sweepDeadEntries: false, ...opts })
   cleanups.push(() => reg.close())
   return reg
 }
@@ -117,5 +118,33 @@ describe('machine id lookup', () => {
     answer('machine-1')
     await expect.poll(() => readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId, { timeout: 5_000 }).toBe('machine-1')
     await expect.poll(() => readJson<AgentLeaseRecord>(leaseFile).holder.machineId, { timeout: 5_000 }).toBe('machine-1')
+  })
+
+  it('a platform with no machine id (empty /etc/machine-id, a container) is cached for the process and said once, never asked again', async () => {
+    let reads = 0
+    __setMachineIdReaderForTests(async () => { reads++; return '  ' + String.fromCharCode(10) }, { retryMs: 20 })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const dir = tempDir()
+    const reg = registry(dir)
+    await reg.configure({ kind: 'daemon' })
+    expect(await machineId()).toBeNull()
+    await new Promise((r) => setTimeout(r, 120))
+    expect(await machineId()).toBeNull()
+    expect(reads).toBe(1)
+    expect(warn.mock.calls.filter(([m]) => String(m).includes('This machine has no machine id')).length).toBe(1)
+    expect(readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId).toBeNull()
+  })
+
+  it('a liveness check waits at most the old 3 s for the machine id of this machine; the lookup goes on', async () => {
+    let answer!: (id: string) => void
+    const slow = new Promise<string>((resolve) => { answer = resolve })
+    __setMachineIdReaderForTests(() => slow, { waitMs: 30 })
+    const t0 = Date.now()
+    // Unknown yet: judged as this machine's record (by pids), not waited for.
+    expect(await fromOtherMachine({ machineId: 'machine-2' })).toBe(false)
+    expect(Date.now() - t0).toBeLessThan(2_000)
+    answer('machine-1')
+    expect(await machineId()).toBe('machine-1')
+    expect(await fromOtherMachine({ machineId: 'machine-2' })).toBe(true)
   })
 })

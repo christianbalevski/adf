@@ -323,15 +323,18 @@ function errCode(err: unknown): string | undefined {
  * seconds on a loaded machine; a second, longer attempt rides that out.
  */
 const MACHINE_ID_ATTEMPT_TIMEOUTS_MS = [3_000, 10_000]
-/** A failed lookup is remembered this long; the next caller after it asks again. */
+/** A failed lookup (timeout, spawn error) is remembered this long; the next caller after it asks again. */
 const MACHINE_ID_RETRY_MS = 15_000
 /**
- * How long a registry's first write waits for the lookup (agent starts wait
- * on it). A slower lookup goes on, and the records are rewritten once it
+ * How long anything that needs the id waits for it (a registry's first
+ * write, an agent start, a liveness check): the old lookup timeout. A slower
+ * lookup goes on in the background, and the records are rewritten once it
  * answers.
  */
 const MACHINE_ID_WAIT_MS = 3_000
 
+/** One lookup: an id, a definite "this platform has none", or a failure worth asking again about. */
+type MachineIdOutcome = { id: string } | { none: true } | { failed: true }
 type MachineIdReader = (timeoutMs: number) => Promise<string | null>
 let machineIdReader: MachineIdReader = readMachineId
 let machineIdRetryMs = MACHINE_ID_RETRY_MS
@@ -339,23 +342,37 @@ let machineIdWaitMs = MACHINE_ID_WAIT_MS
 let machineIdLookup: { promise: Promise<string | null>; failedAt: number | null } | null = null
 
 /**
- * A stable id of this machine, or null when it cannot be read. A read id is
- * cached for the process; a failed lookup only for MACHINE_ID_RETRY_MS, so
- * one slow reg.exe does not leave every record of this process without it.
+ * A stable id of this machine, or null when there is none or it cannot be
+ * read. A read id, and a definite none (no /etc/machine-id in a container),
+ * are cached for the process; a failed lookup only for MACHINE_ID_RETRY_MS,
+ * so one slow reg.exe does not leave every record of this process without it.
  */
 export function machineId(): Promise<string | null> {
   const cached = machineIdLookup
   if (cached && (cached.failedAt === null || Date.now() - cached.failedAt < machineIdRetryMs)) return cached.promise
   const entry: { promise: Promise<string | null>; failedAt: number | null } = { promise: Promise.resolve(null), failedAt: null }
-  entry.promise = lookupMachineId().then((id) => {
-    if (!id) entry.failedAt = Date.now()
-    return id
+  entry.promise = lookupMachineId().then((outcome) => {
+    if ('failed' in outcome) entry.failedAt = Date.now()
+    return 'id' in outcome ? outcome.id : null
   })
   machineIdLookup = entry
   return entry.promise
 }
 
-/** Tests: replace the platform reader, the retry interval and the first write's wait (undefined restores them) and forget the cached id. */
+/** The last lookup failed (and is asked again after MACHINE_ID_RETRY_MS); false for an id or a definite none. */
+function machineIdLookupFailed(): boolean {
+  return machineIdLookup?.failedAt != null
+}
+
+/** machineId(), waiting at most MACHINE_ID_WAIT_MS: null meanwhile, the lookup goes on. */
+export function machineIdWithin(waitMs: number = machineIdWaitMs): Promise<string | null> {
+  const lookup = machineId()
+  let timer: NodeJS.Timeout | undefined
+  const waited = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), waitMs); timer.unref?.() })
+  return Promise.race([lookup, waited]).finally(() => clearTimeout(timer))
+}
+
+/** Tests: replace the platform reader, the retry interval and the wait (undefined restores them) and forget the cached id. */
 export function __setMachineIdReaderForTests(reader?: MachineIdReader, opts: { retryMs?: number; waitMs?: number } = {}): void {
   machineIdReader = reader ?? readMachineId
   machineIdRetryMs = opts.retryMs ?? MACHINE_ID_RETRY_MS
@@ -363,20 +380,21 @@ export function __setMachineIdReaderForTests(reader?: MachineIdReader, opts: { r
   machineIdLookup = null
 }
 
-async function lookupMachineId(): Promise<string | null> {
+async function lookupMachineId(): Promise<MachineIdOutcome> {
   let lastError: unknown = null
   for (const timeoutMs of MACHINE_ID_ATTEMPT_TIMEOUTS_MS) {
     try {
       const id = (await machineIdReader(timeoutMs))?.trim().toLowerCase() || null
-      if (id) return id
-      // Read, but the platform has none: asking again at once will not change that.
-      break
+      if (id) return { id }
+      // Read, and the platform has none: cached for the process, said once.
+      console.warn("[AgentLease] This machine has no machine id (e.g. no /etc/machine-id in a container); this process's records carry none, and records of other runtimes are judged by this machine's pids")
+      return { none: true }
     } catch (err) {
       lastError = err
     }
   }
-  console.warn(`[AgentLease] Could not read this machine's id${lastError ? ` (${lastError instanceof Error ? lastError.message : String(lastError)})` : ''}; asked again in ${Math.ceil(machineIdRetryMs / 1000)} s. Until then this process's records carry no machine id and records of other runtimes are judged by this machine's pids`)
-  return null
+  console.warn(`[AgentLease] Could not read this machine's id (${lastError instanceof Error ? lastError.message : String(lastError)}); asked again after ${Math.ceil(machineIdRetryMs / 1000)} s. Until then this process's records carry no machine id and records of other runtimes are judged by this machine's pids`)
+  return { failed: true }
 }
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
@@ -393,7 +411,10 @@ async function readMachineId(timeoutMs: number): Promise<string | null> {
   if (process.env.ADF_MACHINE_ID) return process.env.ADF_MACHINE_ID
   if (process.platform === 'linux') {
     for (const file of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
-      try { return await fsp.readFile(file, 'utf-8') } catch { /* next */ }
+      try {
+        const id = (await fsp.readFile(file, 'utf-8')).trim()
+        if (id) return id
+      } catch { /* next */ }
     }
     return null
   }
@@ -408,10 +429,10 @@ async function readMachineId(timeoutMs: number): Promise<string | null> {
   return null
 }
 
-/** Both ids known and different: the record was written on another machine. */
+/** Both ids known and different: the record was written on another machine. Waits at most MACHINE_ID_WAIT_MS for ours. */
 export async function fromOtherMachine(record: { machineId?: string | null }): Promise<boolean> {
   if (!record.machineId) return false
-  const ours = await machineId()
+  const ours = await machineIdWithin()
   return !!ours && record.machineId !== ours
 }
 
@@ -1283,10 +1304,7 @@ export class AgentLeaseRegistry {
         .then(async () => {
           if (this.machineIdOverride !== undefined) { this.machineIdValue = this.machineIdOverride; return }
           lookup = machineId()
-          let timer: NodeJS.Timeout | undefined
-          const waited = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), machineIdWaitMs); timer.unref?.() })
-          this.machineIdValue = await Promise.race([lookup, waited])
-          clearTimeout(timer)
+          this.machineIdValue = await machineIdWithin()
         })
         .then(() => this.writeEntry())
         .then(() => this.scheduleMachineIdRetry(lookup))
@@ -1298,9 +1316,10 @@ export class AgentLeaseRegistry {
 
   /**
    * The machine id was not read when the host record was first written: wait
-   * for the lookup still running (`pending`), else ask again every
-   * MACHINE_ID_RETRY_MS (15 s), and once read rewrite the host record and
-   * every lease this process holds. A record without a machine id is judged
+   * for the lookup still running (`pending`), else, after a failed lookup,
+   * ask again every MACHINE_ID_RETRY_MS (15 s), and once read rewrite the
+   * host record and every lease this process holds. A platform with no
+   * machine id at all is not asked again. A record without a machine id is judged
    * by the reader's own pids, so a runtime on another machine sharing the
    * lease folder could take a live agent from this one.
    */
@@ -1309,7 +1328,7 @@ export class AgentLeaseRegistry {
     const settle = (lookup: Promise<string | null>): void => {
       void lookup.then(async (id) => {
         if (!this.ready || this.machineIdValue) return // closed meanwhile, or already stamped
-        if (!id) { this.scheduleMachineIdRetry(); return }
+        if (!id) { if (machineIdLookupFailed()) this.scheduleMachineIdRetry(); return }
         this.machineIdValue = id
         await this.stampMachineId(id)
       })
