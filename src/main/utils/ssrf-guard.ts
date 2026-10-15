@@ -351,12 +351,16 @@ export function envProxyFor(target: URL | string, env: NodeJS.ProcessEnv = proce
 
 let proxySkipLogged = false
 
+/** Lookup failures that mean "this machine cannot resolve the name", not "the name does not exist anywhere". */
+const PROXY_RESOLVES = new Set(['ENOTFOUND', 'EAI_AGAIN'])
+
 /**
- * A host name behind an env proxy (envProxyFor): the proxy looks it up, and
- * this machine may have no DNS of its own. The guard can then check neither
- * its addresses nor pin a connection to them; it leaves the name to the
- * proxy (W4-B follow-up). Literal addresses and loopback names are still
- * checked. Logged once per process.
+ * A host name behind an env proxy (envProxyFor) that this machine cannot
+ * look up (ENOTFOUND, EAI_AGAIN): the proxy looks it up, and this machine
+ * may have no DNS of its own, so the guard leaves the name to the proxy
+ * (W4-B follow-up). A name that does resolve here is checked as any other
+ * (its metadata, daemon and private answers are refused), and literal
+ * addresses and loopback names are always checked. Logged once per process.
  */
 function proxiedHostName(url: URL, host: string): boolean {
   if (isIP(host) || isLoopbackHostname(host) || parseLooseIPv4(host)) return false
@@ -366,7 +370,7 @@ function proxiedHostName(url: URL, host: string): boolean {
     proxySkipLogged = true
     let via = proxy
     try { via = new URL(proxy).host } catch { /* shown as given */ }
-    console.log(`[Egress] NODE_USE_ENV_PROXY is on: host names are looked up by the proxy (${via}), so the egress guard checks only literal addresses and loopback names, and connections are not pinned (first: ${url.hostname})`)
+    console.log(`[Egress] The env proxy is on and this machine cannot look up ${url.hostname}: it is left to the proxy (${via}) to resolve, unchecked (logged once)`)
   }
   return true
 }
@@ -500,10 +504,12 @@ export async function checkFetchTarget(
   const host = url.hostname.replace(/^\[|\]$/g, '')
   if (!host) return `Invalid URL: ${rawUrl}`
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
-  if (proxiedHostName(url, host)) return null
 
   const cls = await classifyHost(host)
-  if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
+  if ('unresolved' in cls) {
+    if (PROXY_RESOLVES.has(cls.unresolved) && proxiedHostName(url, host)) return null
+    return unresolvedMessage(url.hostname, cls.unresolved)
+  }
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, blockedMessage)
 }
 

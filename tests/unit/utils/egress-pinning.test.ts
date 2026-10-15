@@ -128,6 +128,19 @@ describe('a host name behind an HTTP proxy (NODE_USE_ENV_PROXY)', () => {
     expect(envProxyFor('http://a.example/', { ...env, NODE_USE_ENV_PROXY: '0' })).toBeNull()
   })
 
+  it('a name this machine does resolve is checked as any other; only ENOTFOUND / EAI_AGAIN are left to the proxy', async () => {
+    proxyEnv({ NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: 'http://127.0.0.1:9' })
+    dnsScript.set('meta.adf-test.invalid', ['169.254.169.254'])
+    dnsScript.set('daemon.adf-test.invalid', ['127.0.0.1'])
+    dnsScript.set('lan.adf-test.invalid', ['10.0.0.7'])
+    dnsScript.set('public.adf-test.invalid', ['93.184.216.34'])
+    expect(await checkFetchTarget('https://meta.adf-test.invalid/latest/', { allowLocal: true })).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('https://daemon.adf-test.invalid:7385/', { allowLocal: true, daemonPort: 7385 })).toMatch(/daemon control API/)
+    expect(await checkFetchTarget('https://lan.adf-test.invalid/')).toMatch(/private-network/)
+    expect(await checkFetchTarget('https://public.adf-test.invalid/')).toBeNull()
+    expect(await checkFetchTarget('https://no-such-host.invalid/')).toBeNull() // ENOTFOUND: the proxy resolves it
+  })
+
   it('only what Node honours turns the proxy on: NODE_USE_ENV_PROXY=1 or --use-env-proxy', async () => {
     const base = { HTTP_PROXY: 'http://proxy:3128' }
     for (const value of ['true', 'yes', 'on', ' 1']) {
