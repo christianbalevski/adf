@@ -85,7 +85,8 @@ Example 200 (`application/json`):
 
 ```json
 {
-  "ok": true
+  "ok": true,
+  "pid": 41230
 }
 ```
 
@@ -18335,6 +18336,7 @@ One of content / content_base64 is required.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `ok` | boolean | yes |  |
+| `pid` | integer |  | The daemon's process id. ADF Studio compares it with the daemon pid file (and checks the pid is alive) before it sends the token; absent in daemons before W5-D1. |
 
 <a id="schema-identitychangepasswordbody"></a>
 

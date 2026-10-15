@@ -534,7 +534,7 @@ New authenticated route `GET /version` (it requires the daemon token like every 
 
 Studio boot in `local` mode:
 
-1. Read the pid file; if a live daemon answers `/health`, call `/version`.
+1. Read the pid file; if a live daemon answers `/health`, call `/version`. Before that call (and before any other request that carries the token or the local proof) Studio checks who answers (W5-D1): `GET /health` reports the daemon's `pid` (no token), the pid file MUST name that pid (Studio waits up to 3 s for the file a daemon writes right after it listens), and the pid MUST be alive. Otherwise Studio sends nothing and shows why (`detect` → `unidentified`). This puts the bare pid, and nothing else, on the unauthenticated `/health`: a narrowing of the lead decision above, so that a program squatting on the port never receives the token. A pid can be claimed by anyone who reads the pid file; a token-keyed challenge would close that and is not built.
 2. Same `settingsPath` and same `clientApiVersion`: attach.
 3. Different `clientApiVersion`: show a dialog naming both versions, with "Restart the daemon with Studio's version" and "Use embedded mode for this session". Studio MUST NOT restart a daemon without that choice.
 4. Different `settingsPath`: refuse local attach and say which file the running daemon uses.

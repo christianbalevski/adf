@@ -747,7 +747,9 @@ export function createDaemonHttpApi(
 
   server.get('/openapi.json', async () => getOpenApiSpec())
 
-  server.get('/health', async () => ({ ok: true }))
+  // `pid` lets a local client check, before it sends the token, that the
+  // process answering is the one its pid file names (daemon-process.ts).
+  server.get('/health', async () => ({ ok: true, pid: process.pid }))
 
   const localAccess: LocalAccessOptions = {
     behindProxy: opts.security?.behindProxy ?? behindProxyFromEnv(),

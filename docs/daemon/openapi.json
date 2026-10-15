@@ -19787,10 +19787,15 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "pid": {
+            "type": "integer",
+            "description": "The daemon's process id. ADF Studio compares it with the daemon pid file (and checks the pid is alive) before it sends the token; absent in daemons before W5-D1."
           }
         },
         "example": {
-          "ok": true
+          "ok": true,
+          "pid": 41230
         }
       },
       "IdentityChangePasswordBody": {

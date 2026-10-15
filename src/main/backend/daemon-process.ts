@@ -12,6 +12,12 @@
 // daemon who launched it (GET /version `startedBy`) and refuses unless the
 // answer is `studio` and the pid is the one this handle attached to. A CLI or
 // service daemon keeps running whatever Studio does. Every action is logged.
+//
+// Studio sends the token (and, on the local-only routes, the local proof)
+// only to the daemon the pid file names (W5-D1): before any token-bearing
+// request, GET /health (no token) must report the pid in the pid file, and
+// that pid must be alive. Anything else answering on the port (another
+// program, a daemon with no pid file) is refused, and the reason shown.
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { mkdir, open, readFile, rm, stat } from 'node:fs/promises'
@@ -45,6 +51,8 @@ const POLL_MS = 250
 const STALE_PID_WAIT_MS = 25_000
 /** After losing a start race, how long the winning daemon gets to answer. */
 const RACE_SETTLE_MS = 3_000
+/** The daemon writes its pid file right after it listens: how long /health may answer before the file names it. */
+const PID_FILE_WAIT_MS = 3_000
 
 export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => Pick<ChildProcess, 'pid' | 'once' | 'unref'>
 
@@ -73,7 +81,11 @@ export interface DaemonProcessDeps {
   stopTimeoutMs?: number
   staleWaitMs?: number
   raceSettleMs?: number
+  pidFileWaitMs?: number
 }
+
+/** Something answers on the daemon port that is not the daemon the pid file names: no token or proof was sent to it. */
+export class DaemonListenerRefused extends Error {}
 
 export type DaemonDetection =
   /** Nothing answers and no live pid in the pid file. */
@@ -195,6 +207,7 @@ export class DaemonProcessController {
   private readonly stopTimeoutMs: number
   private readonly staleWaitMs: number
   private readonly raceSettleMs: number
+  private readonly pidFileWaitMs: number
   private spawnedPid: number | null = null
 
   constructor(config: DaemonProcessConfig, deps: DaemonProcessDeps = {}) {
@@ -212,6 +225,42 @@ export class DaemonProcessController {
     this.stopTimeoutMs = deps.stopTimeoutMs ?? STOP_TIMEOUT_MS
     this.staleWaitMs = deps.staleWaitMs ?? STALE_PID_WAIT_MS
     this.raceSettleMs = deps.raceSettleMs ?? RACE_SETTLE_MS
+    this.pidFileWaitMs = deps.pidFileWaitMs ?? PID_FILE_WAIT_MS
+  }
+
+  /**
+   * Who answers on the port, asked before any token or proof is sent: GET
+   * /health (no token) must report a pid, the pid file must name that pid
+   * (waiting briefly: the daemon writes the file right after it listens),
+   * and the pid must be alive. Throws DaemonListenerRefused with the reason.
+   */
+  private async verifyListener(): Promise<number> {
+    let pid: unknown
+    try {
+      const res = await this.fetchImpl(`${this.url}/health`, { signal: AbortSignal.timeout(3000) })
+      pid = res.ok ? (await res.json() as { pid?: unknown }).pid : undefined
+    } catch {
+      throw new DaemonListenerRefused(`Nothing answers on ${this.url}/health.`)
+    }
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+      throw new DaemonListenerRefused(`Something answers on ${this.url} but does not report its pid (not an ADF daemon, or one older than this Studio), so Studio did not send it the daemon token. Stop the program on port ${this.port}, or update the daemon.`)
+    }
+    const deadline = Date.now() + this.pidFileWaitMs
+    let record = await readPidRecord(this.paths.pidFile)
+    while (record?.pid !== pid && Date.now() < deadline) {
+      await this.sleep(POLL_MS)
+      record = await readPidRecord(this.paths.pidFile)
+    }
+    if (record?.pid !== pid) {
+      throw new DaemonListenerRefused(
+        `The program answering on ${this.url} is pid ${pid}, but the daemon pid file ${this.paths.pidFile} ${record ? `names pid ${record.pid}` : 'does not exist'}, ` +
+          `so Studio did not send it the daemon token. If it is an ADF daemon on other settings, stop it or give one of them another port (ADF_DAEMON_PORT); otherwise stop the program on port ${this.port}.`,
+      )
+    }
+    if (!this.alive(pid)) {
+      throw new DaemonListenerRefused(`The daemon pid file ${this.paths.pidFile} names pid ${pid}, which is not running, although something answers on ${this.url}; Studio did not send it the daemon token. Stop the program on port ${this.port}.`)
+    }
+    return pid
   }
 
   /** The token of the daemon on Studio's data dir: ADF_DAEMON_TOKEN, else `<data dir>/daemon-token`. */
@@ -226,7 +275,9 @@ export class DaemonProcessController {
     }
   }
 
+  /** A token-bearing request, sent only after verifyListener (throws DaemonListenerRefused). */
   private async request(path: string, init: RequestInit = {}, timeoutMs = 3000): Promise<Response> {
+    await this.verifyListener()
     const token = await this.token()
     return this.fetchImpl(`${this.url}${path}`, {
       ...init,
@@ -235,13 +286,14 @@ export class DaemonProcessController {
     })
   }
 
-  /** GET /version: the info, or the HTTP status (null = no answer). */
-  private async fetchVersion(): Promise<{ info: DaemonVersionInfo } | { status: number | null }> {
+  /** GET /version: the info, or the HTTP status (null = no answer), or why the listener was refused. */
+  private async fetchVersion(): Promise<{ info: DaemonVersionInfo } | { status: number | null; refused?: string }> {
     try {
       const res = await this.request('/version')
       if (!res.ok) return { status: res.status }
       return { info: await res.json() as DaemonVersionInfo }
-    } catch {
+    } catch (err) {
+      if (err instanceof DaemonListenerRefused) return { status: null, refused: err.message }
       return { status: null }
     }
   }
@@ -251,6 +303,10 @@ export class DaemonProcessController {
     if (await isHealthy(this.url, this.fetchImpl)) {
       const version = await this.fetchVersion()
       if ('info' in version) return { state: 'running', info: version.info }
+      if (version.refused) {
+        this.log(`[DaemonProcess] Not sending the token: ${version.refused}`)
+        return { state: 'unidentified', status: null, message: version.refused }
+      }
       const tokenSource = this.env.ADF_DAEMON_TOKEN ? 'ADF_DAEMON_TOKEN' : daemonTokenPath(this.paths.dataDir)
       const message = version.status === 401
         ? `A daemon is running on port ${this.port} but Studio cannot authenticate to it (token from ${tokenSource}).`
@@ -386,7 +442,9 @@ export class DaemonProcessController {
     }
     const version = await this.fetchVersion()
     if (!('info' in version)) {
-      throw new DaemonProcessError(`The ADF daemon started (pid ${childPid}) but GET /version failed (${version.status ?? 'no answer'}).`, paths.logFile)
+      throw new DaemonProcessError(version.refused
+        ? `The ADF daemon was started (pid ${childPid}), but ${version.refused}`
+        : `The ADF daemon started (pid ${childPid}) but GET /version failed (${version.status ?? 'no answer'}).`, paths.logFile)
     }
     const info = version.info
     if (info.pid !== childPid) {
@@ -497,7 +555,7 @@ export class DaemonProcessController {
     const version = await this.fetchVersion()
     if (!('info' in version)) {
       if (this.alive(handle.pid)) {
-        return this.result(false, `Not stopping the ADF daemon pid ${handle.pid}: it does not answer GET /version (${version.status ?? 'no answer'}).`)
+        return this.result(false, `Not stopping the ADF daemon pid ${handle.pid}: ${version.refused ?? `it does not answer GET /version (${version.status ?? 'no answer'}).`}`)
       }
       return this.result(true, `The ADF daemon pid ${handle.pid} is not running.`)
     }
