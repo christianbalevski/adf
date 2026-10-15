@@ -323,7 +323,8 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       if (agent.workspace) {
         const ws = agent.workspace
         const result = runAsRequestWrite(request, () => {
-          if (!unique) {
+          // The stored file is read and hashed only for a check: a write without a base replaces it as before.
+          if (!unique && (baseRevision !== undefined || mustNotExist)) {
             const current = fileRevision(ws, path)
             const size = ws.getFileMeta(path)?.size ?? null
             const refused = (mustNotExist ? existsAlready(path, current, size) : null) ?? staleRevision(path, current, baseRevision, size)

@@ -30,6 +30,7 @@ vi.mock('electron', () => {
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
+import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { AgentRuntimeBuilder } from '../src/main/runtime/agent-runtime-builder'
 import { withSource } from '../src/main/runtime/execution-context'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
@@ -269,6 +270,28 @@ describe('writers of writes that run after an await', () => {
     await client.request('PUT', `${a}/files/content`, { query: { path: 'other.txt' }, body: { content: 'from the cli' } })
     await waitFor(() => changes(tui).some(c => c.what === 'file:other.txt'), 5000, 'cli frame on the uploader')
     expect(changes(tui).filter(c => c.what === 'file:data.txt')).toEqual([])
+  })
+
+  it('PUT files/raw reads the stored file only for a check: no base, no read', async () => {
+    const { server, one } = await daemon()
+    const put = (query: string) => server.inject({
+      method: 'PUT',
+      url: `/agents/${one.agentId}/files/raw?path=blob.bin${query}`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.from('bytes'),
+    })
+    const reads = vi.spyOn(AdfWorkspace.prototype, 'readFileBuffer')
+    try {
+      expect((await put('')).statusCode).toBe(200)
+      expect(reads).not.toHaveBeenCalled()
+      expect((await put('&mustNotExist=false')).statusCode).toBe(200)
+      expect(reads).not.toHaveBeenCalled()
+      const stale = await put('&baseRevision=1')
+      expect(stale.statusCode).toBe(409)
+      expect(reads).toHaveBeenCalled()
+    } finally {
+      reads.mockRestore()
+    }
   })
 })
 
