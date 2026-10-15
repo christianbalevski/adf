@@ -24,8 +24,11 @@ import type { ClientFrame, PushTopic } from '../client-stream'
  * a missing one from the result as after a gap.
  *
  * An end sent from the result is the install's end for the renderer: when
- * the stream's own end (and progress lines before it) arrives later, it is
- * dropped, and logged, so the install never ends twice (W4-B follow-up).
+ * the stream's own end arrives later, it is dropped, and logged, so the
+ * install never ends twice (W4-B follow-up). The next progress line of that
+ * package ends the drop: it starts another install (another client's, the
+ * CLI's), whose pushes must all reach the renderer, so only an end that
+ * follows the relayed one directly is dropped.
  */
 
 export type InstallChannel = typeof IPC.MCP_INSTALL_PROGRESS | typeof IPC.ADAPTER_INSTALL_PROGRESS | typeof IPC.SANDBOX_INSTALL_PROGRESS
@@ -71,14 +74,12 @@ export class InstallProgressRelay {
     const key = relayKey(frame.topic, payload.package)
     const until = this.relayedEnds.get(key)
     if (until !== undefined) {
-      if (until >= Date.now()) {
-        if (ended) {
-          this.relayedEnds.delete(key)
-          this.log.log(`[Backend] The ${payload.package} install's own end (${String(payload.status)}) arrived on the client stream after Studio had sent it from the job result; not sent again`)
-        }
+      this.relayedEnds.delete(key)
+      if (until >= Date.now() && ended) {
+        this.log.log(`[Backend] The ${payload.package} install's own end (${String(payload.status)}) arrived on the client stream after Studio had sent it from the job result; not sent again`)
         return false
       }
-      this.relayedEnds.delete(key)
+      if (until >= Date.now()) this.log.log(`[Backend] A progress line of ${payload.package} after its relayed end: another install of it; its pushes are sent`)
     }
     if (ended) for (const watch of this.watches) watch.endArrived(frame.topic, payload.package)
     return true
