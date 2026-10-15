@@ -19123,7 +19123,7 @@
               "string",
               "null"
             ],
-            "description": "Set when this machine has an OS keychain (Windows, macOS) that the daemon could not read at start (three tries over 5 s), so it runs on its passphrase file: why, and what to do (restart the daemon once the keychain works). Owner create, restore and trust-daemon answer 409 `keychain_unavailable` meanwhile. Null otherwise; absent without an owner identity service or in older daemons."
+            "description": "Set when this machine has an OS keychain (Windows, macOS) that the daemon could not read at start (three tries over 5 s), so it runs on its passphrase file: why, and what to do (restart the daemon once the keychain works). Owner create, restore, import and trust-daemon answer 409 `keychain_unavailable` meanwhile. Null otherwise; absent without an owner identity service or in older daemons."
           }
         },
         "example": {
@@ -20097,7 +20097,7 @@
               "string",
               "null"
             ],
-            "description": "The daemon could not read this machine's OS keychain at start and runs on its passphrase file: why and what to do; null otherwise. Create, restore and trust-daemon answer 409 `keychain_unavailable` meanwhile (set ADF_SECRET_STORE=file to use the file on purpose)."
+            "description": "The daemon could not read this machine's OS keychain at start and runs on its passphrase file: why and what to do; null otherwise. Create, restore, import and trust-daemon answer 409 `keychain_unavailable` meanwhile (set ADF_SECRET_STORE=file to use the file on purpose)."
           },
           "message": {
             "type": "string",

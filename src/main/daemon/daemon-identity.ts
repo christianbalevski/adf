@@ -1001,6 +1001,8 @@ export class DaemonIdentity {
    * backend. Returns the DIDs involved (public values).
    */
   checkImport(opts: DaemonOwnerImportOptions): { ownerDid: string; previousOwnerDid: string | null } {
+    // The phrase would land in the fallback file, which the next boot with a working keychain ignores.
+    this.refuseOnKeychainFallback('Importing an owner identity (adf identity import)')
     const normalized = normalizeMnemonic(opts.mnemonic)
     const ownerDid = deriveOwnerIdentity(normalized).did
     const previousOwnerDid = stringOrNull(this.store.get('ownerDid'))
