@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { buildMcpServerConfigFromRegistration } from '../../shared/utils/mcp-config'
+import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 
 /**
  * The argument schemas of Studio's MCP and adapter IPC handlers, shared by
@@ -97,3 +99,27 @@ export const AdapterDetachArgs = z.object({
   filePath: z.string(),
   adapterType: z.string()
 })
+
+/**
+ * The adf_config.mcp.servers[] entry MCP_ATTACH_SERVER writes, built from its
+ * validated `serverConfig`. Shared by the embedded handler and the daemon-mode
+ * one (rule E1), so both modes write the same entry.
+ */
+export function mcpAttachEntry(serverConfig: z.infer<typeof McpAttachArgs>['serverConfig']): McpServerConfig {
+  return buildMcpServerConfigFromRegistration({
+    id: `mcp:${serverConfig.name}`,
+    name: serverConfig.name,
+    type: serverConfig.type,
+    npmPackage: serverConfig.npmPackage,
+    pypiPackage: serverConfig.pypiPackage,
+    command: serverConfig.command,
+    args: serverConfig.args,
+    url: serverConfig.url,
+    env: serverConfig.envKeys?.map((key) => ({ key, value: '' })),
+    headers: serverConfig.headers,
+    headerEnv: serverConfig.headerEnv,
+    bearerTokenEnvVar: serverConfig.bearerTokenEnvVar,
+    credentialStorage: serverConfig.credentialStorage,
+    runLocation: serverConfig.runLocation
+  })
+}

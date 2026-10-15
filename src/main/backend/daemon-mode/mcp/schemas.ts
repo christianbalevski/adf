@@ -7,5 +7,5 @@
 export {
   AdapterAttachArgs, AdapterCredentialGetArgs, AdapterCredentialSetArgs, AdapterDetachArgs, AdapterListFilesArgs,
   AdapterPackageArgs, AdapterTypeArgs, McpAttachArgs, McpCredentialGetArgs, McpCredentialListArgs, McpCredentialSetArgs,
-  McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, validateMcpArgs,
+  McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, mcpAttachEntry, validateMcpArgs,
 } from '../../../ipc/mcp-adapter-args'
