@@ -297,7 +297,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         const base = e.state.adf[file]?.tables.adf_logs?.rows as Row[] | undefined
         if (!rows || !base) continue
         // The two steps, in order (agent-runtime-builder.ts prepareHttpOAuthOnce): the URL raised, then the token sealed.
-        const STEPS = [/^OAuth sign-in for "[^"]+" approved — authorization URL raised as a "mcp_oauth_authorize" request/, /^OAuth sign-in for "[^"]+" complete — token sealed into the agent\.$/]
+        const STEPS = [/^OAuth sign-in for "[^"]+" approved — authorization URL raised as a "mcp_oauth_authorize" request; open it to continue\.$/,/^OAuth sign-in for "[^"]+" complete — token sealed into the agent\.$/]
         const signIn = (r: Row) => r.event === 'oauth_signin' && r.origin === 'mcp' && r.level === 'info'
         const dropped = rows.filter(signIn)
         if (dropped.length !== 2 || !dropped.every((r, i) => STEPS[i].test(String(r.message ?? '')))) continue
