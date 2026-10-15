@@ -291,7 +291,8 @@ describe('pinnedFetch keeps fetch semantics', () => {
   }, 20000)
 })
 
-function wsManager(): WsConnectionManager {
+function wsManager(security?: { allow_local_fetch?: boolean }): WsConnectionManager {
+  const ws = security ? ({ getAgentConfig: () => ({ id: 'agent-1', security }), insertLog: () => {} } as unknown as AdfWorkspace) : null
   const delegate = {
     getAgentDid: () => null,
     getPrivateKey: () => null,
@@ -299,7 +300,7 @@ function wsManager(): WsConnectionManager {
     processIngressMessage: async () => ({}),
     getCodeSandbox: () => null,
     getAdfCallHandler: () => null,
-    getWorkspace: () => null,
+    getWorkspace: () => ws,
     getToolConfig: () => null,
     getAllowUnsigned: () => true,
   } satisfies WsManagerDelegate
@@ -349,4 +350,43 @@ describe('ws_connect: the socket uses the addresses the guard checked', () => {
     expect(calls[0].guard).toEqual({ allowLocal: true, daemonPort: Number(process.env.ADF_DAEMON_PORT) || 7385 })
     expect('guard' in calls[1]).toBe(false)
   })
+})
+
+describe('stored ws configs (registerAgent, a start by id, reconnects) are held to the agent egress policy', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 300))
+
+  it('a stored literal LAN address is refused without allow_local_fetch, before any socket; the agent opt-in allows it', async () => {
+    const stored = { id: 'lan', url: 'ws://10.255.255.1:9/', enabled: false, auth: 'none' as const, auto_reconnect: false, connect_timeout_ms: 200 }
+    const mgr = wsManager({})
+    mgr.registerAgent('agent-1.adf', [stored])
+    expect((await mgr.connectOutbound('agent-1.adf', 'lan')).error).toMatch(/private-network/)
+    mgr.unregisterAgent('agent-1.adf')
+    const open = wsManager({ allow_local_fetch: true })
+    open.registerAgent('agent-1.adf', [stored])
+    expect((await open.connectOutbound('agent-1.adf', 'lan')).error).not.toMatch(/Blocked/)
+    open.unregisterAgent('agent-1.adf')
+  }, 20000)
+
+  it('a stored config registerAgent starts cannot be rebound to the daemon port; a stored name that checks out connects', async () => {
+    const { port, connections } = await wsServer()
+    const saved = process.env.ADF_DAEMON_PORT
+    process.env.ADF_DAEMON_PORT = String(port)
+    try {
+      dnsScript.set('stored.adf-test.invalid', ['127.0.0.1'])
+      const mgr = wsManager({ allow_local_fetch: true })
+      mgr.registerAgent('agent-1.adf', [{ id: 'd', url: `ws://stored.adf-test.invalid:${port}/`, enabled: true, auth: 'none', auto_reconnect: false }])
+      await settle()
+      expect(connections).toEqual([])
+      expect((await mgr.connectOutbound('agent-1.adf', 'd')).error).toMatch(/daemon control API/)
+      mgr.unregisterAgent('agent-1.adf')
+    } finally {
+      if (saved === undefined) delete process.env.ADF_DAEMON_PORT
+      else process.env.ADF_DAEMON_PORT = saved
+    }
+    const ok = wsManager({})
+    ok.registerAgent('agent-1.adf', [{ id: 'n', url: `ws://stored.adf-test.invalid:${port}/`, enabled: true, auth: 'none', auto_reconnect: false }])
+    await settle()
+    expect(connections).toHaveLength(1)
+    ok.unregisterAgent('agent-1.adf')
+  }, 20000)
 })

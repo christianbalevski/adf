@@ -397,28 +397,28 @@ interface HostClass {
  * the caller refuses it with the resolver's reason.
  */
 async function classifyHost(host: string): Promise<HostClass | { unresolved: string }> {
-  let loopbackHost = false
-  let candidates: string[] = []
-
-  if (isIP(host)) {
-    candidates = [host]
-  } else if (isLoopbackHostname(host)) {
-    loopbackHost = true // no DNS — the name itself is loopback
-  } else {
-    const loose = parseLooseIPv4(host)
-    if (loose) {
-      candidates = [loose]
-    } else {
-      try {
-        const addresses = await lookup(host, { all: true, verbatim: true })
-        candidates = addresses.map((a) => a.address)
-      } catch (err) {
-        return { unresolved: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err)) }
-      }
-      if (candidates.length === 0) return { unresolved: 'no addresses' }
-    }
+  const literal = classifyLiteralHost(host)
+  if (literal) return literal
+  let candidates: string[]
+  try {
+    const addresses = await lookup(host, { all: true, verbatim: true })
+    candidates = addresses.map((a) => a.address)
+  } catch (err) {
+    return { unresolved: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error ? err.message : String(err)) }
   }
+  if (candidates.length === 0) return { unresolved: 'no addresses' }
+  return classifyCandidates(candidates, false)
+}
 
+/** The class of a host that needs no lookup (an IP literal, a loose IPv4 spelling, a loopback name); null for a host name. */
+function classifyLiteralHost(host: string): HostClass | null {
+  if (isIP(host)) return classifyCandidates([host], false)
+  if (isLoopbackHostname(host)) return classifyCandidates([], true) // no DNS — the name itself is loopback
+  const loose = parseLooseIPv4(host)
+  return loose ? classifyCandidates([loose], false) : null
+}
+
+function classifyCandidates(candidates: string[], loopbackHost: boolean): HostClass {
   return {
     anyMetadata: candidates.some(isCloudMetadataIp),
     anyLinkLocal: candidates.some(isLinkLocalIp),
@@ -511,6 +511,32 @@ export async function checkFetchTarget(
     return unresolvedMessage(url.hostname, cls.unresolved)
   }
   return applyPolicy(url.hostname, port, url.pathname, cls, opts, blockedMessage)
+}
+
+/**
+ * checkConnectTarget without a lookup, for a socket created synchronously:
+ * the refusal (or null) for a URL whose host needs no lookup (an IP
+ * literal, a loose IPv4 spelling, a loopback name); `undefined` for a host
+ * name, whose answers the connection's own lookup must check (guardedLookup
+ * in utils/guarded-fetch.ts).
+ */
+export function checkLiteralConnectTarget(rawUrl: string, opts: FetchGuardOptions = { allowLocal: false }): string | null | undefined {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    return `Invalid URL: ${rawUrl}`
+  }
+  if (!ALLOWED_CONNECT_PROTOCOLS.has(url.protocol)) {
+    return `Blocked by the ws_connect guard: only ws, wss, http and https URLs may be connected (got "${url.protocol}").`
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, '')
+  if (!host) return `Invalid URL: ${rawUrl}`
+  const cls = classifyLiteralHost(host)
+  if (!cls) return undefined
+  const secure = url.protocol === 'wss:' || url.protocol === 'https:'
+  const port = url.port ? Number(url.port) : secure ? 443 : 80
+  return applyPolicy(url.hostname, port, url.pathname, cls, opts, connectBlockedMessage)
 }
 
 /**
