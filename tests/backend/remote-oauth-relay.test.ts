@@ -43,6 +43,19 @@ const canBindAlias = await (async () => {
   } catch { return false }
 })()
 
+/** Scripted DNS: names the test knows, nothing else resolves. */
+const DNS: Record<string, string[]> = {
+  'auth.example.com': ['93.184.216.34'],
+  '127.0.0.1.nip.io': ['127.0.0.1'],
+  'intranet.example.com': ['10.1.2.3'],
+  'mixed.example.com': ['93.184.216.34', 'fd00::5'],
+}
+const resolve = async (host: string) => {
+  const answer = DNS[host]
+  if (!answer) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: 'ENOTFOUND' })
+  return answer
+}
+
 describe('which sign-in pages Studio opens for a remote daemon', () => {
   it.each([
     ['https://auth.example.com/authorize?x=1', true],
@@ -54,20 +67,29 @@ describe('which sign-in pages Studio opens for a remote daemon', () => {
     ['https://[::1]/authorize', false],
     ['https://169.254.169.254/latest', false],
     ['https://0.0.0.0/x', false],
+    ['https://10.0.0.5/authorize', false],
+    ['https://192.168.1.5/authorize', false],
+    ['https://100.100.1.1/authorize', false],
+    ['https://[fd00::1]/authorize', false],
+    ['https://127.0.0.1.nip.io/authorize', false],
+    ['https://intranet.example.com/authorize', false],
+    ['https://mixed.example.com/authorize', false],
+    ['https://unknown.example.com/authorize', false],
     ['javascript:alert(1)', false],
     ['file:///etc/passwd', false],
     ['not a url', false],
-  ])('%s → %s', (url, ok) => {
-    expect(checkRemoteBrowserUrl(url).ok).toBe(ok)
+  ])('%s → %s', async (url, ok) => {
+    expect((await checkRemoteBrowserUrl(url, resolve)).ok).toBe(ok)
   })
 
-  it('reads a loopback redirect_uri only', () => {
+  it('reads a loopback redirect_uri; ports below 1024 are refused', () => {
     const at = (redirect: string) => loopbackRedirectOf(new URL(`https://auth.example.com/a?redirect_uri=${encodeURIComponent(redirect)}`))
     expect(at('http://127.0.0.1:53817/callback')).toEqual({ uri: 'http://127.0.0.1:53817/callback', host: '127.0.0.1', port: 53817, path: '/callback' })
     expect(at('http://localhost:1455/auth/callback')).toMatchObject({ host: '127.0.0.1', port: 1455, path: '/auth/callback' })
     expect(at('http://[::1]:53817/callback')).toMatchObject({ host: '::1', port: 53817 })
     expect(at('https://app.example.com/callback')).toBeNull()
-    expect(at('http://127.0.0.1/callback')).toBeNull()
+    expect(at('http://127.0.0.1/callback')).toMatchObject({ refused: expect.stringMatching(/port 80/) })
+    expect(at('http://127.0.0.1:445/callback')).toMatchObject({ refused: expect.stringMatching(/1024 to 65535/) })
     expect(loopbackRedirectOf(new URL('https://auth.example.com/a'))).toBeNull()
   })
 })
@@ -140,15 +162,23 @@ describe.skipIf(!canBindAlias)('relay end to end (Studio on 127.0.0.2, daemon ho
       openExternal: (url) => { opened.push(url) },
       log: quiet,
       bindHost: '127.0.0.2',
+      resolve,
+      daemonHost: () => 'adf.example.test:8443',
+      confirm: async (page) => { asked.push(page); return answerYes },
+      now: () => clock,
     })
     cleanups.push(() => relay.closeAll())
     const authorize = `https://auth.example.com/authorize?client_id=x&state=s-123&redirect_uri=${encodeURIComponent(`http://127.0.0.1:${callbackPort}/callback`)}`
-    return { relay, opened, daemonCallbacks, callbackPort, authorize }
+    const asked: Array<{ daemonHost: string; pageHost: string; label: string }> = []
+    let answerYes = true
+    let clock = 1_000_000
+    return { relay, opened, daemonCallbacks, callbackPort, authorize, asked, decline: () => { answerYes = false }, tick: (ms: number) => { clock += ms } }
   }
 
-  it('opens the page, refuses a callback with another state, relays the real one to the daemon host', async () => {
-    const { relay, opened, daemonCallbacks, callbackPort, authorize } = await setup()
+  it('asks first (daemon host and page host), refuses a callback with another state, relays the real one to the daemon host', async () => {
+    const { relay, opened, daemonCallbacks, callbackPort, authorize, asked } = await setup()
     expect(await relay.open(authorize, 'test sign-in')).toEqual({ opened: true, relaying: true })
+    expect(asked).toEqual([{ daemonHost: 'adf.example.test:8443', pageHost: 'auth.example.com', label: 'test sign-in' }])
     expect(opened).toEqual([authorize])
     // A stray or forged hit on this computer's callback port.
     const forged = await fetch(`http://127.0.0.2:${callbackPort}/callback?code=evil&state=other`)
@@ -162,13 +192,30 @@ describe.skipIf(!canBindAlias)('relay end to end (Studio on 127.0.0.2, daemon ho
     expect(relay.active).toBe(0)
   })
 
-  it('refuses to open a page that is not https, and opens without relaying when the port is taken here', async () => {
-    const { relay, opened, callbackPort, authorize } = await setup()
+  it('refuses a page that is not https or has no state, opens nothing the user declines, and opens without relaying when the port is taken here', async () => {
+    const { relay, opened, callbackPort, authorize, asked, decline, tick } = await setup()
     expect(await relay.open(authorize.replace('https:', 'http:'), 'test sign-in')).toMatchObject({ opened: false, relaying: false, reason: expect.stringMatching(/not an https page/) })
-    expect(opened).toEqual([])
+    expect(await relay.open(authorize.replace('state=s-123&', ''), 'test sign-in')).toMatchObject({ opened: false, reason: expect.stringMatching(/has no state/) })
+    expect(asked).toEqual([])
     const squatter = createServer()
     await listen(squatter, '127.0.0.2', callbackPort)
     expect(await relay.open(authorize, 'test sign-in')).toMatchObject({ opened: true, relaying: false, reason: expect.stringMatching(/in use/) })
     expect(opened).toEqual([authorize])
+    tick(10_000)
+    decline()
+    expect(await relay.open(authorize, 'test sign-in')).toMatchObject({ opened: false, declined: true })
+    expect(opened).toEqual([authorize])
+  })
+
+  it('throttles opens: one every 5 s, five in ten minutes', async () => {
+    const { relay, authorize, tick } = await setup()
+    const page = (n: number) => authorize.replace('s-123', `s-${n}`).replace(/redirect_uri=[^&]+/, '')
+    expect((await relay.open(page(1), 'a')).opened).toBe(true)
+    expect(await relay.open(page(2), 'a')).toMatchObject({ opened: false, reason: expect.stringMatching(/short time/) })
+    for (let n = 3; n <= 6; n++) { tick(6_000); expect((await relay.open(page(n), 'a')).opened, `open ${n}`).toBe(true) }
+    tick(6_000)
+    expect(await relay.open(page(7), 'a')).toMatchObject({ opened: false, reason: expect.stringMatching(/at most/) })
+    tick(10 * 60_000)
+    expect((await relay.open(page(8), 'a')).opened).toBe(true)
   })
 })

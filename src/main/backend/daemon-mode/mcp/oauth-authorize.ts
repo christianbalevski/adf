@@ -34,7 +34,9 @@ export interface McpOAuthAuthorizeDeps {
   fetchInput(filePath: string, approvalId: string): Promise<unknown>
   openExternal(url: string): Promise<void> | void
   /** Remote mode: open through the callback relay (it checks the URL first). Without it remote mode opens nothing. */
-  openRemote?(url: string, label: string): Promise<{ opened: boolean; reason?: string }>
+  openRemote?(url: string, label: string): Promise<{ opened: boolean; relaying?: boolean; declined?: boolean; reason?: string }>
+  /** A remote sign-in that was refused or is not relayed: shown to the user who approved it. */
+  notify?(title: string, text: string): void
   log: Pick<Console, 'log' | 'warn'>
 }
 
@@ -106,12 +108,15 @@ export class McpOAuthAuthorizeOpener {
         this.deps.log.warn(`[MCP] ${entry.agentName}: OAuth sign-in for "${server}" waits for its authorization page; its callback is on the daemon's machine and no relay is set up, so Studio does not open it`)
         return
       }
+      let result: { opened: boolean; declined?: boolean; reason?: string }
       try {
-        const result = await this.deps.openRemote(url, `${entry.agentName}: OAuth sign-in for "${server}"`)
-        if (!result.opened) this.deps.log.warn(`[MCP] ${entry.agentName}: the OAuth authorization page for "${server}" was not opened: ${result.reason ?? 'refused'}`)
+        result = await this.deps.openRemote(url, `${entry.agentName}: OAuth sign-in for "${server}"`)
       } catch (err) {
-        this.deps.log.warn(`[MCP] Could not open the OAuth authorization page for "${server}": ${err instanceof Error ? err.message : String(err)}`)
+        result = { opened: false, reason: err instanceof Error ? err.message : String(err) }
       }
+      if (!result.opened) this.deps.log.warn(`[MCP] ${entry.agentName}: the OAuth authorization page for "${server}" was not opened: ${result.reason ?? 'refused'}`)
+      // Refused, or opened without the relay: the user who approved the sign-in sees why.
+      if (result.reason && !result.declined) this.deps.notify?.(`${entry.agentName}: sign-in to "${server}"`, result.reason)
       return
     }
     this.deps.log.log(`[MCP] ${entry.agentName}: opening the OAuth authorization page for "${server}" in the browser`)

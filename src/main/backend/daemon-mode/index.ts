@@ -232,6 +232,22 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         }
       },
       openExternal: (url) => shell.openExternal(url),
+      daemonHost: host,
+      // Remote mode opens no page without a click (W4-B review); local mode keeps embedded's no-click open.
+      confirm: async ({ daemonHost, pageHost, label }) => {
+        const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
+        const options = {
+          type: 'question',
+          message: `Open a sign-in page on ${pageHost}?`,
+          detail: `The ADF daemon at ${daemonHost} asks to open ${pageHost} in your browser (${label}). Open it only if you started this sign-in.`,
+          buttons: ['Open page', 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        } as Electron.MessageBoxOptions
+        const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+        return response === 0
+      },
       log,
     })
     return { picker, oauth, host, upload: uploadFile(deps.fetch ?? fetch) }
@@ -241,7 +257,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     mode: deps.mode,
     fetchInput: async (filePath, approvalId) => (await started).request<{ input?: unknown }>('GET', '/approvals/input', { query: { filePath, approvalId } }).then((r) => r.input),
     openExternal: (url) => shell.openExternal(url),
-    ...(remoteServices ? { openRemote: (url: string, label: string) => remoteServices.oauth.open(url, label) } : {}),
+    ...(remoteServices ? {
+      openRemote: (url: string, label: string) => remoteServices.oauth.open(url, label),
+      notify: (title: string, text: string) => {
+        const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
+        const options = { type: 'warning', title, message: title, detail: text, buttons: ['OK'] } as Electron.MessageBoxOptions
+        void (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).catch(() => {})
+      },
+    } : {}),
     log,
   })
 

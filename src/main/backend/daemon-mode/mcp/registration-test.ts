@@ -69,6 +69,19 @@ async function showContinueDialog(serverName: string, authUrlOpened: boolean): P
   } as Electron.MessageBoxOptions)
 }
 
+/** The page opened, but its callback is not relayed (a port in use here): said where the user started the sign-in. */
+async function showRelayWarning(serverName: string, reason: string): Promise<void> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined
+  await dialog.showMessageBox({
+    ...(win ? { window: win } : {}),
+    type: 'warning',
+    title: `MCP Authorization — ${serverName}`,
+    message: 'The sign-in may not reach the ADF daemon.',
+    detail: reason,
+    buttons: ['OK'],
+  } as Electron.MessageBoxOptions).catch(() => {})
+}
+
 export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unknown): Promise<McpRegistrationTestResult> {
   let jobId: string
   try {
@@ -78,6 +91,8 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
     return failedResult(rawArgs, errorText(err))
   }
   const handled = new Set<string>()
+  /** Remote mode: the sign-in page was not opened; the test is cancelled and ends with this reason. */
+  let stoppedBecause: string | null = null
 
   const answer = async (id: string): Promise<void> => {
     try {
@@ -94,12 +109,20 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
       // the relay takes it on this computer and hands it over (§9.3, W4-B).
       if (ctx.mode === 'remote' && ctx.remote) {
         const label = `Connect test for "${entry.serverName ?? 'server'}"`
+        let result: { opened: boolean; relaying?: boolean; reason?: string }
         try {
-          const result = await ctx.remote.oauth.open(entry.url ?? '', label)
-          if (!result.opened) ctx.log.warn(`[MCP] ${label}: the authorization page was not opened: ${result.reason ?? 'refused'}`)
+          result = await ctx.remote.oauth.open(entry.url ?? '', label)
         } catch (err) {
-          ctx.log.warn(`[MCP] ${label}: could not open the authorization page: ${err instanceof Error ? err.message : String(err)}`)
+          result = { opened: false, reason: `Studio could not open the sign-in page: ${err instanceof Error ? err.message : String(err)}` }
         }
+        if (!result.opened) {
+          // Shown where the user started it: the test ends now with the reason, instead of waiting out the sign-in.
+          ctx.log.warn(`[MCP] ${label}: the authorization page was not opened: ${result.reason ?? 'refused'}`)
+          stoppedBecause = result.reason ?? 'The sign-in page was not opened.'
+          try { await (await ctx.ready()).request('POST', `/jobs/${enc(jobId)}/cancel`) } catch { /* ended meanwhile */ }
+          return
+        }
+        if (result.reason) void showRelayWarning(entry.serverName ?? 'server', result.reason)
         await answer(entry.id)
         return
       }
@@ -141,6 +164,7 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
       }
     },
   })
+  if (stoppedBecause) return failedResult(rawArgs, stoppedBecause)
   if (outcome.kind === 'lost') return failedResult(rawArgs, outcome.reason)
   const { job } = outcome
   if (job.state === 'succeeded') return job.result as McpRegistrationTestResult
