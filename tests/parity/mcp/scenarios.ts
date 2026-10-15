@@ -185,11 +185,12 @@ export function agentOAuthSignInScenario(serverUrl: () => string): ParityScenari
   }
 }
 
-/** Every W3-C scenario name (the connect scenarios are built per run with the fake server's URL). */
+/** Every MCP scenario name, W3-C and the agent OAuth one (the connect scenarios are built per run with the fake server's URL). */
 export const W3C_SCENARIO_NAMES: readonly string[] = [
   installProgressScenario.name,
   mcpAttachCredentialsScenario.name,
   adapterTelegramScenario.name,
   'w3c-mcp-connect-test',
   'w3c-mcp-oauth-connect',
+  'w2c2-agent-mcp-oauth',
 ]
