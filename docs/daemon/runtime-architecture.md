@@ -40,7 +40,7 @@ once a minute, and immediately whenever the owner identity becomes ready.
 
 ## RuntimeService
 
-`RuntimeService` is the headless lifecycle boundary. It keeps an in-memory map from agent ID to managed agent, plus a file-path index so one `.adf` file is not loaded twice by the same daemon process.
+`RuntimeService` is the headless lifecycle boundary. It keeps an in-memory map from agent ID to managed agent, plus a file-path index so one `.adf` file is not loaded twice by the same daemon process. A second file with the `config.id` of a loaded agent is refused with `409 duplicate_agent_id`, naming both paths. Across processes, the agent lease keeps one agent file in one runtime ([Agent leases](#agent-leases)).
 
 Current responsibilities:
 
@@ -68,8 +68,35 @@ Runtime events:
 | `agent-loaded` | Emitted after an agent is registered |
 | `agent-unloaded` | Emitted before an agent is disposed |
 | `agent-event` | Forwards `AgentExecutor` execution events with agent ID and file path |
+| `agent-lifecycle` | `agent_starting`, `agent_started`, `agent_start_failed`, `agent_stopping`, `agent_stopped`, `agent_loops_changed`, `agent_state_changed` |
+| `document-opened`, `document-closed` | An open document was held or released ([Open documents](#open-documents)) |
 
-The daemon uses these events to register and unregister mesh serving and to publish Server-Sent Events through the daemon event bus.
+The daemon uses these events to register and unregister mesh serving, to publish Server-Sent Events through the daemon event bus, and to feed client sessions ([Client sessions](#client-sessions)).
+
+## Open documents
+
+An open document is an `.adf` opened for reading and editing without a runtime: no executor, no timers, no triggers, no mesh registration, no adapters. Client sessions hold documents (Studio holds the file it shows), and a document with no holder and no runtime is closed. Every `/agents/:id/*` resource route resolves a running agent first, then an open document, so a client can read and edit an agent that is not running. Runtime actions on a document that is not running (chat, trigger, abort, compact, approvals) answer `409 agent_not_running`. Starting a document assembles the runtime on the same workspace; stopping keeps the document open while a session holds it. `GET /agents` lists running agents only.
+
+Opening a document takes no agent lease. A write through a document whose file another runtime runs answers `409 agent_leased`. Behaviour in detail: [design D4 as built](../design/daemon-backend.md#d4-as-built-w2-a).
+
+Code: `src/main/runtime/document-host.ts`, `RuntimeService`, `src/main/daemon/routes/agent-resolver.ts`.
+
+## Client sessions
+
+Clients that need the same view as Studio (Studio in Local or Remote daemon mode, the terminal app) open a client session instead of reading `GET /events`. The routes are internal (`/client/*`, tag `Client (internal)`, `x-adf-stability: internal`) and may change between versions; clients check `clientApiVersion` from `GET /version`.
+
+- A session has its own SSE stream of frames: `executor` (raw executor events), `host` (lifecycle), `push` (inbox, approvals, config changes, mesh, install progress, …) and, on request, `umbilical`. Token deltas go only to the session focused on that agent, whatever `umbilical.stream_deltas` says.
+- Each session has its own ring of 4096 frames and cursor. A resume past the ring, or across a daemon restart, gets `stream.gap`, and the client resyncs.
+- A request with `X-ADF-Client-Session` is not echoed back to its own session; every other session sees the change.
+- A session expires 60 seconds after its stream disconnects and releases its documents. A session opened with `exitDaemonWhenClosed` (Studio with "Keep the daemon running" off) stops a Studio-started daemon when it expires and no other session is open; with other sessions open, the stop waits for the last one and they get `daemon_orphan_hold`.
+- `POST /client/sessions/:id/quit` is Studio's quit: it ends the session and stops the daemon only when Studio started it and no other session is open. `POST /client/reload-credentials` re-reads the credentials Studio moved during a backend switch.
+- Config, document and file writes carry revisions; a stale base answers `409 stale_revision` ([design D5.2](../design/daemon-backend.md#d52-revisions-and-write-conflicts-w3-f)).
+
+Contract: [design D5.1](../design/daemon-backend.md#d51-client-stream-contract-w2-b). Code: `src/main/daemon/client-sessions.ts`, `src/main/daemon/routes/client-routes.ts`, `client-lifecycle-routes.ts`.
+
+## Agent leases
+
+Every runtime host on a machine (an Embedded Studio, each daemon) takes a lease on an agent file before it starts the agent and releases it when the agent stops. A live lease held by another process refuses the start with `agent_leased` and a sentence naming the holder; autostart records `leased_elsewhere`. Runtime hosts register in `<lease dir>/hosts/<pid>.json`, Studio clients in `<lease dir>/clients/<pid>.json`; `adf daemon start` reads them to refuse only an Embedded Studio on the same settings. Code: `src/main/runtime/agent-lease.ts`. Operations: [Studio compatibility](operations.md#studio-compatibility).
 
 ## Dispatch Boundary
 
@@ -108,7 +135,10 @@ GET /events?since=42
 `DaemonRequestGuard` (`request-guard.ts`) first: the `Host` allow-list, the
 `Origin` / `Sec-Fetch-Site` browser check, then the bearer token
 (`daemon-token.ts`) on everything but `GET /health`. Identity routes that move
-secrets and `POST /daemon/shutdown` additionally require a loopback peer. See
+secrets, `POST /daemon/shutdown`, Studio's quit with `stopDaemon` and
+`POST /client/reload-credentials` additionally require a loopback peer;
+owner import and the stored-value reveal routes also require the local proof
+file (`daemon-local-proof`) in every mode. See
 [Base URL and authentication](api-guide.md#base-url-and-authentication).
 
 ## Review Gate
@@ -265,7 +295,11 @@ When a daemon-loaded agent calls `sys_create_adf`, `RuntimeService` marks the ch
 
 The daemon runtime does not yet provide:
 
-- Full file-change trigger semantics without Studio's editor/document source
-- Conflict coordination with a simultaneously running Studio process
+- Full file-change trigger semantics without Studio's editor/document source.
+- A read-only open: opening a document whose file another runtime runs skips the daemon's own open steps, but `AdfWorkspace.open` still runs its maintenance writes (schema migration of an old file, the clean-close marker, the skills registry).
+- Turn ids on `executor` frames: Studio reads `turn.completed`, `agent.error` and `chat.discarded` from the `umbilical` frames of its session instead.
+- A base revision on `PUT /agents/:id/files/raw`; that upload is also echoed to the uploader's own session.
+- Leases across machines: two machines that open one `.adf` on a network share are not protected.
+- On machines without an OS keychain, adoption of Studio's runtime identity: the daemon runs as its own runtime, and files it stamps show as `recognized` in Studio's review.
 
-These are runtime architecture gaps, not ADF file format gaps.
+These are runtime architecture gaps, not ADF file format gaps. The list of open items is the tracker's [review follow-ups](../design/daemon-backend-tracker.md#6-review-follow-ups).

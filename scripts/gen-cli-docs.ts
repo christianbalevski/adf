@@ -138,7 +138,7 @@ const ENV_DOCS: Record<string, { scope: Scope; desc: string }> = {
 }
 
 /** Read by the code but not user settings. */
-const ENV_IGNORED = new Set(['ADF_NODE_ENV_DEFAULTED'])
+const ENV_IGNORED = new Set(['ADF_NODE_ENV_DEFAULTED', 'ADF_VERSION'])
 /** Relevant to CLI users though read outside src/main/{cli,tui}. */
 const ENV_EXTRA = ['ADF_OWNER_PASSPHRASE', 'ADF_OWNER_PASSPHRASE_FILE', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN']
 

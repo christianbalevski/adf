@@ -69,7 +69,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-F | MERGED. Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | MERGED |
 | W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | MERGED |
 | W4-B | Remote mode | 4 | W3-A … W3-D | MERGED |
-| W4-C | Documentation | 4 | W4-A | TODO |
+| W4-C | Documentation | 4 | W4-A | DONE on ws/w4-c (review pending) |
 | W5-A | Full parity run and triage | 5 | W4-A | TODO |
 | W5-B | OS matrix, packaging, Defender, soak | 5 | W4-A | TODO |
 
@@ -298,7 +298,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W0-E | A confirmed plain-http URL cannot be un-confirmed without changing the URL | W4-B (done 5a3dbad7) |
 | W0-B | Template types copied into `src/shared/daemon-client/types.ts` and `src/main/tui/templates/model.ts`; make `model.ts` re-export | W2-B |
 | W0-B | `credentialsFor` implementations MUST honour the explicit `token` argument; document for Studio's implementation | W2-C |
-| W0-B | `api-guide.md` lines 11, 518 and `src/main/tui/CONTRACT.md` 287, 294 still name `src/main/tui/api/*` | W4-C |
+| W0-B | `api-guide.md` lines 11, 518 and `src/main/tui/CONTRACT.md` 287, 294 still name `src/main/tui/api/*` | W4-C (done: both name `src/shared/daemon-client`) |
 | W0-D | If the race-winning daemon is still booting 3 s after our child exits, Studio shows "exited during startup"; keep waiting while a pid file appears or retry `ensure` once | W4-A |
 | W0-D | "Waiting for the ADF daemon (pid N)…" progress is not shown in the UI yet | W4-A |
 | W0-D | Packaged build not verified with a real `node_modules` (junction drops transitive deps); lead verifies `npm run package` in a real checkout | Lead, W5-B |
@@ -324,7 +324,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W1-C | Write `studio-runtime:<scope>` with `serializeStudioRuntimeEntry` + `studioRuntimeScope`; rewrite it after any delegation change (owner import); delete it on the switch back to embedded; move app MCP OAuth with `DaemonAppOAuthStore.importBlob/exportBlob`; send the local proof for `POST /identity/import` | W4-A |
 | W1-C | Unify `src/main/utils/test-seams.ts` with W1-G's `isPackagedRuntime` | Lead (done: both seams use `testSeamsAllowed`) |
 | W1-C | Wire `identity.mcpOAuth` (DaemonAppOAuthStore) into the builder's MCP OAuth path | W1-B / W3-C |
-| W0-C | `agent_leased` message for an endpoint-less stale lease (failed `listen` + reused pid) names an unfindable pid; add the lease file path and remedy | W4-C / W1-A |
+| W0-C | `agent_leased` message for an endpoint-less stale lease (failed `listen` + reused pid) names an unfindable pid; add the lease file path and remedy | W4-C / W1-A (done: `agentLeasedMessage` names the lease file for an unconfirmed holder; every sentence in `docs/cli/troubleshooting.md`) |
 | W0-C | POSIX: "socket missing = dead" also applies to the `tmpdir()` fallback socket (hosts path > 100 chars), which tmp cleaners may delete under a live holder; treat missing as dead only for the 0700 hosts-dir socket | W5-B |
 | W1-D | Unknown/expired identity draft id on create silently mints a fresh DID (console.warn only); report it in the create response | W2-A (done: `identityDraft`, `warnings`) |
 | W1-D | Job cancel only abandons work: OAuth loopback listener lives to its 5 min timeout; an in-flight stdio connect may outlive `disconnectAll` (orphan server process); running jobs unbounded, Python install not deduped | W3-C |
@@ -358,8 +358,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W4-A | Linux `basic_text` safeStorage counts as available for moved-back tokens and MCP blobs (same as embedded today) | W5-B |
 | W4-A | K12: no-keychain machines — `trustedDaemonEncKeys` enrollment fallback not built; switch dialog states it | W5-A |
 | W4-B | DNS pinning covers only `guardedFetch`; `sys_fetch`, `ws_connect`, MCP still check-then-connect (rebinding); NAT64 local-use `64:ff9b:1::/48` and Teredo not mapped; unresolvable-host refusal breaks `NODE_USE_ENV_PROXY` without local DNS | W5-A |
-| W4-B | Plain http to `100.64.0.0/10` counts as tailnet but is also ISP CGNAT; recommend https via MagicDNS in docs | W4-C |
-| W4-B | User-testing checklist items wrong for remote: MODE-06, MODE-07, IDN-02, IDN-03, DMN-20, DMN-22, DMN-18/19 + Remote host row, FILE-16, TMPL-04, MESH-04, COMP-06, FILE-08 | W4-C |
+| W4-B | Plain http to `100.64.0.0/10` counts as tailnet but is also ISP CGNAT; recommend https via MagicDNS in docs | W4-C (done: `docs/cli/remote-daemon.md` Option 2, `docs/guides/studio-backend.md`) |
+| W4-B | User-testing checklist items wrong for remote: MODE-06, MODE-07, IDN-02, IDN-03, DMN-20, DMN-22, DMN-18/19 + Remote host row, FILE-16, TMPL-04, MESH-04, COMP-06, FILE-08 | W4-C (done: rewritten against the code, with MODE-04/05, DMN-02/14/15; new sections SW, HAND, MULTI, STAT, REM; `scripts/check-user-testing-coverage.mjs`) |
 | W3-F | `PUT files/raw` takes no base revision and echoes the upload to the uploader's own session | W5-A |
 | W4-B | A real end push arriving after the 15 s install fallback end is pushed twice; unused `readRemoteToken` import in `connectors.ts` | W5-A |
 | W5-A1 | K12 remaining: a keychain-less daemon that never held the owner phrase can't open Studio-made agents; needs a Studio-side sweep at switch time. Documented limitation (owner machine has a keychain) | post-merge |
@@ -374,7 +374,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W4-B | The Mode control in Settings → Backend still disables Remote while `modeSwitchAvailable` is false; the Remote group's "Switch to remote daemon" is the way in. When W4-A enables the control it keeps `remote` allowed through `REMOTE_SWITCH_AVAILABLE`, and its switch flow reuses `BACKEND_RESTART_STUDIO` | W4-A |
 | W4-B | Provider app keys: the provider form gets `__redacted__` from the daemon (§4.2); a backspaced placeholder (`__redacted_`) is saved as the key, in local and remote mode. Same fix as the MCP form: `editPlaceholderField` in the provider key field, and refuse values made from the placeholder in the settings write | W5-A |
 | W4-B | `POST /oauth/relay` cannot tell whether a sign-in waits at the target (pending flows live in `mcp-admin-routes` and the approvals hub, not shared); it is bounded instead (§9.4). A shared registry of pending loopback callbacks would let it refuse every other port | Lead |
-| W4-B | Docs: remote Studio (Settings → Backend actions, daemon-side picker, upload of a local file, OAuth relay, `tailscale serve`, `ADF_DAEMON_BROWSE_ROOTS`) in `docs/cli/remote-daemon.md` and the Studio guide; user-testing DMN-20 expects owner routes through an SSH tunnel, which Studio refuses by design (§9.4) | W4-C |
+| W4-B | Docs: remote Studio (Settings → Backend actions, daemon-side picker, upload of a local file, OAuth relay, `tailscale serve`, `ADF_DAEMON_BROWSE_ROOTS`) in `docs/cli/remote-daemon.md` and the Studio guide; user-testing DMN-20 expects owner routes through an SSH tunnel, which Studio refuses by design (§9.4) | W4-C (done: `docs/guides/studio-backend.md` Remote daemon in Studio; DMN-20, IDN-02/03 and section REM of the checklist) |
 
 ## 7. Parity triage (filled in W5-A)
 

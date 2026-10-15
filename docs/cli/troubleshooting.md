@@ -28,7 +28,7 @@ npm i -g @agentdocumentformat/cli
 | Message | Fix |
 |---|---|
 | `adf needs Node.js 22 or newer` | Upgrade Node.js (`node --version`) |
-| `ADF Studio is running.` / `Another ADF runtime on the same settings is already running` | See [Studio at the same time](#studio-at-the-same-time) |
+| `ADF Studio (pid N) is running agents from the same settings file (…).` / `ADF Studio is running.` / `Another ADF runtime on the same settings is already running` | See [Studio at the same time](#studio-at-the-same-time) |
 | `The daemon exited during startup (code N).` | Read the log lines shown (or `adf daemon logs`). Run `adf daemon` in the foreground to watch it start |
 | `The daemon did not answer …/health within 90s.` | Same; a first start that installs or migrates can be slow. `adf daemon status` shows whether it came up |
 | `Waiting for the ADF daemon starting as pid N…` | A daemon is already starting under that pid file; wait, or stop it (`adf daemon stop`) |
@@ -75,24 +75,115 @@ name you used: add it to the daemon's `ADF_DAEMON_ALLOWED_HOSTS`. See
 
 ## Studio at the same time
 
-ADF Studio and the daemon share settings and would run the same agents from
-the same files twice, so `adf` does not start a daemon while Studio runs:
+ADF Studio runs agents in one of three backends
+([Studio backend](../guides/studio-backend.md)). In **Local daemon** mode
+Studio uses the same daemon as `adf`: both are clients and run side by side.
+In **Embedded** mode Studio runs agents itself, from the same settings and
+files, so `adf` does not start a daemon while an Embedded Studio runs on the
+same settings:
 
 ```text
-ADF Studio is running.
+ADF Studio (pid 4242) is running agents from the same settings file (C:\Users\me\AppData\Roaming\ADF Studio\adf-settings.json).
 Studio and the daemon would run the same agents from the same files at once.
 Quit ADF Studio, then run adf again. Or keep using Studio.
 ```
 
-Quit Studio and run `adf` again. To run both on purpose, give the daemon
-separate data (`ADF_DAEMON_SETTINGS=/path/to/other/adf-settings.json`), or
-override the check with `adf daemon start --force` (only when you know they
-will not load the same agents).
+Choose one:
+
+- Switch Studio to **Local daemon** (Settings → Backend). Studio and `adf`
+  then share one daemon.
+- Quit Studio and run `adf` again.
+- Give the daemon separate data
+  (`ADF_DAEMON_SETTINGS=/path/to/other/adf-settings.json`), or override the
+  check with `adf daemon start --force`. The agent lease still keeps each
+  agent file in one runtime ([below](#agent-is-already-running-agent_leased)),
+  but both runtimes want mesh port 7295.
+
+Studio versions that do not record themselves in the lease folder are
+detected the old way (the mesh `/ping` answer, or an `ADF Studio` process);
+that check prints `ADF Studio is running.`
+
+## Agent is already running (`agent_leased`)
+
+On one computer, one agent file runs in one runtime at a time (an Embedded
+Studio, or a daemon). Each runtime takes a lease on the agent file when it
+starts the agent. Starting it in a second runtime is refused with code
+`agent_leased` and one of these sentences:
+
+| Sentence | What to do |
+|---|---|
+| `agent-1 is already running in the ADF daemon (pid N[, url]). Stop it there with "adf stop agent-1", or stop that daemon with "adf daemon stop", then start it here.` | As it says |
+| `agent-1 is already running in another ADF Studio (pid N). Stop the agent there or quit that Studio, then start it here.` | As it says |
+| `agent-1 is already running on another machine (host, pid N) that shares this lease folder. Stop it there, then start it here.` | The lease folder is on a shared home directory; stop it on that machine |
+| `… That process uses the settings file …` | The holder runs on other settings (a second daemon with `ADF_DAEMON_SETTINGS`) |
+| `… ADF cannot confirm that pid N is still that process: it recorded no endpoint to check. If no ADF Studio or daemon runs agent-1, delete the lease file <path> and start it again.` | Check `adf daemon status` and Task Manager / `ps`. If neither runs the agent, delete that file |
+| `… ADF could not confirm it: <url> did not answer the check, which a busy daemon also does. Wait a moment and try again; "adf daemon status" shows whether that daemon runs.` | Wait and retry. Do not delete the lease |
+| `agent-1 could not be started: its lease file <path> could not be read or replaced (…). If no other ADF Studio or daemon runs this agent, delete that file and start it again.` | As it says |
+
+Autostart skips such an agent and reports it as `leased_elsewhere`; the
+terminal app's fleet shows the sentence.
+
+**Lease files.** One JSON file per agent file, named by a hash of the agent
+file's real path, in a per-user folder that does not depend on the settings
+file:
+
+| OS | Lease folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\adf\leases` |
+| macOS | `~/Library/Application Support/adf/leases` |
+| Linux | `$XDG_CONFIG_HOME/adf/leases` (default `~/.config/adf/leases`) |
+
+`ADF_LEASE_DIR` overrides it. The file names the holder (`kind`, `pid`,
+`settingsPath`, `controlUrl` for a daemon). `hosts/<pid>.json` lists the
+runtimes on this machine and `clients/<pid>.json` the Studios in daemon mode.
+A lease whose holder is gone is replaced at the next start; delete one by
+hand only when a sentence above says so.
+
+**Lease folder not writable.** `Agent leases unavailable: <folder> cannot be
+written (…). agent-1 runs without protection against a second ADF Studio or
+daemon on this machine running it.` The agent starts anyway. Fix the
+folder's permissions.
+
+**Files open in two runtimes.** An agent file another runtime runs can still
+be opened and read. A write to it through the daemon (config, files, review
+accept) answers `409 agent_leased` with the same sentence.
+
+## The daemon's local proof
+
+Owner import (`adf identity import`) and the reveal of stored credential
+values need, besides the token, a secret the daemon writes at every start to
+`<data dir>/daemon-local-proof` (`daemon-local-proof-<port>` off the default
+port). Only `adf` and Studio on the daemon's machine send it. If the daemon
+cannot restrict that file to your user (Windows `icacls` failure), it runs
+without a proof and those routes answer `403 loopback_only`.
+`adf daemon status` then prints `proof     unavailable: …`, and Studio's
+Settings → Backend says "The daemon runs without its local proof …". Fix the
+data folder's permissions (or move it into your user profile) and run
+`adf daemon restart`.
+
+## Containers left running
+
+When a daemon or Studio stops, it stops only the compute containers it
+started or still uses. A container another runtime uses (most often the
+shared `adf-mcp`) is left running, and the log says so:
+`[Compute] Leaving adf-mcp running (used by …)`. Settings → Compute shows the
+same as "adf-mcp was left running: used by …", and each container row names
+the other runtimes that use it ("Also used by …"). Removing or rebuilding such
+a container from Settings → Compute deletes it anyway; the other runtime
+creates it again when it needs it.
+
+A container whose owner crashed (no live runtime claims it) is stopped by the
+next graceful stop of any runtime. The reason "owner unknown: unreadable
+container claims of …" means another live runtime's record in the lease
+folder could not be read, so the container was kept to be safe.
 
 ## macOS keeps asking for Keychain access
 
-The daemon (a `node` process) reads the owner identity Studio stored in the
-Keychain. macOS asks the first time; choose **Always Allow**. If it asks at
+The daemon (a `node` process, or Studio's own binary when Studio starts it in
+Local daemon mode) reads the owner identity and, in Local daemon mode, Studio's
+runtime key from the Keychain. macOS asks the first time; choose **Always
+Allow**. That grants access to the binary that runs the daemon, and to any
+script it runs. If it asks at
 every start, open Keychain Access, find the `ADF` item, and allow `node`
 under Access Control. To keep the keychain out of it, set
 `ADF_KEYCHAIN=0` (the identity then lives in a passphrase file; see
@@ -120,7 +211,9 @@ access clipboard".
 ## Sign-in problems
 
 - `adf auth` (or `/auth`) shows who is signed in. The daemon's sign-in is
-  separate from Studio's: sign in here even if Studio is signed in.
+  separate from an Embedded Studio's: sign in here even if Studio is signed
+  in. Switching Studio to Local daemon moves Studio's ChatGPT, Grok and MCP
+  sign-ins to the daemon ([what moves](../guides/studio-backend.md#what-moves-during-a-switch)).
 - **The browser does not open:** the URL is printed (in the app, `c` copies
   it); open it by hand.
 - **Timed out:** the sign-in was not finished in time; run it again.
