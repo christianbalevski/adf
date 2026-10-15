@@ -512,7 +512,11 @@ export function createBackendSettingsStore(deps: {
       log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
     }
     const notices = [...result.notices]
+    // Choosing the running mode while a switch waits for its turns is the latest choice: that switch is cancelled (as Cancel Switch).
+    const replaced = !switching && result.config.mode !== previous.mode && switchAction === undefined ? deps.cancelSwitch?.() ?? null : null
+    if (replaced) log.log(`[Backend] Switch to ${replaced} cancelled: ${result.config.mode} was chosen again`)
     if (switching) notices.push((deps.applyModeSwitch?.(result.config.mode)) || 'Studio restarts now.')
+    else if (replaced) notices.push('Switch cancelled; Studio stays in this mode.')
     else if (result.config.mode !== previous.mode) notices.push('Studio already runs this mode; no restart is needed.')
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
     if (switchAction === 'cancel') notices.splice(0, notices.length, 'Switch cancelled; Studio stays in this mode.')

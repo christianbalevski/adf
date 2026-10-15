@@ -321,7 +321,12 @@ export function createModeSwitcher(ctx: SwitchContext) {
   }
 
   const apply = (target: StudioBackendMode): string => {
-    const chosen = choice?.target === target ? choice : { target, wait: false, agents: resumesAgents(ctx.activeMode, target) ? ctx.agentActivity().map((a) => a.filePath) : [] }
+    // A switch still waiting for its turns is replaced: the latest choice wins, and its poll must not restart Studio too.
+    if (pending) {
+      console.log(`[Backend] Switch to ${pending.target} replaced by a switch to ${target}`)
+      pending.cancel()
+    }
+    const chosen =choice?.target === target ? choice : { target, wait: false, agents: resumesAgents(ctx.activeMode, target) ? ctx.agentActivity().map((a) => a.filePath) : [] }
     choice = null
     const record: ResumeRecord = { v: 1, from: ctx.activeMode, to: target, agents: chosen.agents, at: new Date().toISOString() }
     const restart = async (): Promise<void> => {

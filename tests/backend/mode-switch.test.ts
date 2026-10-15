@@ -276,6 +276,23 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(s.finishNow()).toBeNull()
   })
 
+  it('a second switch while one waits replaces it: one restart, into the latest choice (W5-F)', async () => {
+    let busy = true
+    const { s, relaunched } = switcher(() => [{ filePath: agent1, busy }])
+    h.responses.push(0)
+    await s.confirm('local')
+    s.apply('local')
+    h.responses.push(0)
+    await s.confirm('remote')
+    s.apply('remote')
+    expect(s.pendingSwitch()).toEqual({ target: 'remote', waitingFor: ['agent-1'], gaveUp: false })
+    busy = false
+    await vi.waitFor(() => expect(relaunched).toEqual(['remote']), { timeout: 3000 })
+    await new Promise((r) => setTimeout(r, 1300))
+    expect(relaunched).toEqual(['remote'])
+    expect(JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))).toMatchObject({ from: 'embedded', to: 'remote', agents: [] })
+  })
+
   it('a launch in another mode (a session-only override) leaves the record for the switch\'s own launch', async () => {
     writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'embedded', to: 'local', agents: [agent1], at: new Date().toISOString() }))
     const start = vi.fn()

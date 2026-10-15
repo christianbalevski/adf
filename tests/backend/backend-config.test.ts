@@ -178,6 +178,25 @@ describe('Settings → Backend store', () => {
     expect(restarted).toEqual(['local'])
   })
 
+  it('choosing the running mode while a switch waits cancels that switch, as the latest choice (W5-F)', async () => {
+    let waiting: 'local' | null = null
+    const path = tempConfigPath()
+    const rec = recordingLog()
+    const s = createBackendSettingsStore({
+      boot: resolveBootBackend(path, {}, rec.log), codec: fakeCodec(), log: rec.log,
+      confirmModeSwitch: async () => true,
+      applyModeSwitch: (target) => { waiting = target as 'local'; return 'Studio restarts once the turns in flight finish (agent-1).' },
+      pendingSwitch: () => (waiting ? { target: waiting, waitingFor: ['agent-1'], gaveUp: false } : null),
+      cancelSwitch: () => { const t = waiting; waiting = null; return t },
+    })
+    await s.set({ mode: 'local' })
+    expect(waiting).toBe('local')
+    expect(await s.set({ mode: 'embedded' })).toMatchObject({ ok: true, notices: ['Switch cancelled; Studio stays in this mode.'] })
+    expect(waiting).toBeNull()
+    expect(s.get().pendingSwitch).toBeNull()
+    expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('embedded')
+  })
+
   it('a switch to remote goes through the switch dialog and the restart, as every switch (W4-B on W4-A)', async () => {
     const asked: string[] = []
     const restarted: string[] = []
