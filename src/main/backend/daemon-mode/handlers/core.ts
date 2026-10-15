@@ -1,7 +1,8 @@
 import { dialog } from 'electron'
 import { basename, dirname } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'
-import type { AgentStatus, ChatHistory } from '../../../../shared/daemon-client'
+import { DaemonError, type AgentStatus, type ChatHistory } from '../../../../shared/daemon-client'
+import { CHAT_BODY_LIMIT_BYTES } from '../../../../shared/constants/chat-limits'
 import { resolveStartInState, type AgentConfig } from '../../../../shared/types/adf-v02.types'
 import { MAX_INLINE_BINARY_BYTES } from '../../../../shared/utils/image-files'
 import type { FleetPendingInteraction } from '../../../../shared/types/ipc.types'
@@ -28,6 +29,17 @@ import { isTempLocation } from '../documents/file-handlers'
 
 /** Same window as embedded DOC_GET_BATCH / DOC_GET_CHAT. */
 const LOOP_DISPLAY_LIMIT = 200
+
+const MIB = 1024 * 1024
+/** AGENT_INVOKE: a chat over the daemon's chat route limit, with both sizes. */
+function chatTooLarge(bytes: number): string {
+  const size = bytes > 0 ? `${(bytes / MIB).toFixed(1)} MB encoded; ` : ''
+  return `This message is too large to send: ${size}the ADF daemon accepts at most ${CHAT_BODY_LIMIT_BYTES / MIB} MB per chat message (attachments count base64-encoded). Send fewer or smaller attachments.`
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 /** Embedded DOC_READ_INTERNAL_FILE's text extensions (ipc/index.ts). */
 const TEXT_EXTS = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
@@ -335,24 +347,41 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
   },
 
   [IPC.AGENT_INVOKE]: async (ctx, _event, args: { userMessage?: string; filePath?: string; content?: Array<{ type: string }>; loop?: string }) => {
-    const client = await ctx.ready()
     const target = args?.filePath ?? ctx.session.filePath
+    // The renderer shows the message and a spinner before it calls, and reads
+    // no answer: a chat that does not run ends in the chat itself (an error
+    // row and idle, as embedded's executor ends a failed turn).
+    let agentId: string | null = null
+    const failed = (error: string) => {
+      if (target) ctx.bridge.reportChatFailure({ agentId, filePath: target }, args?.loop, error)
+      return { success: false, error }
+    }
     if (!target) return { success: false, error: 'Agent not running' }
-    const agentId = samePath(target, ctx.session.filePath) && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(target)
-    if (!agentId || !(await agentStatus(ctx, agentId))) return { success: false, error: 'Agent not running' }
+    let client: Awaited<ReturnType<DaemonModeContext['ready']>>
+    try {
+      client = await ctx.ready()
+      agentId = samePath(target, ctx.session.filePath) && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(target)
+      if (!agentId || !(await agentStatus(ctx, agentId))) return failed('Agent not running')
+    } catch (error) {
+      return failed(errorText(error))
+    }
     // Content blocks (images, files) go as they are, as embedded's content_json.
     const blocks = Array.isArray(args?.content) && args.content.length > 0 ? args.content : null
-    const body = blocks ? { content: blocks } : { text: args?.userMessage ?? '' }
+    const body = { ...(blocks ? { content: blocks } : { text: args?.userMessage ?? '' }), ...(args?.loop ? { loop: args.loop } : {}), echoed: true }
+    const size = blocks ? Buffer.byteLength(JSON.stringify(body)) : 0
+    if (size > CHAT_BODY_LIMIT_BYTES) return failed(chatTooLarge(size))
     try {
       // `echoed`: the renderer already shows the message, as embedded's dispatch marks it.
-      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body: { ...body, ...(args?.loop ? { loop: args.loop } : {}), echoed: true } })
+      const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body })
       // Embedded resolves once the dispatched turn has run; so does this.
       const outcome = await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
-      if (outcome === 'disconnected') return { success: false, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }
-      if (outcome === 'timeout') return { success: false, error: `No end of the turn arrived from the ADF daemon within ${TURN_WAIT_TIMEOUT_MS / 60_000} minutes.` }
+      if (outcome === 'disconnected') return failed('The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.')
+      if (outcome === 'timeout') return failed(`No end of the turn arrived from the ADF daemon within ${TURN_WAIT_TIMEOUT_MS / 60_000} minutes.`)
       return { success: true }
     } catch (error) {
-      return { success: false, error: String(error) }
+      // A daemon of another build may hold a smaller limit than this Studio checks.
+      if (error instanceof DaemonError && error.status === 413) return failed(chatTooLarge(size))
+      return failed(errorText(error))
     }
   },
 }

@@ -286,6 +286,32 @@ export class EventBridge {
     })
   }
 
+  /**
+   * A chat Studio sent did not run (AGENT_INVOKE failed: not delivered,
+   * refused, the daemon went away before its turn ended). The renderer
+   * already shows the message and its spinner and reads no AGENT_INVOKE
+   * answer, so the chat gets what embedded's executor sends on a failed
+   * turn: an `error` event, then `state_changed` idle, routed as the
+   * daemon's own events (open file: AGENT_EVENT; else the background list).
+   */
+  reportChatFailure(target: { agentId: string | null; filePath: string }, loop: string | undefined, error: string): void {
+    const timestamp = this.now()
+    const onLoop = loop && loop !== 'main' ? { loop } : {}
+    this.log.warn(`[Backend] The chat to ${target.filePath}${loop && loop !== 'main' ? ` (${loop})` : ''} did not run: ${error}`)
+    const events = [
+      { type: 'error', payload: { error }, timestamp, ...onLoop },
+      { type: 'state_changed', payload: { state: 'idle' }, timestamp, ...onLoop },
+    ] as AgentExecutionEvent[]
+    for (const event of events) {
+      if (target.agentId && this.agents.has(target.agentId)) {
+        this.onExecutor({ kind: 'executor', agentId: target.agentId, filePath: target.filePath, event })
+      } else if (this.deps.session.isFocused(target.agentId ?? '', target.filePath)) {
+        // Not running in the daemon (any more): only the open file's chat shows it.
+        this.sendForeground(target.agentId ?? '', target.filePath, event)
+      }
+    }
+  }
+
   /** End every open wait (the connector failed, or the daemon stayed away past the grace period). */
   failTurns(outcome: Extract<TurnOutcome, 'disconnected' | 'stopped'>): void {
     for (const w of [...this.waiters]) w.resolve(outcome)

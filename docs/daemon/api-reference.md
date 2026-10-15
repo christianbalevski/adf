@@ -3290,7 +3290,7 @@ Operation `chatAgent` Â· bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `text` | string |  |  |
-| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB. |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB. |
 | `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
 | `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
@@ -17679,7 +17679,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `text` | string |  |  |
-| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB. |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB. |
 | `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
 | `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |

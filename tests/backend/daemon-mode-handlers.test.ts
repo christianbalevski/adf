@@ -206,6 +206,45 @@ describe('daemon-mode handlers: review fixes', () => {
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
   })
 
+  it('a failed AGENT_INVOKE ends in the chat: an error row and idle, as embedded ends a failed turn (W5-D2)', async () => {
+    daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-1.adf'), agentId: AGENT, loaded: true, tracked: false }))
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+    daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: false, unlocked: false }))
+    await electronStub.handlers.get(IPC.FILE_OPEN)!({}, { filePath: join(dir, 'agent-1.adf') })
+    const agentEvents = () => electronStub.pushes.filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0] as { type: string; payload: { error?: string; state?: string }; loop?: string })
+
+    // Lost while it waited for its turn.
+    daemon.routes.set(`POST /agents/${AGENT}/chat`, () => ({ status: 202, body: { accepted: true, turnId: 'turn_lost' } }))
+    electronStub.pushes.length = 0
+    const lost = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' }))
+    await new Promise((r) => setTimeout(r, 20))
+    handle.bridge.failTurns('disconnected')
+    expect(await lost).toEqual({ success: false, error: expect.stringContaining('connection to the ADF daemon was lost') })
+    expect(agentEvents()).toEqual([
+      { type: 'error', payload: { error: expect.stringContaining('connection to the ADF daemon was lost') }, timestamp: expect.any(Number) },
+      { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number) },
+    ])
+
+    // Over the chat route's body limit (a daemon of another build): the error names the limit; on a side loop, the loop's events.
+    daemon.routes.set(`POST /agents/${AGENT}/chat`, () => ({ status: 413, body: { statusCode: 413, code: 'FST_ERR_CTP_BODY_TOO_LARGE', error: 'Payload Too Large', message: 'Request body is too large' } }))
+    electronStub.pushes.length = 0
+    const content = [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }]
+    const big = await electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { content, loop: 'reflection' }) as { success: boolean; error: string }
+    expect(big.success).toBe(false)
+    expect(big.error).toMatch(/^This message is too large to send: 0\.0 MB encoded; the ADF daemon accepts at most 128 MB per chat message/)
+    expect(agentEvents()).toEqual([
+      { type: 'error', payload: { error: big.error }, timestamp: expect.any(Number), loop: 'reflection' },
+      { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number), loop: 'reflection' },
+    ])
+
+    // Not running: refused before anything is sent, shown the same way.
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ status: 404, body: { error: 'Unknown agent' } }))
+    electronStub.pushes.length = 0
+    expect(await electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' })).toEqual({ success: false, error: 'Agent not running' })
+    expect(agentEvents().map((e) => [e.type, e.payload.error ?? e.payload.state])).toEqual([['error', 'Agent not running'], ['state_changed', 'idle']])
+    await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
+  })
+
   it('W2-A routes: DOC_GET_BATCH and DOC_GET_HEADER in the embedded shape; AGENT_INVOKE sends content blocks as they are', async () => {
     daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-1.adf'), agentId: AGENT, loaded: true, tracked: false }))
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))

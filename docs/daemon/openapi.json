@@ -18151,7 +18151,7 @@
           },
           "content": {
             "type": "array",
-            "description": "The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB.",
+            "description": "The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB.",
             "items": {
               "type": "object",
               "required": [
