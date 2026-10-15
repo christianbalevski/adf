@@ -161,7 +161,10 @@ export async function changeAgentConfig<C extends object>(change: (config: C) =>
     if (!read?.config) return null
     const updated = change(read.config as unknown as C)
     const saved = await api.setAgentConfig(updated, read.revision !== undefined ? { baseRevision: read.revision } : undefined)
-    if (saved?.conflict) continue
+    if (saved?.conflict) {
+      console.info(`[Config] Changed elsewhere since it was read (by ${describeWriter(saved.conflict.writer)}, revision ${saved.conflict.revision}); applying the change again over it (attempt ${attempt + 2} of 3)`)
+      continue
+    }
     if (saved && saved.success === false) return null
     const store = useAgentStore.getState()
     store.setConfig(updated as never)

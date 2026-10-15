@@ -720,7 +720,7 @@ export interface AdfApi {
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
   recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => Promise<{ success: boolean }>
   /** Copies left by a quit or crash with the notice up. */
-  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; path: string; file: string; modifiedAt: number }> }>
+  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number }> }>
   /** Dismiss: move them under recovered/archive/<time>/. */
   recoveryArchive: () => Promise<{ moved: number }>
   recoveryReveal: () => Promise<{ success: boolean }>
