@@ -9,7 +9,7 @@
  * file or in memory.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -141,6 +141,14 @@ function hasWorkingSlot(filePath: string, label: string, privateKey: Buffer): bo
   }
 }
 
+async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('timed out')
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
+
 const disk = () => JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
 const withProof = { 'x-adf-local-proof': PROOF }
 
@@ -235,40 +243,56 @@ describe('K12: trust-daemon and untrust-daemon (owner actions)', () => {
     }
   })
 
-  it('untrust revokes: the key leaves the list, a loaded agent loses its slot, Studio revokes the rest, and the daemon never adds it back', async () => {
+  it('untrust revokes: the key leaves the list and is rotated, loaded and tracked agents lose the slot, an unloaded copy loses it when opened, and nothing is re-added', async () => {
     const s = makeStudio()
     const first = studioAgent(s.svc, 'agent-1')
     const second = studioAgent(s.svc, 'agent-2')
     const d = makeDaemonApi()
+    d.settings.set('trackedDirectories', [agentsDir])
     d.identity.restore({ mnemonic: s.phrase, passphrase: PASSPHRASE })
     expect((await d.server.inject({ method: 'POST', url: '/identity/trust-daemon', headers: withProof, payload: { confirm: true } })).statusCode).toBe(200)
     expect(daemonRead(d.identity, second)).toBe('value-of-agent-2')
-    expect(hasWorkingSlot(second, d.encKey.label, d.encKey.privateKeyPkcs8)).toBe(true)
     const ref = await d.runtime.loadAgent(first)
-    expect(hasWorkingSlot(first, d.encKey.label, d.encKey.privateKeyPkcs8)).toBe(true)
+    const old = { label: d.encKey.label, privateKey: d.encKey.privateKeyPkcs8 }
+    expect(hasWorkingSlot(first, old.label, old.privateKey)).toBe(true)
+    expect(hasWorkingSlot(second, old.label, old.privateKey)).toBe(true)
+    // A copy outside the tracked folders, as a backup or a file sent elsewhere.
+    const outside = join(root, 'outside', 'agent-2.adf')
+    mkdirSync(join(root, 'outside'), { recursive: true })
+    copyFileSync(second, outside)
 
     const revoked = await d.server.inject({ method: 'POST', url: '/identity/untrust-daemon', headers: withProof })
     expect(revoked.statusCode).toBe(200)
-    expect(revoked.json()).toMatchObject({ trust: { state: 'not-trusted' }, agentsUpdated: 1 })
+    expect(revoked.json()).toMatchObject({ trust: { state: 'not-trusted' }, retiredLabel: old.label, agentsUpdated: 1, sweep: 'started' })
+    expect(revoked.json().trust.label).not.toBe(old.label)
     expect(disk().trustedDaemonEncKeys).toEqual([])
-    expect(hasWorkingSlot(first, d.encKey.label, d.encKey.privateKeyPkcs8)).toBe(false)
+    // The key file holds a new key; the old one is no longer used.
+    const rotated = ensureDaemonEncKey(h.userDataDir)
+    expect(rotated.label).not.toBe(old.label)
+    expect(rotated.privateKeyPkcs8.equals(old.privateKey)).toBe(false)
+    expect(hasWorkingSlot(first, old.label, old.privateKey)).toBe(false) // loaded: at once
+    await waitFor(() => !hasWorkingSlot(second, old.label, old.privateKey)) // tracked: the background sweep
     await d.runtime.unloadAgent(ref.id, { mode: 'immediate' })
 
-    // The daemon opens agents with the owner key again: it adds neither the key nor a slot.
-    expect(daemonRead(d.identity, first)).toBe('value-of-agent-1')
-    expect(daemonRead(d.identity, second)).toBe('value-of-agent-2')
-    expect(disk().trustedDaemonEncKeys).toEqual([])
-    expect(hasWorkingSlot(first, d.encKey.label, d.encKey.privateKeyPkcs8)).toBe(false)
+    // The copy outside the tracked folders still carries the old slot: whoever holds the old key file can open it until it is opened here.
+    expect(hasWorkingSlot(outside, old.label, old.privateKey)).toBe(true)
+    // A daemon restarted without the passphrase, on the rotated key: nothing unlocks, and opening the copy removes the old slot.
+    const restarted = makeDaemon()
+    expect(restarted.encKey.label).toBe(rotated.label)
+    expect(daemonRead(restarted.identity, first)).toBeNull()
+    expect(daemonRead(restarted.identity, second)).toBeNull()
+    expect(daemonRead(restarted.identity, outside)).toBeNull()
+    expect(hasWorkingSlot(outside, old.label, old.privateKey)).toBe(false)
 
-    // Embedded Studio's next unlock revokes the slot the daemon could not reach.
+    // With the owner key the daemon opens agents again, and adds neither its key nor a slot.
+    expect(daemonRead(d.identity, first)).toBe('value-of-agent-1')
+    expect(disk().trustedDaemonEncKeys).toEqual([])
+    expect(hasWorkingSlot(first, rotated.label, rotated.privateKeyPkcs8)).toBe(false)
+    // Embedded Studio wraps nothing to either key any more.
     const s2 = makeStudio()
-    const ws = AdfWorkspace.open(second)
-    try {
-      s2.svc.unlockWorkspaceEnvelopes(ws)
-    } finally {
-      ws.close()
-    }
-    expect(hasWorkingSlot(second, d.encKey.label, d.encKey.privateKeyPkcs8)).toBe(false)
+    const third = studioAgent(s2.svc, 'agent-3')
+    expect(hasWorkingSlot(third, old.label, old.privateKey)).toBe(false)
+    expect(hasWorkingSlot(third, rotated.label, rotated.privateKeyPkcs8)).toBe(false)
   })
 
   it('a junk slot under the daemon label is replaced once trusted (label squat)', async () => {

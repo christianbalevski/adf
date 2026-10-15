@@ -11,7 +11,9 @@
 // is refused when the daemon reads the OS keychain and without the owner key.
 // The grant is an entry in the settings file (`trustedDaemonEncKeys`), not a
 // signed statement. Loaded agents get (or lose) their slot at once; other
-// agents when this daemon or Studio next opens them.
+// agents when this daemon or Studio next opens them. Untrust also rotates the
+// daemon's key (the old one is no longer used) and sweeps the tracked
+// folders in the background for slots of the revoked key.
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { DaemonIdentityError } from '../daemon-identity'
@@ -67,8 +69,12 @@ export function registerIdentityTrustRoutes(server: FastifyInstance, ctx: Daemon
     if (!requireLocalCaller(request, reply, ctx.localAccess, OWNER_ACTION)) return reply
     if (!requireLocalProof(request, reply, ctx.localAccess.localProof ?? null, PROOF_REFUSAL)) return reply
     try {
-      const trust = identity.untrustDaemon()
-      return { trust, agentsUpdated: applyToLoaded() }
+      const { retiredLabel, ...trust } = identity.untrustDaemon()
+      const agentsUpdated = applyToLoaded()
+      // Tracked agents that are not loaded: in the background, one file per macrotask.
+      const loaded = new Set(ctx.runtime.listAgents().map((ref) => ref.filePath).filter((p): p is string => !!p))
+      void identity.sweepRevokedSlots(loaded).catch((err) => console.error('[ADF Daemon] Revoked-slot sweep failed:', err instanceof Error ? err.message : err))
+      return { trust, retiredLabel, agentsUpdated, sweep: 'started' }
     } catch (err) {
       return sendError(reply, err)
     }

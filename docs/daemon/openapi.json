@@ -4343,7 +4343,7 @@
           "Owner identity"
         ],
         "summary": "Revoke the owner's trust in this daemon's key",
-        "description": "K12. Removes the daemon's key from `trustedDaemonEncKeys`; loaded agents lose its slot at once, other agents when ADF Studio next opens them. The daemon never adds the key back by itself. Local callers only, always with the local proof.",
+        "description": "K12. Removes the daemon's key from `trustedDaemonEncKeys` and rotates it: a new key replaces the key file, the old one is no longer used, and its label is recorded as revoked. Loaded agents lose the slot at once, agents in the tracked folders in a background sweep (`sweep: started`), any other agent when this daemon or ADF Studio next opens it. A copy outside the tracked folders keeps the old slot until it is opened; anyone holding a copy of the old key file can open that slot until then. Slots of the daemon's own runtime wrapped to the old key open again after the next owner-key unlock. The daemon never adds a key back by itself. Local callers only, always with the local proof.",
         "operationId": "untrustDaemonKey",
         "responses": {
           "200": {

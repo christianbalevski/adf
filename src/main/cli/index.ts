@@ -871,7 +871,13 @@ async function identityCommand(io: CliIo, options: CliOptions, args: string[]): 
     }
     const result = isRecord(answer) ? answer : {}
     const trust = isRecord(result.trust) ? result.trust : {}
-    io.stdout(`${String(trust.message ?? '')}\nSlots removed from ${String(result.agentsUpdated ?? 0)} loaded agent(s); ADF Studio removes the others when it next opens them.\n`)
+    io.stdout(
+      `Revoked key ${String(result.retiredLabel ?? '')}: the daemon now uses a new key, and the old one no longer opens anything here.\n` +
+      `Slots removed from ${String(result.agentsUpdated ?? 0)} loaded agent(s); the tracked folders are swept in the background, and\n` +
+      'ADF Studio removes the slot from each agent it opens. A copy of an agent outside the tracked folders keeps the old slot\n' +
+      'until it is opened, and anyone holding a copy of the old key file can open that slot until then.\n' +
+      `${String(trust.message ?? '')}\n`,
+    )
     return 0
   }
 
