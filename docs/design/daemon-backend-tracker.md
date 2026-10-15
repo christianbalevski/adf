@@ -69,7 +69,8 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W3-F | MERGED. Multi-client write conflicts: revisions + `If-Match` on config/document/file writes, `409 stale_revision`, "changed elsewhere" handling in Studio and TUI editors. Baseline (embedded today): an external (agent) write replaces the open tab and discards unsaved local edits (`editor-tabs.store.ts` `updateTabFromExternal`), and the save layer drops a pending autosave (`lastExternalWrite`). Another client's save arrives through the same path, so parity holds without W3-F; W3-F is an improvement for both modes | 3 | W2-A, W2-B | MERGED |
 | W4-A | Mode switch, handover, quit behaviour | 4 | W3-A, W3-B, W1-C, W0-D, **W1-G (hard)** | MERGED |
 | W4-B | Remote mode | 4 | W3-A … W3-D | MERGED |
-| W4-C | Documentation | 4 | W4-A | DONE on ws/w4-c (review pending) |
+| W4-C | Documentation | 4 | W4-A | MERGED |
+| W5-C | UX code fixes found by the checklist review | 5 | W4-C review | MERGED |
 | W5-A | Full parity run and triage | 5 | W4-A | TODO |
 | W5-B | OS matrix, packaging, Defender, soak | 5 | W4-A | TODO |
 
