@@ -344,6 +344,7 @@
       llmMessages: []
       uiLog: []
       version: 1
+    configRevision: "<rev#1>"
     contextBaseline: null
     document: |
       # agent-1
@@ -351,6 +352,7 @@
       Created: 2026-10-14
       Status: New agent, self-configuring.
       
+    documentRevision: "<rev#2>"
     lastTokens: undefined
     statusText: ""
 3. invoke adf:doc:read-internal-file  [pushes 0→0]
@@ -374,6 +376,7 @@
       <!-- One line per page: - [title](adf-file://mind/slug.md) — one-line hook -->
       
     mimeType: "text/markdown"
+    revision: "<rev#3>"
     size: 380
 4. invoke adf:doc:read-internal-file  [pushes 0→0]
   args:
@@ -411,6 +414,7 @@
       <!-- Where I came from, who I work for, what I'm becoming. Fill in as it happens. -->
       
     mimeType: "text/markdown"
+    revision: "<rev#4>"
     size: 1067
 5. invoke adf:doc:write-internal-file  [pushes 0→0]
   args:
@@ -418,6 +422,7 @@
       content: "from Studio"
       path: "note.md"
   result:
+    revision: "<rev#5>"
     success: true
 6. invoke adf:doc:read-internal-file  [pushes 0→0]
   args:
@@ -428,6 +433,7 @@
     binary: false
     content: "from Studio"
     mimeType: "text/markdown"
+    revision: "<rev#5>"
     size: 11
 7. invoke adf:doc:get-document  [pushes 0→0]
   args: []
@@ -438,6 +444,7 @@
       Created: 2026-10-14
       Status: New agent, self-configuring.
       
+    revision: "<rev#2>"
 8. invoke adf:agent:start  [pushes 0→0]
   args:
     -
@@ -459,12 +466,14 @@
 12. invoke adf:doc:write-internal-file  [pushes 25→25]
   args:
     -
+      baseRevision: "<rev#5>"
       content: "edited in Studio"
       path: "note.md"
   result:
     conflict:
       content: "from agent-1"
       resource: "note.md"
+      revision: "<rev#6>"
       writer:
         kind: "agent"
     error: "note.md changed (by the agent) since you loaded it. Reload it, or keep your version."
@@ -472,11 +481,13 @@
 13. invoke adf:doc:set-document  [pushes 25→25]
   args:
     -
+      baseRevision: "<rev#2>"
       content: "# Edited in Studio"
   result:
     conflict:
       content: "# Rewritten by agent-1"
       resource: "document"
+      revision: "<rev#7>"
       writer:
         kind: "agent"
     error: "The document changed (by the agent) since you loaded it. Reload it, or keep your version."
@@ -484,9 +495,11 @@
 14. invoke adf:doc:write-internal-file  [pushes 25→25]
   args:
     -
+      baseRevision: "<rev#6>"
       content: "edited in Studio"
       path: "note.md"
   result:
+    revision: "<rev#8>"
     success: true
 15. invoke adf:doc:read-internal-file  [pushes 25→25]
   args:
@@ -497,6 +510,7 @@
     binary: false
     content: "edited in Studio"
     mimeType: "text/markdown"
+    revision: "<rev#8>"
     size: 16
 16. invoke adf:doc:get-agent-config  [pushes 25→25]
   args: []
@@ -1156,8 +1170,10 @@
           enabled: false
           targets: []
       ws_connections: []
-    - {}
+    -
+      baseRevision: "<rev#1>"
   result:
+    revision: "<rev#9>"
     success: true
 18. invoke adf:doc:set-agent-config  [pushes 25→25]
   args:
@@ -1488,7 +1504,8 @@
           enabled: false
           targets: []
       ws_connections: []
-    - {}
+    -
+      baseRevision: "<rev#1>"
   result:
     conflict:
       config:
@@ -1819,6 +1836,7 @@
             targets: []
         ws_connections: []
       resource: "config"
+      revision: "<rev#9>"
       writer:
         client: "studio"
         kind: "client"
@@ -1829,11 +1847,13 @@
     -
       content: "# Saved without a base"
   result:
+    revision: "<rev#10>"
     success: true
 20. invoke adf:doc:get-document  [pushes 25→25]
   args: []
   result:
     content: "# Saved without a base"
+    revision: "<rev#10>"
 21. invoke adf:agent:stop  [pushes 25→25]
   args: []
   result:
@@ -2191,6 +2211,9 @@
     content: "from agent-1"
     path: "note.md"
     previousContent: "from Studio"
+    revision: "<rev#6>"
+    writer:
+      kind: "agent"
   timestamp: "<t>"
   type: "file_updated"
 #8:
@@ -2273,6 +2296,9 @@
       Created: 2026-10-14
       Status: New agent, self-configuring.
       
+    revision: "<rev#7>"
+    writer:
+      kind: "agent"
   timestamp: "<t>"
   type: "document_updated"
 #17:

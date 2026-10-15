@@ -272,6 +272,14 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
       return replaceString(value, floor, seen)
     }
     if (typeof value === 'number') {
+      // Rule R18 — W3-F resource revisions under `revision`, `baseRevision`,
+      // `configRevision` and `documentRevision`: drawn from a counter that
+      // starts at the wall clock in microseconds, so the numbers differ every
+      // run. Numbered by first appearance (`<rev#n>`): the same revision
+      // twice and two different ones stay distinguishable, so a save that
+      // went over the wrong revision shows. Hides: the number only. The
+      // `writer` of a change is compared as is.
+      if (key && REVISION_KEYS.has(key)) return numbered('rev', String(value))
       // Rule R8 (numeric form): epoch-ms numbers in the run window.
       if (Number.isInteger(value) && inWindow(value)) {
         seen.push(value)
@@ -320,14 +328,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     // minted at random (nanoid) for the shipped templates seeded during the
     // run. Numbered as `<agent-id#n>`; fixture ids stay as they are.
     const reviewedKeys = path.endsWith('.reviewedAgents')
-    // Rule R18 — W3-F resource revisions. `revision`, `baseRevision`,
-    // `configRevision` and `documentRevision` are drawn from a counter that
-    // starts at the wall clock in microseconds, so they differ every run:
-    // the keys are dropped. `writer` (who made a change) is dropped too,
-    // except inside a refused save's `conflict`, so the recordings of flows
-    // without a conflict stay as they were before revisions existed. Hides:
-    // revision numbers everywhere; the writer of change events and pushes.
-    const entries = Object.keys(obj).filter((k) => !REVISION_KEYS.has(k) && !(k === 'writer' && !path.endsWith('.conflict'))).sort().map((k) => ({
+    const entries = Object.keys(obj).sort().map((k) => ({
       k,
       outKey: reviewedKeys && !fixtureIds.has(k.toLowerCase())
         ? numbered('agent-id', k)
