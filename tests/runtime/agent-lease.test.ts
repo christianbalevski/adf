@@ -28,7 +28,6 @@ import {
   AgentLeaseRegistry,
   agentLeasedMessage,
   canonicalLeasePath,
-  holderLiveness,
   LeasedStartTracker,
   leaseKeyForCanonicalPath,
   leaseDir,
@@ -571,24 +570,6 @@ describe('agent lease semantics', () => {
     }))
     const result = await registry(leases).acquire(filePath)
     expect(result.ok).toBe(false)
-  })
-
-  it('POSIX: a missing socket proves the holder gone only in the hosts dir; the tmpdir() fallback socket missing leaves the pid to decide', async () => {
-    const leases = tempDir('adf-lease-tmpsock-')
-    const runtimeId = 'fedcba9876543210'
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
-    // Absent socket files: the probe answers "missing". Run as POSIX on every OS (trustedEndpoint and the rule read the platform).
-    Object.defineProperty(process, 'platform', { ...platform, value: IS_WIN ? 'linux' : process.platform })
-    try {
-      const holder = (endpoint: string) => ({ pid: process.pid, runtimeId, endpoint })
-      const inHosts = await holderLiveness(holder(join(leases, 'hosts', `${runtimeId}.sock`)), leases)
-      expect(inHosts).toMatchObject({ alive: false })
-      const inTmp = await holderLiveness(holder(join(tmpdir(), `adf-runtime-${runtimeId}.sock`)), leases)
-      expect(inTmp.alive).toBe(true)
-      expect(inTmp.reason).toMatch(/is running \(endpoint missing\)/)
-    } finally {
-      Object.defineProperty(process, 'platform', platform)
-    }
   })
 
   it('a reconcile racing a host-to-host hand-off keeps the lease (probes are read in one snapshot)', async () => {

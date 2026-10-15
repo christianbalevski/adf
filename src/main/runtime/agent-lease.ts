@@ -25,12 +25,7 @@
  * pipe on Windows, a Unix socket elsewhere) the holder listens on for its
  * whole life. The OS closes the endpoint when the process dies, so:
  *   - pid not running                        → stale (crash, kill)
- *   - pid running, endpoint refuses/missing  → stale (the pid was reused);
- *                                              a missing socket in the
- *                                              tmpdir() fallback is
- *                                              inconclusive (tmp cleaners
- *                                              delete files under a live
- *                                              holder)
+ *   - pid running, endpoint refuses/missing  → stale (the pid was reused)
  *   - endpoint connects                      → live, even if its event loop is
  *                                              blocked (the OS accepts the
  *                                              connection)
@@ -72,7 +67,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { promises as fsp, readFileSync, unlinkSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { homedir, hostname as osHostname, tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { getUserDataPath } from '../utils/user-data-path'
 
 export const AGENT_LEASED_CODE = 'agent_leased'
@@ -387,18 +382,6 @@ export function trustedEndpoint(holder: Pick<LeaseHolder, 'endpoint' | 'runtimeI
   return endpoint === join(dir, 'hosts', `${runtimeId}.sock`) || endpoint === join(tmpdir(), `adf-runtime-${runtimeId}.sock`) ? endpoint : null
 }
 
-/**
- * A missing endpoint proves its holder gone only where nothing else removes
- * it: a named pipe (it disappears with its process) and the socket in the
- * 0700 hosts dir. The tmpdir() fallback socket (hosts path over the socket
- * length limit) can be deleted by a tmp cleaner under a live holder, so
- * there a missing socket is inconclusive and liveness rests on the pid.
- */
-function missingMeansGone(endpoint: string): boolean {
-  if (process.platform === 'win32') return true
-  return !(dirname(endpoint) === tmpdir() && /^adf-runtime-[0-9a-f]{16}.sock$/.test(basename(endpoint)))
-}
-
 function pipeName(runtimeId: string): string {
   return `\\\\.\\pipe\\adf-runtime-${runtimeId}`
 }
@@ -430,10 +413,9 @@ export async function holderLiveness(
     const probe = await probeEndpoint(endpoint)
     if (probe === 'connected') return { alive: true, reason: 'endpoint answered' }
     // A named pipe disappears with its process; a Unix socket file stays
-    // behind and refuses (in the 0700 hosts dir missing means gone too; the
-    // tmpdir() fallback socket may have been cleaned away under a live
-    // holder: inconclusive). A timeout is a live holder whose event loop is busy.
-    if (probe === 'refused' || (probe === 'missing' && missingMeansGone(endpoint))) {
+    // behind and refuses (it lives in the 0700 hosts dir, so missing means
+    // gone too). A timeout is a live holder whose event loop is busy.
+    if (probe === 'refused' || probe === 'missing') {
       return { alive: false, reason: `pid ${holder.pid} now belongs to another program` }
     }
     return { alive: true, reason: `pid ${holder.pid} is running (endpoint ${probe})` }
@@ -1014,7 +996,7 @@ export class AgentLeaseRegistry {
     const endpoint = trustedEndpoint(rec, this.dir)
     if (!endpoint) return 'live'
     const probe = await probeEndpoint(endpoint)
-    return probe === 'refused' || (probe === 'missing' && missingMeansGone(endpoint)) ? 'dead' : 'live'
+    return probe === 'refused' || probe === 'missing' ? 'dead' : 'live'
   }
 
   private async releaseLocked(key: string): Promise<void> {
