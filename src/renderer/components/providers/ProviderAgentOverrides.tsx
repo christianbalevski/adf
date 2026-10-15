@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { ProviderConfig, ProviderCredentialFileInfo } from '../../../shared/types/ipc.types'
 import { loadTrackedAdfFiles, adfDisplayName, type TrackedAdfFile } from '../../utils/tracked-adf-files'
-import { summarizeOverride, countOverrides } from './override-utils'
+import { summarizeOverride, countOverrides, credentialFormLoad } from './override-utils'
 import { Tooltip } from '../common/Tooltip'
 import { Button, IconButton, Select, TextInput } from '../ui'
 import { DocsLink } from '../common/DocsLink'
@@ -44,6 +44,8 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   const [overrides, setOverrides] = useState<Record<string, AdfProviderOverride>>({})
   const [saving, setSaving] = useState<string | null>(null)
   const [status, setStatus] = useState<Record<string, 'ok' | string>>({})
+  /** Why a row's stored key could not be read (shown under its key field). */
+  const [loadErrors, setLoadErrors] = useState<Record<string, string>>({})
   const [showUnchanged, setShowUnchanged] = useState(false)
   // Rows added from the picker but not yet saved: a scan that lands later
   // must not drop them.
@@ -85,12 +87,15 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   const openRow = async (filePath: string) => {
     if (editing === filePath) { setEditing(null); return }
     setEditing(filePath)
+    setLoadErrors((prev) => { const n = { ...prev }; delete n[filePath]; return n })
     try {
-      const result = await window.adfApi?.getProviderCredentials({ filePath, providerId: provider.id })
-      if (result?.credentials) setKeys((prev) => ({ ...prev, [filePath]: result.credentials.apiKey ?? '' }))
-      if (result?.providerConfig) setOverrides((prev) => ({ ...prev, [filePath]: result.providerConfig! }))
-    } catch {
-      // Row stays editable with empty fields.
+      const loaded = credentialFormLoad(await window.adfApi?.getProviderCredentials({ filePath, providerId: provider.id }))
+      if (loaded.apiKey !== null) setKeys((prev) => ({ ...prev, [filePath]: loaded.apiKey! }))
+      if (loaded.providerConfig) setOverrides((prev) => ({ ...prev, [filePath]: loaded.providerConfig! }))
+      if (loaded.error) setLoadErrors((prev) => ({ ...prev, [filePath]: loaded.error! }))
+    } catch (err) {
+      // Row stays editable with empty fields; the reason is shown.
+      setLoadErrors((prev) => ({ ...prev, [filePath]: err instanceof Error ? err.message : String(err) }))
     }
   }
 
@@ -160,6 +165,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
     setKeys(drop)
     setOverrides(drop)
     setStatus(drop)
+    setLoadErrors(drop)
   }
 
   const patchOverride = (filePath: string, patch: AdfProviderOverride) =>
@@ -239,6 +245,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
                         placeholder={apiKeyPlaceholder ?? 'API key'}
                         className="font-mono text-[12px]"
                       />
+                      {loadErrors[file.filePath] && <p className="mt-0.5 text-[11px] text-[var(--adf-ui-danger)]">{loadErrors[file.filePath]}</p>}
                     </div>
                     <div>
                       <label className="mb-0.5 block text-[11px] text-[var(--adf-ui-text-muted)]">Default model</label>

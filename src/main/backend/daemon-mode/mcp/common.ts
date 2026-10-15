@@ -55,6 +55,18 @@ export function isEditedPlaceholder(value: string): boolean {
 }
 
 /**
+ * The one refusal of a value made from the placeholder (isEditedPlaceholder),
+ * naming the field: every credential form answers this sentence (the agent's
+ * MCP env dialog, Settings → MCP's per-agent credentials and app-wide env,
+ * the open agent's keystore). Null for any other value, the untouched
+ * placeholder included.
+ */
+export function editedPlaceholderRefusal(value: string, field: string): string | null {
+  if (!isEditedPlaceholder(value)) return null
+  return `The value of ${field} was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.`
+}
+
+/**
  * Remote mode: a credential write made from the placeholder (W3-C follow-up:
  * the exact placeholder is compared, not a prefix). The untouched
  * placeholder of a key the file stores keeps the stored value (`keep`);
@@ -69,9 +81,8 @@ export function placeholderWrite(value: string, stored: boolean, envKey: string)
   if (value !== REDACTED_VALUE && !isEditedPlaceholder(value)) return null
   if (value === REDACTED_VALUE && stored) return { keep: true }
   return {
-    error: value === REDACTED_VALUE
-      ? `${envKey} has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for ${envKey}.`
-      : `The value of ${envKey} was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.`,
+    error: editedPlaceholderRefusal(value, envKey)
+      ?? `${envKey} has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for ${envKey}.`,
   }
 }
 
