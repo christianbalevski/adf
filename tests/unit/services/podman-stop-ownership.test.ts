@@ -494,3 +494,17 @@ describe('planContainerShutdown', () => {
     })
   })
 })
+
+// Settings → Compute in embedded Studio (IPC COMPUTE_LIST_CONTAINERS) lists
+// PodmanService.listContainers(). Characterization: its rows never name the
+// other runtimes using a container, even when one claims it.
+describe('Settings → Compute container rows (characterization)', () => {
+  it('listContainers rows carry no users, whoever else claims the container', async () => {
+    const { a, b } = machine()
+    await a.svc.ensureIsolatedRunning('agent-1', ID_1)
+    await b.svc.ensureIsolatedRunning('agent-1', ID_1)
+    const rows = await a.svc.listContainers()
+    expect(rows.find((r) => r.name === BOX_1)).toBeDefined()
+    expect(rows.every((r) => !('users' in r))).toBe(true)
+  })
+})
