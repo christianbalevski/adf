@@ -49,6 +49,7 @@ import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
 import { processAgentLeases } from '../runtime/agent-lease'
 import { testSeamsAllowed } from '../utils/test-seams'
+import { sweepStaleSnapshots } from './file-ops'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -375,6 +376,11 @@ const client = createDaemonClientSessions({
   },
 })
 agentFactory.startTemplatesWatcher()
+// Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.
+void sweepStaleSnapshots().then((removed) => {
+  if (removed.length > 0) console.log(`[ADF Daemon] Removed ${removed.length} leftover snapshot folder(s) from the temp dir: ${removed.join(', ')}`)
+}).catch((err) => console.warn('[ADF Daemon] Leftover snapshot sweep failed:', err instanceof Error ? err.message : err))
+
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,

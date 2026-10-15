@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { request as httpRequest } from 'node:http'
@@ -33,7 +33,7 @@ import Database from 'better-sqlite3'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { clearPeekCache } from '../src/main/daemon/tracked-dirs'
 import { TrackedDirWatcher, type TrackedDirsPush, type FileRenamedPush } from '../src/main/daemon/dir-watcher'
-import { AgentFileOps } from '../src/main/daemon/file-ops'
+import { AgentFileOps, STALE_SNAPSHOT_MS, snapshotToTemp, sweepStaleSnapshots } from '../src/main/daemon/file-ops'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
@@ -322,6 +322,40 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     await runtime.unloadAgent(ref.id)
     expect((await server.inject({ method: 'GET', url: `/agents/${a.id}/export`, headers: withProof })).statusCode).toBe(200)
     expect((await server.inject({ method: 'GET', url: '/agents/no-such-agent/export', headers: withProof })).statusCode).toBe(404)
+  })
+
+  it('daemon boot sweeps leftover adf-snapshot-* folders older than an hour, plain files only, never through a link', async () => {
+    const tmp = tempDir('adf-sweep-test-')
+    const now = Date.now()
+    const aged = (now - STALE_SNAPSHOT_MS - 60_000) / 1000
+    const make = (name: string, files: string[], old = true) => {
+      const d = join(tmp, name)
+      mkdirSync(d)
+      for (const f of files) writeFileSync(join(d, f), 'x')
+      if (old) utimesSync(d, aged, aged)
+      return d
+    }
+    const stale = make('adf-snapshot-aaaa', ['agent-1.adf', 'agent-1.adf-journal'])
+    const fresh = make('adf-snapshot-bbbb', ['agent-2.adf'], false) // another daemon may be streaming it
+    const other = make('not-a-snapshot', ['keep.txt'])
+    const nested = make('adf-snapshot-cccc', [])
+    mkdirSync(join(nested, 'sub'))
+    utimesSync(nested, aged, aged)
+    const target = tempDir('adf-sweep-target-')
+    writeFileSync(join(target, 'keep.adf'), 'keep')
+    const linked = make('adf-snapshot-dddd', [])
+    symlinkSync(target, join(linked, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    links.push(join(linked, 'link'))
+    utimesSync(linked, aged, aged)
+
+    expect(await sweepStaleSnapshots({ dir: tmp, now })).toEqual([stale])
+    expect(existsSync(stale)).toBe(false)
+    for (const kept of [fresh, other, nested, linked]) expect(existsSync(kept)).toBe(true)
+    expect(readFileSync(join(target, 'keep.adf'), 'utf-8')).toBe('keep')
+    // A real snapshot's folder has the prefix the sweep looks for.
+    const root = tempDir('adf-files-')
+    const snap = await snapshotToTemp(seedAgent(root, 'agent-1').filePath, 'share')
+    try { expect(basename(dirname(snap.file)).startsWith('adf-snapshot-')).toBe(true) } finally { await snap.cleanup() }
   })
 
   it('a full export needs the local proof and leaves plain secrets out unless includeSecrets', async () => {

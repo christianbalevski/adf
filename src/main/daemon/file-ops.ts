@@ -588,6 +588,41 @@ export async function snapshotToTemp(filePath: string, mode: SnapshotMode, opts:
   }
 }
 
+/** Snapshot folders older than this were left by a daemon that died mid-download (a download takes minutes at most). */
+export const STALE_SNAPSHOT_MS = 60 * 60 * 1000
+const SNAPSHOT_PREFIX = 'adf-snapshot-'
+
+/**
+ * Daemon boot: remove `adf-snapshot-*` folders in the temp dir that a
+ * previous run left behind (killed while a snapshot streamed). Only folders
+ * older than STALE_SNAPSHOT_MS (another daemon on this machine may be
+ * streaming one now) that hold plain files only: anything else (a link, a
+ * subfolder) is left alone and never followed. Returns the folders removed.
+ */
+export async function sweepStaleSnapshots(opts: { dir?: string; now?: number } = {}): Promise<string[]> {
+  const root = opts.dir ?? tmpdir()
+  const cutoff = (opts.now ?? Date.now()) - STALE_SNAPSHOT_MS
+  const removed: string[] = []
+  let names: string[]
+  try { names = await readdir(root) } catch { return removed }
+  for (const name of names) {
+    if (!name.startsWith(SNAPSHOT_PREFIX)) continue
+    const dir = join(root, name)
+    try {
+      const st = await lstat(dir)
+      if (!st.isDirectory() || st.isSymbolicLink() || st.mtimeMs > cutoff) continue
+      const entries = await readdir(dir, { withFileTypes: true })
+      if (!entries.every((e) => e.isFile())) continue
+      for (const e of entries) await unlink(join(dir, e.name))
+      await rmdir(dir)
+      removed.push(dir)
+    } catch (err) {
+      console.warn(`[FileOps] Could not remove the leftover snapshot folder ${dir}:`, err instanceof Error ? err.message : err)
+    }
+  }
+  return removed
+}
+
 /** A read stream of a temp snapshot that removes it once the stream closes. */
 export function streamSnapshot(snapshot: TempSnapshot): ReadStream {
   const stream = createReadStream(snapshot.file)
