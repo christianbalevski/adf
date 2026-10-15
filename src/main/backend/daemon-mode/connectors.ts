@@ -107,6 +107,7 @@ export function localDaemonConnector(opts: {
       },
     }
   }
-  return Object.assign(connect, { logFile: controller.paths.logFile })
+  // revive: the daemon Studio used exited (index.ts): the same §8.2 steps again (controller.ensure: attach, or spawn).
+  return Object.assign(connect, { logFile: controller.paths.logFile, revive: connect })
 }
 

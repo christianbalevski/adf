@@ -26,14 +26,40 @@ export interface DaemonEndpoint {
  * (local mode: the controller's log path), so a failed start can still offer
  * "Open daemon log".
  */
-export type DaemonConnector = ((progress: (text: string) => void) => Promise<DaemonEndpoint>) & { logFile?: string | null }
+export type DaemonConnector = ((progress: (text: string) => void) => Promise<DaemonEndpoint>) & {
+  logFile?: string | null
+  /**
+   * Local mode: find or start the daemon again after the one Studio used
+   * exited (daemon-process.ts `ensure`: attach, or spawn one). Same port and
+   * token file, so the client and its stream keep their URL.
+   */
+  revive?: (progress: (text: string) => void) => Promise<DaemonEndpoint>
+}
+
+/** Local mode: the daemon's process is gone (not a dropped connection). */
+export interface DaemonExit {
+  pid: number
+  /** What its log says ended it ("signal SIGTERM", "Failed to start: …"); null when the log has no shutdown line. */
+  cause: string | null
+  /** GET /version `startedBy` of the daemon that exited. */
+  startedBy: string | null
+  /** Studio starts it again by itself (a daemon Studio started, once per window). */
+  respawning: boolean
+  /** Why Studio does not start it again by itself, or why that failed. */
+  detail?: string
+}
+
+/** "The ADF daemon (pid N) exited (cause); agents are stopped." */
+export function daemonExitSentence(exit: Pick<DaemonExit, 'pid' | 'cause'>): string {
+  return `The ADF daemon (pid ${exit.pid}) exited${exit.cause ? ` (${exit.cause})` : ''}; agents are stopped.`
+}
 
 export type ConnectionState =
   | { state: 'connecting'; progress?: string }
   /** Requests and the event stream reach the daemon. */
   | { state: 'connected' }
-  /** The event stream dropped; the stream reconnects with backoff. */
-  | { state: 'disconnected'; since: number; error?: string }
+  /** The event stream dropped; the stream reconnects with backoff. `exited`: local mode, the daemon's process is gone. */
+  | { state: 'disconnected'; since: number; error?: string; exited?: DaemonExit }
   /** The connector failed: no daemon to talk to this session. */
   | { state: 'failed'; message: string }
 
@@ -56,8 +82,10 @@ export class DaemonConnection {
   private readonly ready: Promise<DaemonClient>
 
   private readonly connectorLogFile: string | null
+  private readonly connector: DaemonConnector
 
   constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch) {
+    this.connector = connector
     this.connectorLogFile = connector.logFile ?? null
     this.ready = (async () => {
       try {
@@ -66,7 +94,17 @@ export class DaemonConnection {
           this.set({ state: 'connecting', progress })
         })
         this.endpoint = endpoint
-        this.daemonClient = createStudioDaemonClient({ baseUrl: endpoint.baseUrl, source: endpoint.source, fetch: fetchImpl })
+        // The token source of the current endpoint: a revived daemon's (revive) replaces it under the same client.
+        const source = endpoint.source
+        this.daemonClient = createStudioDaemonClient({
+          baseUrl: endpoint.baseUrl,
+          source: {
+            token: () => (this.endpoint ?? endpoint).source.token(),
+            ...(source.refresh ? { refresh: () => (this.endpoint ?? endpoint).source.refresh?.() ?? false } : {}),
+            ...(source.localProof ? { localProof: (path: string) => (this.endpoint ?? endpoint).source.localProof?.(path) ?? {} } : {}),
+          },
+          fetch: fetchImpl,
+        })
         this.log.log(`[Backend] Using ${endpoint.description}`)
         return this.daemonClient
       } catch (err) {
@@ -134,6 +172,39 @@ export class DaemonConnection {
   markDisconnected(error?: string): void {
     if (this.status.state === 'failed' || this.status.state === 'disconnected') return
     this.set({ state: 'disconnected', since: Date.now(), ...(error ? { error } : {}) })
+  }
+
+  /** Local mode: the daemon's process is gone. Shown as such (status line, dialog or notice) until a daemon answers again. */
+  markExited(exit: DaemonExit): void {
+    if (this.status.state === 'failed') return
+    const since = this.status.state === 'disconnected' ? this.status.since : Date.now()
+    const error = this.status.state === 'disconnected' ? this.status.error : undefined
+    this.set({ state: 'disconnected', since, ...(error ? { error } : {}), exited: exit })
+  }
+
+  /** Whether the connector can find or start the daemon again (local mode). */
+  get canRevive(): boolean {
+    return !!this.connector.revive && !!this.endpoint
+  }
+
+  /**
+   * Local mode: run the connector's `revive` (attach, or spawn a daemon) after
+   * the daemon exited. The client keeps its URL (same port); the endpoint's
+   * token source and version info are the new daemon's. The stream
+   * reconnects on its own (or on the caller's reconnect).
+   */
+  async revive(progress: (text: string) => void = () => {}): Promise<DaemonEndpoint> {
+    if (!this.connector.revive || !this.endpoint) throw new Error('This connection cannot start the ADF daemon again')
+    const endpoint = await this.connector.revive((text) => {
+      this.log.log(`[Backend] ${text}`)
+      progress(text)
+    })
+    if (endpoint.baseUrl !== this.endpoint.baseUrl) {
+      throw new Error(`The ADF daemon started again on ${endpoint.baseUrl}, not ${this.endpoint.baseUrl}; restart Studio to use it`)
+    }
+    this.endpoint = endpoint
+    this.log.log(`[Backend] Using ${endpoint.description}`)
+    return endpoint
   }
 
   private set(state: ConnectionState): void {
