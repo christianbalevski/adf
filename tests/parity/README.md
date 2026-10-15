@@ -33,7 +33,7 @@ The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the b
 | `harness/daemon-backend.ts` | `daemonBackend()`: the built daemon in a fenced child process, Studio's daemon-mode handlers in this process; `switchToLocalMode()` |
 | `harness/gaps.ts` | The daemon side's known differences: named, workstream-tagged transforms (the gap allowlist) |
 | `scenarios/core.ts` | open, start, chat turn with a tool call |
-| `recordings/*.embedded.txt` | Embedded baseline (golden form, rule G1) |
+| `recordings/*.embedded.txt` | Embedded baseline (golden form, rules G1 and G2) |
 | `daemon-reconnect.test.ts` | Daemon killed under a connected Studio, restarted: not-connected state, reconnect, resync |
 | `daemon-respawn.test.ts` | The daemon Studio started is killed: exit notice, Studio starts it again (`revivable`: its own connector, `DaemonProcessController.ensure` on the bundle, fenced), re-holds the open file, starts the agents again |
 
