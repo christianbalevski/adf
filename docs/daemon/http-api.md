@@ -7,8 +7,9 @@ http://127.0.0.1:7385
 ```
 
 Every request but `GET /health` carries `Authorization: Bearer <token>`. Live
-events come as Server-Sent Events from `GET /events`. The ADF CLI and the
-terminal app are clients of this API.
+events come as Server-Sent Events from `GET /events`. The ADF CLI, the
+terminal app and ADF Studio in daemon mode
+([Studio backend](../guides/studio-backend.md)) are clients of this API.
 
 | Read | For |
 |------|-----|
@@ -28,20 +29,22 @@ bearer token (`401 unauthorized`). The token is minted on first start into
 for a non-loopback bind, with `ADF_DAEMON_ALLOWED_HOSTS` for host names).
 Owner identity changes and `POST /daemon/shutdown` answer local callers only
 (`403 loopback_only`): loopback, no proxy headers, and behind a proxy
-(`ADF_DAEMON_BEHIND_PROXY`) the local proof file only `adf` on the host sends. Details, remote access (SSH tunnel, TLS proxy) and
+(`ADF_DAEMON_BEHIND_PROXY`) the local proof file only `adf` on the host sends.
+`POST /identity/import` and the two identity reveal routes require that proof
+in every mode. Details, remote access (SSH tunnel, TLS proxy) and
 examples: [Base URL and authentication](api-guide.md#base-url-and-authentication).
 
 ## The API by area
 
 | Area | Routes | Guide |
 |------|--------|-------|
-| Health and contract | `GET /health` (no token), `GET /openapi.json`, `POST /daemon/shutdown` | [Authentication](api-guide.md#base-url-and-authentication) |
+| Health and contract | `GET /health` (no token), `GET /version`, `GET /openapi.json`, `POST /daemon/shutdown` | [Authentication](api-guide.md#base-url-and-authentication), [Versioning](api-guide.md#versioning-and-compatibility) |
 | Events | `GET /events` (SSE), `GET /agents/:id/umbilical/events` | [The event stream](api-guide.md#the-event-stream) |
 | Agents and files | `/agents`, `/agents/load`, `/agents/:id/{start,stop,unload,interrupt,abort,state,status,vitals,activity}`, `/agents/autostart`, `/agents/review`, `/tracked-dirs` | [Agents and files](api-guide.md#agents-and-files) |
 | Loops | `/agents/:id/loops[/:name]`, `loop` on chat, history, abort, interrupt, compact and timers | [Loops](api-guide.md#loops) |
 | Chat and history | `POST /agents/:id/chat`, `GET\|DELETE /agents/:id/chat`, `GET /agents/:id/loop`, `POST /agents/:id/trigger` | [Chat turns](api-guide.md#chat-turns-and-reading-results) |
 | Approvals, asks, suspends | `/agents/:id/tasks[...]`, `/agents/:id/asks[...]`, `/agents/:id/suspend/respond` | [HIL](api-guide.md#approvals-questions-and-suspends-hil) |
-| Owner identity | `/identity`, `/identity/{create,restore,unlock,lock,confirm-backup}` | [Owner identity](api-guide.md#owner-identity) |
+| Owner identity | `/identity`, `/identity/{create,restore,import,unlock,lock,confirm-backup}` | [Owner identity](api-guide.md#owner-identity) |
 | Credentials | `/agents/:id/identity[...]`, `/agents/:id/{adapters,mcp}/credentials`, `/agents/:id/providers/:providerId/credential[s]` | [Credentials](api-guide.md#credentials) |
 | Channels and MCP servers | `/agents/:id/adapters[...]`, `/agents/:id/mcp/servers[...]`, `/admin/{mcp,adapters,sandbox}/packages` | [Channels, MCP servers and providers](api-guide.md#channels-mcp-servers-and-providers) |
 | Providers and sign-in | `/runtime/providers`, `/runtime/models`, `/agents/:id/providers`, `/auth/claude/*`, `/auth/chatgpt/*`, `/auth/grok/*` | [Channels, MCP servers and providers](api-guide.md#channels-mcp-servers-and-providers) |
@@ -52,6 +55,7 @@ examples: [Base URL and authentication](api-guide.md#base-url-and-authentication
 | Settings | `GET\|PATCH /settings`, `GET\|PUT /settings/:key` | [Daemon settings](api-guide.md#daemon-settings) |
 | Network and mesh | `/network[/*]` (mesh registration, mesh server start/stop) | [Operations](operations.md#ports) |
 | Compute | `/compute/*` | [Operations](operations.md#compute) |
+| Client sessions (internal) | `/client/*`, `/agents/:id/identity/reveal`, `/files/agent/identity/reveal` | [Client routes](#client-routes-internal) |
 
 Errors are `{ "error": "…", "code"?: "…" }`; see [Errors](api-guide.md#errors).
 
@@ -71,6 +75,20 @@ comes from an in-memory buffer of 1000 frames; dedupe on `agent_id` + `seq`.
 resume, dedupe and gap handling:
 [The event stream](api-guide.md#the-event-stream). Event types:
 [Umbilical events](../guides/umbilical-events.md).
+
+## Client routes (internal)
+
+The routes under tag `Client (internal)` serve ADF Studio in daemon mode and
+the terminal app: client sessions with their own event stream, focus and
+held documents (`/client/sessions*`), Studio's quit
+(`POST /client/sessions/:id/quit`), the credential reload after a backend
+switch (`POST /client/reload-credentials`), and the stored-value reveal
+routes. Each carries `x-adf-stability: internal`: it may change in any
+release without notice. They are in the [API reference](api-reference.md)
+for completeness; build other clients on `GET /events` and the public routes.
+A client that uses them MUST check `clientApiVersion` from `GET /version`
+first. How they work:
+[Runtime architecture › Client sessions](runtime-architecture.md#client-sessions).
 
 ## Mesh Server
 

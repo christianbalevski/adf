@@ -2,6 +2,10 @@
 
 **Status: test plan for `feat/daemon-backend`.** Walked by the owner during the
 one-week daily-driver period, before the Embedded backend code is deleted.
+Corrected against what W0-W4 built (W4-C, 2026-10-14). R items describe remote
+mode as built on `ws/w4-b`. The user guide for these features is
+[Studio backend](../guides/studio-backend.md); expected messages are quoted
+from the code.
 
 ## How to use this checklist
 
@@ -22,6 +26,10 @@ Rules:
 - **R MUST match E** except where the Expected column has a `Remote:` note.
   The note states the required remote behaviour; R is judged against it.
 - `N/A` means the item cannot apply to that mode. The Expected column says why.
+- "keep-running" is Settings → Backend → "Keep the daemon running when Studio
+  quits" (L only, default off).
+- An item whose steps change modes is walked in the column of the mode it
+  switches to (MODE-03 and SW-01: L; MODE-05 and SW-06: E).
 - "Within 1 s" and similar bounds are perceptual, not measured, unless the
   item says to measure.
 - Record the daemon version (`adf daemon status`) and Studio version (About)
@@ -41,13 +49,18 @@ Prepare once; reuse across modes. All agents live in one tracked folder
 | `agent-5` | Grok subscription provider; `limits.max_active_turns` = 2; `suspend_timeout_ms` = 120000. |
 | `agent-6` | Claude subscription provider; one stdio MCP server (npm, e.g. filesystem) and one HTTP OAuth MCP server attached; one per-agent provider override with its own key. |
 | MCP | One stdio npm server, one uvx server, one HTTP bearer server, one HTTP OAuth server registered in Settings. |
-| Remote host | Second machine on LAN and tailnet. `ADF_DAEMON_TOKEN=<token> ADF_DAEMON_ALLOWED_HOSTS=<name> adf daemon --host 0.0.0.0`. Same `fixtures/` copied there. |
+| Remote host | Second machine on the LAN and the tailnet with `adf` installed, an owner identity on it (`adf identity new` or `adf identity restore`, run there), and the same `fixtures/` copied there and tracked. Its daemon, as a service or in the foreground: `ADF_DAEMON_TOKEN=<token> ADF_DAEMON_ALLOWED_HOSTS=<lan-name>,<machine>.<tailnet>.ts.net ADF_DAEMON_BEHIND_PROXY=1 adf daemon --host 0.0.0.0` (token: `openssl rand -base64 32 \| tr '+/' '-_' \| tr -d '='`). For DMN-19 also `tailscale serve --bg 7385` there. Owner identity actions run there, in a terminal (IDN-02, IDN-03). Setup guide: [Remote daemon](../cli/remote-daemon.md). |
 | Tools | `adf` CLI on both machines; Task Manager / `Get-Process node,electron`; a phone with Telegram; a screen recorder. |
 
-Mode switch for every walk: **Settings → Backend** (mode, remote URL, token,
-"Keep daemon running when Studio quits"). Before each column, confirm the mode
-with `adf daemon status` (L/R: running, version) and `adf agents` (L/R: lists
-the running agents; E: no daemon running).
+Mode switch for every walk: **Settings → Backend → Run agents in**. The switch
+dialog lists what moves and restarts Studio ([Studio backend](../guides/studio-backend.md#switch-the-backend)).
+The page also holds "Keep the daemon running when Studio quits" (L) and the
+remote URL, token and Test connection (R). Before each column, confirm the
+mode: Settings → Backend says "This launch runs …"; `adf daemon status` shows
+L: running, `started   by studio` (or `cli`), Studio's version; E: not running
+(exit code 3). R: run `adf daemon status` on the server, and
+`adf --url <url> --token <token> agents` here. In E, `adf` refuses to start a
+daemon while Studio runs (DMN-17).
 
 ---
 
@@ -55,18 +68,18 @@ the running agents; E: no daemon running).
 
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
-| MODE-01 | Launch with a fresh profile (`--instance=9`). | Home renders. Default backend mode is the documented default; Settings → Backend shows it. No daemon process exists unless the default is L. | [ ] | [ ] | N/A |
-| MODE-02 | Settings → Backend. | Three modes listed; current mode selected. L shows daemon state (running, version, URL). R shows URL and a masked token. Keep-running toggle shown for L only. | [ ] | [ ] | [ ] |
-| MODE-03 | E → L with no agents running. | Studio starts a daemon (or attaches to one already running). `adf daemon status` shows Studio's version. Sidebar, open tabs, tracked folders unchanged. | N/A | [ ] | N/A |
-| MODE-04 | E → L with agent-1 mid-idle and agent-2 running. | Studio names the running agents before switching. After the switch they run in the daemon (`adf agents`), not in Studio. Each agent runs exactly once (Task Manager: no in-process work; daemon log shows one load each). | N/A | [ ] | N/A |
-| MODE-05 | L → E with agents running. | Agents stop in the daemon and start in Studio. `adf agents` shows none of them. If keep-running is off and Studio spawned the daemon, the daemon exits. No agent runs in both. | [ ] | N/A | N/A |
-| MODE-06 | Select R, enter URL + token, apply. | Connects; sidebar shows the remote host's tracked folders and agents. Daemon version shown. | N/A | N/A | [ ] |
-| MODE-07 | R with an unreachable URL. | Clear error naming the URL. Studio does not fall back to E or L silently. Settings stay editable. | N/A | N/A | [ ] |
-| MODE-08 | Relaunch Studio in each mode. | Comes back in the same mode, attaches, restores open agent and tabs. | [ ] | [ ] | [ ] |
-| MODE-09 | `adf daemon start` first, then launch Studio in L. | Studio attaches to the existing daemon; no second daemon (`Get-Process node`). Running agents show live state on first paint. | N/A | [ ] | N/A |
-| MODE-10 | Occupy port 7385 with another process, launch in L. | Clear error naming the port. No silent fallback to E. | N/A | [ ] | N/A |
-| MODE-11 | R → L → R. | Each switch shows the target's agents only; no agent from one daemon appears under the other; no stale running dots. | N/A | [ ] | [ ] |
-| MODE-12 | Toggle keep-running on/off in L. | Persists across relaunch. Takes effect at next quit (see QUIT). | N/A | [ ] | N/A |
+| MODE-01 | Launch with a fresh profile (`--instance=9`). | Home renders. Settings → Backend: Embedded selected, "This launch runs Embedded." No `studio-backend.json` in the instance's user data folder; no daemon process (`adf daemon status` with that instance's settings: not running). | [ ] | N/A | N/A |
+| MODE-02 | Settings → Backend in each mode. | Run agents in: Embedded / Local daemon / Remote daemon, the configured one selected, with "This launch runs …". L and R: an "ADF daemon" row: "Connected · <url> · pid N · version V · started by this Studio" (or "started by the ADF CLI"). "Keep the daemon running when Studio quits" shown when L is configured or running. Remote daemon group: URL, Token ("A token is saved. Enter a new one to replace it." once saved; the field never shows it), Save, Test connection. | [ ] | [ ] | [ ] |
+| MODE-03 | E → L with no agents running. | Switch dialog "Switch the backend from Embedded to Local daemon?": "Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.", "Moves at the restart:" with each item, "No agent runs now.", buttons Switch and Restart / Cancel. After the restart: summary "Studio now runs Local daemon." listing what moved; Settings → Backend ADF daemon row "Connected … started by this Studio"; `adf daemon status` shows Studio's version, `started   by studio`. Sidebar, open tabs, tracked folders unchanged. | N/A | [ ] | N/A |
+| MODE-04 | E → L with agent-1 idle and agent-2 running, no turn in flight. | The switch dialog says "Running agents keep running: agent-1, agent-2 stop here and Studio starts them in the daemon after the restart." After the restart one notification: "Running again after the switch: agent-1, agent-2." `adf agents` lists both. Each runs once: one load each in the daemon log, none in Studio's main log, one Telegram poller (CHAN-08). Turns in flight: SW-01..SW-05. | N/A | [ ] | N/A |
+| MODE-05 | L → E with agent-1 and agent-2 running; keep-running off; Studio started the daemon. | Dialog: "Studio restarts and runs agents itself." and "Running agents keep running: … Studio starts them itself after the restart." The quit stops the daemon (waits up to 22 s for its process); after the restart "Running again after the switch: agent-1, agent-2." `adf daemon status`: not running. Summary dialog "Studio now runs Embedded." lists sign-ins moved back. No agent runs in both. Keep-running on or a CLI-started daemon: SW-06. | [ ] | N/A | N/A |
+| MODE-06 | Remote daemon group: enter URL and token, Save, Test connection; then choose Remote daemon under Run agents in (or Use for next launch, then Restart now). | Test connection: "Connected to the ADF daemon at <url> (version V, started by cli)." The switch dialog says "Studio restarts and uses the ADF daemon at the remote URL." and lists only Client settings under "Moves at the restart:". After the restart the sidebar shows the server's tracked folders and agents; the ADF daemon row shows the URL and version. | N/A | N/A | [ ] |
+| MODE-07 | R with an unreachable URL (server off, or tunnel down), launch Studio. | No fallback to E or L. Settings → Backend and Help show "Waiting for the remote ADF daemon at <url> (attempt n; next in s): Cannot reach the ADF daemon at <url> (…)…"; one notification "Waiting for the remote ADF daemon at <url>. Studio keeps trying."; the pause grows from 2 s to 30 s. Settings → Backend stays editable. Start the server's daemon: Studio connects without a restart. A wrong token is not retried: DMN-22. | N/A | N/A | [ ] |
+| MODE-08 | Relaunch Studio in each mode. | Comes back in the same mode ("This launch runs …"), attaches (L: to the running daemon or a new one), restores the open agent and tabs. | [ ] | [ ] | [ ] |
+| MODE-09 | `adf daemon start` first, then launch Studio in L. | Studio attaches; no second daemon (`adf daemon status` names one pid; no second daemon process in Task Manager). Settings → Backend: "… started by the ADF CLI". Running agents show live state on first paint. | N/A | [ ] | N/A |
+| MODE-10 | Occupy port 7385 with another program (e.g. `python -m http.server 7385`), launch in L. | Dialog "ADF daemon not available": "Studio could not connect to an ADF daemon." with "The ADF daemon exited during startup (code N)." and the recovery sentence (choose Embedded in Settings → Backend, or `ADF_STUDIO_BACKEND=embedded`). Open Daemon Log shows `EADDRINUSE` and the port. Help menu: "ADF daemon: not connected". No fallback to E. | N/A | [ ] | N/A |
+| MODE-11 | R → L → R. | Each switch shows the target's agents only; no agent from one daemon appears under the other; no stale running dots. L → R leaves the local daemon's agents as keep-running says (QUIT-07, DMN-10). | N/A | [ ] | [ ] |
+| MODE-12 | Toggle "Keep the daemon running when Studio quits" in L. | "Saved. Applies from now on." Persists across relaunch. Takes effect at the next quit (DMN-09, DMN-10) and at once for the crash case (CRASH-01). | N/A | [ ] | N/A |
 
 ## 2. Open, create, clone, rename, delete, share (FILE)
 
@@ -79,7 +92,7 @@ the running agents; E: no daemon running).
 | FILE-05 | Home composer: Attach files (button and drag-drop). | Files land in the new agent's VFS and are referenced in the first message. Remote: local files are uploaded to the daemon host. | [ ] | [ ] | [ ] |
 | FILE-06 | Open agent… (`Ctrl+O`). | Picker opens; chosen agent opens and loads. Remote: picker lists daemon-host paths, or the action states it opens files on the daemon host; it MUST NOT open a local file in-process. | [ ] | [ ] | [ ] |
 | FILE-07 | File → Open Recent → item; then Clear Menu. | Opens the agent. Clear Menu empties the list. Remote: recent entries are daemon-host paths. | [ ] | [ ] | [ ] |
-| FILE-08 | Studio closed. Double-click `agent-1.adf` in Explorer. | Studio launches and opens it. Remote: the file is local, not on the daemon; Studio shows a clear message (or the documented import). It MUST NOT run it in-process. | [ ] | [ ] | [ ] |
+| FILE-08 | Studio closed. Double-click `agent-1.adf` in Explorer. | Studio launches and opens it. Remote: the file is on this computer, so Studio asks "agent-1.adf is on this computer, not on <host>." (Upload a copy… / Cancel). Cancel: nothing uploaded, nothing opened. Upload a copy…: a folder picker limited to tracked folders and the agents folder on the server ("Choose a tracked folder or the agents folder, or a folder inside one."), task-bar progress, then the copy opens and asks for review. The local file is unchanged. Nothing runs in Studio's process. | [ ] | [ ] | [ ] |
 | FILE-09 | Studio open. Double-click another `.adf`. | Existing window focuses and opens it; no second Studio. | [ ] | [ ] | [ ] |
 | FILE-10 | Close Agent (`Ctrl+Shift+W`) on a running agent. | Foreground closes; agent keeps running (sidebar dot stays, timers fire). | [ ] | [ ] | [ ] |
 | FILE-11 | Clone… agent-1, deselect `local_*` tables. | Clone listed with a new DID; only selected tables copied; loop/files as chosen. | [ ] | [ ] | [ ] |
@@ -87,7 +100,7 @@ the running agents; E: no daemon running).
 | FILE-13 | Rename… a running agent. | Rename deferred until stop, then applied; one sidebar entry throughout. | [ ] | [ ] | [ ] |
 | FILE-14 | Change name in Agent → Identity. | Same as FILE-12/13. | [ ] | [ ] | [ ] |
 | FILE-15 | Delete… a running agent, confirm. | Agent stops, file (+ `-wal`/`-shm`) removed, sidebar entry gone, no error dialog. | [ ] | [ ] | [ ] |
-| FILE-16 | Reveal in folder (agent row and folder row). | Explorer opens with the item selected. Remote: N/A — action is hidden or disabled with a note that the file is on the daemon host. | [ ] | [ ] | N/A |
+| FILE-16 | Reveal in folder (agent row and folder row). | Explorer opens with the item selected. Remote: dialog "This file is on <host>." with the path on the server and Copy path (copies it); nothing opens on this computer. | [ ] | [ ] | [ ] |
 | FILE-17 | Share… agent-1 → save a copy. | Dialog lists what travels (config, files, loop) and what does not (identity keys, app-level provider keys). Save dialog writes an identity-free copy locally. Remote: snapshot comes from the daemon host. | [ ] | [ ] | [ ] |
 | FILE-18 | Drag agent-1 from the sidebar to the desktop while it runs. | A consistent `.adf` copy appears; opening it shows loop rows up to the drag time. | [ ] | [ ] | [ ] |
 | FILE-19 | Track folder… (`Ctrl+Shift+O`); Untrack folder…; Rescan. | Folder added and scanned; untrack removes it from the list without touching files; Rescan picks up changes. Remote: daemon-host paths. | [ ] | [ ] | [ ] |
@@ -105,7 +118,7 @@ the running agents; E: no daemon running).
 | EDIT-02 | Toggle Raw mode; use toolbar (bold, heading, list, table). | Markdown round-trips without loss. | [ ] | [ ] | [ ] |
 | EDIT-03 | Open a `.ts` and a `.json` file. | CodeMirror with highlighting; dirty dot on edit; `Ctrl+W` on a dirty tab prompts. | [ ] | [ ] | [ ] |
 | EDIT-04 | With `notes.md` open and clean, ask agent-1 to `fs_write` it. | Tab updates in place without reload. | [ ] | [ ] | [ ] |
-| EDIT-05 | Same as EDIT-04 with unsaved local edits. | Local edits are not clobbered silently; behaviour identical in all modes. | [ ] | [ ] | [ ] |
+| EDIT-05 | Same as EDIT-04 with unsaved local edits. | The edits stay; a strip over the editor says "notes.md was changed by the agent while you were editing. Your changes are not saved." with Reload and Keep mine. Reload shows the agent's text; Keep mine saves yours over it. Same in all modes (more cases: MULTI-01..MULTI-07). | [ ] | [ ] | [ ] |
 | EDIT-06 | Open a file > 128k chars. | Opens in source view; forcing rich mode asks for confirmation. | [ ] | [ ] | [ ] |
 | EDIT-07 | Open a PNG and a binary file. | Image viewer with download; binary placeholder. | [ ] | [ ] | [ ] |
 | EDIT-08 | Edit mind.md and soul.md. | Saved; agent sees them after compaction/clear per snapshot rules. | [ ] | [ ] | [ ] |
@@ -245,9 +258,9 @@ the running agents; E: no daemon running).
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
 | IDN-01 | Settings → Identity. | Owner DID, runtime DID, delegation-valid badge, agent directory URL. Remote: runtime DID and URL are the daemon host's. | [ ] | [ ] | [ ] |
-| IDN-02 | Back Up Seed Phrase → reveal → confirm. | Phrase shown; badge clears. Remote: refused from another machine with a message that names the server; works through an SSH tunnel. | [ ] | [ ] | [ ] |
-| IDN-03 | Import identity (12 words). | Owner restored; restamped/attested counts shown. Remote: as IDN-02. | [ ] | [ ] | [ ] |
-| IDN-04 | Owner created in the terminal first (`adf` welcome), then open Studio. | "Restore your identity" banner; restoring works. | [ ] | [ ] | [ ] |
+| IDN-02 | Back Up Seed Phrase → reveal → confirm. | Phrase shown; badge clears. Remote (through LAN, tailnet, TLS proxy and SSH tunnel alike): Back up seed phrase and Import identity are disabled, with "A remote ADF daemon never sends its owner seed phrase to another machine. …" and "The owner identity of a remote ADF daemon is changed on its machine: run `adf identity restore` … or `adf identity import` … there." Run those on the server. | [ ] | [ ] | [ ] |
+| IDN-03 | Import identity (12 words). | Owner restored; restamped/attested counts shown. L: Studio also rewrites the runtime entry for the daemon (`adf identity`: runtime `studio (adopted)` after the import). Remote: disabled as IDN-02; `adf identity import` on the server works. | [ ] | [ ] | [ ] |
+| IDN-04 | Owner created in the terminal first (`adf` welcome), then open Studio. | "Restore your identity" banner; restoring works. Remote: the banner and Restore identity say to restore on the daemon's machine ("Restore it on the daemon's machine: run `adf identity restore` there. …"); the button is disabled. | [ ] | [ ] | [ ] |
 | IDN-05 | Agent → Identity tab: DID, entries, code-access toggle, reveal, delete entry. | Values reveal on demand; toggles persist. | [ ] | [ ] | [ ] |
 | IDN-06 | Generate keys on an identity-less file; Wipe all (confirm). | DID minted / identity cleared. | [ ] | [ ] | [ ] |
 | IDN-07 | Attestations list; Reissue. | Reissued with new timestamps. | [ ] | [ ] | [ ] |
@@ -267,7 +280,7 @@ the running agents; E: no daemon running).
 | PROV-03 | Add the same type twice. | Auto-numbered names; both usable. | [ ] | [ ] | [ ] |
 | PROV-04 | Request delay and custom parameters. | Applied to requests (observe delay; param effect). | [ ] | [ ] | [ ] |
 | PROV-05 | Local provider (Ollama/LM Studio, `localhost`). | Works. Remote: `localhost` means the daemon host; UI says so or the model list reflects the server. | [ ] | [ ] | [ ] |
-| PROV-06 | ChatGPT: Sign in, run agent-2, Sign out. | Browser opens; status shows email; models listed; turn runs; sign-out clears status. Remote: relay flow (callback on this machine, code sent to daemon) or documented steps. | [ ] | [ ] | [ ] |
+| PROV-06 | ChatGPT: Sign in, run agent-2, Sign out. | Browser opens; status shows email; models listed; turn runs; sign-out clears status. L: the session is the daemon's (`adf auth` shows it). Remote: the callback lands on this computer and is handed to the daemon; no port to tunnel. | [ ] | [ ] | [ ] |
 | PROV-07 | Grok: Sign in (device code), run agent-5, Sign out. | Code and URL shown; status updates when approved; turn runs. | [ ] | [ ] | [ ] |
 | PROV-08 | Claude: status, Sign in (URL + paste code), Cancel, recheck after install, Sign out. | Status shows installed/version/plan; update-required message on old Claude Code; sign-out also signs Claude Code out. Remote: status is the daemon host's Claude Code. | [ ] | [ ] | [ ] |
 | PROV-09 | Provider → Agent overrides: give agent-6 its own key, model, params; remove it. | Override attached; key-source label correct; "unchanged copy" collapse works; detach restores app key. | [ ] | [ ] | [ ] |
@@ -283,7 +296,7 @@ the running agents; E: no daemon running).
 | MCP-02 | Add a uvx server; uninstall it. | uv/Python ensured; install and uninstall complete. | [ ] | [ ] | [ ] |
 | MCP-03 | Custom stdio server with args and env. | Verify shows tools or the server's verbatim error. | [ ] | [ ] | [ ] |
 | MCP-04 | Remote HTTP server with bearer token. | Connects; tools listed. | [ ] | [ ] | [ ] |
-| MCP-05 | HTTP OAuth server: Sign in, Re-authorize, Sign out. | Browser sign-in; status signed in/out. Remote: works via a callback on this machine, or a clear message with the documented workaround. | [ ] | [ ] | [ ] |
+| MCP-05 | HTTP OAuth server: Sign in, Re-authorize, Sign out. | Browser sign-in; status signed in/out. Remote: a native question "Open a sign-in page on <page host>?" naming the daemon's host comes first (REM-14); the browser's callback lands on this computer and is handed to the daemon. | [ ] | [ ] | [ ] |
 | MCP-06 | stdio server with auth preflight. | Browser opens; "Complete authorization, then click Continue"; tools connect. | [ ] | [ ] | [ ] |
 | MCP-07 | Kill a running server process. | Status changes live; supervisor restarts; tools return. | [ ] | [ ] | [ ] |
 | MCP-08 | Restart server; open Logs. | Restart completes; logs show connect and tool calls. | [ ] | [ ] | [ ] |
@@ -318,7 +331,7 @@ the running agents; E: no daemon running).
 | COMP-03 | Start, stop, rebuild, destroy a container; shared compute init and destroy. | Destroy dialog warns about active agents; phases shown live. | [ ] | [ ] | [ ] |
 | COMP-04 | Test an external container target. | Probe result shown. | [ ] | [ ] | [ ] |
 | COMP-05 | Host access on; agent runs `compute_exec` `hostname`. | Runs. Remote: prints the daemon host's name. | [ ] | [ ] | [ ] |
-| COMP-06 | Computer tab / browser viewer for an isolated agent; start/stop/resume Chromium. | noVNC desktop loads; browser controls work. Remote: viewer port is loopback on the server; Studio shows a clear "not reachable" message or uses a tunnel. MUST NOT render blank. | [ ] | [ ] | [ ] |
+| COMP-06 | Computer tab / browser viewer for an isolated agent; start/stop/resume Chromium. | noVNC desktop loads; browser controls work. Remote: the viewer shows "The browser viewer needs the daemon on this computer: the container's noVNC port is on the remote server's loopback." and, when the agent opens a browser, a notification "<agent> opened a browser in its container on the daemon host. Its viewer is on that host's loopback, …". Never a blank viewer. | [ ] | [ ] | [ ] |
 | COMP-07 | Settings → Packages: add, list, remove; agent Make Runtime. | Install progress; listed with size and installer. | [ ] | [ ] | [ ] |
 | COMP-08 | Container base image, system packages, VM CPUs/memory, max sandbox workers. | Saved; effective after the documented restart. | [ ] | [ ] | [ ] |
 
@@ -329,7 +342,7 @@ the running agents; E: no daemon running).
 | MESH-01 | Enable/disable mesh. | Status updates; fleet map shows Enable Mesh prompt when off. | [ ] | [ ] | [ ] |
 | MESH-02 | Mesh server start, stop, restart; change port. | Status card host:port; URL opens. Remote: server runs on the daemon host. | [ ] | [ ] | [ ] |
 | MESH-03 | LAN access toggle; LAN IP list. | Binds 0.0.0.0 with restart notice; IPs listed. Remote: daemon host's IPs. | [ ] | [ ] | [ ] |
-| MESH-04 | Firewall check; Repair (UAC). | Rule state shown; repair creates it. Remote: N/A — disabled or labelled as the server's responsibility. | [ ] | [ ] | N/A |
+| MESH-04 | Firewall check; Repair (UAC). | Rule state shown; repair creates it. Remote: the panel shows "The firewall check applies to this computer, but the mesh server runs on the remote daemon's machine. Check that machine's firewall there: …" and no Fix button. | [ ] | [ ] | [ ] |
 | MESH-05 | Discovered runtimes; Recheck; add/remove manual peer; tailnet toggle. | Peers listed with source badges; manual peer appears within seconds. | [ ] | [ ] | [ ] |
 | MESH-06 | Agent endpoints table. | Handles, URLs, Public/API/Shared badges. | [ ] | [ ] | [ ] |
 | MESH-07 | agent-1 `msg_send` to agent-2. | Delivered; mesh traffic bar ripple. | [ ] | [ ] | [ ] |
@@ -351,7 +364,7 @@ the running agents; E: no daemon running).
 | TMPL-01 | Settings → Agent templates. | Shipped three seeded; default marked. Migration notice shown once. | [ ] | [ ] | [ ] |
 | TMPL-02 | Create blank; duplicate; rename; set default; delete; reset shipped. | Each applied; settings that pointed at a renamed id follow it. | [ ] | [ ] | [ ] |
 | TMPL-03 | Edit template config, README/mind/soul, description/warning; add and remove files. | Saved; new agents from it carry them. | [ ] | [ ] | [ ] |
-| TMPL-04 | Reveal template. | Explorer opens. Remote: N/A, as FILE-16. | [ ] | [ ] | N/A |
+| TMPL-04 | Reveal template. | Explorer opens. Remote: dialog "The templates folder is on <host>." with its path on the server and Copy path. | [ ] | [ ] | [ ] |
 | TMPL-05 | Drop a template `.adf` into the templates folder. | List updates. | [ ] | [ ] | [ ] |
 | TMPL-06 | Foreign template → review → accept. | Claimed; usable in the composer. | [ ] | [ ] | [ ] |
 | TMPL-07 | Skills panel: list, mute checkbox, open SKILL.md. | Mute writes `skills-state.json`; registry updates. | [ ] | [ ] | [ ] |
@@ -370,7 +383,7 @@ the running agents; E: no daemon running).
 | SET-06 | Prompts: global system prompt, compaction prompt, tool instructions (modified badge, reset), apply updates automatically, dynamic instructions. | Auto-saved; running agents use it next turn. | [ ] | [ ] | [ ] |
 | SET-07 | Settings search. | Finds sections by keyword. | [ ] | [ ] | [ ] |
 | SET-08 | Change a setting, quit within 1 s, relaunch. | Persisted. | [ ] | [ ] | [ ] |
-| SET-09 | Change a provider in Studio; run `adf providers`. | CLI shows it (shared settings). Remote: shows on the server's `adf providers`. E: CLI reads the same file. | [ ] | [ ] | [ ] |
+| SET-09 | Change a provider in Studio; run `adf providers`. | L: the CLI shows it (one settings file). Remote: shows on the server's `adf providers`. E: N/A (`adf` refuses to start a daemon while an Embedded Studio runs). | N/A | [ ] | [ ] |
 | SET-10 | Auto-compact threshold default. | New agents use it. | [ ] | [ ] | [ ] |
 | SET-11 | Docs links and info hints. | Open the matching guide. | [ ] | [ ] | [ ] |
 
@@ -401,8 +414,8 @@ the running agents; E: no daemon running).
 | APP-07 | About → Check for updates; status-bar badge; download; restart-and-install (packaged build). | States shown; installs. Daemon follow-up: DMN-15. | [ ] | [ ] | [ ] |
 | APP-08 | Drag-drop: files onto composer, chat, Files; agent out of sidebar. | Covered by FILE-05, CHAT-09, DATA-02, FILE-18; all work. | [ ] | [ ] | [ ] |
 | APP-09 | Deep links: toast click, `adf-file://` link, `.adf` double-click, second instance. | Covered by HIL-12, EDIT-09, FILE-08, FILE-09. | [ ] | [ ] | [ ] |
-| APP-10 | `--instance=2`. | Separate settings and data; does not affect instance 1. L: record whether it attaches to its own daemon. | [ ] | [ ] | [ ] |
-| APP-11 | About tab. | Version, links. L/R: daemon version also visible. | [ ] | [ ] | [ ] |
+| APP-10 | `--instance=2`. | Separate settings and data; does not affect instance 1. L: while instance 1's daemon holds port 7385, instance 2 refuses with "The ADF daemon running on this machine (pid N) uses <instance 1 settings>, not <instance 2 settings>."; started with `ADF_DAEMON_PORT=7395` it runs its own daemon (its mesh port still clashes unless set apart in Settings → Networking). | [ ] | [ ] | [ ] |
+| APP-11 | About tab; Settings → Backend. | About: Studio version, links. L/R: the daemon's version is on the ADF daemon row of Settings → Backend (not in About). | [ ] | [ ] | [ ] |
 
 ## 20. Quitting and restarting (QUIT)
 
@@ -420,7 +433,7 @@ the running agents; E: no daemon running).
 
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
-| CRASH-01 | Kill Studio (`taskkill /F /IM "ADF Studio.exe"`) mid-turn. | E: next launch shows the crash-recovery notice with timestamps; running tasks → failed; pending approvals → cancelled. L/R: agents unaffected; relaunch attaches, turn completed. | [ ] | [ ] | [ ] |
+| CRASH-01 | Kill Studio (`taskkill /F /IM "ADF Studio.exe"`) mid-turn. | E: next launch shows the crash-recovery notice with timestamps; running tasks → failed; pending approvals → cancelled. L keep-running on, and R: agents unaffected; relaunch attaches, turn completed. L keep-running off: the turn completes; if Studio is not back within 60 s the daemon stops (its log: "Stopping the daemon: client session … expired …"); relaunched within 60 s, Studio attaches (and MULTI-13 applies). | [ ] | [ ] | [ ] |
 | CRASH-02 | View → Force Reload mid-stream. | Renderer resyncs; stream continues or completed rows shown; no duplicates. | [ ] | [ ] | [ ] |
 | CRASH-03 | Corrupt `adf-settings.json` (truncate), launch. | File quarantined, defaults loaded, message shown. L: daemon also survives (no clobber of the quarantined copy). | [ ] | [ ] | [ ] |
 | CRASH-04 | After any unexplained exit. | `Get-MpThreatDetection` checked (Defender behaviour kill); `main.log` and crashes dir record the exit. L: daemon log records its own exit. | [ ] | [ ] | [ ] |
@@ -431,7 +444,7 @@ the running agents; E: no daemon running).
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
 | DMN-01 | Same agents E → L → E → L. After each switch compare agent-1 and agent-2: loop rows, files, timers (ids, next fire), inbox, meta, tasks. | Identical. No lost turn, no duplicate timer, no duplicate loop rows. | N/A | [ ] | N/A |
-| DMN-02 | Switch modes while agent-1 streams. | Documented behaviour (refuse, or finish then hand over). The typed message and the turn MUST NOT be lost or run twice. | N/A | [ ] | N/A |
+| DMN-02 | Switch modes while agent-1 streams. | The switch dialog says "A turn is in flight in: agent-1." with Wait for Them to Finish / Stop Them Now / Cancel. Nothing is interrupted without one of them. Details: SW-01..SW-05. The typed message and the turn are never lost or run twice. | N/A | [ ] | N/A |
 | DMN-03 | Studio (L) + `adf` TUI on the same daemon. Chat from TUI. | Studio shows the user row and stream live. | N/A | [ ] | [ ] |
 | DMN-04 | As DMN-03, chat from Studio. | TUI shows it live. | N/A | [ ] | [ ] |
 | DMN-05 | Approve in TUI; approve in Studio (separate requests). | Each clears in the other surface within 1 s. | N/A | [ ] | [ ] |
@@ -439,25 +452,25 @@ the running agents; E: no daemon running).
 | DMN-07 | `adf chat agent-1 "hi"` while Studio shows agent-1. | Turn appears in Studio. | N/A | [ ] | [ ] |
 | DMN-08 | Two Studio machines attached to one remote daemon. | Both see the same state; approval on one clears on the other. | N/A | N/A | [ ] |
 | DMN-09 | Keep-running ON; quit Studio. Wait for agent-2 timer; send agent-3 a Telegram message. | Timer fires; phone gets one reply; `adf agents` lists them running. Relaunch: Studio attaches; loops show those turns; bell shows approvals raised while closed. | N/A | [ ] | N/A |
-| DMN-10 | Keep-running OFF; quit Studio. | Agents stop gracefully; daemon exits (`adf daemon status` not running); no orphan `node.exe`. Relaunch spawns a daemon; autostart agents start. | N/A | [ ] | N/A |
-| DMN-11 | Daemon started by `adf daemon start` before Studio; quit Studio with keep-running OFF. | Documented behaviour (record: Studio stops only a daemon it spawned, or stops any). Matches the settings label. | N/A | [ ] | N/A |
-| DMN-12 | Kill the daemon (`taskkill /F /PID <pid>`) while agent-1 streams. | Within 5 s Studio shows disconnected state; no fake idle. L: Studio restarts the daemon (or offers to); reconnects. Loop shows the recovery notice; no missing or duplicate rows versus `adf` loop listing. | N/A | [ ] | [ ] |
-| DMN-13 | During DMN-12 outage, type and send a message; click an approval. | Either delivered after reconnect or refused visibly. Never dropped silently. | N/A | [ ] | [ ] |
-| DMN-14 | `adf daemon restart` while Studio idle. | Reconnects without user action; state intact. | N/A | [ ] | [ ] |
-| DMN-15 | Version mismatch: run a daemon of another version (older and newer CLI), then Studio. Also after a Studio update with keep-running daemon from the old version. | Message names both versions. L: offers restart into Studio's version; restart is clean. R: incompatible operations refused with a message. No silent protocol errors. | N/A | [ ] | [ ] |
-| DMN-16 | Daemon running agent-2 and agent-3. Launch Studio in E. | Studio MUST NOT start agent-2/agent-3 in-process (skip or warn naming the daemon). Telegram message → exactly one reply. Timer → one "Timer Fired" row per period (check loop and logs count). No `409` in adapter logs. | [ ] | N/A | N/A |
-| DMN-17 | Studio in E with agents running; run `adf`. | CLI refuses to start a daemon while Studio runs, with its message. | [ ] | N/A | N/A |
-| DMN-18 | Remote over LAN by IP and by host name in `ADF_DAEMON_ALLOWED_HOSTS`. Run CHAT-01..07, HIL-01..07, TIME-05, DATA-02, DATA-06, EDIT-01. | All pass. | N/A | N/A | [ ] |
-| DMN-19 | Remote over tailnet (MagicDNS name). Same set as DMN-18. | All pass. | N/A | N/A | [ ] |
-| DMN-20 | Remote via SSH tunnel (`127.0.0.1:7386`). Same set. | All pass; owner routes (IDN-02/03) work. | N/A | N/A | [ ] |
-| DMN-21 | Remote via TLS proxy (`https://…`). | Connects; events stream live (not buffered). | N/A | N/A | [ ] |
-| DMN-22 | Wrong token; then correct token. | `401` reported clearly (mentions `adf daemon token`); no retry storm in the daemon log; correct token connects without restarting Studio. | N/A | N/A | [ ] |
-| DMN-23 | Host name not in `ADF_DAEMON_ALLOWED_HOSTS`. | Clear error naming the host. | N/A | N/A | [ ] |
-| DMN-24 | Network drop 30 s, idle and mid-stream (disable Wi-Fi or kill the tunnel). | Offline indicator; on restore, reconnects, missed events replayed, no duplicates; offline input handled per DMN-13. | N/A | N/A | [ ] |
+| DMN-10 | Keep-running OFF, Studio started the daemon, no other client; quit Studio. | Agents stop gracefully; the daemon exits (`adf daemon status`: not running, exit code 3); no daemon process left in Task Manager. main.log: "Quit: client session ended; the ADF daemon is stopping: …". Relaunch spawns a daemon; autostart agents start. With the TUI connected: MULTI-11. | N/A | [ ] | N/A |
+| DMN-11 | Daemon started by `adf daemon start` before Studio; quit Studio with keep-running OFF. | Studio does not stop it: `adf daemon status` running, agents keep running. main.log: "Quit: client session ended; the ADF daemon keeps running: this daemon run was started by cli, not Studio; Studio never stops it". Matches the setting's description ("A daemon started with adf daemon start is never stopped by Studio."). | N/A | [ ] | N/A |
+| DMN-12 | Kill the daemon (`taskkill /T /F /PID <pid>`) while agent-1 streams. | Within 5 s: Help menu "ADF daemon: not connected (http://127.0.0.1:7385), retrying" and Reconnect to the ADF Daemon; after 3 s the dialog "Studio lost its connection to the ADF daemon." (Reconnect Now / Open Daemon Log / Dismiss). No fake idle. Studio does not restart the daemon itself: run `adf daemon start` (or restart Studio, which starts one). Studio then reconnects by itself and notifies "Reconnected to the ADF daemon." The loop shows the interrupted turn; no missing or duplicate rows versus `adf` loop listing. A chat waiting for its answer ends after 15 s without the daemon. | N/A | [ ] | [ ] |
+| DMN-13 | During the DMN-12 outage, send a message; click an approval; press Stop all agents. | Each is refused visibly: "Cannot reach daemon at <url>: …" where the action was taken; emergency stop shows "Emergency stop did not reach the ADF daemon. … Agents may still be running." Nothing is queued and replayed later; nothing is dropped silently. | N/A | [ ] | [ ] |
+| DMN-14 | `adf daemon restart` while Studio is idle in L (Studio started the daemon). | Studio reconnects without user action (a "Studio lost its connection" dialog may appear while the daemon restarts; dismiss it), re-holds the open agent and resyncs; state intact. Afterwards Settings → Backend says "started by the ADF CLI": the restarted daemon was started by the CLI, so Studio's quit no longer stops it. R: the same with `adf daemon restart` on the server. | N/A | [ ] | [ ] |
+| DMN-15 | Version mismatch. Setup: a daemon of another client API version on Studio's settings, e.g. a source checkout with `CLIENT_API_VERSION` in `src/main/daemon/routes/meta-routes.ts` changed, started with `npm run daemon`; or, after a Studio update that changes the client API version, the old daemon kept running. Launch Studio in L. | Dialog "The running ADF daemon is version X; this Studio is Y." with "Restart the Daemon with Studio's Version" and "Use Embedded Mode for This Session". A CLI-started daemon, or one with other clients connected, is named, the button reads "Restart It Anyway" and Embedded is the default. Restart: the old daemon stops, Studio's starts and attaches; it keeps the old run's "started by". Embedded: DMN-37. A daemon of another release with the same client API version attaches without a dialog. R: the connection fails with "The ADF daemon at <url> (version V) speaks client API N; this Studio needs M. Update the daemon on the server (or Studio) so both are the same version." No silent protocol errors. | N/A | [ ] | [ ] |
+| DMN-16 | Daemon running agent-2 and agent-3. Launch Studio in E. | Studio does not start agent-2/agent-3 in-process: autostart skips them, and Start shows "agent-2 is already running in the ADF daemon (pid N). Stop it there with "adf stop agent-2", or stop that daemon with "adf daemon stop", then start it here." Telegram message → exactly one reply. Timer → one "Timer Fired" row per period. No `409` in adapter logs. | [ ] | N/A | N/A |
+| DMN-17 | Studio in E running; run `adf`. | `adf` refuses to start a daemon: "ADF Studio (pid N) is running agents from the same settings file (<path>)." followed by "Studio and the daemon would run the same agents from the same files at once. Quit ADF Studio, then run adf again. Or keep using Studio." In L the same command attaches (Studio is a client). | [ ] | N/A | N/A |
+| DMN-18 | Remote over the LAN, by IP (`http://192.168.x.y:7385`) and by a host name in `ADF_DAEMON_ALLOWED_HOSTS` (`http://<lan-name>:7385`). Both need "I trust this network; the token is sent unencrypted." Run CHAT-01..07, HIL-01..07, TIME-05, DATA-02, DATA-06, EDIT-01. | Without the box checked Save is disabled. With it, Test connection succeeds and all items pass. A host name not in the list: DMN-23. | N/A | N/A | [ ] |
+| DMN-19 | Remote over the tailnet: `https://<machine>.<tailnet>.ts.net` (through `tailscale serve`), then `http://100.x.y.z:7385`. Same set as DMN-18. | https: no confirmation; all pass. `http://100.x.y.z`: accepted without the confirmation (tailnet range). `http://<machine>.<tailnet>.ts.net:7385` (MagicDNS over plain http) asks for the confirmation. All pass. | N/A | N/A | [ ] |
+| DMN-20 | Remote via SSH tunnel (`ssh -N -L 7386:127.0.0.1:7385 …`, URL `http://127.0.0.1:7386`, the server's token). Same set as DMN-18. | No confirmation (loopback). All pass. Owner identity actions in Studio stay disabled (IDN-02); `adf identity …` run on the server works. Open Daemon Log is disabled. | N/A | N/A | [ ] |
+| DMN-21 | Remote via a TLS proxy (`https://…`). | Test connection succeeds; events stream live (not buffered). A certificate this computer does not trust: "The TLS connection to <url> failed (…). Studio checks certificates and has no option to skip that: …". | N/A | N/A | [ ] |
+| DMN-22 | Wrong token: Save it, Test connection; then launch in R with it. Then the correct token. | Test connection: "The ADF daemon at <url> refused the token. Run adf daemon token on the server and save the result in Settings → Backend." The launch fails once with the same sentence in "Studio could not connect to an ADF daemon."; no retries (one 401 in the daemon log). Correct token: Save, Test connection succeeds, Restart now connects (the connection is made at launch, so a restart is needed). | N/A | N/A | [ ] |
+| DMN-23 | Host name not in `ADF_DAEMON_ALLOWED_HOSTS`. | "The ADF daemon at <url> does not accept the host name <name>. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon)." | N/A | N/A | [ ] |
+| DMN-24 | Network drop 30 s, idle and mid-stream (disable Wi-Fi or kill the tunnel). | Help menu status line and, after 3 s, the "Studio lost its connection" dialog; on restore, reconnects, missed events replayed, no duplicates; input during the drop handled per DMN-13. | N/A | N/A | [ ] |
 | DMN-25 | Network drop longer than the event replay window (busy agent, 10 min). | Studio re-snapshots (loop reloads); no gap in rows. | N/A | [ ] | [ ] |
 | DMN-26 | Laptop sleep 10 min, resume (R). | Reconnects; state current. | N/A | N/A | [ ] |
-| DMN-27 | First switch E → L: run agent-1 (API key), agent-2 (ChatGPT), agent-5 (Grok), agent-6 (Claude, per-agent key, MCP creds, HTTP OAuth MCP), agent-3 (Telegram token). | All work without re-entering secrets. Any re-login MUST be one the release notes document, with a clear prompt. Per-agent credentials unlock in the daemon (daemon key trusted). | N/A | [ ] | N/A |
-| DMN-28 | Switch back L → E; run the same agents. | All work; no re-login; ChatGPT refresh token not clobbered (both surfaces still signed in after 24 h). | [ ] | N/A | N/A |
+| DMN-27 | First switch E → L: run agent-1 (API key), agent-2 (ChatGPT), agent-5 (Grok), agent-6 (Claude, per-agent key, MCP creds, HTTP OAuth MCP), agent-3 (Telegram token). | All work without re-entering secrets: the summary lists the ChatGPT and Grok sessions and MCP sign-ins as moved; Claude Code is shared and needs nothing. Per-agent credentials unlock in the daemon because it adopted Studio's runtime identity (`adf identity`: runtime `studio (adopted)`). Review shows the agents as yours. | N/A | [ ] | N/A |
+| DMN-28 | Switch back L → E; run the same agents. | All work; no re-login: the summary lists the sessions and MCP sign-ins as moved back, and `auth.daemon.json` is gone. ChatGPT still signed in after 24 h (one session moved, not two copies). | [ ] | N/A | N/A |
 | DMN-29 | R: enter an app-level provider key in Studio. | Stored on the daemon host; local keys never sent to the remote daemon. | N/A | N/A | [ ] |
 | DMN-30 | Password-protected agent in L. | Autostart skips it; unlocking in Studio runs it in the daemon. | N/A | [ ] | [ ] |
 | DMN-31 | Run 3 turns in L, switch to E. | Usage counts each turn once; no double count across modes. | N/A | [ ] | N/A |
@@ -466,11 +479,15 @@ the running agents; E: no daemon running).
 | DMN-34 | Agent with `umbilical_taps`. | Taps fire in L/R as in E (daemon profile historically excluded them). | [ ] | [ ] | [ ] |
 | DMN-35 | `on_file_change` for writes from the editor, the agent and a lambda. | Same firing in L/R as in E (headless gap historically). | [ ] | [ ] | [ ] |
 | DMN-36 | Remote daemon host in another time zone. | Timestamps shown in local time; usage bucketed by documented day. | N/A | N/A | [ ] |
+| DMN-37 | DMN-15 → Use Embedded Mode for This Session. | Studio restarts in E for this launch only. Settings → Backend: "This launch runs Embedded for this session only (the ADF daemon's version did not match). The next launch uses Local daemon." The old daemon and its agents keep running; Studio does not start them (agent_leased, DMN-16); sign-ins and the runtime identity stay with the daemon. The next launch asks again. | N/A | [ ] | N/A |
+| DMN-38 | DMN-15 with the daemon started by the CLI and the TUI connected → Restart It Anyway. | The dialog adds "This daemon was started by the ADF CLI (adf daemon start), not Studio. Restarting replaces it; the new one counts as started by cli too, so Studio's quit never stops it." and "Connected to it now: tui …. A restart disconnects them."; "Use Embedded Mode for This Session" is the default button. After the restart the TUI reconnects to the new daemon; Settings → Backend says "started by the ADF CLI". | N/A | [ ] | N/A |
 
 ## 23. Side-by-side parity (PAR)
 
 Method: clone agent-1 to `agent-1b`. Run Studio instance 1 in L with agent-1
-and `--instance=2` in E with agent-1b (agent-1b is not loaded by the daemon).
+and `--instance=2` in E with agent-1b (agent-1b is not loaded by the daemon;
+give instance 2 another mesh port in Settings → Networking, or one of the two
+mesh servers fails to bind).
 Screen-record both with the same scripted prompts. Where two instances are not
 possible, record each mode in turn and compare recordings.
 
@@ -511,11 +528,116 @@ the result shape across modes. Read-only calls only, unless stated.
 | API-12 | `installUpdate` (only after a downloaded update) | Restarts into the update, as APP-07. | [ ] | [ ] | [ ] |
 | API-13 | `await adfApi.computeStop()` | Shared compute stops; Settings → Compute reflects it. | [ ] | [ ] | [ ] |
 
+## 25. Mode switch with running agents (SW)
+
+Guide: [Studio backend › Running agents and turns in flight](../guides/studio-backend.md#running-agents-and-turns-in-flight).
+A long turn for these items: ask agent-1 to run `shell` with a 3-minute
+sleep loop that prints a line every 10 s.
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| SW-01 | In E, agent-1 runs a long turn; switch to L. | The dialog adds "A turn is in flight in: agent-1. "Wait for Them to Finish" restarts once those turns are done; "Stop Them Now" interrupts them." Buttons: Wait for Them to Finish / Stop Them Now / Cancel (Cancel is the default). | N/A | [ ] | N/A |
+| SW-02 | SW-01 → Wait for Them to Finish. | Settings → Backend shows "Switching to Local daemon": "Studio restarts once the turns in flight finish (agent-1)." with Finish Switch Now and Cancel Switch. When the turn ends Studio restarts; agent-1's loop shows the whole reply once; "Running again after the switch: agent-1." | N/A | [ ] | N/A |
+| SW-03 | SW-01 → Stop Them Now. | Studio restarts at once; the quit interrupts the turn (cut off once, no duplicate rows); agent-1 runs in the daemon after the restart. | N/A | [ ] | N/A |
+| SW-04 | SW-02 while waiting: Finish Switch Now. Repeat and choose Cancel Switch. | Finish Switch Now: restarts now; the turn is interrupted. Cancel Switch: no restart; the Mode control shows Embedded again (`studio-backend.json` mode `embedded`); the turn completes in Studio. | N/A | [ ] | N/A |
+| SW-05 | Optional (long): Wait for Them to Finish on a turn that runs over 30 minutes. | After 30 minutes one notification: "The switch to Local daemon is waiting: agent-1 still has a turn in flight. Settings → Backend: Finish Switch Now (stops the turns) or Cancel Switch." Settings → Backend: "Still waiting for agent-1 after 30 minutes. …". No restart until you choose. | N/A | [ ] | N/A |
+| SW-06 | L → E while the daemon keeps running (keep-running on, or started by `adf daemon start`), agent-2 running in it. | Dialog: "The ADF daemon keeps running (started by cli, or "Keep the daemon running" is on), and so do its agents (agent-2) there. Studio does not start an agent the daemon runs; stop it there first (adf daemon stop) to run it in Studio." After the restart agent-2 still runs in the daemon (`adf agents`); the notification lists "Not started: agent-2 (agent-2 is already running in the ADF daemon (pid N). …)"; the summary says sign-ins were not moved back (HAND-08). | [ ] | N/A | N/A |
+| SW-07 | Choose another mode, then Cancel in the switch dialog. | "Switch cancelled. Nothing changed." under the Mode control; no restart; `studio-backend.json` unchanged. | [ ] | [ ] | [ ] |
+| SW-08 | With L configured, launch Studio with `ADF_STUDIO_BACKEND=embedded` (PowerShell: `$env:ADF_STUDIO_BACKEND='embedded'; & "<install dir>\ADF Studio.exe"`). Then choose another mode. | Studio runs E: Settings → Backend "This launch runs Embedded because ADF_STUDIO_BACKEND is set." Only client settings move; ChatGPT, Grok and MCP sign-ins and the runtime identity stay with the daemon (agents using them show signed out); agents the daemon runs cannot start here (agent_leased). The switch dialog adds "ADF_STUDIO_BACKEND is set in this environment and overrides this choice until it is removed." The next launch without the variable runs L. | [ ] | N/A | N/A |
+| SW-09 | macOS only: E → L. | The switch dialog adds "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain. "Always Allow" grants that to the Electron binary that runs the daemon, and to any script it runs." After the restart macOS asks once; after Always Allow no prompt at later starts. Windows and Linux: N/A. | N/A | [ ] | N/A |
+
+## 26. Credential handover (HAND)
+
+Guide: [Studio backend › What moves during a switch](../guides/studio-backend.md#what-moves-during-a-switch).
+Paths are in Studio's user data folder (`%APPDATA%\ADF Studio`).
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| HAND-01 | First E → L with ChatGPT and Grok signed in and one app-level HTTP OAuth MCP server signed in. | Summary "Studio now runs Local daemon." lists Client settings moved, Runtime identity written ("keychain entry studio-runtime:<scope> written"), ChatGPT session and Grok session moved (from …\auth.json to …\auth.daemon.json), MCP sign-ins moved ("1 server sign-in(s) moved into the daemon's secret store"). On disk: `chatgpt-subscription\auth.json` gone, `auth.daemon.json` present, `studio-handover.json` present. `adf auth` shows the ChatGPT account. | N/A | [ ] | N/A |
+| HAND-02 | After HAND-01: `adf identity`; Settings → Identity; agent-1's review and Identity panels; create agent-8 in L. | `adf identity` shows runtime `studio (adopted)`. The runtime DID in Settings → Identity equals the one in E. agent-1 shows as yours. Credential Manager (Windows Credentials) has an `ADF` entry `studio-runtime:<12 hex>`. agent-8 later opens in E (HAND-03) as yours, credentials unlocked, no review. | N/A | [ ] | N/A |
+| HAND-03 | L → E (Studio started the daemon, keep-running off). | Summary "Studio now runs Embedded." lists the ChatGPT and Grok sessions and MCP sign-ins moved back and Runtime identity deleted. `auth.json` back, `auth.daemon.json` gone, no `studio-runtime:` entry in Credential Manager. ChatGPT and Grok agents run without signing in. | [ ] | N/A | N/A |
+| HAND-04 | Accounts conflict. Setup: Studio in E signed in to ChatGPT as account A; quit Studio; `adf daemon start`; `adf auth login chatgpt` as account B; `adf daemon stop`; launch Studio, switch to L. | At the boot after the switch: dialog "ChatGPT session: two accounts" / "Studio and the ADF daemon are signed in to ChatGPT with different accounts." naming both, buttons "Keep A (Studio)" and "Keep B (daemon)". Keep A: `adf auth` shows A; B is saved once, encrypted, as `chatgpt-subscription\auth.replaced.json`; the summary names it. | N/A | [ ] | N/A |
+| HAND-05 | After HAND-04: quit Studio, `adf daemon stop`, rename `auth.replaced.json` to `auth.daemon.json`, `adf daemon start`, `adf auth`. | The daemon is signed in as B. | N/A | [ ] | N/A |
+| HAND-06 | Same as HAND-04 with account A on both sides. | No dialog. Both sessions are kept, each on its side (no `auth.replaced.json`). After switching back to E, Studio's ChatGPT agents run signed in. | N/A | [ ] | N/A |
+| HAND-07 | Replace the contents of `studio-handover.json` with `{`; switch modes (either direction). | The switch dialog lists "Sign-ins: not moved: …studio-handover.json cannot be read (…). Fix or delete it; until then ChatGPT, Grok and MCP sign-ins stay where they are". After the restart the summary says "… part of the handover is not done." with the same item, retried at the next start. | [ ] | [ ] | N/A |
+| HAND-08 | L with a daemon started by `adf daemon start`; switch to E. | Summary: "Sign-ins: kept, retried at the next start (not moved back: the ADF daemon pid N (started by cli) still runs on these settings and could refresh a token while Studio moves it. Stop it (adf daemon stop) and restart Studio; …)". After `adf daemon stop` and a restart, the next summary lists them moved back. | [ ] | N/A | N/A |
+| HAND-09 | In L, delete `studio-handover.json`; switch to E. | The summary: "…studio-handover.json is missing, so Studio cannot tell its sign-ins from the daemon's own; ChatGPT, Grok and MCP sign-ins stay with the daemon. Sign in again in Studio where needed". The `studio-runtime:` keychain entry is deleted. | [ ] | N/A | N/A |
+| HAND-10 | Quit Studio (E); `adf daemon start`; launch Studio (E) and switch to L. | Studio attaches to the CLI daemon (no restart of it). The moved ChatGPT session works in the daemon at once: agent-2's next turn runs, no "signed out". The daemon log shows the credential reload. | N/A | [ ] | N/A |
+| HAND-11 | Linux without a Secret Service only: E → L. | The switch dialog lists "MCP sign-ins: stay in Studio (…)" and "Runtime identity: not shared: …. The daemon runs as its own runtime, and files it stamps show as "recognized" in Studio's review". Windows and macOS: N/A. | N/A | [ ] | N/A |
+
+## 27. Several clients on one daemon (MULTI)
+
+Studio in L (or R) and the terminal app (`adf`) on the same daemon. Guide:
+[Studio backend › Studio and the terminal app together](../guides/studio-backend.md#studio-and-the-terminal-app-together).
+E items use agent-1 (`fs_write`) as the other writer.
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| MULTI-01 | Open agent-1 `notes.md` in Studio and type without saving; in the TUI (Files) edit and save the same file. | Studio keeps your text. Strip: "notes.md was changed by the terminal app while you were editing. Your changes are not saved." with Reload and Keep mine. | N/A | [ ] | [ ] |
+| MULTI-02 | MULTI-01 → Reload. | Studio shows the TUI's text; your text is discarded; nothing is written. | N/A | [ ] | [ ] |
+| MULTI-03 | MULTI-01 → Keep mine. | Your text is saved over theirs; `adf file agent-1 notes.md` shows it. | N/A | [ ] | [ ] |
+| MULTI-04 | With the strip up: Ctrl+S; close the tab; switch to agent-2. | Ctrl+S saves nothing and focuses Reload. Close and switch ask "Discard your unsaved changes to notes.md? Someone else changed notes.md while you were editing. OK discards your version. Cancel keeps notes.md open."; Cancel keeps the tab and the agent. | [ ] | [ ] | [ ] |
+| MULTI-05 | Change agent-1's config in Studio's config panel without saving; in the TUI `/config edit` and save a change. | Config panel strip: "The config was changed by the terminal app while you were editing. Your changes are not saved." Reload / Keep mine as MULTI-02/03. | N/A | [ ] | [ ] |
+| MULTI-06 | With the strip up, quit Studio (menu Quit); relaunch. | Notice: "Studio kept your unsaved version of agent-1/notes.md from the last session, which ended while someone else's change was waiting for your answer." with Show folder and Dismiss. Show folder opens `<userData>\recovered`, which holds `agent-1-<hash>\notes.md` with your text. Dismiss: the notice goes; the copy moves to `recovered\archive\<time>\`; the next launch shows no notice. | [ ] | [ ] | [ ] |
+| MULTI-07 | As MULTI-06, but kill Studio (`taskkill /F /IM "ADF Studio.exe"`) instead of quitting. | Same notice and copy at the next launch. | [ ] | [ ] | [ ] |
+| MULTI-08 | In the TUI open `notes.md` in the external editor (Files → `e`); in Studio edit and save it; save and close the external editor. | TUI: "notes.md was changed by another Studio window after you opened it. Overwrite replaces their version with yours. Reload keeps theirs (your edited copy stays at <path>)." Overwrite saves yours; Reload theirs writes nothing and keeps the copy. | N/A | [ ] | [ ] |
+| MULTI-09 | Set agent-1 `umbilical.stream_deltas` to false. In the TUI open agent-1's chat view and send a long prompt; keep Fleet visible for agent-2. | agent-1's reply streams token by token in the TUI (and in Studio, which has it open); the TUI's Events tab and activity log are not flooded with `turn.delta`; agent-2's state and turns update in Fleet. | N/A | [ ] | [ ] |
+| MULTI-10 | Keep-running off, Studio started the daemon, TUI connected. Quit Studio; then quit the TUI. | After the Studio quit the TUI shows "The daemon stays up because this app is connected: Studio quit; the daemon it started keeps running while you are connected and stops when the last client disconnects"; `adf daemon status`: running. After the TUI quits the daemon stops (`adf daemon status`: not running). | N/A | [ ] | N/A |
+| MULTI-11 | As MULTI-10, but relaunch Studio before quitting the TUI. | The TUI shows "The daemon is no longer waiting for this app to close". Quitting the TUI leaves the daemon running; quitting Studio afterwards stops it. | N/A | [ ] | N/A |
+| MULTI-12 | As MULTI-10, but kill Studio instead of quitting, and wait 60 s. | About 60 s after the kill the TUI shows "The daemon stays up because this app is connected: studio closed; …"; the daemon stops when the TUI quits. | N/A | [ ] | N/A |
+| MULTI-13 | Keep-running off, no TUI: kill Studio and relaunch it within 60 s. | Studio attaches to the running daemon. About 60 s after the kill (the crashed session expires) Studio shows the notification "The ADF daemon keeps running while 1 other client is connected, and stops when the last one closes. (studio closed; …)". The daemon stops when this Studio quits. (As built; log it if the notice is confusing.) | N/A | [ ] | N/A |
+
+## 28. Daemon status and outages (STAT)
+
+Guide: [Studio backend › Daemon status](../guides/studio-backend.md#daemon-status)
+and [When the daemon is not reachable](../guides/studio-backend.md#when-the-daemon-is-not-reachable).
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| STAT-01 | Settings → Backend → ADF daemon row; `adf daemon status`. | L, Studio started it: "Connected · http://127.0.0.1:7385 · pid N · version V · started by this Studio"; `adf daemon status` shows `started   by studio`. L, after `adf daemon start` first: "… started by the ADF CLI", `started   by cli`. R: the remote URL, version and who started it. | N/A | [ ] | [ ] |
+| STAT-02 | Help menu while connected; then kill the daemon. | Connected: Open Daemon Log opens `logs\adf-daemon.log` in the default viewer; no status line. Disconnected: a disabled line "ADF daemon: not connected (http://127.0.0.1:7385), retrying" and Reconnect to the ADF Daemon. R: Open Daemon Log is disabled (the log is on the server: `adf daemon logs`). | N/A | [ ] | [ ] |
+| STAT-03 | Launch Studio in L while a daemon is still starting (right after `adf daemon start`) or stopping. | Task-bar progress; Settings → Backend and Help show "Waiting for the ADF daemon (pid N)…"; one notification "Waiting for the ADF daemon (pid N)… Studio connects when it answers."; then Connected. | N/A | [ ] | N/A |
+| STAT-04 | L: with a daemon running, launch Studio with `ADF_DAEMON_TOKEN=wrong` in its environment. | Dialog "ADF daemon not available": "Studio could not connect to an ADF daemon." with "A daemon is running on port 7385 but Studio cannot authenticate to it (token from ADF_DAEMON_TOKEN)." and the recovery sentence. Settings → Backend: "Not connected". No fallback to E. | N/A | [ ] | N/A |
+| STAT-05 | L: a daemon on other settings holds port 7385 (`$env:ADF_DAEMON_SETTINGS='<folder>\adf-settings.json'; adf daemon start`); launch Studio in L. | The failure dialog says "The ADF daemon running on this machine (pid N) uses <folder>\adf-settings.json, not <Studio's settings>." | N/A | [ ] | N/A |
+| STAT-06 | Kill the daemon; press "Stop all agents and disable mesh". | Dialog "Emergency stop did not reach the ADF daemon." with "Cannot reach daemon at …" and "Agents may still be running."; the status bar keeps its state. After the daemon is back, its agents are listed as they are. | N/A | [ ] | [ ] |
+
+## 29. Remote daemon in Studio (REM)
+
+Guide: [Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).
+`<host>` is the daemon URL's host.
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| REM-01 | Settings → Backend → Remote daemon → Daemon URL: try `http://192.168.x.y:7385`, `http://100.x.y.z:7385`, `http://<machine>.<tailnet>.ts.net:7385`, `http://127.0.0.1:7386`, `https://<name>`, `ftp://x`. | LAN IP and MagicDNS over http show "I trust this network; the token is sent unencrypted."; Save stays disabled until it is checked. `100.x.y.z`, loopback and https need no confirmation. `ftp://x` shows why it is refused. Editing the URL to another address clears the box. | N/A | N/A | [ ] |
+| REM-02 | Test connection with the right URL and token. | "Connected to the ADF daemon at <url> (version V, started by cli)." Nothing is saved by the test. | N/A | N/A | [ ] |
+| REM-03 | Test connection with: the server's daemon stopped; a proxy whose daemon is stopped; an https URL with an untrusted certificate; a URL that redirects; a non-ADF web server. | In order: "Cannot reach the ADF daemon at <url> (…). Check the address, …"; "<url> answered HTTP 502: a proxy answers there, but the ADF daemon behind it does not. …"; "The TLS connection to <url> failed (…). Studio checks certificates and has no option to skip that: …"; "<url> answered a redirect (HTTP 30x …). Studio does not follow redirects, …"; "<url> does not answer as an ADF daemon (…). Check the address and port." | N/A | N/A | [ ] |
+| REM-04 | Save a token; reopen Settings; change the URL to another host and Save; Remove token. | The token field shows dots and "A token is saved. Enter a new one to replace it." (never the token). Another host: "A token is saved for the old address. Saving the new address removes it." and, on Save, "The saved token was removed because the daemon address changed. Enter the token for the new address." Remove token: "Token removed." | N/A | N/A | [ ] |
+| REM-05 | R with a confirmed plain-http LAN URL: uncheck "I trust this network…", Save, restart. | Settings: "Studio will not send the token to <url> until you confirm plain http for it again." The next launch stays in R, does not connect (the failure dialog explains), and Settings → Backend shows "The remote daemon cannot be used: …". No fallback to E. | N/A | N/A | [ ] |
+| REM-06 | While connected, change the server's token (restart its daemon with another `ADF_DAEMON_TOKEN`). | The next request ends the connection: "The ADF daemon at <url> refused the token. Run adf daemon token on the server and save the result in Settings → Backend." One 401 in the server's log, no retry storm. | N/A | N/A | [ ] |
+| REM-07 | Open agent… (Ctrl+O). | A picker titled "Open an agent on <host>": Locations (Home folder, Tracked folder, Agents folder), Up, a path field ("type a folder path on the daemon host and press Enter"), Hidden, folders and `.adf` files of the server. Arrow keys and Enter move and open. Open loads the agent from the server. | N/A | N/A | [ ] |
+| REM-08 | New agent (sidebar or File → New ADF Agent); name `agent-1` in the fixtures folder. | A picker titled "New agent on <host>" with a name field. An existing name shows "agent-1.adf already exists in this folder. Replace it?" and the button reads Replace. A new name creates the agent on the server and opens it. | N/A | N/A | [ ] |
+| REM-09 | In a picker: New folder, type a name, Create folder; then a name with `:` or `..`. | The folder is created on the server and listed. An invalid name: "The name contains characters not allowed in file names." | N/A | N/A | [ ] |
+| REM-10 | Track Folder… (Ctrl+Shift+O); Settings → Files → agents folder; Home composer folder. | Each opens the server-side picker ("Track a folder on <host>", "Choose a folder on <host>"); the chosen path is a server path. | N/A | N/A | [ ] |
+| REM-11 | On the server set `ADF_DAEMON_BROWSE_ROOTS=<folder>` and restart its daemon; open a picker. | Locations list that folder ("Daemon browse root") plus tracked folders and the agents folder; the home folder is not listed. | N/A | N/A | [ ] |
+| REM-12 | Open Recent → an entry whose file was deleted on the server. | "No agent file at <path> on <host> (…). To upload a file of this computer, open it from the file manager or Open Recent." Nothing on this computer is read. | N/A | N/A | [ ] |
+| REM-13 | Studio running in R: double-click a local `.adf` in Explorer (second instance hand-off). | The upload question of FILE-08 ("<name>.adf is on this computer, not on <host>."); Cancel uploads nothing. | N/A | N/A | [ ] |
+| REM-14 | agent-6 calls a tool of its HTTP OAuth MCP server that is not signed in. | A native question "Open a sign-in page on <page host>?" with "The ADF daemon at <host> asks to open <page host> in your browser (…). Open it only if you started this sign-in." Cancel: nothing opens, and no further dialog. Open page: the browser signs in, the callback is handed to the daemon, the tool call continues. | N/A | N/A | [ ] |
+| REM-15 | Settings → MCP servers: add the HTTP OAuth server and Test it. | The same question before the page opens; after sign-in the test lists the tools. | N/A | N/A | [ ] |
+| REM-16 | REM-14 with the callback port in use on this computer (another program listening on it). | The page opens without the relay, and a dialog "agent-6: sign-in to "<server>"" says "Port N on this computer is in use, so Studio cannot take the sign-in callback for the daemon. …". | N/A | N/A | [ ] |
+| REM-17 | agent-6: Identity tab Reveal; provider override key field; MCP credential form; save the form untouched; then edit one character of a placeholder and save. | Reveal and the provider key field say "Stored credential values stay on the daemon's machine: a remote daemon never sends them to Studio." The MCP form shows a placeholder. Saving untouched keeps the stored values (the server still connects). An edited placeholder is refused: "… was shown as a placeholder (…), so an edit of it cannot be saved. Clear the field and type the whole value." | N/A | N/A | [ ] |
+| REM-18 | Save a channel credential of an agent whose credentials are locked on the server. | The question says "This agent's credentials are locked on the daemon's machine." (L and E say "on this machine"). Replace / Cancel. | N/A | N/A | [ ] |
+| REM-19 | L → R, then R → L. | The switch dialog lists only Client settings under "Moves at the restart:". ChatGPT, Grok and MCP sign-ins stay with the local daemon: back in L they work without signing in. | N/A | N/A | [ ] |
+
 ---
 
 ## Appendix A. Bridge method → checklist ID
 
-Every method of `AdfApi` (`src/preload/api.ts`). IPC channels in
+Every method of `AdfApi` (`src/preload/api.ts`). `node
+scripts/check-user-testing-coverage.mjs` checks this table: every member named,
+no unknown name, every cited ID present. The remote members (Test connection,
+restart, the server-side picker) are on `ws/w4-b` until it merges; check them
+with `node scripts/check-user-testing-coverage.mjs src/preload/api.ts <copy of
+ws/w4-b's api.ts>`. IPC channels in
 `src/shared/constants/ipc-channels.ts` map 1:1 to these methods, with two
 exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 `MESH_DEBUG` is defined but unused (`getMeshDebug` invokes `MESH_STATUS` with
@@ -536,7 +658,8 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `getCurrentFile` | FILE-24, CRASH-02 |
 | `revealInFolder` | FILE-16 |
 | `getDocument`, `setDocument` | EDIT-01, EDIT-08 |
-| `getAgentConfig`, `setAgentConfig` | AGT-01..AGT-09 |
+| `getAgentConfig`, `setAgentConfig` | AGT-01..AGT-09, MULTI-05 |
+| `getAgentConfigWithRevision` | AGT-01, MULTI-05 |
 | `onAgentConfigChanged` | AGT-10, LOOP-03 |
 | `getChat`, `getChatOlder` | CHAT-13, CHAT-22, LOOP-01 |
 | `setChat` | API-02 |
@@ -605,7 +728,7 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `renameInternalFile`, `renameFolder` | DATA-03 |
 | `setFileProtection` | DATA-04 |
 | `setFileAuthorized` | DATA-05 |
-| `readInternalFile`, `writeInternalFile` | EDIT-01, EDIT-07, TMPL-07 |
+| `readInternalFile`, `writeInternalFile` | EDIT-01, EDIT-07, TMPL-07, MULTI-01, MULTI-03 |
 | `downloadInternalFile` | DATA-06, EDIT-07 |
 | `getAllMeta`, `setMeta`, `deleteMeta`, `setMetaProtection` | DATA-10 |
 | `listLocalTables`, `queryLocalTable`, `dropLocalTable` | DATA-08 |
@@ -667,6 +790,11 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `orbitalCacheGet`, `orbitalCachePut` | SET-02, DASH-04 |
 | `emergencyStop` | DASH-08 |
 | `platform` | HIL-17 (platform-specific badge), APP-02 |
+| `getBackendSettings`, `setBackendSettings` | MODE-02, MODE-03, MODE-12, SW-04, SW-07, REM-04, REM-05 |
+| `checkRemoteBackend` | REM-02, REM-03 |
+| `restartStudio` | MODE-06 |
+| `onRemotePickerRequest`, `respondRemotePicker`, `browseRemoteFolder`, `createRemoteFolder` | REM-07, REM-08, REM-09, REM-10, REM-11 |
+| `recoveryStash`, `recoveryList`, `recoveryReveal`, `recoveryArchive` | MULTI-06, MULTI-07 |
 
 ---
 
@@ -695,5 +823,6 @@ Restarts / crashes / reconnects (time, cause):
 ```
 
 Exit criterion for deleting the Embedded backend: every L and R box checked
-or marked N/A, no open issue against a MODE, DMN or PAR item, and seven
-consecutive daily-driver days in L with no unexplained difference from E.
+or marked N/A, no open issue against a MODE, SW, HAND, MULTI, STAT, REM, DMN
+or PAR item, and seven consecutive daily-driver days in L with no unexplained
+difference from E.

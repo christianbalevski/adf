@@ -38,6 +38,10 @@ adf
   daemon answers `401` and `adf` points you to `adf daemon token`.
 - Through the tunnel the daemon sees a loopback connection, so owner identity
   create / restore / unlock and `adf daemon stop` work as on the server.
+  This holds for `adf` only: ADF Studio in remote mode (URL
+  `http://127.0.0.1:7386`) never sends a seed phrase to another machine and
+  has no local proof for the server, so its owner identity actions say to run
+  `adf identity` on the server, through the tunnel too.
 
 ## Option 2: bind to the network
 
@@ -58,6 +62,13 @@ ADF_DAEMON_ALLOWED_HOSTS=server.lan adf daemon --host 0.0.0.0
   separated; `name` or `name:port`).
 - Owner identity create / restore / unlock and `adf daemon stop` are refused
   from other machines: run them on the server.
+- On a tailnet, bind to the server's tailnet address (`--host 100.x.y.z`).
+  `100.64.0.0/10` is also the range internet providers use for carrier-grade
+  NAT, so a `http://100.x.y.z` URL on a network you do not control may reach
+  another machine with your token. Prefer https through `tailscale serve` and
+  the MagicDNS name. ADF Studio accepts plain http to a `100.64.0.0/10`
+  address without asking; any other plain-http address (a LAN address, a
+  MagicDNS name) needs its "I trust this network" confirmation.
 
 ## Option 3: TLS reverse proxy
 
@@ -115,3 +126,7 @@ and signed in on the server, not your laptop.
   to the daemon on save.
 - `adf daemon logs`, `status` details (data dir, log) and `token` read the
   local machine: run them on the server.
+- ADF Studio in remote mode picks paths on the server, offers files of your
+  laptop as uploads, and keeps owner identity, stored credential values and
+  the agent browser viewer on the server. See
+  [Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).
