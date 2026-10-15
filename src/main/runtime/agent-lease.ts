@@ -25,7 +25,11 @@
  * pipe on Windows, a Unix socket elsewhere) the holder listens on for its
  * whole life. The OS closes the endpoint when the process dies, so:
  *   - pid not running                        → stale (crash, kill)
- *   - pid running, endpoint refuses/missing  → stale (the pid was reused)
+ *   - pid running, endpoint refuses          → stale (the pid was reused)
+ *   - pid running, endpoint missing          → stale for a named pipe or a
+ *                                              socket in the 0700 hosts dir;
+ *                                              live for the tmpdir() fallback
+ *                                              socket (tmp cleaners delete it)
  *   - endpoint connects                      → live, even if its event loop is
  *                                              blocked (the OS accepts the
  *                                              connection)
@@ -36,7 +40,7 @@
  * removes it only if it still holds the bytes judged stale, and writes its
  * own exclusively. Any number of takers racing on one stale lease leave
  * exactly one holder. The lock is broken only when its holder's pid is gone
- * or its endpoint is missing or refuses; a timeout is a live holder (a
+ * or its endpoint refuses or is missing (missing as above); a timeout is a live holder (a
  * blocked event loop stops answering but keeps the lock), and only a lock
  * without a readable pid expires by TTL. A lock is removed only if it still
  * holds the bytes judged. Endpoints are probed
