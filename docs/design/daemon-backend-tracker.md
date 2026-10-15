@@ -412,7 +412,7 @@ Run (W5-A2, again after the review fixes): bundle rebuilt at c66c62cf, `PARITY_R
 | every scenario | `mode:client-settings-file`: client keys in `studio-client-settings.json` | by design (§4.2). Impact: none; one value per key | 3366b89f |
 | every scenario | `mode:client-defaults-unwritten`: client keys at their default are written nowhere | by design (§4.1). Impact: none | 3b3ac49f |
 | every scenario | `mode:handover-marker`: `studio-handover.json` records that the daemon holds moved credentials | by design (§11.1). Impact: none (a file in user data) | 3b3ac49f |
-| provider-round-trip, agent-provider-key | `mode:redacted-provider-keys`: app provider keys answered as `__redacted__` | by design (§4.2). Impact: the provider key field shows a placeholder, never the key | 7c11be56 |
+| provider-round-trip, agent-provider-key | `mode:redacted-provider-keys`: app provider keys answered as `__redacted__` | local mode fixed by W5-D3 (3fcd2d50): it reads the keys through the local-proof reveal, so the field holds the key as in embedded. Remote keeps the placeholder by design (§9.4); the entry is now `remote:redacted-provider-keys` (remote only) | 7c11be56 |
 | every scenario | `mode:daemon-build-version`: the daemon records its bundle version | by design. Impact: none (one build in a real install) | 3b3ac49f |
 | every scenario | `mode:lease-roles`: the daemon is the runtime host, Studio a client record | by design (§10.2, §10.3). Impact: none; `adf daemon status` names the daemon as host | 3366b89f |
 | every scenario | `mode:daemon-files`: the daemon's enc key, local proof and scratch root | by design. Impact: none (files in user data) | 3366b89f |
@@ -427,3 +427,4 @@ Run (W5-A2, again after the review fixes): bundle rebuilt at c66c62cf, `PARITY_R
 | remote: owner-identity, owner-import | `remote:owner-identity-on-server` | by design (§9.4). Impact: owner phrase backup and restore say to run them on the server | b4a49111 |
 | remote: w3c-mcp-oauth-connect, w2c2-agent-mcp-oauth | `remote:asks-before-sign-in-page` | by design (W4-B review). Impact: one click on a native question before a sign-in page opens | b4a49111 |
 | remote: scenarios that open files | `remote:no-os-recent-documents` | by design (W4-B review). Impact: daemon paths go into Open Recent, not the OS recent documents | 91c0dfb6 |
+| remote: scenarios that open files | `remote:remote-recent-files`: Open Recent kept in `remoteRecentFiles` | by design (W5-D3). Impact: none in remote mode; a switch to embedded leaves the server's paths behind | W5-D3 |

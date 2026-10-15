@@ -452,47 +452,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'mode:redacted-provider-keys',
-    ws: 'mode',
-    scenarios: ['provider-round-trip', 'agent-provider-key'],
-    path: 'steps: providers[].apiKey in SETTINGS_GET results and in the SETTINGS_SET args that write them back; the PROVIDER_CREDENTIAL_SET value of "Copy app key"',
-    what: 'The daemon answers app provider keys as __redacted__ (§4.2) and the renderer writes back what it read; the daemon keeps the stored key and copies the app key itself, so the persisted keys are the same.',
-    apply(d, e) {
-      const REDACTED = '__redacted__'
-      let n = 0
-      // `__redacted__` where embedded has a real key: `apiKey` of an entry of a
-      // `providers` list at the same index (the settings object's), nothing else.
-      const swapProviders = (dv: unknown, ev: unknown): void => {
-        const mine = (dv as { providers?: unknown } | null)?.providers
-        const theirs = (ev as { providers?: unknown } | null)?.providers
-        if (!Array.isArray(mine) || !Array.isArray(theirs)) return
-        mine.forEach((entry, i) => {
-          const base = theirs[i] as { id?: unknown; apiKey?: unknown } | undefined
-          const p = entry as { id?: unknown; apiKey?: unknown } | null
-          if (!p || p.apiKey !== REDACTED || !base || base.id !== p.id) return
-          if (typeof base.apiKey !== 'string' || base.apiKey === '' || base.apiKey === REDACTED) return
-          p.apiKey = base.apiKey
-          n++
-        })
-      }
-      d.steps.forEach((step, i) => {
-        const base = e.steps[i]
-        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
-        if (step.channel === IPC.SETTINGS_GET) swapProviders(step.result, base.result)
-        if (step.channel === IPC.SETTINGS_SET) swapProviders(step.args[0], base.args[0])
-        if (step.channel === IPC.PROVIDER_CREDENTIAL_SET) {
-          const a = step.args[0] as { value?: unknown } | undefined
-          const b = base.args[0] as { value?: unknown } | undefined
-          if (a?.value === REDACTED && typeof b?.value === 'string' && b.value !== REDACTED) {
-            step.args = [{ ...a, value: b.value }, ...step.args.slice(1)]
-            n++
-          }
-        }
-      })
-      return n
-    },
-  },
-  {
     id: 'mode:daemon-build-version',
     ws: 'mode',
     // The daemon writes its host record at boot, so every scenario has one.
@@ -721,6 +680,48 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   // --- remote mode only (W4-B, design §9.4): by-design differences --------------
 
   {
+    id: 'remote:redacted-provider-keys',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['provider-round-trip', 'agent-provider-key'],
+    path: 'steps: providers[].apiKey in SETTINGS_GET results and in the SETTINGS_SET args that write them back; the PROVIDER_CREDENTIAL_SET value of "Copy app key"',
+    what: 'A remote daemon answers app provider keys as __redacted__ (§4.2, §9.4; local mode reads them through the local-proof reveal, W5-D3) and the renderer writes back what it read; the daemon keeps the stored key and copies the app key itself, so the persisted keys are the same.',
+    apply(d, e) {
+      const REDACTED = '__redacted__'
+      let n = 0
+      // `__redacted__` where embedded has a real key: `apiKey` of an entry of a
+      // `providers` list at the same index (the settings object's), nothing else.
+      const swapProviders = (dv: unknown, ev: unknown): void => {
+        const mine = (dv as { providers?: unknown } | null)?.providers
+        const theirs = (ev as { providers?: unknown } | null)?.providers
+        if (!Array.isArray(mine) || !Array.isArray(theirs)) return
+        mine.forEach((entry, i) => {
+          const base = theirs[i] as { id?: unknown; apiKey?: unknown } | undefined
+          const p = entry as { id?: unknown; apiKey?: unknown } | null
+          if (!p || p.apiKey !== REDACTED || !base || base.id !== p.id) return
+          if (typeof base.apiKey !== 'string' || base.apiKey === '' || base.apiKey === REDACTED) return
+          p.apiKey = base.apiKey
+          n++
+        })
+      }
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== base.channel) return
+        if (step.channel === IPC.SETTINGS_GET) swapProviders(step.result, base.result)
+        if (step.channel === IPC.SETTINGS_SET) swapProviders(step.args[0], base.args[0])
+        if (step.channel === IPC.PROVIDER_CREDENTIAL_SET) {
+          const a = step.args[0] as { value?: unknown } | undefined
+          const b = base.args[0] as { value?: unknown } | undefined
+          if (a?.value === REDACTED && typeof b?.value === 'string' && b.value !== REDACTED) {
+            step.args = [{ ...a, value: b.value }, ...step.args.slice(1)]
+            n++
+          }
+        }
+      })
+      return n
+    },
+  },
+  {
     id: 'remote:no-stored-values',
     ws: 'mode',
     backends: ['remote'],
@@ -868,6 +869,24 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       if (!same(d.local, e.local.filter((c) => c.api !== 'app.addRecentDocument'))) return 0
       d.local = clone(e.local)
       return recents
+    },
+  },
+  {
+    id: 'remote:remote-recent-files',
+    ws: 'mode',
+    backends: ['remote'],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH, ...MESH_MESSAGE],
+    path: 'state: user-data/studio-client-settings.json (merged view): `remoteRecentFiles` where embedded has `recentFiles`',
+    what: 'Remote mode keeps Open Recent (paths on the daemon\'s machine) in its own client key, which a switch back to embedded never moves into adf-settings.json (W5-D3).',
+    apply(d, e) {
+      const settings = d.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
+      const base = e.state.userDataJson['adf-settings.json'] as Record<string, unknown> | undefined
+      if (!settings || !base || !('remoteRecentFiles' in settings) || 'recentFiles' in settings) return 0
+      if (!same(settings.remoteRecentFiles, base.recentFiles)) return 0
+      const { remoteRecentFiles, ...rest } = settings
+      rest.recentFiles = remoteRecentFiles
+      d.state.userDataJson['adf-settings.json'] = Object.fromEntries(Object.keys(rest).sort().map((k) => [k, rest[k]]))
+      return 1
     },
   },
 ]
