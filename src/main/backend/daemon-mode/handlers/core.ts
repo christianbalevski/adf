@@ -116,18 +116,16 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const locked = opened.opened ? opened.opened.needsPassword === true : !!opened.agentId && await passwordLocked(ctx, opened.agentId)
       if (locked) {
         ctx.session.forgetUnlocked(filePath)
-        // A running agent the daemon holds no key for runs on the stub
-        // provider (every turn fails credentials_locked). Stop it before the
-        // prompt, as embedded stops a background agent it cannot open without
-        // the password: after the unlock the file opens stopped in both modes,
-        // and the user starts it with its real provider (tracker §6, W5-A1).
-        if (agentWasRunning && opened.agentId) {
-          ctx.log.log(`[Backend] FILE_OPEN: ${basename(filePath)} is running without its password key; stopping it before asking for the password`)
-          try {
-            await (await ctx.ready()).request('POST', `/agents/${enc(opened.agentId)}/stop`, { timeoutMs: 60_000 })
-          } catch (err) {
-            if (!isNotFound(err)) throw err
-          }
+        // A running agent the daemon holds no key for keeps running on the
+        // stub provider (every turn fails credentials_locked); other clients
+        // may be watching it. It is not stopped: the answer says it runs, the
+        // unlock rebuilds its real provider in place, and the renderer
+        // re-attaches it after the prompt (useAdfFile completeFileOpen).
+        // Embedded stops such a background agent instead (it cannot hand it
+        // to the foreground without the key; design §3.2, W5-A1).
+        if (agentWasRunning) {
+          ctx.log.log(`[Backend] FILE_OPEN: ${basename(filePath)} runs without its password key; asking for the password, the agent keeps running`)
+          return { success: true, filePath, needsPassword: true, agentWasRunning: true }
         }
         return { success: true, filePath, needsPassword: true }
       }
