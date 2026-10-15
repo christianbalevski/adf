@@ -109,15 +109,15 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
   const agent1 = 'C:/agents/agent-1.adf'
   const agent2 = 'C:/agents/agent-2.adf'
 
-  function switcher(activity: () => Array<{ filePath: string; busy: boolean }>, activeMode: 'embedded' | 'local' | 'remote' = 'embedded') {
+  function switcher(activity: () => Array<{ filePath: string; busy: boolean }>, activeMode: 'embedded' | 'local' | 'remote' = 'embedded', daemon: { keep?: boolean; startedBy?: 'studio' | 'cli' | null } = {}) {
     const relaunched: string[] = []
     const s = createModeSwitcher({
       activeMode,
       remoteUrl: () => 'https://adf.example.test',
       userDataDir: dir,
       agentActivity: activity,
-      keepDaemonRunning: () => false,
-      daemonStartedBy: () => null,
+      keepDaemonRunning: () => daemon.keep ?? false,
+      daemonStartedBy: () => daemon.startedBy ?? null,
       window: () => null,
       relaunch: (target) => { relaunched.push(target) },
     })
@@ -165,6 +165,21 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(s.apply('embedded')).toBe('Studio restarts now.')
     await vi.waitFor(() => expect(relaunched).toEqual(['embedded']))
     expect(JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))).toMatchObject({ from: 'remote', to: 'embedded', agents: [] })
+  })
+
+  it('from Local (DMN-02): turns in a daemon Studio stops at quit are asked about; in one that keeps running they are not', async () => {
+    const busy = () => [{ filePath: agent1, busy: true }]
+    // Studio started the daemon and "keep running" is off: the quit stops it, so its turns would be interrupted.
+    h.responses.push(2)
+    await switcher(busy, 'local', { startedBy: 'studio' }).s.confirm('embedded')
+    expect(h.dialogs.at(-1)!.buttons).toEqual(['Wait for Them to Finish', 'Stop Them Now', 'Cancel'])
+    // Started by the CLI, or "keep running" on: the daemon and its turns go on; nothing to wait for or stop.
+    for (const daemon of [{ startedBy: 'cli' as const }, { startedBy: 'studio' as const, keep: true }]) {
+      h.responses.push(1)
+      await switcher(busy, 'local', daemon).s.confirm('embedded')
+      expect(h.dialogs.at(-1)!.buttons, JSON.stringify(daemon)).toEqual(['Switch and Restart', 'Cancel'])
+      expect(h.dialogs.at(-1)!.detail).toMatch(/keeps running .*and so do its agents \(agent-1\) there/)
+    }
   })
 
   it('"Stop Them Now" restarts at once; Cancel does nothing', async () => {

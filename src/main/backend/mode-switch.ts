@@ -213,8 +213,10 @@ export function createModeSwitcher(ctx: SwitchContext) {
       .catch((err) => [{ id: 'client-settings' as const, label: 'Handover', detail: `could not be planned: ${err instanceof Error ? err.message : String(err)}` }])
     const activity = ctx.agentActivity()
     const running = activity.map((a) => a.filePath)
-    // Turns on a remote daemon are not interrupted by Studio's restart: nothing to wait for.
-    const busy = ctx.activeMode === 'remote' ? [] : activity.filter((a) => a.busy).map((a) => a.filePath)
+    // A local daemon that keeps running after Studio quits (CLI-started, or "keep running" on) keeps its agents.
+    const localDaemonStays = ctx.activeMode === 'local' && (ctx.keepDaemonRunning() || ctx.daemonStartedBy() !== 'studio')
+    // Turns Studio's restart does not interrupt (on a remote daemon, or a local one that stays): nothing to wait for (DMN-02).
+    const busy = ctx.activeMode === 'remote' || localDaemonStays ? [] : activity.filter((a) => a.busy).map((a) => a.filePath)
     const remoteUrl = ctx.remoteUrl?.() ?? null
     const lines: string[] = []
     lines.push(target === 'embedded'
@@ -234,7 +236,6 @@ export function createModeSwitcher(ctx: SwitchContext) {
     }
     lines.push('')
     const names = agentNames(running).join(', ')
-    const localDaemonStays = ctx.activeMode === 'local' && (ctx.keepDaemonRunning() || ctx.daemonStartedBy() !== 'studio')
     if (running.length === 0) {
       lines.push('No agent runs now.')
     } else if (ctx.activeMode === 'remote') {
