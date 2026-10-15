@@ -183,6 +183,13 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, (m) =>
       fixtureIds.has(m.toLowerCase()) ? m : numbered('uuid', m.toLowerCase()))
 
+    // Rule R19 — HIL task ids. A tool approval, ask or async task gets
+    // `task_` + a random 12-character nanoid (agent-executor.ts,
+    // adf-call-handler.ts): in the request, the approvals hub id
+    // (`<file>|<loop>|task_…`) and the adf_tasks row. Numbered by first
+    // appearance as `<task-id#n>`. Hides: the random part only.
+    s = s.replace(/(?<![A-Za-z0-9_-])task_[A-Za-z0-9_-]{12}(?![A-Za-z0-9_-])/g, (m) => numbered('task-id', m))
+
     // Rule R10 — Ed25519 signatures. The fixture delegation's signature is
     // named by R3 (`<sig:runtime-delegation>`). Every other one was verified
     // against its issuer's DID before normalization (signatures.ts) and
@@ -370,8 +377,19 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
       for (const ms of instantsOf(recording.pushes[ch]?.[i])) running = Math.max(running, ms)
     }
   }
+  // Rule R9, exception for the approvals snapshot (APPROVALS_CHANGED): it is
+  // the hub's whole state, sent 50 ms after a change (approval-hub.ts
+  // NOTIFY_COALESCE_MS), and its instants (`requestedAt`, `resolvedAt`) say
+  // when an entry was raised or settled, not when the snapshot was sent. The
+  // hub stamps `resolvedAt` in the same call in which the executor stamps its
+  // `tool_approval_resolved` event, in the same millisecond or the next one,
+  // so against the pushes sent before the snapshot it read `<t>` in one run
+  // and `<t:earlier>` in the next. Its instants are compared with each other
+  // (array order within the snapshot) and not with earlier pushes. Hides:
+  // nothing a snapshot can get wrong; every other channel keeps the rule.
+  const SNAPSHOT_CHANNELS = new Set(['adf:approvals:changed'])
   const walkStream = (ch: string, payloads: unknown[]): unknown[] =>
-    payloads.map((p, i) => walk(p, `pushes.${ch}[${i}]`, pushFloor.get(ch)?.[i] ?? -Infinity, []))
+    payloads.map((p, i) => walk(p, `pushes.${ch}[${i}]`, SNAPSHOT_CHANNELS.has(ch) ? -Infinity : pushFloor.get(ch)?.[i] ?? -Infinity, []))
 
   // Rule R16 — a template's icon. The shipped templates are seeded into the
   // run's templates folder with an icon picked at random, so the template

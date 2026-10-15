@@ -64,8 +64,10 @@ const W3A_RAN = ['switch-with-background', 'password-unlock', 'config-during-sta
 const W3A_NO_AGENT = ['review-accept-foreign', 'template-create', 'delete', 'doc-resources'] as const
 /** W3-F scenarios (tests/parity/conflicts) that start an agent and stop it before the state dump. */
 const W3F_RAN = ['w3f-write-conflicts'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN] as const
-const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
+/** An agent's own MCP OAuth sign-in (tests/parity/mcp/agent-oauth.test.ts): starts agent-1 and leaves it running. */
+const AGENT_OAUTH = ['w2c2-agent-mcp-oauth'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...AGENT_OAUTH] as const
+const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING, ...AGENT_OAUTH] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
 /** The mesh-status channels whose results carry fleet rows (MESH_STATUS, MESH_FLEET_STATUS, MESH_MAP_POLL). */
@@ -168,10 +170,145 @@ function stripDaemonHelp(items: unknown): { items: MenuItem[]; status: boolean }
 // --- the list -----------------------------------------------------------------
 
 export const GAP_ALLOWLIST: readonly GapEntry[] = [
+  // --- an agent's own MCP OAuth sign-in (agent-oauth.test.ts): run before the
+  // generic entries, which compare channel lists of equal length ------------
+
+  {
+    id: 'mode:agent-oauth-authorize-request',
+    ws: 'mode',
+    scenarios: AGENT_OAUTH,
+    path: 'pushes: the mcp_oauth_authorize request on AGENT_EVENT (awaiting_approval, tool_approval_request, its settled tool_approval_resolved, tool_use) and the APPROVALS_CHANGED snapshots that list it; their timeline lines and the step push watermarks they shift',
+    what: 'The daemon has no browser: after the owner approves an agent\'s MCP sign-in it raises a second request, mcp_oauth_authorize, carrying the authorization page (W1-B, agent-runtime-builder.ts); Studio opens the page from it without a click and the runtime settles it when the callback lands. The chat shows it as a pending approval while the browser sign-in runs. Embedded Studio opens the page directly.',
+    apply(d, e, raw) {
+      type Ev = { type?: string; payload?: { state?: string; name?: string; requestId?: string; settled?: boolean } }
+      type Snap = { pending?: Array<{ toolName?: string }>; history?: Array<{ toolName?: string }> }
+      const AUTHORIZE = 'mcp_oauth_authorize'
+      const events = (d.pushes[IPC.AGENT_EVENT] ?? []) as Ev[]
+      const k = events.findIndex((ev) => ev.type === 'tool_approval_request' && ev.payload?.name === AUTHORIZE)
+      if (k < 1 || events[k - 1].type !== 'state_changed' || events[k - 1].payload?.state !== 'awaiting_approval') return 0
+      const requestId = events[k].payload?.requestId
+      const j = events.findIndex((ev, i) => i > k && ev.type === 'tool_approval_resolved' && ev.payload?.requestId === requestId && ev.payload?.settled === true)
+      if (j < 0 || events[j + 1]?.type !== 'state_changed' || events[j + 1].payload?.state !== 'tool_use') return 0
+      const droppedEvents = new Set([k - 1, k, j, j + 1])
+      const snapshots = (d.pushes[IPC.APPROVALS_CHANGED] ?? []) as Snap[]
+      const lists = (s: Snap) => [...(s.pending ?? []), ...(s.history ?? [])].some((entry) => entry.toolName === AUTHORIZE)
+      const droppedSnapshots = new Set(snapshots.flatMap((s, i) => (lists(s) ? [i] : [])))
+      if (droppedSnapshots.size === 0) return 0
+      const keptEvents = events.filter((_ev, i) => !droppedEvents.has(i))
+      const keptSnapshots = snapshots.filter((_s, i) => !droppedSnapshots.has(i))
+      if (!same(keptEvents, e.pushes[IPC.AGENT_EVENT]) || !same(keptSnapshots, e.pushes[IPC.APPROVALS_CHANGED])) return 0
+      // Timelines: the k-th line of a channel is its k-th push (one agent's events, every approvals snapshot as [app]).
+      const eventLine = /^ {2}adf:agent:event /
+      const snapshotLine = /^ {2}(?:\[app\] )?adf:approvals:changed$/
+      const timelines: typeof d.timelines = {}
+      for (const [agent, lines] of Object.entries(d.timelines)) {
+        let ev = -1
+        let snap = -1
+        const kept = lines.filter((l) => {
+          if (eventLine.test(l)) return !droppedEvents.has(++ev)
+          if (snapshotLine.test(l)) return !droppedSnapshots.has(++snap)
+          return true
+        })
+        if ((ev >= 0 && ev + 1 !== events.length) || snap + 1 !== snapshots.length) return 0
+        timelines[agent] = kept
+      }
+      // Step watermarks: every later watermark loses the pushes taken out before it.
+      // The raw run's send order (seq) of each channel's pushes; the normalized recording keeps no seq.
+      const seqs = (channel: string) => (raw?.daemon.pushes ?? []).filter((p) => p.channel === channel).map((p) => p.seq)
+      const droppedSeqs = [
+        ...seqs(IPC.AGENT_EVENT).filter((_s, i) => droppedEvents.has(i)),
+        ...seqs(IPC.APPROVALS_CHANGED).filter((_s, i) => droppedSnapshots.has(i)),
+      ]
+      if (droppedSeqs.length !== droppedEvents.size + droppedSnapshots.size) return 0
+      const shift = (w: number) => w - droppedSeqs.filter((s) => s <= w).length
+      d.steps = d.steps.map((st) => {
+        const p = st.pushes as Record<string, number>
+        return { ...st, pushes: Object.fromEntries(Object.entries(p).map(([key, w]) => [key, shift(w)])) } as StepRecord
+      })
+      d.timelines = timelines
+      d.pushes[IPC.AGENT_EVENT] = keptEvents
+      d.pushes[IPC.APPROVALS_CHANGED] = keptSnapshots
+      return droppedEvents.size + droppedSnapshots.size
+    },
+  },
+  {
+    id: 'mode:approval-resolve-answer-first',
+    ws: 'mode',
+    scenarios: AGENT_OAUTH,
+    path: 'APPROVALS_RESOLVE: the step\'s resolve marker and push watermark against the agent events the resolve raises',
+    what: 'Embedded resolves the approval inside the IPC call, so the agent\'s tool_approval_resolved and state change are sent before the call returns; the daemon answers POST /approvals/resolve and the same events follow on the client stream. Same events, same order; the renderer does not depend on the order (ApprovalsMenu only shows a refusal).',
+    apply(d, e) {
+      const at = e.steps.findIndex((st) => st.kind === 'invoke' && st.channel === IPC.APPROVALS_RESOLVE)
+      const mine = d.steps[at]
+      const base = e.steps[at]
+      if (at < 0 || mine?.kind !== 'invoke' || base?.kind !== 'invoke' || mine.channel !== base.channel) return 0
+      const moved = base.pushes.after - mine.pushes.after
+      if (moved <= 0 || mine.pushes.before !== base.pushes.before) return 0
+      const marker = `< ${at + 1}`
+      const timelines: typeof d.timelines = {}
+      for (const [agent, lines] of Object.entries(d.timelines)) {
+        const theirs = e.timelines[agent]
+        const from = lines.indexOf(marker)
+        const to = theirs?.indexOf(marker) ?? -1
+        if (from < 0 || to < 0) return 0
+        // The lines the daemon sent after its answer are the ones embedded sent before it.
+        const next = [...lines.slice(0, from), ...lines.slice(from + 1, to + 1), marker, ...lines.slice(to + 1)]
+        if (!same(next.slice(0, to + 1), theirs.slice(0, to + 1))) return 0
+        timelines[agent] = next
+      }
+      d.timelines = timelines
+      d.steps = d.steps.map((st, i) => (i === at ? { ...st, pushes: { ...st.pushes, after: base.pushes.after } } as StepRecord : st))
+      return moved
+    },
+  },
+  {
+    id: 'mode:agent-oauth-authorize-task',
+    ws: 'mode',
+    scenarios: AGENT_OAUTH,
+    path: 'state: the adf_tasks row of the settled mcp_oauth_authorize request',
+    what: 'The daemon\'s mcp_oauth_authorize request (mode:agent-oauth-authorize-request) is a HIL task like any other, recorded in adf_tasks as completed ("Authorization completed").',
+    apply(d, e) {
+      let n = 0
+      for (const [file, dump] of Object.entries(d.state.adf)) {
+        const rows = dump.tables.adf_tasks?.rows as Row[] | undefined
+        const base = e.state.adf[file]?.tables.adf_tasks?.rows as Row[] | undefined
+        if (!rows || !base) continue
+        const kept = rows.filter((r) => !(r.tool === 'mcp_oauth_authorize' && r.status === 'completed' && r.result === 'Authorization completed'))
+        if (kept.length === rows.length || !same(kept, base)) continue
+        n += rows.length - kept.length
+        dump.tables.adf_tasks.rows = kept
+      }
+      return n
+    },
+  },
+  {
+    id: 'mode:agent-oauth-signin-logs',
+    ws: 'mode',
+    scenarios: AGENT_OAUTH,
+    path: 'state: the two `oauth_signin` rows of adf_logs (authorization URL raised, token sealed) and the ids of the rows after them',
+    what: 'The daemon\'s builder logs its interactive sign-in steps to the agent\'s adf_logs (W1-B: no silent actions); embedded Studio\'s foreground sign-in writes no log row. The rows after them are numbered two higher.',
+    apply(d, e) {
+      let n = 0
+      for (const [file, dump] of Object.entries(d.state.adf)) {
+        const rows = dump.tables.adf_logs?.rows as Row[] | undefined
+        const base = e.state.adf[file]?.tables.adf_logs?.rows as Row[] | undefined
+        if (!rows || !base) continue
+        const signIn = (r: Row) => r.event === 'oauth_signin' && r.origin === 'mcp' && r.level === 'info'
+        const kept = rows.filter((r) => !signIn(r))
+        if (kept.length === rows.length || kept.length !== base.length) continue
+        const renumbered = kept.map((r, i) => ({ ...r, id: base[i].id }))
+        if (!same(renumbered, base)) continue
+        n += rows.length - kept.length
+        dump.tables.adf_logs.rows = renumbered
+      }
+      return n
+    },
+  },
+
   {
     id: 'mode:wire-undefined-keys',
     ws: 'mode',
-    scenarios: ['chat-tool-call'],
+    scenarios: ['chat-tool-call', ...AGENT_OAUTH],
     path: 'pushes: payload keys whose embedded value is `undefined` (e.g. file_updated `previousContent`)',
     what: 'The client stream is JSON: a key whose value is undefined is omitted (D5.1 wire serialization), where embedded IPC keeps the key with undefined. The renderer reads both the same.',
     apply(d, e) {
@@ -351,7 +488,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0c:daemon-lease-agent-id',
     ws: 'W0-C',
-    scenarios: ['chat-tool-call', ...W3B_RUNNING, 'fleet-map'],
+    scenarios: ['chat-tool-call', ...W3B_RUNNING, 'fleet-map', ...AGENT_OAUTH],
     path: 'state.leases: the agent lease\'s agentId',
     what: 'Bug: the daemon\'s agent lease records agentId null.',
     apply(d, e) {
@@ -775,7 +912,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:asks-before-sign-in-page',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['w3c-mcp-oauth-connect'],
+    scenarios: ['w3c-mcp-oauth-connect', ...AGENT_OAUTH],
     path: 'local calls: the question before shell.openExternal of an OAuth page',
     what: 'In remote mode no sign-in page opens without a click: a native question naming the daemon\'s host and the page\'s host comes right before the page opens (oauth-relay.ts). Embedded and local mode open it directly.',
     apply(d) {
@@ -793,7 +930,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:no-os-recent-documents',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts'],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH],
     path: 'local calls: app.addRecentDocument',
     what: 'In remote mode an opened file is a path on the daemon\'s machine: it goes into Open Recent (client settings) but not into the OS recent documents, where the Windows shell may contact a UNC host (W4-B review).',
     apply(d, e) {

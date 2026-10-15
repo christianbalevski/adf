@@ -90,7 +90,7 @@ export function parityCases(domain: string, scenarios: readonly ParityScenario[]
         const expected = renderRecording(toGoldenForm(embedded.normalized))
         for (let run = 0; run < RUNS; run++) {
           const daemon = await runScenario(scenario, wrap(daemonBackend()), { tolerant: true })
-          const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, structuredClone(embedded.normalized))
+          const { unmatched } = applyGapAllowlist(scenario.name, daemon.normalized, structuredClone(embedded.normalized), { daemon: daemon.raw })
           expect(unmatched, `gap entries that matched nothing in ${scenario.name} (fixed? remove them from harness/gaps.ts)`).toEqual([])
           const actual = renderRecording(toGoldenForm(daemon.normalized))
           const diff = diffRendered(expected, actual, { expected: 'embedded', actual: 'daemon (after gaps)' })
