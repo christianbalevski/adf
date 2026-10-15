@@ -13,6 +13,8 @@ import { cjs } from '../../interop'
 import type { TuiActions } from '../../state/store'
 import { loadTarget, writeTarget, type LoadedContent } from './io'
 import { formatBytes, targetFileName, targetKey, targetLabel, type FileTarget } from './model'
+import { writeOverConflicts } from './editor'
+import { writeOver } from '../../util/revisions'
 
 const { openBrowser } = cjs(authFlowNs)
 
@@ -123,8 +125,11 @@ export async function saveBackExternal(deps: ExternalDeps, target: FileTarget): 
 
   // Re-fetch: did the agent (or anyone) change it since the copy was made?
   let concurrent: string | null = null
+  // W3-F: the write goes over the revision this check saw; a change after it refuses the write.
+  let baseRevision: number | undefined
   try {
     const current = await loadTarget(client, agentId, target)
+    baseRevision = current.revision
     if (!bytesOf(current).equals(copy.original)) concurrent = 'changed in the agent since you opened it'
   } catch (err) {
     const status = (err as { status?: number | null }).status
@@ -143,10 +148,10 @@ export async function saveBackExternal(deps: ExternalDeps, target: FileTarget): 
   })
   if (!ok) return 'discarded'
 
-  const written = await actions.run(`Write ${label}`, c => (copy.binary && target.kind === 'file'
-    ? c.writeFile(agentId, target.path, { contentBase64: edited.toString('base64'), ...(copy.mime ? { mimeType: copy.mime } : {}) })
-    : writeTarget(c, agentId, target, edited.toString('utf-8'))
-  ).then(() => true))
+  const written = copy.binary && target.kind === 'file'
+    ? await actions.run(`Write ${label}`, c => c.writeFile(agentId, target.path, { contentBase64: edited.toString('base64'), ...(copy.mime ? { mimeType: copy.mime } : {}) }).then(() => true))
+    : await writeOverConflicts(actions, label, copy.file, base => actions.run(`Write ${label}`, c => writeOver(() => writeTarget(c, agentId, target, edited.toString('utf-8'), base))), baseRevision)
+  if (written === 'reloaded') return 'discarded'
   if (!written) {
     actions.toast(`Write failed. Your copy is still at ${copy.file}`, 'error', 12_000)
     return 'failed'

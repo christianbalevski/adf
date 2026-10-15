@@ -11,13 +11,17 @@ import { valueLines } from './format'
 import { useInspectState } from './state'
 import { editText, editorLabel, type EditResult } from '../../util/editor'
 import { changedKeysBetween, checkConfigText } from './config-edit'
+import { revisionOf, writeOver } from '../../util/revisions'
+import { writeOverConflicts } from '../files/editor'
 
 type Suspend = (callback: () => void | Promise<void>) => Promise<void>
 
 /**
  * Edit loop: $EDITOR → JSON + schema validation → confirm the changed keys →
  * PUT. An invalid edit offers to reopen the editor with the text as left, so
- * nothing typed is lost silently.
+ * nothing typed is lost silently. The PUT goes over the revision of the
+ * re-check before it (W3-F): a change after that check refuses the save and
+ * asks again (Overwrite / Reload theirs).
  */
 export async function editConfigFlow(agentId: string, label: string, actions: TuiActions, suspend: Suspend, edit: (text: string) => Promise<EditResult> = text => editText(text, { filename: `${label}.config.json` })): Promise<'saved' | 'unchanged' | 'discarded' | 'failed'> {
   const original = await actions.loadConfig(agentId)
@@ -53,8 +57,10 @@ export async function editConfigFlow(agentId: string, label: string, actions: Tu
     }
     // Re-fetch: the agent (loop_manage), the Loops/Triggers tabs or another
     // client may have changed the config while the editor was open.
-    const fresh = await actions.run('Re-check config', c => c.config(agentId).then(r => r.config))
-    if (!fresh) return 'failed'
+    const freshResult = await actions.run('Re-check config', c => c.config(agentId))
+    if (!freshResult) return 'failed'
+    const fresh = freshResult.config
+    const baseRevision = revisionOf(freshResult)
     const theirs = changedKeysBetween(original, fresh)
     if (theirs.length > 0) {
       const overwrite = await actions.confirm({
@@ -75,7 +81,9 @@ export async function editConfigFlow(agentId: string, label: string, actions: Tu
       danger: check.warnings.length > 0,
     })
     if (!save) { actions.toast('Config edit discarded', 'warn'); return 'discarded' }
-    const saved = await actions.run('Save config', c => c.putConfig(agentId, check.config as AgentConfig))
+    const saved = await writeOverConflicts(actions, `Config of ${label}`, null, base => actions.run('Save config', c => writeOver(() =>
+      c.request('PUT', `/agents/${encodeURIComponent(agentId)}/config`, { body: check.config as AgentConfig, ...(base !== undefined ? { query: { baseRevision: base } } : {}) }))), baseRevision)
+    if (saved === 'reloaded') { await actions.loadConfig(agentId); return 'discarded' }
     if (!saved) return 'failed'
     actions.toast(`Config of ${label} saved (${check.changedKeys.join(', ')})`, 'success')
     await actions.loadConfig(agentId)
