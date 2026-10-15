@@ -228,7 +228,8 @@ describe('daemon agent creation', () => {
     const early = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-0', directory: agentsDir, load: false } })
     expect(early.statusCode).toBe(201)
     expect(early.json()).toMatchObject({ name: 'agent-0', loaded: false, warnings: [expect.stringContaining("The owner identity is not set up yet, so agent-0's identity is not sealed to an owner.")] })
-    expect((await server.inject({ method: 'GET', url: '/templates' })).statusCode).toBe(409)
+    // Templates work before the owner identity exists, as in embedded (W5-D2 e7a4479d).
+    expect((await server.inject({ method: 'GET', url: '/templates' })).statusCode).toBe(200)
 
     const { mnemonic } = (await server.inject({ method: 'POST', url: '/identity/create', payload: {} })).json()
     const status = identity.status()
