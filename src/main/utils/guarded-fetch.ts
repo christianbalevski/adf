@@ -304,6 +304,14 @@ export function daemonGuardPort(): number {
   return Number(process.env.ADF_DAEMON_PORT) || DEFAULT_DAEMON_PORT
 }
 
+/**
+ * The egress policy of an MCP HTTP server's requests. The owner (or a file's
+ * reviewed config) names the server, so loopback, LAN and link-local servers
+ * are allowed; the always-blocked tiers stay: cloud metadata and the local
+ * daemon control API (read per request: the daemon port can change).
+ */
+export const MCP_HTTP_EGRESS = (): FetchGuardOptions => ({ allowLocal: true, allowLinkLocal: true, daemonPort: daemonGuardPort() })
+
 export interface GuardedFetchBody {
   bytes: Buffer
   contentType: string

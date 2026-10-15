@@ -20,6 +20,8 @@ vi.mock('node:dns/promises', async (importOriginal) => {
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { McpClientManager } from '../../../src/main/services/mcp-client-manager'
+import { runMcpHttpOAuthFlow } from '../../../src/main/services/mcp-http-oauth'
+import type { McpOAuthRecord, McpOAuthStore } from '../../../src/main/services/mcp-oauth.types'
 import type { McpServerConfig } from '../../../src/shared/types/adf-v02.types'
 
 const servers: Server[] = []
@@ -70,6 +72,33 @@ describe('MCP HTTP server through the pinned fetch', () => {
       expect(mgr.getServerState('daemon')?.error ?? '').toMatch(/daemon control API/)
       expect(hosts).toEqual([])
       await mgr.disconnectAll()
+    } finally {
+      if (saved === undefined) delete process.env.ADF_DAEMON_PORT
+      else process.env.ADF_DAEMON_PORT = saved
+    }
+  }, 30000)
+})
+
+describe('interactive MCP OAuth sign-in (runMcpHttpOAuthFlow) through the egress guard', () => {
+  const store = (): McpOAuthStore => {
+    const map = new Map<string, McpOAuthRecord>()
+    return { get: async (url) => map.get(url), save: async (url, rec) => { map.set(url, rec) }, invalidate: async (url) => { map.delete(url) } }
+  }
+
+  it('refuses discovery at cloud metadata and at a name that answers the daemon port; nothing is sent', async () => {
+    const { port, hosts } = await mcpServer()
+    const saved = process.env.ADF_DAEMON_PORT
+    process.env.ADF_DAEMON_PORT = String(port)
+    try {
+      dnsScript.set('oauth.adf-test.invalid', ['127.0.0.1'])
+      const io = { openUrl: vi.fn(async () => {}), log: () => {} }
+      const daemon = await runMcpHttpOAuthFlow(`http://oauth.adf-test.invalid:${port}/mcp`, store(), io, { timeoutMs: 5000 })
+      expect(daemon).toMatchObject({ authorized: false })
+      expect(daemon.error).toMatch(/daemon control API/)
+      const metadata = await runMcpHttpOAuthFlow('http://169.254.169.254/mcp', store(), io, { timeoutMs: 5000 })
+      expect(metadata.error).toMatch(/cloud-metadata/)
+      expect(hosts).toEqual([])
+      expect(io.openUrl).not.toHaveBeenCalled()
     } finally {
       if (saved === undefined) delete process.env.ADF_DAEMON_PORT
       else process.env.ADF_DAEMON_PORT = saved

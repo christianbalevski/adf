@@ -16,8 +16,7 @@ import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
 import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
-import { daemonGuardPort, egressFetch } from '../utils/guarded-fetch'
-import type { FetchGuardOptions } from '../utils/ssrf-guard'
+import { egressFetch, MCP_HTTP_EGRESS } from '../utils/guarded-fetch'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
 import { UnauthorizedError } from './mcp-http-oauth'
@@ -50,13 +49,8 @@ const BLOCKED_ENV_VARS = new Set([
   'DYLD_LIBRARY_PATH',
 ])
 
-/**
- * The egress policy of an MCP HTTP server's requests. The owner (or a file's
- * reviewed config) names the server, so loopback, LAN and link-local servers
- * are allowed; the always-blocked tiers stay: cloud metadata and the local
- * daemon control API (read per request: the daemon port can change).
- */
-export const MCP_HTTP_EGRESS = (): FetchGuardOptions => ({ allowLocal: true, allowLinkLocal: true, daemonPort: daemonGuardPort() })
+/** The egress policy of an MCP HTTP server's requests (utils/guarded-fetch.ts). */
+export { MCP_HTTP_EGRESS }
 
 const MAX_LOG_ENTRIES = 500
 const MAX_RETRIES = 3
