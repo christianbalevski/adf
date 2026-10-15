@@ -28,6 +28,7 @@ import {
   AgentLeaseRegistry,
   agentLeasedMessage,
   canonicalLeasePath,
+  holderLiveness,
   LeasedStartTracker,
   leaseKeyForCanonicalPath,
   leaseDir,
@@ -948,5 +949,29 @@ describe('runtime host registry and the adf daemon start check', () => {
     const env = { ADF_DAEMON_SETTINGS: settingsFile, ADF_LEASE_DIR: leases }
     expect(await listRuntimeHosts(leases)).toEqual([expect.objectContaining({ pid, alive: false })])
     expect(await studioConflict(daemonPaths(7385, env), env, (async () => { throw new Error('down') }) as unknown as typeof fetch)).toBeNull()
+  })
+})
+
+describe('holder liveness: a missing endpoint', () => {
+  // tracker §6 W0-C: tmp cleaners may delete the tmpdir() fallback socket
+  // under a live holder, so only a missing pipe or hosts-dir socket is dead.
+  const runtimeId = randomBytes(8).toString('hex')
+
+  it.runIf(process.platform === 'win32')('a missing named pipe of a running pid is a dead holder', async () => {
+    const leases = tempDir('adf-lease-live-')
+    const verdict = await holderLiveness({ pid: process.pid, runtimeId, endpoint: `\\\\.\\pipe\\adf-runtime-${runtimeId}` }, leases)
+    expect(verdict.alive).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('a missing socket in the hosts dir is a dead holder', async () => {
+    const leases = tempDir('adf-lease-live-')
+    const verdict = await holderLiveness({ pid: process.pid, runtimeId, endpoint: join(leases, 'hosts', `${runtimeId}.sock`) }, leases)
+    expect(verdict.alive).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')('a missing tmpdir() fallback socket of a running pid is not proof of death', async () => {
+    const leases = tempDir('adf-lease-live-')
+    const verdict = await holderLiveness({ pid: process.pid, runtimeId, endpoint: join(tmpdir(), `adf-runtime-${runtimeId}.sock`) }, leases)
+    expect(verdict.alive).toBe(true)
   })
 })

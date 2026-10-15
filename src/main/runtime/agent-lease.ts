@@ -25,7 +25,11 @@
  * pipe on Windows, a Unix socket elsewhere) the holder listens on for its
  * whole life. The OS closes the endpoint when the process dies, so:
  *   - pid not running                        → stale (crash, kill)
- *   - pid running, endpoint refuses/missing  → stale (the pid was reused)
+ *   - pid running, endpoint refuses          → stale (the pid was reused)
+ *   - pid running, endpoint missing          → stale for a named pipe or a
+ *                                              socket in the 0700 hosts dir;
+ *                                              live for the tmpdir() fallback
+ *                                              socket (tmp cleaners delete it)
  *   - endpoint connects                      → live, even if its event loop is
  *                                              blocked (the OS accepts the
  *                                              connection)
@@ -36,7 +40,7 @@
  * removes it only if it still holds the bytes judged stale, and writes its
  * own exclusively. Any number of takers racing on one stale lease leave
  * exactly one holder. The lock is broken only when its holder's pid is gone
- * or its endpoint is missing or refuses; a timeout is a live holder (a
+ * or its endpoint refuses or is missing (missing as above); a timeout is a live holder (a
  * blocked event loop stops answering but keeps the lock), and only a lock
  * without a readable pid expires by TTL. A lock is removed only if it still
  * holds the bytes judged. Endpoints are probed
@@ -67,7 +71,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { promises as fsp, readFileSync, unlinkSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { homedir, hostname as osHostname, tmpdir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { getUserDataPath } from '../utils/user-data-path'
 
 export const AGENT_LEASED_CODE = 'agent_leased'
@@ -382,6 +386,19 @@ export function trustedEndpoint(holder: Pick<LeaseHolder, 'endpoint' | 'runtimeI
   return endpoint === join(dir, 'hosts', `${runtimeId}.sock`) || endpoint === join(tmpdir(), `adf-runtime-${runtimeId}.sock`) ? endpoint : null
 }
 
+/**
+ * Does this probe prove the endpoint's process is gone? A refusing endpoint
+ * does. A missing one only where nothing but its process removes it: a named
+ * pipe, or a socket in the 0700 hosts dir. The tmpdir() fallback socket
+ * (hosts path too long for a socket) can be deleted under a live holder by a
+ * tmp cleaner, so there a missing file proves nothing.
+ */
+function probeProvesDead(endpoint: string, probe: EndpointProbe, dir: string): boolean {
+  if (probe === 'refused') return true
+  if (probe !== 'missing') return false
+  return process.platform === 'win32' || dirname(endpoint) === join(dir, 'hosts')
+}
+
 function pipeName(runtimeId: string): string {
   return `\\\\.\\pipe\\adf-runtime-${runtimeId}`
 }
@@ -413,9 +430,9 @@ export async function holderLiveness(
     const probe = await probeEndpoint(endpoint)
     if (probe === 'connected') return { alive: true, reason: 'endpoint answered' }
     // A named pipe disappears with its process; a Unix socket file stays
-    // behind and refuses (it lives in the 0700 hosts dir, so missing means
-    // gone too). A timeout is a live holder whose event loop is busy.
-    if (probe === 'refused' || probe === 'missing') {
+    // behind and refuses (probeProvesDead). A timeout is a live holder whose
+    // event loop is busy.
+    if (probeProvesDead(endpoint, probe, dir)) {
       return { alive: false, reason: `pid ${holder.pid} now belongs to another program` }
     }
     return { alive: true, reason: `pid ${holder.pid} is running (endpoint ${probe})` }
@@ -1015,7 +1032,7 @@ export class AgentLeaseRegistry {
     const endpoint = trustedEndpoint(rec, this.dir)
     if (!endpoint) return 'live'
     const probe = await probeEndpoint(endpoint)
-    return probe === 'refused' || probe === 'missing' ? 'dead' : 'live'
+    return probeProvesDead(endpoint, probe, this.dir) ? 'dead' : 'live'
   }
 
   private async releaseLocked(key: string): Promise<void> {
