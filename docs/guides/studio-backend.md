@@ -53,12 +53,11 @@ saved mode; the dialog says so and Settings → Backend shows "This launch runs
 | "Saved. Applies at the next launch." / "Saved." | The choice is stored in `studio-backend.json` |
 | "Studio restarts now." | A confirmed switch |
 | "Studio already runs this mode; no restart is needed." | You chose the mode this launch already runs (after a session-only launch) |
-| "This launch runs *A*. Restart Studio to use *B*." with **Restart now** | The saved mode differs from the one this launch runs |
+| "This launch runs *A*. Restart Studio to use *B*." with **Restart now** | The saved mode differs from the one this launch runs (for example after "Use Embedded Mode for This Session") |
 | "Switching the backend is available in a later build." / "Switching to a remote daemon from Settings is available in a later build." | This build does not offer that switch; Embedded is always selectable |
 | "Could not save *path*." / "Could not save the backend settings." / "Could not read the backend settings." | `studio-backend.json` could not be written or read; check the user data folder |
 | "studio-backend.json: …" / "studio-backend.json: ignored …" | The file has a problem or fields this Studio does not use; Studio says what it ignored |
 | "The remote daemon cannot be used: …" | The saved remote settings break the transport rule (an unconfirmed plain-http URL); see [Remote daemon in Studio](#remote-daemon-in-studio) |
-| "Saved. Restart Studio to connect to the remote daemon." | **Use for next launch** saved Remote daemon |
 
 ### Running agents and turns in flight
 
@@ -85,9 +84,17 @@ Finish Switch Now (stops the turns) or Cancel Switch."
 
 Switching from Local daemon back to Embedded while the daemon keeps running
 (it was started with `adf daemon start`, or **Keep the daemon running** is
-on): its agents stay in the daemon. The dialog says "The ADF daemon keeps
-running (…), and so do its agents (…) there. Studio does not start an agent
-the daemon runs; stop it there first (adf daemon stop) to run it in Studio."
+on): its agents stay in the daemon. The dialog says "The ADF daemon on this
+computer keeps running (…), and so do its agents (…) there. Studio does not
+start an agent the daemon runs; stop it there first (adf daemon stop) to run
+it in Studio."
+
+Agents are not carried across machines. Switching to Remote daemon: "Running
+agents stop: … stop here and are not started on the remote daemon, which runs
+its own agents." (or, from a Local daemon that keeps running, "… They are not
+started on the remote daemon."). Switching away from Remote daemon: "The
+remote daemon keeps running its agents (…). Studio does not start them …", and
+Studio does not wait for their turns.
 
 ## What moves during a switch
 
@@ -110,8 +117,11 @@ the next start finishes the move.
 Agent files, tracked folders, providers and every other setting stay where
 they are: in Local daemon mode the daemon uses Studio's settings file and
 agent files. A switch to or from Remote daemon moves only the client
-settings; the remote daemon has its own identity and sign-ins
-([§5.5](../design/daemon-backend.md#55-remote-mode)).
+settings. The switch dialog says so: "Stays on this computer: ChatGPT, Grok
+and MCP sign-ins, provider keys, the owner phrase and the runtime identity.
+The remote daemon uses its own; nothing is sent to it." (to Remote daemon), or
+"Nothing comes from the remote daemon: its agents, sign-ins and keys stay on
+it." (from Remote daemon). See [§5.5](../design/daemon-backend.md#55-remote-mode).
 
 Why sessions move instead of being copied: ChatGPT and MCP refresh tokens
 rotate. A copy left behind stops working the first time the other side
@@ -339,8 +349,11 @@ Then, in **Settings → Backend → Remote daemon**:
    daemon address changed. Enter the token for the new address.").
 3. **Test connection**: "Connected to the ADF daemon at *url* (version *V*,
    started by *X*)." or the reason it failed.
-4. Choose **Remote daemon** under **Run agents in**: the switch dialog
-   restarts Studio. Or choose **Use for next launch**, then **Restart now**.
+4. **Switch to This Daemon** (or choose **Remote daemon** under **Run agents
+   in**). The switch dialog says "Studio restarts and uses the ADF daemon at
+   *url*.", what stays on this computer and what happens to running agents
+   ([Running agents](#running-agents-and-turns-in-flight)); confirming
+   restarts Studio connected to the daemon.
 
 Plain `http://` to a `100.64.0.0/10` address is accepted without the
 confirmation because Tailscale uses that range. Internet providers use the
@@ -362,7 +375,7 @@ the Help menu and one notification ("Waiting for the remote ADF daemon at
 |---|---|
 | "Cannot reach the ADF daemon at …" / "… did not answer within 15 s" | The server, tunnel or tailnet is down. Studio keeps trying |
 | "… answered HTTP 502/503/504: a proxy answers there, but the ADF daemon behind it does not." | Start the daemon on the server. Studio keeps trying |
-| "The ADF daemon at … refused the token." | Run `adf daemon token` on the server, save it, Test connection, Restart now. A token refused after connecting ends the connection with the same sentence |
+| "The ADF daemon at … refused the token." | Run `adf daemon token` on the server, save it, Test connection, then quit and relaunch Studio. A token refused after connecting ends the connection with the same sentence |
 | "The ADF daemon at … does not accept the host name …" | Add the name to `ADF_DAEMON_ALLOWED_HOSTS` on the server and restart the daemon |
 | "The TLS connection to … failed" | Give the server a certificate this computer trusts, or use an SSH tunnel. Studio has no option to skip certificate checks |
 | "… answered a redirect" | Enter the daemon's final URL |
@@ -380,7 +393,7 @@ server). New agent asks before it replaces a file ("*name*.adf already
 exists in this folder. Replace it?").
 
 A `.adf` of this computer that you open by double-click, from the command
-line or from Open Recent is offered as an upload: "*name*.adf is on this
+line or through a second Studio instance is offered as an upload: "*name*.adf is on this
 computer, not on *host*." **Upload a copy…** asks for a tracked folder or the
 agents folder on the server and uploads a copy (progress in the task bar).
 The copy is a separate agent that needs review before it runs; the file here

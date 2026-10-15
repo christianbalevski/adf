@@ -163,16 +163,20 @@ http needs the confirmation; use `serve` instead.
 
 Settings → Backend → Remote daemon takes the same URL and token. Test
 connection checks the address, the token and the client API version;
-Use for next launch, then Restart now, connects.
+Switch to This Daemon shows what moves (client settings only) and restarts
+Studio connected to it. Details and every message:
+[Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).
 
 - Open agent…, New agent, Track folder and folder fields pick paths on
   the server (a picker over `GET /fs/browse`). A remote client lists folder
   and `.adf` names under the server's home folder, tracked folders and
   agents folder; set `ADF_DAEMON_BROWSE_ROOTS` on the server to list
   other folders instead of the home folder.
-- A `.adf` opened from this computer (double-click, Open Recent) is offered
+- A `.adf` this computer's OS hands to Studio (double-click, the command
+  line, a second instance) is offered
   as an upload of a copy into a tracked folder or the agents folder on the
-  server. Nothing is uploaded without your choice.
+  server. Nothing is uploaded without your choice. Open Recent lists paths on
+  the server, and Studio adds none of them to the OS recent documents.
 - MCP OAuth sign-in: Studio asks before it opens the page, takes the
   browser's callback on this computer and hands it to the daemon
   (`POST /oauth/relay`). No port needs to be tunnelled.

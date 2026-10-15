@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 313 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 315 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -34,7 +34,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Credentials](#tag-credentials) (10)
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (14)
-- [Providers & sign-in](#tag-providers-sign-in) (20)
+- [Providers & sign-in](#tag-providers-sign-in) (21)
 - [Tasks & approvals](#tag-tasks-approvals) (12)
 - [Timers](#tag-timers) (4)
 - [Templates](#tag-templates) (14)
@@ -48,7 +48,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Dashboard](#tag-dashboard) (3)
 - [Registries](#tag-registries) (6)
 - [Jobs](#tag-jobs) (2)
-- [Agent files](#tag-agent-files) (27)
+- [Agent files](#tag-agent-files) (28)
 - [Client (internal)](#tag-client-internal) (12)
 - [Schemas](#schemas)
 
@@ -7475,6 +7475,7 @@ App-level LLM providers, model lists, agent provider configs and subscription si
 | POST | [`/agents/{id}/providers`](#op-attachagentprovider) | Attach or update a provider in the agent config |
 | DELETE | [`/agents/{id}/providers/{providerId}`](#op-detachagentprovider) | Detach a provider and delete its credentials |
 | POST | [`/runtime/providers/{id}/test`](#op-testruntimeprovider) | Test an app provider’s connection |
+| POST | [`/oauth/relay`](#op-relayoauthcallback) | Relay an OAuth sign-in callback from a client on another machine |
 
 <a id="op-getruntimeproviders"></a>
 
@@ -8398,6 +8399,57 @@ Example 200 (`application/json`):
 ```json
 {
   "status": "ok"
+}
+```
+
+<a id="op-relayoauthcallback"></a>
+
+### POST `/oauth/relay`
+
+**Relay an OAuth sign-in callback from a client on another machine**
+
+For a client whose browser runs on another machine (Studio in remote mode): an OAuth flow the daemon runs (MCP sign-in, the MCP registration test) waits on a loopback callback of the daemon host, but the browser lands on the client's own loopback. The client takes that callback and posts its OAuth parameters here; the daemon delivers them to its own loopback callback with one GET (no redirect followed, the answer body is not returned). `redirectUri` must be http on 127.0.0.1, localhost or [::1] with an explicit port from 1024 to 65535 that is not the daemon's own; `params` may hold only code, state, error, error_description, error_uri and iss (strings of at most 8192 characters), and needs state plus code or error. The callback server checks state against its flow. Values are never logged.
+
+Operation `relayOAuthCallback` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `redirectUri` | string | yes | The authorization URL's redirect_uri, e.g. http://127.0.0.1:53817/callback |
+| `params` | object | yes | The callback query's OAuth parameters |
+| `params.code` | string |  |  |
+| `params.state` | string |  |  |
+| `params.error` | string |  |  |
+| `params.error_description` | string |  |  |
+| `params.error_uri` | string |  |  |
+| `params.iss` | string |  |  |
+
+```json
+{
+  "redirectUri": "http://127.0.0.1:53817/callback",
+  "params": {
+    "code": "c0de",
+    "state": "s7a7e"
+  }
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The callback answered; `delivered` is true for a 2xx answer. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 502 | [ErrorResponse](#schema-errorresponse) | Nothing answers at the redirect URI on the daemon host (the sign-in timed out or ended). `code: relay_unreachable`. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "delivered": true,
+  "status": 200
 }
 ```
 
@@ -14664,6 +14716,7 @@ Agent files on the daemon host: the path → id rule, delete, rename, clone, acc
 | PUT | [`/files/agent/adapters/credentials`](#op-setagentfileadaptercredential) | Store an adapter credential in an agent file |
 | POST | [`/files/agent/adapters`](#op-attachagentfileadapter) | Attach a channel adapter to an agent file |
 | DELETE | [`/files/agent/adapters/{adapterType}`](#op-detachagentfileadapter) | Detach a channel adapter from an agent file |
+| POST | [`/fs/folders`](#op-createfolder) | Create a folder for a daemon-side picker |
 
 <a id="op-describeagentfile"></a>
 
@@ -16370,6 +16423,49 @@ Example 200 (`application/json`):
   },
   "filePath": "string",
   "loaded": true
+}
+```
+
+<a id="op-createfolder"></a>
+
+### POST `/fs/folders`
+
+**Create a folder for a daemon-side picker**
+
+Creates one folder named `name` in `parent`. The parent (after resolving links) must be inside a browse root, as for GET /fs/browse; `name` is one path segment (no separators, not `.` or `..`, no characters Windows refuses, no device name, at most 255 characters). An existing name is refused, never reused. 400 `bad_request` / `invalid_name` / `not_a_directory`, 403 `outside_roots`, 404 `not_found`, 409 `exists`.
+
+Operation `createFolder` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `parent` | string | yes | Absolute folder path |
+| `name` | string | yes |  |
+
+```json
+{
+  "parent": "/srv/agents",
+  "name": "research"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 201 | object | Created |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The parent is outside the browse roots (`outside_roots`). |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
+
+Example 201 (`application/json`):
+
+```json
+{
+  "path": "/srv/agents/research"
 }
 ```
 
