@@ -13,6 +13,9 @@ import { editText, editorLabel, type EditResult } from '../../util/editor'
 import { changedKeysBetween, checkConfigText } from './config-edit'
 import { revisionOf, writeOver } from '../../util/revisions'
 import { writeOverConflicts } from '../files/editor'
+import { promises as fs } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 type Suspend = (callback: () => void | Promise<void>) => Promise<void>
 
@@ -81,7 +84,13 @@ export async function editConfigFlow(agentId: string, label: string, actions: Tu
       danger: check.warnings.length > 0,
     })
     if (!save) { actions.toast('Config edit discarded', 'warn'); return 'discarded' }
-    const saved = await writeOverConflicts(actions, `Config of ${label}`, null, base => actions.run('Save config', c => writeOver(() =>
+    // Reload theirs keeps the edited JSON in a file, as the file editor keeps its copy.
+    const keepCopy = async () => {
+      const file = join(tmpdir(), `adf-tui-${label.replace(/[^\w.-]+/g, '_')}.config-${Date.now()}.json`)
+      await fs.writeFile(file, result.text ?? '', 'utf-8')
+      return file
+    }
+    const saved = await writeOverConflicts(actions, `Config of ${label}`, keepCopy, base => actions.run('Save config', c => writeOver(() =>
       c.request('PUT', `/agents/${encodeURIComponent(agentId)}/config`, { body: check.config as AgentConfig, ...(base !== undefined ? { query: { baseRevision: base } } : {}) }))), baseRevision)
     if (saved === 'reloaded') { await actions.loadConfig(agentId); return 'discarded' }
     if (!saved) return 'failed'

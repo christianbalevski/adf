@@ -1,3 +1,4 @@
+import { readFileSync, rmSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { DaemonError } from '../../src/main/tui/api/types'
 import { editConfigFlow } from '../../src/main/tui/views/inspect/ConfigTab'
@@ -67,19 +68,33 @@ describe('terminal app: config edits over a revision', () => {
     expect(await editConfigFlow(AGENT, 'agent-1', actions, async cb => { await cb() }, editTo(config('mine')))).toBe('saved')
     expect(prompts.at(-1)).toMatchObject({
       title: 'Config of agent-1 changed while you were editing',
-      message: 'Config of agent-1 was changed by another Studio window after you opened it.\nOverwrite replaces their version with yours. Reload keeps theirs.',
+      message: 'Config of agent-1 was changed by another Studio window after you opened it.\nOverwrite replaces their version with yours. Reload keeps theirs (your edited version is kept in a file).',
       confirmLabel: 'Overwrite',
       cancelLabel: 'Reload theirs',
     })
     expect(client.requests.map(r => r.query)).toEqual([{ baseRevision: 10 }, { baseRevision: 12 }])
   })
 
-  it('Reload theirs writes nothing more and reloads the config', async () => {
+  it('Reload theirs writes nothing more, reloads the config and keeps the edited JSON in a file', async () => {
     const client = fakeClient([stale(12, { kind: 'agent' })])
     const { actions, toasts } = fakeActions(client, [true, false])
     expect(await editConfigFlow(AGENT, 'agent-1', actions, async cb => { await cb() }, editTo(config('mine')))).toBe('discarded')
     expect(client.requests).toHaveLength(1)
-    expect(toasts.at(-1)).toBe('Config of agent-1 not written: kept their version')
+    const kept = /Your edited copy is at (.+)$/.exec(toasts.at(-1) ?? '')?.[1]
+    expect(toasts.at(-1)).toMatch(/^Config of agent-1 not written: kept their version\. Your edited copy is at /)
+    expect(JSON.parse(readFileSync(kept!, 'utf-8'))).toMatchObject({ description: 'mine' })
+    rmSync(kept!, { force: true })
+  })
+})
+
+describe('terminal app: creates', () => {
+  it('a create must not replace a file made meanwhile: refused, asked, and Overwrite goes over its revision', async () => {
+    const client = fakeClient([new DaemonError('exists', 409, { code: 'stale_revision', revision: 50, writer: { kind: 'agent' } }), { success: true, revision: 51 }])
+    const { actions, prompts } = fakeActions(client, [true])
+    const target = { kind: 'file' as const, path: 'new.md' }
+    expect(await writeOverConflicts(actions, 'new.md', null, base => actions.run('Write', c => writeOver(() => writeTarget(c, AGENT, target, 'mine', base))), 'absent' as const)).toBe(true)
+    expect(client.requests.map(r => r.body)).toEqual([{ content: 'mine', mustNotExist: true }, { content: 'mine', baseRevision: 50 }])
+    expect(prompts[0].title).toBe('new.md changed while you were editing')
   })
 })
 

@@ -43,8 +43,9 @@ export async function loadTarget(client: DaemonClient, agentId: string, target: 
  * `409 stale_revision` when the target changed since that revision; without
  * it the write replaces whatever is there. Answers the new revision.
  */
-export async function writeTarget(client: DaemonClient, agentId: string, target: FileTarget, text: string, baseRevision?: number): Promise<number | undefined> {
-  const base = baseRevision !== undefined ? { baseRevision } : {}
+export async function writeTarget(client: DaemonClient, agentId: string, target: FileTarget, text: string, baseRevision?: number | 'absent'): Promise<number | undefined> {
+  // 'absent': a create, refused when the file exists meanwhile.
+  const base = baseRevision === 'absent' ? { mustNotExist: true } : baseRevision !== undefined ? { baseRevision } : {}
   const agent = `/agents/${encodeURIComponent(agentId)}`
   if (target.kind === 'document') return revisionOf(await client.request('PUT', `${agent}/document`, { body: { content: text, ...base } }))
   if (target.kind === 'mind') return revisionOf(await client.request('PUT', `${agent}/mind`, { body: { content: text, ...base } }))

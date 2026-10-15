@@ -95,7 +95,7 @@ export async function editTarget(deps: EditDeps, target: FileTarget, options: Ed
   // The write then goes over the revision this check saw (W3-F): a change
   // after the check refuses it, and the user is asked again.
   let concurrent: string | null = null
-  let baseRevision: number | undefined
+  let baseRevision: number | 'absent' | undefined = options.create ? 'absent' : undefined
   if (options.create) {
     if (target.kind === 'file') {
       const list = await client.files(agentId).catch(() => null)
@@ -151,19 +151,19 @@ export async function editTarget(deps: EditDeps, target: FileTarget, options: Ed
  * when the user kept theirs, undefined when the write failed otherwise (run
  * already toasted).
  */
-export async function writeOverConflicts(
+export async function writeOverConflicts<B extends number | 'absent' | undefined>(
   actions: Pick<TuiActions, 'confirm' | 'toast'>,
   label: string,
-  file: string | null,
-  write: (baseRevision: number | undefined) => Promise<{ ok: unknown } | { stale: StaleRevision } | undefined>,
-  baseRevision: number | undefined,
+  file: string | null | (() => Promise<string | null>),
+  write: (baseRevision: B | number) => Promise<{ ok: unknown } | { stale: StaleRevision } | undefined>,
+  baseRevision: B,
 ): Promise<true | 'reloaded' | undefined> {
-  let base = baseRevision
+  let base: B | number = baseRevision
   for (;;) {
     const result = await write(base)
     if (!result) return undefined
     if ('ok' in result) return true
-    const copy = file ? ` (your edited copy stays at ${file})` : ''
+    const copy = typeof file === 'string' ? ` (your edited copy stays at ${file})` : file ? ' (your edited version is kept in a file)' : ''
     const overwrite = await actions.confirm({
       title: `${label} changed while you were editing`,
       message: `${label} was ${changedBy(result.stale)} after you opened it.\nOverwrite replaces their version with yours. Reload keeps theirs${copy}.`,
@@ -172,7 +172,8 @@ export async function writeOverConflicts(
       danger: true,
     })
     if (!overwrite) {
-      actions.toast(`${label} not written: kept their version${file ? `. Your edited copy is at ${file}` : ''}`, 'warn', 12_000)
+      const kept = typeof file === 'function' ? await file().catch(() => null) : file
+      actions.toast(`${label} not written: kept their version${kept ? `. Your edited copy is at ${kept}` : ''}`, 'warn', 12_000)
       return 'reloaded'
     }
     base = result.stale.revision
