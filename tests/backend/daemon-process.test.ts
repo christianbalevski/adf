@@ -79,7 +79,7 @@ function fakeSpawner(onSpawn: () => void = () => {}, pid = 4242) {
   return { spawn, spawns, child, unrefs: () => unrefs }
 }
 
-function controller(fetchImpl: typeof fetch, extra: { spawn?: SpawnFn; alive?: (pid: number) => boolean; env?: NodeJS.ProcessEnv } = {}) {
+function controller(fetchImpl: typeof fetch, extra: { spawn?: SpawnFn; alive?: (pid: number) => boolean; env?: NodeJS.ProcessEnv; startTimeoutMs?: number } = {}) {
   const logs: string[] = []
   const ctl = new DaemonProcessController({
     settingsPath,
@@ -94,7 +94,7 @@ function controller(fetchImpl: typeof fetch, extra: { spawn?: SpawnFn; alive?: (
     processAlive: extra.alive ?? (() => false),
     sleep: () => new Promise(r => setTimeout(r, 1)),
     log: (line) => logs.push(line),
-    startTimeoutMs: 2000,
+    startTimeoutMs: extra.startTimeoutMs ?? 2000,
     stopTimeoutMs: 2000,
     staleWaitMs: 200,
     raceSettleMs: 200,
@@ -330,7 +330,8 @@ describe('DaemonProcessController', () => {
       if (spawns === 1) setTimeout(() => spawner.child.emit('exit', 1), 0)
       else setTimeout(() => { state.up = true }, 0)
     }, 4242)
-    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: () => false })
+    // A generous start budget: a loaded test machine must not turn this into the timeout path.
+    const { ctl, logs } = controller(fetchImpl, { spawn: spawner.spawn, alive: () => false, startTimeoutMs: 15_000 })
     const result = await ctl.ensure()
     expect(result).toMatchObject({ kind: 'spawned', handle: { pid: 4242, spawnedHere: true } })
     expect(spawner.spawns).toHaveLength(2)

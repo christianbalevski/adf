@@ -393,7 +393,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, localProofProblem, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher, localProofProblem },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
