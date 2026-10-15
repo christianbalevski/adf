@@ -17,6 +17,7 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { McpOAuthStore, McpOAuthRecord } from './mcp-oauth.types'
 import { canonicalizeServerUrl } from './mcp-oauth.types'
+import { egressFetch, MCP_HTTP_EGRESS } from '../utils/guarded-fetch'
 
 /**
  * Interactive HTTP-OAuth for remote (`type: 'http'`) MCP servers — the
@@ -385,9 +386,11 @@ export async function runMcpHttpOAuthFlow(
   const deadline = setTimeout(() => controller.abort(), timeoutMs)
   deadline.unref?.()
   // fetchFn threaded into auth() so its discovery/DCR/token fetches share the
-  // deadline signal. Kept as a plain wrapper over global fetch.
+  // deadline signal. They go out as the MCP transport's do: each hop checked
+  // by the egress guard and connected to a checked address (MCP_HTTP_EGRESS).
+  const send = egressFetch(MCP_HTTP_EGRESS)
   const fetchFn = (input: string | URL, init?: RequestInit): Promise<Response> =>
-    fetch(input, { ...(init ?? {}), signal: controller.signal })
+    send(input, { ...(init ?? {}), signal: controller.signal })
 
   let provider: AdfOAuthClientProvider | undefined
   const server = await startOAuthCallbackServer(() => provider?.lastState, timeoutMs)

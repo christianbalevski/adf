@@ -718,7 +718,7 @@ const api: AdfApi = {
   getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
   setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
   checkRemoteBackend: (request: RemoteCheckRequest) => ipcRenderer.invoke(IPC.BACKEND_REMOTE_CHECK, request),
-  restartStudio: () => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO),
+  restartStudio: (kind?: 'reconnect' | 'embedded-session') => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO, kind),
 
   // Remote mode: daemon-side picker
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {

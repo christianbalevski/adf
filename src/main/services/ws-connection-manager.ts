@@ -34,6 +34,8 @@ import { withSource } from '../runtime/execution-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 import { withAuthorization } from '../runtime/authorization-context'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
+import { addressCheck, daemonGuardPort, guardedLookup } from '../utils/guarded-fetch'
+import { checkLiteralConnectTarget, type FetchGuardOptions } from '../utils/ssrf-guard'
 
 // =============================================================================
 // Delegate Interface
@@ -270,10 +272,30 @@ export class WsConnectionManager {
   // Outbound Connections
   // ===========================================================================
 
+  /** The agent's egress policy now: ws_connect's (its `security.allow_local_fetch`, the daemon control port). */
+  private egressGuardFor(agentFilePath: string): FetchGuardOptions {
+    let allowLocal = false
+    try {
+      const security = this.delegate.getWorkspace(agentFilePath)?.getAgentConfig().security as { allow_local_fetch?: boolean } | undefined
+      allowLocal = security?.allow_local_fetch === true
+    } catch { /* no readable config: the default policy */ }
+    return { allowLocal, daemonPort: daemonGuardPort() }
+  }
+
+  /**
+   * Every outbound socket is held to the egress guard (W4-B follow-up):
+   * `guard` (ws_connect's policy for an ad-hoc URL), else the agent's own
+   * policy read now (`security.allow_local_fetch`, the daemon control port),
+   * so stored configs, the ones registerAgent starts and every reconnect
+   * are covered. A literal address is checked before the socket exists; a
+   * host name's answers are checked by the socket's lookup, so it connects
+   * only to an address the policy allows.
+   */
   async connectOutbound(
     agentFilePath: string,
     configOrId: string | WsConnectionConfig,
-    inheritedAttempts?: number
+    inheritedAttempts?: number,
+    guard?: FetchGuardOptions
   ): Promise<{ connection_id?: string; error?: string }> {
     let config: WsConnectionConfig
     if (typeof configOrId === 'string') {
@@ -284,13 +306,19 @@ export class WsConnectionManager {
     } else {
       config = configOrId
     }
+    const pinnedTo = guard ?? this.egressGuardFor(agentFilePath)
+    const literalRefusal = checkLiteralConnectTarget(config.url, pinnedTo)
+    if (literalRefusal) {
+      this.log(agentFilePath, 'warn', 'ws_connect', config.id, `Outbound connection to ${config.url} refused: ${literalRefusal}`)
+      return { error: literalRefusal }
+    }
 
     const connectionId = nanoid(10)
 
     return new Promise<{ connection_id?: string; error?: string }>((resolve) => {
       let resolved = false
 
-      const socket = new WebSocket(config.url)
+      const socket = new WebSocket(config.url, { lookup: guardedLookup(addressCheck(new URL(config.url), pinnedTo, 'connect')) } as WebSocket.ClientOptions)
       const conn: ManagedConnection = {
         id: connectionId,
         agentFilePath,

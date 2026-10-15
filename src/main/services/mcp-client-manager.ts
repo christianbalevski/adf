@@ -16,6 +16,7 @@ import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
 import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
+import { egressFetch, MCP_HTTP_EGRESS } from '../utils/guarded-fetch'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
 import { UnauthorizedError } from './mcp-http-oauth'
@@ -48,6 +49,9 @@ const BLOCKED_ENV_VARS = new Set([
   'DYLD_LIBRARY_PATH',
 ])
 
+/** The egress policy of an MCP HTTP server's requests (utils/guarded-fetch.ts). */
+export { MCP_HTTP_EGRESS }
+
 const MAX_LOG_ENTRIES = 500
 const MAX_RETRIES = 3
 const INITIAL_BACKOFF_MS = 2000
@@ -71,6 +75,8 @@ function connectTimeoutForAttempt(retryIndex: number): number {
 }
 const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
+/** How long a closing stdio server gets to exit on stdin EOF before its process tree is killed (the SDK waits as long). */
+const CLOSE_GRACE_MS = 2000
 
 /** Strip security-sensitive env vars that MCP server configs must not override. */
 function filterBlockedEnv(env: Record<string, string>): Record<string, string> {
@@ -305,6 +311,11 @@ export class McpClientManager extends EventEmitter {
         transport = this.createHttpTransport(new URL(managed.config.url!), {
           ...(Object.keys(headers).length ? { requestInit: { headers } } : {}),
           ...(authProvider ? { authProvider } : {}),
+          // Every request (OAuth discovery included) connects only to an
+          // address the egress guard checked: LAN and link-local servers
+          // stay reachable, cloud metadata and the daemon control API do not,
+          // and a DNS answer that changes to one of them is refused (W4-B).
+          fetch: egressFetch(MCP_HTTP_EGRESS),
         })
       } else {
         // Default: spawn directly on host via StdioClientTransport
@@ -848,6 +859,20 @@ export class McpClientManager extends EventEmitter {
     const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
     const pid = this.stdioTransportPid(transport)
 
+    // E3: on Windows the SDK's close kills only the process it spawned, the
+    // cmd.exe shim of an npx/uvx server, and the sweep after close reaches
+    // only the dead shim, so a server that ignores stdin EOF was orphaned.
+    // Give it the graceful EOF exit first (the SDK's own 2 s), then kill the
+    // tree while the shim still links it, as abandonAttempt does.
+    let treeHandled = false
+    if (process.platform === 'win32' && child && !exitedBeforeClose && pid != null) {
+      treeHandled = true
+      if (!(await this.endStdinAndWait(child, CLOSE_GRACE_MS))) {
+        this.addLog(managed, 'system', `Server did not exit ${CLOSE_GRACE_MS / 1000}s after its input closed — stopping its process tree`)
+        await this.sweepPidTreeNow(pid)
+      }
+    }
+
     if (client) {
       try {
         client.onclose = () => { /* detached */ }
@@ -879,7 +904,20 @@ export class McpClientManager extends EventEmitter {
     // Runs even when client.close()/transport.close() threw or timed out —
     // but never when the child was already dead before we started closing
     // (pid-reuse hazard: the pid may now belong to an unrelated process).
-    if (!exitedBeforeClose) this.sweepPidTree(pid)
+    if (!exitedBeforeClose && !treeHandled) this.sweepPidTree(pid)
+  }
+
+  /** End the child's stdin and wait up to `graceMs` for it to exit; true when it did. */
+  private endStdinAndWait(child: import('child_process').ChildProcess, graceMs: number): Promise<boolean> {
+    const exited = () => child.exitCode !== null || child.signalCode !== null
+    if (exited()) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => {
+      const done = () => { clearTimeout(timer); child.off('exit', done); resolve(exited()) }
+      const timer = setTimeout(done, graceMs)
+      timer.unref?.()
+      child.once('exit', done)
+      try { child.stdin?.end() } catch { /* already closed */ }
+    })
   }
 
   /** Pid of the child spawned by our own StdioClientTransport, else null. */

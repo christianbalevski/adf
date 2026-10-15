@@ -10,7 +10,9 @@ import { MESH_SCENARIOS } from './scenarios'
 
 /**
  * Parity harness, mesh scenarios (tracker W3-D): the fleet map with two
- * running agents and a stopped one, and the emergency stop. Each runs
+ * running agents and a stopped one, the emergency stop, and a message one
+ * running agent sends another that triggers a turn there (tracker §6 W1-B:
+ * the mesh in one daemon, not only at MeshManager level). Each runs
  * against embedded Studio (stable, matches its recording in recordings/)
  * and against Studio in daemon mode on the built daemon; the two
  * recordings must be equal apart from the named entries of

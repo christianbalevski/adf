@@ -188,8 +188,12 @@ export function showHandoverSummary(report: HandoverReport | null, mode: StudioB
 export interface SwitchContext {
   activeMode: StudioBackendMode
   userDataDir: string
-  /** The agents running now and whether a turn is in flight (embedded: this process; daemon mode: the daemon). */
-  agentActivity: () => Array<{ filePath: string; busy: boolean }>
+  /**
+   * The agents running now, whether a turn is in flight, and (daemon mode)
+   * whether one waits on an approval or a question (embedded: this process;
+   * daemon mode: the daemon).
+   */
+  agentActivity: () => Array<{ filePath: string; busy: boolean; waiting?: boolean }>
   /** studio-backend.json `keepDaemonRunning` now. */
   keepDaemonRunning: () => boolean
   /** Local mode: who started the daemon Studio uses (GET /version). */
@@ -232,8 +236,14 @@ export function createModeSwitcher(ctx: SwitchContext) {
       .catch((err) => [{ id: 'client-settings' as const, label: 'Handover', detail: `could not be planned: ${err instanceof Error ? err.message : String(err)}` }])
     const activity = ctx.agentActivity()
     const running = activity.map((a) => a.filePath)
-    // Turns on a remote daemon are not interrupted by Studio's restart: nothing to wait for.
-    const busy = ctx.activeMode === 'remote' ? [] : activity.filter((a) => a.busy).map((a) => a.filePath)
+    // A local daemon that keeps running after Studio quits (CLI-started, or "keep running" on) keeps its agents.
+    // An unknown starter (no answer from /version) counts as stopping: the dialog asks about turns rather than promise they go on.
+    const startedBy = ctx.daemonStartedBy()
+    const keep = ctx.keepDaemonRunning()
+    const startedElsewhere = startedBy != null && startedBy !== 'studio'
+    const localDaemonStays = ctx.activeMode === 'local' && (keep || startedElsewhere)
+    // Turns Studio's restart does not interrupt (on a remote daemon, or a local one that stays): nothing to wait for (DMN-02).
+    const busy = ctx.activeMode === 'remote' || localDaemonStays ? [] : activity.filter((a) => a.busy).map((a) => a.filePath)
     const remoteUrl = ctx.remoteUrl?.() ?? null
     const lines: string[] = []
     lines.push(target === 'embedded'
@@ -242,7 +252,8 @@ export function createModeSwitcher(ctx: SwitchContext) {
         ? 'Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.'
         : `Studio restarts and uses the ADF daemon at ${remoteUrl ?? 'the remote URL'}.`)
     if (plan.length > 0) {
-      lines.push('', target === 'embedded' ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
+      // "Back to Studio" only for credentials that come back (from this computer's daemon stores), not for client keys alone.
+      lines.push('', target === 'embedded' && plan.some((item) => item.id !== 'client-settings') ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
       for (const item of plan) lines.push(`• ${item.label}: ${item.detail}`)
     }
     if (target === 'remote') {
@@ -252,16 +263,20 @@ export function createModeSwitcher(ctx: SwitchContext) {
     }
     lines.push('')
     const names = agentNames(running).join(', ')
-    const localDaemonStays = ctx.activeMode === 'local' && (ctx.keepDaemonRunning() || ctx.daemonStartedBy() !== 'studio')
     if (running.length === 0) {
       lines.push('No agent runs now.')
     } else if (ctx.activeMode === 'remote') {
       lines.push(`The remote daemon keeps running its agents (${names}). Studio does not start them ${target === 'embedded' ? 'itself' : 'in the local daemon'}.`)
     } else if (localDaemonStays && target !== 'local') {
-      const startedBy = ctx.daemonStartedBy()
-      lines.push(`The ADF daemon on this computer keeps running (${startedBy && startedBy !== 'studio' ? `started by ${startedBy}` : '"Keep the daemon running" is on'}), and so do its agents (${names}) there. ${target === 'embedded'
+      const why = startedElsewhere ? `started by ${startedBy === 'cli' ? 'the ADF CLI' : startedBy === 'service' ? 'a service manager' : startedBy}` : '"Keep the daemon running" is on'
+      lines.push(`The ADF daemon on this computer keeps running (${why}), and so do its agents (${names}) there. ${target === 'embedded'
         ? 'Studio does not start an agent the daemon runs; stop it there first (adf daemon stop) to run it in Studio.'
         : 'They are not started on the remote daemon.'}`)
+      // Their approvals and questions stay open in the daemon, which Studio no longer shows after the switch.
+      const waiting = activity.filter((a) => a.waiting).map((a) => a.filePath)
+      if (waiting.length > 0) {
+        lines.push(`Waiting for an answer there: ${agentNames(waiting).join(', ')}. Answer with adf (adf tasks, adf approve, adf deny, adf asks, adf answer) or in the terminal app (adf).`)
+      }
     } else if (target === 'remote') {
       lines.push(`Running agents stop: ${names} stop here and are not started on the remote daemon, which runs its own agents.`)
     } else {
@@ -443,10 +458,37 @@ export async function askVersionMismatch(
   const win = window()
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
   if (response === 0) return 'restart'
-  console.log('[Backend] Restarting Studio in embedded mode for this session (daemon version mismatch); credentials stay with the daemon')
+  relaunchEmbeddedForSession('daemon version mismatch')
+  return 'embedded'
+}
+
+let relaunching = false
+
+/**
+ * One restart per process: each app.relaunch() starts one more instance at
+ * quit, so a second request (the window's answer and main's fallback, or
+ * two clicks) is logged and dropped.
+ */
+function relaunchStarted(reason: string): boolean {
+  if (relaunching) {
+    console.log(`[Backend] Studio is already restarting; not restarting again for: ${reason}`)
+    return true
+  }
+  relaunching = true
+  return false
+}
+
+/**
+ * Restart Studio in embedded mode for this launch only (SESSION_BACKEND_ARG):
+ * after a daemon version mismatch, or a launch whose daemon could not be
+ * reached. The saved mode, the daemon, its agents and its sign-ins stay as
+ * they are; credentials do not move (session-only handover).
+ */
+export function relaunchEmbeddedForSession(reason: string): void {
+  if (relaunchStarted(reason)) return
+  console.log(`[Backend] Restarting Studio in embedded mode for this session (${reason}); credentials stay where the saved mode keeps them`)
   app.relaunch({ args: [...process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG), SESSION_BACKEND_ARG] })
   app.quit()
-  return 'embedded'
 }
 
 /**
@@ -466,6 +508,7 @@ export async function syncRuntimeEntryAfterImport(userDataDir: string, phrase: s
 
 /** Restart Studio into the backend just saved. A session-only embedded override is not carried over. */
 export function relaunchStudio(reason: string): void {
+  if (relaunchStarted(reason)) return
   console.log(`[Backend] Restarting Studio: ${reason}`)
   app.relaunch({ args: process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG) })
   app.quit()

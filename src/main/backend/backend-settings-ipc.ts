@@ -4,7 +4,7 @@ import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, Re
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import { createBackendSettingsStore, readRemoteToken, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { remoteHandshake, RemoteConnectError } from './daemon-mode/remote/connector'
-import { isObfuscationOnly, relaunchStudio } from './mode-switch'
+import { isObfuscationOnly, relaunchEmbeddedForSession, relaunchStudio } from './mode-switch'
 
 const SAFE_PREFIX = 'safe:'
 
@@ -48,7 +48,13 @@ export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
     checkRemoteBackend(store.config(), safeStorageCodec, request && typeof request === 'object' ? request : {}))
   // The saved mode differs from the running one outside a switch (a boot that fell back, a
   // hand-edited file): restart into it, dropping a session-only override (mode-switch.ts).
-  ipcMain.handle(IPC.BACKEND_RESTART_STUDIO, () => { relaunchStudio('Restart Studio in Settings → Backend, so the saved backend applies') })
+  // `kind` (daemon mode): the window kept its unsaved editor text as recovery copies and restarts for Reconnect or
+  // Use Embedded for This Session after the daemon connection failed (daemon-mode/index.ts restartKeepingEdits).
+  ipcMain.handle(IPC.BACKEND_RESTART_STUDIO, (_event, kind?: unknown) => {
+    if (kind === 'reconnect') relaunchStudio('Reconnect after a failed connection to the ADF daemon (unsaved editor text kept as recovery copies)')
+    else if (kind === 'embedded-session' && boot.mode === 'local') relaunchEmbeddedForSession('no usable ADF daemon (unsaved editor text kept as recovery copies)')
+    else relaunchStudio('Restart Studio in Settings → Backend, so the saved backend applies')
+  })
   // The daemon-side picker exists in daemon mode only (daemon-mode/remote/,
   // registered with the other daemon-mode channels). Embedded Studio never
   // asks for a pick; a stray call gets an answer, not "no handler".

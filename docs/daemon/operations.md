@@ -10,8 +10,9 @@ Studio compatibility, and troubleshooting. Building a client instead? See the
 - **Personal machine:** install `@agentdocumentformat/cli` and run `adf`. It
   starts the daemon in the background when needed, and the daemon keeps your
   agents running after you close the terminal app. Studio and the daemon share
-  settings and owner identity, but should not run at the same time (see
-  [Studio compatibility](#studio-compatibility)).
+  settings and owner identity. Studio in Local daemon mode uses this daemon
+  as its backend; an Embedded Studio and the daemon never run the same agent
+  at once (see [Studio compatibility](#studio-compatibility)).
 - **Server or always-on host:** run `adf daemon` (foreground) under a service
   manager, with a dedicated settings file (`ADF_DAEMON_SETTINGS`), dedicated
   tracked folders, and a passphrase-file owner identity unlocked at boot
@@ -23,7 +24,7 @@ Studio compatibility, and troubleshooting. Building a client instead? See the
 |------|---------|
 | Start in the background | `adf daemon start` (or any `adf` command, which auto-starts a local daemon; `--no-daemon` / `ADF_NO_AUTOSTART=1` disables that) |
 | Run in the foreground | `adf daemon [--port N] [--host H] [--settings FILE]` (from source: `npm run daemon`) |
-| Status | `adf daemon status`: url, running, pid, uptime, version, loaded agents, data dir, log file (exit code 3 when not running) |
+| Status | `adf daemon status`: url, running, pid, uptime, version, who started it (`studio`, `cli` or `service`), loaded agents, data dir, log file, and `proof unavailable` when the local proof file could not be protected (exit code 3 when not running) |
 | Logs | `adf daemon logs [-f] [-n N]` (background daemons log to `<data dir>/logs/adf-daemon.log`; foreground daemons to stdout/stderr) |
 | Stop | `adf daemon stop` |
 | Restart | `adf daemon restart` |
@@ -36,8 +37,9 @@ WebSocket connections, the mesh server, sandboxes and child processes. The
 whole shutdown is capped at 20 seconds. On Windows, `adf daemon stop` is the
 only graceful way to stop a detached daemon.
 
-`adf daemon start` refuses while ADF Studio runs on the same settings (see
-below); `--force` skips that. A daemon that is starting under an existing pid
+`adf daemon start` refuses while an Embedded ADF Studio runs on the same
+settings (see below); `--force` skips that. A Studio in Local daemon or
+Remote daemon mode is a client, not a conflict. A daemon that is starting under an existing pid
 file is waited for rather than started twice, and the daemon itself refuses to
 start when its pid file names a live process.
 
@@ -59,7 +61,8 @@ else `ADF_USER_DATA_DIR`, else the platform default: `ADF Studio` or
 | `daemon-token` | The API access token (0600) |
 | `runtime-enc-key`, `runtime-enc-key.pub` | The daemon's envelope key (lets it unlock agent credentials Studio shared with it) |
 | `owner-secrets.json` | The owner identity, when stored in a passphrase file instead of the OS keychain |
-| `adf-daemon[-<port>].pid` | Pid file of a daemon started by `adf` |
+| `adf-daemon[-<port>].pid` | Pid file of a daemon started by `adf` or by Studio |
+| `daemon-local-proof[-<port>]` | A secret the daemon writes at every start, readable by this OS user only. `adf` and Studio on this machine send it on the routes that stay on this machine ([loopback-only routes](api-guide.md#loopback-only-routes)) |
 | `logs/adf-daemon[-<port>].log` | Log of a background daemon |
 
 `adf daemon status` prints the directory. Agent templates (`templates/`,
@@ -86,8 +89,9 @@ The mesh server is on by default. It binds once a loaded agent is reachable
 over the mesh, on loopback, and rebinds to all interfaces when an agent with
 `lan` or `public` visibility loads (or when `meshLan` is set). `adf network
 server stop|start` (or `POST /network/server/stop|start`) turns it off or on
-and persists the choice as `meshServerEnabled`. Studio uses the same port:
-running both makes one fail to bind.
+and persists the choice as `meshServerEnabled`. An Embedded Studio uses the
+same port: running both on one machine makes one fail to bind. Studio in
+Local daemon mode binds no mesh port; the daemon serves it.
 
 ## Access token
 
@@ -236,17 +240,43 @@ port 7295. `adf network` shows the state.
 
 ## Studio compatibility
 
-Studio and the daemon are separate hosts of the same runtime, not a
-replacement for each other. Run one at a time on the same agents:
+Studio runs agents in one of three backends ([Studio backend](../guides/studio-backend.md)):
+Embedded (in Studio's own process), Local daemon (this daemon) or Remote
+daemon. In Local daemon mode Studio starts this daemon or attaches to it and
+runs no agents itself; Studio, the terminal app and `adf` commands are all
+clients of one daemon. Whether quitting Studio stops the daemon is the
+setting **Keep the daemon running when Studio quits**; a daemon started with
+`adf daemon start` is never stopped by Studio.
 
-- both would open and write the same `.adf` files, start the same channels
-  (the same bot account), and fire the same timers;
-- both want mesh port 7295;
-- from a source checkout, switching rebuilds `better-sqlite3`.
+An Embedded Studio is a runtime of its own. On one machine, one agent file
+runs in one runtime at a time: each runtime takes a lease on the agent file
+when it starts the agent.
 
-`adf` refuses to auto-start a daemon while Studio runs on the same settings.
-A daemon started by hand (`adf daemon`, `npm run daemon`) is not checked, and
-nothing stops Studio from starting while the daemon runs.
+- Starting an agent another runtime runs is refused with `agent_leased` and a
+  sentence that names the holder and its pid
+  ([Troubleshooting](../cli/troubleshooting.md#agent-is-already-running-agent_leased)).
+  Nothing takes over a live lease.
+- Autostart skips such agents and reports them as `leased_elsewhere` in
+  `daemon.autostart.report`.
+- An agent file that another runtime runs can be opened and read; writes
+  through the daemon answer `409 agent_leased`.
+- Leases live in a per-user folder that does not depend on the settings file
+  (`%LOCALAPPDATA%\adf\leases`, `~/Library/Application Support/adf/leases`,
+  `$XDG_CONFIG_HOME/adf/leases`; `ADF_LEASE_DIR` overrides it). A dead
+  holder's lease is replaced at the next start.
+- `adf daemon start` refuses while an Embedded Studio runs on the same
+  settings file ("ADF Studio (pid N) is running agents from the same settings
+  file (…)."), because both would bind mesh port 7295 and the same channel
+  accounts. Give the daemon its own settings (`ADF_DAEMON_SETTINGS`) to run
+  both on purpose.
+- On graceful shutdown each runtime stops only the compute containers it
+  started or uses. A container another runtime still uses is left running and
+  logged ("Leaving adf-mcp running (used by …)"); Settings → Compute lists it.
+- From a source checkout, switching between Studio and the daemon rebuilds
+  `better-sqlite3` ([Native SQLite ABI](#native-sqlite-abi)).
+
+The lease covers one OS user on one machine. An `.adf` on a network share
+opened from two machines is not protected.
 
 ## Troubleshooting
 
@@ -295,5 +325,5 @@ and container routing in the log.
 - File-change triggers are incomplete in headless operation (there is no
   document editor).
 - The daemon speaks plain HTTP; remote use needs an SSH tunnel or TLS in front.
-- No cross-process lock keeps Studio and a hand-started daemon off the same
-  `.adf` files.
+- Agent leases cover one OS user on one machine; two machines that open the
+  same `.adf` on a network share are not protected.

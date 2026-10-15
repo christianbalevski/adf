@@ -1,4 +1,5 @@
 import { IPC } from '../../../src/shared/constants/ipc-channels'
+import type { LlmRequestView } from '../harness/mock-llm'
 import type { ParityScenario, ScenarioContext } from '../harness/scenario'
 
 /**
@@ -69,5 +70,47 @@ export const emergencyStopScenario: ParityScenario = {
   },
 }
 
+/**
+ * The receiving agent's inbox trigger waits this long after the message: its
+ * turn starts after the sender's turn has ended, so the two agents' model
+ * requests never interleave (agent-1's turn takes about 1 s with the mock
+ * model's streamed replies).
+ */
+const INBOX_DEBOUNCE_MS = 3000
+/** agent-1's requests carry the chat; every other one is agent-2's inbox turn. */
+const fromAgent1 = (req: LlmRequestView) => req.messages.some((m) => m.text.includes('Tell agent-2 hello.'))
+
+export const meshMessageTurnScenario: ParityScenario = {
+  name: 'mesh-message-turn',
+  description:
+    'agent-2 running in the background, agent-1 open and running, mesh on. A chat asks agent-1 to message agent-2 (msg_send to its handle); the message reaches agent-2\'s inbox and its on_inbox trigger runs a turn in agent-2.',
+  fixtures: [
+    { name: 'agent-1' },
+    { name: 'agent-2', triggers: { on_inbox: { enabled: true, targets: [{ scope: 'agent', debounce_ms: INBOX_DEBOUNCE_MS }] } } },
+  ],
+  settings: MESH_SETTINGS,
+  llm: (req) => {
+    if (req.isPreflight) return { text: 'ok' }
+    if (!fromAgent1(req)) return { text: 'Got it.' }
+    if (req.last?.role === 'tool') return { text: 'Sent.' }
+    return { toolCalls: [{ name: 'msg_send', arguments: { recipient: 'agent-2', content: 'Hello from agent-1.' } }] }
+  },
+  // agent-2's reply streams to a background agent: no deltas to measure.
+  shownStream: fromAgent1,
+  quietMs: 1000,
+  async run(ctx) {
+    const a2 = ctx.agent('agent-2').filePath
+    await openAndStart(ctx, a2)
+    const a1 = ctx.agent('agent-1').filePath
+    await openAndStart(ctx, a1)
+    await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 runs in the background', batchHas('agent_started', a2))
+    // No wait for the mesh server: the daemon binds it when the first agent
+    // registers (daemon/index.ts ensureMeshServer), so the message names the
+    // bound port in reply_to, return_path and card, as Studio's does.
+    await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Tell agent-2 hello.', filePath: a1 })
+    await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 answered the message', batchHas('turn_complete', a2))
+  },
+}
+
 /** Every mesh scenario, in run order. */
-export const MESH_SCENARIOS: readonly ParityScenario[] = [fleetMapScenario, emergencyStopScenario]
+export const MESH_SCENARIOS: readonly ParityScenario[] = [fleetMapScenario, emergencyStopScenario, meshMessageTurnScenario]

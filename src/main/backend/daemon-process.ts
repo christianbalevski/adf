@@ -14,7 +14,7 @@
 // service daemon keeps running whatever Studio does. Every action is logged.
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
-import { mkdir, open, readFile, rm } from 'node:fs/promises'
+import { mkdir, open, readFile, rm, stat } from 'node:fs/promises'
 import { uptime as osUptime } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import {
@@ -333,6 +333,8 @@ export class DaemonProcessController {
     this.log(`[DaemonProcess] Starting the ADF daemon: ${this.config.execPath} ${this.config.daemonEntry} on ${this.url} (settings ${this.config.settingsPath}, log ${paths.logFile})`)
     onProgress?.('Starting the ADF daemon…')
     const started = Date.now()
+    // Where this run's lines start in the shared log: its own startup error is read from here on.
+    const logStart = await stat(paths.logFile).then((s) => s.size, () => 0)
     const log = await open(paths.logFile, 'a')
     let child: ReturnType<SpawnFn>
     let exited: number | null = null
@@ -372,10 +374,12 @@ export class DaemonProcessController {
         }
       }
       const tail = await tailFile(paths.logFile, 15)
+      // MODE-10: the daemon's own sentence ("Failed to start: port 7385 on 127.0.0.1 is already in use"), not just the exit code.
+      const said = exited !== null ? await startupFailure(paths.logFile, logStart) : null
       const reason = spawnError
         ? `The ADF daemon could not be started: ${(spawnError as Error).message}`
         : exited !== null
-          ? `The ADF daemon exited during startup (code ${exited}).`
+          ? `The ADF daemon exited during startup (code ${exited}).${said ? ` Its log says: "${said}".` : ''}`
           : `The ADF daemon did not answer ${this.url}/health within ${this.startTimeoutMs / 1000}s.`
       this.log(`[DaemonProcess] ${reason} Log: ${paths.logFile}${tail ? `\n${tail}` : ''}`)
       throw new DaemonProcessError(reason, paths.logFile)
@@ -556,6 +560,34 @@ async function readPidRecord(file: string): Promise<PidRecord | null> {
 }
 
 /** The last `count` lines of a log file (at most its last 64 KiB). */
+/**
+ * The daemon's own startup failure in its log after `from` (this run's
+ * lines): the sentence of its last "[ADF Daemon] Failed to start: …" line,
+ * up to the advice after " — ". Null when it wrote none.
+ */
+export async function startupFailure(file: string, from: number): Promise<string | null> {
+  try {
+    const handle = await open(file, 'r')
+    try {
+      const { size } = await handle.stat()
+      const start = Math.max(from, size - 64 * 1024)
+      if (size <= start) return null
+      const buf = Buffer.alloc(size - start)
+      await handle.read(buf, 0, buf.length, start)
+      const lines = buf.toString('utf-8').split(/\r?\n/)
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const match = /\[ADF Daemon\] (Failed to start: .+)$/.exec(lines[i])
+        if (match) return match[1].split(' — ')[0].trim().replace(/[.\s]+$/, '')
+      }
+      return null
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return null
+  }
+}
+
 async function tailFile(file: string, count: number): Promise<string> {
   try {
     const handle = await open(file, 'r')

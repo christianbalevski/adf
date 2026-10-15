@@ -103,12 +103,15 @@ async function daemon(opts: { ringFrames?: number } = {}) {
   await runtime.loadAgent(one.filePath)
   await runtime.loadAgent(two.filePath)
   const requests: string[] = []
+  /** The X-ADF-Client-Session each request carried ('' for none), as `METHOD path session`. */
+  const sessionHeaders: string[] = []
   const fetchLog: typeof fetch = (input, init) => {
     const url = new URL(String(input))
     requests.push(`${init?.method ?? 'GET'} ${url.pathname}`)
+    sessionHeaders.push(`${init?.method ?? 'GET'} ${url.pathname} ${(init?.headers as Record<string, string> | undefined)?.['X-ADF-Client-Session'] ?? ''}`)
     return fetch(input, init)
   }
-  return { runtime, sessions, bus, one, two, baseUrl, requests, fetchLog }
+  return { runtime, sessions, bus, one, two, baseUrl, requests, sessionHeaders, fetchLog }
 }
 
 async function tui(baseUrl: string, fetchImpl: typeof fetch, view = 'chat'): Promise<TuiStore> {
@@ -123,6 +126,18 @@ const items = (store: TuiStore, agentId: string) => store.getState().transcripts
 describe('the terminal app on a client session', () => {
   it('speaks the daemon\'s client API version', () => {
     expect(SUPPORTED_CLIENT_API_VERSION).toBe(CLIENT_API_VERSION)
+  })
+
+  it('a daemon of client API 1 (no turn ids in executor frames) still gets a session; the TUI reads umbilical frames', async () => {
+    const { baseUrl, fetchLog } = await daemon()
+    const asV1: typeof fetch = async (input, init) => {
+      const res = await fetchLog(input, init)
+      if (new URL(String(input)).pathname !== '/version') return res
+      const body = { ...(await res.json() as Record<string, unknown>), clientApiVersion: 1 }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const store = await tui(baseUrl, asV1)
+    expect(store.liveMode).toBe('session')
   })
 
   it('streams the chat view\'s agent token by token with umbilical.stream_deltas off; other agents update live without deltas', async () => {
@@ -185,6 +200,38 @@ describe('the terminal app on a client session', () => {
     await waitFor(() => store.getState().toasts.some(t => t.text.includes('Events were missed')), 10_000, 'gap toast')
     await waitFor(() => requests.slice(before).includes('GET /agents') && requests.slice(before).includes(`GET /agents/${one.agentId}/loop`) && requests.slice(before).includes(`GET /agents/${one.agentId}/tasks`), 10_000, 'resync requests')
     expect(sessions.stats(sessionId).dropped).toBeGreaterThan(0)
+  })
+
+  it('names its session on every request once open: its writes show as client:tui, and its own refresh still works', async () => {
+    const { sessions, one, baseUrl, sessionHeaders, fetchLog } = await daemon()
+    const studio = new DaemonClient({ baseUrl })
+    const { sessionId: studioSession } = await studio.createClientSession({ client: 'studio', version: 'test' })
+    const frames: ClientFrame[] = []
+    let open = false
+    const stream = studio.clientSessionEvents(studioSession, { onEvent: f => frames.push(f), onState: s => { if (s.state === 'open') open = true } }).start()
+    cleanups.push(() => stream.close())
+    await waitFor(() => open)
+
+    const store = await tui(baseUrl, fetchLog)
+    expect(store.liveMode).toBe('session')
+    const tuiSession = [...(sessions as unknown as { sessions: Map<string, unknown> }).sessions.keys()].find(id => id !== studioSession)!
+    expect(sessions.clientOf(tuiSession)).toBe('tui')
+    const from = sessionHeaders.length
+    const { config } = await store.client.config(one.agentId)
+    await store.client.putConfig(one.agentId, { ...config, description: 'edited in the terminal' })
+    await store.actions.refreshAgents()
+    // Every request after the session opened names it (the session's own routes too).
+    expect(sessionHeaders.slice(from).length).toBeGreaterThan(0)
+    for (const line of sessionHeaders.slice(from)) expect(line.endsWith(` ${tuiSession}`), line).toBe(true)
+    // Studio sees the write, and who made it.
+    const changed = () => frames.find(f => f.kind === 'push' && f.topic === 'config_changed' && f.agentId === one.agentId)
+    await waitFor(() => !!changed(), 5000, 'config_changed at Studio')
+    expect(changed()).toMatchObject({ payload: { config: { description: 'edited in the terminal' }, writer: { kind: 'client', client: 'tui' } } })
+    expect(store.getState().agents[one.agentId]).toBeDefined()
+
+    // Ending the session drops the header: the store's client is the plain one again.
+    await store.close()
+    expect((store.client as unknown as { options: { clientSession?: string } }).options.clientSession).toBeUndefined()
   })
 
   it('a Studio-like session and the terminal app on one daemon see the same state', async () => {

@@ -90,6 +90,40 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
   })
 
+  // As embedded stops a running agent it cannot open without the password
+  // (ipc/index.ts FILE_OPEN). It used to keep running on the stub provider.
+  // W5-A1 (lead decision): the agent is not stopped. Embedded stops a
+  // background agent it cannot open without the password; the daemon keeps
+  // it running for every client, and Studio re-attaches it after the unlock.
+  it('FILE_OPEN of a running agent whose key the daemon lacks answers needsPassword and agentWasRunning; a second client watching it sees it keep running; AGENT_START after the unlock re-attaches it', async () => {
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'idle', sessionId: 'session-9' }))
+    daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ agentId: AGENT, displayState: 'idle', configured: [] }))
+    daemon.routes.set('GET /approvals/interactions', () => [])
+    // A second client (another Studio window or the TUI) has the agent open.
+    const watcherFake = createFakeClientSession((p) => (p === file1 ? AGENT : OTHER))
+    watcherFake.holdsAvailable = true
+    const watcher = { ...ctx, session: new DaemonModeSession(watcherFake, quiet) } as DaemonModeContext
+    const watch = (channel: string, ...args: unknown[]) => Promise.resolve(handlers[channel as keyof typeof handlers]!(watcher, {} as never, ...args))
+    expect(await watch(IPC.FILE_OPEN, { filePath: file1 })).toMatchObject({ success: true, agentWasRunning: true })
+
+    holdLocked = true
+    expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true, agentWasRunning: true })
+    expect(daemon.requests.some((r) => r.method === 'POST' && (r.path.endsWith('/stop') || r.path.endsWith('/start')))).toBe(false)
+    expect(await watch(IPC.FILE_GET_CURRENT)).toEqual({ filePath: file1, agentRunning: true })
+
+    // The password dialog unlocked it (the daemon rebuilt the real provider in place): completeFileOpen re-attaches.
+    daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: true, unlocked: true }))
+    expect(await call(IPC.AGENT_START, {})).toMatchObject({ success: true, sessionId: 'session-9', agentState: 'idle' })
+    expect(daemon.requests.some((r) => r.method === 'POST' && (r.path.endsWith('/stop') || r.path.endsWith('/start')))).toBe(false)
+    expect(await watch(IPC.FILE_GET_CURRENT)).toEqual({ filePath: file1, agentRunning: true })
+  })
+
+  it('FILE_OPEN of a locked agent that is not running stops nothing', async () => {
+    holdLocked = true
+    expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
+    expect(last('POST', `/agents/${AGENT}/stop`)).toBeUndefined()
+  })
+
   it('FILE_OPEN of a held document that is not running answers agentWasRunning false', async () => {
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, agentWasRunning: false })
   })

@@ -116,6 +116,17 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const locked = opened.opened ? opened.opened.needsPassword === true : !!opened.agentId && await passwordLocked(ctx, opened.agentId)
       if (locked) {
         ctx.session.forgetUnlocked(filePath)
+        // A running agent the daemon holds no key for keeps running on the
+        // stub provider (every turn fails credentials_locked); other clients
+        // may be watching it. It is not stopped: the answer says it runs, the
+        // unlock rebuilds its real provider in place, and the renderer
+        // re-attaches it after the prompt (useAdfFile completeFileOpen).
+        // Embedded stops such a background agent instead (it cannot hand it
+        // to the foreground without the key; design §3.2, W5-A1).
+        if (agentWasRunning) {
+          ctx.log.log(`[Backend] FILE_OPEN: ${basename(filePath)} runs without its password key; asking for the password, the agent keeps running`)
+          return { success: true, filePath, needsPassword: true, agentWasRunning: true }
+        }
         return { success: true, filePath, needsPassword: true }
       }
       // Self-heal a claimed-but-stranded temp file, as embedded's FILE_OPEN:

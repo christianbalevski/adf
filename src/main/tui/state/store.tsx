@@ -6,6 +6,14 @@
 // its outcome visibly (transcript item or toast); nothing fails silently.
 
 import { createContext, useContext, useRef, useSyncExternalStore, type ReactNode } from 'react'
+
+/**
+ * The oldest client API whose sessions this app reads. Version 2 added turn
+ * ids to executor frames and the `turn` frame, which the terminal app does
+ * not use (it reads umbilical frames), so a version-1 daemon still gets a
+ * session. Studio stays strict (client-stream.ts).
+ */
+export const TUI_MIN_CLIENT_API_VERSION: number = 1
 import type { DaemonClient } from '../api/client'
 import type { ConnectionInfo, EventStream, ResumeInfo, StreamGap } from '../api/sse'
 import {
@@ -213,7 +221,16 @@ export const PROMPT_PREFILL_KEY = 'shell.prompt.prefill'
 const CHAT_VIEW_ID = 'chat'
 
 export function createTuiStore(options: CreateStoreOptions): TuiStore {
+  /**
+   * This daemon's client. Once a client session is open it names the session
+   * on every request (X-ADF-Client-Session), so the daemon records the TUI's
+   * writes as `client:tui` and does not echo them back on its stream.
+   */
   let client = options.client
+  /** The same daemon without the session header: sessions open and end through it, other daemons derive from it. */
+  let plain = options.client
+  /** `plain` and its session-named copies: a read started through one of them is not stale. */
+  let current = new WeakSet<DaemonClient>([client])
   const pageSize = options.pageSize ?? 100
   let state = initialState(client.baseUrl, options.initialView)
   const listeners = new Set<() => void>()
@@ -284,11 +301,16 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   const selectedLoopOf = (agentId: string) => state.selectedLoop[agentId] ?? MAIN_LOOP
   /** Reads started against a daemon we have since switched away from are dropped. */
-  const stale = (c: DaemonClient) => c !== client
+  const stale = (c: DaemonClient) => !current.has(c)
+  /** Requests name session `id` from now on (null: none). */
+  const useSession = (id: string | null) => {
+    client = id ? plain.withClientSession(id) : plain
+    current.add(client)
+  }
 
   const actions: TuiActions = {
     async setDaemonUrl(url, token) {
-      const next = client.withBaseUrl(url, token)
+      const next = plain.withBaseUrl(url, token)
       if (next.baseUrl === client.baseUrl && token === undefined) {
         toast(`Already connected to ${next.baseUrl}`, 'info')
         return true
@@ -308,6 +330,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       for (const timer of debounced.values()) clearTimeout(timer)
       debounced.clear()
       client = next
+      plain = next
+      current = new WeakSet([next])
       dispatch({ type: 'daemon/switch', url: next.baseUrl })
       toast(`Switched from ${previous} to ${next.baseUrl} — agents on the old daemon keep running`, 'success', 6000)
       await start()
@@ -1053,13 +1077,16 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   /**
    * A client session on this daemon, or null for the /events path: the
-   * client API version must match, and the daemon must have the routes.
+   * daemon's client API version must be one this app reads (from
+   * TUI_MIN_CLIENT_API_VERSION up to SUPPORTED_CLIENT_API_VERSION), and the
+   * daemon must have the routes.
    */
   async function openSession(c: DaemonClient): Promise<string | null> {
     try {
       const info = await c.version()
-      if (info.clientApiVersion !== SUPPORTED_CLIENT_API_VERSION) {
-        noticeFallback(`the daemon speaks client API ${info.clientApiVersion}, this app ${SUPPORTED_CLIENT_API_VERSION}`)
+      const version = info.clientApiVersion
+      if (typeof version !== 'number' || version < TUI_MIN_CLIENT_API_VERSION || version > SUPPORTED_CLIENT_API_VERSION) {
+        noticeFallback(`the daemon speaks client API ${version}, this app ${TUI_MIN_CLIENT_API_VERSION}-${SUPPORTED_CLIENT_API_VERSION}`)
         return null
       }
     } catch (err) {
@@ -1084,13 +1111,14 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   }
 
   async function openStream() {
-    const c = client
+    const c = plain
     const id = options.clientSessions === false ? null : await openSession(c)
     if (stale(c) || stopped) {
       if (id) void c.endClientSession(id).catch(() => {})
       return
     }
     sessionId = id
+    useSession(id)
     focusSent = undefined
     if (id) {
       stream = c.clientSessionEvents(id, { onEvent: onClientFrame, onState: onStreamState, onResume: onStreamResume, onGap: onStreamGap }).start()
@@ -1109,6 +1137,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       stream?.close()
       stream = null
       sessionId = null
+      useSession(null)
       await openStream()
       if (stopped) return
       if (hadSession) toast('The daemon no longer had this app\'s client session — reopened, reloading', 'warn', 4000)
@@ -1147,6 +1176,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   function endSession(c: DaemonClient): Promise<void> {
     const id = sessionId
     sessionId = null
+    if (c === client) useSession(null)
     focusSent = undefined
     if (!id) return Promise.resolve()
     return c.endClientSession(id).then(() => {}, () => {})

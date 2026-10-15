@@ -16,13 +16,11 @@
 
 import { dirname, isAbsolute } from 'node:path'
 import type { FastifyInstance } from 'fastify'
-import { AgentVitalsService } from '../../services/agent-vitals'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { markConfigReviewed } from '../../services/agent-review'
 import { canonicalizePath, isSameOrSubPath } from '../../utils/tracked-paths'
 import { prepareFoundAgent } from '../../utils/found-agent'
 import type { FleetSettableState, FleetStateResult } from '../../../shared/types/ipc.types'
-import { createDaemonVitalsDeps } from '../vitals-routes'
 import type { DaemonRouteContext } from './index'
 import { badRequest, flagParam, serverError, stringParam, unavailable } from './route-helpers'
 
@@ -43,8 +41,7 @@ function canon(filePath: string): string {
 
 
 export function registerFleetClientRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
-  const { runtime, options } = ctx
-  const vitals = new AgentVitalsService(createDaemonVitalsDeps({ runtime, settings: options.settingsStore, mesh: options.mesh, ws: options.wsService }))
+  const { runtime, options, vitals } = ctx
   const trackedDirs = (): string[] => (options.settingsStore?.get('trackedDirectories') as string[] | undefined) ?? []
 
   type VitalsReq = { Querystring: { path?: string; force?: string } }

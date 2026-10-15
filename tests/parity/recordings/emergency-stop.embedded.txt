@@ -36,16 +36,16 @@
     sessionId: "session-<t>"
     success: true
 5. wait adf:background-agent:event-batch — agent-1 runs in the background  [matched push 3]
-6. invoke adf:emergency-stop  [pushes 5→8]
+6. invoke adf:emergency-stop  [pushes 5→7]
   args: []
   result:
     success: true
-7. invoke adf:agent:status  [pushes 8→8]
+7. invoke adf:agent:status  [pushes 7→7]
   args: []
   result:
     running: false
     state: "stopped"
-8. invoke adf:mesh:fleet-status  [pushes 8→8]
+8. invoke adf:mesh:fleet-status  [pushes 7→7]
   args: []
   result:
     agents:
@@ -101,7 +101,7 @@
         status: ""
         trackedDirRoot: "<ROOT>/agents"
     running: false
-9. shutdown  [pushes 8→8]
+9. shutdown  [pushes 7→7]
 
 ## timeline <ROOT>/agents/agent-1.adf
 > 1 adf:file:open
@@ -145,7 +145,6 @@
 > 6 adf:emergency-stop
   [app] adf:mesh:event agent_left
   [app] adf:mesh:event agent_left
-  adf:agent:event error
 < 6
 > 7 adf:agent:status
 < 7
@@ -153,13 +152,6 @@
 < 8
 > 9 shutdown
 < 9
-
-## push adf:agent:event (1)
-#1:
-  payload:
-    error: "Error: Cannot dispatch startup while agent lifecycle is disposed"
-  timestamp: "<t>"
-  type: "error"
 
 ## push adf:background-agent:event-batch (1)
 #1:

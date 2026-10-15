@@ -117,7 +117,6 @@ describe('normalizeBackendConfig', () => {
 
 describe('Settings → Backend store', () => {
   function store(opts: {
-    allowModeChange?: boolean
     codec?: SecretCodec
     path?: string
     confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
@@ -126,23 +125,16 @@ describe('Settings → Backend store', () => {
     const path = opts.path ?? tempConfigPath()
     const rec = recordingLog()
     const boot = resolveBootBackend(path, {}, rec.log)
-    const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), allowModeChange: opts.allowModeChange, log: rec.log, confirmModeSwitch: opts.confirmModeSwitch, applyModeSwitch: opts.applyModeSwitch })
+    const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), log: rec.log, confirmModeSwitch: opts.confirmModeSwitch, applyModeSwitch: opts.applyModeSwitch })
     return { path, s, lines: rec.lines }
   }
 
   it('persists the mode so the next launch boots with it', async () => {
-    const { path, s } = store({ allowModeChange: true })
+    const { path, s } = store()
     const result = await s.set({ mode: 'local' })
     expect(result.ok).toBe(true)
     expect(JSON.parse(readFileSync(path, 'utf-8')).mode).toBe('local')
     expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'local', source: 'file' })
-  })
-
-  it('refuses a mode switch while switching is unavailable and writes nothing', async () => {
-    const { path, s } = store({ allowModeChange: false })
-    const result = await s.set({ mode: 'local' })
-    expect(result).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
-    expect(existsSync(path)).toBe(false)
   })
 
   it('switching to local asks first (the switch dialog), then saves and restarts; cancel writes nothing (W4-A)', async () => {
@@ -150,7 +142,6 @@ describe('Settings → Backend store', () => {
     const restarted: string[] = []
     let answer = false
     const { path, s } = store({ confirmModeSwitch: async (target) => { asked.push(target); return answer }, applyModeSwitch: (target) => { restarted.push(target) } })
-    expect(s.get().modeSwitchAvailable).toBe(true)
     expect(await s.set({ mode: 'local' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
     expect(existsSync(path)).toBe(false)
     expect(restarted).toEqual([])
@@ -192,7 +183,6 @@ describe('Settings → Backend store', () => {
     const restarted: string[] = []
     let answer = false
     const { path, s } = store({ confirmModeSwitch: async (t) => { asked.push(t); return answer }, applyModeSwitch: (t) => { restarted.push(t) } })
-    expect(s.get().remoteSwitchAvailable).toBe(true)
     await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })
     expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
     expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('embedded')
@@ -275,7 +265,7 @@ describe('remote URL rules (§9.2)', () => {
     applyBackendPatch(
       defaultBackendConfig(),
       { remoteUrl, allowInsecureHttp, insecureHttpOrigin: allowInsecureHttp ? new URL(remoteUrl).origin : undefined },
-      { codec, allowModeChange: false },
+      { codec },
     )
 
   it('accepts https, loopback and tailnet http', () => {
@@ -304,7 +294,7 @@ describe('remote URL rules (§9.2)', () => {
 
 describe('review fixes', () => {
   const codec = fakeCodec()
-  const opts = { codec, allowModeChange: false }
+  const opts = { codec }
   const confirmed = (url: string): StudioBackendConfig => ({ ...defaultBackendConfig(), remote: { url, token: null, allowInsecureHttp: true } })
 
   it('does not carry a plain-http confirmation over to a new origin', () => {
@@ -376,7 +366,7 @@ describe('review fixes', () => {
   })
 
   it('switches to remote once a usable URL and its token are saved', () => {
-    const switchOpts = { ...opts, allowModeChange: true }
+    const switchOpts = opts
     const none = defaultBackendConfig()
     expect(applyBackendPatch(none, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
     const urlOnly: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: null, allowInsecureHttp: false } }
@@ -386,8 +376,6 @@ describe('review fixes', () => {
     const ready: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: 'safe:abc', allowInsecureHttp: false } }
     const switched = applyBackendPatch(ready, { mode: 'remote' }, switchOpts)
     expect(switched.ok && switched.config.mode).toBe('remote')
-    // A build without mode switches refuses remote as every other non-embedded mode.
-    expect(applyBackendPatch(ready, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
   })
 
   it('does not block unrelated saves on a stored unconfirmed URL', () => {

@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readDaemonToken, daemonTokenPath } from '../../daemon/daemon-token'
-import { readRemoteToken, type SecretCodec, type StudioBackendConfig } from '../backend-config'
 import { DaemonProcessController, type AttachDecision, type DaemonProcessDeps } from '../daemon-process'
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
 import type { DaemonConnector } from './connection'

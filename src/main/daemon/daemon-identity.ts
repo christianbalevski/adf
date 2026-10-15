@@ -33,16 +33,17 @@
  * material appears in logs, statuses or errors.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, promises as fsp, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
-import type { AdfWorkspace } from '../adf/adf-workspace'
+import { AdfWorkspace } from '../adf/adf-workspace'
 import { deriveOwnerIdentity, validateMnemonic } from '../crypto/mnemonic-identity'
 import { OWNER_SEED_DERIVED_KEY, OwnerIdentityService, ownerMnemonicSupersededKey, type OwnerIdentitySettings, type RestampResult } from '../services/owner-identity.service'
 import { DaemonAppOAuthStore, daemonAppOAuthAccount } from '../services/mcp-oauth-store'
 import { settingsScope } from '../services/provider-key-store'
 import type { WorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { testSeamsAllowed } from '../utils/test-seams'
+import { canonicalizePath } from '../utils/tracked-paths'
 import {
   FileSecretBackend,
   MIN_PASSPHRASE_LENGTH,
@@ -53,7 +54,7 @@ import {
 } from '../services/owner-secret-store'
 import { SecretBackendProviderKeyVault, type ProviderKeyVault } from './provider-key-vault'
 import type { SecretStatus } from '../services/settings.service'
-import type { DaemonEncKey } from './daemon-enc-key'
+import { readRevokedDaemonKeyLabels, rotateDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import {
   canonicalSettingsPath,
   studioRuntimeAccount,
@@ -91,12 +92,26 @@ export interface DaemonRuntimeAdoption {
   message: string
 }
 
+/**
+ * K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`),
+ * so ADF Studio wraps agent credentials to it. `not-applicable`: the daemon
+ * reads the OS keychain and shares Studio's runtime identity instead.
+ */
+export interface DaemonTrustStatus {
+  state: 'trusted' | 'not-trusted' | 'not-applicable'
+  /** `daemon:<fingerprint>`, the slot label; null without a key file. */
+  label: string | null
+  message: string
+}
+
 export interface DaemonIdentityStatus {
   status: DaemonIdentityState
   ownerDid: string | null
   /** The runtime DID the daemon signs and stamps with: Studio's when adopted, else its own. */
   runtimeDid: string | null
   runtime: DaemonRuntimeAdoption
+  /** K12: the owner's trust in this daemon's key (adf identity trust-daemon). */
+  trust?: DaemonTrustStatus
   storage: 'keychain' | 'file'
   /** The user confirmed they wrote the phrase down (shared with Studio). */
   backupConfirmed: boolean
@@ -118,6 +133,7 @@ export type DaemonIdentityErrorCode =
   | 'not_ready'
   | 'switch_unconfirmed'
   | 'backup_unconfirmed'
+  | 'keychain_available'
 
 export class DaemonIdentityError extends Error {
   constructor(
@@ -161,12 +177,17 @@ export class DaemonIdentitySettings implements OwnerIdentitySettings {
   constructor(
     private readonly store: IdentitySettingsStore,
     private readonly backend: SecretBackend,
-    private readonly encKey: DaemonEncKey | null,
+    private encKey: DaemonEncKey | null,
     private readonly runtimeAccount: string,
   ) {}
 
   clearCache(): void {
     this.cache.clear()
+  }
+
+  /** The daemon key after a rotation (untrustDaemon). */
+  setEncKey(key: DaemonEncKey): void {
+    this.encKey = key
   }
 
   /** Use Studio's runtime identity (a verified entry), or the daemon's own (null). */
@@ -295,7 +316,8 @@ export class DaemonIdentity {
   private readonly identitySettings: DaemonIdentitySettings
   private readonly backend: SecretBackend
   private readonly store: IdentitySettingsStore
-  private readonly encKey: DaemonEncKey | null
+  /** Replaced when the owner revokes the daemon's key (untrustDaemon rotates it). */
+  private encKey: DaemonEncKey | null
   private readonly bootPassphrase?: string
   /** API keys of providers added through the daemon (same secret store as the owner phrase). */
   readonly providerKeys: ProviderKeyVault
@@ -392,7 +414,7 @@ export class DaemonIdentity {
   }
 
   private withRuntime(status: DaemonIdentityStatus): DaemonIdentityStatus {
-    return { ...status, runtimeDid: this.runtimeDid(), runtime: this.adoption }
+    return { ...status, runtimeDid: this.runtimeDid(), runtime: this.adoption, trust: this.trustStatus() }
   }
 
   /**
@@ -574,6 +596,183 @@ export class DaemonIdentity {
   unlockWorkspaceEnvelopes(workspace: AdfWorkspace): void {
     this.unlockWithLocalRuntimeKeys(workspace)
     this.service.unlockWorkspaceEnvelopes(workspace)
+    this.reconcileTrustedSlot(workspace)
+  }
+
+  /**
+   * K12 (design §5.3 "Fallback"): the trusted-daemon slot of this daemon's
+   * key on an open agent. While the owner trusts this daemon (trustDaemon, an
+   * explicit owner action: the key is in `trustedDaemonEncKeys`) and it has
+   * no keychain, an unlocked credentials envelope gets a working slot. The
+   * daemon never adds its key to the list by itself. Slots under a label the
+   * owner revoked (untrustDaemon rotated that key away) come off every agent
+   * it opens; a slot of the current key is never removed here, because a
+   * daemon on its own settings file does not see the list Studio enrolled it
+   * in (Phase C). True when the file changed.
+   */
+  private reconcileTrustedSlot(workspace: AdfWorkspace): boolean {
+    if (!workspace.hasEnvelopes()) return false
+    let changed = this.removeRevokedSlots(workspace)
+    const key = this.encKey
+    if (key && this.backend.kind !== 'keychain' && this.isTrusted()) {
+      changed = this.service.enrollTrustedDaemonSlot(workspace, key) === 'added' || changed
+    }
+    return changed
+  }
+
+  /** Remove the credentials slots of revoked daemon keys (no unlock needed: removing a slot only narrows access). */
+  private removeRevokedSlots(workspace: AdfWorkspace): boolean {
+    const revoked = this.revokedLabels()
+    if (revoked.length === 0) return false
+    let removed = false
+    for (const label of revoked) {
+      try {
+        if (workspace.removeEnvelopeKeySlot('credentials', label)) {
+          removed = true
+          console.log(`[ADF Daemon] Removed the revoked trusted-daemon slot ${label} from ${workspace.getFilePath() ?? 'an agent'}`)
+        }
+      } catch (err) {
+        console.warn(`[ADF Daemon] Removing the revoked trusted-daemon slot ${label} failed:`, err instanceof Error ? err.message : err)
+      }
+    }
+    return removed
+  }
+
+  private revokedLabelCache: string[] | null = null
+
+  private revokedLabels(): string[] {
+    if (!this.encKey) return []
+    this.revokedLabelCache ??= readRevokedDaemonKeyLabels(dirname(this.encKey.keyPath))
+    return this.revokedLabelCache
+  }
+
+  private trustedKeys(): string[] {
+    const trusted = this.store.get('trustedDaemonEncKeys')
+    return Array.isArray(trusted) ? trusted.filter((k): k is string => typeof k === 'string') : []
+  }
+
+  private isTrusted(): boolean {
+    return !!this.encKey && this.trustedKeys().includes(this.encKey.publicKeyB64)
+  }
+
+  /** Whether the owner trusts this daemon's key (`trustedDaemonEncKeys`): GET /identity, GET /version, `adf daemon status`. */
+  trustStatus(): DaemonTrustStatus {
+    const label = this.encKey?.label ?? null
+    if (this.backend.kind === 'keychain') {
+      return this.isTrusted()
+        ? { state: 'trusted', label, message: 'This daemon\'s key is in trustedDaemonEncKeys although the daemon reads the OS keychain, where it shares ADF Studio\'s runtime identity. Remove it: adf identity untrust-daemon.' }
+        : { state: 'not-applicable', label, message: 'The daemon reads the OS keychain, so it shares ADF Studio\'s runtime identity instead of a trusted key.' }
+    }
+    if (this.isTrusted()) {
+      return { state: 'trusted', label, message: `The owner trusts this daemon's key ${label}: ADF Studio wraps each agent's credentials to it, so they unlock here without the owner passphrase. Revoke: adf identity untrust-daemon.` }
+    }
+    return { state: 'not-trusted', label, message: 'No OS keychain here: agents made in ADF Studio unlock only through the owner key (adf identity unlock). adf identity trust-daemon lets them unlock without it.' }
+  }
+
+  /**
+   * Owner action (`adf identity trust-daemon`, POST /identity/trust-daemon):
+   * add this daemon's key to `trustedDaemonEncKeys`, so embedded Studio wraps
+   * every agent's credentials to it (Phase C) and they unlock here without
+   * the owner passphrase. Refused with a keychain (Studio's runtime identity
+   * is shared there; trusting the key file would let a plain file unlock what
+   * the keychain protects) and without the owner key. The grant is an
+   * unsigned settings entry.
+   */
+  trustDaemon(): DaemonTrustStatus {
+    if (this.backend.kind === 'keychain') {
+      throw new DaemonIdentityError('keychain_available', 'This daemon reads the OS keychain, where it shares ADF Studio\'s runtime identity (switch Studio to local mode). Trusting its key file would let a plain file unlock what the keychain protects, so it is refused.', 409)
+    }
+    const key = this.encKey
+    if (!key) throw new DaemonIdentityError('not_ready', 'The daemon runtime encryption key (runtime-enc-key) is unreadable; fix or remove it and restart the daemon.', 409)
+    if (!this.isReady()) {
+      throw new DaemonIdentityError('not_ready', 'Trusting this daemon is an owner action: unlock or restore the owner identity first (adf identity unlock, adf identity restore).', 409)
+    }
+    if (!this.isTrusted()) {
+      this.store.set('trustedDaemonEncKeys', [...this.trustedKeys(), key.publicKeyB64])
+      console.log(`[ADF Daemon] The owner trusted this daemon's key ${key.label} (trustedDaemonEncKeys): ADF Studio wraps agent credentials to it from now on`)
+    }
+    return this.trustStatus()
+  }
+
+  /**
+   * Owner action (`adf identity untrust-daemon`, POST /identity/untrust-daemon):
+   * remove this daemon's key from `trustedDaemonEncKeys` and rotate it
+   * (rotateDaemonEncKey): a fresh key replaces the file and the old one is no
+   * longer used, so slots wrapped to it stop opening here. The old label is
+   * recorded as revoked: its slots come off each agent this daemon opens
+   * (reconcileTrustedSlot), the loaded ones and the tracked ones
+   * (sweepRevokedSlots, run by the route), and embedded Studio drops them at
+   * its next unlock (Phase C revocation). The daemon never adds a key back.
+   * Slots of the daemon's own runtime that were wrapped to the old key open
+   * again after the next owner-key unlock, which re-wraps them to the new key.
+   */
+  untrustDaemon(): DaemonTrustStatus & { retiredLabel: string | null } {
+    const key = this.encKey
+    if (!key) throw new DaemonIdentityError('not_ready', 'The daemon runtime encryption key (runtime-enc-key) is unreadable; fix or remove it and restart the daemon.', 409)
+    if (this.trustedKeys().includes(key.publicKeyB64)) {
+      this.store.set('trustedDaemonEncKeys', this.trustedKeys().filter((k) => k !== key.publicKeyB64))
+    }
+    const { key: next, retiredLabel } = rotateDaemonEncKey(dirname(key.keyPath))
+    this.encKey = next
+    this.identitySettings.setEncKey(next)
+    this.revokedLabelCache = null
+    console.log(`[ADF Daemon] The owner revoked this daemon's key ${retiredLabel} (trustedDaemonEncKeys): the key is rotated (now ${next.label}), and its slots come off each agent this daemon or ADF Studio opens`)
+    return { ...this.trustStatus(), retiredLabel }
+  }
+
+  /**
+   * After untrustDaemon: remove revoked slots from the agents in the tracked
+   * folders. Skipped, and cleaned when they are next opened: `skip` (files
+   * this daemon has loaded or holds open as documents; loaded ones are
+   * handled through their open workspace), files `leasedElsewhere` names
+   * (another runtime runs the agent and is the one writer of its file), and
+   * files that cannot be opened. One file per macrotask. Copies outside the
+   * tracked folders keep the slot until they are opened here or in Studio.
+   */
+  async sweepRevokedSlots(
+    skip: Iterable<string>,
+    opts: { leasedElsewhere?: (filePath: string) => Promise<string | null> } = {},
+  ): Promise<{ cleaned: number; skipped: string[]; failed: string[] }> {
+    const result = { cleaned: 0, skipped: [] as string[], failed: [] as string[] }
+    const skipKeys = new Set([...skip].map(pathKey))
+    if (this.revokedLabels().length === 0) return result
+    const tracked = this.store.get('trackedDirectories')
+    const dirs = Array.isArray(tracked) ? tracked.filter((d): d is string => typeof d === 'string') : []
+    const depth = this.store.get('maxDirectoryScanDepth')
+    const files: string[] = []
+    for (const dir of dirs) await collectAdfFilesAsync(dir, typeof depth === 'number' ? depth : 5, 0, files)
+    for (const file of files) {
+      if (skipKeys.has(pathKey(file))) {
+        result.skipped.push(file)
+        continue
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      const holder = opts.leasedElsewhere ? await opts.leasedElsewhere(file) : null
+      if (holder) {
+        result.skipped.push(file)
+        continue
+      }
+      let ws: AdfWorkspace | null = null
+      try {
+        ws = AdfWorkspace.open(file)
+        if (this.removeRevokedSlots(ws)) result.cleaned++
+      } catch (err) {
+        result.failed.push(`${file}: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        try { ws?.close() } catch { /* closed */ }
+      }
+    }
+    console.log(`[ADF Daemon] Revoked trusted-daemon slots removed from ${result.cleaned} tracked agent(s)${result.skipped.length ? `; ${result.skipped.length} open here or run by another runtime, cleaned when next opened` : ''}${result.failed.length ? `; ${result.failed.length} could not be opened and are cleaned when next opened` : ''}`)
+    return result
+  }
+
+  /**
+   * Apply the trust state to a loaded agent now (POST /identity/trust-daemon
+   * and /identity/untrust-daemon): trusted, its slot is (re)wrapped; revoked
+   * slots come off. True when the file changed.
+   */
+  applyTrustToLoadedAgent(workspace: AdfWorkspace): boolean {
+    return this.reconcileTrustedSlot(workspace)
   }
 
   /** The daemon's workspace identity hooks (setWorkspaceIdentityHooks). */
@@ -585,6 +784,7 @@ export class DaemonIdentity {
         this.unlockWithLocalRuntimeKeys(workspace)
         if (ready) this.service.ensureWorkspaceIdentity(workspace)
         else this.service.unlockWorkspaceEnvelopes(workspace)
+        this.reconcileTrustedSlot(workspace)
       },
       unlockEnvelopes: (workspace) => this.unlockWorkspaceEnvelopes(workspace),
       canProvision: () => this.isReady(),
@@ -934,4 +1134,24 @@ export function readBootPassphrase(readFile: (path: string) => string): string |
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null
+}
+
+/** One spelling per file (canonical path), for the sweep's skip list. */
+function pathKey(filePath: string): string {
+  try { return canonicalizePath(filePath) } catch { return filePath }
+}
+
+/** .adf files under a tracked folder, as the tracked-directory scan finds them (async: the revocation sweep runs in the background). */
+async function collectAdfFilesAsync(dir: string, maxDepth: number, depth: number, out: string[]): Promise<void> {
+  if (depth > maxDepth) return
+  let entries: import('fs').Dirent[]
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.adf')) out.push(join(dir, e.name))
+    else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') await collectAdfFilesAsync(join(dir, e.name), maxDepth, depth + 1, out)
+  }
 }

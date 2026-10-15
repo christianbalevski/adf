@@ -250,6 +250,14 @@ describe('attach and detach on agent files', () => {
     expect(await invoke(IPC.MCP_DETACH_SERVER, { filePath: FILE, serverName: 'acme', credentialNamespace: '@acme/server' })).toEqual({ success: true })
   })
 
+  it('MCP_ATTACH_SERVER of an OAuth server sends oauth in the entry (E3)', async () => {
+    const bodies: unknown[] = []
+    daemon.routes.set('POST /files/agent/mcp/servers', ({ body }) => { bodies.push(body); return { success: true, alreadyAttached: false } })
+    await invoke(IPC.MCP_ATTACH_SERVER, { filePath: FILE, serverConfig: { name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true, bearerTokenEnvVar: 'REMOTE_TOKEN', credentialStorage: 'agent' } })
+    expect(bodies).toEqual([{ server: expect.objectContaining({ name: 'remote', transport: 'http', oauth: true }) }])
+    expect((bodies[0] as { server: Record<string, unknown> }).server.bearer_token_env_var).toBeUndefined()
+  })
+
   it('ADAPTER_ATTACH: on stays as it is, off is turned on with its policy, new gets the config', async () => {
     const posted: unknown[] = []
     let adapters: Record<string, unknown> = {}
@@ -404,6 +412,36 @@ describe('InstallProgressRelay', () => {
     relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'jimp', status: 'installed' } })
     await finished
     expect(answered).toBe(true)
+  })
+
+  it('a real end that arrives after the fallback end was sent is dropped, once; a progress line first means another install, which passes (W4-B follow-up)', async () => {
+    const sent: unknown[] = []
+    const logged: string[] = []
+    const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: (m: string) => { logged.push(m) }, warn: () => {} }, 20, 40)
+    const push = (pkg: string, status: string) => ({ kind: 'push' as const, topic: 'mcp_install' as const, payload: { package: pkg, status } })
+    await relay.begin(IPC.MCP_INSTALL_PROGRESS, ['slow']).finish([{ package: 'slow', status: 'installed' }])
+    expect(sent).toEqual([{ package: 'slow', status: 'installed' }])
+    // The stream catches up: its end is not sent again.
+    expect(relay.observe(push('slow', 'installed'))).toBe(false)
+    expect(logged.some((m) => /slow install's own end \(installed\) arrived .* not sent again/.test(m))).toBe(true)
+    // Only that one end: the next pushes of the package pass, as do other packages and topics.
+    expect(relay.observe(push('slow', 'installed'))).toBe(true)
+    expect(relay.observe(push('other', 'installed'))).toBe(true)
+    expect(relay.observe({ kind: 'push', topic: 'adapter_install', payload: { package: 'slow', status: 'installed' } })).toBe(true)
+
+    // Another client's install of the package after the relayed end: its progress line ends the drop, so its end reaches the renderer.
+    await relay.begin(IPC.MCP_INSTALL_PROGRESS, ['shared']).finish([{ package: 'shared', status: 'installed' }])
+    expect(relay.observe(push('shared', 'installing'))).toBe(true)
+    expect(relay.observe(push('shared', 'installed'))).toBe(true)
+    expect(logged.some((m) => /progress line of shared after its relayed end: another install/.test(m))).toBe(true)
+    sent.splice(0)
+
+    // A new install of the package owns its pushes, even if the old late end never came.
+    await relay.begin(IPC.MCP_INSTALL_PROGRESS, ['lost']).finish([{ package: 'lost', status: 'installed' }])
+    const again = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['lost'])
+    expect(relay.observe(push('lost', 'installed'))).toBe(true)
+    await again.finish([{ package: 'lost', status: 'installed' }])
+    expect(sent).toHaveLength(1)
   })
 })
 

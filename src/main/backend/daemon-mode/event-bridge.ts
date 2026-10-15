@@ -3,7 +3,7 @@ import type { DaemonClient, AgentSummary, AgentStatus } from '../../../shared/da
 import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, NotificationsSnapshot } from '../../../shared/types/ipc.types'
 import { applyBackgroundEvent, type BackgroundMappingState } from '../../runtime/background-event-mapping'
 import { toDisplayState } from '../../runtime/display-state'
-import type { ClientFrame, ExecutorFrame, HostFrame, PushFrame, PushTopic, StreamGap, TurnFrame } from './client-stream'
+import { turnEndOf, type ClientFrame, type ExecutorFrame, type HostFrame, type PushFrame, type PushTopic, type StreamGap, type TurnFrame } from './client-stream'
 import { dirname } from 'node:path'
 import { pathKey, samePath, type DaemonModeSession } from './session'
 
@@ -245,7 +245,13 @@ export class EventBridge {
 
   handleFrame(frame: ClientFrame): void {
     try {
-      if (frame.kind === 'executor') this.onExecutor(frame)
+      if (frame.kind === 'executor') {
+        // The executor frame first, then the turn end it carries (D5): the order the umbilical turn end had.
+        try { this.onExecutor(frame) } finally {
+          const end = turnEndOf(frame)
+          if (end) this.onTurn(end)
+        }
+      }
       else if (frame.kind === 'host') this.onHost(frame)
       else if (frame.kind === 'turn') this.onTurn(frame)
       else this.onPush(frame)
@@ -621,8 +627,9 @@ export class EventBridge {
     }
     if (route.action === 'notice') {
       const p = frame.payload as { holding?: unknown; reason?: unknown; sessions?: unknown }
+      const clients = typeof p?.sessions === 'number' ? `${p.sessions} other client${p.sessions === 1 ? ' is' : 's are'}` : 'other clients are'
       const text = p?.holding === true
-        ? `The ADF daemon keeps running while ${typeof p.sessions === 'number' ? p.sessions : 'other'} other client${p.sessions === 1 ? ' is' : 's are'} connected, and stops when the last one closes.${typeof p.reason === 'string' ? ` (${p.reason})` : ''}`
+        ? `The ADF daemon keeps running while ${clients} connected, and stops when the last one closes.${typeof p.reason === 'string' ? ` (${p.reason})` : ''}`
         : `The ADF daemon no longer stops when the other clients close.${typeof p?.reason === 'string' ? ` (${p.reason})` : ''}`
       this.log.log(`[Backend] ${text}`)
       if (p?.holding === true) this.deps.onNotice?.(text)

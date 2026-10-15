@@ -38,6 +38,10 @@ adf
   daemon answers `401` and `adf` points you to `adf daemon token`.
 - Through the tunnel the daemon sees a loopback connection, so owner identity
   create / restore / unlock and `adf daemon stop` work as on the server.
+  This holds for `adf` only: ADF Studio in remote mode (URL
+  `http://127.0.0.1:7386`) never sends a seed phrase to another machine and
+  has no local proof for the server, so its owner identity actions say to run
+  `adf identity` on the server, through the tunnel too.
 
 ## Option 2: bind to the network
 
@@ -58,6 +62,13 @@ ADF_DAEMON_ALLOWED_HOSTS=server.lan adf daemon --host 0.0.0.0
   separated; `name` or `name:port`).
 - Owner identity create / restore / unlock and `adf daemon stop` are refused
   from other machines: run them on the server.
+- On a tailnet, bind to the server's tailnet address (`--host 100.x.y.z`).
+  `100.64.0.0/10` is also the range internet providers use for carrier-grade
+  NAT, so a `http://100.x.y.z` URL on a network you do not control may reach
+  another machine with your token. Prefer https through `tailscale serve` and
+  the MagicDNS name. ADF Studio accepts plain http to a `100.64.0.0/10`
+  address without asking; any other plain-http address (a LAN address, a
+  MagicDNS name) needs its "I trust this network" confirmation.
 
 ## Option 3: TLS reverse proxy
 
@@ -152,16 +163,20 @@ http needs the confirmation; use `serve` instead.
 
 Settings → Backend → Remote daemon takes the same URL and token. Test
 connection checks the address, the token and the client API version;
-Use for next launch, then Restart now, connects.
+Switch to This Daemon shows what moves (client settings only) and restarts
+Studio connected to it. Details and every message:
+[Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).
 
 - Open agent…, New agent, Track folder and folder fields pick paths on
   the server (a picker over `GET /fs/browse`). A remote client lists folder
   and `.adf` names under the server's home folder, tracked folders and
   agents folder; set `ADF_DAEMON_BROWSE_ROOTS` on the server to list
   other folders instead of the home folder.
-- A `.adf` opened from this computer (double-click, Open Recent) is offered
+- A `.adf` this computer's OS hands to Studio (double-click, the command
+  line, a second instance) is offered
   as an upload of a copy into a tracked folder or the agents folder on the
-  server. Nothing is uploaded without your choice.
+  server. Nothing is uploaded without your choice. Open Recent lists paths on
+  the server, and Studio adds none of them to the OS recent documents.
 - MCP OAuth sign-in: Studio asks before it opens the page, takes the
   browser's callback on this computer and hands it to the daemon
   (`POST /oauth/relay`). No port needs to be tunnelled.
@@ -198,3 +213,7 @@ and signed in on the server, not your laptop.
   to the daemon on save.
 - `adf daemon logs`, `status` details (data dir, log) and `token` read the
   local machine: run them on the server.
+- ADF Studio in remote mode picks paths on the server, offers files of your
+  laptop as uploads, and keeps owner identity, stored credential values and
+  the agent browser viewer on the server. See
+  [Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).

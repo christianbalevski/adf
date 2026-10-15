@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -8,6 +8,7 @@ import {
   decideAttach,
   DaemonProcessController,
   DaemonProcessError,
+  startupFailure,
   type SpawnFn,
 } from '../../src/main/backend/daemon-process'
 import { CLIENT_API_VERSION, type DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
@@ -266,6 +267,22 @@ describe('DaemonProcessController', () => {
     await expect(ctl.spawn()).rejects.toThrow(DaemonProcessError)
     await expect(ctl.spawn()).rejects.toThrow(/exited during startup \(code 1\)/)
     expect(logs.some(l => l.includes('exited during startup'))).toBe(true)
+  })
+
+  it('MODE-10: a daemon that fails on a busy port names it, from this run\'s own log line', async () => {
+    const { fetchImpl } = fakeDaemon({ up: false, info: null })
+    const spawner = fakeSpawner(() => {
+      const fd = (spawner.spawns.at(-1)!.options.stdio as unknown[])[2] as number
+      writeSync(fd, `[ADF Daemon] Failed to start: port ${PORT} on 127.0.0.1 is already in use — an ADF daemon (or another service) is likely running there already. Stop the existing daemon, or pick another port via ADF_DAEMON_PORT.\n`)
+      setTimeout(() => spawner.child.emit('exit', 1), 0)
+    })
+    const { ctl } = controller(fetchImpl, { spawn: spawner.spawn })
+    const logFile = ctl.paths.logFile
+    // An earlier run's failure is in the log already; it must not be reported for this one.
+    mkdirSync(dirname(logFile), { recursive: true })
+    writeFileSync(logFile, '[ADF Daemon] Failed to start: an older reason — ignore it\n')
+    await expect(ctl.spawn()).rejects.toThrow(`The ADF daemon exited during startup (code 1). Its log says: "Failed to start: port ${PORT} on 127.0.0.1 is already in use".`)
+    expect(await startupFailure(logFile, statSync(logFile).size)).toBeNull()
   })
 
   it('stops a daemon Studio started, through POST /daemon/shutdown with the token', async () => {

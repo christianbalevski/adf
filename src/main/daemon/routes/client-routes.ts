@@ -44,6 +44,7 @@ import {
   type ClientStreamSink,
 } from '../client-sessions'
 import type { DaemonRouteContext } from './index'
+import { localAccessRefusal } from '../local-access'
 import { badRequest, stringParam } from './route-helpers'
 
 /** Request header naming the client session a write comes from. */
@@ -64,7 +65,7 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     done()
   })
 
-  server.post<{ Body: { client?: unknown; version?: unknown; exitDaemonWhenClosed?: unknown; umbilical?: unknown } }>('/client/sessions', async (request, reply) => {
+  server.post<{ Body: { client?: unknown; version?: unknown; exitDaemonWhenClosed?: unknown; umbilical?: unknown; pid?: unknown } }>('/client/sessions', async (request, reply) => {
     const body = request.body ?? {}
     const client = stringParam(body.client)
     const version = stringParam(body.version)
@@ -73,7 +74,11 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
       return badRequest(reply, 'exitDaemonWhenClosed must be a boolean')
     }
     if (body.umbilical !== undefined && typeof body.umbilical !== 'boolean') return badRequest(reply, 'umbilical must be a boolean')
-    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true })))
+    if (body.pid !== undefined && !(typeof body.pid === 'number' && Number.isInteger(body.pid) && body.pid > 0)) return badRequest(reply, 'pid must be a positive integer')
+    // A pid names a process on the daemon's machine: taken from a local caller only (a remote one's pid means nothing here).
+    const local = body.pid !== undefined && !localAccessRefusal({ remoteAddress: request.socket?.remoteAddress, headers: request.headers }, ctx.localAccess)
+    const pid = local ? body.pid as number : undefined
+    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true, ...(pid ? { pid } : {}) })))
   })
 
   server.get<{ Params: SessionParams; Querystring: { since?: string; epoch?: string } }>('/client/sessions/:id/events', async (request, reply) => {
@@ -287,6 +292,20 @@ export function requestWriter(request: { server: FastifyInstance; headers: Recor
   const sessions = (request.server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
   if (!sessions) return { kind: 'cli' }
   return writerOf(sessions, liveSession(sessions, request.headers))
+}
+
+/**
+ * Run a route's write that happens after an await (past the preHandler's
+ * window) as its request's: the writer for revisions (W3-F), and the origin
+ * session, so the change frames the write raises synchronously
+ * (`file_updated`, `config_changed`) skip the session that made it (D5.1
+ * origin dedup), as for a write in the handler's synchronous part.
+ */
+export function runAsRequestWrite<T>(request: { server: FastifyInstance; headers: Record<string, string | string[] | undefined> }, fn: () => T): T {
+  const sessions = (request.server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
+  if (!sessions) return runAsWriter({ kind: 'cli' }, fn)
+  const origin = liveSession(sessions, request.headers)
+  return runAsWriter(writerOf(sessions, origin), () => (origin ? runAsClientWrite(origin, fn) : fn()))
 }
 
 /** The live client session a request names, or null. */

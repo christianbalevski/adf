@@ -766,17 +766,11 @@ export function createDaemonHttpApi(
   registerTemplateRoutes(server, { agentFactory: opts.agentFactory })
   registerProviderRoutes(server, { settingsStore: opts.settingsStore, providerKeys: opts.providerKeys })
   registerContextRoutes(server, runtime)
-  registerDaemonRoutes(server, { runtime, options: opts, localAccess })
-  registerVitalsRoutes(server, {
-    runtime,
-    settings: opts.settingsStore,
-    vitals: new AgentVitalsService(createDaemonVitalsDeps({
-      runtime,
-      settings: opts.settingsStore,
-      mesh: opts.mesh,
-      ws: opts.wsService,
-    })),
-  })
+  // One vitals service for every route that reads vitals: one set of caches and one fleet scan.
+  const vitalsDeps = createDaemonVitalsDeps({ runtime, settings: opts.settingsStore, mesh: opts.mesh, ws: opts.wsService })
+  const vitals = new AgentVitalsService(vitalsDeps)
+  registerDaemonRoutes(server, { runtime, options: opts, localAccess, vitals, vitalsDeps })
+  registerVitalsRoutes(server, { runtime, settings: opts.settingsStore, vitals })
 
   server.get<{ Querystring: EventsQuery }>('/events', async (request, reply) => {
     if (!opts.eventBus) return unavailable(reply, 'Event bus is not configured.')

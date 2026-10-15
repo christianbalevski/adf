@@ -12,13 +12,14 @@ import { dirname } from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import type { DaemonRouteContext } from './index'
 import { localProofProblem } from '../local-access'
+import type { DaemonTrustStatus } from '../daemon-identity'
 
 /**
  * Version of the internal client API (`/client/*` routes, client frames).
  * Bump it on any change a client of the previous number cannot handle;
  * Studio refuses to attach to a daemon with another number (§8.2).
  */
-export const CLIENT_API_VERSION = 1
+export const CLIENT_API_VERSION = 2
 
 export type DaemonStartedBy = 'studio' | 'cli' | 'service'
 
@@ -62,6 +63,8 @@ export interface DaemonVersionInfo {
    * Absent in daemons before W4-A.
    */
   localProof?: { available: boolean; problem: string | null }
+  /** K12: whether the owner trusts this daemon's key (adf identity trust-daemon); absent without an owner identity service or in older daemons. */
+  trust?: DaemonTrustStatus
 }
 
 export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
@@ -78,6 +81,7 @@ export function registerMetaRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       pid: process.pid,
       startedBy: options.routes?.startedBy ?? 'cli',
       localProof: { available: !!ctx.localAccess.localProof, problem: ctx.localAccess.localProof ? null : localProofProblem() ?? 'no local proof was minted for this run' },
+      ...(options.identity ? { trust: options.identity.trustStatus() } : {}),
     }
   })
 }

@@ -161,7 +161,7 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     const shown = electronStub.calls.length
     const answer = await invoke(IPC.FILE_OPEN, { filePath: localAdf })
     // It says only what is known: this computer was not looked at.
-    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at .*To upload a file of this computer, open it from the file manager or Open Recent\.$/) })
+    expect(answer).toMatchObject({ success: false, error: expect.stringMatching(/No agent file at .*To upload a file of this computer, open it with ADF Studio from the file manager, or start ADF Studio with its path on the command line.$/) })
     expect(answer.error).not.toMatch(/none on this computer/)
     expect(statCalls).toEqual([])
     expect(electronStub.calls.slice(shown).filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
@@ -355,6 +355,18 @@ describe('provider keys shown as the placeholder', () => {
     expect(patches).toEqual([])
     expect(await invoke(IPC.SETTINGS_SET, { providers: [{ id: 'p1', name: 'OpenAI', apiKey: '__redacted__' }] })).toEqual({ success: true })
     expect(patches).toHaveLength(1)
+  })
+
+  it("SETTINGS_SET refuses a Settings → MCP env value made from the placeholder, in the per-agent forms' sentence", async () => {
+    const patches: unknown[] = []
+    daemon.routes.set('PATCH /settings', ({ body }) => { patches.push(body); return {} })
+    const servers = (value: string) => ({ mcpServers: [{ id: 'mcp:acme', name: 'acme', type: 'npm', env: [{ key: 'API_KEY', value }] }] })
+    for (const edited of ['__redacted_', '__redacted__abc', '__redaXcted__']) {
+      await expect(invoke(IPC.SETTINGS_SET, servers(edited)), edited).rejects.toThrow('The value of API_KEY was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.')
+    }
+    expect(patches).toEqual([])
+    expect(await invoke(IPC.SETTINGS_SET, servers('k-2'))).toEqual({ success: true })
+    expect(patches).toEqual([servers('k-2')])
   })
 })
 
