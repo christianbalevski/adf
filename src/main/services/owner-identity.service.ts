@@ -18,6 +18,7 @@ import { readdir } from 'fs/promises'
 import { join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
+import { AdfDatabase } from '../adf/adf-database'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey, openKeySlot, type KeySlotRecord } from '../crypto/envelope-crypto'
@@ -83,6 +84,11 @@ export interface RestampResult {
   /** Files `skip` left out (another runtime runs them); restamped when next opened. Present only when a `skip` was given. */
   skipped?: string[]
 }
+
+/** How long minting an agent's identity waits for another connection's write lock (an interactive open). */
+export const PROVISION_BUSY_TIMEOUT_MS = 100
+/** The boot sweep's wait: a busy file is a named failure, retried at the next boot or open. */
+export const SWEEP_BUSY_TIMEOUT_MS = 25
 
 /** What one boot envelope sweep did (sweepEnvelopeMigration). */
 export interface EnvelopeSweepResult {
@@ -753,7 +759,12 @@ export class OwnerIdentityService {
    */
   ensureWorkspaceIdentity(
     workspace: AdfWorkspace,
-    opts: { mintKeys?: boolean; adoptKeys?: { privateKey: Buffer; publicKey: Buffer } } = {}
+    opts: {
+      mintKeys?: boolean
+      adoptKeys?: { privateKey: Buffer; publicKey: Buffer }
+      /** How long a mint waits for another connection's write lock (default PROVISION_BUSY_TIMEOUT_MS). */
+      busyTimeoutMs?: number
+    } = {}
   ): { keysGenerated: boolean; sealed: number } {
     if (workspace.isPasswordProtected()) {
       // Still run the unlock-only step: envelope unwrap is X25519 against
@@ -770,12 +781,7 @@ export class OwnerIdentityService {
       return { keysGenerated: false, sealed: 0 }
     }
 
-    // One BEGIN IMMEDIATE transaction: the checks below (envelopes, signing
-    // keys) and the writes they decide on are atomic against every other
-    // connection, so two runtimes provisioning the same file at once (the
-    // boot sweep and a lazy open elsewhere) cannot each mint envelopes or
-    // keys with the last writer winning; the second finds them and is a no-op.
-    return workspace.immediateTransaction(() => {
+    const provision = (): { keysGenerated: boolean; sealed: number } => {
       const recipients = this.getEnvelopeRecipients()
       if (recipients) {
         if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
@@ -824,7 +830,23 @@ export class OwnerIdentityService {
 
       const sealed = workspace.sealPlainRowsIntoEnvelopes()
       return { keysGenerated, sealed }
-    })
+    }
+
+    // Read-only pre-check, outside any write transaction: every open of an
+    // agent comes through here, and an already provisioned file must not take
+    // the file's write lock (or wait on another connection's). Only minting
+    // (no envelopes yet, no signing key) is a check-then-write two runtimes
+    // can race on; the rest is as before.
+    const mints = (!workspace.hasEnvelopes() && this.getEnvelopeRecipients() !== null) ||
+      workspace.getIdentityRow('crypto:signing:private_key') === null
+    if (!mints) return provision()
+    // Minting: one BEGIN IMMEDIATE transaction, the checks repeated inside it,
+    // so two runtimes provisioning the same file at once (the boot sweep and a
+    // lazy open elsewhere) cannot each mint envelopes or keys with the last
+    // writer winning; the second finds them and is a no-op. A file another
+    // connection is writing fails after a short wait (SQLITE_BUSY), never the
+    // 5 s busy_timeout: the caller reports it, and the next open retries.
+    return workspace.immediateTransaction(provision, opts.busyTimeoutMs ?? PROVISION_BUSY_TIMEOUT_MS)
   }
 
   /**
@@ -909,7 +931,7 @@ export class OwnerIdentityService {
   async sweepEnvelopeMigration(
     opts: {
       skip?: (filePath: string) => Promise<boolean>
-      provision?: (workspace: AdfWorkspace) => { keysGenerated: boolean; sealed: number }
+      provision?: (workspace: AdfWorkspace, opts: { busyTimeoutMs: number }) => { keysGenerated: boolean; sealed: number }
     } = {},
   ): Promise<EnvelopeSweepResult> {
     const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [] }
@@ -935,6 +957,13 @@ export class OwnerIdentityService {
           result.skipped.push(filePath)
           continue
         }
+        // Another connection is writing it: opening would block in the open's
+        // own writes for up to 5 s. A named failure, retried at the next boot
+        // or open.
+        if (!AdfDatabase.writeLockFree(filePath, SWEEP_BUSY_TIMEOUT_MS)) {
+          result.failures.push(`${filePath}: busy (another connection is writing it)`)
+          continue
+        }
         const workspace = AdfWorkspace.open(filePath)
         try {
           if (workspace.isPasswordProtected()) continue
@@ -945,7 +974,8 @@ export class OwnerIdentityService {
             !workspace.hasUnsealedSecrets()
           ) continue
           if (!reviewedIds.has(workspace.getAgentConfig().id)) continue
-          const { keysGenerated, sealed } = opts.provision ? opts.provision(workspace) : this.ensureWorkspaceIdentity(workspace)
+          const busy = { busyTimeoutMs: SWEEP_BUSY_TIMEOUT_MS }
+          const { keysGenerated, sealed } = opts.provision ? opts.provision(workspace, busy) : this.ensureWorkspaceIdentity(workspace, busy)
           if (keysGenerated) result.provisioned++
           result.sealed += sealed
         } finally {

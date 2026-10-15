@@ -296,6 +296,61 @@ describe('ensureWorkspaceIdentity: atomic per file (W5-G)', () => {
   })
 })
 
+describe('ensureWorkspaceIdentity: no write lock on the open of a provisioned file (W5-G re-review)', () => {
+  /** Another connection holding the file's write lock (RESERVED) until released. */
+  function holdWriteLock(filePath: string): { release(): void } {
+    const other = AdfWorkspace.open(filePath)
+    const raw = (other.getDatabase() as unknown as { db: { exec(sql: string): unknown } }).db
+    raw.exec('BEGIN IMMEDIATE')
+    return { release() { try { raw.exec('ROLLBACK') } finally { other.close() } } }
+  }
+
+  it('an already provisioned file opens while another connection writes it: no lock taken, no wait', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const first = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    expect(svc.ensureWorkspaceIdentity(first).keysGenerated).toBe(true)
+    first.close()
+    // Opened first (the open's own maintenance writes are not under test), then another connection starts writing.
+    const ws = AdfWorkspace.open(filePath)
+    const lock = holdWriteLock(filePath)
+    try {
+      ;(ws.getDatabase() as unknown as { db: { pragma(s: string): unknown } }).db.pragma('busy_timeout = 0')
+      const t0 = performance.now()
+      expect(svc.ensureWorkspaceIdentity(ws)).toEqual({ keysGenerated: false, sealed: 0 })
+      expect(performance.now() - t0).toBeLessThan(1_000)
+      expect(ws.getSigningKeys(null)).not.toBeNull()
+    } finally {
+      ws.close()
+      lock.release()
+    }
+  })
+
+  it('the sweep against a file another connection is writing fails fast, named in its log line', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    settings.set('reviewedAgents', { [ws.getAgentConfig().id]: 'accepted' })
+    ws.close()
+    const lock = holdWriteLock(filePath)
+    try {
+      const t0 = performance.now()
+      const sweep = await svc.sweepEnvelopeMigration()
+      expect(performance.now() - t0).toBeLessThan(2_000)
+      expect(sweep.provisioned).toBe(0)
+      expect(sweep.failures).toHaveLength(1)
+      expect(sweep.failures[0]).toMatch(/agent-1[.]adf: busy/)
+      expect(describeEnvelopeSweep(sweep, performance.now() - t0)).toContain(filePath)
+    } finally {
+      lock.release()
+    }
+    // Retried at the next sweep (or open): provisioned then.
+    expect((await svc.sweepEnvelopeMigration()).provisioned).toBe(1)
+  })
+})
+
 describe('review gating (mintKeys) + claimWorkspace (spec D11)', () => {
   it('mintKeys: false is unlock-only — an unreviewed file is not mutated', () => {
     const settings = makeSettings()

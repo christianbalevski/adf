@@ -886,9 +886,9 @@ export class DaemonIdentity {
     if (!this.isReady()) return { provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true }
     return this.service.sweepEnvelopeMigration({
       skip,
-      provision: (workspace) => {
+      provision: (workspace, busy) => {
         this.unlockWithLocalRuntimeKeys(workspace)
-        const result = this.service.ensureWorkspaceIdentity(workspace)
+        const result = this.service.ensureWorkspaceIdentity(workspace, busy)
         this.reconcileTrustedSlot(workspace)
         return result
       },
