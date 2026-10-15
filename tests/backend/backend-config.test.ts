@@ -197,6 +197,29 @@ describe('Settings → Backend store', () => {
     expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('embedded')
   })
 
+  it('once a switch\'s restart has started, a mode change or a switch action is refused and nothing is saved (W5-F)', async () => {
+    let restarting: string | null = null
+    const cancels: string[] = []
+    const path = tempConfigPath()
+    const rec = recordingLog()
+    const s = createBackendSettingsStore({
+      boot: resolveBootBackend(path, {}, rec.log), codec: fakeCodec(), log: rec.log,
+      confirmModeSwitch: async () => true,
+      applyModeSwitch: (target) => { restarting = `Studio is restarting into ${target}. Nothing changed.` },
+      cancelSwitch: () => { cancels.push('cancel'); return null },
+      restarting: () => restarting,
+    })
+    await s.set({ mode: 'local' })
+    expect(await s.set({ mode: 'embedded' })).toEqual({ ok: false, code: 'restarting', error: 'Studio is restarting into local. Nothing changed.' })
+    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: false, code: 'restarting' })
+    expect(await s.set({ switchAction: 'cancel' })).toMatchObject({ ok: false, code: 'restarting' })
+    expect(await s.set({ switchAction: 'finish-now' })).toMatchObject({ ok: false, code: 'restarting' })
+    expect(cancels).toEqual([])
+    expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('local')
+    // Other settings still save.
+    expect(await s.set({ keepDaemonRunning: true })).toMatchObject({ ok: true })
+  })
+
   it('a switch to remote goes through the switch dialog and the restart, as every switch (W4-B on W4-A)', async () => {
     const asked: string[] = []
     const restarted: string[] = []

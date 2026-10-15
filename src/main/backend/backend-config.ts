@@ -461,6 +461,8 @@ export function createBackendSettingsStore(deps: {
   finishSwitchNow?: () => string | null
   /** Stop waiting; the target it was waiting for, or null when none waits. */
   cancelSwitch?: () => StudioBackendMode | null
+  /** Once a switch's restart has started: the refusal for any later mode change or switch action. */
+  restarting?: () => string | null
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
@@ -473,6 +475,12 @@ export function createBackendSettingsStore(deps: {
   const save = async (input: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
     const { switchAction, ...rest } = input
+    // Studio is restarting into a switch already: a mode change or a switch action now would not apply (nor be undone).
+    const restarting = deps.restarting?.() ?? null
+    if (restarting && (switchAction !== undefined || (rest.mode !== undefined && rest.mode !== current.mode))) {
+      log.warn(`[Backend] Settings → Backend change refused: ${restarting}`)
+      return { ok: false, code: 'restarting', error: restarting }
+    }
     let patch: BackendSettingsPatch = rest
     if (switchAction !== undefined) {
       if (switchAction === 'finish-now') {

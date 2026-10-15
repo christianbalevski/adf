@@ -239,6 +239,8 @@ interface ResumeRecord { v: 1; from: StudioBackendMode; to: StudioBackendMode; a
 export function createModeSwitcher(ctx: SwitchContext) {
   let choice: { target: StudioBackendMode; wait: boolean; agents: string[] } | null = null
   let pending: { target: StudioBackendMode; gaveUp: boolean; waitingFor: () => string[]; finish: () => void; cancel: () => void } | null = null
+  /** Set once a restart has started (now, or a waiting switch finished): no later switch or cancel can change it. */
+  let restarting: StudioBackendMode | null = null
 
   const confirm = async (target: StudioBackendMode): Promise<boolean> => {
     const plan = await planHandover(target as HandoverTarget, handoverDeps(ctx.userDataDir, { chooseSession: undefined }))
@@ -321,15 +323,20 @@ export function createModeSwitcher(ctx: SwitchContext) {
   }
 
   const apply = (target: StudioBackendMode): string => {
+    if (restarting) {
+      console.warn(`[Backend] Switch to ${target} refused: Studio is already restarting into ${restarting}`)
+      return restartingMessage(restarting)
+    }
     // A switch still waiting for its turns is replaced: the latest choice wins, and its poll must not restart Studio too.
     if (pending) {
       console.log(`[Backend] Switch to ${pending.target} replaced by a switch to ${target}`)
       pending.cancel()
     }
-    const chosen =choice?.target === target ? choice : { target, wait: false, agents: resumesAgents(ctx.activeMode, target) ? ctx.agentActivity().map((a) => a.filePath) : [] }
+    const chosen = choice?.target === target ? choice : { target, wait: false, agents: resumesAgents(ctx.activeMode, target) ? ctx.agentActivity().map((a) => a.filePath) : [] }
     choice = null
     const record: ResumeRecord = { v: 1, from: ctx.activeMode, to: target, agents: chosen.agents, at: new Date().toISOString() }
     const restart = async (): Promise<void> => {
+      restarting = target
       try {
         await writeJsonAtomicAsync(join(ctx.userDataDir, SWITCH_RESUME_FILE), record)
       } catch (err) {
@@ -366,6 +373,9 @@ export function createModeSwitcher(ctx: SwitchContext) {
     return `Studio restarts once the turns in flight finish (${busyNames().join(', ')}).`
   }
 
+  /** The mode Studio is restarting into, once a restart has started; null before. */
+  const restartingInto = (): StudioBackendMode | null => restarting
+
   /** A switch waiting for turns in flight (Settings → Backend shows it with its two buttons). */
   const pendingSwitch = (): { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null =>
     pending ? { target: pending.target, waitingFor: pending.waitingFor(), gaveUp: pending.gaveUp } : null
@@ -380,6 +390,10 @@ export function createModeSwitcher(ctx: SwitchContext) {
 
   /** "Cancel Switch": stop waiting. The caller saves the running mode again. */
   const cancel = (): StudioBackendMode | null => {
+    if (restarting) {
+      console.warn(`[Backend] Cancel Switch refused: Studio is already restarting into ${restarting}`)
+      return null
+    }
     if (!pending) return null
     const target = pending.target
     console.log(`[Backend] Switch to ${target} cancelled by the user; this mode stays`)
@@ -387,7 +401,12 @@ export function createModeSwitcher(ctx: SwitchContext) {
     return target
   }
 
-  return { confirm, apply, pendingSwitch, finishNow, cancel }
+  return { confirm, apply, pendingSwitch, finishNow, cancel, restartingInto }
+}
+
+/** Settings → Backend's refusal of a switch, a cancel or a mode save once the restart has started. */
+export function restartingMessage(target: StudioBackendMode): string {
+  return `Studio is restarting into ${MODE_LABELS[target]}. Nothing changed.`
 }
 
 function notify(body: string): void {
@@ -418,8 +437,13 @@ export async function resumeSwitchedAgents(
     return
   }
   const stale = !record || record.v !== 1 || !Array.isArray(record.agents) || !(Date.now() - Date.parse(record.at) <= RESUME_MAX_AGE_MS)
-  // A launch in another mode (a session-only override) leaves the record for the switch's own launch.
-  if (!stale && record!.to !== mode) return
+  // A launch in another mode (a session-only override) leaves the record for the switch's own launch; said, never silent.
+  if (!stale && record!.to !== mode) {
+    const names = agentNames(record!.agents)
+    console.log(`[Backend] Not resuming the agents of the switch to ${record!.to}: this launch runs ${mode}${names.length ? ` (not started: ${names.join(', ')})` : ''}; ${file} is kept for a launch in ${record!.to}`)
+    if (names.length > 0) notify(`Not started after the switch: ${names.join(', ')}. The switch was to ${MODE_LABELS[record!.to] ?? record!.to}, but Studio runs ${MODE_LABELS[mode]}.`)
+    return
+  }
   await fsp.unlink(file).catch(() => {})
   if (!record || stale) {
     console.log(`[Backend] Not resuming the agents of a switch: the record ${file} is malformed or older than ${RESUME_MAX_AGE_MS / 60_000} min`)

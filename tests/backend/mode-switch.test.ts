@@ -46,6 +46,7 @@ process.env.ADF_KEYCHAIN = '0'
 const {
   askVersionMismatch,
   createModeSwitcher,
+  restartingMessage,
   resumeSwitchedAgents,
   SESSION_BACKEND_ARG,
   sessionBackendEnv,
@@ -293,11 +294,29 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))).toMatchObject({ from: 'embedded', to: 'remote', agents: [] })
   })
 
-  it('a launch in another mode (a session-only override) leaves the record for the switch\'s own launch', async () => {
-    writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'embedded', to: 'local', agents: [agent1], at: new Date().toISOString() }))
+  it('a launch in another mode (a session-only override) leaves the record for the switch\'s own launch, and says which agents did not start', async () => {
+    writeFileSync(join(dir, SWITCH_RESUME_FILE), JSON.stringify({ v: 1, from: 'embedded', to: 'local', agents: [agent1, agent2], at: new Date().toISOString() }))
     const start = vi.fn()
     await resumeSwitchedAgents('embedded', dir, start)
     expect(start).not.toHaveBeenCalled()
     expect(existsSync(join(dir, SWITCH_RESUME_FILE))).toBe(true)
+    expect(h.notifications).toEqual(['Not started after the switch: agent-1, agent-2. The switch was to Local daemon, but Studio runs Embedded.'])
+  })
+
+  it('once the restart has started, a later switch or Cancel Switch is refused and changes nothing (W5-F)', async () => {
+    const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: true }])
+    h.responses.push(0)
+    await s.confirm('local')
+    s.apply('local')
+    expect(s.restartingInto()).toBeNull()
+    expect(s.finishNow()).toBe('Studio restarts now.')
+    expect(s.restartingInto()).toBe('local')
+    expect(s.cancel()).toBeNull()
+    expect(s.apply('remote')).toBe(restartingMessage('local'))
+    expect(restartingMessage('local')).toBe('Studio is restarting into Local daemon. Nothing changed.')
+    await vi.waitFor(() => expect(relaunched).toEqual(['local']))
+    await new Promise((r) => setTimeout(r, 1200))
+    expect(relaunched).toEqual(['local'])
+    expect(JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))).toMatchObject({ to: 'local' })
   })
 })
