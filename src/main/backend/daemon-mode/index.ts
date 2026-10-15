@@ -26,6 +26,7 @@ import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
 import { REMOTE_MODE_HANDLERS } from './remote/handlers'
+import { REMOTE_WAITING_PREFIX } from './remote/connector'
 import { OAuthCallbackRelay } from './remote/oauth-relay'
 import { RemotePicker } from './remote/picker'
 import { uploadFile, type RemoteServices } from './remote/services'
@@ -168,7 +169,36 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     },
     { logFile: deps.connect.logFile },
   )
-  const connection = new DaemonConnection(connect, log, deps.fetch)
+  // Remote mode: a 401 after connecting (the server's token changed) is the
+  // "refused the token" sentence and ends the connection; retrying could not
+  // help (W4-B review). /health carries no token and is not counted.
+  let unauthorized = false
+  const onUnauthorized = (): void => {
+    if (unauthorized) return
+    unauthorized = true
+    const url = connection.baseUrl ?? 'the remote daemon'
+    log.error(`[Backend] The ADF daemon at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
+    connection.markFailed(`The ADF daemon at ${url} refused the token. Run adf daemon token on the server and save the result in Settings → Backend.`)
+    bridge.failTurns('disconnected')
+    void clientSession?.end().catch(() => {})
+  }
+  const baseFetch: typeof fetch = deps.fetch ?? ((input, init) => fetch(input, init))
+  const connectionFetch: typeof fetch | undefined = deps.mode !== 'remote' ? deps.fetch : (async (input: string | URL | Request, init?: RequestInit) => {
+    const res = await baseFetch(input, init)
+    if (res.status === 401 && !unauthorized) {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url)
+      if (connection.baseUrl && url.origin === new URL(connection.baseUrl).origin && url.pathname !== '/health') onUnauthorized()
+    }
+    return res
+  }) as typeof fetch
+  const connection = new DaemonConnection(connect, log, connectionFetch)
+  // Remote mode, unreachable at launch: the connector retries (remote/connector.ts); say so once.
+  let waitingNoticed = false
+  connection.onState((state) => {
+    if (deps.mode !== 'remote' || waitingNoticed || state.state !== 'connecting' || !state.progress?.startsWith(REMOTE_WAITING_PREFIX)) return
+    waitingNoticed = true
+    statusUi.notice(`${state.progress.split(':')[0]}: Studio keeps trying.`)
+  })
   // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
   const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })
 
@@ -323,7 +353,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       void dialog.showMessageBox({
         type: 'warning',
         message: 'Studio has no ADF daemon to reconnect to.',
-        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${RECOVERY_HINT}`,
+        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
         buttons: ['OK'],
       }).catch(() => {})
       return

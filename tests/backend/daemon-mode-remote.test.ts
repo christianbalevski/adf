@@ -336,3 +336,12 @@ describe('RemotePicker', () => {
     }
   })
 })
+
+// Last: it ends the shared connection.
+describe('remote connection: a 401 after connecting', () => {
+  it('is the refused-token sentence and ends the connection (no endless retry)', async () => {
+    daemon.routes.set('GET /tracked-dirs', () => ({ status: 401, body: { error: 'Unauthorized' } }))
+    await expect(invoke(IPC.TRACKED_DIRS_GET)).rejects.toThrow()
+    expect(handle.connection.state).toMatchObject({ state: 'failed', message: expect.stringMatching(/refused the token\. Run adf daemon token on the server/) })
+  })
+})

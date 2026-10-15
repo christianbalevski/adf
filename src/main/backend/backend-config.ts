@@ -170,11 +170,10 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
       }
     }
   }
-  if (config.mode === 'remote' && !config.remote.url) {
-    warnings.push('mode is remote but there is no usable remote.url; using embedded')
-    config.mode = 'embedded'
-    dropped.push('the remote mode, which had no usable daemon URL')
-  }
+  // Mode remote without a usable URL stays remote: the connector refuses it
+  // with a dialog that points at Settings → Backend. Falling back to embedded
+  // here would autostart this computer's agents without a word (W4-B review).
+  if (config.mode === 'remote' && !config.remote.url) warnings.push('mode is remote but there is no usable remote.url; Studio will say so at launch')
   return { config, warnings, dropped }
 }
 
@@ -232,13 +231,14 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   if (dropped.length > 0) notices.push(`studio-backend.json: ignored ${dropped.join('; ')}.`)
 
   let mode = config.mode
-  // The file asks for remote, but its URL may not be used: embedded for this
-  // launch, logged and shown in Settings → Backend (never silent).
+  // The file asks for remote, but its URL may not be used. Studio still boots
+  // remote, runs no agents, and the remote connector refuses with a dialog
+  // naming the reason (W4-B review: no silent embedded boot, which would
+  // autostart this computer's agents). Settings → Backend shows it too.
   const refusal = config.mode === 'remote' ? remoteTransportRefusal(config) : null
   if (refusal) {
-    log.warn(`[Backend] ${configPath}: mode is remote, but ${refusal} Using embedded for this launch.`)
-    notices.push(`Studio started in embedded mode because the remote daemon cannot be used: ${refusal}`)
-    mode = 'embedded'
+    log.warn(`[Backend] ${configPath}: mode is remote, but ${refusal} Studio will not connect until it is fixed.`)
+    notices.push(`The remote daemon cannot be used: ${refusal}`)
   }
   let source: StudioBackendSource = file.found ? 'file' : 'default'
   const override = env[BACKEND_ENV_OVERRIDE]?.trim().toLowerCase()

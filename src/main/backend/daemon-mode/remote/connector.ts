@@ -124,6 +124,18 @@ export interface HandshakeOptions {
   timeoutMs?: number
 }
 
+/** A daemon that is not there yet (server booting, tunnel or tailnet still coming up) is retried; anything else is a configuration problem. */
+const RETRIED: ReadonlySet<RemoteConnectProblem> = new Set(['unreachable', 'proxy'])
+
+export interface RemoteConnectorOptions extends HandshakeOptions {
+  /** Backoff between attempts while the daemon cannot be reached: from `initialMs`, doubling up to `maxMs`. */
+  retry?: { initialMs?: number; maxMs?: number; maxAttempts?: number }
+  sleep?: (ms: number) => Promise<void>
+}
+
+/** The progress line while Studio waits for an unreachable remote daemon (index.ts notifies once on it). */
+export const REMOTE_WAITING_PREFIX = 'Waiting for the remote ADF daemon'
+
 /**
  * GET /health (no token), then GET /version with the token: the daemon is
  * there, accepts the token, and speaks Studio's client API. Resolves with
@@ -178,13 +190,29 @@ export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCo
   return { url: check.url, token }
 }
 
-export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec, opts: HandshakeOptions = {}): DaemonConnector {
+export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec, opts: RemoteConnectorOptions = {}): DaemonConnector {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   return Object.assign(async (progress: (text: string) => void) => {
     const checked = remoteConfigProblem(config, codec)
     if ('error' in checked) throw checked.error
     const { url, token } = checked
     progress(`Connecting to the remote ADF daemon at ${url}…`)
-    const info = await remoteHandshake(url, token, opts)
+    // An unreachable daemon at launch is retried with backoff (W4-B review);
+    // a wrong token, TLS error, version or address problem ends the attempt.
+    let delay = opts.retry?.initialMs ?? 2_000
+    const maxDelay = opts.retry?.maxMs ?? 30_000
+    let info: DaemonVersion
+    for (let attempt = 1; ; attempt++) {
+      try {
+        info = await remoteHandshake(url, token, opts)
+        break
+      } catch (err) {
+        if (!(err instanceof RemoteConnectError) || !RETRIED.has(err.problem) || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw err
+        progress(`${REMOTE_WAITING_PREFIX} at ${url} (attempt ${attempt}; next in ${Math.round(delay / 1000)} s): ${err.message}`)
+        await sleep(delay)
+        delay = Math.min(maxDelay, delay * 2)
+      }
+    }
     return {
       baseUrl: url,
       logFile: null,

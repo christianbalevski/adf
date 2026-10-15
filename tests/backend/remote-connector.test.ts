@@ -66,7 +66,7 @@ async function listen(server: Server): Promise<number> {
 
 async function connectError(config: StudioBackendConfig, fetchImpl?: typeof fetch): Promise<RemoteConnectError> {
   try {
-    await remoteDaemonConnector(config, codec, { fetch: fetchImpl, timeoutMs: 3000 })(() => {})
+    await remoteDaemonConnector(config, codec, { fetch: fetchImpl, timeoutMs: 3000, retry: { maxAttempts: 1 } })(() => {})
   } catch (err) {
     expect(err).toBeInstanceOf(RemoteConnectError)
     expect(String((err as Error).message)).not.toContain(TOKEN)
@@ -156,6 +156,31 @@ describe('version handshake and its failures', () => {
     expect(endpoint.source.localProof).toBeUndefined()
     expect(endpoint.source.refresh).toBeUndefined()
     expect(endpoint.source.token()).toBe(TOKEN)
+  })
+
+  it('an unreachable daemon at launch is retried with backoff until it answers; a wrong token is not retried', async () => {
+    const seen: Seen[] = []
+    const server = createHttpServer(daemonHandler(seen))
+    const port = await listen(server)
+    await new Promise<void>((done) => server.close(() => done()))
+    servers.pop()
+    const progress: string[] = []
+    const sleeps: number[] = []
+    const connect = remoteDaemonConnector(remoteConfig(`http://127.0.0.1:${port}`), codec, {
+      timeoutMs: 2000,
+      sleep: async (ms) => {
+        sleeps.push(ms)
+        // The daemon comes up after the third failed attempt.
+        if (sleeps.length === 3) { const up = createHttpServer(daemonHandler(seen)); servers.push(up); await new Promise<void>((r) => up.listen(port, '127.0.0.1', () => r())) }
+      },
+    })
+    const endpoint = await connect((p) => progress.push(p))
+    expect(endpoint.baseUrl).toBe(`http://127.0.0.1:${port}`)
+    expect(sleeps).toEqual([2000, 4000, 8000])
+    expect(progress.filter((p) => p.startsWith('Waiting for the remote ADF daemon'))).toHaveLength(3)
+
+    const wrong = remoteDaemonConnector(remoteConfig(`http://127.0.0.1:${port}`, { token: 'tok_wrong_wrong_wrong_wrong_wrong_wrong' }), codec, { sleep: async () => { throw new Error('a wrong token must not be retried') } })
+    await expect(wrong(() => {})).rejects.toMatchObject({ problem: 'unauthorized' })
   })
 
   it('a wrong token', async () => {

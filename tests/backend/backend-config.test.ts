@@ -257,20 +257,21 @@ describe('review fixes', () => {
     expect(samePath.ok && samePath.config.remote.allowInsecureHttp).toBe(true)
   })
 
-  it('never boots remote or hands out the token for an unconfirmed plain-http URL from the file, and says so', () => {
+  it('never hands out the token for an unconfirmed plain-http URL from the file; boots remote (no silent embedded autostart) and says so', () => {
     const path = tempConfigPath()
     writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc' } }))
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    expect(boot.mode).toBe('embedded')
+    // W4-B review: remote, so the connector refuses with a dialog; embedded would autostart this computer's agents.
+    expect(boot.mode).toBe('remote')
     // Kept (Settings shows it, a save keeps it), never used.
     expect(boot.config.remote).toEqual({ url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false })
     expect(readRemoteToken(boot.config, fakeCodec())).toBeNull()
     expect(lines.some((l) => l.includes('not used until confirmed'))).toBe(true)
     expect(lines.some((l) => l.includes('mode is remote'))).toBe(true)
-    // W0-E follow-up: the fallback is visible in Settings → Backend.
+    // W0-E follow-up: the refusal is visible in Settings → Backend (and the connector's dialog).
     const view = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log }).get()
-    expect(view.active.notices.join(' ')).toMatch(/started in embedded mode.*192\.168\.1\.5/)
+    expect(view.active.notices.join(' ')).toMatch(/remote daemon cannot be used.*192\.168\.1\.5/)
     expect(view.remoteUrlProblem).toMatch(/not confirmed/)
     expect(view.configured).toMatchObject({ mode: 'remote', remoteUrl: 'http://192.168.1.5:7385', remoteTokenSaved: true, allowInsecureHttp: false })
   })
@@ -288,7 +289,7 @@ describe('review fixes', () => {
     const path = tempConfigPath()
     writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'ftp://adf.example.com' } }))
     const boot = resolveBootBackend(path, {}, recordingLog().log)
-    expect(boot.mode).toBe('embedded')
+    expect(boot.mode).toBe('remote')
     const s = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log })
     expect(s.get().active.notices.join(' ')).toMatch(/ignored the remote daemon URL/)
     const first = await s.set({ keepDaemonRunning: true })
