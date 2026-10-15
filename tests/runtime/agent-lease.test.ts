@@ -403,6 +403,39 @@ describe('agent lease across processes', () => {
     expect(existsSync(`${file}.takeover`)).toBe(false)
   }, 30_000)
 
+  it('a takeover lock whose live holder dies during the wait is taken in that same wait', async () => {
+    const leases = tempDir('adf-lease-lock-dies-')
+    const work = tempDir('adf-lease-lock-dies-work-')
+    const { filePath } = seedAgent(work, 'agent-1', false)
+    const gone = spawnSleeper()
+    killTree(gone.pid!)
+    await waitForExit(gone)
+    const canonical = await canonicalLeasePath(filePath)
+    const file = join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`)
+    writeFileSync(file, JSON.stringify({
+      v: 1, path: canonical, agentId: null, acquiredAt: 1,
+      holder: { kind: 'daemon', pid: gone.pid, runtimeId: 'gone', hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint: null },
+    }))
+    // The lock's holder runs (no endpoint: its pid alone says live), then dies.
+    const holder = spawnSleeper()
+    const old = new Date(Date.now() - 60_000)
+    writeFileSync(`${file}.takeover`, JSON.stringify({ pid: holder.pid, runtimeId: 'unknown', endpoint: null, at: 1 }))
+    utimesSync(`${file}.takeover`, old, old)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const started = Date.now()
+    const taking = registry(leases).acquire(filePath)
+    await new Promise((r) => setTimeout(r, 300))
+    killTree(holder.pid!)
+    await waitForExit(holder)
+    const result = await taking
+    const elapsed = Date.now() - started
+    vi.restoreAllMocks()
+    expect(result.ok).toBe(true)
+    // Within the first 2 s wait (TAKEOVER_LOCK_WAIT_MS), not after it ran out.
+    expect(elapsed).toBeLessThan(1900)
+  }, 30_000)
+
   it('a taker whose event loop is blocked (not awaiting) keeps its takeover lock: one holder', async () => {
     const leases = tempDir('adf-lease-blocked-')
     const work = tempDir('adf-lease-blocked-work-')

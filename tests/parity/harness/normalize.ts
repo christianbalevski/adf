@@ -112,11 +112,11 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const named = ctx.named
     .filter((n): n is { value: string; name: string } => typeof n.value === 'string' && n.value.length > 0)
     .sort((a, b) => b.value.length - a.value.length)
-  // A named value under the run root is named whole, before R1 rewrites its
-  // root: the lease endpoint is `<root>/leases/hosts/<runtimeId>.sock` on
-  // macOS and Linux (a named pipe outside the root on Windows), and is
-  // `<lease-endpoint:ROLE>` on every platform.
-  const rootedNamed = named.filter((n) => ctx.rootSpellings.some((r) => n.value.includes(r.spelling)))
+  // A lease endpoint is named whole, before R1 rewrites its root: it is
+  // `<root>/leases/hosts/<runtimeId>.sock` on macOS and Linux (a named pipe
+  // outside the root on Windows), and `<lease-endpoint:ROLE>` on every
+  // platform. Every other named value keeps R1 first.
+  const rootedNamed = named.filter((n) => n.name.startsWith('lease-endpoint:') && ctx.rootSpellings.some((r) => n.value.includes(r.spelling)))
 
   // Rule R8 — wall-clock instants inside the run window: epoch-ms numbers,
   // 13-digit epoch-ms runs inside strings (`session-1791991172180`),
@@ -478,9 +478,10 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
  * still compared with separators, spellings and sockets intact.
  *
  * Rule G2 — on macOS the application menu (Menu.setApplicationMenu) is put
- * in its Windows and Linux form (menu.ts): the app menu goes, and its
- * Settings… and Quit return to the end of Edit and File; Window loses
- * "Bring All to Front". Every other item is compared as recorded.
+ * in its Windows and Linux form (menu.ts), after checking the app menu's
+ * exact shape: its recorded Settings… and Quit move to the end of Edit and
+ * File; Window loses "Bring All to Front" (darwinMenuInOtherForm). Every
+ * other item is compared as recorded.
  */
 export function toGoldenForm(recording: ComparableRecording, platform: NodeJS.Platform = process.platform): ComparableRecording {
   if (platform === 'darwin') {
@@ -509,18 +510,47 @@ export function toGoldenForm(recording: ComparableRecording, platform: NodeJS.Pl
 
 type MenuShape = Record<string, unknown> & { label?: unknown; role?: unknown; type?: unknown; submenu?: unknown }
 
-/** Rule G2: a macOS application menu in the form menu.ts builds on Windows and Linux. */
+const SEPARATOR: MenuShape = { type: 'separator' }
+/** The macOS app menu exactly as menu.ts builds it (as the parity fake records it). */
+export const DARWIN_APP_SUBMENU: readonly MenuShape[] = [
+  { role: 'about' }, SEPARATOR,
+  { label: 'Settings…', accelerator: 'Cmd+,' }, SEPARATOR,
+  { role: 'services' }, SEPARATOR,
+  { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, SEPARATOR,
+  { role: 'quit' },
+]
+
+const canonical = (value: unknown): string => JSON.stringify(value, (_k, v: unknown) =>
+  v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v)
+
+/**
+ * Rule G2: a macOS application menu in the form menu.ts builds on Windows
+ * and Linux. Only the exact app menu (DARWIN_APP_SUBMENU) with File, Edit
+ * and a Window menu ending in "Bring All to Front" is converted: its recorded
+ * Settings… item moves to the end of Edit (accelerator Cmd+, becomes Ctrl+,),
+ * its recorded Quit to the end of File, each after a separator, and Window's
+ * last separator and Bring All to Front go. Any other shape is returned as
+ * recorded, so it shows as a difference.
+ */
 export function darwinMenuInOtherForm(items: MenuShape[]): MenuShape[] {
-  const [first, ...rest] = items
-  const isAppMenu = !!first && Array.isArray(first.submenu) && (first.submenu as MenuShape[]).some((i) => i.role === 'about')
-  if (!isAppMenu) return items
+  const [app, ...rest] = items
+  if (!app || typeof app.label !== 'string' || !Array.isArray(app.submenu)) return items
+  const appItems = app.submenu as MenuShape[]
+  if (canonical(appItems) !== canonical(DARWIN_APP_SUBMENU)) return items
+  const settings = appItems.find((i) => i.label === 'Settings…')!
+  const quit = appItems.find((i) => i.role === 'quit')!
+  const sub = (label: string) => {
+    const menu = rest.find((m) => m.label === label)
+    return menu && Array.isArray(menu.submenu) ? (menu.submenu as MenuShape[]) : null
+  }
+  const file = sub('File')
+  const edit = sub('Edit')
+  const win = sub('Window')
+  if (!file || !edit || !win || win.length < 2 || canonical(win.slice(-2)) !== canonical([SEPARATOR, { role: 'front' }])) return items
   return rest.map((menu) => {
-    const sub = Array.isArray(menu.submenu) ? (menu.submenu as MenuShape[]) : null
-    if (!sub) return menu
-    if (menu.label === 'File') return { ...menu, submenu: [...sub, { type: 'separator' }, { role: 'quit' }] }
-    if (menu.label === 'Edit') return { ...menu, submenu: [...sub, { type: 'separator' }, { label: 'Settings…', accelerator: 'Ctrl+,' }] }
-    const n = sub.length
-    if (menu.label === 'Window' && n >= 2 && sub[n - 1].role === 'front' && sub[n - 2].type === 'separator') return { ...menu, submenu: sub.slice(0, -2) }
+    if (menu.label === 'File') return { ...menu, submenu: [...file, SEPARATOR, quit] }
+    if (menu.label === 'Edit') return { ...menu, submenu: [...edit, SEPARATOR, { ...settings, accelerator: 'Ctrl+,' }] }
+    if (menu.label === 'Window') return { ...menu, submenu: win.slice(0, -2) }
     return menu
   })
 }

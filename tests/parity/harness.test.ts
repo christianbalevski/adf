@@ -49,6 +49,19 @@ function norm(value: unknown): unknown {
 }
 
 describe('parity harness: normalizer', () => {
+  it('names a lease endpoint under the root whole (POSIX sockets); any other named value keeps R1 first', () => {
+    const sep = WIN ? '\\' : '/'
+    const endpoint = `${ROOT}${sep}leases${sep}hosts${sep}0123456789abcdef.sock`
+    const other = `${ROOT}${sep}agents${sep}agent-1.adf`
+    const withNamed: NormalizationContext = {
+      ...ctx,
+      named: [...ctx.named, { value: endpoint, name: 'lease-endpoint:studio-embedded' }, { value: other, name: 'not-an-endpoint' }],
+    }
+    const n = (v: string) => normalizeRecording(rec({ ch: [v] }), withNamed).pushes.ch[0]
+    expect(n(endpoint)).toBe('<lease-endpoint:studio-embedded>')
+    expect(n(other)).toBe(`<ROOT>${sep}agents${sep}agent-1.adf`)
+  })
+
   it('R1 gives each root spelling its own token, exact case only', () => {
     const sep = WIN ? '\\' : '/'
     expect(norm(`${ROOT}${sep}agents${sep}agent-1.adf`)).toBe(`<ROOT>${sep}agents${sep}agent-1.adf`)
