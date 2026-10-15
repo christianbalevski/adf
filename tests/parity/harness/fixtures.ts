@@ -65,6 +65,8 @@ export interface FixtureSpec {
   mcpServers?: ReadonlyArray<Record<string, unknown>>
   /** Default true. False: not in reviewedAgents, so opening it asks for a review. */
   reviewed?: boolean
+  /** Trigger entries replacing the defaults of the same name (`config.triggers`), e.g. an `on_inbox` with a debounce. */
+  triggers?: Record<string, unknown>
 }
 
 export interface FixtureAgent {
@@ -98,6 +100,7 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
         if (tool) Object.assign(tool, { enabled: true, visible: true })
         else config.tools.push({ name, enabled: true, visible: true })
       }
+      if (spec.triggers) config.triggers = { ...config.triggers, ...spec.triggers } as typeof config.triggers
       if (spec.mcpServers) config.mcp = { ...config.mcp, servers: spec.mcpServers.map((server) => ({ ...server })) } as typeof config.mcp
       workspace.setAgentConfig(config)
       if (spec.ownerSealedKey) {

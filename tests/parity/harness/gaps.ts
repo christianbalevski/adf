@@ -66,8 +66,10 @@ const W3A_NO_AGENT = ['review-accept-foreign', 'template-create', 'delete', 'doc
 const W3F_RAN = ['w3f-write-conflicts'] as const
 /** An agent's own MCP OAuth sign-in (tests/parity/mcp/agent-oauth.test.ts): starts agent-1 and leaves it running. */
 const AGENT_OAUTH = ['w2c2-agent-mcp-oauth'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...AGENT_OAUTH] as const
-const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING, ...AGENT_OAUTH] as const
+/** The mesh scenario with a message between two running agents (tests/parity/mesh): leaves both running. */
+const MESH_MESSAGE = ['mesh-message-turn'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
+const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
 /** The mesh-status channels whose results carry fleet rows (MESH_STATUS, MESH_FLEET_STATUS, MESH_MAP_POLL). */
@@ -736,7 +738,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:mesh-foreground-handover',
     ws: 'mode',
-    scenarios: MESH,
+    scenarios: [...MESH, ...MESH_MESSAGE],
     path: 'MESH_EVENT: agent_left + agent_joined of the agent a FILE_OPEN moves to the background, agent_left at shutdown; their timeline lines and the step push watermarks they shift',
     what: 'Embedded unregisters the open agent from the mesh when another file opens and registers it again as a background agent (agent_left, agent_joined), and unregisters every agent on quit. In the daemon an agent has one registration whatever window shows it, and quitting Studio does not stop it (§8.3).',
     apply(d, e) {
@@ -930,7 +932,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:no-os-recent-documents',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH, ...MESH_MESSAGE],
     path: 'local calls: app.addRecentDocument',
     what: 'In remote mode an opened file is a path on the daemon\'s machine: it goes into Open Recent (client settings) but not into the OS recent documents, where the Windows shell may contact a UNC host (W4-B review).',
     apply(d, e) {

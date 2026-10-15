@@ -245,10 +245,33 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   // Numbered as `<turn-id#n>`; scoped to that row.
   const UPSERT_TABLE_ROWS = /^state\.adf\..*\.tables\.(adf_meta|adf_config|adf_files|adf_identity)\.rows$/
   const META_ROW_PATH =/^state\.adf\..*\.tables\.adf_meta\.rows\[\d+\]$/
+  // Rule R20 — mesh messages in the dumped .adf (`adf_inbox`, `adf_outbox`):
+  // the row `id` (random) and the message's `message_id` (random, the same
+  // in the sender's outbox and the receiver's inbox) are numbered as
+  // `<msg-row#n>` and `<message-id#n>`; inside `original_message` (the signed
+  // message as sent) the message id gets its number and each Ed25519
+  // signature becomes `<sig:message#n>`. A message signature signs content
+  // with a fresh timestamp and key, so it differs every run; whether the
+  // receiver verified it is in the row's `meta` (`message_verified`,
+  // `payload_verified`), which is compared as is. Scoped to those two tables.
+  const MESSAGE_ROW_PATH = /^state\.adf\..*\.tables\.adf_(inbox|outbox)\.rows\[\d+\]$/
+  const messageRow = (row: Record<string, unknown>): Record<string, unknown> => {
+    const out = { ...row }
+    const messageId = typeof row.message_id === 'string' && row.message_id ? row.message_id : null
+    if (typeof row.id === 'string') out.id = numbered('msg-row', row.id)
+    if (messageId) out.message_id = numbered('message-id', messageId)
+    if (typeof row.original_message === 'string') {
+      let s = row.original_message
+      if (messageId) s = s.split(`"id":"${messageId}"`).join(`"id":"${numbered('message-id', messageId)}"`)
+      out.original_message = s.replace(/ed25519:[A-Za-z0-9+/]{80,}={0,2}/g, (m) => numbered('sig:message', m))
+    }
+    return out
+  }
   const preprocessRow = (path: string, row: Record<string, unknown>): Record<string, unknown> => {
     if (META_ROW_PATH.test(path) && row.key === 'adf_runtime_turn_checkpoint' && typeof row.value === 'string') {
       return { ...row, value: row.value.replace(/"id":"([A-Za-z0-9_-]{10})"/, (_m, id: string) => `"id":"${numbered('turn-id', id)}"`) }
     }
+    if (MESSAGE_ROW_PATH.test(path)) return messageRow(row)
     return row
   }
 
