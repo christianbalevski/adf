@@ -63,7 +63,7 @@ export class ConnectionStatusUi {
 
   constructor(
     private readonly connection: DaemonConnection,
-    private readonly actions: { reconnect: () => void; openLog: () => void; recoveryHint: string; useEmbeddedForSession?: () => void },
+    private readonly actions: { reconnect: () => void; openLog: () => void; recoveryHint: string; useEmbeddedForSession?: () => void; openBackendSettings?: () => void },
     private readonly log: Log = console,
   ) {
     this.unsubscribe = connection.onState((state) => this.onState(state))
@@ -171,11 +171,12 @@ export class ConnectionStatusUi {
     }
   }
 
-  /** A failed launch: Reconnect (Studio restarts and tries again), embedded for this session, the log. */
+  /** A failed launch: Reconnect (Studio restarts and tries again), embedded for this session (local) or Settings → Backend (remote), the log. */
   private async showFailedDialog(message: string): Promise<void> {
     const logFile = this.connection.logFile
     const embedded = this.actions.useEmbeddedForSession
-    const buttons = ['Reconnect', ...(embedded ? ['Use Embedded for This Session'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
+    const settings = this.actions.openBackendSettings
+    const buttons = ['Reconnect', ...(embedded ? ['Use Embedded for This Session'] : []), ...(settings ? ['Open Settings → Backend'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
     try {
       const { response } = await dialog.showMessageBox({
         type: 'error',
@@ -189,6 +190,7 @@ export class ConnectionStatusUi {
       })
       if (buttons[response] === 'Reconnect') this.actions.reconnect()
       else if (buttons[response] === 'Use Embedded for This Session') embedded?.()
+      else if (buttons[response] === 'Open Settings → Backend') settings?.()
       else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
     } catch (err) {
       this.log.warn('[Backend] Could not show the connection failure dialog:', err)

@@ -418,11 +418,22 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log.log('[Backend] Reconnecting to the ADF daemon (requested)')
     clientSession.reconnect()
   }
-  /** After a failed launch: embedded for this launch only; the saved mode stays (§8.2 session-only). */
-  const useEmbeddedForSession = (): void => {
+  /**
+   * After a failed launch, local mode only: embedded for this launch only;
+   * the saved mode stays (§8.2 session-only). Not in remote mode: embedded
+   * Studio autostarts this computer's agents, which may run on the server
+   * too (two pollers of one bot, Telegram 409).
+   */
+  const useEmbeddedForSession = deps.mode === 'local' ? (): void => {
     log.log('[Backend] Use Embedded for This Session requested after a failed connection to the ADF daemon')
     relaunch.embeddedForSession('no ADF daemon could be reached at launch')
-  }
+  } : undefined
+  /** Remote mode, after a failed launch: Settings → Backend, where the URL and token are fixed and tested. */
+  const openBackendSettings = deps.mode === 'remote' ? (): void => {
+    log.log('[Backend] Opening Settings → Backend after a failed connection to the remote ADF daemon')
+    const win = hooks.showMainWindow?.() ?? BrowserWindow.getAllWindows()[0] ?? null
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.MENU_ACTION, 'open-settings-backend')
+  } : undefined
   initApplicationMenu(clientSettings, {
     logFile: () => connection.logFile,
     problem: () => connectionProblem(connection.state, connection.baseUrl),
@@ -430,10 +441,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
     useEmbeddedForSession,
-    canUseEmbedded: () => connection.state.state === 'failed',
+    openBackendSettings,
+    launchFailed: () => connection.state.state === 'failed',
     remoteRecents: deps.mode === 'remote',
   })
-  const statusUi = new ConnectionStatusUi(connection, { reconnect, useEmbeddedForSession, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
+  const statusUi = new ConnectionStatusUi(connection, { reconnect, useEmbeddedForSession, openBackendSettings, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
 
   const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
   let versionInfo: DaemonVersionInfo | null = null

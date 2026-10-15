@@ -16,6 +16,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 import { electronStub, helpLabels } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
+import { IPC } from '../../src/shared/constants/ipc-channels'
 
 const BASE = 'http://127.0.0.1:47386'
 const dirs: string[] = []
@@ -28,7 +29,7 @@ function helpItem(label: string): MenuItem | undefined {
   return help?.submenu?.find((i) => i.label === label)
 }
 
-function boot(connect: () => Promise<never> | Promise<unknown>) {
+function boot(connect: () => Promise<never> | Promise<unknown>, mode: 'local' | 'remote' = 'local') {
   const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-failed-'))
   dirs.push(dir)
   const daemon = createFakeDaemon(BASE)
@@ -37,7 +38,7 @@ function boot(connect: () => Promise<never> | Promise<unknown>) {
   const session = createFakeClientSession()
   const relaunches: string[] = []
   const handle = registerDaemonModeHandlers({
-    mode: 'local',
+    mode,
     userDataDir: dir,
     connect: Object.assign(connect as never, { logFile: join(dir, 'adf-daemon.log') }),
     leases: { registerClient: async () => {} },
@@ -76,6 +77,20 @@ describe('after a failed launch', () => {
     const { handle, relaunches } = boot(async () => { throw new Error('No ADF daemon answers.') })
     expect(await handle.ready).toBe(false)
     await vi.waitFor(() => expect(relaunches).toEqual(['embedded: no ADF daemon could be reached at launch']))
+  })
+
+  it('remote mode: Reconnect and Open Settings → Backend, never embedded (agents here may also run on the server)', async () => {
+    electronStub.calls.length = 0
+    electronStub.pushes.length = 0
+    electronStub.dialogResponse = 99
+    const { handle, relaunches } = boot(async () => { throw new Error('The remote ADF daemon at https://adf.example.test does not answer.') }, 'remote')
+    expect(await handle.ready).toBe(false)
+    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Open Settings → Backend'])
+    helpItem('Open Settings → Backend')!.click!()
+    expect(electronStub.pushes).toEqual([{ channel: IPC.MENU_ACTION, args: ['open-settings-backend'] }])
+    const dialog = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { buttons: string[] }
+    expect(dialog.buttons).toEqual(['Reconnect', 'Open Settings → Backend', 'Open Daemon Log', 'OK'])
+    expect(relaunches).toEqual([])
   })
 
   it('while the stream is only disconnected, Reconnect reconnects it and the embedded escape is not offered', async () => {

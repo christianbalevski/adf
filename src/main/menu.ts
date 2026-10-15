@@ -25,12 +25,14 @@ export interface DaemonMenuOptions {
   openLog: () => void
   reconnect: () => void
   /**
-   * After a failed launch (no daemon this session): "Use Embedded for This
-   * Session" restarts Studio in embedded mode for one launch. Offered while
-   * `canUseEmbedded` says so.
+   * After a failed launch (no daemon this session), while `launchFailed`
+   * says so: local mode offers "Use Embedded for This Session" (Studio
+   * restarts in embedded mode for one launch), remote mode "Open Settings →
+   * Backend" (fix the URL or token there).
    */
   useEmbeddedForSession?: () => void
-  canUseEmbedded?: () => boolean
+  openBackendSettings?: () => void
+  launchFailed?: () => boolean
   /**
    * Remote mode: recent files are paths on the daemon's machine. They are
    * not added to the OS recent documents (the Windows shell may contact a
@@ -47,6 +49,7 @@ export type MenuAction =
   | 'save'
   | 'close-file'
   | 'open-settings'
+  | 'open-settings-backend'
 
 const MAX_RECENT_FILES = 10
 
@@ -242,11 +245,14 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
   const logFile = options.logFile()
   const problem = options.problem()
   const useEmbedded = options.useEmbeddedForSession
+  const openBackend = options.openBackendSettings
+  const failed = !!problem && options.launchFailed?.() === true
   return [
     { type: 'separator' },
     { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
     ...(problem ? [{ label: problem, enabled: false }] : []),
     ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : []),
-    ...(problem && useEmbedded && options.canUseEmbedded?.() ? [{ label: 'Use Embedded for This Session', click: () => useEmbedded() }] : [])
+    ...(failed && useEmbedded ? [{ label: 'Use Embedded for This Session', click: () => useEmbedded() }] : []),
+    ...(failed && openBackend ? [{ label: 'Open Settings → Backend', click: () => openBackend() }] : [])
   ]
 }

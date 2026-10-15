@@ -160,6 +160,10 @@ export default function App() {
         case 'open-settings':
           setShowSettings(true)
           break
+        // Daemon mode: a remote daemon could not be reached at launch (Help, or the failure dialog).
+        case 'open-settings-backend':
+          useAppStore.getState().openSettingsAt('backend')
+          break
       }
     })
   }, [openFile, createFile, closeFile, addDirectory, saveActiveDocument, setShowMeshGraph, setShowSettings])
