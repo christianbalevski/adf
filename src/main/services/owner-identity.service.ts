@@ -14,6 +14,7 @@
  */
 
 import { readdirSync } from 'fs'
+import { readdir } from 'fs/promises'
 import { join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
@@ -81,6 +82,24 @@ export interface RestampResult {
   failures: string[]
   /** Files `skip` left out (another runtime runs them); restamped when next opened. Present only when a `skip` was given. */
   skipped?: string[]
+}
+
+/** What one boot envelope sweep did (sweepEnvelopeMigration). */
+export interface EnvelopeSweepResult {
+  /** Files that got signing keys (and a DID and attestations). */
+  provisioned: number
+  /** Plain secret rows sealed under their envelope. */
+  sealed: number
+  failures: string[]
+  /** Files left alone because another runtime runs them. */
+  skipped: string[]
+}
+
+/** The sweep's log line, the same in both modes; null when it did nothing. */
+export function describeEnvelopeSweep(sweep: EnvelopeSweepResult, ms: number): string | null {
+  if (!sweep.provisioned && !sweep.sealed && !sweep.failures.length && !sweep.skipped.length) return null
+  return `[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s)` +
+    `${sweep.skipped.length ? `, ${sweep.skipped.length} run by another runtime (provisioned when next opened)` : ''} in ${ms.toFixed(0)}ms`
 }
 
 export class OwnerIdentityService {
@@ -865,9 +884,22 @@ export class OwnerIdentityService {
    * Unreviewed files are left untouched: a file someone dropped into a
    * tracked directory must go through review + claim before we stamp
    * ownership or seal anything into our envelopes.
+   *
+   * One sweep for both modes (embedded Studio and the daemon run it 2 s
+   * after boot). The folder walk is async and the sweep yields after every
+   * file, so a large tracked tree does not block the event loop. Files
+   * `skip` names (another runtime runs the agent and is the one writer of
+   * its file) are not opened; they are provisioned when next opened.
+   * `provision` replaces ensureWorkspaceIdentity (the daemon's recipe adds
+   * its own unlock cascade and trusted slot around it).
    */
-  sweepEnvelopeMigration(): { provisioned: number; sealed: number; failures: string[] } {
-    const result = { provisioned: 0, sealed: 0, failures: [] as string[] }
+  async sweepEnvelopeMigration(
+    opts: {
+      skip?: (filePath: string) => Promise<boolean>
+      provision?: (workspace: AdfWorkspace) => { keysGenerated: boolean; sealed: number }
+    } = {},
+  ): Promise<EnvelopeSweepResult> {
+    const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [] }
     if (!this.getEnvelopeRecipients()) return result
 
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
@@ -875,7 +907,7 @@ export class OwnerIdentityService {
     const files: string[] = []
     for (const dir of tracked) {
       try {
-        collectAdfFiles(dir, maxDepth, 0, files)
+        await collectAdfFilesAsync(dir, maxDepth, 0, files)
       } catch (err) {
         result.failures.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -884,7 +916,12 @@ export class OwnerIdentityService {
     const reviewedIds = new Set(getReviewedIds(this.settings.get('reviewedAgents')))
 
     for (const filePath of files) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
       try {
+        if (await opts.skip?.(filePath)) {
+          result.skipped.push(filePath)
+          continue
+        }
         const workspace = AdfWorkspace.open(filePath)
         try {
           if (workspace.isPasswordProtected()) continue
@@ -895,7 +932,7 @@ export class OwnerIdentityService {
             !workspace.hasUnsealedSecrets()
           ) continue
           if (!reviewedIds.has(workspace.getAgentConfig().id)) continue
-          const { keysGenerated, sealed } = this.ensureWorkspaceIdentity(workspace)
+          const { keysGenerated, sealed } = opts.provision ? opts.provision(workspace) : this.ensureWorkspaceIdentity(workspace)
           if (keysGenerated) result.provisioned++
           result.sealed += sealed
         } finally {
@@ -1010,6 +1047,19 @@ function derivedDid(mnemonic: string): string | null {
     return deriveOwnerIdentity(mnemonic).did
   } catch {
     return null
+  }
+}
+
+/** collectAdfFiles, reading directories asynchronously (the boot envelope sweep). */
+async function collectAdfFilesAsync(dir: string, maxDepth: number, depth: number, out: string[]): Promise<void> {
+  if (depth > maxDepth) return
+  const entries = await readdir(dir, { withFileTypes: true })
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.adf')) {
+      out.push(join(dir, e.name))
+    } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+      await collectAdfFilesAsync(join(dir, e.name), maxDepth, depth + 1, out)
+    }
   }
 }
 

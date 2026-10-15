@@ -39,12 +39,8 @@ import { canonicalizePath, containsPath, isSameOrSubPath } from '../utils/tracke
 import type { RuntimeAgentSummary, RuntimeLiveAgent, RuntimeService } from '../runtime/runtime-service'
 import {
   AGENT_LEASED_CODE,
-  agentLeasedMessage,
-  canonicalLeasePath,
-  holderLiveness,
-  leaseKeyForCanonicalPath,
+  leaseHolderElsewhere,
   processAgentLeases,
-  type AgentLeaseRecord,
   type AgentLeaseRegistry,
 } from '../runtime/agent-lease'
 import type { DaemonIdentity } from './daemon-identity'
@@ -763,28 +759,8 @@ const yieldToLoop = () => new Promise<void>(r => setImmediate(r))
 
 // --- Leases ------------------------------------------------------------------------
 
-/**
- * The sentence naming the live runtime that holds `filePath`'s agent lease
- * (W0-C), or null when nobody else does. A file another runtime runs must not
- * be written, moved or deleted from here.
- */
-export async function leaseHolderElsewhere(leases: AgentLeaseRegistry | null, filePath: string): Promise<string | null> {
-  if (!leases) return null
-  try {
-    if (await leases.isHeld(filePath)) return null
-    const canonical = await canonicalLeasePath(filePath)
-    let raw: string
-    try { raw = await readFile(join(leases.dir, `${leaseKeyForCanonicalPath(canonical)}.json`), 'utf-8') } catch { return null }
-    const record = JSON.parse(raw) as AgentLeaseRecord
-    if (record?.v !== 1 || typeof record.holder?.pid !== 'number' || typeof record.holder.runtimeId !== 'string') return null
-    if (record.holder.runtimeId === leases.runtimeId) return null
-    const liveness = await holderLiveness(record.holder, leases.dir)
-    return liveness.alive ? agentLeasedMessage(record, undefined, liveness.otherMachine) : null
-  } catch (err) {
-    console.warn(`[FileOps] Lease check of ${basename(filePath)} failed:`, err)
-    return null
-  }
-}
+// leaseHolderElsewhere moved to runtime/agent-lease.ts (the boot envelope sweep of both modes uses it).
+export { leaseHolderElsewhere }
 
 // --- Operations ---------------------------------------------------------------------
 

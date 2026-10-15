@@ -415,6 +415,29 @@ export async function fromOtherMachine(record: { machineId?: string | null }): P
   return !!ours && record.machineId !== ours
 }
 
+/**
+ * The sentence naming the live runtime that holds `filePath`'s agent lease
+ * (W0-C), or null when nobody else does. A file another runtime runs must not
+ * be written, moved or deleted from here.
+ */
+export async function leaseHolderElsewhere(leases: AgentLeaseRegistry | null, filePath: string): Promise<string | null> {
+  if (!leases) return null
+  try {
+    if (await leases.isHeld(filePath)) return null
+    const canonical = await canonicalLeasePath(filePath)
+    let raw: string
+    try { raw = await fsp.readFile(join(leases.dir, `${leaseKeyForCanonicalPath(canonical)}.json`), 'utf-8') } catch { return null }
+    const record = JSON.parse(raw) as AgentLeaseRecord
+    if (record?.v !== 1 || typeof record.holder?.pid !== 'number' || typeof record.holder.runtimeId !== 'string') return null
+    if (record.holder.runtimeId === leases.runtimeId) return null
+    const liveness = await holderLiveness(record.holder, leases.dir)
+    return liveness.alive ? agentLeasedMessage(record, undefined, liveness.otherMachine) : null
+  } catch (err) {
+    console.warn(`[AgentLease] Lease check of ${agentNameOf(filePath)} failed:`, err)
+    return null
+  }
+}
+
 /** process.kill(pid, 0), plus the Linux zombie check (an exited, unreaped pid is not alive). */
 export async function pidAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false

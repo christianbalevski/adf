@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { embeddedBackend } from './harness/backend'
-import { runScenario, type ParityScenario } from './harness/scenario'
-import { adapterTelegramScenario } from './mcp/scenarios'
+import { embeddedBackend } from '../harness/backend'
+import { runScenario, type ParityScenario } from '../harness/scenario'
+import { adapterTelegramScenario } from '../mcp/scenarios'
 
 /**
  * W5-G, CI run 38749217035: w3c-adapter-telegram, remote side. Embedded

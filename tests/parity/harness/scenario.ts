@@ -24,6 +24,12 @@ export interface ParityScenario {
   fixtures: readonly FixtureSpec[]
   /** Merged over `baseSettings`; a function gets the run's environment (paths such as `agentsDir`). */
   settings?: Record<string, unknown> | ((env: ParityEnv) => Record<string, unknown>)
+  /**
+   * `boot`: the boot envelope sweep runs at boot and has finished before
+   * `run` starts, in every backend. Default: it never runs (it is on a 2 s
+   * timer, so a recording would depend on the run's speed).
+   */
+  envelopeSweep?: 'boot'
   llm?: LlmScript
   /**
    * After `run` returns the scenario is done: the backend must then stay
@@ -118,6 +124,7 @@ async function leakedHandles(before: Set<object>): Promise<string[]> {
  */
 export async function runScenario(scenario: ParityScenario, backend: ParityBackend, opts: RunOptions = {}): Promise<ScenarioResult> {
   const env = await createParityEnv(scenario.name)
+  if (scenario.envelopeSweep) process.env.ADF_TEST_ENVELOPE_SWEEP = scenario.envelopeSweep
   const handlesBefore = new Set(activeHandles())
   const llm = await startMockLlm(scenario.llm ?? defaultScript, { now: () => Date.now() - env.startedAt })
   env.allowPort(Number(new URL(llm.baseUrl).port))

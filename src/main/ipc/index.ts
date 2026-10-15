@@ -98,7 +98,8 @@ import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
-import { LeasedStartTracker, processAgentLeases } from '../runtime/agent-lease'
+import { LeasedStartTracker, leaseHolderElsewhere, processAgentLeases } from '../runtime/agent-lease'
+import { describeEnvelopeSweep } from '../services/owner-identity.service'
 import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
@@ -1757,19 +1758,41 @@ export const hostActions: {
 /** The boot envelope sweep's timer until it fires (registerAllIpcHandlers). */
 let pendingEnvelopeSweep: NodeJS.Timeout | null = null
 
+/** The boot envelope sweep (spec §8), as the daemon runs it: files another runtime runs are skipped. */
+async function runEnvelopeSweep(): Promise<void> {
+  try {
+    const t0 = performance.now()
+    const leases = processAgentLeases()
+    const sweep = await settings.getOwnerIdentity().sweepEnvelopeMigration({
+      skip: async (filePath) => (await leaseHolderElsewhere(leases, filePath)) !== null,
+    })
+    const line = describeEnvelopeSweep(sweep, performance.now() - t0)
+    if (line) console.log(line)
+  } catch (err) {
+    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  }
+}
+
 /**
  * Tests (parity harness): drop the boot envelope sweep before it runs; true
  * when it was pending. A recording captures the backend's first seconds,
- * before the sweep, and the daemon has no such sweep. On its 2 s timer it ran
- * inside any scenario that outlasted 2 s on a loaded runner and provisioned
- * the reviewed agents of the tracked folders (keys, DID, owner and operator
- * attestations), so the recording depended on the run's speed.
+ * before the sweep. On its 2 s timer it ran inside any scenario that
+ * outlasted 2 s on a loaded runner and provisioned the reviewed agents of the
+ * tracked folders (keys, DID, owner and operator attestations), so the
+ * recording depended on the run's speed. The daemon's switch is
+ * ADF_TEST_ENVELOPE_SWEEP (daemon/index.ts).
  */
 export function cancelDeferredEnvelopeSweep(): boolean {
   if (!pendingEnvelopeSweep) return false
   clearTimeout(pendingEnvelopeSweep)
   pendingEnvelopeSweep = null
   return true
+}
+
+/** Tests (parity harness): run the boot envelope sweep now instead of on its timer; resolves when it is done. */
+export async function runDeferredEnvelopeSweepNow(): Promise<void> {
+  if (!cancelDeferredEnvelopeSweep()) return
+  await runEnvelopeSweep()
 }
 
 export interface IpcHostHooks {
@@ -1842,18 +1865,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
   // Deferred — it opens every tracked .adf, which must not block window
-  // creation. Behavior is otherwise identical to the old synchronous sweep.
+  // creation. The daemon runs the same sweep the same way (daemon/index.ts).
   pendingEnvelopeSweep = setTimeout(() => {
     pendingEnvelopeSweep = null
-    try {
-      const t0 = performance.now()
-      const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
-      if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
-        console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
-      }
-    } catch (err) {
-      console.warn('[OwnerIdentity] Envelope sweep failed:', err)
-    }
+    void runEnvelopeSweep()
   }, 2_000)
   pendingEnvelopeSweep.unref?.()
 

@@ -47,7 +47,8 @@ import { applySettingLive } from './live-setting'
 import { approvalHub } from '../runtime/approval-hub'
 import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
-import { processAgentLeases } from '../runtime/agent-lease'
+import { leaseHolderElsewhere, processAgentLeases } from '../runtime/agent-lease'
+import { describeEnvelopeSweep } from '../services/owner-identity.service'
 import { testSeamsAllowed } from '../utils/test-seams'
 import { sweepStaleSnapshots } from './file-ops'
 
@@ -537,12 +538,37 @@ runtime.on('agent-loaded', (event) => {
   if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
 })
 
+// --- Boot envelope sweep (spec §8) -------------------------------------------
+// As Studio (registerAllIpcHandlers): 2 s after boot, every reviewed agent in
+// the tracked folders that has no keys is provisioned (keys, DID, owner and
+// operator attestations) and plain secret rows are sealed; files another
+// runtime runs are left for their next open. Same sweep, same log line.
+// Test seam ADF_TEST_ENVELOPE_SWEEP (ADF_TEST_SEAMS=1, unpackaged), the
+// daemon side of the parity harness's switch: `off` never runs it, `boot`
+// runs it before the daemon listens.
+const envelopeSweepSeam = testSeamsAllowed() ? process.env.ADF_TEST_ENVELOPE_SWEEP : undefined
+async function runEnvelopeSweep(): Promise<void> {
+  try {
+    const t0 = performance.now()
+    const leases = processAgentLeases()
+    const sweep = await ownerIdentity.sweepEnvelopes(async (filePath) => (await leaseHolderElsewhere(leases, filePath)) !== null)
+    const line = sweep ? describeEnvelopeSweep(sweep, performance.now() - t0) : null
+    if (line) console.log(line)
+  } catch (err) {
+    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  }
+}
+let bootEnvelopeSweep: Promise<void> = Promise.resolve()
+if (envelopeSweepSeam === 'boot') bootEnvelopeSweep = runEnvelopeSweep()
+else if (envelopeSweepSeam !== 'off') setTimeout(() => { void runEnvelopeSweep() }, 2_000).unref?.()
+if (envelopeSweepSeam) console.log(`[ADF Daemon] Test seam: boot envelope sweep ${envelopeSweepSeam} (ADF_TEST_ENVELOPE_SWEEP)`)
+
 withSource('system:daemon', () => {
   // Clean up scratch dirs left by previous processes that exited uncleanly
   // (parity with Studio boot).
   try { purgeStaleProcessDirs() } catch (err) { console.warn('[ADF Daemon] Stale scratch purge failed:', err) }
 
-  daemon.start()
+  bootEnvelopeSweep.then(() => daemon.start())
     .then(address => {
       console.log(`[ADF Daemon] Listening on http://${address.host}:${address.port}`)
       console.log(`[ADF Daemon] Settings: ${settings.filePath ?? '(memory)'}`)

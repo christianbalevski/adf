@@ -62,7 +62,7 @@ const fence = createRequire(__filename)('./fence.cjs') as Fence
 
 /** Variables the harness sets; every other `ADF_*` is removed for the run. */
 const OWN_ENV = [
-  'ADF_USER_DATA_DIR', 'ADF_LEASE_DIR', 'ADF_TEMP_DIR', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN', 'ADF_MACHINE_ID',
+  'ADF_USER_DATA_DIR', 'ADF_LEASE_DIR', 'ADF_TEMP_DIR', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN', 'ADF_MACHINE_ID', 'ADF_TEST_ENVELOPE_SWEEP',
   'MESH_PORT', 'MESH_HOST', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TMPDIR', 'TEMP', 'TMP',
   'PARITY_FENCE_LOG', 'PARITY_FENCE_ROOT', 'PARITY_FENCE_PORTS', 'NODE_OPTIONS',
@@ -260,6 +260,10 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     // after the snapshot (CI run 38749217035). Unit-tested in
     // tests/runtime/agent-lease-machine-id.test.ts.
     ADF_MACHINE_ID: randomUUID(),
+    // The boot envelope sweep: `off` unless the scenario asks for `boot`
+    // (ParityScenario.envelopeSweep). Embedded: backend.ts; the daemon child
+    // reads it as a test seam (daemon/index.ts).
+    ADF_TEST_ENVELOPE_SWEEP: 'off',
     MESH_PORT: String(meshPort),
     MESH_HOST: '127.0.0.1',
     HOME: homeDir,

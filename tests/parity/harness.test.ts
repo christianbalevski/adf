@@ -253,7 +253,7 @@ describe('parity harness: isolation', () => {
       }
       expect(process.env.ADF_DAEMON_URL).toBeUndefined()
       expect(Object.keys(process.env).filter((k) => k.startsWith('ADF_')).sort())
-        .toEqual(['ADF_KEYCHAIN', 'ADF_LEASE_DIR', 'ADF_MACHINE_ID', 'ADF_SECRET_STORE', 'ADF_TEMP_DIR', 'ADF_USER_DATA_DIR'])
+        .toEqual(['ADF_KEYCHAIN', 'ADF_LEASE_DIR', 'ADF_MACHINE_ID', 'ADF_SECRET_STORE', 'ADF_TEMP_DIR', 'ADF_TEST_ENVELOPE_SWEEP', 'ADF_USER_DATA_DIR'])
       expect(process.env.ADF_MACHINE_ID).toMatch(/^[0-9a-f-]{36}$/)
       expect(process.env.ADF_SECRET_STORE).toBe('file')
       expect(process.env.ADF_KEYCHAIN).toBe('0')

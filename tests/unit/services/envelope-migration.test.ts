@@ -132,7 +132,7 @@ describe('ensureWorkspaceIdentity (spec D1)', () => {
 })
 
 describe('sweepEnvelopeMigration (spec §8)', () => {
-  it('provisions key-less files and seals legacy plain rows across a tracked dir', () => {
+  it('provisions key-less files and seals legacy plain rows across a tracked dir', async () => {
     const settings = makeSettings()
     const svc = settings.getOwnerIdentity()
 
@@ -148,14 +148,14 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     b.close()
     settings.set('reviewedAgents', { [aId]: 'accepted', [bId]: 'accepted' })
 
-    const sweep = svc.sweepEnvelopeMigration()
+    const sweep = await svc.sweepEnvelopeMigration()
     expect(sweep.failures).toEqual([])
     expect(sweep.provisioned).toBe(1) // A got keys (sealed at generation, not counted here)
     expect(sweep.sealed).toBe(2) // B's private key + B's token
 
     // Second sweep is a no-op (fast path)
-    const again = svc.sweepEnvelopeMigration()
-    expect(again).toEqual({ provisioned: 0, sealed: 0, failures: [] })
+    const again = await svc.sweepEnvelopeMigration()
+    expect(again).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
 
     // Both files unlock with this install's runtime key
     for (const name of ['a', 'b']) {
@@ -169,14 +169,14 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     }
   })
 
-  it('leaves unreviewed files untouched — no ownership stamp before review', () => {
+  it('leaves unreviewed files untouched — no ownership stamp before review', async () => {
     const settings = makeSettings()
     const svc = settings.getOwnerIdentity()
 
     AdfWorkspace.create(join(trackedDir, 'dropped.adf'), { name: 'dropped' }).close()
 
-    const sweep = svc.sweepEnvelopeMigration()
-    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [] })
+    const sweep = await svc.sweepEnvelopeMigration()
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
 
     const ws = AdfWorkspace.open(join(trackedDir, 'dropped.adf'))
     try {
@@ -186,6 +186,46 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     } finally {
       ws.close()
     }
+  })
+})
+
+describe('sweepEnvelopeMigration: files another runtime runs (W5-G)', () => {
+  it('never opens a file `skip` names; the others are provisioned', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ids: string[] = []
+    for (const name of ['agent-1', 'agent-2']) {
+      const ws = AdfWorkspace.create(join(trackedDir, `${name}.adf`), { name })
+      ids.push(ws.getAgentConfig().id)
+      ws.close()
+    }
+    settings.set('reviewedAgents', Object.fromEntries(ids.map((id) => [id, 'accepted'])))
+    const leased = join(trackedDir, 'agent-2.adf')
+    const asked: string[] = []
+
+    const sweep = await svc.sweepEnvelopeMigration({ skip: async (filePath) => { asked.push(filePath); return filePath === leased } })
+    expect(asked.sort()).toEqual([join(trackedDir, 'agent-1.adf'), leased].sort())
+    expect(sweep).toEqual({ provisioned: 1, sealed: 0, failures: [], skipped: [leased] })
+    for (const [name, provisioned] of [['agent-1', true], ['agent-2', false]] as const) {
+      const ws = AdfWorkspace.open(join(trackedDir, `${name}.adf`))
+      try {
+        expect(ws.getDid() !== null, name).toBe(provisioned)
+        expect(readAdfAttestations(ws).length, name).toBe(provisioned ? 2 : 0)
+      } finally {
+        ws.close()
+      }
+    }
+  })
+
+  it('does nothing without an owner identity (no envelope recipients)', async () => {
+    const settings = new SettingsService()
+    settings.set('trackedDirectories', [trackedDir])
+    const ws = AdfWorkspace.create(join(trackedDir, 'agent-1.adf'), { name: 'agent-1' })
+    settings.set('reviewedAgents', { [ws.getAgentConfig().id]: 'accepted' })
+    ws.close()
+    const svc = settings.getOwnerIdentity()
+    vi.spyOn(svc, 'getEnvelopeRecipients').mockReturnValue(null)
+    expect(await svc.sweepEnvelopeMigration()).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
   })
 })
 
