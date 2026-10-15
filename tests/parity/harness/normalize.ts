@@ -112,6 +112,11 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const named = ctx.named
     .filter((n): n is { value: string; name: string } => typeof n.value === 'string' && n.value.length > 0)
     .sort((a, b) => b.value.length - a.value.length)
+  // A named value under the run root is named whole, before R1 rewrites its
+  // root: the lease endpoint is `<root>/leases/hosts/<runtimeId>.sock` on
+  // macOS and Linux (a named pipe outside the root on Windows), and is
+  // `<lease-endpoint:ROLE>` on every platform.
+  const rootedNamed = named.filter((n) => ctx.rootSpellings.some((r) => n.value.includes(r.spelling)))
 
   // Rule R8 — wall-clock instants inside the run window: epoch-ms numbers,
   // 13-digit epoch-ms runs inside strings (`session-1791991172180`),
@@ -169,6 +174,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
 
   const replaceString = (input: string, floor: number, seen: number[]): string => {
     let s = input
+    for (const { value, name } of rootedNamed) s = s.split(value).join(`<${name}>`)
     if (rootRe) s = s.replace(rootRe, (m) => rootToken.get(m) ?? m)
     for (const { re, to } of portRes) s = s.replace(re, to)
     if (s.includes('code_challenge=')) s = oauthAuthorizationUrl(s)
