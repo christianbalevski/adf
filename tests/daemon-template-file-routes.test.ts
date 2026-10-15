@@ -108,7 +108,7 @@ describe('PUT /templates/:id/files/raw (W3-A)', () => {
     expect((await putRaw(server, '/templates/standard/files/raw?name=a.txt', Buffer.from('x'))).status).toBe(409)
     await call(server, 'POST', '/identity/create', {})
     await call(server, 'POST', '/templates', { name: 'Refusals' })
-    const seed = await putRaw(server, '/templates/refusals/files/raw?name=' + encodeURIComponent('badname.txt'), Buffer.from('x'))
+    const seed = await putRaw(server, '/templates/refusals/files/raw?name=' + encodeURIComponent('bad\u0001name.txt'), Buffer.from('x'))
     expect(seed.status).toBe(400)
     expect(seed.body.code).toBe('template_invalid')
     expect((await putRaw(server, '/templates/nope/files/raw?name=a.txt', Buffer.from('x'))).body.code).toBe('template_missing')
