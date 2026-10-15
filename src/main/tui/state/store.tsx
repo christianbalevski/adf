@@ -6,6 +6,14 @@
 // its outcome visibly (transcript item or toast); nothing fails silently.
 
 import { createContext, useContext, useRef, useSyncExternalStore, type ReactNode } from 'react'
+
+/**
+ * The oldest client API whose sessions this app reads. Version 2 added turn
+ * ids to executor frames and the `turn` frame, which the terminal app does
+ * not use (it reads umbilical frames), so a version-1 daemon still gets a
+ * session. Studio stays strict (client-stream.ts).
+ */
+export const TUI_MIN_CLIENT_API_VERSION = 1
 import type { DaemonClient } from '../api/client'
 import type { ConnectionInfo, EventStream, ResumeInfo, StreamGap } from '../api/sse'
 import {
@@ -1069,13 +1077,16 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   /**
    * A client session on this daemon, or null for the /events path: the
-   * client API version must match, and the daemon must have the routes.
+   * daemon's client API version must be one this app reads (from
+   * TUI_MIN_CLIENT_API_VERSION up to SUPPORTED_CLIENT_API_VERSION), and the
+   * daemon must have the routes.
    */
   async function openSession(c: DaemonClient): Promise<string | null> {
     try {
       const info = await c.version()
-      if (info.clientApiVersion !== SUPPORTED_CLIENT_API_VERSION) {
-        noticeFallback(`the daemon speaks client API ${info.clientApiVersion}, this app ${SUPPORTED_CLIENT_API_VERSION}`)
+      const version = info.clientApiVersion
+      if (typeof version !== 'number' || version < TUI_MIN_CLIENT_API_VERSION || version > SUPPORTED_CLIENT_API_VERSION) {
+        noticeFallback(`the daemon speaks client API ${version}, this app ${TUI_MIN_CLIENT_API_VERSION === SUPPORTED_CLIENT_API_VERSION ? SUPPORTED_CLIENT_API_VERSION : `${TUI_MIN_CLIENT_API_VERSION}-${SUPPORTED_CLIENT_API_VERSION}`}`)
         return null
       }
     } catch (err) {
