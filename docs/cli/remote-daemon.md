@@ -102,6 +102,34 @@ tailscale serve status
 adf daemon token
 ```
 
+- Make the two variables permanent for whatever starts the daemon: `export`
+  holds only for that shell, and a daemon that `adf` starts later by
+  itself (or after a reboot) would come up without them and refuse the
+  `ts.net` name. Use a service with the variables in it, or the account's
+  persistent environment:
+
+  ```bash
+  # Linux: a systemd user unit (systemctl --user enable --now adf-daemon)
+  # ~/.config/systemd/user/adf-daemon.service
+  [Service]
+  Environment=ADF_DAEMON_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+  Environment=ADF_DAEMON_BEHIND_PROXY=1
+  ExecStart=/usr/bin/env adf daemon
+  Restart=on-failure
+  [Install]
+  WantedBy=default.target
+
+  # macOS: for the login session (or the same keys in a launchd agent's EnvironmentVariables)
+  launchctl setenv ADF_DAEMON_ALLOWED_HOSTS <machine>.<tailnet>.ts.net
+  launchctl setenv ADF_DAEMON_BEHIND_PROXY 1
+
+  # Windows: the user's persistent environment (new shells and processes)
+  setx ADF_DAEMON_ALLOWED_HOSTS <machine>.<tailnet>.ts.net
+  setx ADF_DAEMON_BEHIND_PROXY 1
+  ```
+
+  Restart the daemon after changing them (`adf daemon stop`, then start it
+  the same way).
 - `tailscale serve` forwards the browser's Host header (the `ts.net` name)
   to the daemon, and adds `X-Forwarded-For`, `X-Forwarded-Host`,
   `X-Forwarded-Proto` and `Tailscale-User-*` headers (Tailscale's
