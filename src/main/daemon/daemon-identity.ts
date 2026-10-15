@@ -1100,7 +1100,7 @@ export class DaemonIdentity {
     return {
       identity,
       previousOwnerDid,
-      restamp: { restamped: result.restamped, attested: result.attested, failures: result.failures, ...(result.skipped ? { skipped: result.skipped } : {}) },
+      restamp: { restamped: result.restamped, attested: result.attested, failures: result.failures, ...(result.skipped?.length ? { skipped: result.skipped } : {}) },
     }
   }
 

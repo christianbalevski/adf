@@ -18508,7 +18508,7 @@ Whose runtime identity the daemon uses. `adopted`: ADF Studio's, from a verified
 | `restamp.restamped` | integer | yes |  |
 | `restamp.attested` | integer | yes |  |
 | `restamp.failures` | string[] | yes |  |
-| `restamp.skipped` | string[] |  | Tracked files another runtime runs (agent lease): not restamped now; restamped when next opened. |
+| `restamp.skipped` | string[] |  | Tracked files another runtime runs (agent lease): not restamped now; restamped when next opened. Absent when there are none. |
 | `reloaded` | object[] | yes |  |
 | `reloaded[].agentId` | string | yes |  |
 | `reloaded[].name` | string | yes |  |

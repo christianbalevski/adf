@@ -20263,7 +20263,7 @@
               },
               "skipped": {
                 "type": "array",
-                "description": "Tracked files another runtime runs (agent lease): not restamped now; restamped when next opened.",
+                "description": "Tracked files another runtime runs (agent lease): not restamped now; restamped when next opened. Absent when there are none.",
                 "items": {
                   "type": "string"
                 }
