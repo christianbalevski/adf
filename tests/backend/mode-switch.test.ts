@@ -285,7 +285,8 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     s.apply('local')
     h.responses.push(0)
     await s.confirm('remote')
-    s.apply('remote')
+    expect(h.dialogs[1].detail).toMatch(/This replaces the waiting switch to Local daemon\./)
+    expect(s.apply('remote')).toBe('Replaces the waiting switch to Local daemon. Studio restarts once the turns in flight finish (agent-1).')
     expect(s.pendingSwitch()).toEqual({ target: 'remote', waitingFor: ['agent-1'], gaveUp: false })
     busy = false
     await vi.waitFor(() => expect(relaunched).toEqual(['remote']), { timeout: 3000 })

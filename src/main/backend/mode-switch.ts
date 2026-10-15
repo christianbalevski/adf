@@ -262,6 +262,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       : target === 'local'
         ? 'Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.'
         : `Studio restarts and uses the ADF daemon at ${remoteUrl ?? 'the remote URL'}.`)
+    if (pending) lines.push(`This replaces the waiting switch to ${MODE_LABELS[pending.target]}.`)
     if (plan.length > 0) {
       // "Back to Studio" only for credentials that come back (from this computer's daemon stores), not for client keys alone.
       lines.push('', target === 'embedded' && plan.some((item) => item.id !== 'client-settings') ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
@@ -328,6 +329,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       return restartingMessage(restarting)
     }
     // A switch still waiting for its turns is replaced: the latest choice wins, and its poll must not restart Studio too.
+    const replaced = pending ? `Replaces the waiting switch to ${MODE_LABELS[pending.target]}. ` : ''
     if (pending) {
       console.log(`[Backend] Switch to ${pending.target} replaced by a switch to ${target}`)
       pending.cancel()
@@ -346,7 +348,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
     }
     if (!chosen.wait) {
       void restart()
-      return 'Studio restarts now.'
+      return `${replaced}Studio restarts now.`
     }
     const busyNames = () => agentNames(ctx.agentActivity().filter((a) => a.busy).map((a) => a.filePath))
     console.log(`[Backend] Switch to ${target}: waiting for the turns in flight (${busyNames().join(', ')}) to finish`)
@@ -370,7 +372,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       void restart()
     }
     pending = { target, gaveUp: false, waitingFor: busyNames, finish, cancel: () => { clearInterval(poll); pending = null } }
-    return `Studio restarts once the turns in flight finish (${busyNames().join(', ')}).`
+    return `${replaced}Studio restarts once the turns in flight finish (${busyNames().join(', ')}).`
   }
 
   /** The mode Studio is restarting into, once a restart has started; null before. */
