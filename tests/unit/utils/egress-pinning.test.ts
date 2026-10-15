@@ -18,7 +18,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
   }) as typeof real.lookup
   return { ...real, lookup, default: { ...real, lookup } }
 })
-import { checkConnectTarget, checkFetchTarget, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
+import { checkConnectTarget, checkFetchTarget, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
 import { SysFetchTool } from '../../../src/main/tools/built-in/sys-fetch.tool'
 import { WsConnectionManager, type WsManagerDelegate } from '../../../src/main/services/ws-connection-manager'
 import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
@@ -68,10 +68,42 @@ describe('a host name behind an HTTP proxy (NODE_USE_ENV_PROXY)', () => {
     }
   })
 
-  it('before: refused because this machine cannot look it up, though the proxy would', async () => {
-    process.env.NODE_USE_ENV_PROXY = '1'
-    process.env.HTTPS_PROXY = 'http://127.0.0.1:9'
+  function proxyEnv(vars: Record<string, string>): void {
+    for (const key of ['NODE_USE_ENV_PROXY', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy']) delete process.env[key]
+    Object.assign(process.env, vars)
+  }
+
+  it('after: left to the proxy, which looks it up; literal addresses and loopback names are still checked', async () => {
+    proxyEnv({ NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: 'http://127.0.0.1:9' })
+    expect(await checkFetchTarget('https://no-such-host.invalid/')).toBeNull()
+    expect(await checkFetchTarget('https://169.254.169.254/latest/', { allowLocal: true })).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('https://10.0.0.1/')).toMatch(/private-network/)
+    expect(await checkFetchTarget('https://localhost:7385/', { daemonPort: 7385 })).toMatch(/daemon/)
+    // http has no proxy configured: this machine looks the name up.
+    expect(await checkFetchTarget('http://no-such-host.invalid/')).toMatch(/could not be looked up/)
+    // ws_connect never goes through the env proxy.
+    expect(await checkConnectTarget('wss://no-such-host.invalid/')).toMatch(/could not be looked up/)
+  })
+
+  it('after: a host NO_PROXY names, or NODE_USE_ENV_PROXY off, is looked up here as before', async () => {
+    proxyEnv({ NODE_USE_ENV_PROXY: '1', HTTPS_PROXY: 'http://127.0.0.1:9', NO_PROXY: 'example.com, .invalid' })
     expect(await checkFetchTarget('https://no-such-host.invalid/')).toMatch(/could not be looked up/)
+    proxyEnv({ HTTPS_PROXY: 'http://127.0.0.1:9' })
+    expect(await checkFetchTarget('https://no-such-host.invalid/')).toMatch(/could not be looked up/)
+  })
+
+  it('envProxyFor reads the proxy as Node\'s fetch does', () => {
+    const env = { NODE_USE_ENV_PROXY: '1', HTTP_PROXY: 'http://proxy:3128', NO_PROXY: 'exact.example, .corp.example, *.wild.example, ported.example:8443' }
+    expect(envProxyFor('https://a.example/', env)).toBe('http://proxy:3128') // https falls back to HTTP_PROXY
+    expect(envProxyFor('http://exact.example/', env)).toBeNull()
+    expect(envProxyFor('http://sub.exact.example/', env)).toBe('http://proxy:3128')
+    expect(envProxyFor('http://a.corp.example/', env)).toBeNull()
+    expect(envProxyFor('http://a.wild.example/', env)).toBeNull()
+    expect(envProxyFor('https://ported.example:8443/', env)).toBeNull()
+    expect(envProxyFor('https://ported.example/', env)).toBe('http://proxy:3128')
+    expect(envProxyFor('ws://a.example/', env)).toBeNull()
+    expect(envProxyFor('http://a.example/', { ...env, NO_PROXY: '*' })).toBeNull()
+    expect(envProxyFor('http://a.example/', { ...env, NODE_USE_ENV_PROXY: '0' })).toBeNull()
   })
 })
 

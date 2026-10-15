@@ -39,7 +39,7 @@ import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { Readable } from 'node:stream'
-import { checkFetchTarget, type FetchGuardOptions } from './ssrf-guard'
+import { checkFetchTarget, envProxyFor, type FetchGuardOptions } from './ssrf-guard'
 
 /** The process's own fetch, as loaded; a stub that replaced it (tests) is used without the pinned connection. */
 const NATIVE_FETCH = globalThis.fetch
@@ -221,7 +221,8 @@ export async function guardedFetch(
       const blocked = await checkFetchTarget(current, guard)
       if (blocked) return { error: blocked }
 
-      const response = globalThis.fetch === NATIVE_FETCH
+      // Behind an env proxy the proxy resolves the host (ssrf-guard envProxyFor): nothing to pin.
+      const response = globalThis.fetch === NATIVE_FETCH && !envProxyFor(current)
         ? await pinnedGet(current, controller.signal, guard)
         : await fetch(current, { signal: controller.signal, redirect: 'manual' })
       if (response.status >= 300 && response.status <= 399) {

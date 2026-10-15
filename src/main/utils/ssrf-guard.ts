@@ -310,6 +310,64 @@ export function isOwnInterfaceIp(ip: string, now = Date.now()): boolean {
   return c !== null && ownAddressCache.set.has(c)
 }
 
+/**
+ * The proxy Node's fetch sends `target` through when `NODE_USE_ENV_PROXY` is
+ * on, else null: `HTTPS_PROXY` (falling back to `HTTP_PROXY`) for https,
+ * `HTTP_PROXY` for http, none for a host `NO_PROXY` names. NO_PROXY is read
+ * as undici's EnvHttpProxyAgent reads it: `*` exempts every host; an entry
+ * names an exact host, or a domain and its subdomains with a leading `.` or
+ * `*.`; `host:port` limits it to that port. Other schemes (ws, wss) never go
+ * through it.
+ */
+export function envProxyFor(target: URL | string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const flag = (env.NODE_USE_ENV_PROXY ?? '').trim().toLowerCase()
+  if (!flag || flag === '0' || flag === 'false') return null
+  let url: URL
+  try { url = typeof target === 'string' ? new URL(target) : target } catch { return null }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+  const httpProxy = env.http_proxy || env.HTTP_PROXY || ''
+  const proxy = url.protocol === 'https:' ? env.https_proxy || env.HTTPS_PROXY || httpProxy : httpProxy
+  if (!proxy) return null
+  const noProxy = (env.no_proxy ?? env.NO_PROXY ?? '').trim()
+  if (noProxy === '*') return null
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+  for (const raw of noProxy.split(/[,\s]+/)) {
+    if (!raw) continue
+    const m = /^(.*?)(?::(\d+))?$/.exec(raw.toLowerCase())!
+    const entryHost = m[1].replace(/^\[|\]$/g, '')
+    if (m[2] && m[2] !== port) continue
+    if (!/^[.*]/.test(entryHost)) {
+      if (host === entryHost) return null
+    } else if (host.endsWith(entryHost.replace(/^\*/, ''))) {
+      return null
+    }
+  }
+  return proxy
+}
+
+let proxySkipLogged = false
+
+/**
+ * A host name behind an env proxy (envProxyFor): the proxy looks it up, and
+ * this machine may have no DNS of its own. The guard can then check neither
+ * its addresses nor pin a connection to them; it leaves the name to the
+ * proxy (W4-B follow-up). Literal addresses and loopback names are still
+ * checked. Logged once per process.
+ */
+function proxiedHostName(url: URL, host: string): boolean {
+  if (isIP(host) || isLoopbackHostname(host) || parseLooseIPv4(host)) return false
+  const proxy = envProxyFor(url)
+  if (!proxy) return false
+  if (!proxySkipLogged) {
+    proxySkipLogged = true
+    let via = proxy
+    try { via = new URL(proxy).host } catch { /* shown as given */ }
+    console.log(`[Egress] NODE_USE_ENV_PROXY is on: host names are looked up by the proxy (${via}), so the egress guard checks only literal addresses and loopback names, and connections are not pinned (first: ${url.hostname})`)
+  }
+  return true
+}
+
 function unresolvedMessage(target: string, reason: string): string {
   return `Blocked: the address of "${target}" could not be looked up (${reason}), so the egress guard could not check it. Check the host name and the network.`
 }
@@ -439,6 +497,7 @@ export async function checkFetchTarget(
   const host = url.hostname.replace(/^\[|\]$/g, '')
   if (!host) return `Invalid URL: ${rawUrl}`
   const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
+  if (proxiedHostName(url, host)) return null
 
   const cls = await classifyHost(host)
   if ('unresolved' in cls) return unresolvedMessage(url.hostname, cls.unresolved)
