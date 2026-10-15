@@ -47,7 +47,8 @@ const { syncBuiltinESMExports } = require('node:module')
 /** Always refused, whatever the allow list says: the owner's real daemon. */
 const FORBIDDEN_PORTS = new Set([7385])
 const FORBIDDEN_BINARY = /^(podman|wsl)(\.exe|\.cmd|\.bat)?$/i
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]', 'localhost'])
+// 127.0.0.2: the remote-mode OAuth relay listens there, as on another computer's loopback (W4-B).
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '127.0.0.2', '::1', '[::1]', 'localhost'])
 
 let state = null
 
@@ -276,6 +277,17 @@ function install(options) {
     netTarget(Array.isArray(args[0]) ? args[0] : args)))
   patch(net, 'connect', fencedConnect('net', net.connect, netTarget))
   patch(net, 'createConnection', fencedConnect('net', net.createConnection, netTarget))
+  // A server this process listens on is one of its own ports: connecting to
+  // it stays in the process (the daemon delivering a relayed OAuth callback
+  // to its own loopback callback server, W4-B). Loopback rules still apply.
+  const originalListen = net.Server.prototype.listen
+  patch(net.Server.prototype, 'listen', function (...args) {
+    this.once('listening', () => {
+      const address = this.address()
+      if (state && address && typeof address === 'object') state.ports.add(Number(address.port))
+    })
+    return originalListen.apply(this, args)
+  })
   // UDP: only to the run's loopback ports; no multicast (mDNS) at all.
   const udp = dgram.Socket.prototype
   patch(udp, 'send', fencedConnect('dgram', udp.send, (args) => dgramTarget(args)))

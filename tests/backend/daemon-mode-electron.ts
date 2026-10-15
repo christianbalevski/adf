@@ -77,8 +77,10 @@ export function createElectronStub(): ElectronStub {
     },
     dialog: {
       showOpenDialog: async (opts: unknown) => { call('dialog.showOpenDialog', [opts]); return { canceled: true, filePaths: [] } },
-      showMessageBox: async (opts: unknown) => { call('dialog.showMessageBox', [opts]); return { response: stub.dialogResponse } },
+      // (options) or (window, options), as Electron takes it; the options are recorded.
+      showMessageBox: async (a: unknown, b?: unknown) => { call('dialog.showMessageBox', [b ?? a]); return { response: stub.dialogResponse } },
     },
+    clipboard: { writeText: (text: string) => { call('clipboard.writeText', [text]) } },
     shell: {
       openPath: async (p: string) => { call('shell.openPath', [p]); return '' },
       openExternal: async (url: string) => { call('shell.openExternal', [url]) },

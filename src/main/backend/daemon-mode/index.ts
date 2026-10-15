@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, shell, type IpcMain } from 'electron'
 import { join } from 'node:path'
 import type { BackendDaemonStatus, StudioBackendMode } from '../../../shared/types/backend.types'
-import type { AgentStatus, AgentSummary, DaemonClient } from '../../../shared/daemon-client'
+import { DaemonError, type AgentStatus, type AgentSummary, type DaemonClient } from '../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../shared/types/ipc.types'
 import { IPC } from '../../../shared/constants/ipc-channels'
 import { BACKEND_ENV_OVERRIDE } from '../backend-config'
@@ -27,6 +27,11 @@ import { waitForDaemonExit } from './daemon-exit'
 import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
+import { REMOTE_MODE_HANDLERS } from './remote/handlers'
+import { REMOTE_WAITING_PREFIX } from './remote/connector'
+import { OAuthCallbackRelay } from './remote/oauth-relay'
+import { RemotePicker } from './remote/picker'
+import { uploadFile, type RemoteServices } from './remote/services'
 
 /**
  * Daemon-mode IPC registration (design D1, §3): the alternative to
@@ -68,9 +73,28 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.RECOVERY_LIST,
   IPC.RECOVERY_ARCHIVE,
   IPC.RECOVERY_REVEAL,
+  IPC.BACKEND_REMOTE_CHECK,
+  IPC.BACKEND_RESTART_STUDIO,
 ]
 
 export const RECOVERY_HINT = `To run agents in Studio instead, choose Embedded in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
+
+/**
+ * The one notification while Studio waits for an unreachable remote daemon,
+ * from the connector's progress line "Waiting for the remote ADF daemon at
+ * <url> (attempt n; …): <reason>". The URL holds colons, so the line is cut
+ * at " (attempt ".
+ */
+export function remoteWaitingNotice(progress: string): string {
+  const at = progress.indexOf(' (attempt ')
+  return `${at > 0 ? progress.slice(0, at) : REMOTE_WAITING_PREFIX}. Studio keeps trying.`
+}
+
+/** Remote mode: Settings → Backend works without a daemon, so the URL, the token or the mode can be fixed there. */
+export const REMOTE_RECOVERY_HINT = `Settings → Backend works without the daemon: fix the remote daemon's URL or token there and use Test connection, or choose Embedded. ${RECOVERY_HINT}`
+
+/** COMPUTE_BROWSER_SESSION in remote mode (§9.3): the viewer is on the server's loopback, never opened here. */
+export const REMOTE_BROWSER_SESSION_SENTENCE = 'opened a browser in its container on the daemon host. Its viewer is on that host\'s loopback, so Studio cannot show it here; use a tunnel to the container\'s noVNC port, or Studio on that host.'
 
 /** How long a lost daemon connection may last before waiting chats are ended. */
 export const TURN_DISCONNECT_GRACE_MS = 15_000
@@ -104,6 +128,8 @@ export interface DaemonModeDeps {
    * /client/reload-credentials), for a daemon that was already running.
    */
   reloadCredentials?: boolean
+  /** Tests (parity harness): where the OAuth relay listens, and pages exempt from the public-address rule. */
+  remoteOAuth?: { bindHost?: string; allowPage?: (url: URL) => boolean }
   /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
   sharedMnemonic?: () => SharedMnemonicStore | null
   /** Tests: waits for the daemon's pid to exit (default: process liveness). */
@@ -189,7 +215,36 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     },
     { logFile: deps.connect.logFile },
   )
-  const connection = new DaemonConnection(connect, log, deps.fetch)
+  // Remote mode: a 401 after connecting (the server's token changed) is the
+  // "refused the token" sentence and ends the connection; retrying could not
+  // help (W4-B review). /health carries no token and is not counted.
+  let unauthorized = false
+  const onUnauthorized = (): void => {
+    if (unauthorized) return
+    unauthorized = true
+    const url = connection.baseUrl ?? 'the remote daemon'
+    log.error(`[Backend] The ADF daemon at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
+    connection.markFailed(`The ADF daemon at ${url} refused the token. Run adf daemon token on the server and save the result in Settings → Backend.`)
+    bridge.failTurns('disconnected')
+    void clientSession?.end().catch(() => {})
+  }
+  const baseFetch: typeof fetch = deps.fetch ?? ((input, init) => fetch(input, init))
+  const connectionFetch: typeof fetch | undefined = deps.mode !== 'remote' ? deps.fetch : (async (input: string | URL | Request, init?: RequestInit) => {
+    const res = await baseFetch(input, init)
+    if (res.status === 401 && !unauthorized) {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url)
+      if (connection.baseUrl && url.origin === new URL(connection.baseUrl).origin && url.pathname !== '/health') onUnauthorized()
+    }
+    return res
+  }) as typeof fetch
+  const connection = new DaemonConnection(connect, log, connectionFetch)
+  // Remote mode, unreachable at launch: the connector retries (remote/connector.ts); say so once.
+  let waitingNoticed = false
+  connection.onState((state) => {
+    if (deps.mode !== 'remote' || waitingNoticed || state.state !== 'connecting' || !state.progress?.startsWith(REMOTE_WAITING_PREFIX)) return
+    waitingNoticed = true
+    statusUi.notice(remoteWaitingNotice(state.progress))
+  })
   // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
   const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })
 
@@ -226,10 +281,68 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   }
 
   const installs = new InstallProgressRelay((channel, payload) => output.send(channel, payload), log)
+
+  // Remote mode (W4-B): the daemon-side picker, the OAuth callback relay and
+  // uploads from this computer. Local mode needs none: the daemon shares
+  // this computer's files, browser and loopback.
+  const remoteServices: RemoteServices | null = deps.mode !== 'remote' ? null : (() => {
+    const host = (): string => {
+      try { return new URL(connection.baseUrl ?? '').host || 'the daemon host' } catch { return 'the daemon host' }
+    }
+    const picker = new RemotePicker({
+      host,
+      log,
+      send: (request) => {
+        const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
+        if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return false
+        win.webContents.send(IPC.REMOTE_PICKER_REQUEST, request)
+        return true
+      },
+    })
+    const oauth = new OAuthCallbackRelay({
+      relay: async (body) => {
+        try {
+          return await (await started).request<{ delivered: boolean; status: number }>('POST', '/oauth/relay', { body })
+        } catch (err) {
+          return { delivered: false, status: err instanceof DaemonError ? err.status : null, error: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      openExternal: (url) => shell.openExternal(url),
+      daemonHost: host,
+      ...(deps.remoteOAuth?.bindHost ? { bindHost: deps.remoteOAuth.bindHost } : {}),
+      ...(deps.remoteOAuth?.allowPage ? { allowPage: deps.remoteOAuth.allowPage } : {}),
+      // Remote mode opens no page without a click (W4-B review); local mode keeps embedded's no-click open.
+      confirm: async ({ daemonHost, pageHost, label }) => {
+        const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
+        const options = {
+          type: 'question',
+          message: `Open a sign-in page on ${pageHost}?`,
+          detail: `The ADF daemon at ${daemonHost} asks to open ${pageHost} in your browser (${label}). Open it only if you started this sign-in.`,
+          buttons: ['Open page', 'Cancel'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        } as Electron.MessageBoxOptions
+        const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+        return response === 0
+      },
+      log,
+    })
+    return { picker, oauth, host, upload: uploadFile(deps.fetch ?? fetch) }
+  })()
+
   const mcpOAuth = new McpOAuthAuthorizeOpener({
     mode: deps.mode,
     fetchInput: async (filePath, approvalId) => (await started).request<{ input?: unknown }>('GET', '/approvals/input', { query: { filePath, approvalId } }).then((r) => r.input),
     openExternal: (url) => shell.openExternal(url),
+    ...(remoteServices ? {
+      openRemote: (url: string, label: string) => remoteServices.oauth.open(url, label),
+      notify: (title: string, text: string) => {
+        const win = BrowserWindow.getFocusedWindow() ?? firstWindow()
+        const options = { type: 'warning', title, message: title, detail: text, buttons: ['OK'] } as Electron.MessageBoxOptions
+        void (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).catch(() => {})
+      },
+    } : {}),
     log,
   })
 
@@ -251,9 +364,25 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     openFile: hooks.openFile,
     log,
   })
+  // Remote mode: a browser session's viewer port is the server's loopback.
+  // Opening it here would load this computer's loopback, so the push is
+  // replaced by a notice (remote-unsupported, design §9.3).
+  const bridgeOutput: typeof output = deps.mode !== 'remote' ? output : {
+    send(channel: string, ...args: unknown[]) {
+      if (channel === IPC.COMPUTE_BROWSER_SESSION) {
+        const name = (args[0] as { agentName?: unknown } | undefined)?.agentName
+        const text = `${typeof name === 'string' && name ? name : 'An agent'} ${REMOTE_BROWSER_SESSION_SENTENCE}`
+        log.warn(`[Remote] ${text}`)
+        statusUi.notice(text)
+        return
+      }
+      output.send(channel, ...args)
+    },
+    sendAll: (channel: string, ...args: unknown[]) => output.sendAll(channel, ...args),
+  }
   bridge = new EventBridge({
     session,
-    output,
+    output: bridgeOutput,
     batcher,
     client: () => connection.current,
     onApprovals: (snapshot) => { approvals.apply(snapshot); void mcpOAuth.apply(snapshot) },
@@ -272,7 +401,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       void dialog.showMessageBox({
         type: 'warning',
         message: 'Studio has no ADF daemon to reconnect to.',
-        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${RECOVERY_HINT}`,
+        detail: `${state.state === 'failed' ? `${state.message}\n\n` : ''}Restart Studio to try again. ${deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
         buttons: ['OK'],
       }).catch(() => {})
       return
@@ -286,8 +415,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     canReconnect: () => connection.state.state === 'disconnected',
     openLog: () => { void openDaemonLog(connection.logFile, log) },
     reconnect,
+    remoteRecents: deps.mode === 'remote',
   })
-  const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: RECOVERY_HINT }, log)
+  const statusUi = new ConnectionStatusUi(connection, { reconnect, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
 
   const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
   let versionInfo: DaemonVersionInfo | null = null
@@ -395,6 +525,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     recordRecentFile,
     hooks,
     ...(deps.afterOwnerImport ? { afterOwnerImport: deps.afterOwnerImport } : {}),
+    remote: remoteServices,
     log,
   }
 
@@ -418,7 +549,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       continue
     }
     if (!isInvoke(entry)) continue
-    const handler = DAEMON_MODE_HANDLERS[channel]
+    // Remote mode: the remote variant first (remote/handlers.ts), else the shared one.
+    const handler = (deps.mode === 'remote' ? REMOTE_MODE_HANDLERS[channel] : undefined) ?? DAEMON_MODE_HANDLERS[channel]
     if (handler) {
       ipc.handle(channel, (event, ...args) => handler(ctx, event, ...args))
     } else {
@@ -453,6 +585,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     shutdownPromise ??= (async () => {
       statusUi.dispose()
       approvals.dispose()
+      remoteServices?.picker.cancelAll()
+      remoteServices?.oauth.closeAll()
       bridge.dispose()
       batcher.dispose()
       const stopDaemon = deps.mode === 'local' && !keepRunning()

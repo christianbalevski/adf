@@ -147,7 +147,7 @@ interface CreateAnswer { agentId: string; name: string; filePath: string; did: s
  * and only then does the open file change, so a refused template leaves the
  * current file as it was. The new file becomes the open file, not running.
  */
-async function createAndOpen(ctx: DaemonModeContext, body: Record<string, unknown>): Promise<{ ok: true; created: CreateAnswer } | { ok: false; result: { success: false; error: string; code?: string } }> {
+export async function createAndOpen(ctx: DaemonModeContext, body: Record<string, unknown>): Promise<{ ok: true; created: CreateAnswer } | { ok: false; result: { success: false; error: string; code?: string } }> {
   const client = await ctx.ready()
   let created: CreateAnswer
   try {

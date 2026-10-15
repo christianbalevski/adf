@@ -5,15 +5,15 @@
  *
  * Choosing another mode opens main's switch dialog (what moves, what happens
  * to running agents); confirming restarts Studio into it, and the handover
- * runs at that start (design §11). Remote follows when remote mode ships
- * (`remoteSwitchAvailable`). The remote token is write-only here: main never
+ * runs at that start (design §11); a switch to or from Remote daemon moves
+ * client settings only. The remote token is write-only here: main never
  * returns it, and this component never logs it.
  */
 
 import { useEffect, useState } from 'react'
 import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextInput } from '../ui'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../../shared/utils/remote-backend-url'
-import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
 
 type MessageGroup = 'backend' | 'remote'
 
@@ -77,6 +77,9 @@ export function BackendSettings() {
   const [saving, setSaving] = useState(false)
   /** Result of the last save, shown in the group whose control triggered it. */
   const [message, setMessage] = useState<{ group: MessageGroup; kind: 'ok' | 'error'; text: string } | null>(null)
+  /** Remote daemon: the last "Test connection" answer, and whether one runs. */
+  const [check, setCheck] = useState<RemoteCheckResult | null>(null)
+  const [checking, setChecking] = useState(false)
 
   /** Take main's view. Drafts reset only on load and after the remote Save, so other saves keep unsaved URL edits. */
   const adopt = (next: BackendSettingsView, resetDrafts: boolean) => {
@@ -145,14 +148,49 @@ export function BackendSettings() {
     const patch: BackendSettingsPatch = { remoteUrl: urlDraft.trim() || null, allowInsecureHttp: insecureConfirmed }
     if (insecureConfirmed && draftOrigin) patch.insecureHttpOrigin = draftOrigin
     if (tokenDraft.trim()) patch.remoteToken = tokenDraft
+    setCheck(null)
     void save('remote', patch, undefined, true)
   }
+
+  // Remote daemon actions (W4-B): test the draft, switch to the saved daemon (main's switch dialog, then the restart).
+  const testRemote = async () => {
+    setChecking(true)
+    setCheck(null)
+    try {
+      setCheck(await window.adfApi.checkRemoteBackend({ url: urlDraft.trim() || undefined, ...(tokenDraft.trim() ? { token: tokenDraft } : {}), allowInsecureHttp: insecureConfirmed }))
+    } catch {
+      setCheck({ ok: false, problem: 'unreachable', error: 'Studio could not run the check.' })
+    } finally {
+      setChecking(false)
+    }
+  }
+  const remoteReady = !!view.configured.remoteUrl && view.configured.remoteTokenSaved && !view.remoteUrlProblem && !remoteDirty
+  const remoteConfigured = view.configured.mode === 'remote'
+  const remoteActive = view.active.mode === 'remote'
+  const restart = () => { void window.adfApi.restartStudio() }
+  /**
+   * A saved mode this launch does not run outside a switch (a launch that fell
+   * back, a hand-edited file). Not for ADF_STUDIO_BACKEND or a session-only
+   * launch, which say so above, nor a switch waiting for turns in flight.
+   */
+  const pendingRestart = view.active.source !== 'env' && view.active.source !== 'session' && !view.pendingSwitch && view.configured.mode !== view.active.mode
 
   const messageFor = (group: MessageGroup) =>
     message?.group === group ? message : null
 
   return (
     <>
+      {view.active.notices.length > 0 && (
+        <div role="status" className="mb-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+          {view.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
+        </div>
+      )}
+      {pendingRestart && (
+        <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+          <span>This launch runs {MODE_LABELS[view.active.mode]}. Restart Studio to use {MODE_LABELS[view.configured.mode]}.</span>
+          <Button variant="primary" size="compact" onClick={restart}>Restart now</Button>
+        </div>
+      )}
       <SettingsGroup
         title="Mode"
         description="Studio reads this at launch, so a change applies after a restart."
@@ -161,7 +199,7 @@ export function BackendSettings() {
           label="Run agents in"
           description={MODE_DESCRIPTIONS[view.configured.mode]}
           help={view.modeSwitchAvailable
-            ? `${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.${view.remoteSwitchAvailable ? '' : ' Remote daemon is available in a later build.'}`
+            ? `${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`
             : `${activeLine(view)} Switching the backend is available in a later build.`}
         >
           <SegmentedControl
@@ -235,7 +273,7 @@ export function BackendSettings() {
           stacked
           label="Daemon URL"
           help="https://, or http:// to localhost (an SSH tunnel) or a Tailscale address (100.64.0.0/10)."
-          error={urlCheck?.kind === 'invalid' ? urlCheck.reason : undefined}
+          error={urlCheck?.kind === 'invalid' ? urlCheck.reason : !urlChanged && view.remoteUrlProblem ? view.remoteUrlProblem : undefined}
         >
           <TextInput
             value={urlDraft}
@@ -288,10 +326,41 @@ export function BackendSettings() {
         </SettingsRow>
         <div className="flex items-center justify-between gap-4 border-t border-[var(--adf-ui-separator)] px-4 py-3">
           <MessageLine message={messageFor('remote')} />
-          <Button variant="primary" disabled={!remoteDirty || remoteInvalid} loading={saving} onClick={saveRemote}>
-            Save
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button disabled={remoteInvalid || !urlDraft.trim()} loading={checking} onClick={() => void testRemote()}>
+              Test connection
+            </Button>
+            <Button variant="primary" disabled={!remoteDirty || remoteInvalid} loading={saving} onClick={saveRemote}>
+              Save
+            </Button>
+          </div>
         </div>
+        {check && (
+          <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5">
+            <MessageLine message={check.ok
+              ? { kind: 'ok', text: `Connected to the ADF daemon at ${check.url} (version ${check.version}, started by ${check.startedBy}).` }
+              : { kind: 'error', text: check.error }}
+            />
+          </div>
+        )}
+        <SettingsRow
+          separator
+          label="Use this daemon"
+          description={remoteActive
+            ? 'Studio is using this remote daemon. Choose another mode above to switch back.'
+            : remoteConfigured
+              ? 'Saved as the backend; this launch does not run it.'
+              : 'Shows what moves (client settings only; sign-ins and keys stay on this computer) and what happens to running agents, then restarts Studio connected to this daemon.'}
+        >
+          {!remoteConfigured && (
+            <Button
+              disabled={!view.remoteSwitchAvailable || !remoteReady || saving}
+              onClick={() => void save('remote', { mode: 'remote' }, '')}
+            >
+              Switch to This Daemon
+            </Button>
+          )}
+        </SettingsRow>
       </SettingsGroup>
     </>
   )

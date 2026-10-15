@@ -21,7 +21,18 @@ export type StudioBackendSource =
 
 export interface BackendSettingsView {
   /** The backend this Studio process booted with. Fixed until restart. */
-  active: { mode: StudioBackendMode; source: StudioBackendSource }
+  active: {
+    mode: StudioBackendMode
+    source: StudioBackendSource
+    /**
+     * What this launch could not do as configured, token-free: Studio started
+     * embedded because the remote daemon may not be used, or fields of
+     * studio-backend.json were ignored.
+     */
+    notices: string[]
+  }
+  /** Why the saved remote URL is not used (an unconfirmed plain-http address), or null. */
+  remoteUrlProblem: string | null
   /** What `studio-backend.json` holds now (what the next launch uses, unless overridden). */
   configured: {
     mode: StudioBackendMode
@@ -34,8 +45,8 @@ export interface BackendSettingsView {
   }
   /** Switching between embedded and local daemon from Settings (W4-A). */
   modeSwitchAvailable: boolean
-  /** Switching to remote from Settings (W4-B); false: the remote choice is disabled. */
-  remoteSwitchAvailable?: boolean
+  /** Switching to Remote daemon is available (it moves nothing, design §5.5). */
+  remoteSwitchAvailable: boolean
   /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
   daemon?: BackendDaemonStatus | null
   /**
@@ -99,7 +110,58 @@ export type BackendSettingsErrorCode =
   | 'invalid_patch'
   | 'file_unreadable'
   | 'write_failed'
+  | 'remote_not_configured'
 
 export type BackendSettingsSaveResult =
   | { ok: true; view: BackendSettingsView; notices: string[] }
   | { ok: false; code: BackendSettingsErrorCode; error: string }
+
+// --- Remote mode (design §9, tracker W4-B) ---------------------------------
+
+/** Settings → Backend "Test connection": a draft URL and token, or the saved ones. */
+export interface RemoteCheckRequest {
+  /** Default: the saved URL. */
+  url?: string
+  /** Default: the saved token, and only while `url` has the saved URL's origin. */
+  token?: string
+  /** The user ticked the plain-http confirmation for `url`'s origin. */
+  allowInsecureHttp?: boolean
+}
+
+export type RemoteCheckResult =
+  | { ok: true; url: string; version: string; startedBy: string }
+  | { ok: false; problem: string; error: string }
+
+/** What the daemon-side picker picks (§9.3): an agent file, a folder, or a folder plus a new file name. */
+export type RemotePickKind = 'open-adf' | 'folder' | 'save-adf'
+
+/** Main asks the renderer for a daemon-side pick. Paths are on the daemon's machine. */
+export interface RemotePickRequest {
+  requestId: string
+  kind: RemotePickKind
+  title: string
+  /** The daemon's host, as the picker names it. */
+  host: string
+  /** save-adf: the proposed file name, without `.adf`. */
+  defaultName?: string
+  /** `import`: only folders the daemon imports into (tracked folders and the agents folder). */
+  within?: 'import'
+}
+
+export type RemotePickAnswer =
+  | { path: string }
+  | { directory: string; name: string; replace?: boolean }
+
+/** GET /fs/browse (W1-E): folders and `.adf` files only, inside the daemon's browse roots. */
+export interface RemoteBrowseListing {
+  path: string | null
+  parent: string | null
+  roots: Array<{ path: string; kind: 'home' | 'tracked' | 'agents' | 'configured' }>
+  entries: Array<{ name: string; path: string; kind: 'directory' | 'adf'; size?: number; mtimeMs?: number }>
+  truncated: boolean
+}
+
+export type RemoteBrowseResult = RemoteBrowseListing | { error: string; code?: string }
+
+/** POST /fs/folders through REMOTE_FS_MKDIR. */
+export type RemoteMkdirResult = { path: string } | { error: string; code?: string }

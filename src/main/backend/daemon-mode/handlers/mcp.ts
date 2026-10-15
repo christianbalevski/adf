@@ -6,7 +6,7 @@ import { buildMcpServerConfigFromRegistration } from '../../../../shared/utils/m
 import type { McpServerRegistration } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
-import { atPath, errorText, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
+import { atPath, errorText, isEditedPlaceholder, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
 import { awaitDaemonJob, startDaemonJob } from '../mcp/jobs'
 import { runRegistrationTest } from '../mcp/registration-test'
 import {
@@ -187,7 +187,7 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
     try {
       const client = await ctx.ready()
       // Remote mode read placeholders, not values: see placeholderWrite.
-      if (ctx.mode === 'remote' && value.startsWith(REDACTED_VALUE)) {
+      if (ctx.mode === 'remote' && (value === REDACTED_VALUE || isEditedPlaceholder(value))) {
         const meta = await client.request<{ credentials: Record<string, CredentialMeta> }>('GET', '/files/agent/mcp/credentials', { query: atPath(filePath, { npmPackage }) })
         const outcome = placeholderWrite(value, meta.credentials?.[envKey]?.present === true, envKey)
         if (outcome && 'keep' in outcome) return { success: true }

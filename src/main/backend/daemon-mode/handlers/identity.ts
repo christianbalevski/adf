@@ -7,6 +7,8 @@ import { verifyAttestation } from '../../../services/attestation.service'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
 import { REMOTE_VALUES_UNSUPPORTED, writeWithLockedChoice } from './providers'
+import { isEditedPlaceholder, REDACTED_VALUE } from '../mcp/common'
+import { REMOTE_OWNER_BACKUP_SENTENCE } from '../../../../shared/constants/remote-owner-identity'
 
 /**
  * The daemon-mode handlers of identity (tracker W3-B, design §5): the open
@@ -121,6 +123,12 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   // --- the open agent's keystore -------------------------------------------------------
   [IPC.IDENTITY_SET]: (ctx, _event, args: { purpose: string; value: string }) =>
     onOpenAgent(ctx, 'Storing a value in the open agent', () => ({ error: NO_ADF }), async (client, agentId) => {
+      // Remote mode showed a placeholder for a stored value (IDENTITY_GET):
+      // the untouched placeholder keeps it, a value made from it is refused.
+      if (ctx.mode === 'remote' && (args.value === REDACTED_VALUE || isEditedPlaceholder(args.value))) {
+        if (args.value === REDACTED_VALUE) return undefined
+        throw new Error(`The value of ${args.purpose} was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.`)
+      }
       const path = `/agents/${enc(agentId)}/identity/${enc(args.purpose)}`
       await writeWithLockedChoice(ctx, args.purpose, (replace) =>
         client.request('PUT', path, { body: { value: args.value, ...(replace ? { replace } : {}) } }))
@@ -128,11 +136,17 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
     }),
 
   // Values come only from the daemon on this machine (local-only reveal
-  // routes with the local proof); a remote daemon never sends them.
+  // routes with the local proof); a remote daemon never sends them. Remote
+  // mode answers the placeholder for a stored value (null for none), as the
+  // MCP credential form does, so a form that saves what it read keeps the
+  // stored value (IDENTITY_SET) instead of erasing it (W4-B review).
   [IPC.IDENTITY_GET]: (ctx, _event, args: { purpose: string }) =>
     onOpenAgent(ctx, 'Reading a value of the open agent', () => null, async (client, agentId) => {
       if (isKeyMaterialPurpose(args.purpose)) return null
-      if (ctx.mode === 'remote') throw new Error(REMOTE_VALUES_UNSUPPORTED)
+      if (ctx.mode === 'remote') {
+        const { purposes } = await client.request<{ purposes: string[] }>('GET', `/agents/${enc(agentId)}/identity`, { query: { prefix: args.purpose } })
+        return purposes.includes(args.purpose) ? REDACTED_VALUE : null
+      }
       return reveal(client, agentId, args.purpose)
     }),
 
@@ -272,9 +286,7 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
    * or when the entry holds another owner's phrase.
    */
   [IPC.IDENTITY_OWNER_REVEAL_MNEMONIC]: async (ctx) => {
-    if (ctx.mode === 'remote') {
-      throw new Error('The seed phrase stays on the daemon host: back it up there with `adf identity` (a remote daemon never sends it).')
-    }
+    if (ctx.mode === 'remote') return { mnemonic: null, reason: REMOTE_OWNER_BACKUP_SENTENCE }
     const client = await ctx.ready()
     const { ownerDid } = await client.request<{ ownerDid: string | null }>('GET', '/identity')
     const phrase = ctx.sharedMnemonic()?.read() ?? null

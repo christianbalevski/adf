@@ -109,10 +109,11 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
   const agent1 = 'C:/agents/agent-1.adf'
   const agent2 = 'C:/agents/agent-2.adf'
 
-  function switcher(activity: () => Array<{ filePath: string; busy: boolean }>) {
+  function switcher(activity: () => Array<{ filePath: string; busy: boolean }>, activeMode: 'embedded' | 'local' | 'remote' = 'embedded') {
     const relaunched: string[] = []
     const s = createModeSwitcher({
-      activeMode: 'embedded',
+      activeMode,
+      remoteUrl: () => 'https://adf.example.test',
       userDataDir: dir,
       agentActivity: activity,
       keepDaemonRunning: () => false,
@@ -138,6 +139,32 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     await vi.waitFor(() => expect(relaunched).toEqual(['local']), { timeout: 3000 })
     const record = JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))
     expect(record).toMatchObject({ v: 1, from: 'embedded', to: 'local', agents: [agent1, agent2] })
+  })
+
+  it('to Remote (W4-B): says what stays on this computer; running agents are not started on the remote daemon', async () => {
+    const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: false }])
+    h.responses.push(0)
+    expect(await s.confirm('remote')).toBe(true)
+    const detail = h.dialogs[0].detail
+    expect(detail).toMatch(/uses the ADF daemon at https:\/\/adf\.example\.test\./)
+    expect(detail).toMatch(/Stays on this computer: ChatGPT, Grok and MCP sign-ins, provider keys, the owner phrase and the runtime identity\./)
+    expect(detail).toMatch(/agent-1 stop here and are not started on the remote daemon/)
+    expect(detail).not.toMatch(/Studio starts them/)
+    s.apply('remote')
+    await vi.waitFor(() => expect(relaunched).toEqual(['remote']))
+    expect(JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))).toMatchObject({ from: 'embedded', to: 'remote', agents: [] })
+  })
+
+  it('from Remote (W4-B): the remote daemon keeps its agents; no wait for its turns, nothing resumed here', async () => {
+    const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: true }], 'remote')
+    h.responses.push(0)
+    expect(await s.confirm('embedded')).toBe(true)
+    expect(h.dialogs[0].buttons).toEqual(['Switch and Restart', 'Cancel'])
+    expect(h.dialogs[0].detail).toMatch(/Nothing comes from the remote daemon: its agents, sign-ins and keys stay on it\./)
+    expect(h.dialogs[0].detail).toMatch(/The remote daemon keeps running its agents \(agent-1\)\. Studio does not start them itself\./)
+    expect(s.apply('embedded')).toBe('Studio restarts now.')
+    await vi.waitFor(() => expect(relaunched).toEqual(['embedded']))
+    expect(JSON.parse(readFileSync(join(dir, SWITCH_RESUME_FILE), 'utf-8'))).toMatchObject({ from: 'remote', to: 'embedded', agents: [] })
   })
 
   it('"Stop Them Now" restarts at once; Cancel does nothing', async () => {

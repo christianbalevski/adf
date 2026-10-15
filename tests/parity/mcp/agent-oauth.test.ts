@@ -64,4 +64,14 @@ describe('MCP OAuth sign-in from an agent\'s loop (mcp_oauth_signin)', () => {
     const snapshots = daemon.raw.pushes.filter((p) => p.channel === IPC.APPROVALS_CHANGED).map((p) => p.args[0] as { pending?: Array<{ toolName?: string }> })
     expect(snapshots.some((s) => s.pending?.some((e) => e.toolName === 'mcp_oauth_authorize'))).toBe(true)
   }, 240_000)
+
+  it.skipIf(!existsSync(DAEMON_BUNDLE))('remote mode: the same outcome; the page opens after a question naming both hosts, and its callback goes through the relay (W4-B)', async () => {
+    const scenario = agentOAuthSignInScenario(() => fake.oauthUrl)
+    const embedded = await runScenario(scenario, withFakeServer(() => fake)(embeddedBackend))
+    const remote = await runScenario(scenario, withFakeServer(() => fake)(daemonBackend({ remote: true })), { tolerant: true })
+    expect(outcome(remote.raw, fake.port)).toEqual(outcome(embedded.raw, fake.port))
+    // Asked first (remote mode opens no page without a click), naming the page's host.
+    const asked = remote.raw.local.filter((c) => c.api === 'dialog.showMessageBox').map((c) => c.args[0] as { message?: string })
+    expect(asked.some((m) => m.message === `Open a sign-in page on 127.0.0.1:${fake.port}?`)).toBe(true)
+  }, 240_000)
 })

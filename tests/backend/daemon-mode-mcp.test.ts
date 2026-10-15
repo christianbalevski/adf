@@ -223,6 +223,10 @@ describe('credential values: local mode reads them, a remote daemon never sends 
         success: false,
         error: 'RENAMED_KEY has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for RENAMED_KEY.',
       })
+      // Exact placeholder only (W4-B): a backspaced or mid-edited placeholder is refused too, never saved as the secret.
+      for (const edited of ['__redacted_', '__redac', '__redaXcted__', '__redcted__', 'x__redacted__']) {
+        expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: edited }), edited).toMatchObject({ success: false, error: expect.stringMatching(/shown as a placeholder/) })
+      }
       expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' })).toEqual({ success: true })
       expect(bodies).toEqual([{ npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' }])
     })
@@ -363,8 +367,9 @@ describe('MCP_REGISTRATION_TEST interactive steps', () => {
 describe('InstallProgressRelay', () => {
   it('sends nothing while the stream delivers; after a gap, the end the stream lost (after the grace)', async () => {
     const sent: unknown[] = []
-    const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: () => {}, warn: () => {} }, 20)
+    const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: () => {}, warn: () => {} }, 20, 40)
     const quiet = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['a'])
+    relay.observe({ kind: 'push', topic: 'mcp_install', payload: { package: 'a', status: 'installed' } })
     await quiet.finish([{ package: 'a', status: 'installed' }])
     expect(sent).toEqual([])
 
@@ -379,6 +384,26 @@ describe('InstallProgressRelay', () => {
     relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'c', status: 'installed' } })
     await arrived.finish([{ package: 'c', status: 'installed' }])
     expect(sent).toEqual([])
+
+    // No gap, no end yet: the end never arrives within the wait, so it comes from the result.
+    const silent = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['d'])
+    await silent.finish([{ package: 'd', status: 'installed' }])
+    expect(sent).toEqual([{ package: 'd', status: 'installed' }])
+  })
+
+  it('the answer waits until the stream delivered the install\'s end push (W4-B review: a remote stream lags the job poll)', async () => {
+    const relay = new InstallProgressRelay(() => {}, { log: () => {}, warn: () => {} }, 20, 5_000)
+    const watch = relay.begin(IPC.SANDBOX_INSTALL_PROGRESS, ['jimp'])
+    let answered = false
+    const finished = watch.finish([{ package: 'jimp', status: 'installed' }]).then(() => { answered = true })
+    await new Promise((r) => setTimeout(r, 50))
+    // The job ended; its progress line and end push are still in flight.
+    expect(answered).toBe(false)
+    relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'jimp', status: 'installing', message: 'npm install' } })
+    expect(answered).toBe(false)
+    relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'jimp', status: 'installed' } })
+    await finished
+    expect(answered).toBe(true)
   })
 })
 
@@ -412,19 +437,32 @@ describe('McpOAuthAuthorizeOpener (mcp_oauth_authorize)', () => {
     expect(opened).toEqual(['https://auth.example.test/a?s=1'])
   })
 
-  it('remote mode opens nothing (the callback is on the daemon machine) and says why', async () => {
+  it('remote mode opens the page through the callback relay, never directly (W4-B)', async () => {
     const warnings: string[] = []
     const opened: string[] = []
+    const relayed: string[] = []
     const opener = new McpOAuthAuthorizeOpener({
       mode: 'remote',
       fetchInput: async () => ({ server: 'docs', authorize_url: 'https://auth.example.test/a' }),
       openExternal: (url) => { opened.push(url) },
+      openRemote: async (url) => { relayed.push(url); return { opened: true } },
       log: { log: () => {}, warn: (m) => { warnings.push(m) } },
     })
     await opener.apply({ pending: [], history: [] })
     await opener.apply({ pending: [entry('r')], history: [] })
     expect(opened).toEqual([])
-    expect(warnings[0]).toMatch(/W4-B/)
+    expect(relayed).toEqual(['https://auth.example.test/a'])
+    // Without a relay remote mode opens nothing and says why.
+    const bare = new McpOAuthAuthorizeOpener({
+      mode: 'remote',
+      fetchInput: async () => ({ server: 'docs', authorize_url: 'https://auth.example.test/b' }),
+      openExternal: (url) => { opened.push(url) },
+      log: { log: () => {}, warn: (m) => { warnings.push(m) } },
+    })
+    await bare.apply({ pending: [], history: [] })
+    await bare.apply({ pending: [entry('r2')], history: [] })
+    expect(opened).toEqual([])
+    expect(warnings[0]).toMatch(/no relay is set up/)
   })
 
   it('daemon mode wires it to the approvals snapshots: GET /approvals/input for the URL, shell.openExternal to open it', async () => {

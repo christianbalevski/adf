@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, shell } from 'electron'
 import { existsSync } from 'fs'
 import { basename } from 'path'
 import { IPC } from '../shared/constants/ipc-channels'
+import { grantLocalOpen } from './backend/local-open-grants'
 
 /** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode). */
 export interface MenuSettings {
@@ -23,6 +24,13 @@ export interface DaemonMenuOptions {
   canReconnect: () => boolean
   openLog: () => void
   reconnect: () => void
+  /**
+   * Remote mode: recent files are paths on the daemon's machine. They are
+   * not added to the OS recent documents (the Windows shell may contact a
+   * UNC host), not checked for existence here, and never granted as files
+   * of this computer (local-open-grants.ts) (W4-B review).
+   */
+  remoteRecents?: boolean
 }
 
 export type MenuAction =
@@ -48,6 +56,8 @@ function sendMenuAction(action: MenuAction): void {
 
 // Recent entries reuse the same flow as double-clicking a .adf in Finder
 function sendOpenFile(filePath: string): void {
+  // The user's own recent list: remote mode may offer this computer's copy for upload (local-open-grants.ts).
+  if (!daemonMenu?.remoteRecents) grantLocalOpen(filePath)
   targetWindow()?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
 }
 
@@ -71,7 +81,7 @@ export function recordRecentFile(filePath: string): void {
     MAX_RECENT_FILES
   )
   settingsRef.set('recentFiles', list)
-  app.addRecentDocument(filePath)
+  if (!daemonMenu?.remoteRecents) app.addRecentDocument(filePath)
   buildApplicationMenu()
 }
 
@@ -83,7 +93,8 @@ function clearRecentFiles(): void {
 
 export function buildApplicationMenu(): void {
   const isMac = process.platform === 'darwin'
-  const recents = getRecentFiles().filter((p) => existsSync(p))
+  // No file-system call on a network path (UNC: Windows would send NTLM credentials to that host).
+  const recents = daemonMenu?.remoteRecents ? getRecentFiles() : getRecentFiles().filter((p) => !/^[\\/]{2}/.test(p) && existsSync(p))
 
   const openRecentSubmenu: Electron.MenuItemConstructorOptions[] = [
     ...recents.map((filePath) => ({

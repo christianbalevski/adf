@@ -13,6 +13,7 @@ import { BrandMark } from '../common/BrandMark'
 import { Button, Select, TextInput } from '../ui'
 import { ProviderAgentOverrides, ParamsEditor } from './ProviderAgentOverrides'
 import { providerDotClass, providerStatusLabel, type ProviderTestStatus } from './provider-status'
+import { editPlaceholderField } from '../../utils/placeholder-field'
 
 export interface SubscriptionAuthState {
   authenticated: boolean
@@ -250,7 +251,8 @@ function ProviderForm({
               aria-label="API key"
               type="password"
               value={provider.apiKey}
-              onChange={(e) => onUpdate({ apiKey: e.target.value })}
+              // The daemon answers a stored key as a placeholder (§4.2): typing replaces it, never edits it.
+              onChange={(e) => onUpdate({ apiKey: editPlaceholderField(provider.apiKey ?? '', e.target.value) })}
               placeholder={entry?.keyPlaceholder ?? 'API key'}
               className="font-mono text-[12px]"
             />

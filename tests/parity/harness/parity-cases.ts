@@ -23,6 +23,31 @@ import { runScenario, type ParityScenario } from './scenario'
 const RUNS = Math.max(1, Number(process.env.PARITY_RUNS ?? 1))
 const BUNDLE = existsSync(DAEMON_BUNDLE)
 
+/**
+ * Remote mode (W4-B): each scenario against Studio in `mode: 'remote'` on the
+ * built daemon behind the remote-acting proxy (daemonBackend({ remote: true
+ * })), compared with embedded after the named gaps, the remote-only ones
+ * included. Skipped without out/main/daemon.js.
+ */
+export function remoteParityCases(domain: string, scenarios: readonly ParityScenario[], opts: ParityCaseOptions = {}): void {
+  const wrap = opts.backend ?? ((b: ParityBackend) => b)
+  describe.skipIf(!BUNDLE)(`parity: ${domain}, remote backend (daemon behind a remote-acting proxy)`, () => {
+    for (const scenario of scenarios) {
+      it(`${scenario.name}: indistinguishable from embedded, apart from the named gaps`, async () => {
+        const embedded = await runScenario(scenario, wrap(embeddedBase))
+        const expected = renderRecording(toGoldenForm(embedded.normalized))
+        const remote = await runScenario(scenario, wrap(daemonBackend({ remote: true })), { tolerant: true })
+        const { unmatched } = applyGapAllowlist(scenario.name, remote.normalized, structuredClone(embedded.normalized), { daemon: remote.raw }, 'remote')
+        expect(unmatched, `gap entries that matched nothing in ${scenario.name} (fixed? remove them from harness/gaps.ts)`).toEqual([])
+        const actual = renderRecording(toGoldenForm(remote.normalized))
+        const diff = diffRendered(expected, actual, { expected: 'embedded', actual: 'remote (after gaps)' })
+        if (process.env.PARITY_DIFF_DIR) writeFileSync(join(process.env.PARITY_DIFF_DIR, `remote-${scenario.name}.diff`), diff)
+        expect(diff).toBe('')
+      }, 240_000)
+    }
+  })
+}
+
 export interface ParityCaseOptions {
   /**
    * Wraps each backend of a run, for a domain whose scenarios need the
@@ -76,4 +101,6 @@ export function parityCases(domain: string, scenarios: readonly ParityScenario[]
       }, 120_000 + RUNS * 120_000)
     }
   })
+
+  remoteParityCases(domain, scenarios, opts)
 }

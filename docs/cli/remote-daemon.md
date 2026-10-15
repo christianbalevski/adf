@@ -82,7 +82,7 @@ adf.example.com {
 ```
 
 - Start the daemon with `ADF_DAEMON_ALLOWED_HOSTS=adf.example.com` so it
-  accepts the proxied `Host`.
+  accepts the proxied `Host` (also on its loopback bind).
 - The token is the install's file token: `adf daemon token` on the server.
   Clients: `adf --url https://adf.example.com --token <token>`.
 - Live events are a streaming response (`/events`). Caddy streams them as is;
@@ -95,6 +95,89 @@ adf.example.com {
   `127.0.0.1:7385`, not through the proxy. A request that carries proxy
   headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, …) is never treated
   as local, with or without the setting.
+
+## Option 4: tailscale serve
+
+On a tailnet, `tailscale serve` gives the daemon an https address with a
+certificate your devices trust, and the daemon stays on the server's
+loopback.
+
+```bash
+# on the server: the daemon on loopback, told the tailnet name and that a proxy is in front
+export ADF_DAEMON_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+export ADF_DAEMON_BEHIND_PROXY=1
+adf daemon start
+# https://<machine>.<tailnet>.ts.net → 127.0.0.1:7385, in the background
+tailscale serve --bg 7385
+tailscale serve status
+adf daemon token
+```
+
+- Make the two variables permanent for whatever starts the daemon: `export`
+  holds only for that shell, and a daemon that `adf` starts later by
+  itself (or after a reboot) would come up without them and refuse the
+  `ts.net` name. Use a service with the variables in it, or the account's
+  persistent environment:
+
+  ```bash
+  # Linux: a systemd user unit (systemctl --user enable --now adf-daemon)
+  # ~/.config/systemd/user/adf-daemon.service
+  [Service]
+  Environment=ADF_DAEMON_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+  Environment=ADF_DAEMON_BEHIND_PROXY=1
+  ExecStart=/usr/bin/env adf daemon
+  Restart=on-failure
+  [Install]
+  WantedBy=default.target
+
+  # macOS: for the login session (or the same keys in a launchd agent's EnvironmentVariables)
+  launchctl setenv ADF_DAEMON_ALLOWED_HOSTS <machine>.<tailnet>.ts.net
+  launchctl setenv ADF_DAEMON_BEHIND_PROXY 1
+
+  # Windows: the user's persistent environment (new shells and processes)
+  setx ADF_DAEMON_ALLOWED_HOSTS <machine>.<tailnet>.ts.net
+  setx ADF_DAEMON_BEHIND_PROXY 1
+  ```
+
+  Restart the daemon after changing them (`adf daemon stop`, then start it
+  the same way).
+- `tailscale serve` forwards the browser's Host header (the `ts.net` name)
+  to the daemon, and adds `X-Forwarded-For`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto` and `Tailscale-User-*` headers (Tailscale's
+  `ipn/ipnlocal/serve.go`). So the name MUST be in
+  `ADF_DAEMON_ALLOWED_HOSTS`; the daemon accepts it on a loopback bind.
+  Without it every request answers `403 host_not_allowed`.
+- The forwarded headers make every request through `serve` a remote one:
+  owner identity create / restore / unlock / lock and `adf daemon stop`
+  are refused there. Run them on the server against `127.0.0.1:7385`.
+- Clients: `adf --url https://<machine>.<tailnet>.ts.net --token <token>`.
+- To stop serving: `tailscale serve reset`.
+
+Without `serve`, a daemon bound to its tailnet address
+(`adf daemon --host <100.x.y.z>`, with `ADF_DAEMON_TOKEN`) is reachable as
+`http://100.x.y.z:7385`; ADF Studio accepts plain http to a tailnet
+address (100.64.0.0/10) without a confirmation. A MagicDNS name over plain
+http needs the confirmation; use `serve` instead.
+
+## ADF Studio
+
+Settings → Backend → Remote daemon takes the same URL and token. Test
+connection checks the address, the token and the client API version;
+Use for next launch, then Restart now, connects.
+
+- Open agent…, New agent, Track folder and folder fields pick paths on
+  the server (a picker over `GET /fs/browse`). A remote client lists folder
+  and `.adf` names under the server's home folder, tracked folders and
+  agents folder; set `ADF_DAEMON_BROWSE_ROOTS` on the server to list
+  other folders instead of the home folder.
+- A `.adf` opened from this computer (double-click, Open Recent) is offered
+  as an upload of a copy into a tracked folder or the agents folder on the
+  server. Nothing is uploaded without your choice.
+- MCP OAuth sign-in: Studio asks before it opens the page, takes the
+  browser's callback on this computer and hands it to the daemon
+  (`POST /oauth/relay`). No port needs to be tunnelled.
+- Owner identity, stored credential values and the agent browser viewer
+  stay on the server; Studio says so where you ask for them.
 
 ## Sign in to ChatGPT
 

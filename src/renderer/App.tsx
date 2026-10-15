@@ -13,6 +13,7 @@ import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
+import { RemotePickerHost } from './components/common/RemotePickerDialog'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -269,6 +270,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppShell />
+      <RemotePickerHost />
     </ErrorBoundary>
   )
 }
