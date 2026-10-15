@@ -95,4 +95,32 @@ describe('Studio client session (W2-B)', () => {
     expect(daemon.requests.some((q) => q.method === 'DELETE' && q.path === '/client/sessions/s2')).toBe(true)
     expect(session.sessionId).toBeNull()
   })
+
+  it('a quit while the new session is re-held starts no stream and reports no gap (W5-F)', async () => {
+    const daemon = createFakeDaemon(BASE)
+    let created = 0
+    daemon.routes.set('GET /version', () => ({ version: '1.0.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION }))
+    daemon.routes.set('POST /client/sessions', () => ({ status: 201, body: { sessionId: `s${++created}`, epoch: 'e1' } }))
+    let s1Served = false
+    daemon.routes.set('GET /client/sessions/s1/events', () => {
+      if (s1Served) return { status: 404, body: { error: 'No client session s1', code: 'session_not_found' } }
+      s1Served = true
+      return sse(frame({ kind: 'push', cursor: 1, topic: 'templates', agentId: null, filePath: null, payload: {} }))
+    })
+    daemon.routes.set('GET /client/sessions/s2/events', () => sse(frame({ kind: 'push', cursor: 1, topic: 'templates', agentId: null, filePath: null, payload: {} })))
+    daemon.routes.set('POST /client/sessions/s2/quit', () => ({ sessionId: 's2', ended: true, stopping: false, otherSessions: 0 }))
+
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1.0.0', exitDaemonWhenClosed: true, log: quiet })
+    const r = recorder()
+    let quitDone = false
+    // Studio quits while the reopen re-holds its documents on s2.
+    r.listener.onReattached = async () => { await session.quit(false); quitDone = true }
+    session.start(r.listener)
+    await waitFor(() => quitDone, 'the quit during the reopen')
+    await new Promise((res) => setTimeout(res, 100))
+    expect(daemon.requests.some((q) => q.path === '/client/sessions/s2/quit')).toBe(true)
+    expect(daemon.requests.some((q) => q.path === '/client/sessions/s2/events')).toBe(false)
+    expect(r.gaps.some((g) => g.reason === 'new_session')).toBe(false)
+    expect(session.sessionId).toBeNull()
+  })
 })

@@ -361,11 +361,13 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
       sessionId = null
       log.warn(`[Backend] Client session ${previous ?? '?'} is gone on the daemon; opening a new one`)
       const id = await open()
-      if (!id || !listener) return
+      // quit()/end() during an await: no stream and no gap after it.
+      if (!id || !listener || ended) return
       // The new session holds nothing yet: focus and documents first, then frames.
       try { await listener.onReattached?.({ epochChanged: true }) } catch (err) {
         log.warn(`[Backend] Re-holding the documents on the new session failed: ${err instanceof Error ? err.message : String(err)}`)
       }
+      if (ended) return
       startStream(id)
       listener.onGap({ reason: 'new_session' })
     })().finally(() => { reopening = null })
