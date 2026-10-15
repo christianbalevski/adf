@@ -489,6 +489,24 @@ describe('the way back to embedded (review fixes)', () => {
     expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
   })
 
+  it('safeStorage that only obfuscates (Linux basic_text): MCP sign-ins stay with the daemon and say why; sessions move back with the key-file cipher', async () => {
+    const sub = SUBS[0]
+    studioTokens(sub).write(auth.issue(sub.subject))
+    await switchedToLocalWithMcp()
+    const reason = 'No OS keyring is available (Studio would only obfuscate the value).'
+    const report = await runHandover('embedded', deps({ studioSecrets: { ...studioCodec, available: () => false, unavailableReason: () => reason } }))
+    const mcp = report.items.find((i) => i.id === 'mcp-oauth')
+    expect(mcp).toMatchObject({ outcome: 'kept', pending: true })
+    expect(mcp?.detail).toContain('No OS keyring is available')
+    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+    const session = report.items.find((i) => i.id === 'chatgpt')
+    expect(session).toMatchObject({ outcome: 'moved' })
+    expect(session?.detail).toContain('key-file cipher')
+    const raw = readFileSync(studioTokens(sub).path, 'utf-8')
+    expect(raw.startsWith('safe:')).toBe(false)
+    expect(JSON.parse(decryptCredential(raw, '[test]')!)).toMatchObject({ account_id: sub.subject })
+  })
+
   it('a daemon still running on these settings: nothing moves back, the marker stays, and the user is told to stop it', async () => {
     const sub = SUBS[0]
     studioTokens(sub).write(auth.issue(sub.subject))

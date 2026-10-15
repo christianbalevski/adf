@@ -53,11 +53,30 @@ const RESUME_MAX_AGE_MS = 30 * 60_000
 /** "Wait for them to finish": the longest wait before the switch gives up and asks again. */
 const WAIT_FOR_TURNS_MAX_MS = 30 * 60_000
 
-/** The settings-secret format SettingsService uses: safeStorage when available. */
+/**
+ * Linux without a Secret Service keyring: safeStorage falls back to
+ * 'basic_text', a fixed key that only obfuscates. Not good enough for a
+ * daemon token, a moved-back session or MCP sign-ins.
+ */
+export function isObfuscationOnly(): boolean {
+  if (process.platform !== 'linux') return false
+  const backend = (safeStorage as { getSelectedStorageBackend?: () => string }).getSelectedStorageBackend?.()
+  return backend === 'basic_text'
+}
+
+/**
+ * The settings-secret format SettingsService uses: safeStorage when it
+ * really encrypts. Under `basic_text` the handover writes nothing with it
+ * (sessions go to the key-file cipher, MCP sign-ins stay with the daemon);
+ * values already stored that way still decrypt.
+ */
 export const studioSecretCodec: StudioSecretCodec = {
-  available: () => safeStorage.isEncryptionAvailable(),
+  available: () => safeStorage.isEncryptionAvailable() && !isObfuscationOnly(),
+  unavailableReason: () => isObfuscationOnly()
+    ? 'No OS keyring is available (Studio would only obfuscate the value). Install and unlock a Secret Service keyring such as GNOME Keyring or KWallet, then restart Studio.'
+    : safeStorage.isEncryptionAvailable() ? null : 'OS secure storage (safeStorage) is not available.',
   encrypt: (plain) => {
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('OS secure storage (safeStorage) is not available')
+    if (!studioSecretCodec.available()) throw new Error(studioSecretCodec.unavailableReason?.() ?? 'OS secure storage (safeStorage) is not available')
     return 'safe:' + safeStorage.encryptString(plain).toString('base64')
   },
   decrypt: (stored) => {

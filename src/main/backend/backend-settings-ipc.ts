@@ -4,20 +4,9 @@ import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, Re
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import { createBackendSettingsStore, readRemoteToken, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { remoteHandshake, RemoteConnectError } from './daemon-mode/remote/connector'
-import { relaunchStudio } from './mode-switch'
+import { isObfuscationOnly, relaunchStudio } from './mode-switch'
 
 const SAFE_PREFIX = 'safe:'
-
-/**
- * Linux without a Secret Service keyring: safeStorage falls back to
- * 'basic_text', a fixed key that only obfuscates. Not good enough for a
- * token that controls a remote daemon.
- */
-function isObfuscationOnly(): boolean {
-  if (process.platform !== 'linux') return false
-  const backend = (safeStorage as { getSelectedStorageBackend?: () => string }).getSelectedStorageBackend?.()
-  return backend === 'basic_text'
-}
 
 /** Electron safeStorage as the `safe:` codec, the format SettingsService uses. */
 export const safeStorageCodec: SecretCodec = {

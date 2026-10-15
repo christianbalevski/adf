@@ -109,7 +109,10 @@ export interface HandoverPlanItem {
 
 /** The `safe:` format of Studio's settings secrets and auth.json (Electron safeStorage). */
 export interface StudioSecretCodec {
+  /** False also where safeStorage only obfuscates (Linux `basic_text`): nothing moved back is written with it. */
   available(): boolean
+  /** Why `available()` is false, as a sentence; null when it is true. */
+  unavailableReason?(): string | null
   /** `safe:<base64>`. Throws when encryption is unavailable. */
   encrypt(plain: string): string
   /** Null when this value cannot be decrypted here. */
@@ -520,6 +523,10 @@ async function moveSubscription(
   }
   await deps.beforeSourceDelete?.(sub.id)
   await unlinkIfExists(sourcePath)
+  // Without usable safeStorage (none, or Linux basic_text) the moved-back session is written with the key-file cipher, as Studio itself does.
+  if (!toDaemon && !deps.studioSecrets.available()) {
+    note += `; encrypted with the key-file cipher (${(deps.studioSecrets.unavailableReason?.() ?? 'OS secure storage is not available').replace(/\.$/, '')})`
+  }
   // Recorded as moved only when Studio's own session went over (a conflict won by the daemon's session leaves it the daemon's).
   return { item: { id: sub.id, label: sub.label, outcome: 'moved', detail: `${sessionAccountLabel(keep)} moved from ${sourcePath} to ${destPath}${note}` }, ...(keep === source ? { movedAccount: keep.account_id } : {}) }
 }
@@ -593,7 +600,10 @@ async function moveMcpOAuth(toDaemon: boolean, deps: HandoverDeps, marker: Hando
   const ownKept = Object.keys(daemonBlob).length - urls.length
   const ownNote = ownKept > 0 ? `; ${ownKept} sign-in(s) the daemon had before the switch stay with it` : ''
   if (urls.length === 0) return result('unchanged', `no app-level MCP sign-ins of Studio's in the daemon${ownNote}`)
-  if (!deps.studioSecrets.available()) return result('kept', 'OS secure storage is not available to Studio, and MCP tokens are never stored unencrypted; they stay with the daemon', true)
+  if (!deps.studioSecrets.available()) {
+    const why = deps.studioSecrets.unavailableReason?.() ?? 'OS secure storage is not available to Studio'
+    return result('kept', `${why.replace(/\.$/, '')}, and MCP tokens are never stored unencrypted; they stay with the daemon`, true)
+  }
   if (studioText === null && rawStudio !== undefined) return result('kept', `Studio's ${MCP_OAUTH_SETTINGS_KEY} cannot be decrypted here; nothing moved`, true)
   const merged: Record<string, McpOAuthRecord> = { ...studioBlob }
   for (const url of urls) merged[url] = newerRecord(merged[url], daemonBlob[url])!
