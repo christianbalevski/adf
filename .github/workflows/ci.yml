@@ -175,6 +175,16 @@ jobs:
           node-version: 22
           cache: npm
 
+      # @electron/get's download cache (about 100 MB per OS), keyed on the lockfile.
+      - name: Cache the Electron download
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/.cache/electron
+            ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
       - name: Install dependencies with the Electron binary
         shell: bash
         run: |
