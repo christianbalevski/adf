@@ -24,7 +24,6 @@ import type { FastifyInstance } from 'fastify'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { RuntimeGate } from '../../runtime/runtime-gate'
 import type { RuntimeService } from '../../runtime/runtime-service'
-import { AgentVitalsService } from '../../services/agent-vitals'
 import { mergeAdapterStates } from '../../services/adapter-status'
 import { getFleetBurnService } from '../../services/fleet-burn.service'
 import { killAllHostExecs } from '../../services/host-exec.service'
@@ -37,7 +36,6 @@ import { createDispatch, createEvent } from '../../../shared/types/adf-event.typ
 import type { ContentBlock } from '../../../shared/types/provider.types'
 import type { FleetMessageResult } from '../../../shared/types/ipc.types'
 import type { AdapterState } from '../../../shared/types/channel-adapter.types'
-import { createDaemonVitalsDeps } from '../vitals-routes'
 import { gapDeps } from './gap-deps'
 import type { DaemonRouteContext } from './index'
 import { loadedAgentIndex } from './loaded-agents'
@@ -73,10 +71,8 @@ function sinceSeqOf(raw: unknown): number | undefined | null {
 }
 
 export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
-  const { runtime, options } = ctx
+  const { runtime, options, vitals, vitalsDeps } = ctx
   const mesh = options.mesh as (typeof options.mesh & MeshExtras) | undefined
-  const vitalsDeps = createDaemonVitalsDeps({ runtime, settings: options.settingsStore, mesh: options.mesh, ws: options.wsService })
-  const vitals = new AgentVitalsService(vitalsDeps)
   const index = loadedAgentIndex(runtime)
 
   const meshSource: MeshStatusSource = {

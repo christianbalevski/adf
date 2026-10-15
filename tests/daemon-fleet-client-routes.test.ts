@@ -63,6 +63,30 @@ describe('GET /fleet/vitals, /fleet/activity', () => {
   })
 })
 
+describe('one vitals service per daemon', () => {
+  it('/fleet/vitals, /fleet/status and /agents/:id/vitals read through one AgentVitalsService (one set of caches, one fleet scan)', async () => {
+    // Every service a route reads through: each call notes its `this`.
+    const services = new Set<AgentVitalsService>()
+    const wrap = <K extends 'getAgentVitals' | 'getFleetStatus' | 'ensureFleetScan'>(name: K) => {
+      const original = AgentVitalsService.prototype[name] as (...args: unknown[]) => unknown
+      const spy = vi.spyOn(AgentVitalsService.prototype, name).mockImplementation(function (this: AgentVitalsService, ...args: unknown[]) {
+        services.add(this)
+        return original.apply(this, args)
+      } as never)
+      cleanups.push(() => spy.mockRestore())
+    }
+    wrap('getAgentVitals'); wrap('getFleetStatus'); wrap('ensureFleetScan')
+
+    const { dir, runtime, server } = setup()
+    const { filePath } = seedAgent(dir, 1)
+    const ref = await runtime.loadAgent(filePath)
+    expect((await server.inject({ method: 'GET', url: `/fleet/vitals?path=${encodeURIComponent(filePath)}` })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'GET', url: '/fleet/status' })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'GET', url: `/agents/${ref.id}/vitals` })).statusCode).toBe(200)
+    expect(services.size).toBe(1)
+  })
+})
+
 describe('POST /fleet/state', () => {
   it('sets a running agent idle or hibernate; offline and invalid states fail as in Studio', async () => {
     const { dir, runtime, server } = setup()

@@ -15,6 +15,7 @@ import type { FastifyInstance } from 'fastify'
 import type { RuntimeService } from '../../runtime/runtime-service'
 import type { DaemonHttpApiOptions } from '../http-api'
 import type { LocalAccessOptions } from '../local-access'
+import type { AgentVitalsDeps, AgentVitalsService } from '../../services/agent-vitals'
 import { registerMetaRoutes, type DaemonStartedBy } from './meta-routes'
 import { registerApprovalsRoutes } from './approvals-routes'
 import { registerCredentialsRoutes } from './credentials-routes'
@@ -63,6 +64,10 @@ export interface DaemonRouteContext {
   options: DaemonHttpApiOptions
   /** Proxy mode + local proof, for local-only routes (requireLocalCaller). */
   localAccess: LocalAccessOptions
+  /** The daemon's one vitals service (its caches and fleet scan are shared by every route that reads vitals). */
+  vitals: AgentVitalsService
+  /** The sources `vitals` reads (createDaemonVitalsDeps). */
+  vitalsDeps: AgentVitalsDeps
 }
 
 export type DaemonRouteModule = (server: FastifyInstance, ctx: DaemonRouteContext) => void
