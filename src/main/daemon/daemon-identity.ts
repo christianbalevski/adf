@@ -574,6 +574,36 @@ export class DaemonIdentity {
   unlockWorkspaceEnvelopes(workspace: AdfWorkspace): void {
     this.unlockWithLocalRuntimeKeys(workspace)
     this.service.unlockWorkspaceEnvelopes(workspace)
+    this.enrollWithoutKeychain(workspace)
+  }
+
+  /**
+   * K12 (design §5.3 "Fallback"): without a usable keychain the daemon cannot
+   * adopt Studio's runtime identity, so Studio-made agents open only through
+   * the owner key, which a daemon on a passphrase file holds only while it is
+   * unlocked. While it holds the owner key (proof of the owner's authority),
+   * the daemon enrolls itself: its key goes into `trustedDaemonEncKeys` (once,
+   * logged), so embedded Studio wraps every agent's credentials to it from
+   * then on, and the open file gets its trusted-daemon slot. Credentials then
+   * unlock after a restart without the passphrase. Not with a keychain
+   * (adoption is the answer there), not without the owner key.
+   */
+  private enrollWithoutKeychain(workspace: AdfWorkspace): void {
+    const key = this.encKey
+    if (!key || this.adoption.state !== 'unavailable' || this.readyOwnerDid === null) return
+    if (workspace.getEnvelopeState('credentials') !== 'unlocked') return
+    try {
+      const trusted = this.store.get('trustedDaemonEncKeys')
+      const list = Array.isArray(trusted) ? trusted.filter((k): k is string => typeof k === 'string') : []
+      if (!list.includes(key.publicKeyB64)) {
+        this.store.set('trustedDaemonEncKeys', [...list, key.publicKeyB64])
+        console.log(`[ADF Daemon] No usable OS keychain: enrolled this daemon's key ${key.label} in trustedDaemonEncKeys with the owner key, so agent credentials unlock here without the passphrase (ADF Studio adds the slot to each agent it opens)`)
+      }
+    } catch (err) {
+      console.error('[ADF Daemon] Enrolling this daemon in trustedDaemonEncKeys failed:', err instanceof Error ? err.message : err)
+      return
+    }
+    this.service.enrollTrustedDaemonSlot(workspace, key)
   }
 
   /** The daemon's workspace identity hooks (setWorkspaceIdentityHooks). */
@@ -585,6 +615,7 @@ export class DaemonIdentity {
         this.unlockWithLocalRuntimeKeys(workspace)
         if (ready) this.service.ensureWorkspaceIdentity(workspace)
         else this.service.unlockWorkspaceEnvelopes(workspace)
+        this.enrollWithoutKeychain(workspace)
       },
       unlockEnvelopes: (workspace) => this.unlockWorkspaceEnvelopes(workspace),
       canProvision: () => this.isReady(),

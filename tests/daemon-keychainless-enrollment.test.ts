@@ -31,7 +31,7 @@ import { DaemonIdentity } from '../src/main/daemon/daemon-identity'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
 import { SettingsService } from '../src/main/services/settings.service'
 import { FileSecretBackend } from '../src/main/services/owner-secret-store'
-import type { KeySlotRecord } from '../src/main/crypto/envelope-crypto'
+import { openKeySlot, type KeySlotRecord } from '../src/main/crypto/envelope-crypto'
 
 const PASSPHRASE = 'a long daemon passphrase'
 const SECRET = 'mcp:@acme/server:API_KEY'
@@ -114,7 +114,7 @@ function credentialSlotDids(filePath: string): string[] {
 const disk = () => JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
 
 describe('K12: a daemon without a keychain and Studio-made agents', () => {
-  it('characterization: the owner key opens a Studio agent, but nothing enrolls the daemon, so a later Studio agent stays locked without the passphrase', () => {
+  it('the owner key enrolls the daemon: its key in trustedDaemonEncKeys, a trusted slot in the agent; agents Studio makes later unlock without the passphrase', () => {
     const s = makeStudio()
     const first = studioAgent(s.svc, 'agent-1')
 
@@ -123,8 +123,14 @@ describe('K12: a daemon without a keychain and Studio-made agents', () => {
     d1.identity.restore({ mnemonic: s.phrase, passphrase: PASSPHRASE })
     expect(d1.identity.status().runtime.state).toBe('unavailable')
     expect(daemonRead(d1.identity, first)).toBe('value-of-agent-1')
-    expect(disk().trustedDaemonEncKeys).toBeUndefined()
-    expect(credentialSlotDids(first)).not.toContain(daemonEncKeyLabel(d1.encKey.publicKeyRaw))
+    const label = daemonEncKeyLabel(d1.encKey.publicKeyRaw)
+    expect(disk().trustedDaemonEncKeys).toEqual([d1.encKey.publicKeyB64])
+    expect(credentialSlotDids(first)).toContain(label)
+    // Idempotent: a second open writes nothing.
+    const slotsBefore = credentialSlotDids(first)
+    expect(daemonRead(d1.identity, first)).toBe('value-of-agent-1')
+    expect(credentialSlotDids(first)).toEqual(slotsBefore)
+    expect(disk().trustedDaemonEncKeys).toEqual([d1.encKey.publicKeyB64])
 
     // Back in embedded Studio, a new agent; then the daemon starts without its passphrase.
     const s2 = makeStudio()
@@ -132,6 +138,61 @@ describe('K12: a daemon without a keychain and Studio-made agents', () => {
     const d2 = makeDaemon()
     expect(d2.identity.status().status).toBe('locked')
     expect(daemonRead(d2.identity, first)).toBe('value-of-agent-1') // runtime slot re-wrapped through the owner key
-    expect(daemonRead(d2.identity, second)).toBeNull()
+    expect(credentialSlotDids(second)).toContain(label)
+    expect(daemonRead(d2.identity, second)).toBe('value-of-agent-2')
+    // Only the credentials envelope: the identity envelope never gets a daemon slot.
+    const ws = AdfWorkspace.open(second)
+    try {
+      expect(ws.unlockEnvelopes({ runtimeEncPrivateKey: d2.encKey.privateKeyPkcs8 }).identity).not.toBe('unlocked')
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('without the owner key the daemon enrolls nothing', () => {
+    const s = makeStudio()
+    const first = studioAgent(s.svc, 'agent-1')
+    const d = makeDaemon() // no phrase restored: restore-needed
+    expect(d.identity.status().status).toBe('restore-needed')
+    expect(daemonRead(d.identity, first)).toBeNull()
+    expect(disk().trustedDaemonEncKeys).toBeUndefined()
+  })
+
+  it('a daemon with a keychain does not enroll itself (adoption is the answer there)', async () => {
+    const { fakeKeychain } = await import('./helpers/studio-runtime-entry')
+    const keychain = fakeKeychain()
+    const studio = new SettingsService()
+    const svc = studio.getOwnerIdentity()
+    svc.setSharedMnemonicStore(keychain.shared)
+    svc.ensureIdentity()
+    const first = studioAgent(svc, 'agent-1')
+    const settings = new FileSettingsStore(settingsPath)
+    const identity = new DaemonIdentity({ settings, settingsPath, encKey: ensureDaemonEncKey(h.userDataDir), backend: keychain.backend })
+    expect(identity.status().runtime.state).toBe('absent')
+    expect(daemonRead(identity, first)).toBe('value-of-agent-1') // through the owner key
+    expect(disk().trustedDaemonEncKeys).toBeUndefined()
+  })
+
+  it('a junk slot under the daemon label is replaced (label squat)', async () => {
+    const { randomBytes } = await import('node:crypto')
+    const s = makeStudio()
+    const first = studioAgent(s.svc, 'agent-1')
+    const d1 = makeDaemon()
+    d1.identity.restore({ mnemonic: s.phrase, passphrase: PASSPHRASE })
+    const ws = AdfWorkspace.open(first)
+    try {
+      s.svc.unlockWorkspaceEnvelopes(ws)
+      ws.addEnvelopeKeySlot('credentials', 'runtime', d1.encKey.label, randomBytes(32))
+    } finally {
+      ws.close()
+    }
+    expect(daemonRead(d1.identity, first)).toBe('value-of-agent-1')
+    const cold = AdfWorkspace.open(first)
+    try {
+      const slot = (cold.readEnvelopeSlots('credentials') ?? []).find((sl) => sl.type !== 'password' && (sl as KeySlotRecord).recipient_did === d1.encKey.label) as KeySlotRecord
+      expect(openKeySlot(slot, 'credentials', d1.encKey.privateKeyPkcs8)).not.toBeNull()
+    } finally {
+      cold.close()
+    }
   })
 })
