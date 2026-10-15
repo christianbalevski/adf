@@ -528,12 +528,44 @@ export interface TempSnapshot {
 }
 
 /**
+ * Identity rows an export without `includeSecrets` keeps although they are
+ * stored plain: public or wrapped material only (the agent's public key,
+ * envelope descriptors, KDF parameters). Every other plain row is a secret:
+ * a legacy agent's `crypto:signing:private_key`, credential values.
+ */
+const EXPORT_KEPT_PLAIN = /^crypto:(signing:public_key$|envelope:|kdf:)/
+
+/**
+ * Remove the plain secrets from a snapshot copy (export without
+ * `includeSecrets`): plain `crypto:*` key rows and plain credential rows.
+ * Sealed rows stay (they open only with a key the receiver holds).
+ * `secure_delete` zeroes the removed values in the file. Returns how many
+ * rows were removed.
+ */
+export function stripPlainSecrets(file: string): number {
+  const db = new Database(file, { fileMustExist: true })
+  try {
+    db.pragma('journal_mode = DELETE')
+    db.pragma('secure_delete = ON')
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'adf_identity'").get()) return 0
+    const rows = db.prepare('SELECT purpose, encryption_algo FROM adf_identity').all() as Array<{ purpose: string; encryption_algo: string | null }>
+    const drop = rows.filter((r) => (r.encryption_algo ?? 'plain') === 'plain' && !EXPORT_KEPT_PLAIN.test(r.purpose)).map((r) => r.purpose)
+    const del = db.prepare('DELETE FROM adf_identity WHERE purpose = ?')
+    db.transaction(() => { for (const purpose of drop) del.run(purpose) })()
+    return drop.length
+  } finally {
+    try { db.close() } catch { /* closed */ }
+  }
+}
+
+/**
  * A consistent copy of `filePath` in a fresh temp folder: `export` is the
- * whole file (SQLite online backup, safe while the agent runs and writes);
+ * whole file (SQLite online backup, safe while the agent runs and writes),
+ * minus its plain secrets unless `includeSecrets` (stripPlainSecrets);
  * `share` is the identity-free copy Studio's Share and Save a copy… make
  * (AdfDatabase.snapshotForSend).
  */
-export async function snapshotToTemp(filePath: string, mode: SnapshotMode): Promise<TempSnapshot> {
+export async function snapshotToTemp(filePath: string, mode: SnapshotMode, opts: { includeSecrets?: boolean } = {}): Promise<TempSnapshot & { secretsRemoved: number }> {
   const dir = await mkdtemp(join(tmpdir(), 'adf-snapshot-'))
   const file = join(dir, basename(filePath))
   const cleanup = async () => {
@@ -543,9 +575,13 @@ export async function snapshotToTemp(filePath: string, mode: SnapshotMode): Prom
     try { await rmdir(dir) } catch { /* not empty: leave it */ }
   }
   try {
+    let secretsRemoved = 0
     if (mode === 'share') await AdfDatabase.snapshotForSend(filePath, file)
-    else await AdfDatabase.snapshotTo(filePath, file)
-    return { file, size: (await stat(file)).size, cleanup }
+    else {
+      await AdfDatabase.snapshotTo(filePath, file)
+      if (!opts.includeSecrets) secretsRemoved = stripPlainSecrets(file)
+    }
+    return { file, size: (await stat(file)).size, cleanup, secretsRemoved }
   } catch (err) {
     await cleanup()
     throw err

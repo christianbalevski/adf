@@ -4,7 +4,7 @@
     "title": "ADF Daemon API",
     "version": "0.2.0",
     "summary": "HTTP API of the headless ADF runtime (adf daemon).",
-    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import` and the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
+    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import`, the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and full exports (`GET /agents/{id}/export`, `GET /files/snapshot?mode=export`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**The token is as powerful as the owner phrase.** A token holder can run code as the daemon (an agent's stdio MCP server or adapter, `POST /agents/{id}/start`), and code running as the daemon can read the owner phrase from the OS keychain or the unlocked identity file. Keep the token as you keep the 12 words: never paste it into a chat, a ticket or a shared shell history, and give a remote client a machine you trust.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -12893,7 +12893,7 @@
           "Agent files"
         ],
         "summary": "Download a snapshot of an agent file",
-        "description": "`share` (default): the identity-free copy Studio's Share and Save a copy… make. `export`: the whole file. Both are consistent while the agent runs (SQLite online backup) and travel as one file (rollback journal mode).",
+        "description": "`share` (default): the identity-free copy Studio's Share and Save a copy… make. `export`: the whole file, which holds the agent's identity: local callers with this run's `X-ADF-Local-Proof` only, in every mode (403 `loopback_only` otherwise; see Local-only routes), and without its plain secrets (a legacy agent's plain `crypto:signing:private_key`, plain credential values; header `X-ADF-Export-Secrets: removed`) unless `includeSecrets=true` (`X-ADF-Export-Secrets: included`). Sealed rows, the public key, envelope descriptors and KDF parameters stay. Both are consistent while the agent runs (SQLite online backup) and travel as one file (rollback journal mode).",
         "operationId": "getAgentFileSnapshot",
         "parameters": [
           {
@@ -12917,6 +12917,25 @@
                 "export"
               ],
               "default": "share"
+            }
+          },
+          {
+            "name": "includeSecrets",
+            "in": "query",
+            "required": false,
+            "description": "`mode=export` only: keep the plain secrets (a legacy agent's plain signing key, plain credential values) in the copy. 400 with `mode=share`.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "X-ADF-Local-Proof",
+            "in": "header",
+            "required": false,
+            "description": "Required for `mode=export`, in every mode: the contents of `<settings dir>/daemon-local-proof` on the daemon host.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -12964,11 +12983,30 @@
           "Agent files"
         ],
         "summary": "Export an agent's file",
-        "description": "A consistent copy of the agent's whole .adf (SQLite online backup), also while it runs and writes. The agent may be loaded, or a file in a tracked folder with that config id. 409 `not_file_backed` for an in-memory agent.",
+        "description": "A consistent copy of the agent's whole .adf (SQLite online backup), also while it runs and writes. The agent may be loaded, or a file in a tracked folder with that config id. The file holds the agent's identity, so this route answers local callers with this run's `X-ADF-Local-Proof` only, in every mode (403 `loopback_only` otherwise; see Local-only routes). Plain secrets (a legacy agent's plain `crypto:signing:private_key`, plain credential values) are left out (`X-ADF-Export-Secrets: removed`) unless `includeSecrets=true` (`X-ADF-Export-Secrets: included`). 409 `not_file_backed` for an in-memory agent.",
         "operationId": "exportAgent",
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "includeSecrets",
+            "in": "query",
+            "required": false,
+            "description": "Keep the plain secrets (a legacy agent's plain signing key, plain credential values) in the copy.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "X-ADF-Local-Proof",
+            "in": "header",
+            "required": true,
+            "description": "The contents of `<settings dir>/daemon-local-proof` on the daemon host, in every mode.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

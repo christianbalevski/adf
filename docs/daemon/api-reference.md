@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 315 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 317 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -14,7 +14,9 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 
 **Errors** are JSON `{ "error": "<message>", "code": "<code>" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ "statusCode": 400, "code": "FST_ERR_CTP_EMPTY_JSON_BODY", "error": "Bad Request", "message": "…" }`: send no Content-Type (or `{}`) on bodiless POSTs.
 
-**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take "local" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import` and the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.
+**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take "local" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import`, the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and full exports (`GET /agents/{id}/export`, `GET /files/snapshot?mode=export`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.
+
+**The token is as powerful as the owner phrase.** A token holder can run code as the daemon (an agent's stdio MCP server or adapter, `POST /agents/{id}/start`), and code running as the daemon can read the owner phrase from the OS keychain or the unlocked identity file. Keep the token as you keep the 12 words: never paste it into a chat, a ticket or a shared shell history, and give a remote client a machine you trust.
 
 **Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).
 
@@ -30,7 +32,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Chat](#tag-chat) (7)
 - [Files](#tag-files) (15)
 - [Identity (agent)](#tag-identity-agent) (23)
-- [Owner identity](#tag-owner-identity) (9)
+- [Owner identity](#tag-owner-identity) (11)
 - [Credentials](#tag-credentials) (10)
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (14)
@@ -1328,7 +1330,7 @@ Operation `startAgent` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ReviewRequiredResponse](#schema-reviewrequiredresponse) \| [ErrorResponse](#schema-errorresponse) | The .adf must be reviewed on this machine before it loads (`AGENT_REVIEW_REQUIRED`), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
-| 409 | [AmbiguousAgentResponse](#schema-ambiguousagentresponse) \| [ErrorResponse](#schema-errorresponse) | The identifier matches several agent files (`ambiguous_agent`), the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`), another process runs the agent (`agent_leased`) or another loaded file has the same agent id (`duplicate_agent_id`) |
+| 409 | [AmbiguousAgentResponse](#schema-ambiguousagentresponse) \| [ErrorResponse](#schema-errorresponse) | The identifier matches several agent files (`ambiguous_agent`), the `preflight` provider check failed (`provider_missing`, `provider_unconfigured`, `provider_check_failed`), another process runs the agent (`agent_leased`), another loaded file has the same agent id (`duplicate_agent_id`) or the agent is being stopped while it starts (`agent_not_running`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 
 Example 200 (`application/json`):
@@ -5228,6 +5230,8 @@ The owner identity on this machine (seed phrase, keychain or passphrase file). S
 | GET | [`/identity`](#op-getowneridentity) | Owner identity status (no secrets) |
 | POST | [`/identity/create`](#op-createowneridentity) | Create the owner identity; returns the seed phrase ONCE (loopback only) |
 | POST | [`/identity/restore`](#op-restoreowneridentity) | Restore the owner identity from its seed phrase (loopback only) |
+| POST | [`/identity/trust-daemon`](#op-trustdaemonkey) | Trust this daemon's key (owner action, no OS keychain) |
+| POST | [`/identity/untrust-daemon`](#op-untrustdaemonkey) | Revoke the owner's trust in this daemon's key |
 | POST | [`/identity/unlock`](#op-unlockowneridentity) | Unlock a passphrase-file identity (loopback only) |
 | POST | [`/identity/lock`](#op-lockowneridentity) | Lock a passphrase-file identity (loopback only) |
 | POST | [`/identity/confirm-backup`](#op-confirmownerbackup) | Record that the seed phrase was written down (loopback only) |
@@ -5408,6 +5412,84 @@ Example 200 (`application/json`):
     "passphraseRequired": false,
     "message": "Owner identity is ready."
   }
+}
+```
+
+<a id="op-trustdaemonkey"></a>
+
+### POST `/identity/trust-daemon`
+
+**Trust this daemon's key (owner action, no OS keychain)**
+
+K12. Adds the daemon's key (runtime-enc-key) to `trustedDaemonEncKeys`, so ADF Studio wraps every agent's credentials to it and they unlock here without the owner passphrase; loaded agents get their slot at once. An explicit owner action, never automatic: the body must say `confirm: true`. Refused when the daemon reads the OS keychain (`keychain_available`) and without the owner key (`not_ready`). The grant is a settings entry, not a signed statement. Local callers only, always with the local proof (see Local-only routes).
+
+Operation `trustDaemonKey` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `confirm` | `true` | yes |  |
+
+```json
+{
+  "confirm": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The trust state after the call, and how many loaded agents got or lost their slot |
+| 400 | [IdentityErrorResponse](#schema-identityerrorresponse) | No `confirm: true` (`confirm_required`); the error says what trusting means |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 409 | [IdentityErrorResponse](#schema-identityerrorresponse) | The daemon reads the OS keychain (`keychain_available`) or the owner key is not available (`not_ready`) |
+| 503 | — | No owner identity service on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "trust": {
+    "state": "trusted",
+    "label": "string",
+    "message": "string"
+  },
+  "agentsUpdated": 0
+}
+```
+
+<a id="op-untrustdaemonkey"></a>
+
+### POST `/identity/untrust-daemon`
+
+**Revoke the owner's trust in this daemon's key**
+
+K12. Removes the daemon's key from `trustedDaemonEncKeys` and rotates it: a new key replaces the key file, the old one is no longer used, and its label is recorded as revoked. Loaded agents lose the slot at once, agents in the tracked folders in a background sweep (`sweep: started`; it skips files another runtime runs and documents this daemon holds open, which are cleaned when next opened), any other agent when this daemon or ADF Studio next opens it. A copy outside the tracked folders keeps the old slot until it is opened; anyone holding a copy of the old key file can open that slot until then. Slots of the daemon's own runtime wrapped to the old key open again after the next owner-key unlock. The daemon never adds a key back by itself. Local callers only, always with the local proof.
+
+Operation `untrustDaemonKey` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The trust state after the call, and how many loaded agents got or lost their slot |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not a local caller (`loopback_only`): the request came from another machine, through a proxy (forwarded headers), or — with `ADF_DAEMON_BEHIND_PROXY` — without this machine's `X-ADF-Local-Proof`. Owner secrets and shutdown are handled on the daemon host only. Or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 503 | — | No owner identity service on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "trust": {
+    "state": "trusted",
+    "label": "string",
+    "message": "string"
+  },
+  "agentsUpdated": 0
 }
 ```
 
@@ -15066,7 +15148,7 @@ Example 200 (`application/json`):
 
 **Download a snapshot of an agent file**
 
-`share` (default): the identity-free copy Studio's Share and Save a copy… make. `export`: the whole file. Both are consistent while the agent runs (SQLite online backup) and travel as one file (rollback journal mode).
+`share` (default): the identity-free copy Studio's Share and Save a copy… make. `export`: the whole file, which holds the agent's identity: local callers with this run's `X-ADF-Local-Proof` only, in every mode (403 `loopback_only` otherwise; see Local-only routes), and without its plain secrets (a legacy agent's plain `crypto:signing:private_key`, plain credential values; header `X-ADF-Export-Secrets: removed`) unless `includeSecrets=true` (`X-ADF-Export-Secrets: included`). Sealed rows, the public key, envelope descriptors and KDF parameters stay. Both are consistent while the agent runs (SQLite online backup) and travel as one file (rollback journal mode).
 
 Operation `getAgentFileSnapshot` · bearer token
 
@@ -15076,6 +15158,8 @@ Operation `getAgentFileSnapshot` · bearer token
 |---|---|---|---|---|
 | `path` | query | string | yes | Absolute path of the .adf file |
 | `mode` | query | `"share"` \| `"export"` |  |  |
+| `includeSecrets` | query | boolean |  | `mode=export` only: keep the plain secrets (a legacy agent's plain signing key, plain credential values) in the copy. 400 with `mode=share`. |
+| `X-ADF-Local-Proof` | header | string |  | Required for `mode=export`, in every mode: the contents of `<settings dir>/daemon-local-proof` on the daemon host. |
 
 **Responses**
 
@@ -15100,7 +15184,7 @@ Example 200 (`application/octet-stream`):
 
 **Export an agent's file**
 
-A consistent copy of the agent's whole .adf (SQLite online backup), also while it runs and writes. The agent may be loaded, or a file in a tracked folder with that config id. 409 `not_file_backed` for an in-memory agent.
+A consistent copy of the agent's whole .adf (SQLite online backup), also while it runs and writes. The agent may be loaded, or a file in a tracked folder with that config id. The file holds the agent's identity, so this route answers local callers with this run's `X-ADF-Local-Proof` only, in every mode (403 `loopback_only` otherwise; see Local-only routes). Plain secrets (a legacy agent's plain `crypto:signing:private_key`, plain credential values) are left out (`X-ADF-Export-Secrets: removed`) unless `includeSecrets=true` (`X-ADF-Export-Secrets: included`). 409 `not_file_backed` for an in-memory agent.
 
 Operation `exportAgent` · bearer token
 
@@ -15109,6 +15193,8 @@ Operation `exportAgent` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `includeSecrets` | query | boolean |  | Keep the plain secrets (a legacy agent's plain signing key, plain credential values) in the copy. |
+| `X-ADF-Local-Proof` | header | string | yes | The contents of `<settings dir>/daemon-local-proof` on the daemon host, in every mode. |
 
 **Responses**
 
@@ -17950,6 +18036,18 @@ What the API reveals about one stored identity value: never the value.
 | `length` | integer \| null | yes | null for crypto:* purposes and locked values |
 | `code_access` | boolean | yes |  |
 
+<a id="schema-daemontruststatus"></a>
+
+### DaemonTrustStatus
+
+K12: whether the owner trusts this daemon's key (`trustedDaemonEncKeys`). `not-applicable`: the daemon reads the OS keychain and shares ADF Studio's runtime identity instead.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `state` | `"trusted"` \| `"not-trusted"` \| `"not-applicable"` | yes |  |
+| `label` | string \| null | yes | Slot label `daemon:<fingerprint>` of the daemon key; null without a key file. |
+| `message` | string | yes |  |
+
 <a id="schema-daemonversioninfo"></a>
 
 ### DaemonVersionInfo
@@ -17963,6 +18061,7 @@ What the API reveals about one stored identity value: never the value.
 | `runtimeId` | string \| null | yes | Mesh runtime id from settings; null until one was minted |
 | `pid` | integer | yes | Daemon process id |
 | `startedBy` | `"studio"` \| `"cli"` \| `"service"` | yes | Who launched this daemon run (`ADF_DAEMON_STARTED_BY`) |
+| `trust` | [DaemonTrustStatus](#schema-daemontruststatus) |  |  |
 | `localProof` | object |  | Whether this run has a local proof (X-ADF-Local-Proof). Without one, every route that needs it refuses (POST /identity/import, the stored-value reveal routes); on Windows that happens when icacls cannot restrict the proof file. Absent in daemons before this field. |
 | `localProof.available` | boolean | yes |  |
 | `localProof.problem` | string \| null | yes | Why there is no proof; null when available. |
@@ -18355,6 +18454,7 @@ The ONLY response that carries the seed phrase (sent with Cache-Control: no-stor
 | `status` | `"none"` \| `"locked"` \| `"restore-needed"` \| `"ready"` | yes |  |
 | `ownerDid` | string \| null | yes |  |
 | `runtimeDid` | string \| null | yes | The runtime DID the daemon signs and stamps with: ADF Studio's when `runtime.state` is `adopted`, else the daemon's own |
+| `trust` | [DaemonTrustStatus](#schema-daemontruststatus) |  |  |
 | `runtime` | [DaemonRuntimeAdoption](#schema-daemonruntimeadoption) |  |  |
 | `storage` | `"keychain"` \| `"file"` | yes |  |
 | `backupConfirmed` | boolean | yes |  |

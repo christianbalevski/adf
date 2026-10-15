@@ -91,6 +91,10 @@ function memorySettings(initial: Record<string, unknown> = {}) {
   }
 }
 
+/** This run's local proof: a full export (mode export) needs it. */
+const PROOF = 'test-local-proof-0123456789abcdefghijklmnopqrstuvwxyz'
+const withProof = { 'x-adf-local-proof': PROOF }
+
 function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeService; rawFileBodyLimit?: number; identity?: unknown } = {}) {
   const settings = memorySettings(initial)
   const runtime = opts.runtime ?? new RuntimeService({
@@ -109,6 +113,7 @@ function setup(initial: Record<string, unknown> = {}, opts: { runtime?: RuntimeS
     ...(opts.identity ? { identity: opts.identity as never } : {}),
     onTrackedDirectoriesChanged: dirs => changes.push(dirs),
     routes: { trackedDirWatcher: watcher, ...(opts.rawFileBodyLimit ? { rawFileBodyLimit: opts.rawFileBodyLimit } : {}) },
+    security: { localProof: PROOF },
   })
   servers.push(server)
   return { runtime, server, settings, changes, pushes, renames, watcher }
@@ -297,7 +302,7 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     }
     for (const side of ['-wal', '-shm']) { try { unlinkSync(mainOnly + side) } catch { /* none */ } }
 
-    const res = await server.inject({ method: 'GET', url: `/agents/${ref.id}/export` })
+    const res = await server.inject({ method: 'GET', url: `/agents/${ref.id}/export`, headers: withProof })
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toBe('application/octet-stream')
     expect(res.headers['content-disposition']).toContain('agent-1.adf')
@@ -315,8 +320,69 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     }
     // A tracked file that is not loaded exports by id too; unknown ids are 404.
     await runtime.unloadAgent(ref.id)
-    expect((await server.inject({ method: 'GET', url: `/agents/${a.id}/export` })).statusCode).toBe(200)
-    expect((await server.inject({ method: 'GET', url: '/agents/no-such-agent/export' })).statusCode).toBe(404)
+    expect((await server.inject({ method: 'GET', url: `/agents/${a.id}/export`, headers: withProof })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'GET', url: '/agents/no-such-agent/export', headers: withProof })).statusCode).toBe(404)
+  })
+
+  it('a full export needs the local proof and leaves plain secrets out unless includeSecrets', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    // A legacy agent: no envelopes, so its signing key and credentials are stored plain.
+    const ws = AdfWorkspace.open(a.filePath)
+    try {
+      ws.generateIdentityKeys(null)
+      ws.setIdentity('provider:p1:apiKey', 'sk-plain-secret')
+      expect(ws.getIdentityRow('crypto:signing:private_key')).not.toBeNull()
+    } finally {
+      ws.close()
+    }
+    const { server } = setup({ trackedDirectories: [root] })
+    const exportUrl = `/agents/${a.id}/export`
+    const snapshotUrl = `/files/snapshot?path=${q(a.filePath)}&mode=export`
+
+    // The token alone: refused, naming the proof; a remote caller too, with the proof.
+    for (const url of [exportUrl, snapshotUrl]) {
+      const bare = await server.inject({ method: 'GET', url })
+      expect(bare.statusCode).toBe(403)
+      expect(bare.json()).toMatchObject({ code: 'loopback_only' })
+      expect(bare.json().error).toContain('X-ADF-Local-Proof')
+      expect((await server.inject({ method: 'GET', url, headers: { 'x-adf-local-proof': 'wrong'.repeat(10) } })).statusCode).toBe(403)
+      expect((await server.inject({ method: 'GET', url, headers: withProof, remoteAddress: '10.1.2.3' })).statusCode).toBe(403)
+    }
+    // The share copy stays token-only; includeSecrets is for exports only.
+    expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(a.filePath)}&mode=share` })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(a.filePath)}&includeSecrets=true`, headers: withProof })).statusCode).toBe(400)
+    expect((await server.inject({ method: 'GET', url: `${exportUrl}?includeSecrets=yes`, headers: withProof })).statusCode).toBe(400)
+
+    const identityRows = (payload: Buffer) => {
+      const out = join(tempDir('adf-export-'), 'agent-1.adf')
+      writeFileSync(out, payload)
+      const db = new Database(out, { readonly: true })
+      try {
+        return Object.fromEntries((db.prepare('SELECT purpose, value FROM adf_identity').all() as Array<{ purpose: string; value: Buffer | string }>)
+          .map((r) => [r.purpose, Buffer.isBuffer(r.value) ? r.value.toString('utf-8') : String(r.value)]))
+      } finally {
+        db.close()
+      }
+    }
+    for (const url of [exportUrl, snapshotUrl]) {
+      const stripped = await server.inject({ method: 'GET', url, headers: withProof })
+      expect(stripped.statusCode).toBe(200)
+      expect(stripped.headers['x-adf-export-secrets']).toBe('removed')
+      const rows = identityRows(stripped.rawPayload)
+      expect(rows['crypto:signing:private_key']).toBeUndefined()
+      expect(rows['provider:p1:apiKey']).toBeUndefined()
+      expect(rows['crypto:signing:public_key']).toBeDefined() // public material stays
+      // secure_delete: the removed values are not left in the file's free pages.
+      expect(stripped.rawPayload.includes(Buffer.from('sk-plain-secret'))).toBe(false)
+
+      const full = await server.inject({ method: 'GET', url: `${url}${url.includes('?') ? '&' : '?'}includeSecrets=true`, headers: withProof })
+      expect(full.statusCode).toBe(200)
+      expect(full.headers['x-adf-export-secrets']).toBe('included')
+      const all = identityRows(full.rawPayload)
+      expect(all['crypto:signing:private_key']).toBeDefined()
+      expect(all['provider:p1:apiKey']).toBe('sk-plain-secret')
+    }
   })
 
   it('serves an identity-free share snapshot and writes a copy with save-as (never over the source)', async () => {
@@ -682,7 +748,7 @@ describe('daemon file routes: path safety', () => {
     try { symlinkSync(victim, evil, 'file'); links.push(evil) } catch { fileLinks = false } // needs Developer Mode on Windows
     if (fileLinks) {
       expect((await server.inject({ method: 'DELETE', url: `/files?path=${q(evil)}` })).json().code).toBe('not_an_adf')
-      expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(evil)}&mode=export` })).json().code).toBe('not_an_adf')
+      expect((await server.inject({ method: 'GET', url: `/files/snapshot?path=${q(evil)}&mode=export`, headers: withProof })).json().code).toBe('not_an_adf')
       expect(readFileSync(victim, 'utf-8')).toBe('keep me')
     }
 

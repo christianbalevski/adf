@@ -15,6 +15,28 @@ token). `adf` never starts a daemon for a remote URL (or a tunnelled local
 port), and never sends your machine's own token file to another host. In the app, `/url <url> --token
 <token>` switches daemons live.
 
+## The token is as powerful as your seed phrase
+
+Whoever holds the daemon token can run code on the server as the daemon's
+user: attaching an MCP server or a channel adapter sets the command the
+daemon starts, and starting the agent runs it. That code can read what the
+daemon reads, including the owner seed phrase in the OS keychain (or in the
+daemon's memory once its passphrase file is unlocked). Treat the token as you
+treat the 12 words:
+
+- Give it only to machines you trust with the seed phrase. Never paste it
+  into a chat, a ticket, a shared shell history or a CI log.
+- Send it only over an encrypted transport (SSH tunnel, https). Plain http
+  on a network you do not control hands it to that network.
+- If it leaks, rotate it: on the server run `adf daemon stop`, delete the
+  `daemon-token` file (`adf daemon status` names the data directory) or set a
+  new `ADF_DAEMON_TOKEN`, and start the daemon again. If the daemon held the
+  seed phrase, also move your agents to a new owner (`adf identity import`).
+
+Routes that hand secrets out directly (owner import, stored values, full
+`.adf` exports) additionally need the local proof file, which only the
+server's own user can read; that does not stop the path above.
+
 ## Option 1: SSH tunnel (recommended)
 
 The daemon stays on the server's loopback, where it is by default; SSH does
