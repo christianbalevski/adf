@@ -383,7 +383,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 
 ## 7. Parity triage (filled in W5-A)
 
-Run (W5-A2): bundle rebuilt at 42ebd118, `PARITY_RUNS=3 PARITY_REQUIRE_DAEMON=1 … run tests/parity --reporter=verbose`: 18 files, 147 tests passed, 2 todo; 70 daemon-side and 33 remote-side cases. Allowlist 23 entries before W5-A2, 26 after (one fixed and removed, one accepted and renamed, four by-design entries for the agent OAuth flow now compared in full); the two `e3:*` entries leave with ws/w5-a1.
+Run (W5-A2, again after the review fixes): bundle rebuilt at c66c62cf, `PARITY_RUNS=3 PARITY_REQUIRE_DAEMON=1 … run tests/parity --reporter=verbose`: 18 files, 147 tests passed, 2 todo; 70 daemon-side and 33 remote-side cases. Allowlist 23 entries before W5-A2, 26 after (one fixed and removed, one accepted and renamed, four by-design entries for the agent OAuth flow now compared in full); the two `e3:*` entries leave with ws/w5-a1.
 
 | Scenario | Diff | Decision | Commit |
 |---|---|---|---|
