@@ -314,7 +314,8 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
           ws.writeFileBuffer(path, bytes, mimeType)
           return path
         }))
-        revision = observeRevision(ws, fileRevisionKey(saved), ws.readFileBuffer(saved), writer).revision
+        // The bytes in hand are what `saved` holds (a unique write reuses only identical bytes): no re-read.
+        revision = observeRevision(ws, fileRevisionKey(saved), bytes, writer).revision
       } else {
         if (unique) return reply.code(409).send({ error: 'unique naming needs a file-backed agent', code: 'not_file_backed' })
         revision = runAsWriter(writer, () => runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType })).revision
