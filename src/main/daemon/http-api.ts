@@ -1,5 +1,6 @@
 // Imported, not read from disk: bundles (the npm package) carry it inline.
 import openApiSpec from '../../../docs/daemon/openapi.json'
+import { CHAT_BODY_LIMIT_BYTES } from '../../shared/constants/chat-limits'
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
@@ -389,8 +390,8 @@ interface ChatBody {
   echoed?: boolean
 }
 
-/** POST /agents/:id/chat body limit: content blocks carry images and audio as data URIs. */
-const CHAT_BODY_LIMIT = 32 * 1024 * 1024
+/** POST /agents/:id/chat body limit: content blocks carry images and audio as data URIs (shared with Studio, which names it). */
+const CHAT_BODY_LIMIT = CHAT_BODY_LIMIT_BYTES
 
 /** Block types a user message may carry (the rest are model output). */
 const USER_CONTENT_TYPES = new Set(['text', 'image_url', 'input_audio', 'video_url'])
@@ -2460,10 +2461,12 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.post<{ Body: { path?: unknown } }>('/tracked-dirs', async (request, reply) => {
+  server.post<{ Body: { path?: unknown; autostart?: unknown } }>('/tracked-dirs', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    const autostart = request.body?.autostart
+    if (autostart !== undefined && typeof autostart !== 'boolean') return badRequest(reply, 'autostart must be a boolean')
     try {
-      const result = await trackDir(runtime, opts.settingsStore, request.body?.path, opts.onTrackedDirectoriesChanged)
+      const result = await trackDir(runtime, opts.settingsStore, request.body?.path, opts.onTrackedDirectoriesChanged, { autostart })
       return reply.code(201).send(result)
     } catch (err) {
       return trackedDirsError(reply, err)

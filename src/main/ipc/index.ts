@@ -91,6 +91,7 @@ import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { withSource } from '../runtime/execution-context'
 import { AGENT_WRITER, configRevision, documentRevision, fileRevision, runAsWriter } from '../runtime/resource-revisions'
+import { isValidAgentFileName } from '../../shared/utils/agent-file-name'
 import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-conflicts'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
@@ -1337,13 +1338,6 @@ async function handleAgentOff(filePath: string): Promise<void> {
  * rename is applied when the agent stops. Keyed by current file path.
  */
 const pendingAgentRenames = new Map<string, string>()
-
-/** Characters not allowed in file names on Windows (superset of POSIX). */
-const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
-
-function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
-}
 
 function isAgentFileRunning(filePath: string): boolean {
   if (startingFilePaths.has(filePath)) return true

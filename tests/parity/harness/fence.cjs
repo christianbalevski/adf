@@ -110,6 +110,13 @@ const REQUIRE_SELF = `--require "${__filename.split('\\').join('/')}"`
 function withFenceEnv(args) {
   if (!state) return args
   const out = [...args]
+  // A child under Node's permission model (the code sandbox host,
+  // runtime/sandbox-host.ts) may read only what it allows: the fence it is
+  // given through NODE_OPTIONS is added to its read allowlist, or it could
+  // not load the fence and would exit at once.
+  if (Array.isArray(out[1]) && out[1].includes('--permission')) {
+    out[1] = ['--permission', `--allow-fs-read=${__filename}`, ...out[1].filter((a) => a !== '--permission')]
+  }
   for (let i = 1; i < out.length; i++) {
     const a = out[i]
     if (!a || typeof a !== 'object' || Array.isArray(a)) continue

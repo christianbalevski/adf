@@ -17,6 +17,7 @@ import type { DaemonHandlerTable, DaemonModeContext, DaemonSendHandlerTable } fr
 import { enc } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
 import { samePath } from '../session'
+import { isValidAgentFileName } from '../../../../shared/utils/agent-file-name'
 import { daemonCode, daemonStatus, errorMessage, errorString, onOpenFile } from './open-file'
 
 /**
@@ -33,11 +34,7 @@ import { daemonCode, daemonStatus, errorMessage, errorString, onOpenFile } from 
 
 // --- helpers ----------------------------------------------------------------
 
-/** Embedded FILE_RENAME / FILE_CREATE_QUICK name rule (ipc/index.ts isValidAgentFileName). */
-const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
-function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
-}
+// Embedded FILE_RENAME / FILE_CREATE_QUICK name rule: isValidAgentFileName (shared/utils/agent-file-name.ts).
 
 const CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin'
 
@@ -529,13 +526,16 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     return { path: result.filePaths[0] }
   },
 
+  // Embedded Studio tracks a folder without starting its agents (they start at
+  // the next start, ipc/index.ts autostartFromDirectories at boot): so does
+  // the daemon for Studio (`autostart: false`).
   [IPC.TRACKED_DIRS_ADD]: async (ctx) => {
     remotePicker(ctx, 'Tracking a folder picked with the native dialog in remote mode')
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     const client = await ctx.ready()
     if (result.canceled || result.filePaths.length === 0) return { directories: await trackedList(client) }
     try {
-      const tracked = await client.request<{ directories: string[] }>('POST', '/tracked-dirs', { body: { path: result.filePaths[0] }, timeoutMs: 120_000 })
+      const tracked = await client.request<{ directories: string[] }>('POST', '/tracked-dirs', { body: { path: result.filePaths[0], autostart: false }, timeoutMs: 120_000 })
       return { directories: tracked.directories }
     } catch (err) {
       // Already covered by a tracked folder (itself or a parent): the list as it is.

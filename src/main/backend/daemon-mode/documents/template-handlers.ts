@@ -18,9 +18,9 @@ import { reviewSummaryKeys } from './file-handlers'
  * service's `{ success: false, error }` sentence travels as the route's
  * `error` and comes back as it was.
  *
- * Differences that remain: the daemon's template routes need the owner
- * identity (409 identity_not_ready, its sentence is the answer), where
- * embedded Studio lists and edits templates without one.
+ * As embedded, templates are listed and edited without the owner identity;
+ * accepting a template's review needs it (409 identity_not_ready, its
+ * sentence is the answer).
  */
 
 type Fail = { success: false; error: string }

@@ -14,6 +14,7 @@ import { MESH_SCENARIOS } from './mesh/scenarios'
 import { W3C_SCENARIO_NAMES } from './mcp/scenarios'
 import { DOCUMENT_SCENARIOS } from './documents/scenarios'
 import { CONFLICT_SCENARIOS } from './conflicts/scenarios'
+import { WRITE_SOURCE_SCENARIOS } from './write-source/scenarios'
 
 /**
  * Parity harness, daemon side (tracker W2-C, README "Daemon backend").
@@ -85,7 +86,7 @@ describe.skipIf(!BUNDLE)('parity: daemon backend (child process)', () => {
   }
 
   it('every gap entry names a workstream and lists only known scenarios', () => {
-    const names = new Set([...[...CORE_SCENARIOS, ...MESH_SCENARIOS, ...SETTINGS_SCENARIOS, ...IDENTITY_SCENARIOS, ...DOCUMENT_SCENARIOS, ...CONFLICT_SCENARIOS].map((s) => s.name), ...W3C_SCENARIO_NAMES])
+    const names = new Set([...[...CORE_SCENARIOS, ...MESH_SCENARIOS, ...SETTINGS_SCENARIOS, ...IDENTITY_SCENARIOS, ...DOCUMENT_SCENARIOS, ...CONFLICT_SCENARIOS, ...WRITE_SOURCE_SCENARIOS].map((s) => s.name), ...W3C_SCENARIO_NAMES])
     for (const entry of GAP_ALLOWLIST) {
       expect(entry.ws).toMatch(/^(W\d-[A-Z]\d?|E3|mode)$/)
       for (const s of entry.scenarios) expect(names.has(s), `${entry.id}: ${s}`).toBe(true)

@@ -19,9 +19,9 @@ import type { ComparableRecording } from './recording'
  * key counts, so `{x: undefined}` and `{}` differ for it). Object key order
  * is not compared (the formatter sorts keys; no consumer depends on it).
  *
- * Rules exist only for values observed to vary. There is no duration rule:
- * no recorded payload carries a duration yet. When one does, add a rule here
- * keyed by that field name, not a pattern over all numbers.
+ * Rules exist only for values observed to vary. The one duration rule (R21)
+ * is keyed by its field and log message (a lambda's run in adf_logs), not a
+ * pattern over all numbers; add any other the same way.
  *
  * Two layers:
  * - `normalizeRecording` (R1-R13): every comparison, including embedded vs
@@ -255,6 +255,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   // receiver verified it is in the row's `meta` (`message_verified`,
   // `payload_verified`), which is compared as is. Scoped to those two tables.
   const MESSAGE_ROW_PATH = /^state\.adf\..*\.tables\.adf_(inbox|outbox)\.rows\[\d+\]$/
+  const LOG_ROW_PATH = /^state\.adf\..*\.tables\.adf_logs\.rows\[\d+\]$/
   const messageRow = (row: Record<string, unknown>): Record<string, unknown> => {
     const out = { ...row }
     const messageId = typeof row.message_id === 'string' && row.message_id ? row.message_id : null
@@ -272,6 +273,16 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
       return { ...row, value: row.value.replace(/"id":"([A-Za-z0-9_-]{10})"/, (_m, id: string) => `"id":"${numbered('turn-id', id)}"`) }
     }
     if (MESSAGE_ROW_PATH.test(path)) return messageRow(row)
+    // Rule R21 — a system-scope lambda's run in `adf_logs` (origin `lambda`,
+    // system-scope-handler.ts) records its wall-clock duration in `data`
+    // (`duration_ms`) and in the message ("Lambda completed in Nms"). Both
+    // become `<duration>`. Scoped to those rows; the outcome is compared.
+    if (LOG_ROW_PATH.test(path) && row.origin === 'lambda') {
+      const out = { ...row }
+      if (typeof row.data === 'string') out.data = row.data.replace(/("duration_ms":)\d+(?:\.\d+)?/g, '$1"<duration>"')
+      if (typeof row.message === 'string') out.message = row.message.replace(/^(Lambda (?:completed|failed) in )\d+(?:\.\d+)?ms/, '$1<duration>ms')
+      return out
+    }
     return row
   }
 

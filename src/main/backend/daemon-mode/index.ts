@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain as electronIpcMain, shell, type IpcMain } from 'electron'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { BackendDaemonStatus, StudioBackendMode } from '../../../shared/types/backend.types'
 import { DaemonError, type AgentStatus, type AgentSummary, type DaemonClient } from '../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../shared/types/ipc.types'
@@ -15,16 +15,18 @@ import { relaunchEmbeddedForSession, relaunchStudio } from '../mode-switch'
 import { createAdfFileHandler } from './adf-file'
 import { ApprovalsUi } from './approvals-ui'
 import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
-import { DaemonConnection, type DaemonConnector } from './connection'
+import { DaemonConnection, type DaemonConnector, type DaemonEndpoint } from './connection'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { DaemonModeUnavailableError } from './errors'
 import { EventBridge } from './event-bridge'
 import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from './handlers'
 import { channelKey, pendingWorkstream } from './pending'
-import { DaemonModeSession } from './session'
+import { DaemonModeSession, samePath } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
-import { waitForDaemonExit } from './daemon-exit'
+import { readDaemonExitCause, waitForDaemonExit } from './daemon-exit'
+import { processAlive } from '../../cli/daemon-control'
+import { daemonExitSentence } from './connection'
 import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
@@ -100,6 +102,16 @@ export const REMOTE_BROWSER_SESSION_SENTENCE = 'opened a browser in its containe
 /** How long a lost daemon connection may last before waiting chats are ended. */
 export const TURN_DISCONNECT_GRACE_MS = 15_000
 
+/**
+ * Local mode, a daemon Studio started exited: Studio starts it again by
+ * itself after this pause, at most once per window below (a daemon that
+ * keeps dying is then left to the user's "Start the ADF Daemon").
+ */
+export const DAEMON_RESPAWN_DELAY_MS = 2_000
+export const DAEMON_RESPAWN_WINDOW_MS = 10 * 60_000
+/** How long a dropped stream waits for the daemon's pid to go before the drop counts as "lost", not "exited". */
+const EXIT_CHECK_MS = 1_500
+
 export interface DaemonModeDeps {
   mode: Exclude<StudioBackendMode, 'embedded'>
   /** Finds or starts the daemon (local: daemon-process.ts; remote: URL + token). */
@@ -135,6 +147,16 @@ export interface DaemonModeDeps {
   sharedMnemonic?: () => SharedMnemonicStore | null
   /** Tests: waits for the daemon's pid to exit (default: process liveness). */
   waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
+  /** Tests: whether the daemon's pid is alive (local mode exit detection). Default: process liveness. */
+  processAlive?: (pid: number) => boolean
+  /** Tests: the pause after the daemon exited before Studio starts it again, or shows the exit (default DAEMON_RESPAWN_DELAY_MS). */
+  respawnDelayMs?: number
+  /**
+   * Electron's powerMonitor (main/index.ts passes it): on `resume` the
+   * daemon is checked and the client stream re-dialed at once. Absent: no
+   * resume handling (tests, the parity harness).
+   */
+  powerMonitor?: Pick<Electron.PowerMonitor, 'on' | 'removeListener'> | null
   /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
   afterOwnerImport?: (phrase: string) => Promise<string>
   /** Tests: Studio's restarts after a failed launch. Default: relaunchStudio / relaunchEmbeddedForSession (mode-switch.ts). */
@@ -200,25 +222,30 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   // Studio's (daemon-process.ts checks that), so Studio reads its local proof
   // and sends it on the local-only routes (owner import, stored-value
   // reveal), as the adf CLI does. Never for another route or another host.
-  const connect: DaemonConnector = deps.mode !== 'local' ? deps.connect : Object.assign(
-    async (progress: (text: string) => void) => {
-      const endpoint = await deps.connect(progress)
-      const port = Number(new URL(endpoint.baseUrl).port) || undefined
-      return {
-        ...endpoint,
-        source: {
-          ...endpoint.source,
-          token: () => endpoint.source.token(),
-          ...(endpoint.source.refresh ? { refresh: () => endpoint.source.refresh!() } : {}),
-          localProof: (path: string): Record<string, string> => {
-            if (!isLocalOnlyRoute(path)) return {}
-            const proof = readLocalProof(deps.userDataDir, port)
-            return proof ? { [LOCAL_PROOF_HEADER]: proof } : {}
-          },
+  const withLocalProof = (find: (progress: (text: string) => void) => Promise<DaemonEndpoint>) => async (progress: (text: string) => void): Promise<DaemonEndpoint> => {
+    const endpoint = await find(progress)
+    const port = Number(new URL(endpoint.baseUrl).port) || undefined
+    return {
+      ...endpoint,
+      source: {
+        ...endpoint.source,
+        token: () => endpoint.source.token(),
+        ...(endpoint.source.refresh ? { refresh: () => endpoint.source.refresh!() } : {}),
+        localProof: (path: string): Record<string, string> => {
+          if (!isLocalOnlyRoute(path)) return {}
+          const proof = readLocalProof(deps.userDataDir, port)
+          return proof ? { [LOCAL_PROOF_HEADER]: proof } : {}
         },
-      }
+      },
+    }
+  }
+  const connect: DaemonConnector = deps.mode !== 'local' ? deps.connect : Object.assign(
+    withLocalProof(deps.connect),
+    {
+      logFile: deps.connect.logFile,
+      ...(deps.connect.revive ? { revive: withLocalProof(deps.connect.revive) } : {}),
+      ...(deps.connect.verifyListener ? { verifyListener: deps.connect.verifyListener } : {}),
     },
-    { logFile: deps.connect.logFile },
   )
   // Remote mode: a 401 after connecting (the server's token changed) is the
   // "refused the token" sentence and ends the connection; retrying could not
@@ -459,6 +486,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       }).catch(() => {})
       return
     }
+    if (deps.mode === 'local' && daemonGone()) {
+      // The daemon's process is gone: re-dialing the stream cannot help; find or start one (controller.ensure).
+      void reviveDaemon('requested')
+      return
+    }
     log.log('[Backend] Reconnecting to the ADF daemon (requested)')
     clientSession.reconnect()
   }
@@ -493,7 +525,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     launchFailed: () => connection.state.state === 'failed',
     remoteRecents: deps.mode === 'remote',
   })
-  const statusUi = new ConnectionStatusUi(connection, { reconnect, useEmbeddedForSession, openBackendSettings, openLog: () => { void openDaemonLog(connection.logFile, log) }, recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT }, log)
+  const statusUi = new ConnectionStatusUi(connection, {
+    reconnect,
+    useEmbeddedForSession,
+    openBackendSettings,
+    openLog: () => { void openDaemonLog(connection.logFile, log) },
+    recoveryHint: deps.mode === 'remote' ? REMOTE_RECOVERY_HINT : RECOVERY_HINT,
+    reviving: () => reviving !== null,
+  }, log)
 
   const exitDaemonWhenClosed = deps.mode === 'local' && !keepRunning()
   let versionInfo: DaemonVersionInfo | null = null
@@ -592,7 +631,160 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       turnGrace.unref?.()
     }
     if (state.state === 'connected' && turnGrace) { clearTimeout(turnGrace); turnGrace = null }
+    // Chats whose wait ended while away: their agent's real state now.
+    if (state.state === 'connected') void bridge.recheckTurns()
   })
+
+  // --- Local mode: the daemon's process exited ---------------------------------
+  // A dropped stream is "lost" while the daemon's pid lives (the stream
+  // retries) and "exited" once it is gone: its agents are stopped and only
+  // a new daemon brings them back. A daemon Studio started is started again
+  // once (controller.ensure through the connector's revive), visibly; one
+  // the CLI started is never started by Studio on its own: the dialog
+  // offers it.
+  const alive = deps.processAlive ?? processAlive
+  const daemonPid = (): number | null => versionInfo?.pid ?? connection.endpointInfo?.daemon?.pid ?? null
+  const daemonGone = (): boolean => {
+    const pid = daemonPid()
+    return pid !== null && connection.state.state === 'disconnected' && !alive(pid)
+  }
+  let exitChecked: number | null = null
+  let lastAutoRespawnAt = 0
+  let reviving: Promise<boolean> | null = null
+  /** Agents running when the daemon exited: started again with the new daemon. */
+  let agentsAtExit: string[] = []
+  const sleep = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.() })
+
+  const checkDaemonExit = async (): Promise<void> => {
+    const pid = daemonPid()
+    if (pid === null || exitChecked === pid) return
+    // The stream can drop a moment before the process is gone.
+    const deadline = Date.now() + EXIT_CHECK_MS
+    while (alive(pid) && Date.now() < deadline) await sleep(250)
+    if (alive(pid) || shutdownPromise || exitChecked === pid || connection.state.state !== 'disconnected' || daemonPid() !== pid) return
+    exitChecked = pid
+    const cause = await readDaemonExitCause(connection.logFile)
+    const startedBy = versionInfo?.startedBy ?? connection.endpointInfo?.daemon?.startedBy ?? null
+    agentsAtExit = bridge.runningAgents().map((a) => a.filePath)
+    const recent = lastAutoRespawnAt > 0 && Date.now() - lastAutoRespawnAt < DAEMON_RESPAWN_WINDOW_MS
+    const auto = startedBy === 'studio' && !cause?.deliberate && !recent && connection.canRevive
+    const detail = auto ? undefined
+      : startedBy !== 'studio' ? `It was started by ${startedBy ?? 'another program'}, not by Studio, so Studio does not start it again by itself.`
+        : cause?.deliberate ? 'It was stopped on purpose, so Studio does not start it again by itself.'
+          : recent ? `Studio already started it again ${Math.max(1, Math.round((Date.now() - lastAutoRespawnAt) / 60_000))} min ago and does not do so twice within ${DAEMON_RESPAWN_WINDOW_MS / 60_000} minutes.`
+            : undefined
+    log.warn(`[Backend] ${daemonExitSentence({ pid, cause: cause?.text ?? null })}${cause ? '' : ' Its log has no shutdown line: it was killed or crashed.'} Started by ${startedBy ?? 'unknown'}; ${agentsAtExit.length} agent(s) were running.${auto ? ' Studio starts it again.' : ''}`)
+    // The turns its agents ran cannot end any more.
+    bridge.failTurns('exited')
+    if (!auto) {
+      // A daemon replaced from the terminal (`adf daemon restart`) answers again within moments: no dialog then.
+      await sleep(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
+      if (shutdownPromise || connection.state.state !== 'disconnected') {
+        log.log(`[Backend] Another ADF daemon answered after pid ${pid} exited`)
+        return
+      }
+    }
+    connection.markExited({ pid, cause: cause?.text ?? null, startedBy, respawning: auto, ...(detail ? { detail } : {}) })
+    if (!auto) return
+    lastAutoRespawnAt = Date.now()
+    await sleep(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
+    if (shutdownPromise || connection.state.state !== 'disconnected') return
+    void reviveDaemon('automatic')
+  }
+  if (deps.mode === 'local') {
+    // The token goes out again only once the listener is the daemon its pid file names (connection.ts): re-dial then, not at the next backoff.
+    connection.onListenerVerified(() => { if (connection.state.state !== 'connected') clientSession?.reconnect() })
+    connection.onState((state) => {
+      if (state.state === 'disconnected' && !state.exited && !shutdownPromise && !reviving) void checkDaemonExit()
+    })
+  }
+
+  /**
+   * The computer woke up. A stream that slept is often dead without knowing
+   * it; the idle watchdog would notice only after 75 s. Check the daemon
+   * (/health, no token, 3 s) and re-dial the stream at once: the resume is
+   * exact when the daemon kept the session, a new session otherwise. A
+   * daemon that does not answer is a lost connection now (local mode: the
+   * exit check and the pid check before the token run from there).
+   */
+  const RESUME_HEALTH_TIMEOUT_MS = 3_000
+  const onSystemResume = (): void => {
+    const client = connection.current
+    const state = connection.state.state
+    if (shutdownPromise || !clientSession || !client || state === 'failed' || state === 'connecting') return
+    log.log('[Backend] The computer resumed: checking the ADF daemon and re-dialing the client stream')
+    void client.withTimeout(RESUME_HEALTH_TIMEOUT_MS).health().then(
+      () => { clientSession?.reconnect() },
+      (err: unknown) => {
+        const reason = err instanceof Error ? err.message : String(err)
+        log.warn(`[Backend] The ADF daemon did not answer after the computer resumed: ${reason}`)
+        connection.markDisconnected(`no answer after the computer resumed: ${reason}`)
+        clientSession?.reconnect()
+      },
+    )
+  }
+  deps.powerMonitor?.on('resume', onSystemResume)
+
+  /** Resolves true once the stream is connected again (the new session opened, documents re-held, focus re-sent). */
+  const waitConnected = (budgetMs: number): Promise<boolean> => new Promise((done) => {
+    if (connection.state.state === 'connected') { done(true); return }
+    const timer = setTimeout(() => { off(); done(false) }, budgetMs)
+    timer.unref?.()
+    const off = connection.onState((state) => {
+      if (state.state !== 'connected' && state.state !== 'failed') return
+      clearTimeout(timer)
+      off()
+      done(state.state === 'connected')
+    })
+  })
+
+  /**
+   * Find or start the daemon again (the connector's revive: daemon-process.ts
+   * `ensure`, attach or spawn), reconnect the stream (the new daemon has no
+   * session: a new one opens, the documents are re-held and the focus
+   * re-sent), then start the agents that ran when it exited. Every step is
+   * logged; the result is a notice, a failure the exit dialog.
+   */
+  const reviveDaemon = (trigger: 'automatic' | 'requested'): Promise<boolean> => {
+    reviving ??= (async () => {
+      const previous = connection.state.state === 'disconnected' ? connection.state.exited : undefined
+      log.log(`[Backend] Starting the ADF daemon again (${trigger === 'automatic' ? 'automatically, once' : 'requested'}) after pid ${previous?.pid ?? daemonPid() ?? '?'} exited`)
+      try {
+        const endpoint = await connection.revive()
+        if (endpoint.daemon) versionInfo = endpoint.daemon
+        // Dial now unless the stream's own retry already reached the new daemon (a re-dial would drop that stream).
+        if (connection.state.state !== 'connected') clientSession?.reconnect()
+        if (!(await waitConnected(60_000))) throw new Error('the new ADF daemon did not accept the client stream within 60 s')
+        const toStart = agentsAtExit
+        agentsAtExit = []
+        const restarted: string[] = []
+        const failed: string[] = []
+        // The new daemon may have started some itself (autostart); the bridge still lists the dead daemon's.
+        const loaded = toStart.length ? await (await started).request<AgentSummary[]>('GET', '/agents').catch(() => [] as AgentSummary[]) : []
+        for (const filePath of toStart) {
+          const name = basename(filePath, '.adf')
+          if (loaded.some((a) => a.filePath && samePath(a.filePath, filePath))) { restarted.push(name); continue }
+          const result = await startAgentAgain(filePath)
+          if (result.success) restarted.push(name)
+          else failed.push(`${name} (${result.error ?? 'failed'})`)
+        }
+        const pid = versionInfo?.pid ?? endpoint.daemon?.pid
+        const text = `Studio started the ADF daemon again${pid ? ` (pid ${pid})` : ''}.${toStart.length ? ` Agents running again: ${restarted.length} of ${toStart.length}.` : ''}${failed.length ? ` Not started: ${failed.join(', ')}.` : ''}`
+        log.log(`[Backend] ${text}`)
+        statusUi.notice(text)
+        return true
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        log.error(`[Backend] Starting the ADF daemon again failed: ${message}`)
+        if (previous && connection.state.state === 'disconnected') connection.markExited({ ...previous, respawning: false, detail: `Starting it again failed: ${message}` })
+        else statusUi.notice(`Starting the ADF daemon again failed: ${message}`)
+        return false
+      } finally {
+        reviving = null
+      }
+    })()
+    return reviving
+  }
 
   const ctx: DaemonModeContext = {
     mode: deps.mode,
@@ -671,6 +863,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   let shutdownPromise: Promise<void> | null = null
   const shutdown = (opts: { waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
+      deps.powerMonitor?.removeListener('resume', onSystemResume)
       statusUi.dispose()
       approvals.dispose()
       remoteServices?.picker.cancelAll()
@@ -743,6 +936,18 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     if (!handler) return { success: false, error: 'Background start is not available in daemon mode' }
     try {
       return await handler(ctx, {} as Electron.IpcMainInvokeEvent, { filePath }) as { success: boolean; error?: string; code?: string }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** An agent that ran when the daemon exited: the open file's through AGENT_START (as its Start button), any other in the background. */
+  const startAgentAgain = async (filePath: string): Promise<{ success: boolean; error?: string }> => {
+    if (!samePath(filePath, session.filePath)) return startBackgroundAgent(filePath)
+    const handler = DAEMON_MODE_HANDLERS[IPC.AGENT_START]
+    if (!handler) return { success: false, error: 'Agent start is not available in daemon mode' }
+    try {
+      return await handler(ctx, {} as Electron.IpcMainInvokeEvent, { filePath }) as { success: boolean; error?: string }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }

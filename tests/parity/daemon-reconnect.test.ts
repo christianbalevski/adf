@@ -45,15 +45,26 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
     try {
       const invoke = (channel: string, ...args: unknown[]) => Promise.resolve(electron.handlers.get(channel)!(electron.ipcEvent(), ...args))
       expect(await invoke(IPC.FILE_OPEN, { filePath: agents['agent-1'].filePath })).toMatchObject({ success: true })
+      expect(await invoke(IPC.AGENT_START, { filePath: agents['agent-1'].filePath })).toMatchObject({ success: true })
       expect(booted.handle.connection.state.state).toBe('connected')
       expect(helpLabels(electron)).toEqual(['ADF Studio Documentation', '-', 'Open Daemon Log'])
 
       await booted.killDaemon()
       await waitFor('the Help menu status line', () => helpLabels(electron).includes('Reconnect to the ADF Daemon'))
-      expect(helpLabels(electron).find((l) => l.startsWith('ADF daemon: not connected'))).toBeTruthy()
-      await waitFor('the disconnected dialog', () => electron.localCalls.some((c) =>
-        c.api === 'dialog.showMessageBox' && (c.args[0] as { message?: string }).message === 'Studio lost its connection to the ADF daemon.'), 15_000)
+      expect(helpLabels(electron).find((l) => /^ADF daemon: (not connected|exited)/.test(l))).toBeTruthy()
+      // The daemon's pid is gone: an exit, not a lost connection (W5-D2). This harness connector cannot start a daemon, so no Start button.
+      await waitFor('the exit dialog', () => electron.localCalls.some((c) =>
+        c.api === 'dialog.showMessageBox' && /^The ADF daemon \(pid \d+\) exited; agents are stopped\.$/.test((c.args[0] as { message?: string }).message ?? '')), 15_000)
+      expect(helpLabels(electron).find((l) => l.startsWith('ADF daemon: exited (pid '))).toBeTruthy()
       await expect(invoke(IPC.SETTINGS_GET)).rejects.toThrow(/Cannot reach daemon/)
+      // A chat sent now fails in the chat itself (W5-D2): the renderer reads no AGENT_INVOKE answer, so the
+      // daemon-mode handler sends what embedded's executor sends on a failed turn: an error row, then idle.
+      const chatFrom = electron.pushes.length
+      expect(await invoke(IPC.AGENT_INVOKE, { userMessage: 'Are you there?', filePath: agents['agent-1'].filePath })).toEqual({ success: false, error: expect.stringMatching(/Cannot reach daemon/) })
+      expect(electron.pushes.slice(chatFrom).filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0])).toEqual([
+        { type: 'error', payload: { error: expect.stringMatching(/Cannot reach daemon/) }, timestamp: expect.any(Number) },
+        { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number) },
+      ])
 
       const pushesBefore = electron.pushes.length
       await booted.restartDaemon()

@@ -54,7 +54,6 @@ export function registerTemplateFileRoutes(server: FastifyInstance, ctx: DaemonR
     const items = planItems(request.body)
     if (!items) return reply.code(400).send({ error: 'files must list each picked file as { name, isFile, size } or { name, statError }', code: 'bad_request' })
     try {
-      factory.requireIdentity()
       factory.existingTemplateFile(request.params.id)
       return factory.templatesService().planAddFiles(request.params.id, items)
     } catch (err) {
@@ -87,7 +86,6 @@ export function registerTemplateFileRoutes(server: FastifyInstance, ctx: DaemonR
       return refuse(413, { error: `${name.trim()} is larger than ${mb} MB.`, code: 'too_large', maxBytes: TEMPLATE_EXTRA_FILE_MAX_BYTES })
     }
     try {
-      factory.requireIdentity()
       factory.existingTemplateFile(request.params.id)
       const bytes = await readCapped(request.body, TEMPLATE_EXTRA_FILE_MAX_BYTES)
       bodyRead = true

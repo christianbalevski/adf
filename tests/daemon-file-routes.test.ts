@@ -970,9 +970,26 @@ describe('daemon file routes: re-review fixes', () => {
     const a = seedAgent(root, 'agent-1')
     const { server } = setup({ trackedDirectories: [root] })
     for (const name of ['CON', 'nul', 'com1', 'Lpt9.backup']) {
-      expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: name } })).json().code).toBe('invalid_name')
+      const res = (await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: name } })).json()
+      expect(res.code).toBe('invalid_name')
+      // The one deliberate difference from embedded's rule (W5-D2): said as such, not "characters not allowed".
+      expect(res.error).toBe(`"${name}" is a Windows device name (CON, NUL, COM1, …), which no file can be named on Windows. Choose another name.`)
     }
     expect(existsSync(a.filePath)).toBe(true)
+  })
+
+  it('names follow embedded Studio\'s rule: no length limit on rename or create (W5-D2)', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const { server } = setup({ trackedDirectories: [root] })
+    const long = `agent-${'x'.repeat(94)}`
+    const renamed = await server.inject({ method: 'POST', url: '/files/rename', payload: { path: a.filePath, newName: long } })
+    expect(renamed.statusCode).toBe(200)
+    expect(existsSync(join(root, `${long}.adf`))).toBe(true)
+    // Embedded's rule is the daemon's: a backslash or a trailing dot is refused (a name is trimmed first, as there).
+    for (const name of ['a\\b', 'trailing.', 'a|b']) {
+      expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: join(root, `${long}.adf`), newName: name } })).json()).toMatchObject({ code: 'invalid_name', error: 'Name contains characters not allowed in file names.' })
+    }
   })
 
   it('applies a pending rename when the agent unloads after the server closed (daemon shutdown order; RuntimeService renames)', async () => {

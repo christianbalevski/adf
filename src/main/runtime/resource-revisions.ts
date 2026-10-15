@@ -27,6 +27,7 @@
  */
 import { createHash } from 'node:crypto'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
+import { withSource } from './execution-context'
 
 export type { ResourceWriter } from '../../shared/types/resource-revision.types'
 
@@ -77,6 +78,41 @@ export function runAsWriter<T>(writer: ResourceWriter, fn: () => T): T {
 /** The writer of the write running now; the agent when none announced itself. */
 export function currentResourceWriter(): ResourceWriter {
   return currentWriter ?? AGENT_WRITER
+}
+
+/**
+ * The execution-context source (`withSource`) of a write through the daemon
+ * API. A write from Studio's client session is Studio's, as in embedded mode
+ * (`system:studio`: file-change triggers and lambdas see the same origin);
+ * every other API writer (the terminal app, the CLI, scripts) stays
+ * `system:runtime-api`.
+ */
+export function apiWriteSource(): string {
+  const writer = currentResourceWriter()
+  return writer.kind === 'client' && writer.client === 'studio' ? 'system:studio' : 'system:runtime-api'
+}
+
+let apiWriteDepth = 0
+
+/**
+ * Run `fn` (synchronously) as a write through the daemon API, with its
+ * source (`apiWriteSource`). A Studio write here is `system:studio` as in
+ * embedded mode, but unlike embedded Studio's own write it still raises
+ * `file_updated`: other clients follow it, and the daemon skips the writing
+ * session (assemble-agent.ts reads `inApiWrite`).
+ */
+export function runAsApiWrite<T>(agentId: string | undefined, fn: () => T): T {
+  apiWriteDepth++
+  try {
+    return withSource(apiWriteSource(), agentId, fn)
+  } finally {
+    apiWriteDepth--
+  }
+}
+
+/** Whether a daemon API write (runAsApiWrite) is running now. */
+export function inApiWrite(): boolean {
+  return apiWriteDepth > 0
 }
 
 interface Entry { revision: number; hash: string; writer: ResourceWriter | null }

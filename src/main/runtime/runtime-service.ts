@@ -81,10 +81,11 @@ import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/s
 import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
 import { DocumentHost, type OpenDocument } from './document-host'
 import {
-  configRevision, currentResourceWriter, documentRevision, fileRevision, fileRevisionKey, observeRevision,
+  configRevision, currentResourceWriter, runAsApiWrite, documentRevision, fileRevision, fileRevisionKey, observeRevision,
   existsAlready, staleRevision, staleRevisionMessage, type ResourceRevision,
 } from './resource-revisions'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -2643,12 +2644,12 @@ export class RuntimeService extends EventEmitter {
     if (exists) throw new RuntimeLoopError(staleRevisionMessage(exists), 409, 'stale_revision', { ...exists })
     this.assertBaseRevision(path, current, opts.baseRevision, size)
     if (opts.contentBase64 !== undefined) {
-      withSource('system:runtime-api', target.id, () => {
+      runAsApiWrite(target.id, () => {
         target.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64!, 'base64'), opts.mimeType)
       })
     } else {
       const content = opts.content ?? ''
-      withSource('system:runtime-api', target.id, () => {
+      runAsApiWrite(target.id, () => {
         target.workspace.writeFile(path, content, opts.protection)
       })
     }
@@ -2659,7 +2660,7 @@ export class RuntimeService extends EventEmitter {
     const target = this.requireTarget(agentId)
     return {
       agentId: target.id,
-      success: withSource('system:runtime-api', target.id, () => target.workspace.deleteFile(path)),
+      success: runAsApiWrite(target.id, () => target.workspace.deleteFile(path)),
     }
   }
 
@@ -2667,13 +2668,13 @@ export class RuntimeService extends EventEmitter {
     const target = this.requireTarget(agentId)
     return {
       agentId: target.id,
-      success: withSource('system:runtime-api', target.id, () => target.workspace.renameInternalFile(oldPath, newPath)),
+      success: runAsApiWrite(target.id, () => target.workspace.renameInternalFile(oldPath, newPath)),
     }
   }
 
   renameAgentFolder(agentId: string, oldPrefix: string, newPrefix: string): { agentId: string; success: true; count: number } {
     const target = this.requireTarget(agentId)
-    const count = withSource('system:runtime-api', target.id, () => target.workspace.renameFolder(oldPrefix, newPrefix))
+    const count = runAsApiWrite(target.id, () => target.workspace.renameFolder(oldPrefix, newPrefix))
     return { agentId: target.id, success: true, count }
   }
 
@@ -4509,11 +4510,13 @@ async function disposeRuntimeAgent(agent: RuntimeAgent, mode: AgentStopMode, ret
   }
 }
 
-/** Characters not allowed in file names on Windows (a superset of POSIX); as Studio's rename. */
-const INVALID_FILENAME_CHARS = /[<>:"/\|?*\u0000-\u001f]/
-
+/**
+ * Studio's rule for an agent file name (shared/utils/agent-file-name.ts),
+ * plus no Windows device name, as the daemon's create and rename (W5-D2).
+ * The copy here missed the backslash.
+ */
 function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
+  return agentFileNameProblem(name) === null
 }
 
 /** Path comparison key: case-insensitive where the file system usually is (as agent-lease.ts). */

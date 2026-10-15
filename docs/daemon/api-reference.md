@@ -3293,7 +3293,7 @@ Operation `chatAgent` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `text` | string |  |  |
-| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB. |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB. |
 | `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
 | `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
@@ -9383,7 +9383,7 @@ Example 200 (`application/json`):
 
 ## Templates
 
-Agent templates new agents are created from. Every route needs a ready owner identity (409 `identity_not_ready`).
+Agent templates new agents are created from. As in embedded Studio they are listed and edited without the owner identity; accepting a template's review needs it (409 `identity_not_ready`).
 
 | Method | Path | Summary |
 |---|---|---|
@@ -10326,6 +10326,7 @@ Operation `trackDir` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Absolute path to an existing directory |
+| `autostart` | boolean |  | Default true. false: track the folder without the autostart pass (Studio sends it, as embedded Studio starts a tracked folder's agents only at its next start); `autostart` is then an empty report. |
 
 ```json
 {
@@ -17769,7 +17770,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `text` | string |  |  |
-| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 32 MiB. |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB. |
 | `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
 | `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
@@ -20078,6 +20079,7 @@ Type: `"pending"` \| `"pending_approval"` \| `"running"` \| `"completed"` \| `"f
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Absolute path to an existing directory |
+| `autostart` | boolean |  | Default true. false: track the folder without the autostart pass (Studio sends it, as embedded Studio starts a tracked folder's agents only at its next start); `autostart` is then an empty report. |
 
 <a id="schema-trackdirresult"></a>
 

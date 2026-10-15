@@ -114,6 +114,11 @@ describe('POST /agents/create without load (FILE_CREATE, FILE_CREATE_QUICK, MESH
     expect(runtime.listOpenDocuments()).toEqual([])
     expect(existsSync(closed.body.filePath)).toBe(true)
 
+    // Names follow embedded Studio's rule (W5-D2): no 64-character limit; a Windows device name is the one refusal it adds.
+    const long = `agent-${'x'.repeat(70)}`
+    expect((await call(server, 'POST', '/agents/create', { name: long, directory: dir, load: false })).body).toMatchObject({ name: long })
+    expect((await call(server, 'POST', '/agents/create', { name: 'aux', directory: dir, load: false })).body.error).toMatch(/^name must be a file name: "aux" is a Windows device name/)
+
     // The holder is the client session in the X-ADF-Client-Session header, never a body field.
     expect((await call(server, 'POST', '/agents/create', { name: 'agent-2', directory: dir, load: false, holder: S1 })).status).toBe(400)
     const unknown = await server.inject({ method: 'POST', url: '/agents/create', headers: { 'x-adf-client-session': S1 }, payload: { name: 'agent-2', directory: dir, load: false } })

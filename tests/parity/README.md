@@ -35,6 +35,7 @@ The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the b
 | `scenarios/core.ts` | open, start, chat turn with a tool call |
 | `recordings/*.embedded.txt` | Embedded baseline (golden form, rule G1) |
 | `daemon-reconnect.test.ts` | Daemon killed under a connected Studio, restarted: not-connected state, reconnect, resync |
+| `daemon-respawn.test.ts` | The daemon Studio started is killed: exit notice, Studio starts it again (`revivable`: its own connector, `DaemonProcessController.ensure` on the bundle, fenced), re-holds the open file, starts the agents again |
 
 ## What a recording contains
 

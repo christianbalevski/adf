@@ -1,6 +1,6 @@
 import { BrowserWindow, dialog, Notification, shell } from 'electron'
 import { buildApplicationMenu } from '../../menu'
-import type { ConnectionState, DaemonConnection } from './connection'
+import { daemonExitSentence, type ConnectionState, type DaemonConnection, type DaemonExit } from './connection'
 
 /**
  * The visible "backend not connected" state (tracker W2-C). The renderer
@@ -19,6 +19,11 @@ import type { ConnectionState, DaemonConnection } from './connection'
  *   a cooldown;
  * - after such a dialog, the reconnect raises an OS notification so the user
  *   learns it is back;
+ * - local mode, the daemon's process is gone (`exited`, not a dropped
+ *   connection): the status line says so; a daemon Studio starts again by
+ *   itself gets a notification, any other exit a dialog at once, with
+ *   "Start the ADF Daemon", whatever the cooldown (each exit is a new
+ *   outage);
  * - a connector that failed (no daemon, refused attach) raises one dialog
  *   with the reason and the recovery override.
  *
@@ -42,6 +47,7 @@ export function connectionProblem(state: ConnectionState, baseUrl: string | null
     case 'connecting':
       return `ADF daemon: ${state.progress ?? 'connecting…'}`
     case 'disconnected':
+      if (state.exited) return `ADF daemon: exited (pid ${state.exited.pid}); agents are stopped${state.exited.respawning ? ', starting it again' : ''}`
       return `ADF daemon: not connected${baseUrl ? ` (${baseUrl})` : ''}, retrying`
     case 'failed':
       return 'ADF daemon: not connected'
@@ -59,11 +65,21 @@ export class ConnectionStatusUi {
   private progressTimer: ReturnType<typeof setTimeout> | null = null
   private progressShown = false
   private waitNoticeShown = false
+  /** The daemon exit last shown (each markExited is a new one). */
+  private shownExit: DaemonExit | null = null
   private readonly unsubscribe: () => void
 
   constructor(
     private readonly connection: DaemonConnection,
-    private readonly actions: { reconnect: () => void; openLog: () => void; recoveryHint: string; useEmbeddedForSession?: () => void; openBackendSettings?: () => void },
+    private readonly actions: {
+      reconnect: () => void
+      openLog: () => void
+      recoveryHint: string
+      useEmbeddedForSession?: () => void
+      openBackendSettings?: () => void
+      /** Studio is starting the daemon again (local mode): it announces the result itself. */
+      reviving?: () => boolean
+    },
     private readonly log: Log = console,
   ) {
     this.unsubscribe = connection.onState((state) => this.onState(state))
@@ -113,6 +129,20 @@ export class ConnectionStatusUi {
       return
     }
     this.stopBootProgress()
+    if (state.state === 'disconnected' && state.exited) {
+      this.wasDisconnected = true
+      if (state.exited === this.shownExit) return
+      this.shownExit = state.exited
+      if (this.graceTimer) { clearTimeout(this.graceTimer); this.graceTimer = null }
+      this.dialogShownThisEpisode = true
+      if (state.exited.respawning) {
+        this.notify('ADF Studio', `${daemonExitSentence(state.exited)} Studio is starting it again.`)
+        return
+      }
+      // A new outage: shown whatever the cooldown, but never two dialogs at once.
+      if (!this.dialogOpen) void this.showExitedDialog(state.exited)
+      return
+    }
     if (state.state === 'disconnected') {
       this.wasDisconnected = true
       this.log.warn(`[Backend] Lost the connection to the ADF daemon${state.error ? `: ${state.error}` : ''}; reconnecting`)
@@ -132,10 +162,12 @@ export class ConnectionStatusUi {
       if (this.graceTimer) { clearTimeout(this.graceTimer); this.graceTimer = null }
       if (this.wasDisconnected) {
         this.log.log('[Backend] Reconnected to the ADF daemon')
-        if (this.dialogShownThisEpisode) this.notify('ADF Studio', 'Reconnected to the ADF daemon.')
+        // Studio started the daemon again: that path sends its own notice (with what it restarted).
+        if (this.dialogShownThisEpisode && !this.actions.reviving?.()) this.notify('ADF Studio', 'Reconnected to the ADF daemon.')
       }
       this.wasDisconnected = false
       this.dialogShownThisEpisode = false
+      this.shownExit = null
       return
     }
     if (state.state === 'failed' && !this.failureShown) {
@@ -166,6 +198,37 @@ export class ConnectionStatusUi {
       else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
     } catch (err) {
       this.log.warn('[Backend] Could not show the disconnected dialog:', err)
+    } finally {
+      this.dialogOpen = false
+    }
+  }
+
+  /** Local mode, the daemon's process is gone and Studio does not start it again by itself: Start the ADF Daemon (the connector's revive), the log. */
+  private async showExitedDialog(exit: DaemonExit): Promise<void> {
+    this.dialogOpen = true
+    this.lastDialogAt = Date.now()
+    const logFile = this.connection.logFile
+    // Only a connector that can start a daemon offers it (local mode); otherwise the stream keeps trying.
+    const start = this.connection.canRevive
+    const buttons = [...(start ? ['Start the ADF Daemon'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'Dismiss']
+    try {
+      const { response } = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'ADF daemon exited',
+        message: daemonExitSentence(exit),
+        detail: `${exit.detail ? `${exit.detail}
+
+` : ''}${start ? 'Start the ADF Daemon starts it from Studio and starts the agents that were running again (Help → Reconnect to the ADF Daemon does the same later). ' : 'Studio reconnects when a daemon answers again. '}Until then, actions that need the backend fail.${logFile ? `
+Daemon log: ${logFile}` : ''}`,
+        buttons,
+        defaultId: 0,
+        cancelId: buttons.length - 1,
+        noLink: true,
+      })
+      if (buttons[response] === 'Start the ADF Daemon') this.actions.reconnect()
+      else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
+    } catch (err) {
+      this.log.warn('[Backend] Could not show the daemon exit dialog:', err)
     } finally {
       this.dialogOpen = false
     }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, powerMonitor, protocol, session, shell } from 'electron'
 import { join } from 'path'
 // The embedded IPC layer (./ipc) is imported only in embedded mode, at boot:
 // loading it constructs embedded services (a PodmanService, the uvx manifest
@@ -596,6 +596,8 @@ app.whenReady().then(async () => {
         })
         : remoteDaemonConnector(backend.config, safeStorageCodec),
       hooks: { showMainWindow, openFile: requestOpenFile },
+      // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
+      powerMonitor,
       // Read at quit: a change in Settings → Backend applies to the next quit.
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,

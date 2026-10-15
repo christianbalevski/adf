@@ -27,8 +27,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
-import { withSource } from '../../runtime/execution-context'
-import { currentResourceWriter, existsAlready, fileRevision, fileRevisionKey, observeRevision, parseBaseRevision, staleRevision, staleRevisionMessage } from '../../runtime/resource-revisions'
+import { currentResourceWriter, existsAlready, fileRevision, fileRevisionKey, observeRevision, parseBaseRevision, staleRevision, staleRevisionMessage, runAsApiWrite } from '../../runtime/resource-revisions'
 import { runAsRequestWrite } from './client-routes'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
@@ -350,7 +349,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
             const refused = (mustNotExist ? existsAlready(path, current, size) : null) ?? staleRevision(path, current, baseRevision, size)
             if (refused) throw new RuntimeLoopError(staleRevisionMessage(refused), 409, 'stale_revision', { ...refused })
           }
-          const at = withSource('system:runtime-api', agent.ref.id, () => {
+          const at = runAsApiWrite(agent.ref.id, () => {
             if (unique) return ws.writeFileBufferUnique(path, bytes, mimeType)
             ws.writeFileBuffer(path, bytes, mimeType)
             return path

@@ -204,6 +204,14 @@ export interface DaemonBackendOptions {
    * never send one remotely). No interface but loopback is bound.
    */
   remote?: boolean
+  /**
+   * Local mode: the connector also has Studio's `revive` (localDaemonConnector:
+   * DaemonProcessController.ensure against the built bundle), so a daemon
+   * that exited is started again by Studio itself. Its children are spawned
+   * fenced (`--require fence.cjs`), on the same port, token, settings and
+   * keychain, and are killed like the first one.
+   */
+  revivable?: boolean
 }
 
 /** Header names the remote proxy drops on the way to the daemon. */
@@ -261,6 +269,8 @@ export interface BootedDaemonBackend extends BootedBackend {
   killDaemon(): Promise<void>
   /** Start a new daemon child on the same port, settings and keychain; resolves once it answers /health. */
   restartDaemon(): Promise<void>
+  /** The daemon child's pid now (another one after Studio started the daemon again). */
+  daemonPid(): number | undefined
   /** Studio's daemon-mode handle (connection, session, bridge). */
   readonly handle: import('../../../src/main/backend/daemon-mode/index').DaemonModeHandle
 }
@@ -289,8 +299,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       const settingsPath = join(env.userDataDir, 'adf-settings.json')
       await switchToLocalMode(env, keychainFile)
 
-      const startChild = async (): Promise<DaemonChild> => {
-        const stdlibDir = writeStdlibManifest(env)
+      const childEnvFor = (): NodeJS.ProcessEnv => {
         const childEnv: NodeJS.ProcessEnv = {
           ...process.env,
           ELECTRON_RUN_AS_NODE: '1',
@@ -309,6 +318,11 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
         // refuses the real keychain addon in the child (fence.cjs).
         delete childEnv.ADF_KEYCHAIN
         delete childEnv.ADF_SECRET_STORE
+        return childEnv
+      }
+      const startChild = async (): Promise<DaemonChild> => {
+        const stdlibDir = writeStdlibManifest(env)
+        const childEnv = childEnvFor()
         const args = (options.entry ?? 'built') === 'built'
           ? ['--require', FENCE_PATH, DAEMON_BUNDLE]
           : ['--require', FENCE_PATH, '--import', 'tsx', resolve(REPO, 'src/main/daemon/index.ts')]
@@ -375,7 +389,36 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
             remote: { url: `http://127.0.0.1:${proxy.port}`, token: codec.encrypt(token), allowInsecureHttp: false },
           }, codec)
         }
+        if (options.revivable && !proxy) {
+          // Studio's own local connector, for the revive only: the first daemon is the harness's.
+          const connectors = (await import(/* @vite-ignore */ srcPath('main/backend/daemon-mode/connectors.ts'))) as typeof import('../../../src/main/backend/daemon-mode/connectors')
+          const local = connectors.localDaemonConnector({
+            userDataDir: env.userDataDir,
+            execPath: ELECTRON,
+            daemonEntry: DAEMON_BUNDLE,
+            env: childEnvFor(),
+            processDeps: {
+              // The controller's spawn, fenced as the harness's own child is; tracked so it is killed the same hard way.
+              spawn: (command, args, spawnOptions) => {
+                writeStdlibManifest(env)
+                const child = spawn(command, ['--require', FENCE_PATH, ...args], { ...spawnOptions, env: { ...spawnOptions.env, NODE_OPTIONS: `--require "${FENCE_PATH.replace(/\\/g, '/')}"` } })
+                let exitCode: number | null = null
+                if (child.pid !== undefined) LIVE_DAEMONS.add(child.pid)
+                child.once('exit', (code) => {
+                  exitCode = code ?? -1
+                  if (child.pid !== undefined) LIVE_DAEMONS.delete(child.pid)
+                })
+                daemon = { child, exited: () => exitCode }
+                pids.push(child.pid)
+                return child
+              },
+            },
+          })
+          // Studio's revive, and its check before the token goes out again after a drop (the pid file names the listener).
+          Object.assign(connect, { revive: local, verifyListener: local.verifyListener })
+        }
         handle = daemonMode.registerDaemonModeHandlers({
+          ...(options.revivable ? { respawnDelayMs: 200 } : {}),
           mode: proxy ? 'remote' : 'local',
           userDataDir: env.userDataDir,
           connect,
@@ -410,6 +453,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       let leaks: string[] = []
       return {
         handle,
+        daemonPid: () => daemon.child.pid,
         async killDaemon() {
           await killTree(daemon.child, daemon.exited)
         },

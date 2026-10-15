@@ -107,6 +107,8 @@ export function localDaemonConnector(opts: {
       },
     }
   }
-  return Object.assign(connect, { logFile: controller.paths.logFile })
+  // revive: the daemon Studio used exited (index.ts): the same §8.2 steps again (controller.ensure: attach, or spawn).
+  // verifyListener: after a dropped connection, the token goes out again only once the pid file names whoever answers (W5-D1, connection.ts).
+  return Object.assign(connect, { logFile: controller.paths.logFile, revive: connect, verifyListener: () => controller.verifyListener() })
 }
 

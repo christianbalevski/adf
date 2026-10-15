@@ -64,11 +64,13 @@ const W3A_RAN = ['switch-with-background', 'password-unlock', 'config-during-sta
 const W3A_NO_AGENT = ['review-accept-foreign', 'template-create', 'delete', 'doc-resources'] as const
 /** W3-F scenarios (tests/parity/conflicts) that start an agent and stop it before the state dump. */
 const W3F_RAN = ['w3f-write-conflicts'] as const
+/** W5-D2 scenarios (tests/parity/write-source) that start an agent and stop it before the state dump. */
+const W5D2_RAN = ['w5d2-studio-write-source'] as const
 /** An agent's own MCP OAuth sign-in (tests/parity/mcp/agent-oauth.test.ts): starts agent-1 and leaves it running. */
 const AGENT_OAUTH = ['w2c2-agent-mcp-oauth'] as const
 /** The mesh scenario with a message between two running agents (tests/parity/mesh): leaves both running. */
 const MESH_MESSAGE = ['mesh-message-turn'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN, ...W5D2_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING, ...AGENT_OAUTH, ...MESH_MESSAGE] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
@@ -315,7 +317,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:wire-undefined-keys',
     ws: 'mode',
-    scenarios: ['chat-tool-call', ...AGENT_OAUTH],
+    scenarios: ['chat-tool-call', ...AGENT_OAUTH, ...W5D2_RAN],
     path: 'pushes: payload keys whose embedded value is `undefined` (e.g. file_updated `previousContent`)',
     what: 'The client stream is JSON: a key whose value is undefined is omitted (D5.1 wire serialization), where embedded IPC keeps the key with undefined. The renderer reads both the same.',
     apply(d, e) {
@@ -535,7 +537,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:effective-runtime-host',
     ws: 'mode',
-    scenarios: [...RUNNING, ...MESH, ...W3A_RAN, ...W3F_RAN],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN, ...W3F_RAN, ...W5D2_RAN],
     path: 'state: adf_meta adf_effective_runtime `host` field only',
     what: 'The agent file records which host profile ran it: `daemon`, not `studioForeground`.',
     apply(d) {
@@ -860,7 +862,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:no-os-recent-documents',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH, ...MESH_MESSAGE],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...W5D2_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE],
     path: 'local calls: app.addRecentDocument',
     what: 'In remote mode an opened file is a path on the daemon\'s machine: it goes into Open Recent (client settings) but not into the OS recent documents, where the Windows shell may contact a UNC host (W4-B review).',
     apply(d, e) {
@@ -875,7 +877,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'remote:remote-recent-files',
     ws: 'mode',
     backends: ['remote'],
-    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...AGENT_OAUTH, ...MESH_MESSAGE],
+    scenarios: ['agent-claim', 'agent-keystore', 'chat-tool-call', 'config-during-start', 'delete', 'doc-resources', 'emergency-stop', 'fleet-map', 'legacy-password-unlock', 'open-agent', 'password-unlock', 'rename-while-running', 'review-accept-foreign', 'start-agent', 'switch-with-background', 'w3f-write-conflicts', ...W5D2_RAN, ...AGENT_OAUTH, ...MESH_MESSAGE],
     path: 'state: user-data/studio-client-settings.json (merged view): `remoteRecentFiles` where embedded has `recentFiles`',
     what: 'Remote mode keeps Open Recent (paths on the daemon\'s machine) in its own client key, which a switch back to embedded never moves into adf-settings.json (W5-D3).',
     apply(d, e) {
