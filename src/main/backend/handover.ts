@@ -217,7 +217,7 @@ async function readText(path: string): Promise<string | null> {
 async function readJsonObject(path: string): Promise<Json | null> {
   const raw = await readText(path)
   if (raw === null) return null
-  const parsed = JSON.parse(raw.replace(/^﻿/, '')) as unknown
+  const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')) as unknown
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${path} is not a JSON object`)
   return parsed as Json
 }
