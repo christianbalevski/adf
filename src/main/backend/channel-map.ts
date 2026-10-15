@@ -533,7 +533,7 @@ export const CHANNEL_MAP = {
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
   [IPC.BACKEND_REMOTE_CHECK]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: the remote handshake (remote/connector.ts) against a draft URL, with the saved token only for the saved origin. Never returns the token.'),
-  [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: app.relaunch, then the normal quit path.'),
+  [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: relaunchStudio (mode-switch.ts), then the normal quit path.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------
   [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),

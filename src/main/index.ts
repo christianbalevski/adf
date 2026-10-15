@@ -619,6 +619,7 @@ app.whenReady().then(async () => {
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
     daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
     window: () => mainWindow,
+    remoteUrl: () => backendStore?.config().remote.url ?? backend.config.remote.url,
     relaunch: (target) => {
       switchingTo = target
       relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)

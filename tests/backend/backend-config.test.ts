@@ -187,11 +187,20 @@ describe('Settings → Backend store', () => {
     expect(restarted).toEqual(['local'])
   })
 
-  it('refuses a switch to remote until remote mode ships (W4-B)', async () => {
-    const { path, s } = store()
-    expect(s.get().remoteSwitchAvailable).toBe(false)
-    expect(await s.set({ mode: 'remote', remoteUrl: 'https://adf.example.com' })).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
-    expect(existsSync(path)).toBe(false)
+  it('a switch to remote goes through the switch dialog and the restart, as every switch (W4-B on W4-A)', async () => {
+    const asked: string[] = []
+    const restarted: string[] = []
+    let answer = false
+    const { path, s } = store({ confirmModeSwitch: async (t) => { asked.push(t); return answer }, applyModeSwitch: (t) => { restarted.push(t) } })
+    expect(s.get().remoteSwitchAvailable).toBe(true)
+    await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })
+    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
+    expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('embedded')
+    answer = true
+    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: true })
+    expect(asked).toEqual(['remote', 'remote'])
+    expect(restarted).toEqual(['remote'])
+    expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('remote')
   })
 
   it('always allows going back to embedded', async () => {
@@ -366,18 +375,19 @@ describe('review fixes', () => {
     expect(again.ok && again.config.remote.allowInsecureHttp).toBe(true)
   })
 
-  it('switches to remote without the handover, once a usable URL and its token are saved', () => {
+  it('switches to remote once a usable URL and its token are saved', () => {
+    const switchOpts = { ...opts, allowModeChange: true }
     const none = defaultBackendConfig()
-    expect(applyBackendPatch(none, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
+    expect(applyBackendPatch(none, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
     const urlOnly: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: null, allowInsecureHttp: false } }
-    expect(applyBackendPatch(urlOnly, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
+    expect(applyBackendPatch(urlOnly, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
     const unconfirmed: StudioBackendConfig = { ...none, remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false } }
-    expect(applyBackendPatch(unconfirmed, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
+    expect(applyBackendPatch(unconfirmed, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
     const ready: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: 'safe:abc', allowInsecureHttp: false } }
-    const switched = applyBackendPatch(ready, { mode: 'remote' }, opts)
+    const switched = applyBackendPatch(ready, { mode: 'remote' }, switchOpts)
     expect(switched.ok && switched.config.mode).toBe('remote')
-    // Local still waits for the handover (W4-A).
-    expect(applyBackendPatch(ready, { mode: 'local' }, opts)).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
+    // A build without mode switches refuses remote as every other non-embedded mode.
+    expect(applyBackendPatch(ready, { mode: 'remote' }, opts)).toMatchObject({ ok: false, code: 'mode_switch_unavailable' })
   })
 
   it('does not block unrelated saves on a stored unconfirmed URL', () => {
