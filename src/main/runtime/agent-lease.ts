@@ -179,6 +179,8 @@ const UNUSABLE_DIR_MEMO_MS = 60_000
 /** A takeover lock this old (or whose pid is gone) was left by a crash. */
 const TAKEOVER_LOCK_TTL_MS = 10_000
 const TAKEOVER_LOCK_WAIT_MS = 2_000
+/** How often a takeover lock judged live is probed again during one wait. */
+const TAKEOVER_LOCK_REPROBE_MS = 250
 /** A takeover lock older than this has its pid checked. */
 const TAKEOVER_LOCK_SUSPECT_MS = 500
 const DIR_MODE = 0o700
@@ -1061,11 +1063,12 @@ export class AgentLeaseRegistry {
    */
   private async lockTakeover(lock: string): Promise<boolean> {
     const deadline = Date.now() + TAKEOVER_LOCK_WAIT_MS
-    // One liveness check per lock per call, not one per retry: a holder whose
-    // event loop is blocked accepts no probe, each one waits in its socket's
-    // accept queue, and macOS refuses connections once that queue is full
-    // (ECONNREFUSED, which reads as a dead holder).
-    const judged = new Map<string, 'live' | 'dead' | 'unknown'>()
+    // A live holder is probed again only every TAKEOVER_LOCK_REPROBE_MS, not
+    // on every retry: a holder whose event loop is blocked accepts no probe,
+    // each one waits in its socket's accept queue, and macOS refuses
+    // connections once that queue is full (ECONNREFUSED, which reads as a
+    // dead holder). Often enough to see a holder that died during the wait.
+    const judged = new Map<string, { state: 'live' | 'dead' | 'unknown'; at: number }>()
     while (Date.now() < deadline) {
       try {
         await fsp.writeFile(lock, JSON.stringify({ pid: this.pid, runtimeId: this.runtimeId, endpoint: this.endpoint, machineId: this.machineIdValue, at: Date.now() }), { flag: 'wx', mode: FILE_MODE })
@@ -1082,8 +1085,10 @@ export class AgentLeaseRegistry {
         const age = Date.now() - st.mtimeMs
         if (age > TAKEOVER_LOCK_SUSPECT_MS) {
           const raw = await fsp.readFile(lock, 'utf-8')
-          const state = judged.get(raw) ?? await this.lockHolderState(raw)
-          judged.set(raw, state)
+          const last = judged.get(raw)
+          const fresh = last && (last.state !== 'live' || Date.now() - last.at < TAKEOVER_LOCK_REPROBE_MS)
+          const state = fresh ? last.state : await this.lockHolderState(raw)
+          if (!fresh) judged.set(raw, { state, at: Date.now() })
           // A live holder keeps its lock however long it stalls or blocks;
           // the TTL is only for a lock without a readable pid.
           if (state === 'dead' || (state === 'unknown' && age > this.takeoverLockTtlMs)) {
