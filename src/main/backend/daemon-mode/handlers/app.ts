@@ -4,6 +4,7 @@ import type { AgentToolsResult } from '../../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { mergeSettingsViews, splitSettingsPatch } from '../settings'
+import { isEditedPlaceholder } from '../mcp/common'
 
 /**
  * Daemon-mode handlers owned by W2-C outside the core flow: the settings
@@ -39,6 +40,16 @@ export const APP_HANDLERS: DaemonHandlerTable = {
     const { client: clientPart, backend, unclassified } = splitSettingsPatch(newSettings ?? {})
     if (unclassified.length) {
       ctx.log.warn(`[Settings] Keys in neither settings class go to the daemon: ${unclassified.join(', ')}`)
+    }
+    // App provider keys arrive as the placeholder the daemon answered (§4.2);
+    // a value made from it (backspaced, edited) would be saved as the key.
+    const providers = (backend as { providers?: unknown }).providers
+    if (Array.isArray(providers)) {
+      for (const p of providers as Array<{ id?: unknown; name?: unknown; apiKey?: unknown }>) {
+        if (typeof p?.apiKey === 'string' && isEditedPlaceholder(p.apiKey)) {
+          throw new Error(`The API key of ${String(p.name ?? p.id ?? 'a provider')} was shown as a placeholder (the ADF daemon never sends stored keys), so an edit of it cannot be saved. Clear the field and type the whole key.`)
+        }
+      }
     }
     if (Object.keys(backend).length > 0) {
       const client = await ctx.ready()

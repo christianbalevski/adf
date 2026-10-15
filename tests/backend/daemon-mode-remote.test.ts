@@ -337,6 +337,17 @@ describe('RemotePicker', () => {
   })
 })
 
+describe('provider keys shown as the placeholder', () => {
+  it('SETTINGS_SET refuses a key made from the placeholder and passes the untouched one to the daemon', async () => {
+    const patches: unknown[] = []
+    daemon.routes.set('PATCH /settings', ({ body }) => { patches.push(body); return {} })
+    await expect(invoke(IPC.SETTINGS_SET, { providers: [{ id: 'p1', name: 'OpenAI', apiKey: '__redacted_' }] })).rejects.toThrow(/API key of OpenAI was shown as a placeholder/)
+    expect(patches).toEqual([])
+    expect(await invoke(IPC.SETTINGS_SET, { providers: [{ id: 'p1', name: 'OpenAI', apiKey: '__redacted__' }] })).toEqual({ success: true })
+    expect(patches).toHaveLength(1)
+  })
+})
+
 // Last: it ends the shared connection.
 describe('remote connection: a 401 after connecting', () => {
   it('is the refused-token sentence and ends the connection (no endless retry)', async () => {
