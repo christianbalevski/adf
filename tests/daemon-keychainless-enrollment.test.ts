@@ -295,6 +295,41 @@ describe('K12: trust-daemon and untrust-daemon (owner actions)', () => {
     expect(hasWorkingSlot(third, rotated.label, rotated.privateKeyPkcs8)).toBe(false)
   })
 
+  it('the revocation sweep leaves files another runtime runs and documents held open here; opening them cleans them later', async () => {
+    const s = makeStudio()
+    const free = studioAgent(s.svc, 'agent-1')
+    const leased = studioAgent(s.svc, 'agent-2')
+    const held = studioAgent(s.svc, 'agent-3')
+    const d = makeDaemon()
+    d.settings.set('trackedDirectories', [agentsDir])
+    d.identity.restore({ mnemonic: s.phrase, passphrase: PASSPHRASE })
+    d.identity.trustDaemon()
+    for (const file of [free, leased, held]) expect(daemonRead(d.identity, file)).toMatch(/^value-of-/)
+    const old = { label: d.encKey.label, privateKey: d.encKey.privateKeyPkcs8 }
+    for (const file of [free, leased, held]) expect(hasWorkingSlot(file, old.label, old.privateKey)).toBe(true)
+
+    d.identity.untrustDaemon()
+    const leasedChecks: string[] = []
+    const result = await d.identity.sweepRevokedSlots([held], {
+      leasedElsewhere: async (filePath) => {
+        leasedChecks.push(filePath)
+        return filePath === leased ? 'agent-2 is running in ADF Studio (pid 4242)' : null
+      },
+    })
+    expect(result.cleaned).toBe(1)
+    expect(result.skipped.sort()).toEqual([held, leased].sort())
+    expect(leasedChecks).not.toContain(held)
+    expect(hasWorkingSlot(free, old.label, old.privateKey)).toBe(false)
+    expect(hasWorkingSlot(leased, old.label, old.privateKey)).toBe(true)
+    expect(hasWorkingSlot(held, old.label, old.privateKey)).toBe(true)
+
+    // Opened later by this daemon: cleaned then.
+    expect(daemonRead(d.identity, leased)).toBe('value-of-agent-2')
+    expect(daemonRead(d.identity, held)).toBe('value-of-agent-3')
+    expect(hasWorkingSlot(leased, old.label, old.privateKey)).toBe(false)
+    expect(hasWorkingSlot(held, old.label, old.privateKey)).toBe(false)
+  })
+
   it('a junk slot under the daemon label is replaced once trusted (label squat)', async () => {
     const { randomBytes } = await import('node:crypto')
     const s = makeStudio()

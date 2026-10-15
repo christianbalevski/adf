@@ -20,6 +20,8 @@ import { DaemonIdentityError } from '../daemon-identity'
 import { requireLocalCaller } from '../identity-routes'
 import { requireLocalProof } from './identity-import-routes'
 import type { DaemonRouteContext } from './index'
+import { leaseHolderElsewhere } from '../file-ops'
+import { processAgentLeases } from '../../runtime/agent-lease'
 
 const OWNER_ACTION = 'Trusting this daemon\'s key is an owner action and can be done'
 const PROOF_REFUSAL = 'Trusting or revoking this daemon\'s key needs this machine\'s local proof (X-ADF-Local-Proof, read from the daemon-local-proof file next to the daemon settings). Run adf identity trust-daemon on the daemon host.'
@@ -71,9 +73,14 @@ export function registerIdentityTrustRoutes(server: FastifyInstance, ctx: Daemon
     try {
       const { retiredLabel, ...trust } = identity.untrustDaemon()
       const agentsUpdated = applyToLoaded()
-      // Tracked agents that are not loaded: in the background, one file per macrotask.
-      const loaded = new Set(ctx.runtime.listAgents().map((ref) => ref.filePath).filter((p): p is string => !!p))
-      void identity.sweepRevokedSlots(loaded).catch((err) => console.error('[ADF Daemon] Revoked-slot sweep failed:', err instanceof Error ? err.message : err))
+      // Tracked agents: in the background, one file per macrotask; not the ones
+      // loaded or held open here (their own workspace), nor the ones another runtime runs.
+      const open = [
+        ...ctx.runtime.listAgents().map((ref) => ref.filePath).filter((p): p is string => !!p),
+        ...ctx.runtime.listOpenDocuments().map((doc) => doc.filePath),
+      ]
+      const leases = processAgentLeases()
+      void identity.sweepRevokedSlots(open, { leasedElsewhere: (filePath) => leaseHolderElsewhere(leases, filePath) }).catch((err) => console.error('[ADF Daemon] Revoked-slot sweep failed:', err instanceof Error ? err.message : err))
       return { trust, retiredLabel, agentsUpdated, sweep: 'started' }
     } catch (err) {
       return sendError(reply, err)

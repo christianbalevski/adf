@@ -43,6 +43,7 @@ import { DaemonAppOAuthStore, daemonAppOAuthAccount } from '../services/mcp-oaut
 import { settingsScope } from '../services/provider-key-store'
 import type { WorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { testSeamsAllowed } from '../utils/test-seams'
+import { canonicalizePath } from '../utils/tracked-paths'
 import {
   FileSecretBackend,
   MIN_PASSPHRASE_LENGTH,
@@ -720,14 +721,20 @@ export class DaemonIdentity {
   }
 
   /**
-   * After untrustDaemon: remove revoked slots from every agent in the tracked
-   * folders that is not loaded (`skip`: loaded files, handled through their
-   * open workspace). One file per macrotask; a file that cannot be opened is
-   * skipped and cleaned when it is next opened. Copies outside the tracked
-   * folders keep the slot until they are opened here or in Studio.
+   * After untrustDaemon: remove revoked slots from the agents in the tracked
+   * folders. Skipped, and cleaned when they are next opened: `skip` (files
+   * this daemon has loaded or holds open as documents; loaded ones are
+   * handled through their open workspace), files `leasedElsewhere` names
+   * (another runtime runs the agent and is the one writer of its file), and
+   * files that cannot be opened. One file per macrotask. Copies outside the
+   * tracked folders keep the slot until they are opened here or in Studio.
    */
-  async sweepRevokedSlots(skip: ReadonlySet<string>): Promise<{ cleaned: number; failed: string[] }> {
-    const result = { cleaned: 0, failed: [] as string[] }
+  async sweepRevokedSlots(
+    skip: Iterable<string>,
+    opts: { leasedElsewhere?: (filePath: string) => Promise<string | null> } = {},
+  ): Promise<{ cleaned: number; skipped: string[]; failed: string[] }> {
+    const result = { cleaned: 0, skipped: [] as string[], failed: [] as string[] }
+    const skipKeys = new Set([...skip].map(pathKey))
     if (this.revokedLabels().length === 0) return result
     const tracked = this.store.get('trackedDirectories')
     const dirs = Array.isArray(tracked) ? tracked.filter((d): d is string => typeof d === 'string') : []
@@ -735,8 +742,16 @@ export class DaemonIdentity {
     const files: string[] = []
     for (const dir of dirs) await collectAdfFilesAsync(dir, typeof depth === 'number' ? depth : 5, 0, files)
     for (const file of files) {
-      if (skip.has(file)) continue
+      if (skipKeys.has(pathKey(file))) {
+        result.skipped.push(file)
+        continue
+      }
       await new Promise<void>((resolve) => setImmediate(resolve))
+      const holder = opts.leasedElsewhere ? await opts.leasedElsewhere(file) : null
+      if (holder) {
+        result.skipped.push(file)
+        continue
+      }
       let ws: AdfWorkspace | null = null
       try {
         ws = AdfWorkspace.open(file)
@@ -747,7 +762,7 @@ export class DaemonIdentity {
         try { ws?.close() } catch { /* closed */ }
       }
     }
-    console.log(`[ADF Daemon] Revoked trusted-daemon slots removed from ${result.cleaned} tracked agent(s)${result.failed.length ? `; ${result.failed.length} could not be opened and are cleaned when next opened` : ''}`)
+    console.log(`[ADF Daemon] Revoked trusted-daemon slots removed from ${result.cleaned} tracked agent(s)${result.skipped.length ? `; ${result.skipped.length} open here or run by another runtime, cleaned when next opened` : ''}${result.failed.length ? `; ${result.failed.length} could not be opened and are cleaned when next opened` : ''}`)
     return result
   }
 
@@ -1119,6 +1134,11 @@ export function readBootPassphrase(readFile: (path: string) => string): string |
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value !== '' ? value : null
+}
+
+/** One spelling per file (canonical path), for the sweep's skip list. */
+function pathKey(filePath: string): string {
+  try { return canonicalizePath(filePath) } catch { return filePath }
 }
 
 /** .adf files under a tracked folder, as the tracked-directory scan finds them (async: the revocation sweep runs in the background). */
