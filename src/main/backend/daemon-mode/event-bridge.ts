@@ -147,7 +147,8 @@ function initialMapping(state: AgentState): BackgroundMappingState {
  * end cannot be known. `disconnected`: the daemon did not come back.
  * `timeout`: TURN_WAIT_TIMEOUT_MS passed.
  */
-export type TurnOutcome = 'completed' | 'error' | 'discarded' | 'stopped' | 'gap' | 'disconnected' | 'timeout'
+/** `exited`: local mode, the daemon's process is gone (its turns cannot end); `disconnected`: the stream stayed away past the grace period, the daemon may still be running the turn. */
+export type TurnOutcome = 'completed' | 'error' | 'discarded' | 'stopped' | 'gap' | 'disconnected' | 'exited' | 'timeout'
 
 type EndOutcome = 'completed' | 'error' | 'discarded'
 
@@ -298,10 +299,14 @@ export class EventBridge {
     const timestamp = this.now()
     const onLoop = loop && loop !== 'main' ? { loop } : {}
     this.log.warn(`[Backend] The chat to ${target.filePath}${loop && loop !== 'main' ? ` (${loop})` : ''} did not run: ${error}`)
-    const events = [
+    this.emitSynthetic(target, [
       { type: 'error', payload: { error }, timestamp, ...onLoop },
       { type: 'state_changed', payload: { state: 'idle' }, timestamp, ...onLoop },
-    ] as AgentExecutionEvent[]
+    ] as AgentExecutionEvent[])
+  }
+
+  /** Executor-shaped events Studio makes, routed as the daemon's own (open file: AGENT_EVENT; else the background list). */
+  private emitSynthetic(target: { agentId: string | null; filePath: string }, events: AgentExecutionEvent[]): void {
     for (const event of events) {
       if (target.agentId && this.agents.has(target.agentId)) {
         this.onExecutor({ kind: 'executor', agentId: target.agentId, filePath: target.filePath, event })
@@ -312,8 +317,48 @@ export class EventBridge {
     }
   }
 
-  /** End every open wait (the connector failed, or the daemon stayed away past the grace period). */
-  failTurns(outcome: Extract<TurnOutcome, 'disconnected' | 'stopped'>): void {
+  /** Chats whose wait ended with the stream away (`disconnected`): their agent's real state is read on reconnect. */
+  private readonly rechecks = new Map<string, { agentId: string; filePath: string; loop: string }>()
+
+  /**
+   * A chat's wait ended while the stream was away, but the daemon may still
+   * run its turn: no error is shown. Once connected again, `recheckTurns`
+   * reads the agent's state and ends the spinner if its turn is over (a
+   * busy agent's own events end it).
+   */
+  recheckOnReconnect(target: { agentId: string; filePath: string }, loop: string | undefined): void {
+    const l = loop ?? 'main'
+    this.rechecks.set(`${target.agentId}\0${l}`, { ...target, loop: l })
+  }
+
+  async recheckTurns(): Promise<void> {
+    const client = this.deps.client()
+    if (!client || this.rechecks.size === 0) return
+    const pending = [...this.rechecks.values()]
+    this.rechecks.clear()
+    for (const r of pending) {
+      let state: string | null
+      try {
+        state = (await client.request<AgentStatus>('GET', `/agents/${encodeURIComponent(r.agentId)}/status`)).runtimeState
+      } catch (err) {
+        if ((err as { status?: unknown }).status !== 404) {
+          this.rechecks.set(`${r.agentId}\0${r.loop}`, r)
+          this.log.warn(`[Backend] Could not read the state of ${r.filePath} after the reconnect: ${err instanceof Error ? err.message : String(err)}`)
+          continue
+        }
+        state = null
+      }
+      if (state !== null && toDisplayState(state) === 'active') {
+        this.log.log(`[Backend] ${r.filePath} is still busy after the reconnect; its own events end the chat`)
+        continue
+      }
+      this.log.log(`[Backend] ${r.filePath} is ${state ?? 'not running'} after the reconnect: the chat's turn is over`)
+      this.emitSynthetic(r, [{ type: 'state_changed', payload: { state: 'idle' }, timestamp: this.now(), ...(r.loop !== 'main' ? { loop: r.loop } : {}) }] as AgentExecutionEvent[])
+    }
+  }
+
+  /** End every open wait (the connector failed, the daemon stayed away past the grace period, or its process exited). */
+  failTurns(outcome: Extract<TurnOutcome, 'disconnected' | 'exited' | 'stopped'>): void {
     for (const w of [...this.waiters]) w.resolve(outcome)
   }
 

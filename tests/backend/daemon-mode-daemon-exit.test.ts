@@ -98,8 +98,11 @@ describe('local mode: the daemon process exited', () => {
     const { handle, session, revives, logFile, kill, logs } = boot('studio')
     expect(await handle.ready).toBe(true)
     writeFileSync(logFile, '[ADF Daemon] Version 0.8.0 (pid 1001, started by studio)\n')
+    const ended = vi.spyOn(handle.bridge, 'failTurns')
     kill()
     await vi.waitFor(() => expect(revives).toEqual([1001]))
+    // Only the exit path ends waiting chats with an error (`exited`), once.
+    expect(ended.mock.calls).toEqual([['exited']])
     expect(notices()).toContain('The ADF daemon (pid 1001) exited; agents are stopped. Studio is starting it again.')
     expect(logs.some((l) => l.includes('Its log has no shutdown line: it was killed or crashed.'))).toBe(true)
     // The stream is re-dialed on the new daemon (a new session there re-holds and re-focuses: client-stream.ts).

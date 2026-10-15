@@ -213,15 +213,39 @@ describe('daemon-mode handlers: review fixes', () => {
     await electronStub.handlers.get(IPC.FILE_OPEN)!({}, { filePath: join(dir, 'agent-1.adf') })
     const agentEvents = () => electronStub.pushes.filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0] as { type: string; payload: { error?: string; state?: string }; loop?: string })
 
-    // Lost while it waited for its turn.
+    // The stream away past the grace period, the daemon alive: no error; on reconnect the agent's real state ends the spinner.
     daemon.routes.set(`POST /agents/${AGENT}/chat`, () => ({ status: 202, body: { accepted: true, turnId: 'turn_lost' } }))
     electronStub.pushes.length = 0
     const lost = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' }))
     await new Promise((r) => setTimeout(r, 20))
     handle.bridge.failTurns('disconnected')
     expect(await lost).toEqual({ success: false, error: expect.stringContaining('connection to the ADF daemon was lost') })
+    expect(agentEvents()).toEqual([])
+    handle.connection.markDisconnected('stream ended')
+    handle.connection.markConnected()
+    await vi.waitFor(() => expect(agentEvents()).toEqual([{ type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number) }]))
+
+    // A busy agent at the reconnect: nothing pushed (its own events end the chat).
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'thinking', targetState: null, loopCount: 0 }))
+    electronStub.pushes.length = 0
+    const busy = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' }))
+    await new Promise((r) => setTimeout(r, 20))
+    handle.bridge.failTurns('disconnected')
+    await busy
+    handle.connection.markDisconnected('stream ended')
+    handle.connection.markConnected()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(agentEvents()).toEqual([])
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
+
+    // The daemon's process exited (local mode exit path): exactly one error, then idle.
+    electronStub.pushes.length = 0
+    const exited = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' }))
+    await new Promise((r) => setTimeout(r, 20))
+    handle.bridge.failTurns('exited')
+    expect(await exited).toEqual({ success: false, error: expect.stringContaining('The ADF daemon exited while the message waited') })
     expect(agentEvents()).toEqual([
-      { type: 'error', payload: { error: expect.stringContaining('connection to the ADF daemon was lost') }, timestamp: expect.any(Number) },
+      { type: 'error', payload: { error: expect.stringContaining('The ADF daemon exited while the message waited') }, timestamp: expect.any(Number) },
       { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number) },
     ])
 

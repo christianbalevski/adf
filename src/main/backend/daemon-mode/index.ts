@@ -631,6 +631,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       turnGrace.unref?.()
     }
     if (state.state === 'connected' && turnGrace) { clearTimeout(turnGrace); turnGrace = null }
+    // Chats whose wait ended while away: their agent's real state now.
+    if (state.state === 'connected') void bridge.recheckTurns()
   })
 
   // --- Local mode: the daemon's process exited ---------------------------------
@@ -673,7 +675,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
             : undefined
     log.warn(`[Backend] ${daemonExitSentence({ pid, cause: cause?.text ?? null })}${cause ? '' : ' Its log has no shutdown line: it was killed or crashed.'} Started by ${startedBy ?? 'unknown'}; ${agentsAtExit.length} agent(s) were running.${auto ? ' Studio starts it again.' : ''}`)
     // The turns its agents ran cannot end any more.
-    bridge.failTurns('disconnected')
+    bridge.failTurns('exited')
     if (!auto) {
       // A daemon replaced from the terminal (`adf daemon restart`) answers again within moments: no dialog then.
       await sleep(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
