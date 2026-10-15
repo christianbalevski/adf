@@ -282,16 +282,16 @@ non-interrupted `turn.completed` (or `absorbed_turn_ids`) marks it answered.
 `unanswered_turn_ids` → taken, not answered.
 **Never hide model output** — every item kind must be renderable.
 
-## 6. Daemon client (`api/`)
+## 6. Daemon client (`src/shared/daemon-client/`; `api/` re-exports it)
 
-`runtime()` is normalized (`api/normalize.ts`): a partial or older daemon's
+`runtime()` is normalized (`src/shared/daemon-client/normalize.ts`): a partial or older daemon's
 GET /runtime (missing sections, `providers: {}`) reads as empty, never
 crashes a view. Read other responses defensively too.
 
 `new DaemonClient({ baseUrl?, token?, fetch?, timeoutMs? })` — `baseUrl`
 defaults like the CLI (`--url` → `ADF_DAEMON_URL` → `http://127.0.0.1:7385`),
 token from `ADF_DAEMON_TOKEN`. All methods reject with `DaemonError { status,
-body, unreachable }`. Types in `api/types.ts` are type-imported from the daemon
+body, unreachable }`. Types in `src/shared/daemon-client/types.ts` are type-imported from the daemon
 (`RuntimeService` / `http-api.ts`), so they track the real shapes.
 
 - daemon: `health runtime providers authStatus runtimeSettings runtimeMcp

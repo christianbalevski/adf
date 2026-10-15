@@ -8,7 +8,7 @@ the flows. Every endpoint, parameter and response field is in the generated
 `GET /openapi.json`).
 
 The ADF CLI and the terminal app are clients of exactly this API
-([`src/main/tui/api/client.ts`](../../src/main/tui/api/client.ts) is a complete
+([`src/shared/daemon-client/client.ts`](../../src/shared/daemon-client/client.ts) is a complete
 typed client), so anything they do, your client can do.
 
 - [Quick start](#quick-start)
@@ -515,7 +515,7 @@ export async function follow(onEvent: (e: UmbilicalEvent) => void, resync: () =>
 ```
 
 (Add an idle timer that aborts the fetch in production; the terminal app's
-[`sse.ts`](../../src/main/tui/api/sse.ts) is a complete implementation.)
+[`sse.ts`](../../src/shared/daemon-client/sse.ts) is a complete implementation.)
 
 For one agent there is also a pull alternative, `GET
 /agents/:id/umbilical/events?since_seq=`, over an opt-in in-memory window
