@@ -233,8 +233,10 @@ export class DaemonProcessController {
    * /health (no token) must report a pid, the pid file must name that pid
    * (waiting briefly: the daemon writes the file right after it listens),
    * and the pid must be alive. Throws DaemonListenerRefused with the reason.
+   * Studio also asks it again before its token goes out after a dropped
+   * connection (daemon-mode connection.ts).
    */
-  private async verifyListener(): Promise<number> {
+  async verifyListener(): Promise<number> {
     let pid: unknown
     try {
       const res = await this.fetchImpl(`${this.url}/health`, { signal: AbortSignal.timeout(3000) })

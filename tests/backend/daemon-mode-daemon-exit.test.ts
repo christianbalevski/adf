@@ -17,7 +17,7 @@ import { electronStub, helpLabels } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
 import { readDaemonExitCause } from '../../src/main/backend/daemon-mode/daemon-exit'
-import type { DaemonEndpoint } from '../../src/main/backend/daemon-mode/connection'
+import { DaemonConnection, type DaemonEndpoint } from '../../src/main/backend/daemon-mode/connection'
 import type { DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
 
 const BASE = 'http://127.0.0.1:47391'
@@ -170,5 +170,44 @@ describe('local mode: the daemon process exited', () => {
     expect((live.handle.connection.state as { exited?: unknown }).exited).toBeUndefined()
     expect(live.revives).toEqual([])
     await live.handle.shutdown()
+  })
+})
+
+describe('local mode: the token after a dropped connection (W5-D1 pid check, every reconnect)', () => {
+  it('sends no token or local proof until the listener on the port is the daemon its pid file names again', async () => {
+    const seen: Array<{ path: string; auth: string | null; proof: string | null }> = []
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      seen.push({ path: new URL(String(url)).pathname, auth: headers.Authorization ?? null, proof: headers['X-ADF-Local-Proof'] ?? null })
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+    let verdict: () => Promise<number> = async () => 1001
+    let verifications = 0
+    const connector = Object.assign(async () => ({
+      baseUrl: BASE, logFile: null, description: 'fake',
+      source: { token: () => 't', localProof: () => ({ 'X-ADF-Local-Proof': 'p' }) },
+    }), { verifyListener: () => { verifications++; return verdict() } })
+    const connection = new DaemonConnection(connector, { log: () => {}, warn: () => {}, error: () => {} }, fetchImpl)
+    const client = await connection.client()
+    connection.markConnected()
+    await client.request('POST', '/identity/import')
+    expect(seen.at(-1)).toEqual({ path: '/identity/import', auth: 'Bearer t', proof: 'p' })
+
+    // Another program took the port: refused, so nothing carries the token.
+    verdict = async () => { throw new Error('The program answering on the port is pid 4321, but the daemon pid file names pid 1001') }
+    const verified: number[] = []
+    connection.onListenerVerified((pid) => { verified.push(pid) })
+    connection.markDisconnected('stream ended')
+    expect(connection.tokenAllowed).toBe(false)
+    await client.request('POST', '/identity/import').catch(() => {})
+    expect(seen.at(-1)).toEqual({ path: '/identity/import', auth: null, proof: null })
+    await vi.waitFor(() => expect(verifications).toBeGreaterThanOrEqual(1))
+
+    // The daemon the pid file names answers again: the token goes out, and the stream is told to re-dial.
+    verdict = async () => 1002
+    await vi.waitFor(() => expect(verified).toEqual([1002]), { timeout: 3_000 })
+    expect(connection.tokenAllowed).toBe(true)
+    await client.request('POST', '/identity/import')
+    expect(seen.at(-1)).toEqual({ path: '/identity/import', auth: 'Bearer t', proof: 'p' })
   })
 })

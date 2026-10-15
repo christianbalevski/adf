@@ -34,6 +34,13 @@ export type DaemonConnector = ((progress: (text: string) => void) => Promise<Dae
    * token file, so the client and its stream keep their URL.
    */
   revive?: (progress: (text: string) => void) => Promise<DaemonEndpoint>
+  /**
+   * Local mode: whoever answers on the port is the daemon the pid file names
+   * (daemon-process.ts verifyListener, no token sent); resolves its pid,
+   * rejects with the reason. Asked again after every dropped connection
+   * before the token goes out (DaemonConnection).
+   */
+  verifyListener?: () => Promise<number>
 }
 
 /** Local mode: the daemon's process is gone (not a dropped connection). */
@@ -83,6 +90,14 @@ export class DaemonConnection {
 
   private readonly connectorLogFile: string | null
   private readonly connector: DaemonConnector
+  /**
+   * Local mode: the listener on the port was verified since the last drop.
+   * Until then requests carry no token and no local proof (a 401 at worst):
+   * whatever binds the port after the daemon died never gets them.
+   */
+  private listenerVerified = true
+  private verifying: Promise<void> | null = null
+  private readonly verifiedListeners = new Set<(pid: number) => void>()
 
   constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch) {
     this.connector = connector
@@ -99,9 +114,9 @@ export class DaemonConnection {
         this.daemonClient = createStudioDaemonClient({
           baseUrl: endpoint.baseUrl,
           source: {
-            token: () => (this.endpoint ?? endpoint).source.token(),
-            ...(source.refresh ? { refresh: () => (this.endpoint ?? endpoint).source.refresh?.() ?? false } : {}),
-            ...(source.localProof ? { localProof: (path: string) => (this.endpoint ?? endpoint).source.localProof?.(path) ?? {} } : {}),
+            token: () => this.listenerVerified ? (this.endpoint ?? endpoint).source.token() : undefined,
+            ...(source.refresh ? { refresh: () => this.listenerVerified && ((this.endpoint ?? endpoint).source.refresh?.() ?? false) } : {}),
+            ...(source.localProof ? { localProof: (path: string) => this.listenerVerified ? (this.endpoint ?? endpoint).source.localProof?.(path) ?? {} : {} } : {}),
           },
           fetch: fetchImpl,
         })
@@ -171,7 +186,47 @@ export class DaemonConnection {
 
   markDisconnected(error?: string): void {
     if (this.status.state === 'failed' || this.status.state === 'disconnected') return
+    if (this.connector.verifyListener && this.endpoint) {
+      // The daemon may be gone and another program on its port: no token until the pid file names the listener again.
+      this.listenerVerified = false
+      void this.verifyListenerLoop()
+    }
     this.set({ state: 'disconnected', since: Date.now(), ...(error ? { error } : {}) })
+  }
+
+  /** Local mode: whether requests carry the token now (the listener was verified since the last drop). */
+  get tokenAllowed(): boolean {
+    return this.listenerVerified
+  }
+
+  /** Called with the daemon's pid each time the listener is verified after a drop (the stream then re-dials at once). */
+  onListenerVerified(listener: (pid: number) => void): () => void {
+    this.verifiedListeners.add(listener)
+    return () => { this.verifiedListeners.delete(listener) }
+  }
+
+  /** Ask verifyListener until it passes, while the connection is down (every second; a refusal is logged once per reason). */
+  private verifyListenerLoop(): Promise<void> {
+    this.verifying ??= (async () => {
+      let lastRefusal: string | null = null
+      while (!this.listenerVerified && this.status.state !== 'failed') {
+        try {
+          const pid = await this.connector.verifyListener!()
+          if ((this.status as ConnectionState).state === 'failed') break
+          this.listenerVerified = true
+          this.log.log(`[Backend] The ADF daemon on ${this.baseUrl} is pid ${pid}, as its pid file says; sending the token again`)
+          for (const listener of this.verifiedListeners) {
+            try { listener(pid) } catch (err) { this.log.warn('[Backend] Listener-verified callback failed:', err) }
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          if (message !== lastRefusal && !message.startsWith('Nothing answers')) this.log.warn(`[Backend] Not sending the daemon token: ${message}`)
+          lastRefusal = message
+          await new Promise<void>((r) => { const t = setTimeout(r, 1_000); t.unref?.() })
+        }
+      }
+    })().finally(() => { this.verifying = null })
+    return this.verifying
   }
 
   /** Local mode: the daemon's process is gone. Shown as such (status line, dialog or notice) until a daemon answers again. */
@@ -203,6 +258,8 @@ export class DaemonConnection {
       throw new Error(`The ADF daemon started again on ${endpoint.baseUrl}, not ${this.endpoint.baseUrl}; restart Studio to use it`)
     }
     this.endpoint = endpoint
+    // The revive's controller.ensure verified the listener before it sent the token.
+    this.listenerVerified = true
     this.log.log(`[Backend] Using ${endpoint.description}`)
     return endpoint
   }

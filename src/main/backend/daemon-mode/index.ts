@@ -235,7 +235,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   }
   const connect: DaemonConnector = deps.mode !== 'local' ? deps.connect : Object.assign(
     withLocalProof(deps.connect),
-    { logFile: deps.connect.logFile, ...(deps.connect.revive ? { revive: withLocalProof(deps.connect.revive) } : {}) },
+    {
+      logFile: deps.connect.logFile,
+      ...(deps.connect.revive ? { revive: withLocalProof(deps.connect.revive) } : {}),
+      ...(deps.connect.verifyListener ? { verifyListener: deps.connect.verifyListener } : {}),
+    },
   )
   // Remote mode: a 401 after connecting (the server's token changed) is the
   // "refused the token" sentence and ends the connection; retrying could not
@@ -672,6 +676,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     void reviveDaemon('automatic')
   }
   if (deps.mode === 'local') {
+    // The token goes out again only once the listener is the daemon its pid file names (connection.ts): re-dial then, not at the next backoff.
+    connection.onListenerVerified(() => { if (connection.state.state !== 'connected') clientSession?.reconnect() })
     connection.onState((state) => {
       if (state.state === 'disconnected' && !state.exited && !shutdownPromise && !reviving) void checkDaemonExit()
     })

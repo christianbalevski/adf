@@ -414,7 +414,8 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
               },
             },
           })
-          ;(connect as { revive?: unknown }).revive = local
+          // Studio's revive, and its check before the token goes out again after a drop (the pid file names the listener).
+          Object.assign(connect, { revive: local, verifyListener: local.verifyListener })
         }
         handle = daemonMode.registerDaemonModeHandlers({
           ...(options.revivable ? { respawnDelayMs: 200 } : {}),
