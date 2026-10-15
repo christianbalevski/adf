@@ -577,16 +577,18 @@ describe('the way back to embedded (review fixes)', () => {
     expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
   })
 
-  it('safeStorage that only obfuscates (Linux basic_text): MCP sign-ins stay with the daemon and say why; sessions move back with the key-file cipher', async () => {
+  it('safeStorage that only obfuscates (Linux basic_text): MCP sign-ins move back as embedded stores them, with a note; sessions move back with the key-file cipher', async () => {
     const sub = SUBS[0]
     studioTokens(sub).write(auth.issue(sub.subject))
     await switchedToLocalWithMcp()
-    const reason = 'No OS keyring is available (Studio would only obfuscate the value).'
-    const report = await runHandover('embedded', deps({ studioSecrets: { ...studioCodec, available: () => false, unavailableReason: () => reason } }))
+    const reason = 'No OS keyring is available, so safeStorage only obfuscates.'
+    const report = await runHandover('embedded', deps({ studioSecrets: { ...studioCodec, obfuscationOnly: () => reason } }))
     const mcp = report.items.find((i) => i.id === 'mcp-oauth')
-    expect(mcp).toMatchObject({ outcome: 'kept', pending: true })
-    expect(mcp?.detail).toContain('No OS keyring is available')
-    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+    expect(mcp).toMatchObject({ outcome: 'moved' })
+    expect(mcp?.detail).toContain('basic_text')
+    expect(studioMcp().read()[MCP_URL]).toBeDefined()
+    expect(daemonMcp().listServerUrls()).toEqual([])
+    expect(await readCredentialHolder(dir)).toBe('studio')
     const session = report.items.find((i) => i.id === 'chatgpt')
     expect(session).toMatchObject({ outcome: 'moved' })
     expect(session?.detail).toContain('key-file cipher')

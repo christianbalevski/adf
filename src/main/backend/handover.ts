@@ -109,10 +109,12 @@ export interface HandoverPlanItem {
 
 /** The `safe:` format of Studio's settings secrets and auth.json (Electron safeStorage). */
 export interface StudioSecretCodec {
-  /** False also where safeStorage only obfuscates (Linux `basic_text`): nothing moved back is written with it. */
   available(): boolean
-  /** Why `available()` is false, as a sentence; null when it is true. */
-  unavailableReason?(): string | null
+  /**
+   * Set where safeStorage only obfuscates (Linux `basic_text`): a sentence
+   * saying so and what fixes it; null or absent where it really encrypts.
+   */
+  obfuscationOnly?(): string | null
   /** `safe:<base64>`. Throws when encryption is unavailable. */
   encrypt(plain: string): string
   /** Null when this value cannot be decrypted here. */
@@ -376,9 +378,15 @@ function decryptStudioToken(deps: HandoverDeps, raw: string): string | null {
   return raw.startsWith(AES_GCM_PREFIX) ? deps.daemonCipher.decrypt(raw) : raw
 }
 
+/** Whether a moved-back session is written with the key-file cipher instead of safeStorage. */
+function studioTokenUsesKeyFile(deps: HandoverDeps): boolean {
+  return !deps.studioSecrets.available() || !!deps.studioSecrets.obfuscationOnly?.()
+}
+
 function encryptStudioToken(deps: HandoverDeps, plain: string): string {
-  // As subscription-token-store writes in Studio: safeStorage, else the key-file cipher.
-  return deps.studioSecrets.available() ? deps.studioSecrets.encrypt(plain) : deps.daemonCipher.encrypt(plain)
+  // safeStorage, else the key-file cipher (subscription-token-store reads both).
+  // Under basic_text the key-file cipher is used, which encrypts where basic_text only obfuscates.
+  return studioTokenUsesKeyFile(deps) ? deps.daemonCipher.encrypt(plain) : deps.studioSecrets.encrypt(plain)
 }
 
 async function readDaemonTokens(deps: HandoverDeps, sub: (typeof SUBSCRIPTIONS)[number]): Promise<{ raw: string | null; tokens: SessionTokens | null }> {
@@ -523,9 +531,11 @@ async function moveSubscription(
   }
   await deps.beforeSourceDelete?.(sub.id)
   await unlinkIfExists(sourcePath)
-  // Without usable safeStorage (none, or Linux basic_text) the moved-back session is written with the key-file cipher, as Studio itself does.
-  if (!toDaemon && !deps.studioSecrets.available()) {
-    note += `; encrypted with the key-file cipher (${(deps.studioSecrets.unavailableReason?.() ?? 'OS secure storage is not available').replace(/\.$/, '')})`
+  // Without safeStorage, or with Linux basic_text, the moved-back session is written with the key-file cipher.
+  // (Embedded Studio itself writes basic_text when that is all it has; its next token refresh does so again.)
+  if (!toDaemon && studioTokenUsesKeyFile(deps)) {
+    const why = deps.studioSecrets.obfuscationOnly?.() ?? 'OS secure storage is not available'
+    note += `; encrypted with the key-file cipher (${why.replace(/\.$/, '')})`
   }
   // Recorded as moved only when Studio's own session went over (a conflict won by the daemon's session leaves it the daemon's).
   return { item: { id: sub.id, label: sub.label, outcome: 'moved', detail: `${sessionAccountLabel(keep)} moved from ${sourcePath} to ${destPath}${note}` }, ...(keep === source ? { movedAccount: keep.account_id } : {}) }
@@ -600,10 +610,9 @@ async function moveMcpOAuth(toDaemon: boolean, deps: HandoverDeps, marker: Hando
   const ownKept = Object.keys(daemonBlob).length - urls.length
   const ownNote = ownKept > 0 ? `; ${ownKept} sign-in(s) the daemon had before the switch stay with it` : ''
   if (urls.length === 0) return result('unchanged', `no app-level MCP sign-ins of Studio's in the daemon${ownNote}`)
-  if (!deps.studioSecrets.available()) {
-    const why = deps.studioSecrets.unavailableReason?.() ?? 'OS secure storage is not available to Studio'
-    return result('kept', `${why.replace(/\.$/, '')}, and MCP tokens are never stored unencrypted; they stay with the daemon`, true)
-  }
+  if (!deps.studioSecrets.available()) return result('kept', 'OS secure storage is not available to Studio, and MCP tokens are never stored unencrypted; they stay with the daemon', true)
+  // basic_text: moved back as embedded Studio stores them (mcp-oauth-store), with a note; tracker §6 has the store-wide fix.
+  const weak = deps.studioSecrets.obfuscationOnly?.() ?? null
   if (studioText === null && rawStudio !== undefined) return result('kept', `Studio's ${MCP_OAUTH_SETTINGS_KEY} cannot be decrypted here; nothing moved`, true)
   const merged: Record<string, McpOAuthRecord> = { ...studioBlob }
   for (const url of urls) merged[url] = newerRecord(merged[url], daemonBlob[url])!
@@ -617,7 +626,7 @@ async function moveMcpOAuth(toDaemon: boolean, deps: HandoverDeps, marker: Hando
   if (urls.some((url) => !back[url])) return result('failed', 'Studio\'s settings do not hold every server after the write; the daemon\'s copy kept', true)
   await deps.beforeSourceDelete?.('mcp-oauth')
   for (const url of urls) await store.invalidate(url, 'all')
-  return { item: { id: 'mcp-oauth', label, outcome: 'moved', detail: `${urls.length} server sign-in(s) moved back into Studio's settings${ownNote}` }, movedUrls: urls }
+  return { item: { id: 'mcp-oauth', label, outcome: 'moved', detail: `${urls.length} server sign-in(s) moved back into Studio's settings${ownNote}${weak ? `; stored with safeStorage's basic_text obfuscation, as Studio stores them on this machine (${weak.replace(/\.$/, '')})` : ''}` }, movedUrls: urls }
 }
 
 // --- runtime identity -----------------------------------------------------------------

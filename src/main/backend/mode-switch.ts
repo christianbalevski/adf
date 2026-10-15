@@ -55,8 +55,8 @@ const WAIT_FOR_TURNS_MAX_MS = 30 * 60_000
 
 /**
  * Linux without a Secret Service keyring: safeStorage falls back to
- * 'basic_text', a fixed key that only obfuscates. Not good enough for a
- * daemon token, a moved-back session or MCP sign-ins.
+ * 'basic_text', a fixed key that only obfuscates. Not good enough for the
+ * remote daemon token or a moved-back session.
  */
 export function isObfuscationOnly(): boolean {
   if (process.platform !== 'linux') return false
@@ -65,18 +65,18 @@ export function isObfuscationOnly(): boolean {
 }
 
 /**
- * The settings-secret format SettingsService uses: safeStorage when it
- * really encrypts. Under `basic_text` the handover writes nothing with it
- * (sessions go to the key-file cipher, MCP sign-ins stay with the daemon);
- * values already stored that way still decrypt.
+ * The settings-secret format SettingsService uses: safeStorage when
+ * available. Under `basic_text` (obfuscationOnly) the handover writes
+ * moved-back sessions with the key-file cipher and moves MCP sign-ins back
+ * as SettingsService stores them, with a note in the report.
  */
 export const studioSecretCodec: StudioSecretCodec = {
-  available: () => safeStorage.isEncryptionAvailable() && !isObfuscationOnly(),
-  unavailableReason: () => isObfuscationOnly()
-    ? 'No OS keyring is available (Studio would only obfuscate the value). Install and unlock a Secret Service keyring such as GNOME Keyring or KWallet, then restart Studio.'
-    : safeStorage.isEncryptionAvailable() ? null : 'OS secure storage (safeStorage) is not available.',
+  available: () => safeStorage.isEncryptionAvailable(),
+  obfuscationOnly: () => isObfuscationOnly()
+    ? 'No OS keyring is available, so safeStorage only obfuscates. Install and unlock a Secret Service keyring such as GNOME Keyring or KWallet, then restart Studio.'
+    : null,
   encrypt: (plain) => {
-    if (!studioSecretCodec.available()) throw new Error(studioSecretCodec.unavailableReason?.() ?? 'OS secure storage (safeStorage) is not available')
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('OS secure storage (safeStorage) is not available')
     return 'safe:' + safeStorage.encryptString(plain).toString('base64')
   },
   decrypt: (stored) => {
