@@ -115,6 +115,10 @@ export function mcpAttachEntry(serverConfig: z.infer<typeof McpAttachArgs>['serv
     command: serverConfig.command,
     args: serverConfig.args,
     url: serverConfig.url,
+    // E3: the .adf records that the server signs in with OAuth (oauth wins over the
+    // bearer variable, as for a Settings install), so another runtime does not
+    // connect without it. Client id and scopes stay on the registration.
+    oauth: serverConfig.oauth,
     env: serverConfig.envKeys?.map((key) => ({ key, value: '' })),
     headers: serverConfig.headers,
     headerEnv: serverConfig.headerEnv,
