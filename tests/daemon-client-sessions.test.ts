@@ -545,6 +545,31 @@ describe('client sessions: producers', () => {
     expect(sessions.stats(sessionId).connected).toBe(false)
   })
 
+  it('turn bookkeeping (D5): executor frames carry turnId and absorbedTurnIds, focused or not; chat.discarded is a turn frame for every session', async () => {
+    const sessions = registry()
+    const focused = open(sessions, { focus: AGENT_1 })
+    const other = open(sessions)
+    sessions.indexAgent(FILE_1, AGENT_1)
+    sessions.publishExecutor({ ...exec(AGENT_1, 'tool_call_result', { result: { content: 'x' } }), turnId: 'turn_1' })
+    sessions.publishExecutor({ ...exec(AGENT_1, 'turn_complete', {}), turnId: 'turn_1', absorbedTurnIds: ['turn_0'] })
+    sessions.publishExecutor(exec(AGENT_1, 'state_changed', { state: 'idle' }))
+    sessions.publishUmbilical({ seq: 2, event_type: 'chat.discarded', timestamp: 1, source: 'agent:x', agent_id: AGENT_1, loop: 'side', payload: { reason: 'stopped', count: 1, turn_ids: ['turn_q'], unanswered_turn_ids: ['turn_c'] } })
+    sessions.publishUmbilical({ seq: 3, event_type: 'chat.discarded', timestamp: 1, source: 'agent:x', agent_id: AGENT_1, payload: { reason: 'stopped', count: 0, turn_ids: [] } })
+    await tick()
+    for (const { sink } of [focused, other]) {
+      const frames = sink.frames()
+      expect(frames.map(f => f.kind === 'executor' ? [f.event.type, f.turnId ?? null, f.absorbedTurnIds ?? null] : f.kind)).toEqual([
+        ['tool_call_result', 'turn_1', null],
+        ['turn_complete', 'turn_1', ['turn_0']],
+        ['state_changed', null, null],
+        'turn',
+      ])
+      expect(frames[3]).toEqual({ cursor: 4, kind: 'turn', agentId: AGENT_1, filePath: FILE_1, loop: 'side', outcome: 'discarded', turnIds: ['turn_q'], unansweredTurnIds: ['turn_c'] })
+    }
+    // The unfocused session's tool result is stripped, its turn id kept.
+    expect(other.sink.frames()[0]).toMatchObject({ stripped: 'tool_result', turnId: 'turn_1' })
+  })
+
   it('no session: producers do no serialization work', () => {
     const sessions = registry()
     const payload = { get expensive() { throw new Error('serialized') } }

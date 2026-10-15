@@ -143,6 +143,8 @@ Code: `src/main/daemon/client-sessions.ts` (registry, frames, producers), `src/m
 
 Additions to the table above, all additive: `POST …/documents` takes `{filePath}` or `{agentId}`; `GET …/events` also takes `epoch` and `Last-Event-ID`, and without `since` replays from the session's first frame; the `host` frame also carries the lifecycle `payload` and `timestamp`; `POST /client/sessions` answers 201 and takes `umbilical: true`, which adds a fourth frame kind, `umbilical` `{agentId, event}`: every envelope `GET /events` carries except `turn.delta` (the focused agent's tokens arrive as `executor` frames). The terminal app sets it; Studio does not.
 
+Turn bookkeeping (W5-A2, client API version 2): RuntimeService stamps each executor event with the `turnId` of the async context's turn (the umbilical `turn_id` of the same event) and, on `error` and a `turn_complete` that was not interrupted, the executor's absorbed ids (`absorbedTurnIds`); `executor` frames carry both, also when stripped. The executor's `chat.discarded` becomes a fifth frame kind, `turn` `{agentId, filePath, loop?, outcome: 'discarded', turnIds, unansweredTurnIds}`, sent to every session. Studio's AGENT_INVOKE waits settle on these (`client-stream.ts` `turnEndOf`); it no longer opens its session with `umbilical: true`.
+
 Delivery:
 
 - Fan-out is per session. Each session has its own ring, cursor space (`epoch`), focus, documents and expiry clock; sessions share nothing but the serialized frame text. A slow, absent or expired session MUST NOT delay, drop or reorder frames of another session.

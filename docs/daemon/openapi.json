@@ -14625,7 +14625,7 @@
           "Client (internal)"
         ],
         "summary": "Stream the session's frames (Server-Sent Events)",
-        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
+        "description": "One stream per session (a new connect replaces the open one). Starts with `: connected` and `stream.hello` `{epoch, oldestCursor, latestCursor}`, then the frames after the resume cursor; `: heartbeat` every 30 s. Each frame: `id: <cursor>`, `event: executor | host | push | umbilical | turn`, `data: <ClientFrame JSON>`. Without `since` the stream starts at the session's first frame. **Frames**: `executor` = a raw executor event (as ADF Studio's AGENT_EVENT carries it): text and thinking deltas only for the session's focused agent (PUT …/focus), whatever `umbilical.stream_deltas` says; a `tool_call_result` of another agent carries `result.isError` and `resultSize` instead of the content (`stripped: tool_result`). `host` = an agent lifecycle event (`agent_starting` … `agent_stopped`, `agent_state_changed`, `agent_loops_changed`, `trigger_error`, `startup_failed`). `push` = a topic for every other change (inbox, approvals snapshot, mesh, config_changed, workspace data, file and folder changes, install progress, MCP and adapter status, compute). `turn` = a stop dropped queued chats (`outcome: discarded`). Executor frames of a turn carry its `turnId`; `turn_complete` and `error` also the `absorbedTurnIds` that end with it. Frames of one agent arrive in emission order. Sessions not focused on an agent get its large payloads as stubs (see ClientFrame), so one agent's large write never fills another session's ring; a single frame over 4 Mi characters becomes `stream.gap` `oversized` for the session that would get it. **Ring**: each session keeps its newest 4096 frames (and at most 32 Mi characters). A frame dropped before it was written (a slow reader, or a long disconnect) is announced: `stream.gap` `{reason: evicted, dropped, …}` comes before the next frame; `epoch_changed` when the cursor is from another session. On a gap, reload state. Fan-out is per session: a slow or absent session never delays another.",
         "operationId": "streamClientSessionEvents",
         "x-adf-stability": "internal",
         "parameters": [
@@ -28321,7 +28321,7 @@
       },
       "ClientFrame": {
         "type": "object",
-        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
+        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
         "required": [
           "cursor",
           "kind"
@@ -28337,8 +28337,39 @@
               "executor",
               "host",
               "push",
-              "umbilical"
+              "umbilical",
+              "turn"
             ]
+          },
+          "turnId": {
+            "type": "string",
+            "description": "`executor`: the turn the event belongs to (the `turnId` POST …/chat answered); absent outside a turn."
+          },
+          "absorbedTurnIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`executor` `turn_complete` (not interrupted) and `error`: the other chats this turn answered; they end with it."
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "discarded"
+            ],
+            "description": "`turn`: a stop or `off` dropped queued chats (`turnIds`) and cut off the turn answering `unansweredTurnIds`."
+          },
+          "turnIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unansweredTurnIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "agentId": {
             "type": [

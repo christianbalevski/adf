@@ -604,6 +604,7 @@ export type {
   ClientPushPayloads,
   ClientPushTopic,
   ClientStreamGap,
+  ClientTurnFrame,
   ClientUmbilicalFrame,
 } from '../../main/daemon/client-sessions'
 
@@ -647,4 +648,4 @@ export type DaemonVersion = import('../../main/daemon/routes/meta-routes').Daemo
  * speaks: GET /version `clientApiVersion` must equal it before a client uses
  * client sessions. Equal to the daemon's CLIENT_API_VERSION (meta-routes.ts).
  */
-export const SUPPORTED_CLIENT_API_VERSION = 1
+export const SUPPORTED_CLIENT_API_VERSION = 2

@@ -45,7 +45,7 @@ describe('Studio client session (W2-B)', () => {
     const r = recorder()
     session.start(r.listener)
     await waitFor(() => r.fatal.length > 0, 'the refusal')
-    expect(r.fatal[0]).toMatch(/9\.0\.0 speaks client API 2; this Studio needs 1\. Update the daemon/)
+    expect(r.fatal[0]).toContain(`9.0.0 speaks client API ${SUPPORTED_CLIENT_API_VERSION + 1}; this Studio needs ${SUPPORTED_CLIENT_API_VERSION}. Update the daemon`)
     expect(daemon.requests.some((q) => q.path === '/client/sessions')).toBe(false)
     await session.end()
   })
@@ -63,7 +63,7 @@ describe('Studio client session (W2-B)', () => {
       s1Served = true
       return sse(
         frame({ kind: 'executor', cursor: 1, agentId: 'a1', filePath: 'C:/a.adf', event: { type: 'state_changed', payload: { state: 'thinking' }, timestamp: 1 } }),
-        frame({ kind: 'umbilical', cursor: 2, agentId: 'a1', event: { seq: 1, event_type: 'turn.completed', timestamp: 2, source: 'agent', agent_id: 'a1', turn_id: 't1', payload: { filePath: 'C:/a.adf' } } }),
+        frame({ kind: 'turn', cursor: 2, agentId: 'a1', filePath: 'C:/a.adf', outcome: 'discarded', turnIds: ['t1'], unansweredTurnIds: [] }),
         frame({ kind: 'umbilical', cursor: 3, agentId: 'a1', event: { seq: 2, event_type: 'tool.started', timestamp: 2, source: 'agent', agent_id: 'a1', payload: {} } }),
       )
     })
@@ -76,14 +76,14 @@ describe('Studio client session (W2-B)', () => {
     await session.setFocus('a1') // before the session exists: sent once it opens
     session.start(r.listener)
     expect(await session.holdDocument('C:/a.adf')).toMatchObject({ agentId: 'a1', running: false })
-    expect(daemon.requests.find((q) => q.path === '/client/sessions')?.body).toEqual({ client: 'studio', version: '1.0.0', exitDaemonWhenClosed: true, umbilical: true })
+    expect(daemon.requests.find((q) => q.path === '/client/sessions')?.body).toEqual({ client: 'studio', version: '1.0.0', exitDaemonWhenClosed: true })
     expect(daemon.requests.find((q) => q.path === '/client/sessions/s1/focus')?.body).toEqual({ agentId: 'a1' })
     expect(session.sessionId).toBe('s1')
 
     await waitFor(() => r.frames.length >= 2, 'the first frames')
     expect(r.frames.slice(0, 2)).toEqual([
       { kind: 'executor', agentId: 'a1', filePath: 'C:/a.adf', event: { type: 'state_changed', payload: { state: 'thinking' }, timestamp: 1 } },
-      { kind: 'turn', agentId: 'a1', filePath: 'C:/a.adf', outcome: 'completed', turnIds: ['t1'], unansweredTurnIds: [] },
+      { kind: 'turn', agentId: 'a1', filePath: 'C:/a.adf', outcome: 'discarded', turnIds: ['t1'], unansweredTurnIds: [] },
     ])
 
     // The stream ends, the reconnect answers 404: a new session, reattached before its frames, then a resync.

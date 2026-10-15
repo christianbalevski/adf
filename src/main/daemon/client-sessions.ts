@@ -166,6 +166,32 @@ export interface ClientExecutorFrame {
   stripped?: 'tool_result' | 'tool_input' | 'stub'
   /** The payload could not be serialized: `event.payload` is `{unserializable: reason}`. */
   unserializable?: true
+  /**
+   * Turn bookkeeping (D5): the turn the event belongs to, the `turnId` of
+   * the chat that started it (POST /agents/:id/chat answers it). Absent
+   * outside a turn.
+   */
+  turnId?: string
+  /** On `error` and a `turn_complete` that was not interrupted: the other chats the turn answered (they end with it). */
+  absorbedTurnIds?: string[]
+}
+
+/**
+ * A stop or `off` dropped queued chats (`turnIds`, never delivered) and cut
+ * off the turn that was answering `unansweredTurnIds` (the executor's
+ * `chat.discarded`). Sent to every session: a client waiting for one of
+ * those turns settles here (D5).
+ */
+export interface ClientTurnFrame {
+  kind: 'turn'
+  cursor: number
+  agentId: string
+  filePath: string | null
+  /** The loop the chats were sent to; absent = main. */
+  loop?: string
+  outcome: 'discarded'
+  turnIds: string[]
+  unansweredTurnIds: string[]
 }
 
 export interface ClientHostFrame {
@@ -291,7 +317,7 @@ export interface ClientUmbilicalFrame {
   unserializable?: true
 }
 
-export type ClientFrame = ClientExecutorFrame | ClientHostFrame | ClientPushFrame | ClientUmbilicalFrame
+export type ClientFrame = ClientExecutorFrame | ClientHostFrame | ClientPushFrame | ClientUmbilicalFrame | ClientTurnFrame
 
 /**
  * `stream.gap` data. `epoch_changed`: the cursor came from another session;
@@ -785,6 +811,28 @@ export class ClientSessionRegistry {
       body ??= frameJson({ kind: 'umbilical', agentId: event.agent_id ?? null, event }, 'event')
       this.append(session, 'umbilical', body)
     }
+    if (event.event_type === 'chat.discarded') this.publishTurnsDiscarded(event)
+  }
+
+  /** The executor's `chat.discarded` as a `turn` frame, for every session (D5 turn bookkeeping). */
+  private publishTurnsDiscarded(event: UmbilicalEvent): void {
+    const agentId = event.agent_id
+    if (!agentId) return
+    const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
+    const payload = (event.payload ?? {}) as Record<string, unknown>
+    const turnIds = ids(payload.turn_ids)
+    const unansweredTurnIds = ids(payload.unanswered_turn_ids)
+    if (turnIds.length === 0 && unansweredTurnIds.length === 0) return
+    const frame: Omit<ClientTurnFrame, 'cursor'> = {
+      kind: 'turn',
+      agentId,
+      filePath: this.pathsByAgent.get(agentId) ?? null,
+      ...(event.loop ? { loop: event.loop } : {}),
+      outcome: 'discarded',
+      turnIds,
+      unansweredTurnIds,
+    }
+    this.fanOut(agentId, { name: 'turn', full: () => frameJson(frame, 'payload') })
   }
 
   publishHost(event: RuntimeLifecycleEvent): void {
@@ -1082,7 +1130,14 @@ function pathKey(filePath: string): string {
 
 function executorFrame(event: RuntimeAgentEvent, strip: 'tool_result' | 'tool_input' | 'stub' | null): Omit<ClientExecutorFrame, 'cursor'> {
   const loop = event.event.loop
-  const base = { kind: 'executor' as const, agentId: event.agentId, filePath: event.filePath, ...(loop !== undefined ? { loop } : {}) }
+  const base = {
+    kind: 'executor' as const,
+    agentId: event.agentId,
+    filePath: event.filePath,
+    ...(loop !== undefined ? { loop } : {}),
+    ...(event.turnId ? { turnId: event.turnId } : {}),
+    ...(event.absorbedTurnIds?.length ? { absorbedTurnIds: event.absorbedTurnIds } : {}),
+  }
   if (!strip) return { ...base, event: event.event }
   if (strip === 'tool_input') {
     const payload = (event.event.payload ?? {}) as Record<string, unknown>
