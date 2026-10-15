@@ -231,6 +231,30 @@ describe('egressFetch over a replaced global fetch', () => {
   })
 })
 
+describe('an abort between hops', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('stops the redirect chain with the abort reason; nothing more is sent', async () => {
+    const controller = new AbortController()
+    const sent: string[] = []
+    vi.stubGlobal('fetch', async (input: string | URL | Request) => {
+      sent.push(String(input))
+      // The caller gives up while this hop is in flight; the hop itself ignores the signal.
+      controller.abort()
+      return new Response(null, { status: 302, headers: { location: '/next' } })
+    })
+    const f = egressFetch({ daemonPort: 1 })
+    await expect(f('http://127.0.0.1:9/first', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+    expect(sent).toEqual(['http://127.0.0.1:9/first'])
+  })
+
+  it('a response that arrives after the abort is not handed back', async () => {
+    const controller = new AbortController()
+    vi.stubGlobal('fetch', async () => { controller.abort(); return new Response('late') })
+    await expect(egressFetch({ daemonPort: 1 })('http://127.0.0.1:9/', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
 describe('pinnedFetch keeps fetch semantics', () => {
   it('sends method, headers and body; decodes gzip; follows a redirect after re-checking it; answers it under manual', async () => {
     const seen: Array<{ method?: string; url?: string; host?: string; body: string; type?: string }> = []

@@ -227,14 +227,18 @@ export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)
     const policy = typeof guard === 'function' ? guard() : guard
     const request = new Request(input, init?.body != null ? { ...init, duplex: 'half' } as RequestInit : init)
     const signal = request.signal
-    if (signal.aborted) throw abortReason(signal)
+    // An abort is honoured at every step: before each send and after every await.
+    const stopIfAborted = () => { if (signal.aborted) throw abortReason(signal) }
+    stopIfAborted()
     let url = new URL(request.url)
     let method = request.method
     const headers = new Headers(request.headers)
     let body: Buffer | null = request.body ? Buffer.from(await request.arrayBuffer()) : null
     for (let hop = 0; ; hop++) {
+      stopIfAborted()
       // Every hop is checked first, literal addresses included, whoever connects.
       const refusal = await checkFetchTarget(url.toString(), policy)
+      stopIfAborted()
       if (refusal) throw new Error(refusal)
       // Behind the env proxy the proxy connects (a name this machine could
       // not look up is the proxy's to resolve); its redirects come back here
@@ -244,9 +248,14 @@ export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)
       const response = viaFetch
         ? await viaFetch(url, { method, headers, ...(body ? { body: body as unknown as BodyInit } : {}), signal, redirect: 'manual' })
         : await pinnedRequest(url, method, headers, body, signal, policy)
+      if (signal.aborted) {
+        try { await response.body?.cancel() } catch { /* best effort */ }
+        throw abortReason(signal)
+      }
       const location = response.headers.get('location')
       if (!REDIRECTS.has(response.status) || !location || request.redirect === 'manual') return response
       try { await response.body?.cancel() } catch { /* best effort */ }
+      stopIfAborted()
       if (request.redirect === 'error') throw new TypeError('fetch failed', { cause: new Error(`unexpected redirect to ${location}`) })
       if (hop >= MAX_FOLLOWED_REDIRECTS) throw new TypeError('fetch failed', { cause: new Error('redirect count exceeded') })
       const next = new URL(location, url)
