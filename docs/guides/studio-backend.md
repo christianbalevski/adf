@@ -68,8 +68,12 @@ rules apply). One notification lists the result: "Running again after the
 switch: agent-1, agent-2." and, if any failed, "Not started: agent-3
 (reason)."
 
-When an agent has a turn in flight, the dialog says "A turn is in flight in:
-*agents*." and offers:
+When the restart would interrupt an agent's turn, the dialog says "A turn is
+in flight in: *agents*." and offers the buttons below. That is the case in
+Embedded mode, and in Local daemon mode with a daemon Studio started and
+**Keep the daemon running** off. A local daemon that keeps running (started
+with `adf daemon start`, or the setting on) keeps its turns going, so the
+dialog does not ask. Neither does a switch away from Remote daemon.
 
 | Button | What happens |
 |---|---|
@@ -278,7 +282,7 @@ Three places show the daemon Studio uses:
   reason). While the connection is
   down, a status line ("ADF daemon: connecting…", "ADF daemon: not connected
   (*url*), retrying", "ADF daemon: not connected") and **Reconnect to the ADF
-  Daemon**.
+  Daemon**; after a failed launch also **Use Embedded for This Session**.
 - **`adf daemon status`** in a terminal: also `started by …`, and `proof
   unavailable: …` when the daemon runs without its local proof (below).
 
@@ -294,7 +298,7 @@ refused. Restart the daemon after fixing the file's permissions."
 | Task-bar progress and the line "Starting the ADF daemon…" | Studio is starting the daemon | Wait; Studio connects when it answers |
 | The line "Waiting for the ADF daemon (pid N)…" and one notification "Waiting for the ADF daemon (pid N)… Studio connects when it answers." | Another daemon is starting or stopping on these settings | Wait |
 | Dialog "Studio lost its connection to the ADF daemon." (**Reconnect Now**, **Open Daemon Log**, **Dismiss**) | The connection dropped for more than 3 seconds. Studio keeps reconnecting. The dialog is not shown again within 60 seconds | Check `adf daemon status`. If the daemon stopped, start it (`adf daemon start`) or restart Studio, which starts one. Studio reconnects by itself and notifies "Reconnected to the ADF daemon." |
-| Dialog "Studio could not connect to an ADF daemon." with **Reconnect** and **Use Embedded Mode for This Session** | No daemon for this launch (see the table below) | Fix the cause (Settings → Backend works without a daemon), then Reconnect; or run Embedded for this launch |
+| Dialog "Studio could not connect to an ADF daemon." with **Reconnect**, **Use Embedded for This Session** and **Open Daemon Log** | No daemon for this launch (see the table below) | Fix the cause (Settings → Backend works without a daemon), then **Reconnect**: it restarts Studio and tries the daemon again. **Use Embedded for This Session** restarts Studio running agents itself for this launch only; the saved mode stays. The Help menu offers both later (**Reconnect to the ADF Daemon**, **Use Embedded for This Session**) |
 | An action fails with "Cannot reach daemon at *url*: …" | The call was made while disconnected. Nothing was done | Retry after the reconnect |
 | A chat waiting for its answer ends after 15 seconds without the daemon | Studio stops waiting; the daemon may still run the turn | Reopen the agent after the reconnect |
 | Dialog "Emergency stop did not reach the ADF daemon. … Agents may still be running." (after **Kill**) | The stop request failed | Run `adf daemon stop` in a terminal, or stop the agents once Studio reconnects |
@@ -307,8 +311,8 @@ not connect to an ADF daemon." include:
 
 | Reason | Fix |
 |---|---|
-| "Failed to start: port 7385 on 127.0.0.1 is already in use" | Another program holds the daemon port. Stop it, or set `ADF_DAEMON_PORT` for Studio and the CLI |
-| "The ADF daemon exited during startup (code N)." | **Open Daemon Log** |
+| "The ADF daemon exited during startup (code 1). Its log says: "Failed to start: port 7385 on 127.0.0.1 is already in use"." | Another program holds the daemon port. Stop it, or set `ADF_DAEMON_PORT` for Studio and the CLI |
+| "The ADF daemon exited during startup (code N)." with another line from its log | **Open Daemon Log** |
 | "The ADF daemon did not answer …/health within 90s." | Same |
 | "A daemon is running on port N but Studio cannot authenticate to it (token from …)." | The daemon uses another token: unset `ADF_DAEMON_TOKEN`, or stop that daemon |
 | "A daemon is running on port N but has no GET /version; it is an older ADF build." | Update the CLI (`npm i -g @agentdocumentformat/cli@latest`) and run `adf daemon restart` |
@@ -395,7 +399,7 @@ the Help menu and one notification ("Waiting for the remote ADF daemon at
 |---|---|
 | "Cannot reach the ADF daemon at …" / "… did not answer within 15 s" | The server, tunnel or tailnet is down. Studio keeps trying |
 | "… answered HTTP 502/503/504: a proxy answers there, but the ADF daemon behind it does not." | Start the daemon on the server. Studio keeps trying |
-| "The ADF daemon at … refused the token." | Run `adf daemon token` on the server, save it, Test connection, then **Reconnect**. A token refused after connecting ends the connection with the same sentence |
+| "The ADF daemon at … refused the token." | Run `adf daemon token` on the server, save it, Test connection, then **Reconnect** (Studio restarts and connects). A token refused after connecting ends the connection with the same sentence |
 | "The ADF daemon at … does not accept the host name …" | Add the name to `ADF_DAEMON_ALLOWED_HOSTS` on the server and restart the daemon |
 | "The TLS connection to … failed" | Give the server a certificate this computer trusts, or use an SSH tunnel. Studio has no option to skip certificate checks |
 | "… answered a redirect" | Enter the daemon's final URL |
@@ -522,7 +526,8 @@ Every message the backend features show, and where it is explained. Text in
 | "Could not open the daemon log." | [Daemon status](#daemon-status) (Help menu) |
 | "Studio restarts once the turns in flight finish (…)." / "Switching to *B*" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "*Action* is not available in daemon mode yet: W2-B (…)" | [Agents in two runtimes](#agents-in-two-runtimes) |
-| "Failed to start: port 7385 on 127.0.0.1 is already in use" | [When the daemon is not reachable](#when-the-daemon-is-not-reachable) |
+| "… Its log says: "Failed to start: port 7385 on 127.0.0.1 is already in use"." | [When the daemon is not reachable](#when-the-daemon-is-not-reachable) |
+| "Use Embedded for This Session" (failure dialog, Help menu) | [When the daemon is not reachable](#when-the-daemon-is-not-reachable) |
 | "The running ADF daemon is version *X*; this Studio is *Y*." / Restart It Anyway | [Version mismatch](#version-mismatch) |
 | "This launch runs … because ADF_STUDIO_BACKEND is set." / "… for this session only" | [Run Embedded when the daemon does not work](#run-embedded-when-the-daemon-does-not-work) |
 | "Connected to the ADF daemon at …" (Test connection) and the remote sentences | [Remote daemon in Studio](#remote-daemon-in-studio) |
