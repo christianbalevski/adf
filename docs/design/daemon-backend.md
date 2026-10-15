@@ -269,7 +269,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 
 | Class | Keys | Lives in (daemon mode) |
 |---|---|---|
-| **Client** (Studio presentation and Studio-host behaviour) | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars`, `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `nativeNotificationsEnabled`, `menuBarEnabled`, `recentFiles`, `updateChecksEnabled`, `spellcheckDownloadsEnabled` | `studio-client-settings.json` (Studio userData) |
+| **Client** (Studio presentation and Studio-host behaviour) | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars`, `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `nativeNotificationsEnabled`, `menuBarEnabled`, `recentFiles`, `remoteRecentFiles` (remote mode's Open Recent; stays in the client file on a switch to embedded), `updateChecksEnabled`, `spellcheckDownloadsEnabled` | `studio-client-settings.json` (Studio userData) |
 | **Backend** (read by runtime, providers, MCP, adapters, mesh, review, compute, tracked dirs) | every other key, including `trackedDirectories`, `agentsFolder`, `compute`, `remoteCatalogsEnabled`, `providerChecksEnabled`, `skillCatalogSources` (the terminal app reads it) | The daemon's settings file, through `GET/PATCH /settings` and the dedicated routes |
 | **Backend selection** | `mode`, `keepDaemonRunning`, `remote.url`, `remote.token` | `studio-backend.json` (Studio userData), token as `safe:` |
 
@@ -624,7 +624,7 @@ Switching backends happens at restart (D9) and moves, not copies, the state that
 | State | embedded → `local` | `local` → embedded |
 |---|---|---|
 | Running agents | Stopped by Studio at quit; the daemon autostarts per the usual rules | Stopped by the daemon (if Studio stops it) or left running there; embedded Studio then hits `agent_leased` for each, visibly |
-| Client settings | Copied into `studio-client-settings.json` | Copied back into `adf-settings.json` |
+| Client settings | Copied into `studio-client-settings.json` | Copied back into `adf-settings.json`, except `remoteRecentFiles` (paths on a remote daemon's machine), which stays in the client file |
 | Runtime identity | Written to keychain `studio-runtime:<scope>` (§5.3) | Nothing (Studio kept its copy) |
 | App-level MCP OAuth | Moved from `mcpOauthCredentials` into the daemon's secret-backend account; removed from Studio | Moved back; removed from the daemon store |
 | ChatGPT / Grok sessions | Moved from `auth.json` to `auth.daemon.json` (written with `credential-cipher`); `auth.json` removed | Moved back |

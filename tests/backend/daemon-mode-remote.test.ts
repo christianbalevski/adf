@@ -121,7 +121,9 @@ describe('remote-variant channels: the daemon-side picker (§9.3)', () => {
     const before = electronStub.calls.length
     expect((await invoke(IPC.FILE_OPEN, { filePath: SERVER_FILE })).success).toBe(true)
     expect(electronStub.calls.slice(before).filter((c) => c.api === 'app.addRecentDocument')).toEqual([])
-    expect(handle.clientSettings.get('recentFiles')).toContain(SERVER_FILE)
+    // Kept under remote mode's own key, which a switch to embedded leaves behind (W5-D3).
+    expect(handle.clientSettings.get('remoteRecentFiles')).toContain(SERVER_FILE)
+    expect(handle.clientSettings.get('recentFiles') ?? []).not.toContain(SERVER_FILE)
   })
 
   it('FILE_OPEN of a path the daemon has opens it without asking', async () => {

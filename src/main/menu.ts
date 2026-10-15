@@ -3,8 +3,9 @@ import { existsSync } from 'fs'
 import { basename } from 'path'
 import { IPC } from '../shared/constants/ipc-channels'
 import { grantLocalOpen } from './backend/local-open-grants'
+import { recentFilesKey as recentFilesKeyFor } from '../shared/constants/client-settings-keys'
 
-/** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode). */
+/** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode), `remoteRecentFiles` in remote mode. */
 export interface MenuSettings {
   get(key: string): unknown
   set(key: string, value: unknown): void
@@ -37,7 +38,9 @@ export interface DaemonMenuOptions {
    * Remote mode: recent files are paths on the daemon's machine. They are
    * not added to the OS recent documents (the Windows shell may contact a
    * UNC host), not checked for existence here, and never granted as files
-   * of this computer (local-open-grants.ts) (W4-B review).
+   * of this computer (local-open-grants.ts) (W4-B review). They are kept
+   * under their own client key, `remoteRecentFiles`, which a switch back to
+   * embedded leaves behind (W5-D3).
    */
   remoteRecents?: boolean
 }
@@ -71,8 +74,13 @@ function sendOpenFile(filePath: string): void {
   targetWindow()?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
 }
 
+/** The settings key of this mode's Open Recent list. */
+function recentFilesKey(): string {
+  return recentFilesKeyFor(!!daemonMenu?.remoteRecents)
+}
+
 function getRecentFiles(): string[] {
-  const raw = settingsRef?.get('recentFiles')
+  const raw = settingsRef?.get(recentFilesKey())
   return Array.isArray(raw) ? raw.filter((p): p is string => typeof p === 'string') : []
 }
 
@@ -90,13 +98,13 @@ export function recordRecentFile(filePath: string): void {
     0,
     MAX_RECENT_FILES
   )
-  settingsRef.set('recentFiles', list)
+  settingsRef.set(recentFilesKey(), list)
   if (!daemonMenu?.remoteRecents) app.addRecentDocument(filePath)
   buildApplicationMenu()
 }
 
 function clearRecentFiles(): void {
-  settingsRef?.set('recentFiles', [])
+  settingsRef?.set(recentFilesKey(), [])
   app.clearRecentDocuments()
   buildApplicationMenu()
 }
