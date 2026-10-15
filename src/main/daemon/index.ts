@@ -26,7 +26,7 @@ import { TrackedDirWatcher } from './dir-watcher'
 import { createMeshControls } from './mesh-controls'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
-import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
+import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof, noteLocalProofProblem } from './local-access'
 import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -47,6 +47,8 @@ import { applySettingLive } from './live-setting'
 import { approvalHub } from '../runtime/approval-hub'
 import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
+import { processAgentLeases } from '../runtime/agent-lease'
+import { testSeamsAllowed } from '../utils/test-seams'
 
 // Defined by the builds that ship the daemon (electron.vite.config.ts for
 // out/main/daemon.js, scripts/build-npm.mjs for the npm package).
@@ -109,6 +111,9 @@ const startedBy = takeLaunchEnv()
 console.log(`[ADF Daemon] Version ${daemonVersion} (pid ${process.pid}, started by ${startedBy})`)
 
 const settings = new FileSettingsStore(settingsPath)
+// Runtime host record (§10.3) at boot, with this build's version (the
+// registry's default reads npm_package_version, absent in the bundle).
+void processAgentLeases().configure({ kind: 'daemon', settingsPath, version: daemonVersion })
 const eventBus = new DaemonEventBus(1000)
 registerDaemonEventBus(eventBus)
 
@@ -162,6 +167,8 @@ if (behindProxy) {
   try {
     localProof = mintLocalProof(dirname(settingsPath), port).proof
   } catch (err) {
+    // Visible in GET /version (`localProof`), Studio's Settings → Backend and `adf daemon status`.
+    noteLocalProofProblem(`the local proof file could not be written or protected: ${err instanceof Error ? err.message : String(err)}`)
     console.error('[ADF Daemon] Could not write or protect the local proof file; owner import (adf identity import) and the stored-value reveal routes stay unavailable:', err instanceof Error ? err.message : err)
   }
 }
@@ -354,6 +361,10 @@ const client = createDaemonClientSessions({
   packages: { mcp: mcpPackageResolver, python: uvxPackageResolver, adapters: adapterPackageResolver, sandbox: sandboxPackagesService },
   options: {
     startedBy,
+    // Test seam (ADF_TEST_SEAMS=1, unpackaged): a short session expiry, so the orphan rule is testable end to end.
+    ...(testSeamsAllowed() && Number(process.env.ADF_TEST_CLIENT_SESSION_EXPIRY_MS) > 0
+      ? { expiryMs: Number(process.env.ADF_TEST_CLIENT_SESSION_EXPIRY_MS) }
+      : {}),
     // §8.3 orphan rule: the session of a Studio that crashed expired.
     requestShutdown: () => {
       console.log('[ADF Daemon] The last client session that owned this daemon run expired — shutting down...')

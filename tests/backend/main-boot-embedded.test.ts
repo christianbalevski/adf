@@ -20,6 +20,8 @@ vi.mock('../../src/main/ipc/index', async () => {
     getCurrentWorkspace: () => null,
     readAppSetting: () => undefined,
     writeAppSetting: () => {},
+    // W4-A: the backend switch's view of the embedded backend (resume after a switch, the switch dialog).
+    hostActions: {},
   }
 })
 vi.mock('../../src/main/ipc/orbital-cache', async () => {

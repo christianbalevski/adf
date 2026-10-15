@@ -25,6 +25,7 @@ import {
   type DaemonPaths,
 } from '../cli/daemon-control'
 import { daemonTokenPath } from '../daemon/daemon-token'
+import { LOCAL_PROOF_HEADER, readLocalProof } from '../daemon/local-access'
 import {
   CLIENT_API_VERSION,
   DAEMON_STARTED_BY_ENV,
@@ -129,6 +130,8 @@ export function buildDaemonEnv(base: NodeJS.ProcessEnv, opts: {
   pidFile: string
   port: number
   userDataDir?: string
+  /** Who the daemon run counts as started by (GET /version). Default `studio`; a restart keeps the replaced run's. */
+  startedBy?: DaemonStartedBy
 }): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(base)) {
@@ -143,7 +146,7 @@ export function buildDaemonEnv(base: NodeJS.ProcessEnv, opts: {
   env.ADF_DAEMON_HOST = '127.0.0.1'
   env.ADF_DAEMON_SETTINGS = opts.settingsPath
   env.ADF_DAEMON_PIDFILE = opts.pidFile
-  env[DAEMON_STARTED_BY_ENV] = 'studio' satisfies DaemonStartedBy
+  env[DAEMON_STARTED_BY_ENV] = opts.startedBy ?? ('studio' satisfies DaemonStartedBy)
   if (opts.userDataDir) env.ADF_USER_DATA_DIR = opts.userDataDir
   return env
 }
@@ -317,7 +320,7 @@ export class DaemonProcessController {
    * `spawnedHere` is true only when the daemon that answers is the child
    * spawned here: another start (CLI, a second Studio) can win the port.
    */
-  async spawn(onProgress?: (text: string) => void): Promise<DaemonHandle> {
+  async spawn(onProgress?: (text: string) => void, retried = false, startedBy: DaemonStartedBy = 'studio'): Promise<DaemonHandle> {
     const { paths } = this
     await mkdir(dirname(paths.logFile), { recursive: true })
     const env = buildDaemonEnv(this.env, {
@@ -325,12 +328,15 @@ export class DaemonProcessController {
       pidFile: paths.pidFile,
       port: this.port,
       userDataDir: this.config.userDataDir,
+      startedBy,
     })
     this.log(`[DaemonProcess] Starting the ADF daemon: ${this.config.execPath} ${this.config.daemonEntry} on ${this.url} (settings ${this.config.settingsPath}, log ${paths.logFile})`)
     onProgress?.('Starting the ADF daemon…')
     const started = Date.now()
     const log = await open(paths.logFile, 'a')
     let child: ReturnType<SpawnFn>
+    let exited: number | null = null
+    let spawnError: Error | null = null
     try {
       child = this.spawnFn(this.config.execPath, [this.config.daemonEntry], {
         cwd: paths.dataDir,
@@ -339,26 +345,30 @@ export class DaemonProcessController {
         stdio: ['ignore', log.fd, log.fd],
         env,
       })
+      // Before any await: a child that exits at once must not be missed (it would read as "did not answer").
+      child.once('exit', (code: number | null) => { exited = code ?? -1 })
+      child.once('error', (err: Error) => { spawnError = err })
     } finally {
       // The child holds its own copy of the descriptor.
       await log.close()
     }
-    let exited: number | null = null
-    let spawnError: Error | null = null
-    child.once('exit', (code: number | null) => { exited = code ?? -1 })
-    child.once('error', (err: Error) => { spawnError = err })
     child.unref()
     const childPid = child.pid ?? -1
     const up = await this.waitHealthy(() => exited === null && spawnError === null)
     if (!up) {
       if (!spawnError && exited !== null) {
         // Lost a start race: a daemon that started at the same time took the
-        // port or the pid file (EADDRINUSE / pid file conflict). Use that one.
-        await this.waitHealthy(() => true, this.raceSettleMs)
-        const winner = await this.detect()
-        if (winner.state === 'running') {
-          this.log(`[DaemonProcess] The daemon Studio started (pid ${childPid}) exited (code ${exited}); ADF daemon pid ${winner.info.pid} (started by ${winner.info.startedBy}) answers on ${this.url} instead`)
-          return { url: this.url, pid: winner.info.pid, info: winner.info, spawnedHere: false }
+        // port or the pid file (EADDRINUSE / pid file conflict). Use that one,
+        // also while it is still booting.
+        const winner = await this.waitForRaceWinner(onProgress)
+        if (winner) {
+          this.log(`[DaemonProcess] The daemon Studio started (pid ${childPid}) exited (code ${exited}); ADF daemon pid ${winner.pid} (started by ${winner.startedBy}) answers on ${this.url} instead`)
+          return { url: this.url, pid: winner.pid, info: winner, spawnedHere: false }
+        }
+        if (!retried) {
+          // Nothing took over: the other start failed too, or ours crashed. One more try, then the error with the log.
+          this.log(`[DaemonProcess] The daemon Studio started (pid ${childPid}) exited (code ${exited}) and no other ADF daemon answers ${this.url}; starting it once more`)
+          return this.spawn(onProgress, true, startedBy)
         }
       }
       const tail = await tailFile(paths.logFile, 15)
@@ -384,6 +394,94 @@ export class DaemonProcessController {
     this.spawnedPid = childPid
     this.log(`[DaemonProcess] ADF daemon running (pid ${childPid}, ${((Date.now() - started) / 1000).toFixed(1)}s)`)
     return { url: this.url, pid: childPid, info, spawnedHere: true }
+  }
+
+  /**
+   * After the child lost a start race: the daemon that won, once it answers.
+   * A winner that is still booting writes its pid file only once it listens,
+   * so this polls for up to the settle time, then waits for a pid it finds
+   * (progress: "Waiting for the ADF daemon (pid N)…"). Null when none appears.
+   */
+  private async waitForRaceWinner(onProgress?: (text: string) => void): Promise<DaemonVersionInfo | null> {
+    const deadline = Date.now() + this.raceSettleMs
+    for (;;) {
+      const found = await this.detect()
+      if (found.state === 'running') return found.info
+      if (found.state === 'unidentified') return null
+      if (found.state === 'starting') {
+        this.log(`[DaemonProcess] Waiting for the ADF daemon pid ${found.pid}, which won the start race, to answer ${this.url}`)
+        onProgress?.(`Waiting for the ADF daemon (pid ${found.pid})…`)
+        if (!await this.waitHealthy(() => this.alive(found.pid), this.staleWaitMs)) return null
+        const version = await this.fetchVersion()
+        return 'info' in version ? version.info : null
+      }
+      if (Date.now() >= deadline) return null
+      await this.sleep(POLL_MS)
+    }
+  }
+
+  /**
+   * §8.2 step 3, the user's "Restart the daemon with Studio's version": stop
+   * the daemon that answers now (whoever started it; the user chose this),
+   * wait for it to exit, then start Studio's. Never called without that choice.
+   */
+  async restart(running: DaemonVersionInfo, onProgress?: (text: string) => void): Promise<EnsureResult> {
+    this.log(`[DaemonProcess] Restarting the ADF daemon pid ${running.pid} (version ${running.version}, client API ${running.clientApiVersion}, started by ${running.startedBy}) with Studio's version, as the user chose`)
+    onProgress?.(`Stopping the ADF daemon (pid ${running.pid})…`)
+    try {
+      const res = await this.request('/daemon/shutdown', { method: 'POST' }, 5000)
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null
+        throw new DaemonProcessError(`The running ADF daemon refused to stop: ${body?.error ?? `HTTP ${res.status}`}`, this.paths.logFile)
+      }
+    } catch (err) {
+      if (err instanceof DaemonProcessError) throw err
+      /* the connection may close while it shuts down */
+    }
+    const deadline = Date.now() + this.stopTimeoutMs
+    while (this.alive(running.pid) || await isHealthy(this.url, this.fetchImpl, 800)) {
+      if (Date.now() >= deadline) {
+        throw new DaemonProcessError(`The ADF daemon pid ${running.pid} is still shutting down after ${this.stopTimeoutMs / 1000}s.`, this.paths.logFile)
+      }
+      await this.sleep(POLL_MS)
+    }
+    // The replacement counts as started by whoever started the one it replaces: a CLI user's daemon is not stopped by Studio's quit later.
+    this.log(`[DaemonProcess] ADF daemon pid ${running.pid} stopped; starting Studio's (started by ${running.startedBy}, as the one it replaces)`)
+    const handle = await this.spawn(onProgress, false, running.startedBy)
+    return this.attachOrRefuse(handle.info, handle.spawnedHere ? 'spawned' : 'attached')
+  }
+
+  /** The clients connected to the running daemon (GET /client/sessions); null when it cannot say (an older daemon). */
+  async listClientSessions(): Promise<Array<{ client: string; version: string }> | null> {
+    try {
+      const res = await this.request('/client/sessions')
+      if (!res.ok) return null
+      const body = await res.json() as { sessions?: Array<{ client: string; version: string }> }
+      return Array.isArray(body.sessions) ? body.sessions : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * After a handover at an embedded boot (handover.ts): a daemon that keeps
+   * running on Studio's settings re-reads the stores Studio moved credentials
+   * out of (POST /client/reload-credentials, local-only, no secrets). Returns
+   * what happened, for the log; never throws.
+   */
+  async notifyCredentialsMoved(): Promise<string> {
+    try {
+      const found = await this.detect()
+      if (found.state !== 'running') return 'no ADF daemon runs on these settings'
+      if (decideAttach(found.info, { settingsPath: this.config.settingsPath }).kind === 'settings-mismatch') return `the ADF daemon on ${this.url} uses other settings`
+      const proof = readLocalProof(this.paths.dataDir, this.port)
+      const res = await this.request('/client/reload-credentials', { method: 'POST', headers: proof ? { [LOCAL_PROOF_HEADER]: proof } : {} }, 10_000)
+      if (!res.ok) return `the ADF daemon pid ${found.info.pid} answered HTTP ${res.status}`
+      const body = await res.json() as { runtime?: { state?: string } | null }
+      return `the ADF daemon pid ${found.info.pid} reloaded its credential stores (runtime identity ${body.runtime?.state ?? 'n/a'})`
+    } catch (err) {
+      return `the ADF daemon could not be asked to reload its credential stores: ${err instanceof Error ? err.message : String(err)}`
+    }
   }
 
   /**

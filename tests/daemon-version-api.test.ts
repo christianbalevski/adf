@@ -58,6 +58,8 @@ describe('GET /version', () => {
         runtimeId: 'runtime-1',
         pid: process.pid,
         startedBy: 'studio',
+        // No proof minted for this server (security.localProof unset): the routes that need it refuse, visibly.
+        localProof: { available: false, problem: 'no local proof was minted for this run' },
       })
       expect(validateVersionInfo(body)).toEqual([])
     } finally {

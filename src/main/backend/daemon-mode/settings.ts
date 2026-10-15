@@ -1,9 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CLIENT_SETTINGS_KEYS, settingsKeyClass, type ClientSettingsKey } from '../../../shared/constants/client-settings-keys'
 import { createSettingsDefaults } from '../../../shared/constants/settings-defaults'
 import { applyClientSettingsMigrations } from '../../../shared/utils/settings-migrations'
-import { readJsonOrQuarantine, writeJsonAtomic, writeJsonAtomicAsync } from '../../utils/atomic-json'
+import { readJsonOrQuarantine, writeJsonAtomicAsync } from '../../utils/atomic-json'
 
 /**
  * Settings in daemon mode (design §4.1, §4.2).
@@ -49,36 +48,6 @@ export function clientSettingsDefaults(): Readonly<Partial<Record<ClientSettings
  * write is not.
  */
 export class ClientSettingsStore {
-  /**
-   * INTERIM until W4-A's mode switch moves the client keys (§4.3): on the
-   * first daemon-mode boot, with no client file yet, copy the client keys of
-   * adf-settings.json into it, so a switch through ADF_STUDIO_BACKEND or
-   * studio-backend.json does not reset theme, recents and the other client
-   * keys to defaults. adf-settings.json is only read (the daemon writes it).
-   * Logged; a no-op once the client file exists.
-   */
-  static seedOnce(clientPath: string, settingsPath: string, log: Log = console): void {
-    if (existsSync(clientPath) || !existsSync(settingsPath)) return
-    // A plain read: adf-settings.json is the daemon's file; a corrupt one is
-    // left where it is for the daemon (never renamed from here).
-    let data: unknown
-    try {
-      data = JSON.parse(readFileSync(settingsPath, 'utf-8'))
-    } catch (err) {
-      log.error(`[Settings] Could not read ${settingsPath} to seed ${clientPath}; client keys start at their defaults:`, err)
-      return
-    }
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return
-    const seed: Record<string, unknown> = {}
-    for (const key of CLIENT_SETTINGS_KEYS) if (key in data) seed[key] = (data as Record<string, unknown>)[key]
-    try {
-      writeJsonAtomic(clientPath, seed)
-      log.log(`[Settings] First daemon-mode boot: copied ${Object.keys(seed).length} client keys from ${settingsPath} into ${clientPath} (interim; the mode switch, W4-A, moves them)`)
-    } catch (err) {
-      log.error(`[Settings] Could not seed ${clientPath}:`, err)
-    }
-  }
-
   private data: Record<string, unknown>
   private writeBlocked: boolean
   private pending: Promise<void> = Promise.resolve()

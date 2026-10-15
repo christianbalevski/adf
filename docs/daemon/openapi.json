@@ -1362,11 +1362,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "500": {
-            "$ref": "#/components/responses/ServerError"
-          },
           "409": {
             "$ref": "#/components/responses/StaleRevision"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -2781,11 +2781,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "500": {
-            "$ref": "#/components/responses/ServerError"
-          },
           "409": {
             "$ref": "#/components/responses/StaleRevision"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       },
@@ -3121,11 +3121,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "500": {
-            "$ref": "#/components/responses/ServerError"
-          },
           "409": {
             "$ref": "#/components/responses/StaleRevision"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -3214,11 +3214,11 @@
           "404": {
             "$ref": "#/components/responses/NotFound"
           },
-          "500": {
-            "$ref": "#/components/responses/ServerError"
-          },
           "409": {
             "$ref": "#/components/responses/StaleRevision"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
           }
         }
       }
@@ -14496,6 +14496,40 @@
             "$ref": "#/components/responses/Unavailable"
           }
         }
+      },
+      "get": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "List the open client sessions",
+        "description": "Which clients are connected (client name, version, whether its session stops the daemon when it expires), without session ids. ADF Studio names them before it offers to restart a daemon of another version (design daemon-backend.md §8.2).",
+        "operationId": "listClientSessions",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "The open sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientSessionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/client/sessions/{id}": {
@@ -15140,6 +15174,206 @@
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/quit": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "End a client session as its client quits",
+        "description": "ADF Studio's quit (design daemon-backend.md §8.3). Ends the session like DELETE /client/sessions/{id}, then, with `stopDaemon: true`, stops the daemon only when this run was started by Studio (GET /version `startedBy: studio`); with other client sessions open the stop is pending until the last one ends or expires (they get `daemon_orphan_hold`). A daemon the CLI or a service started keeps running. When it stops, new sessions are refused before the answer is sent, so none can open between the decision and the stop. The answer and the daemon log give the reason. The shutdown is the daemon's own bounded one (the same as POST /daemon/shutdown), started after the answer. An unknown or expired session id is not an error (`ended: false`): the stop decision still applies. With `stopDaemon: true` the caller must be local (loopback, no proxy headers; the local proof behind a proxy), as for POST /daemon/shutdown.",
+        "operationId": "quitClientSession",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientQuitInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The session ended; whether the daemon stops",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientQuitResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "stopDaemon is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "stopDaemon must be a boolean",
+                  "code": "bad_request"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client/reload-credentials": {
+      "post": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Re-read the credential stores a client changed",
+        "description": "ADF Studio moved credentials into or out of this daemon's stores while it ran (the mode-switch handover, design daemon-backend.md §11): ChatGPT and Grok sessions (auth.daemon.json), app-level MCP sign-ins and the `studio-runtime:<scope>` keychain entry. No secret crosses HTTP: the daemon re-reads the runtime identity entry (as GET /identity does), re-runs the credential unlock of every agent degraded on locked credentials, and brings loops that failed on a subscription's auth out of `error` for each subscription whose session is now in its store. Local callers only (loopback, no proxy headers; the local proof behind a proxy).",
+        "operationId": "reloadClientCredentials",
+        "x-adf-stability": "internal",
+        "responses": {
+          "200": {
+            "description": "What the reload found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialReloadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/client/sessions/{id}/exit-when-closed": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Client session id (POST /client/sessions)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Client (internal)"
+        ],
+        "summary": "Change a session's orphan behaviour",
+        "description": "The client's quit behaviour changed (ADF Studio's keepDaemonRunning): with `exitDaemonWhenClosed: true` the session's expiry stops a Studio-started daemon when no other session is open (the orphan rule, §8.3); with false it does not.",
+        "operationId": "setClientSessionExitWhenClosed",
+        "x-adf-stability": "internal",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "exitDaemonWhenClosed"
+                ],
+                "properties": {
+                  "exitDaemonWhenClosed": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "sessionId",
+                    "exitDaemonWhenClosed"
+                  ],
+                  "properties": {
+                    "sessionId": {
+                      "type": "string"
+                    },
+                    "exitDaemonWhenClosed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "exitDaemonWhenClosed is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "No such client session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "This daemon has no client sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -18403,6 +18637,26 @@
               "service"
             ],
             "description": "Who launched this daemon run (`ADF_DAEMON_STARTED_BY`)"
+          },
+          "localProof": {
+            "type": "object",
+            "required": [
+              "available",
+              "problem"
+            ],
+            "description": "Whether this run has a local proof (X-ADF-Local-Proof). Without one, every route that needs it refuses (POST /identity/import, the stored-value reveal routes); on Windows that happens when icacls cannot restrict the proof file. Absent in daemons before this field.",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "problem": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why there is no proof; null when available."
+              }
+            }
           }
         },
         "example": {
@@ -28243,6 +28497,174 @@
             }
           }
         ]
+      },
+      "ClientQuitInput": {
+        "type": "object",
+        "properties": {
+          "stopDaemon": {
+            "type": "boolean",
+            "description": "Stop the daemon when allowed (Studio: `keepDaemonRunning` off). Default false: only the session ends."
+          }
+        }
+      },
+      "ClientQuitResult": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "ended",
+          "stopping",
+          "reason",
+          "otherSessions"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "ended": {
+            "type": "boolean",
+            "description": "False when the session had already ended or expired."
+          },
+          "stopping": {
+            "type": "boolean",
+            "description": "True when the daemon shuts down because of this request."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the daemon stops or keeps running."
+          },
+          "otherSessions": {
+            "type": "integer",
+            "description": "Client sessions still open."
+          }
+        }
+      },
+      "CredentialReloadResult": {
+        "type": "object",
+        "required": [
+          "runtime",
+          "unlocked",
+          "stillLocked",
+          "sessions",
+          "recovered"
+        ],
+        "properties": {
+          "runtime": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Runtime identity adoption after the re-read (GET /identity `runtime`); null without an owner identity service.",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "adopted",
+                  "absent",
+                  "rejected",
+                  "unavailable"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          },
+          "unlocked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "description": "Agents whose credentials unlocked now."
+          },
+          "stillLocked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "agentId",
+                "filePath"
+              ],
+              "properties": {
+                "agentId": {
+                  "type": "string"
+                },
+                "filePath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "description": "Agents still degraded on locked credentials."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "chatgpt",
+                "grok"
+              ]
+            },
+            "description": "Subscription sessions in this daemon's stores."
+          },
+          "recovered": {
+            "type": "integer",
+            "description": "Loops that left an auth error."
+          }
+        }
+      },
+      "ClientSessionList": {
+        "type": "object",
+        "required": [
+          "sessions"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "client",
+                "version",
+                "exitDaemonWhenClosed"
+              ],
+              "properties": {
+                "client": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "exitDaemonWhenClosed": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
