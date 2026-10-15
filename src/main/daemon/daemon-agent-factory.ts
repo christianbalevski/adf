@@ -8,6 +8,7 @@
 import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'fs'
 import { basename, isAbsolute, join, resolve } from 'path'
+import { agentFileBusy } from '../services/owner-identity.service'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AgentTemplatesService, templateFilePath, templatesDir } from '../adf/agent-templates'
 import { autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
@@ -87,6 +88,7 @@ export type AgentCreateErrorCode =
   | 'password_required'
   | 'wrong_password'
   | 'load_failed'
+  | 'agent_file_busy'
 
 export class AgentCreateError extends Error {
   constructor(
@@ -404,6 +406,9 @@ export class DaemonAgentFactory {
       // An agent without its sealed, attested identity is not what was asked for.
       if (!replacing) {
         removeWork()
+        // Another program was writing the new file: say so, by name; creating again retries.
+        const busy = agentFileBusy(err, filePath)
+        if (busy) throw new AgentCreateError('agent_file_busy', busy.message, 409)
         throw new Error(`Could not provision the new agent's identity: ${why}`)
       }
       // A confirmed replace keeps the new agent and warns, as Studio's create does.

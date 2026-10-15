@@ -19,6 +19,7 @@
 
 import { homedir } from 'node:os'
 import { dirname, sep } from 'node:path'
+import { agentFileBusy } from '../services/owner-identity.service'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { autoLockFields, buildConfigSummary, deriveReviewIdentity, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
@@ -189,6 +190,21 @@ export interface AgentReviewAccepted {
 }
 
 /** POST /agents/review/accept: Studio's FILE_REVIEW_ACCEPT, without the relocate (POST /files/relocate). */
+/**
+ * Another program writing the file (the identity mint's short wait, or an
+ * open's own writes past busy_timeout): a 409 naming the file. Nothing was
+ * accepted; accepting again retries.
+ */
+function withBusyAsReviewError<T>(filePath: string, fn: () => T): T {
+  try {
+    return fn()
+  } catch (err) {
+    const busy = agentFileBusy(err, filePath)
+    if (busy) throw new ReviewError(busy.message, 409, busy.code)
+    throw err
+  }
+}
+
 export async function acceptAgentReview(runtime: RuntimeService, filePath: string, input: AgentReviewAcceptInput, deps: ReviewDeps): Promise<AgentReviewAccepted> {
   const settings = deps.settings
   if (!settings?.set) throw new ReviewError('The settings store is read-only; the review cannot be recorded.', 409, 'read_only')
@@ -208,7 +224,7 @@ export async function acceptAgentReview(runtime: RuntimeService, filePath: strin
   }
   const identity = deps.identity
 
-  const result = runtime.withAgentFile(filePath, (workspace, canonicalPath, keyCell) => {
+  const result = withBusyAsReviewError(filePath, () => runtime.withAgentFile(filePath, (workspace, canonicalPath, keyCell) => {
     let claimed = false
     if (input.claim) {
       // Claim & Open: a fresh identity under the local owner. A legacy whole-
@@ -246,7 +262,7 @@ export async function acceptAgentReview(runtime: RuntimeService, filePath: strin
     // A closed file is written here; an open one through the runtime below (fan-out).
     if (!open) workspace.setAgentConfig(config)
     return { canonicalPath, config, claimed, did: workspace.getDid(), newlyLocked }
-  })
+  }))
   let config = result.config
   if (open) config = (await runtime.setAgentConfig(open.agentId, config)).config
   settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))

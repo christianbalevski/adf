@@ -99,7 +99,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
-import { describeEnvelopeSweep } from '../services/owner-identity.service'
+import { agentFileBusy, describeEnvelopeSweep } from '../services/owner-identity.service'
 import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
@@ -2382,6 +2382,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           owner.ensureWorkspaceIdentity(workspace)
         }
       } catch (err) {
+        const busy = agentFileBusy(err, filePath)
+        if (busy) {
+          // Another program is writing the new file: the create fails with a
+          // sentence naming it. The file is kept (it may have replaced one);
+          // its identity is provisioned when it is next opened.
+          workspace.close()
+          throw new Error(`${busy.message} The new agent file is kept at ${filePath}; its identity is set up when it is next opened.`)
+        }
         console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
       } finally {
         draft?.privateKey.fill(0)
@@ -2761,6 +2769,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { success: true, ...persistAcceptedAgent() }
     } catch (err) {
       console.warn('[IPC] FILE_REVIEW_ACCEPT error:', err)
+      // Another program writing the file: the sentence names it; accepting again retries.
+      const busy = agentFileBusy(err, currentFilePath ?? args?.expectedPath ?? 'The agent file')
+      if (busy) return { success: false, code: busy.code, error: busy.message }
       return { success: false, error: String(err) }
     }
   })

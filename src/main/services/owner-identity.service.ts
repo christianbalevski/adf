@@ -15,7 +15,7 @@
 
 import { readdirSync } from 'fs'
 import { readdir } from 'fs/promises'
-import { join } from 'path'
+import { basename, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
 import { AdfDatabase } from '../adf/adf-database'
@@ -89,6 +89,30 @@ export interface RestampResult {
 export const PROVISION_BUSY_TIMEOUT_MS = 100
 /** The boot sweep's wait: a busy file is a named failure, retried at the next boot or open. */
 export const SWEEP_BUSY_TIMEOUT_MS = 25
+
+/**
+ * Minting an agent's identity found the file's write lock held by another
+ * connection past PROVISION_BUSY_TIMEOUT_MS. The message is for the user and
+ * names the file; nothing was written.
+ */
+export class AgentFileBusyError extends Error {
+  readonly code = 'agent_file_busy'
+  constructor(readonly filePath: string) {
+    super(`${basename(filePath)} is busy (another program is writing it); try again.`)
+    this.name = 'AgentFileBusyError'
+  }
+}
+
+/**
+ * `err` as the user-facing AgentFileBusyError for `filePath` when it is one,
+ * or SQLite's own SQLITE_BUSY (another connection held the write lock past
+ * busy_timeout); null for anything else.
+ */
+export function agentFileBusy(err: unknown, filePath: string): AgentFileBusyError | null {
+  if (err instanceof AgentFileBusyError) return err
+  const code = (err as { code?: unknown } | null)?.code
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY') ? new AgentFileBusyError(filePath) : null
+}
 
 /** What one boot envelope sweep did (sweepEnvelopeMigration). */
 export interface EnvelopeSweepResult {
@@ -846,7 +870,11 @@ export class OwnerIdentityService {
     // writer winning; the second finds them and is a no-op. A file another
     // connection is writing fails after a short wait (SQLITE_BUSY), never the
     // 5 s busy_timeout: the caller reports it, and the next open retries.
-    return workspace.immediateTransaction(provision, opts.busyTimeoutMs ?? PROVISION_BUSY_TIMEOUT_MS)
+    try {
+      return workspace.immediateTransaction(provision, opts.busyTimeoutMs ?? PROVISION_BUSY_TIMEOUT_MS)
+    } catch (err) {
+      throw agentFileBusy(err, workspace.getFilePath()) ?? err
+    }
   }
 
   /**

@@ -281,7 +281,7 @@ describe('ensureWorkspaceIdentity: atomic per file (W5-G)', () => {
       })
       expect(svc.ensureWorkspaceIdentity(a).keysGenerated).toBe(true)
       // A held the write lock from its first check: B could not write in between.
-      expect(String(bResult)).toMatch(/SQLITE_BUSY|database is locked/)
+      expect(String(bResult)).toContain('agent-1.adf is busy (another program is writing it); try again.')
       // Now B finds A's envelopes and keys: nothing to do, and it opens them.
       expect(svc.ensureWorkspaceIdentity(b)).toEqual({ keysGenerated: false, sealed: 0 })
       expect(b.getSigningKeys(null)).not.toBeNull()
