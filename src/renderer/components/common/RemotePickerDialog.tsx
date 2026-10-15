@@ -55,6 +55,8 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
   const [showHidden, setShowHidden] = useState(false)
   const [name, setName] = useState(request.defaultName ?? '')
   const [confirmReplace, setConfirmReplace] = useState(false)
+  /** The folder field: shows the listed folder; a typed or pasted daemon path opens on Enter. */
+  const [pathDraft, setPathDraft] = useState('')
 
   const browse = useCallback(async (path: string | null) => {
     setLoading(true)
@@ -64,7 +66,10 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
     try {
       const result = await window.adfApi.browseRemoteFolder({ ...(path ? { path } : {}), showHidden })
       if ('error' in result) setError(result.error)
-      else setListing(result)
+      else {
+        setListing(result)
+        setPathDraft(result.path ?? '')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -111,9 +116,15 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
         <Button size="compact" disabled={loading || !folder} onClick={() => void browse(listing?.parent ?? null)} aria-label="Up one folder">
           ↑ Up
         </Button>
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text)]" title={folder ?? ''}>
-          {folder ?? 'Locations'}
-        </span>
+        <TextInput
+          value={pathDraft}
+          onChange={(e) => setPathDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && pathDraft.trim()) void browse(pathDraft.trim()) }}
+          placeholder="Locations (type a folder path on the daemon host and press Enter)"
+          aria-label={`Folder on ${request.host}`}
+          spellCheck={false}
+          className="font-mono"
+        />
         <label className="flex items-center gap-1.5 text-[12px] text-[var(--adf-ui-text-muted)]">
           <input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} className="rounded accent-[var(--adf-ui-accent)]" />
           Hidden
