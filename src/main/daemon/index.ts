@@ -47,8 +47,8 @@ import { applySettingLive } from './live-setting'
 import { approvalHub } from '../runtime/approval-hub'
 import { createDaemonClientSessions } from './client-wiring'
 import { wireRuntimeToMesh } from './runtime-mesh-wiring'
-import { leaseHolderElsewhere, processAgentLeases } from '../runtime/agent-lease'
-import { describeEnvelopeSweep } from '../services/owner-identity.service'
+import { processAgentLeases } from '../runtime/agent-lease'
+import { createBootEnvelopeSweep } from './boot-envelope-sweep'
 import { testSeamsAllowed } from '../utils/test-seams'
 import { sweepStaleSnapshots } from './file-ops'
 
@@ -539,25 +539,20 @@ runtime.on('agent-loaded', (event) => {
 })
 
 // --- Boot envelope sweep (spec §8) -------------------------------------------
-// As Studio (registerAllIpcHandlers): 2 s after boot, every reviewed agent in
-// the tracked folders that has no keys is provisioned (keys, DID, owner and
-// operator attestations) and plain secret rows are sealed; files another
-// runtime runs are left for their next open. Same sweep, same log line.
+// As Studio (registerAllIpcHandlers), 2 s after boot: boot-envelope-sweep.ts.
 // Test seam ADF_TEST_ENVELOPE_SWEEP (ADF_TEST_SEAMS=1, unpackaged), the
 // daemon side of the parity harness's switch: `off` never runs it, `boot`
 // runs it before the daemon listens.
 const envelopeSweepSeam = testSeamsAllowed() ? process.env.ADF_TEST_ENVELOPE_SWEEP : undefined
-async function runEnvelopeSweep(): Promise<void> {
-  try {
-    const t0 = performance.now()
-    const leases = processAgentLeases()
-    const sweep = await ownerIdentity.sweepEnvelopes(async (filePath) => (await leaseHolderElsewhere(leases, filePath)) !== null)
-    const line = sweep ? describeEnvelopeSweep(sweep, performance.now() - t0) : null
-    if (line) console.log(line)
-  } catch (err) {
-    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
-  }
-}
+const envelopeSweep = createBootEnvelopeSweep({
+  identity: ownerIdentity,
+  leases: processAgentLeases(),
+  openHere: () => [
+    ...runtime.listAgents().map((ref) => ref.filePath).filter((p): p is string => !!p),
+    ...runtime.listOpenDocuments().map((doc) => doc.filePath),
+  ],
+})
+const runEnvelopeSweep = () => envelopeSweep.run()
 let bootEnvelopeSweep: Promise<void> = Promise.resolve()
 if (envelopeSweepSeam === 'boot') bootEnvelopeSweep = runEnvelopeSweep()
 else if (envelopeSweepSeam !== 'off') setTimeout(() => { void runEnvelopeSweep() }, 2_000).unref?.()

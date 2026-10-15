@@ -879,11 +879,11 @@ export class DaemonIdentity {
   /**
    * The boot envelope sweep (spec §8), Studio's sweepEnvelopeMigration with
    * the daemon's provisioning recipe (workspaceHooks().ensureIdentity). Only
-   * with a ready owner identity, as the hooks mint only then; null when not
-   * ready. Files `skip` names (another runtime runs them) are not opened.
+   * with a ready owner identity, as the hooks mint only then (otherwise
+   * `ownerNotReady`, nothing opened). Files `skip` names are not opened.
    */
-  async sweepEnvelopes(skip?: (filePath: string) => Promise<boolean>): Promise<EnvelopeSweepResult | null> {
-    if (!this.isReady()) return null
+  async sweepEnvelopes(skip?: (filePath: string) => Promise<boolean>): Promise<EnvelopeSweepResult> {
+    if (!this.isReady()) return { provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true }
     return this.service.sweepEnvelopeMigration({
       skip,
       provision: (workspace) => {
