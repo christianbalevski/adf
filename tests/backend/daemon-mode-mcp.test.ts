@@ -367,8 +367,9 @@ describe('MCP_REGISTRATION_TEST interactive steps', () => {
 describe('InstallProgressRelay', () => {
   it('sends nothing while the stream delivers; after a gap, the end the stream lost (after the grace)', async () => {
     const sent: unknown[] = []
-    const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: () => {}, warn: () => {} }, 20)
+    const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: () => {}, warn: () => {} }, 20, 40)
     const quiet = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['a'])
+    relay.observe({ kind: 'push', topic: 'mcp_install', payload: { package: 'a', status: 'installed' } })
     await quiet.finish([{ package: 'a', status: 'installed' }])
     expect(sent).toEqual([])
 
@@ -383,6 +384,26 @@ describe('InstallProgressRelay', () => {
     relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'c', status: 'installed' } })
     await arrived.finish([{ package: 'c', status: 'installed' }])
     expect(sent).toEqual([])
+
+    // No gap, no end yet: the end never arrives within the wait, so it comes from the result.
+    const silent = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['d'])
+    await silent.finish([{ package: 'd', status: 'installed' }])
+    expect(sent).toEqual([{ package: 'd', status: 'installed' }])
+  })
+
+  it('the answer waits until the stream delivered the install\'s end push (W4-B review: a remote stream lags the job poll)', async () => {
+    const relay = new InstallProgressRelay(() => {}, { log: () => {}, warn: () => {} }, 20, 5_000)
+    const watch = relay.begin(IPC.SANDBOX_INSTALL_PROGRESS, ['jimp'])
+    let answered = false
+    const finished = watch.finish([{ package: 'jimp', status: 'installed' }]).then(() => { answered = true })
+    await new Promise((r) => setTimeout(r, 50))
+    // The job ended; its progress line and end push are still in flight.
+    expect(answered).toBe(false)
+    relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'jimp', status: 'installing', message: 'npm install' } })
+    expect(answered).toBe(false)
+    relay.observe({ kind: 'push', topic: 'sandbox_install', payload: { package: 'jimp', status: 'installed' } })
+    await finished
+    expect(answered).toBe(true)
   })
 })
 

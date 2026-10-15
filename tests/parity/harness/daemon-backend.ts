@@ -253,6 +253,15 @@ async function startRemoteProxy(daemonPort: number): Promise<{ server: Server; p
     headers['x-forwarded-for'] = '198.51.100.7'
     const upstream = httpRequest({ host: '127.0.0.1', port: daemonPort, method: req.method, path: req.url, headers }, (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers)
+      // PARITY_REMOTE_STREAM_DELAY_MS: the event stream arrives late, as over a slow link, while
+      // requests answer at once (W4-B review: install answers must wait for their pushes).
+      const delay = Number(process.env.PARITY_REMOTE_STREAM_DELAY_MS) || 0
+      if (delay > 0 && /\/events(\?|$)/.test(req.url ?? '')) {
+        let chain = Promise.resolve()
+        answer.on('data', (chunk: Buffer) => { chain = chain.then(() => new Promise<void>((r) => setTimeout(() => { if (!res.destroyed) res.write(chunk); r() }, delay))) })
+        answer.on('end', () => { void chain.then(() => res.end()) })
+        return
+      }
       answer.pipe(res)
     })
     upstream.on('error', () => {
