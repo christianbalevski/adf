@@ -274,9 +274,12 @@ export class DaemonAgentFactory {
     throw new AgentCreateError('identity_not_ready', `Set up the owner identity first. ${identity.message}`, 409, identity)
   }
 
-  /** Instantiable templates. Needs the owner identity: shipped templates are generated with one. */
+  /**
+   * Instantiable templates. As embedded Studio, without the owner identity
+   * too: shipped templates are then written without an owner, and an agent
+   * made from one is made as create() makes it without identity.
+   */
   listTemplates(): AgentTemplateListResult {
-    this.requireIdentity()
     return this.templatesService().list()
   }
 

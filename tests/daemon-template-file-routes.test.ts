@@ -105,7 +105,8 @@ describe('PUT /templates/:id/files/raw (W3-A)', () => {
 
   it('refuses what the Studio picker refuses, an unknown template, a missing name and JSON bodies', async () => {
     const { server } = makeDaemon()
-    expect((await putRaw(server, '/templates/standard/files/raw?name=a.txt', Buffer.from('x'))).status).toBe(409)
+    // Without the owner identity too, as embedded Studio (W5-D2).
+    expect((await putRaw(server, '/templates/standard/files/raw?name=a.txt', Buffer.from('x'))).status).toBe(200)
     await call(server, 'POST', '/identity/create', {})
     await call(server, 'POST', '/templates', { name: 'Refusals' })
     const seed = await putRaw(server, '/templates/refusals/files/raw?name=' + encodeURIComponent('bad\u0001name.txt'), Buffer.from('x'))

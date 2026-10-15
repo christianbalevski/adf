@@ -9383,7 +9383,7 @@ Example 200 (`application/json`):
 
 ## Templates
 
-Agent templates new agents are created from. Every route needs a ready owner identity (409 `identity_not_ready`).
+Agent templates new agents are created from. As in embedded Studio they are listed and edited without the owner identity; accepting a template's review needs it (409 `identity_not_ready`).
 
 | Method | Path | Summary |
 |---|---|---|
@@ -10326,6 +10326,7 @@ Operation `trackDir` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Absolute path to an existing directory |
+| `autostart` | boolean |  | Default true. false: track the folder without the autostart pass (Studio sends it, as embedded Studio starts a tracked folder's agents only at its next start); `autostart` is then an empty report. |
 
 ```json
 {
@@ -20078,6 +20079,7 @@ Type: `"pending"` \| `"pending_approval"` \| `"running"` \| `"completed"` \| `"f
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | Absolute path to an existing directory |
+| `autostart` | boolean |  | Default true. false: track the folder without the autostart pass (Studio sends it, as embedded Studio starts a tracked folder's agents only at its next start); `autostart` is then an empty report. |
 
 <a id="schema-trackdirresult"></a>
 

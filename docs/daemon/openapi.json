@@ -88,7 +88,7 @@
     },
     {
       "name": "Templates",
-      "description": "Agent templates new agents are created from. Every route needs a ready owner identity (409 `identity_not_ready`)."
+      "description": "Agent templates new agents are created from. As in embedded Studio they are listed and edited without the owner identity; accepting a template's review needs it (409 `identity_not_ready`)."
     },
     {
       "name": "Tracked folders",

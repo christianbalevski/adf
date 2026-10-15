@@ -6,10 +6,12 @@
  * template, delete (into `<userData>/templates-trash`, never a hard delete),
  * contents (config, seed files, extra files) and the per-template review.
  *
- * GET /templates (the list) lives in identity-routes.ts. Every route needs the
- * owner identity (409 identity_not_ready otherwise), like the list, except
- * GET /templates/:id/review, which answers needsReview: false with
- * identityReady: false (Studio parity).
+ * GET /templates (the list) lives in identity-routes.ts. As in embedded
+ * Studio, the list and the editing routes work without the owner identity
+ * (templates are then made and edited without identity keys); accepting a
+ * template's review needs it (409 identity_not_ready), and GET
+ * /templates/:id/review answers needsReview: false with identityReady: false
+ * (Studio parity).
  */
 
 import type { FastifyInstance, FastifyReply } from 'fastify'
@@ -59,7 +61,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     if (!isObject(body) || typeof body.name !== 'string') return reply.code(400).send({ error: 'name is required', code: 'bad_request' })
     if (body.fromId !== undefined && typeof body.fromId !== 'string') return reply.code(400).send({ error: 'fromId must be a string', code: 'bad_request' })
     try {
-      f.requireIdentity()
       const made = await f.templatesService().create({ name: body.name, ...(body.fromId !== undefined ? { fromId: body.fromId as string } : {}) })
       if (!made.success || !made.id) return refused(reply, made.error)
       return reply.code(201).send({ id: made.id, template: summaryOf(f, made.id) ?? null })
@@ -72,7 +73,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const f = factory(reply)
     if (!f) return reply
     try {
-      f.requireIdentity()
       const id = request.params.id
       f.existingTemplateFile(id)
       const list = f.listTemplates()
@@ -98,7 +98,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
       if (body[key] !== undefined && typeof body[key] !== 'string') return reply.code(400).send({ error: `${key} must be a string`, code: 'bad_request' })
     }
     try {
-      f.requireIdentity()
       let id = request.params.id
       f.existingTemplateFile(id)
       const service = f.templatesService()
@@ -124,7 +123,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const f = factory(reply)
     if (!f) return reply
     try {
-      f.requireIdentity()
       const id = request.params.id
       f.existingTemplateFile(id)
       const done = await f.templatesService().delete(id)
@@ -139,7 +137,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const f = factory(reply)
     if (!f) return reply
     try {
-      f.requireIdentity()
       f.existingTemplateFile(request.params.id)
       const done = f.templatesService().setDefault(request.params.id)
       if (!done.success) return refused(reply, done.error)
@@ -153,7 +150,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const f = factory(reply)
     if (!f) return reply
     try {
-      f.requireIdentity()
       const id = request.params.id
       f.existingTemplateFile(id)
       const shipped = summaryOf(f, id)?.shipped
@@ -194,7 +190,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const config = isObject(request.body) ? request.body.config : undefined
     if (!isObject(config)) return reply.code(400).send({ error: 'config (an object) is required', code: 'bad_request' })
     try {
-      f.requireIdentity()
       f.existingTemplateFile(request.params.id)
       const done = f.templatesService().setConfig({ id: request.params.id, config: config as unknown as AgentConfig })
       if (!done.success) return refused(reply, done.error)
@@ -212,7 +207,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
       return reply.code(400).send({ error: 'path and content (strings) are required', code: 'bad_request' })
     }
     try {
-      f.requireIdentity()
       f.existingTemplateFile(request.params.id)
       const done = f.templatesService().setFile({ id: request.params.id, path: body.path, content: body.content })
       if (!done.success) return refused(reply, done.error)
@@ -228,7 +222,6 @@ export function registerTemplateRoutes(server: FastifyInstance, deps: TemplateRo
     const path = request.query.path
     if (!path) return reply.code(400).send({ error: 'path is required', code: 'bad_request' })
     try {
-      f.requireIdentity()
       f.existingTemplateFile(request.params.id)
       const done = f.templatesService().removeFile({ id: request.params.id, path })
       if (!done.success) return refused(reply, done.error)
