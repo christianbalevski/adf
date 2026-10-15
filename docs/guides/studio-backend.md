@@ -28,6 +28,50 @@ Embedded and Local daemon look and behave the same. Remote daemon differs
 where the machine boundary forces it; [Remote daemon in
 Studio](#remote-daemon-in-studio) lists each difference.
 
+## Before your daily-driver week
+
+For the week of daily use on a pre-release build of this branch
+(`0.8.0-daemon.N`). The checklist walked during that week is
+[daemon-backend-user-testing.md](../design/daemon-backend-user-testing.md).
+
+1. **Only this branch's builds on the machine.** Quit the release Studio, or
+   uninstall it, and stop the daemon of an `adf` installed from npm
+   (`adf daemon stop`), then uninstall that package. Then check:
+   - `adf daemon status` reports no daemon (exit code 3), or one whose version
+     is this build's;
+   - `<config>/adf/leases/hosts/` (Windows: `%LOCALAPPDATA%\adf\leases\hosts\`)
+     holds no `<pid>.json` of a process that is not this build's Studio or
+     daemon. Each file names its `kind`, `pid`, `version` and `settingsPath`.
+     A runtime of another build there runs agents from the same files.
+2. **After the first switch to Local daemon**, confirm the daemon took over
+   Studio's identity and can prove it is local:
+   - `adf identity` shows the runtime as `studio (adopted)`. Anything else
+     means agents made by Studio stay locked in the daemon.
+   - `adf daemon status` has no `proof     unavailable` line. With that line,
+     owner import and the stored-value reveal (Settings → Providers keys,
+     Identity panel Reveal) refuse until the daemon restarts.
+3. **No owner switch from the terminal during the week.** Do not run
+   `adf identity import` with a phrase of another owner (the import that asks
+   you to type "switch"), unless you restart Studio in Local daemon mode right
+   after it. Studio re-signs its runtime entry for the new owner only at a
+   local-mode boot; until then, agents Studio made do not open in the daemon.
+   An owner import in Studio itself does this at once.
+4. **Watchdogs that look for Studio by process name do not see a dead
+   Studio.** The daemon Studio starts is `ADF Studio.exe` (or `ADF Studio` on
+   macOS) too, so a check for the process name passes while only the daemon
+   runs. Check for the window, or for Studio's pid, instead.
+5. **The way back**, in this order:
+   1. Settings → Backend → Embedded, then restart Studio as asked.
+   2. After the restart, check the handover summary: no item may be pending.
+      A pending item means a credential is still with the daemon. Fix what it
+      names and restart again before going on.
+   3. Stop the daemon: `adf daemon stop`.
+   4. Reinstall the release (v0.7.8).
+
+   Do not use `ADF_STUDIO_BACKEND=embedded` as the way back. It starts Studio
+   embedded without running the handover, so credentials moved to the daemon
+   stay there.
+
 ## Switch the backend
 
 1. Open **Settings → Backend** and choose the mode under **Run agents in**.
