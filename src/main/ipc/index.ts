@@ -2872,7 +2872,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { success: true, revision }
   })
 
-  ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async () => {
+  ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async (_event, opts?: { withRevision?: boolean }) => {
+    // W3-F: `withRevision` answers { config, revision } for a read-modify-write; without it, the config as before.
+    if (opts?.withRevision) return currentWorkspace ? { config: currentWorkspace.getAgentConfig(), revision: configRevision(currentWorkspace).revision } : { config: null }
     if (!currentWorkspace) return null
     return currentWorkspace.getAgentConfig()
   })

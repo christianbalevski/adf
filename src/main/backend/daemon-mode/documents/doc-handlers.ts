@@ -206,8 +206,10 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
     }
   }),
 
-  [IPC.DOC_GET_AGENT_CONFIG]: (ctx) => onOpenFile<AgentConfig | null>(ctx, 'Reading the open agent\'s config', null, async (client, id) => {
-    return (await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(id)}/config`)).config
+  // W3-F: `withRevision` answers { config, revision }, as embedded.
+  [IPC.DOC_GET_AGENT_CONFIG]: (ctx, _event, opts?: { withRevision?: boolean }) => onOpenFile<unknown>(ctx, 'Reading the open agent\'s config', opts?.withRevision ? { config: null } : null, async (client, id) => {
+    const read = await client.request<{ config: AgentConfig; revision?: number }>('GET', `/agents/${enc(id)}/config`)
+    return opts?.withRevision ? { config: read.config, revision: read.revision } : read.config
   }),
 
   /**

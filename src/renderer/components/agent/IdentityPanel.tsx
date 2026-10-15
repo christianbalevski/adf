@@ -4,6 +4,8 @@ import { Tooltip } from '../common/Tooltip'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { useDocumentStore } from '../../stores/document.store'
+import { changeAgentConfig } from '../../utils/edit-conflict'
+import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 
 interface IdentityEntry {
   purpose: string
@@ -141,14 +143,13 @@ export function IdentityPanel() {
   }, [])
 
   const handleTogglePublish = useCallback(async () => {
-    const config = await window.adfApi.getAgentConfig()
-    if (!config) return
-    const enabled = !config.card?.publish_attestations
-    await window.adfApi.setAgentConfig({
-      ...config,
-      card: { ...(config.card ?? {}), publish_attestations: enabled || undefined }
+    // W3-F: over the config's revision, re-applied when someone saved in between.
+    let enabled = false
+    const saved = await changeAgentConfig<AgentConfig>((config) => {
+      enabled = !config.card?.publish_attestations
+      return { ...config, card: { ...(config.card ?? {}), publish_attestations: enabled || undefined } }
     })
-    setPublishOnCard(enabled)
+    if (saved) setPublishOnCard(enabled)
   }, [])
 
   useEffect(() => {
