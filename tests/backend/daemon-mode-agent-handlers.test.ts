@@ -90,6 +90,16 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
   })
 
+  // Characterization (tracker §6, W3-A): embedded stops a running agent it
+  // cannot open without the password (ipc/index.ts FILE_OPEN); daemon mode
+  // leaves it running on the stub provider.
+  it('FILE_OPEN of a running agent whose key the daemon lacks answers needsPassword and leaves it running', async () => {
+    holdLocked = true
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1))
+    expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, needsPassword: true })
+    expect(last('POST', `/agents/${AGENT}/stop`)).toBeUndefined()
+  })
+
   it('FILE_OPEN of a held document that is not running answers agentWasRunning false', async () => {
     expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toEqual({ success: true, filePath: file1, agentWasRunning: false })
   })
