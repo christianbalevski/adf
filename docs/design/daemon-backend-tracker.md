@@ -365,6 +365,7 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W4-B | A real end push arriving after the 15 s install fallback end is pushed twice; unused `readRemoteToken` import in `connectors.ts` | W5-A |
 | W5-A1 | K12 remaining: a keychain-less daemon that never held the owner phrase can't open Studio-made agents; needs a Studio-side sweep at switch time. Documented limitation (owner machine has a keychain) | post-merge |
 | Lead | Parity suites are timing-sensitive: run them in their own CI step/job, never in the same vitest invocation as `tests/lifecycle`/`tests/backend` (13 spurious failures observed under combined load) | W5-B |
+| W5-A2 | Proxy fallback on EAI_AGAIN can be induced per-name by an attacker's DNS; hand names to the proxy only when this machine's DNS is failing altogether | post-merge |
 | W1-B | `McpStatusDashboard.tsx:10-24` has no label/colour for MCP status `needs_sign_in` (blank in daemon mode) | W3-C |
 | W1-C | OAuth chunk store: `chunkedSecretDelete` removes head before chunks (crash strands fragments) — delete chunks first; >999 chunks writes a head `isGeneration` rejects — throw on write; `splitOnCodePoints(size=1)` loops on a high surrogate — guard | W4-A |
 | W1-C | Test-seam Deno gate misses custom `DENO_DIR` + non-npmjs registry | Lead (with seam unify) |
