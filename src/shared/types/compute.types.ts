@@ -64,7 +64,7 @@ export interface ContainerSummary {
    *  the provisioning error; Rebuild retries, Remove clears the row. */
   error?: string
   /** Other live runtimes on this machine that use this container ("daemon
-   *  pid 4242"). Studio in daemon mode only; absent when nobody else does. */
+   *  pid 4242"), in both backends; absent when nobody else does. */
   users?: string[]
 }
 

@@ -508,3 +508,20 @@ describe('Settings → Compute container rows (characterization)', () => {
     expect(rows.every((r) => !('users' in r))).toBe(true)
   })
 })
+
+// E3 (W5-D3): embedded Settings → Compute never named the other runtimes
+// using a container, so Stop, Remove and Rebuild could not warn.
+describe('Settings → Compute container rows name the other runtimes using them', () => {
+  it('listContainersWithUsers adds users to a row another live runtime claims, and only there', async () => {
+    const { alive, a, b } = machine()
+    await a.svc.ensureIsolatedRunning('agent-1', ID_1)
+    await b.svc.ensureIsolatedRunning('agent-1', ID_1)
+    await a.svc.ensureIsolatedRunning('agent-2', ID_2)
+    const rows = await a.svc.listContainersWithUsers()
+    expect(rows.find((r) => r.name === BOX_1)?.users).toEqual([`daemon pid ${PID_B}`])
+    expect(rows.find((r) => r.name === BOX_2)).not.toHaveProperty('users')
+    // A runtime that died no longer counts.
+    alive.delete(PID_B)
+    expect((await a.svc.listContainersWithUsers()).find((r) => r.name === BOX_1)).not.toHaveProperty('users')
+  })
+})

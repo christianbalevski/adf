@@ -8075,8 +8075,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
+  // Rows carry `users` (other live runtimes using the container, W1-G), as in daemon mode: the Stop, Remove and Rebuild confirmations name them.
   ipcMain.handle(IPC.COMPUTE_LIST_CONTAINERS, async () => {
-    return { containers: await podmanService.listContainers() }
+    return { containers: await podmanService.listContainersWithUsers() }
   })
 
   ipcMain.handle(IPC.COMPUTE_STOP_CONTAINER, async (_event, args: { name: string }) => {
