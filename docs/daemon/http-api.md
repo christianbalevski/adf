@@ -36,6 +36,8 @@ examples: [Base URL and authentication](api-guide.md#base-url-and-authentication
 
 ## The API by area
 
+Paths write a parameter as `:id` (the reference writes `{id}`); `{a,b}` lists alternatives and `[...]` sub-routes.
+
 | Area | Routes | Guide |
 |------|--------|-------|
 | Health and contract | `GET /health` (no token), `GET /version`, `GET /openapi.json`, `POST /daemon/shutdown` | [Authentication](api-guide.md#base-url-and-authentication), [Versioning](api-guide.md#versioning-and-compatibility) |
@@ -81,7 +83,9 @@ resume, dedupe and gap handling:
 The routes under tag `Client (internal)` serve ADF Studio in daemon mode and
 the terminal app: client sessions with their own event stream, focus and
 held documents (`/client/sessions*`), Studio's quit
-(`POST /client/sessions/:id/quit`), the credential reload after a backend
+(`POST /client/sessions/:id/quit`), whether a session stops a Studio-started
+daemon when it expires (`PUT /client/sessions/:id/exit-when-closed`, kept in
+step with "Keep the daemon running"), the credential reload after a backend
 switch (`POST /client/reload-credentials`), and the stored-value reveal
 routes. Each carries `x-adf-stability: internal`: it may change in any
 release without notice. They are in the [API reference](api-reference.md)
