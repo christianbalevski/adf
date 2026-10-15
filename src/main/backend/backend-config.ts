@@ -33,12 +33,6 @@ export const BACKEND_CONFIG_FILE = 'studio-backend.json'
 /** Recovery override: `ADF_STUDIO_BACKEND=embedded` boots embedded whatever the file says. */
 export const BACKEND_ENV_OVERRIDE = 'ADF_STUDIO_BACKEND'
 
-/** Switching between embedded and local daemon from Settings, with the handover (W4-A, handover.ts). */
-export const MODE_SWITCH_AVAILABLE = true
-
-/** Switching to a remote daemon moves nothing (design §5.5, §9), so it ships with remote mode (W4-B). */
-export const REMOTE_SWITCH_AVAILABLE = true
-
 const SAFE_PREFIX = 'safe:'
 const MAX_TOKEN_LENGTH = 4096
 /** Header-safe: printable ASCII without spaces, as `ADF_DAEMON_TOKEN` values are. */
@@ -283,8 +277,6 @@ export function toBackendSettingsView(
       remoteTokenSaved: config.remote.token !== null,
       allowInsecureHttp: config.remote.allowInsecureHttp,
     },
-    modeSwitchAvailable: MODE_SWITCH_AVAILABLE,
-    remoteSwitchAvailable: REMOTE_SWITCH_AVAILABLE,
     daemon,
     pendingSwitch,
     encryptionAvailable: codec.available(),
@@ -311,7 +303,7 @@ function fail(code: BackendSettingsErrorCode, error: string): ApplyPatchResult {
 export function applyBackendPatch(
   current: StudioBackendConfig,
   patch: BackendSettingsPatch,
-  opts: { codec: SecretCodec; allowModeChange: boolean; allowRemoteSwitch?: boolean },
+  opts: { codec: SecretCodec },
 ): ApplyPatchResult {
   const next: StudioBackendConfig = { ...current, remote: { ...current.remote } }
   const notices: string[] = []
@@ -337,14 +329,8 @@ export function applyBackendPatch(
   if (patch.mode !== undefined) {
     if (!isMode(patch.mode)) return fail('invalid_mode', 'Unknown backend mode.')
     if (patch.mode !== current.mode) {
-      // Back to embedded is always allowed: it is the recovery path from a
-      // hand-edited file, and embedded needs no handover. Remote moves nothing
-      // to another machine (§5.5); it is allowed once its URL and token are
-      // saved (checked below).
-      if (!opts.allowModeChange && patch.mode !== 'embedded') return fail('mode_switch_unavailable', 'Switching the backend is available in a later build.')
-      if (patch.mode === 'remote' && !(opts.allowRemoteSwitch ?? REMOTE_SWITCH_AVAILABLE)) {
-        return fail('mode_switch_unavailable', 'Switching to a remote daemon from Settings is available in a later build.')
-      }
+      // Remote moves nothing to another machine (§5.5); it is allowed once its
+      // URL and token are saved (checked below).
       next.mode = patch.mode
       changes.push(`mode=${patch.mode}`)
     }
@@ -457,8 +443,6 @@ export interface BackendSettingsStore {
 export function createBackendSettingsStore(deps: {
   boot: BootBackend
   codec: SecretCodec
-  allowModeChange?: boolean
-  allowRemoteSwitch?: boolean
   log?: Log
   /** The daemon line of the view (daemon mode). */
   daemonStatus?: () => BackendDaemonStatus | null
@@ -503,7 +487,7 @@ export function createBackendSettingsStore(deps: {
       patch = { ...rest, mode: deps.boot.mode }
     }
     const previous = current
-    const result = applyBackendPatch(current, patch, { codec: deps.codec, allowModeChange: deps.allowModeChange ?? MODE_SWITCH_AVAILABLE, allowRemoteSwitch: deps.allowRemoteSwitch })
+    const result = applyBackendPatch(current, patch, { codec: deps.codec })
     if (!result.ok) return result
     // A switch away from the running backend restarts Studio (D9); back to it is a plain save.
     const switching = result.config.mode !== current.mode && result.config.mode !== deps.boot.mode

@@ -7,7 +7,7 @@ import { verifyAttestation } from '../../../services/attestation.service'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
 import { REMOTE_VALUES_UNSUPPORTED, writeWithLockedChoice } from './providers'
-import { isEditedPlaceholder, REDACTED_VALUE } from '../mcp/common'
+import { editedPlaceholderRefusal, isEditedPlaceholder, REDACTED_VALUE } from '../mcp/common'
 import { REMOTE_OWNER_BACKUP_SENTENCE } from '../../../../shared/constants/remote-owner-identity'
 
 /**
@@ -127,7 +127,7 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
       // the untouched placeholder keeps it, a value made from it is refused.
       if (ctx.mode === 'remote' && (args.value === REDACTED_VALUE || isEditedPlaceholder(args.value))) {
         if (args.value === REDACTED_VALUE) return undefined
-        throw new Error(`The value of ${args.purpose} was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.`)
+        throw new Error(editedPlaceholderRefusal(args.value, args.purpose)!)
       }
       const path = `/agents/${enc(agentId)}/identity/${enc(args.purpose)}`
       await writeWithLockedChoice(ctx, args.purpose, (replace) =>

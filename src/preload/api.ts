@@ -717,8 +717,12 @@ export interface AdfApi {
   setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
   /** Remote daemon: the handshake only (reachable, token accepted, client API version). Never returns the token. */
   checkRemoteBackend: (request: RemoteCheckRequest) => Promise<RemoteCheckResult>
-  /** Quit and start Studio again, so a saved backend applies (design D9). */
-  restartStudio: () => Promise<void>
+  /**
+   * Quit and start Studio again, so a saved backend applies (design D9).
+   * `kind`: the restart main asked for after the daemon connection failed
+   * (the window first kept its unsaved editor text as recovery copies).
+   */
+  restartStudio: (kind?: 'reconnect' | 'embedded-session') => Promise<void>
 
   // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void

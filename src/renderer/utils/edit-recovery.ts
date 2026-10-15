@@ -94,9 +94,39 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
   }
 }
 
-/** The launch notice's sentence for the copies a quit or crash left. */
+/**
+ * Before a restart main asked for (daemon mode: Reconnect, or Use Embedded
+ * for This Session, after the connection failed): keep every unsaved editor
+ * of the open agent as a recovery copy, listed at the next launch. The
+ * README tab or the document, every dirty text tab, and the config panel's
+ * version under a conflict. Answers how many copies were written.
+ */
+export async function stashUnsavedEditors(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined): Promise<number> {
+  const agentFilePath = useDocumentStore.getState().filePath
+  if (!api?.recoveryStash || !agentFilePath) return 0
+  const copies = new Map<string, string>()
+  for (const tab of useEditorTabsStore.getState().tabs) {
+    if (tab.kind === 'file' && !tab.isBinary && tab.isDirty) copies.set(tab.path, tab.content)
+  }
+  const doc = useDocumentStore.getState()
+  if (doc.isDirty && !copies.has('README.md')) copies.set('README.md', doc.documentContent)
+  const config = useAgentStore.getState().configConflict
+  if (config?.owner === agentFilePath) copies.set(CONFIG_RECOVERY_PATH, `${JSON.stringify(config.mine, null, 2)}\n`)
+  let written = 0
+  for (const [path, content] of copies) {
+    try {
+      await api.recoveryStash({ agentFilePath, path, content })
+      written++
+    } catch (err) {
+      console.error(`[Recovery] Could not keep a copy of unsaved ${path}:`, err)
+    }
+  }
+  return written
+}
+
+/** The launch notice's sentence for the copies a quit, crash or restart left. */
 export function recoveredEditsMessage(files: ReadonlyArray<{ agent: string; path: string }>): string {
   const names = files.map((f) => `${f.agent}/${f.path}`)
   const shown = names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ')
-  return `Studio kept your unsaved version of ${shown} from the last session, which ended while someone else's change was waiting for your answer.`
+  return `Studio kept your unsaved version of ${shown} from the last session, which ended before it was saved.`
 }

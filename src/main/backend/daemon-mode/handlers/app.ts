@@ -4,7 +4,7 @@ import type { AgentToolsResult } from '../../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { mergeSettingsViews, splitSettingsPatch } from '../settings'
-import { isEditedPlaceholder } from '../mcp/common'
+import { editedPlaceholderRefusal, isEditedPlaceholder } from '../mcp/common'
 
 /**
  * Daemon-mode handlers owned by W2-C outside the core flow: the settings
@@ -48,6 +48,16 @@ export const APP_HANDLERS: DaemonHandlerTable = {
       for (const p of providers as Array<{ id?: unknown; name?: unknown; apiKey?: unknown }>) {
         if (typeof p?.apiKey === 'string' && isEditedPlaceholder(p.apiKey)) {
           throw new Error(`The API key of ${String(p.name ?? p.id ?? 'a provider')} was shown as a placeholder (the ADF daemon never sends stored keys), so an edit of it cannot be saved. Clear the field and type the whole key.`)
+        }
+      }
+    }
+    // Settings → MCP: an app-wide env value made from a placeholder is refused as the per-agent forms refuse it.
+    const servers = (backend as { mcpServers?: unknown }).mcpServers
+    if (Array.isArray(servers)) {
+      for (const server of servers as Array<{ env?: unknown }>) {
+        for (const entry of Array.isArray(server?.env) ? server.env as Array<{ key?: unknown; value?: unknown }> : []) {
+          const refusal = typeof entry?.value === 'string' ? editedPlaceholderRefusal(entry.value, String(entry.key ?? 'an environment variable')) : null
+          if (refusal) throw new Error(refusal)
         }
       }
     }

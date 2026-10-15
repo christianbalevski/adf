@@ -18,6 +18,24 @@ export interface OverrideSummary {
 
 const norm = (s?: string): string => (s ?? '').trim()
 
+/**
+ * What the override form takes from PROVIDER_CREDENTIAL_GET: the key field's
+ * value, the copy's fields, and the reason the stored key could not be read
+ * (a remote daemon never sends stored values; a failed read), which the form
+ * shows under the key field instead of an empty field without a word.
+ */
+export function credentialFormLoad(result: { credentials?: Record<string, string>; providerConfig?: { defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number }; error?: string } | null | undefined): {
+  apiKey: string | null
+  providerConfig: { defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number } | null
+  error: string | null
+} {
+  return {
+    apiKey: result?.credentials ? result.credentials.apiKey ?? '' : null,
+    providerConfig: result?.providerConfig ?? null,
+    error: result?.error ? result.error : null,
+  }
+}
+
 function paramsEqual(a?: { key: string; value: string }[], b?: { key: string; value: string }[]): boolean {
   const clean = (p?: { key: string; value: string }[]) => (p ?? []).filter((x) => x.key.trim())
   const ca = clean(a)

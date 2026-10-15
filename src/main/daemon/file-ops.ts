@@ -416,7 +416,12 @@ const BROWSE_ENTRY_LIMIT = 2000
  * What GET /fs/browse may list: the OS user's home folder (or, when set,
  * the folders in ADF_DAEMON_BROWSE_ROOTS instead), the tracked folders and
  * the agents folder.
- * Only those that exist, canonicalized, without duplicates.
+ * Only those that exist, canonicalized, without duplicates. The tracked
+ * folders and the agents folder stay listed as their own roots even inside
+ * the home folder: the upload picker offers only those kinds. Among the
+ * browse roots (home, configured) and among the upload roots (tracked,
+ * agents), one inside another of its group is left out; a path that is both
+ * keeps the upload kind.
  */
 export async function browseRoots(settings?: TrackedDirsSettings): Promise<BrowseRoot[]> {
   const configured = process.env[BROWSE_ROOTS_ENV]
@@ -426,6 +431,7 @@ export async function browseRoots(settings?: TrackedDirsSettings): Promise<Brows
   for (const dir of (configured ?? '').split(delimiter)) {
     if (dir.trim() && isAbsolute(dir.trim())) candidates.push({ path: dir.trim(), kind: 'configured' })
   }
+  const upload = (kind: BrowseRoot['kind']) => kind === 'tracked' || kind === 'agents'
   const roots: BrowseRoot[] = []
   for (const candidate of candidates) {
     let canonical: string
@@ -433,9 +439,15 @@ export async function browseRoots(settings?: TrackedDirsSettings): Promise<Brows
       canonical = await realpath(candidate.path)
       if (!(await stat(canonical)).isDirectory()) continue
     } catch { continue }
-    if (roots.some(r => containsPath(r.path, canonical))) continue
-    // A new root that contains earlier ones replaces them.
-    for (let i = roots.length - 1; i >= 0; i--) if (containsPath(canonical, roots[i].path)) roots.splice(i, 1)
+    const same = roots.find(r => r.path === canonical)
+    if (same) {
+      if (upload(candidate.kind) && !upload(same.kind)) same.kind = candidate.kind
+      continue
+    }
+    const group = upload(candidate.kind)
+    if (roots.some(r => upload(r.kind) === group && containsPath(r.path, canonical))) continue
+    // A new root that contains earlier ones of its group replaces them.
+    for (let i = roots.length - 1; i >= 0; i--) if (upload(roots[i].kind) === group && containsPath(canonical, roots[i].path)) roots.splice(i, 1)
     roots.push({ path: canonical, kind: candidate.kind })
   }
   return roots
@@ -499,9 +511,9 @@ export async function browse(settings: TrackedDirsSettings | undefined, input: u
     if (entries.length >= BROWSE_ENTRY_LIMIT) { truncated = true; break }
   }
   entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1))
-  const atRoot = roots.some(r => r.path === real)
-  const parent = atRoot ? null : dirname(real)
-  return { path: real, parent: parent && inRoot(parent) ? parent : null, roots, entries, truncated }
+  // A root inside another root (the agents folder inside home) has that root's folder as its parent.
+  const parent = dirname(real)
+  return { path: real, parent: parent !== real && inRoot(parent) ? parent : null, roots, entries, truncated }
 }
 
 // --- Snapshots ---------------------------------------------------------------------

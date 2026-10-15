@@ -4,7 +4,7 @@ import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/a
 import { useDocumentStore } from './stores/document.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
 import { saveActiveEditorTab } from './utils/editor-save'
-import { startEditRecovery } from './utils/edit-recovery'
+import { startEditRecovery, stashUnsavedEditors } from './utils/edit-recovery'
 import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
@@ -159,6 +159,16 @@ export default function App() {
           break
         case 'open-settings':
           setShowSettings(true)
+          break
+        // Daemon mode: a remote daemon could not be reached at launch (Help, or the failure dialog).
+        case 'open-settings-backend':
+          useAppStore.getState().openSettingsAt('backend')
+          break
+        // Daemon mode: main restarts Studio after the connection failed; keep unsaved editors first.
+        case 'stash-edits-and-reconnect':
+        case 'stash-edits-and-use-embedded':
+          await stashUnsavedEditors()
+          await window.adfApi?.restartStudio(action === 'stash-edits-and-reconnect' ? 'reconnect' : 'embedded-session')
           break
       }
     })
