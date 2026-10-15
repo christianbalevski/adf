@@ -222,7 +222,7 @@ function pinnedRequest(url: URL, method: string, headers: Headers, body: Buffer 
  * hop at a time: its redirects are checked here, not followed by Node.
  * `guard` is read per call.
  */
-export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)): typeof fetch {
+export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions), opts: PinnedFetchOptions = {}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const policy = typeof guard === 'function' ? guard() : guard
     const request = new Request(input, init?.body != null ? { ...init, duplex: 'half' } as RequestInit : init)
@@ -239,8 +239,10 @@ export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)
       // Behind the env proxy the proxy connects (a name this machine could
       // not look up is the proxy's to resolve); its redirects come back here
       // and are checked as every other hop.
-      const response = envProxyFor(url)
-        ? await NATIVE_FETCH(url, { method, headers, ...(body ? { body: body as unknown as BodyInit } : {}), signal, redirect: 'manual' })
+      const replaced = opts.useReplacedFetch && globalThis.fetch !== NATIVE_FETCH ? globalThis.fetch : null
+      const viaFetch = replaced ?? (envProxyFor(url) ? NATIVE_FETCH : null)
+      const response = viaFetch
+        ? await viaFetch(url, { method, headers, ...(body ? { body: body as unknown as BodyInit } : {}), signal, redirect: 'manual' })
         : await pinnedRequest(url, method, headers, body, signal, policy)
       const location = response.headers.get('location')
       if (!REDIRECTS.has(response.status) || !location || request.redirect === 'manual') return response
@@ -260,15 +262,22 @@ export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)
   }) as typeof fetch
 }
 
+export interface PinnedFetchOptions {
+  /**
+   * When the global fetch was replaced (unit tests stub it), send each hop
+   * through it instead of node:http(s); every hop is still checked and
+   * redirects still come back to the hop loop.
+   */
+  useReplacedFetch?: boolean
+}
+
 /**
  * pinnedFetch for egress an agent or a file drives (sys_fetch, MCP HTTP).
- * A replaced global fetch (unit tests stub it) is used as it is, checked
- * per call.
+ * A replaced global fetch (unit tests stub it) carries the hops, each one
+ * checked (decided per hop).
  */
 export function egressFetch(guard: FetchGuardOptions | (() => FetchGuardOptions)): typeof fetch {
-  const pinned = pinnedFetch(guard)
-  return ((input: string | URL | Request, init?: RequestInit) =>
-    globalThis.fetch === NATIVE_FETCH ? pinned(input, init) : globalThis.fetch(input, init)) as typeof fetch
+  return pinnedFetch(guard, { useReplacedFetch: true })
 }
 
 /** Port the local daemon control API listens on when nothing overrides it. */

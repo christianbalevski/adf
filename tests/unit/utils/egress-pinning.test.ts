@@ -21,7 +21,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
 })
 import { checkConnectTarget, checkFetchTarget, embeddedIPv4s, envProxyEnabled, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
 import { SysFetchTool } from '../../../src/main/tools/built-in/sys-fetch.tool'
-import { pinnedFetch } from '../../../src/main/utils/guarded-fetch'
+import { egressFetch, pinnedFetch } from '../../../src/main/utils/guarded-fetch'
 import { WsConnectionManager, type WsManagerDelegate } from '../../../src/main/services/ws-connection-manager'
 import { WsConnectTool } from '../../../src/main/tools/built-in/ws-connect.tool'
 import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
@@ -202,6 +202,33 @@ describe('sys_fetch: the connection uses the addresses the guard checked', () =>
     expect(JSON.parse(r.content).error).toMatch(/daemon control API/)
     expect(hits).toEqual([])
   }, 20000)
+})
+
+describe('egressFetch over a replaced global fetch', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('still checks every hop: a refused first hop is never sent, a redirect to a refused address is not followed', async () => {
+    const sent: string[] = []
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input)
+      sent.push(`${url} ${init?.redirect}`)
+      if (url.endsWith('/to-metadata')) return new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/' } })
+      if (url.endsWith('/to-daemon')) return new Response(null, { status: 307, headers: { location: 'http://127.0.0.1:7385/agents' } })
+      if (url.endsWith('/moved')) return new Response(null, { status: 301, headers: { location: '/ok' } })
+      return new Response('ok')
+    })
+    const f = egressFetch({ allowLocal: true, daemonPort: 7385 })
+    await expect(f('http://169.254.169.254/latest/')).rejects.toThrow(/cloud-metadata/)
+    await expect(f('http://10.0.0.5/to-metadata')).rejects.toThrow(/cloud-metadata/)
+    await expect(f('http://10.0.0.5/to-daemon')).rejects.toThrow(/daemon control API/)
+    expect(await (await f('http://10.0.0.5/moved')).text()).toBe('ok')
+    expect(sent).toEqual([
+      'http://10.0.0.5/to-metadata manual',
+      'http://10.0.0.5/to-daemon manual',
+      'http://10.0.0.5/moved manual',
+      'http://10.0.0.5/ok manual',
+    ])
+  })
 })
 
 describe('pinnedFetch keeps fetch semantics', () => {
