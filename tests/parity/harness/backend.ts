@@ -155,6 +155,11 @@ export const embeddedBackend: ParityBackend = {
       },
       openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },
     })
+    // The boot envelope sweep runs 2 s after boot, before the user has done
+    // anything; here it runs now. On its timer it ran inside a scenario that
+    // took over 2 s (a loaded CI runner) and provisioned the agents of the
+    // tracked folder the scenario had just set (CI run 38749217035).
+    ipc.runDeferredEnvelopeSweepNow()
     // Studio creates the window after registering handlers (main/index.ts).
     electron.openWindow()
     let leaks: string[] = []
