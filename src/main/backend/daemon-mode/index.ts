@@ -461,7 +461,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[Backend] Could not read the daemon's approvals at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     clientSession.start({
-      onFrame: (frame) => { installs.observe(frame); bridge.handleFrame(frame) },
+      onFrame: (frame) => { if (installs.observe(frame)) bridge.handleFrame(frame) },
       onGap: (gap) => { installs.onGap(); void bridge.handleGap(gap) },
       onConnection: (c) => {
         if (c.state === 'open') connection.markConnected()

@@ -405,6 +405,30 @@ describe('InstallProgressRelay', () => {
     await finished
     expect(answered).toBe(true)
   })
+
+  it('a real end that arrives after the fallback end was sent is dropped, once, with its late progress lines (W4-B follow-up)', async () => {
+    const sent: unknown[] = []
+    const logged: string[] = []
+    const relay = new InstallProgressRelay((_c, p) => { sent.push(p) }, { log: (m: string) => { logged.push(m) }, warn: () => {} }, 20, 40)
+    const push = (pkg: string, status: string) => ({ kind: 'push' as const, topic: 'mcp_install' as const, payload: { package: pkg, status } })
+    await relay.begin(IPC.MCP_INSTALL_PROGRESS, ['slow']).finish([{ package: 'slow', status: 'installed' }])
+    expect(sent).toEqual([{ package: 'slow', status: 'installed' }])
+    // The stream catches up: its progress line and its end are not sent again.
+    expect(relay.observe(push('slow', 'installing'))).toBe(false)
+    expect(relay.observe(push('slow', 'installed'))).toBe(false)
+    expect(logged.some((m) => /slow install's own end \(installed\) arrived .* not sent again/.test(m))).toBe(true)
+    // Only that one end: the next pushes of the package pass, as do other packages and topics.
+    expect(relay.observe(push('slow', 'installed'))).toBe(true)
+    expect(relay.observe(push('other', 'installed'))).toBe(true)
+    expect(relay.observe({ kind: 'push', topic: 'adapter_install', payload: { package: 'slow', status: 'installed' } })).toBe(true)
+
+    // A new install of the package owns its pushes, even if the old late end never came.
+    await relay.begin(IPC.MCP_INSTALL_PROGRESS, ['lost']).finish([{ package: 'lost', status: 'installed' }])
+    const again = relay.begin(IPC.MCP_INSTALL_PROGRESS, ['lost'])
+    expect(relay.observe(push('lost', 'installed'))).toBe(true)
+    await again.finish([{ package: 'lost', status: 'installed' }])
+    expect(sent).toHaveLength(2)
+  })
 })
 
 describe('McpOAuthAuthorizeOpener (mcp_oauth_authorize)', () => {

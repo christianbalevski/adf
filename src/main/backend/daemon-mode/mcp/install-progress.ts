@@ -22,6 +22,10 @@ import type { ClientFrame, PushTopic } from '../client-stream'
  * daemon sends it after the install's progress lines, in order on one
  * connection); the answer waits for every end, up to END_WAIT_MS, then sends
  * a missing one from the result as after a gap.
+ *
+ * An end sent from the result is the install's end for the renderer: when
+ * the stream's own end (and progress lines before it) arrives later, it is
+ * dropped, and logged, so the install never ends twice (W4-B follow-up).
  */
 
 export type InstallChannel = typeof IPC.MCP_INSTALL_PROGRESS | typeof IPC.ADAPTER_INSTALL_PROGRESS | typeof IPC.SANDBOX_INSTALL_PROGRESS
@@ -36,6 +40,8 @@ export const INSTALL_TOPIC: Readonly<Record<InstallChannel, PushTopic>> = {
 export const END_GRACE_MS = 1500
 /** How long the answer waits for the stream to deliver an install's end push when no gap was seen. */
 export const END_WAIT_MS = 15_000
+/** How long a late stream push of an install whose end was sent from its result is still dropped. */
+export const LATE_END_DROP_MS = 10 * 60_000
 
 export interface InstallEnd {
   package: string
@@ -47,15 +53,35 @@ type Send = (channel: string, payload: unknown) => void
 
 export class InstallProgressRelay {
   private readonly watches = new Set<InstallWatch>()
+  /** Installs whose end was sent from the job result (`topic:package` → until when its late pushes are dropped). */
+  private readonly relayedEnds = new Map<string, number>()
 
   constructor(private readonly send: Send, private readonly log: Pick<Console, 'log' | 'warn'> = console, private readonly graceMs = END_GRACE_MS, private readonly waitMs = END_WAIT_MS) {}
 
-  /** Every frame of the client stream, before the event bridge maps it. */
-  observe(frame: ClientFrame): void {
-    if (frame.kind !== 'push') return
+  /**
+   * Every frame of the client stream, before the event bridge maps it.
+   * False: the frame is a late push of an install whose end was already sent
+   * from its result, and the bridge must not send it.
+   */
+  observe(frame: ClientFrame): boolean {
+    if (frame.kind !== 'push') return true
     const payload = frame.payload as { package?: unknown; status?: unknown } | null
-    if (!payload || typeof payload.package !== 'string' || (payload.status !== 'installed' && payload.status !== 'error')) return
-    for (const watch of this.watches) watch.endArrived(frame.topic, payload.package)
+    if (!payload || typeof payload.package !== 'string' || !isInstallTopic(frame.topic)) return true
+    const ended = payload.status === 'installed' || payload.status === 'error'
+    const key = relayKey(frame.topic, payload.package)
+    const until = this.relayedEnds.get(key)
+    if (until !== undefined) {
+      if (until >= Date.now()) {
+        if (ended) {
+          this.relayedEnds.delete(key)
+          this.log.log(`[Backend] The ${payload.package} install's own end (${String(payload.status)}) arrived on the client stream after Studio had sent it from the job result; not sent again`)
+        }
+        return false
+      }
+      this.relayedEnds.delete(key)
+    }
+    if (ended) for (const watch of this.watches) watch.endArrived(frame.topic, payload.package)
+    return true
   }
 
   /** The stream lost frames: an end push of an install now running may be among them. */
@@ -65,14 +91,17 @@ export class InstallProgressRelay {
 
   /** An install Studio is about to wait on. */
   begin(channel: InstallChannel, packages: readonly string[]): InstallWatch {
+    // A new install of a package owns its pushes: an older install's late ones are no longer told apart.
+    for (const pkg of packages) this.relayedEnds.delete(relayKey(INSTALL_TOPIC[channel], pkg))
     const watch = new InstallWatch(this, channel, packages)
     this.watches.add(watch)
     return watch
   }
 
-  /** @internal */
-  relay(channel: InstallChannel, payload: unknown): void {
-    this.send(channel, payload)
+  /** @internal An end sent from the job result: the stream's own pushes of that install are dropped from now on. */
+  relayEnd(channel: InstallChannel, end: InstallEnd): void {
+    this.relayedEnds.set(relayKey(INSTALL_TOPIC[channel], end.package), Date.now() + LATE_END_DROP_MS)
+    this.send(channel, endPayload(end))
   }
 
   /** @internal */
@@ -133,13 +162,23 @@ export class InstallWatch {
         this.relay.logger.log(this.gapped
           ? `[Backend] The end of the ${end.package} install was lost in a client stream gap; sending it from the install's job result (${end.status})`
           : `[Backend] The end of the ${end.package} install did not arrive on the client stream within ${Math.round(this.relay.wait / 1000)} s of the job's end; sending it from the install's job result (${end.status})`)
-        this.relay.relay(this.channel, endPayload(end))
+        this.relay.relayEnd(this.channel, end)
       }
     } finally {
       this.waiters.clear()
       this.relay.done(this)
     }
   }
+}
+
+const INSTALL_TOPICS: ReadonlySet<string> = new Set(Object.values(INSTALL_TOPIC))
+
+function isInstallTopic(topic: PushTopic): boolean {
+  return INSTALL_TOPICS.has(topic)
+}
+
+function relayKey(topic: PushTopic, pkg: string): string {
+  return `${topic}:${pkg}`
 }
 
 function endPayload(end: InstallEnd): Record<string, unknown> {
