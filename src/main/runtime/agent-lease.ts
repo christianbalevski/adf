@@ -71,7 +71,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { promises as fsp, readFileSync, unlinkSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { homedir, hostname as osHostname, tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { getUserDataPath } from '../utils/user-data-path'
 
 export const AGENT_LEASED_CODE = 'agent_leased'
@@ -224,8 +224,9 @@ function stripLongPathPrefix(p: string): string {
   return p
 }
 
+/** Either separator: a lease folder shared between machines holds Windows and POSIX paths alike. */
 function agentNameOf(path: string): string {
-  return basename(path).replace(/\.adf$/i, '')
+  return (path.split(/[\\/]/).pop() ?? path).replace(/\.adf$/i, '')
 }
 
 function samePath(a: string, b: string): boolean {
