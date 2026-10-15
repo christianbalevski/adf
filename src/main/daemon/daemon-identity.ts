@@ -49,7 +49,8 @@ import {
   MIN_PASSPHRASE_LENGTH,
   OWNER_MNEMONIC_ACCOUNT,
   WrongPassphraseError,
-  openKeychainBackend,
+  probeKeychain,
+  type KeychainProbe,
   type SecretBackend,
 } from '../services/owner-secret-store'
 import { SecretBackendProviderKeyVault, type ProviderKeyVault } from './provider-key-vault'
@@ -118,6 +119,12 @@ export interface DaemonIdentityStatus {
   backupConfirmed: boolean
   /** File storage that is not unlocked: create/restore/unlock take a passphrase. */
   passphraseRequired: boolean
+  /**
+   * Set when this machine has an OS keychain but the daemon could not read it
+   * at boot (retried) and runs on the passphrase file instead: why, and what
+   * to do. Create, restore and trust-daemon are refused meanwhile. Null otherwise.
+   */
+  keychainProblem: string | null
   /** One human sentence saying what to do next. */
   message: string
 }
@@ -135,6 +142,7 @@ export type DaemonIdentityErrorCode =
   | 'switch_unconfirmed'
   | 'backup_unconfirmed'
   | 'keychain_available'
+  | 'keychain_unavailable'
 
 export class DaemonIdentityError extends Error {
   constructor(
@@ -318,6 +326,16 @@ export interface DaemonIdentityOptions {
   backend?: SecretBackend
   /** Passphrase for the file backend (ADF_OWNER_PASSPHRASE[_FILE]). */
   bootPassphrase?: string
+  /** Test seams for the keychain probe at boot (selectBackend): the probe, the wait between tries, the platform. */
+  keychainProbe?: KeychainProbeDeps
+}
+
+export interface KeychainProbeDeps {
+  probe?: () => KeychainProbe
+  /** Blocking wait between tries (boot only, before the daemon serves anything). */
+  sleep?: (ms: number) => void
+  platform?: NodeJS.Platform
+  now?: () => number
 }
 
 export interface DaemonOwnerImportOptions {
@@ -360,12 +378,26 @@ export class DaemonIdentity {
   private adoption: DaemonRuntimeAdoption
   /** Last logged adoption outcome, so a status poll does not repeat the line. */
   private adoptionLogKey: string | null = null
+  /** This machine has a keychain the boot probe could not read: why (null when the keychain is used, or there is none). */
+  private keychainError: string | null = null
+  /** The keychain answered a later probe (refresh); the daemon keeps the file until it restarts. */
+  private keychainRecovered = false
+  private lastKeychainProbe = 0
+  private readonly keychainDeps: KeychainProbeDeps
 
   constructor(opts: DaemonIdentityOptions) {
     this.store = opts.settings
     this.encKey = opts.encKey
     this.bootPassphrase = opts.bootPassphrase || undefined
-    this.backend = opts.backend ?? selectBackend(opts.settingsPath)
+    this.keychainDeps = opts.keychainProbe ?? {}
+    if (opts.backend) {
+      this.backend = opts.backend
+    } else {
+      const selected = selectBackend(opts.settingsPath, this.keychainDeps)
+      this.backend = selected.backend
+      this.keychainError = selected.keychainError
+      this.lastKeychainProbe = (this.keychainDeps.now ?? Date.now)()
+    }
     const scope = settingsScope(opts.settingsPath)
     const runtimeAccount = `daemon-runtime-signing-key:${scope}`
     this.canonicalSettingsPath = canonicalSettingsPath(opts.settingsPath)
@@ -411,6 +443,7 @@ export class DaemonIdentity {
    */
   refresh(): DaemonIdentityStatus {
     this.identitySettings.clearCache()
+    this.reprobeKeychain()
     const status = this.computeStatus()
     if (status.status === 'ready') {
       // Adopt a phrase whose owner this settings file has not seen yet.
@@ -438,6 +471,46 @@ export class DaemonIdentity {
       if (becameReady) this.notifyReady(derived)
     }
     return this.withRuntime(status)
+  }
+
+  /**
+   * On the fallback file store of a machine that has a keychain: probe the
+   * keychain again (at most every 30 s, one try, no wait). When it answers,
+   * say so; the daemon keeps the file it booted with until it restarts
+   * (switching stores under loaded agents would hide their secrets).
+   */
+  private reprobeKeychain(): void {
+    if (this.keychainError === null || this.keychainRecovered) return
+    const now = (this.keychainDeps.now ?? Date.now)()
+    if (now - this.lastKeychainProbe < KEYCHAIN_REPROBE_MS) return
+    this.lastKeychainProbe = now
+    const probe = (this.keychainDeps.probe ?? probeKeychain)()
+    if (probe.backend) {
+      this.keychainRecovered = true
+      console.warn('[ADF Daemon] The OS keychain answers now. The daemon keeps the passphrase file it started with; restart it (adf daemon restart) to use the keychain.')
+    } else if (probe.error && probe.error !== this.keychainError) {
+      this.keychainError = probe.error
+    }
+  }
+
+  /** Why the daemon runs on the passphrase file although this machine has a keychain; null when it does not. */
+  keychainProblem(): string | null {
+    if (this.keychainError === null) return null
+    return this.keychainRecovered
+      ? `The OS keychain could not be read when the daemon started, so it uses the passphrase file ${SECRET_FILE_NAME}; the keychain answers now. Restart the daemon (adf daemon restart) to use it.`
+      : `The OS keychain could not be read (${this.keychainError}; tried ${KEYCHAIN_PROBE_DELAYS_MS.length + 1} times at start), so the daemon uses the passphrase file ${SECRET_FILE_NAME} instead. Fix the keychain and restart the daemon (adf daemon restart).`
+  }
+
+  /** Refuse owner actions that would put secrets in the fallback file of a machine whose keychain is just unreadable. */
+  private refuseOnKeychainFallback(action: string): void {
+    if (this.keychainError === null || this.backend.kind !== 'file') return
+    throw new DaemonIdentityError(
+      'keychain_unavailable',
+      `${action} is refused while the daemon runs on its fallback passphrase file: this machine has an OS keychain, but the daemon could not read it ` +
+        `(${this.keychainError}). Done now, the owner secrets would land in ${SECRET_FILE_NAME} instead of the keychain ADF Studio shares. ` +
+        'Fix the keychain and restart the daemon (adf daemon restart), or set ADF_SECRET_STORE=file to use the file on purpose.',
+      409,
+    )
   }
 
   private withRuntime(status: DaemonIdentityStatus): DaemonIdentityStatus {
@@ -706,6 +779,7 @@ export class DaemonIdentity {
    * unsigned settings entry.
    */
   trustDaemon(): DaemonTrustStatus {
+    this.refuseOnKeychainFallback('Trusting the daemon key (adf identity trust-daemon)')
     if (this.backend.kind === 'keychain') {
       throw new DaemonIdentityError('keychain_available', 'This daemon reads the OS keychain, where it shares ADF Studio\'s runtime identity (switch Studio to local mode). Trusting its key file would let a plain file unlock what the keychain protects, so it is refused.', 409)
     }
@@ -826,6 +900,7 @@ export class DaemonIdentity {
       runtime: this.adoption,
       backupConfirmed: this.store.get('ownerSeedBackupConfirmed') === true,
       passphraseRequired: this.backend.kind === 'file' && !this.backend.isUnlocked(),
+      keychainProblem: this.keychainProblem(),
     }
     if (!this.encKey) {
       return { ...base, status: 'locked', ownerDid: settingsOwner, message: 'The daemon runtime encryption key (runtime-enc-key) is unreadable; fix or remove it and restart the daemon.' }
@@ -879,6 +954,7 @@ export class DaemonIdentity {
    * from the daemon afterwards.
    */
   create(opts: { passphrase?: string } = {}): { mnemonic: string; identity: DaemonIdentityStatus } {
+    this.refuseOnKeychainFallback('Creating an owner identity (adf identity new)')
     const before = this.refresh()
     if (before.status !== 'none') {
       throw new DaemonIdentityError('identity_exists', `An owner identity already exists here (status: ${before.status}). ${before.message}`, 409)
@@ -897,6 +973,7 @@ export class DaemonIdentity {
 
   /** Restore from the 12 words. Must match this machine's owner DID when one is on record. */
   restore(opts: { mnemonic: string; passphrase?: string }): DaemonIdentityStatus {
+    this.refuseOnKeychainFallback('Restoring the owner identity (adf identity restore)')
     const normalized = normalizeMnemonic(opts.mnemonic)
     const derived = deriveOwnerIdentity(normalized).did
     const settingsOwner = stringOrNull(this.store.get('ownerDid'))
@@ -1161,29 +1238,57 @@ export class TestKeychainFileBackend implements SecretBackend {
   }
 }
 
+/** Waits between the boot probes of a keychain that did not answer: 3 tries over 5 s. */
+export const KEYCHAIN_PROBE_DELAYS_MS = [1000, 4000]
+/** At most one keychain re-probe per this interval (refresh). */
+const KEYCHAIN_REPROBE_MS = 30_000
+
+function blockingSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 /**
  * ADF_SECRET_STORE=file|keychain forces a backend; ADF_KEYCHAIN=0 rules the
- * keychain out; default: keychain when usable, else the file.
+ * keychain out; default: keychain when usable, else the file. A keychain
+ * that exists but does not answer (Windows Credential Manager or the macOS
+ * Keychain busy at logon) is probed again with backoff before the daemon
+ * falls back; the fallback is then reported (`keychainError`), never silent.
+ * Linux without a Secret Service is "no keychain", not a failure.
  */
-function selectBackend(settingsPath: string): SecretBackend {
+function selectBackend(settingsPath: string, deps: KeychainProbeDeps = {}): { backend: SecretBackend; keychainError: string | null } {
   const forced = process.env.ADF_SECRET_STORE
   const file = () => new FileSecretBackend(join(dirname(settingsPath), SECRET_FILE_NAME))
-  if (forced === 'file') return file()
-  if (process.env.ADF_KEYCHAIN === '0' || process.env.ADF_KEYCHAIN === 'off') return file()
+  if (forced === 'file') return { backend: file(), keychainError: null }
+  if (process.env.ADF_KEYCHAIN === '0' || process.env.ADF_KEYCHAIN === 'off') return { backend: file(), keychainError: null }
   const fakePath = process.env[TEST_KEYCHAIN_FILE_ENV]
   if (fakePath) {
     if (testSeamsAllowed()) {
       console.warn(`[ADF Daemon] Test seam: ${fakePath} stands in for the OS keychain (ADF_TEST_SEAMS=1)`)
-      return new TestKeychainFileBackend(fakePath)
+      return { backend: new TestKeychainFileBackend(fakePath), keychainError: null }
     }
     // Fail closed: never fall through to the real keychain when a test asked not to use it.
     console.error(`[ADF Daemon] Ignoring ${TEST_KEYCHAIN_FILE_ENV}: test seams need ADF_TEST_SEAMS=1 and an unpackaged build. Using the passphrase file, not the OS keychain.`)
-    return file()
+    return { backend: file(), keychainError: null }
   }
-  const keychain = openKeychainBackend()
-  if (keychain) return keychain
+  const probe = deps.probe ?? probeKeychain
+  const sleep = deps.sleep ?? blockingSleep
+  const platform = deps.platform ?? process.platform
+  let result = probe()
+  // Windows and macOS always have a keychain: a failed read is transient (logon, a busy service). Retry.
+  const expected = result.present && (platform === 'win32' || platform === 'darwin')
+  for (let i = 0; !result.backend && expected && i < KEYCHAIN_PROBE_DELAYS_MS.length; i++) {
+    console.warn(`[ADF Daemon] The OS keychain did not answer (${result.error ?? 'unknown error'}); trying again in ${KEYCHAIN_PROBE_DELAYS_MS[i] / 1000}s`)
+    sleep(KEYCHAIN_PROBE_DELAYS_MS[i])
+    result = probe()
+  }
+  if (result.backend) return { backend: result.backend, keychainError: null }
+  if (expected) {
+    const error = result.error ?? 'unknown error'
+    console.error(`[ADF Daemon] The OS keychain could not be read after ${KEYCHAIN_PROBE_DELAYS_MS.length + 1} tries (${error}): using the passphrase file ${SECRET_FILE_NAME}. Owner create, restore and trust-daemon are refused until the daemon restarts with the keychain (adf daemon restart).`)
+    return { backend: file(), keychainError: error }
+  }
   if (forced === 'keychain') console.error('[ADF Daemon] ADF_SECRET_STORE=keychain but no OS keychain is usable — using the passphrase file instead')
-  return file()
+  return { backend: file(), keychainError: null }
 }
 
 /** Passphrase from ADF_OWNER_PASSPHRASE, else the first line of ADF_OWNER_PASSPHRASE_FILE. */

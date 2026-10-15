@@ -54,6 +54,7 @@ function daemonLine(daemon: BackendDaemonStatus): string {
   // K12 (no OS keychain): the owner's trust in the daemon's key, set with adf identity trust-daemon.
   if (daemon.trust?.state === 'trusted') parts.push('daemon key trusted by the owner')
   else if (daemon.trust?.state === 'not-trusted') parts.push('daemon key not trusted (adf identity trust-daemon)')
+  if (daemon.keychainProblem) parts.push('keychain unavailable')
   return parts.join(' · ')
 }
 
@@ -249,9 +250,12 @@ export function BackendSettings() {
             label="ADF daemon"
             description={daemonLine(view.daemon)}
             help={view.daemon.message ?? undefined}
-            error={view.daemon.localProof && !view.daemon.localProof.available
-              ? `The daemon runs without its local proof (${view.daemon.localProof.problem ?? 'unknown reason'}), so revealing stored values and importing an identity are refused. Restart the daemon after fixing the file's permissions.`
-              : undefined}
+            error={[
+              view.daemon.localProof && !view.daemon.localProof.available
+                ? `The daemon runs without its local proof (${view.daemon.localProof.problem ?? 'unknown reason'}), so revealing stored values and importing an identity are refused. Restart the daemon after fixing the file's permissions.`
+                : null,
+              view.daemon.keychainProblem,
+            ].filter(Boolean).join(' ') || undefined}
           />
         )}
         {(view.configured.mode === 'local' || view.active.mode === 'local') && <SettingsRow

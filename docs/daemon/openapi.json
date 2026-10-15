@@ -19117,6 +19117,13 @@
                 "description": "Why there is no proof; null when available."
               }
             }
+          },
+          "keychainProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set when this machine has an OS keychain (Windows, macOS) that the daemon could not read at start (three tries over 5 s), so it runs on its passphrase file: why, and what to do (restart the daemon once the keychain works). Owner create, restore and trust-daemon answer 409 `keychain_unavailable` meanwhile. Null otherwise; absent without an owner identity service or in older daemons."
           }
         },
         "example": {
@@ -19885,7 +19892,9 @@
               "switch_unconfirmed",
               "bad_request",
               "backup_unconfirmed",
-              "studio_running"
+              "studio_running",
+              "keychain_available",
+              "keychain_unavailable"
             ]
           }
         }
@@ -20077,6 +20086,13 @@
           "passphraseRequired": {
             "type": "boolean",
             "description": "File storage not unlocked: create/restore/unlock take a passphrase"
+          },
+          "keychainProblem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The daemon could not read this machine's OS keychain at start and runs on its passphrase file: why and what to do; null otherwise. Create, restore and trust-daemon answer 409 `keychain_unavailable` meanwhile (set ADF_SECRET_STORE=file to use the file on purpose)."
           },
           "message": {
             "type": "string",

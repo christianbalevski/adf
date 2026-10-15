@@ -117,6 +117,33 @@ export function openKeychainBackend(): KeychainSecretBackend | null {
   }
 }
 
+/** One keychain probe: the backend when usable; whether a keychain binding exists here; why the read failed. */
+export interface KeychainProbe {
+  backend: KeychainSecretBackend | null
+  /** The native binding loaded (an OS keychain exists to talk to), whether or not the read worked. */
+  present: boolean
+  /** The probe read's error message (never a value); null when it worked or nothing was tried. */
+  error: string | null
+}
+
+/**
+ * openKeychainBackend with the reason: the daemon tells "no keychain here"
+ * (ADF_KEYCHAIN=0, no binding) from "a keychain that did not answer", which
+ * it retries and reports (daemon-identity.ts).
+ */
+export function probeKeychain(): KeychainProbe {
+  if (process.env.ADF_KEYCHAIN === '0' || process.env.ADF_KEYCHAIN === 'off') return { backend: null, present: false, error: null }
+  const Entry = loadKeyring()
+  if (!Entry) return { backend: null, present: false, error: null }
+  try {
+    const backend = new KeychainSecretBackend(Entry)
+    backend.get(OWNER_MNEMONIC_ACCOUNT)
+    return { backend, present: true, error: null }
+  } catch (err) {
+    return { backend: null, present: true, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Passphrase-encrypted file
 // ---------------------------------------------------------------------------
