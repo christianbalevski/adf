@@ -84,6 +84,9 @@ async function passwordLocked(ctx: DaemonModeContext, agentId: string): Promise<
 interface AgentHeader { agentId: string; document: string; agentConfig: AgentConfig; statusText: string }
 /** GET /agents/:id/batch: the header, the token figures and main's last 200 display entries. */
 interface AgentBatch extends AgentHeader {
+  /** W3-F: the revisions of the config and the document. */
+  configRevision?: number
+  documentRevision?: number
   lastTokens?: unknown
   contextBaseline: unknown
   chat: { version: number; uiLog: unknown[]; llmMessages: unknown[]; earlierCount: number; total: number }
@@ -150,6 +153,9 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       return {
         document: b.document,
         agentConfig: b.agentConfig,
+        // W3-F: the revisions the config panel and the document tab save over.
+        configRevision: b.configRevision,
+        documentRevision: b.documentRevision,
         lastTokens: b.lastTokens,
         contextBaseline: b.contextBaseline,
         statusText: b.statusText,
@@ -200,7 +206,9 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     if (!res.ok) throw new Error(`The ADF daemon answered ${res.status} for ${args.path}`)
     const buf = Buffer.from(await res.arrayBuffer())
     const info = { mimeType: meta.mime_type, size: buf.length }
-    if (text) return { content: buf.toString('utf-8'), binary: false, ...info }
+    // W3-F: the revision an editor saves over (writeInternalFile's baseRevision), as embedded.
+    const revision = Number(res.headers.get('x-adf-revision') ?? NaN)
+    if (text) return { content: buf.toString('utf-8'), binary: false, ...info, ...(Number.isSafeInteger(revision) ? { revision } : {}) }
     return { content: buf.toString('base64'), binary: true, ...info }
   },
 

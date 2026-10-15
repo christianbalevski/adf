@@ -27,6 +27,7 @@ vi.mock('../../src/main/services/uvx-package-resolver', async () => {
   return {}
 })
 vi.mock('../../src/main/ipc/orbital-cache', () => ({ registerOrbitalCacheHandlers: () => {} }))
+vi.mock('../../src/main/backend/edit-recovery', () => ({ registerEditRecoveryHandlers: () => {} }))
 vi.mock('../../src/main/utils/main-log-file', () => ({ installMainLogFile: () => null }))
 vi.mock('../../src/main/utils/stall-monitor', () => ({ startStallMonitor: () => null, stopStallMonitor: () => {} }))
 vi.mock('../../src/main/utils/scratch-dir', () => ({ purgeStaleProcessDirs: () => {} }))

@@ -49,7 +49,9 @@ const HELD_ONLY = ['legacy-password-unlock'] as const
 const W3A_RAN = ['switch-with-background', 'password-unlock', 'config-during-start', 'rename-while-running'] as const
 /** W3-A scenarios that run no agent. */
 const W3A_NO_AGENT = ['review-accept-foreign', 'template-create', 'delete', 'doc-resources'] as const
-const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT] as const
+/** W3-F scenarios (tests/parity/conflicts) that start an agent and stop it before the state dump. */
+const W3F_RAN = ['w3f-write-conflicts'] as const
+const ALL = [...CORE, ...W3B_NO_AGENT, ...W3B_RUNNING, ...W3C, ...HELD_ONLY, ...W3A_RAN, ...W3A_NO_AGENT, ...W3F_RAN] as const
 const RUNNING = ['start-agent', 'chat-tool-call', ...W3B_RUNNING] as const
 /** The mesh scenarios (tests/parity/mesh, W3-D). */
 const MESH = ['fleet-map', 'emergency-stop'] as const
@@ -379,7 +381,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'w0d:daemon-version-null',
     ws: 'W0-D',
-    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN, ...W3F_RAN],
     path: 'state.leases: `version` of the daemon\'s host record and lease holder',
     what: 'Bug: the daemon records version null in its host record and agent leases.',
     apply(d) {
@@ -457,7 +459,7 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
   {
     id: 'mode:effective-runtime-host',
     ws: 'mode',
-    scenarios: [...RUNNING, ...MESH, ...W3A_RAN],
+    scenarios: [...RUNNING, ...MESH, ...W3A_RAN, ...W3F_RAN],
     path: 'state: adf_meta adf_effective_runtime `host` field only',
     what: 'The agent file records which host profile ran it: `daemon`, not `studioForeground`.',
     apply(d) {
@@ -580,6 +582,26 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
       d.pushes = Object.fromEntries(Object.keys(d.pushes).sort().map((c) => [c, d.pushes[c]]))
       if (d.pushSeq) d.pushSeq[IPC.AGENT_EVENT] = clone(e.pushSeq?.[IPC.AGENT_EVENT] ?? [])
       d.steps = d.steps.map((st, i) => ({ ...st, pushes: clone(e.steps[i].pushes) }) as StepRecord)
+      return n
+    },
+  },
+  {
+    id: 'mode:invoke-args-stamped',
+    ws: 'mode',
+    scenarios: W3F_RAN,
+    path: 'DOC_SET_AGENT_CONFIG step args: `metadata.updated_at`',
+    what: 'The embedded handler stamps `metadata.updated_at` on the config it was given (AdfDatabase.setConfig), and the harness records invoke args by reference after the handler ran; Electron clones IPC args, so the renderer never sees the stamp. The daemon side sends the args as JSON and records them unchanged.',
+    apply(d, e) {
+      let n = 0
+      d.steps.forEach((step, i) => {
+        const base = e.steps[i]
+        if (step.kind !== 'invoke' || base?.kind !== 'invoke' || step.channel !== IPC.DOC_SET_AGENT_CONFIG || base.channel !== step.channel) return
+        const mine = (step.args?.[0] as { metadata?: Record<string, unknown> } | undefined)?.metadata
+        const theirs = (base.args?.[0] as { metadata?: Record<string, unknown> } | undefined)?.metadata
+        if (!mine || !theirs || mine.updated_at === theirs.updated_at) return
+        mine.updated_at = theirs.updated_at
+        n++
+      })
       return n
     },
   },

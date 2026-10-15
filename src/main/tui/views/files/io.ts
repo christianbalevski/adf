@@ -4,6 +4,7 @@
 import type { DaemonClient } from '../../api/client'
 import type { FileListEntry } from '../../api/types'
 import { looksBinary, type FileTarget } from './model'
+import { revisionOf } from '../../util/revisions'
 
 export interface LoadedContent {
   target: FileTarget
@@ -17,16 +18,18 @@ export interface LoadedContent {
   protection?: string
   authorized?: boolean
   updatedAt?: string
+  /** W3-F: the revision a write of an edit of this content saves over. */
+  revision?: number
 }
 
 export async function loadTarget(client: DaemonClient, agentId: string, target: FileTarget): Promise<LoadedContent> {
   if (target.kind === 'document' || target.kind === 'mind') {
     const result = target.kind === 'document' ? await client.document(agentId) : await client.mind(agentId)
     const text = result.content ?? ''
-    return { target, text, binary: false, mime: 'text/markdown', size: Buffer.byteLength(text, 'utf-8') }
+    return { target, text, binary: false, mime: 'text/markdown', size: Buffer.byteLength(text, 'utf-8'), revision: revisionOf(result) }
   }
   const file = await client.file(agentId, target.path)
-  const base = { target, mime: file.mime_type, size: file.size, protection: file.protection, authorized: file.authorized, updatedAt: file.updated_at }
+  const base = { target, mime: file.mime_type, size: file.size, protection: file.protection, authorized: file.authorized, updatedAt: file.updated_at, revision: revisionOf(file) }
   if (file.encoding === 'base64') {
     return { ...base, binary: true, bytes: Buffer.from(file.content_base64 ?? '', 'base64') }
   }
@@ -35,10 +38,18 @@ export async function loadTarget(client: DaemonClient, agentId: string, target: 
   return { ...base, text, binary: false }
 }
 
-export async function writeTarget(client: DaemonClient, agentId: string, target: FileTarget, text: string): Promise<void> {
-  if (target.kind === 'document') await client.putDocument(agentId, text)
-  else if (target.kind === 'mind') await client.putMind(agentId, text)
-  else await client.writeFile(agentId, target.path, { content: text })
+/**
+ * Write `text`. With `baseRevision` (W3-F) the daemon refuses the write with
+ * `409 stale_revision` when the target changed since that revision; without
+ * it the write replaces whatever is there. Answers the new revision.
+ */
+export async function writeTarget(client: DaemonClient, agentId: string, target: FileTarget, text: string, baseRevision?: number | 'absent'): Promise<number | undefined> {
+  // 'absent': a create, refused when the file exists meanwhile.
+  const base = baseRevision === 'absent' ? { mustNotExist: true } : baseRevision !== undefined ? { baseRevision } : {}
+  const agent = `/agents/${encodeURIComponent(agentId)}`
+  if (target.kind === 'document') return revisionOf(await client.request('PUT', `${agent}/document`, { body: { content: text, ...base } }))
+  if (target.kind === 'mind') return revisionOf(await client.request('PUT', `${agent}/mind`, { body: { content: text, ...base } }))
+  return revisionOf(await client.request('PUT', `${agent}/files/content`, { query: { path: target.path }, body: { content: text, ...base } }))
 }
 
 // --- path cache (for /open completion) --------------------------------------

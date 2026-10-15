@@ -11,6 +11,7 @@ import type { TuiActions } from '../../state/store'
 import { resolveEditor, runEditorProcess } from '../../util/editor'
 import { loadTarget, writeTarget } from './io'
 import { describeDiff, targetFileName, targetLabel, type FileTarget } from './model'
+import { changedBy, writeOver, type StaleRevision } from '../../util/revisions'
 
 export interface EditDeps {
   client: DaemonClient
@@ -91,7 +92,10 @@ export async function editTarget(deps: EditDeps, target: FileTarget, options: Ed
   }
 
   // Re-fetch: did the agent (or anyone) change it while the editor was open?
+  // The write then goes over the revision this check saw (W3-F): a change
+  // after the check refuses it, and the user is asked again.
   let concurrent: string | null = null
+  let baseRevision: number | 'absent' | undefined = options.create ? 'absent' : undefined
   if (options.create) {
     if (target.kind === 'file') {
       const list = await client.files(agentId).catch(() => null)
@@ -100,6 +104,7 @@ export async function editTarget(deps: EditDeps, target: FileTarget, options: Ed
   } else {
     try {
       const current = await loadTarget(client, agentId, target)
+      baseRevision = current.revision
       if (current.text !== original) {
         const theirs = describeDiff(original, current.text ?? '', 0)
         concurrent = `changed while you were editing (their change: ${theirs.summary})`
@@ -128,7 +133,8 @@ export async function editTarget(deps: EditDeps, target: FileTarget, options: Ed
     actions.toast(`Not written. Your edited copy is kept at ${file}`, 'warn', 12_000)
     return 'discarded'
   }
-  const written = await actions.run(`Write ${label}`, c => writeTarget(c, agentId, target, edited).then(() => true))
+  const written = await writeOverConflicts(actions, label, file, base => actions.run(`Write ${label}`, c => writeOver(() => writeTarget(c, agentId, target, edited, base))), baseRevision)
+  if (written === 'reloaded') return 'discarded'
   if (!written) {
     actions.toast(`Write failed. Your edited copy is kept at ${file}`, 'error', 12_000)
     return 'failed'
@@ -136,4 +142,40 @@ export async function editTarget(deps: EditDeps, target: FileTarget, options: Ed
   await cleanup()
   actions.toast(`${options.create ? 'Created' : 'Saved'} ${label} (${diff.summary})`, 'success')
   return 'written'
+}
+
+/**
+ * W3-F: write over `baseRevision`; when someone else wrote since, ask:
+ * Overwrite (write again over their revision) or Reload theirs (nothing
+ * written; the edited copy stays at `file`). True when written, 'reloaded'
+ * when the user kept theirs, undefined when the write failed otherwise (run
+ * already toasted).
+ */
+export async function writeOverConflicts<B extends number | 'absent' | undefined>(
+  actions: Pick<TuiActions, 'confirm' | 'toast'>,
+  label: string,
+  file: string | null | (() => Promise<string | null>),
+  write: (baseRevision: B | number) => Promise<{ ok: unknown } | { stale: StaleRevision } | undefined>,
+  baseRevision: B,
+): Promise<true | 'reloaded' | undefined> {
+  let base: B | number = baseRevision
+  for (;;) {
+    const result = await write(base)
+    if (!result) return undefined
+    if ('ok' in result) return true
+    const copy = typeof file === 'string' ? ` (your edited copy stays at ${file})` : file ? ' (your edited version is kept in a file)' : ''
+    const overwrite = await actions.confirm({
+      title: `${label} changed while you were editing`,
+      message: `${label} was ${changedBy(result.stale)} after you opened it.\nOverwrite replaces their version with yours. Reload keeps theirs${copy}.`,
+      confirmLabel: 'Overwrite',
+      cancelLabel: 'Reload theirs',
+      danger: true,
+    })
+    if (!overwrite) {
+      const kept = typeof file === 'function' ? await file().catch(() => null) : file
+      actions.toast(`${label} not written: kept their version${kept ? `. Your edited copy is at ${kept}` : ''}`, 'warn', 12_000)
+      return 'reloaded'
+    }
+    base = result.stale.revision
+  }
 }

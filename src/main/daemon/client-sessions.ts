@@ -56,6 +56,7 @@ import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../.
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
+import { configRevision, type ResourceWriter, type RevisionedWorkspace } from '../runtime/resource-revisions'
 import type {
   RuntimeAgentEvent,
   RuntimeAgentFileRenamedEvent,
@@ -195,8 +196,11 @@ export interface ClientInstallProgress {
  * the open file are sent for every agent; the client filters.
  */
 export interface ClientPushPayloads {
-  /** DOC_AGENT_CONFIG_CHANGED. Runtime-originated changes; a session's own PUT /agents/:id/config is not echoed to it (header X-ADF-Client-Session). */
-  config_changed: { filePath: string | null; config: AgentConfig }
+  /**
+   * DOC_AGENT_CONFIG_CHANGED. Runtime-originated changes; a session's own PUT /agents/:id/config is not echoed to it (header X-ADF-Client-Session).
+   * W3-F: `revision` is the config's revision after the change and `writer` who made it (absent on the mesh's persisted defaults).
+   */
+  config_changed: { filePath: string | null; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }
   /**
    * INBOX_UPDATED: mesh delivery, adapter inbound, DELETE /agents/:id/inbox
    * (empty). Sessions not focused on the agent get only the counts (frame
@@ -553,6 +557,11 @@ export class ClientSessionRegistry {
   /** The agent a session follows, or undefined for an unknown session. */
   focusOf(sessionId: string): string | null | undefined {
     return this.sessions.get(sessionId)?.focus
+  }
+
+  /** The client name a session was created with (`studio`, `tui`, …), or undefined for an unknown session. */
+  clientOf(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.client
   }
 
   /** End a session now (DELETE /client/sessions/:id): its documents are released; a pending orphan shutdown is re-checked. */
@@ -1307,7 +1316,14 @@ function attachLoadedAgent(sessions: ClientSessionRegistry, event: RuntimeAgentL
 
   undo.push(watchWorkspaceData(sessions, agent.workspace, target))
   undo.push(subscribeAgentRuntimeSignals(agent.workspace, {
-    onConfigChanged: (config) => sessions.publishPush('config_changed', { filePath: filePath(), config }, target()),
+    onConfigChanged: (config) => {
+      // W3-F: the revision this change took (an API write took it with its
+      // writer; otherwise it was the agent's). A workspace that cannot say
+      // still gets its frame, without them.
+      let revision: { revision: number; writer: ResourceWriter | null } | null = null
+      try { revision = configRevision(agent.workspace as unknown as RevisionedWorkspace) } catch { revision = null }
+      sessions.publishPush('config_changed', { filePath: filePath(), config, ...(revision ? { revision: revision.revision, writer: revision.writer } : {}) }, target())
+    },
   }))
 
   return () => { for (const fn of undo) fn() }
