@@ -8,7 +8,7 @@
 // registry that wrote its records without the id (the first write waits at
 // most 3 s, as before) rewrites them once it is read.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -146,5 +146,81 @@ describe('machine id lookup', () => {
     answer('machine-1')
     expect(await machineId()).toBe('machine-1')
     expect(await fromOtherMachine({ machineId: 'machine-2' })).toBe(true)
+  })
+
+  it('an acquire under way (in a takeover) when the id arrives writes its lease with the id', async () => {
+    let answer!: (id: string) => void
+    const slow = new Promise<string>((resolve) => { answer = resolve })
+    __setMachineIdReaderForTests(() => slow, { waitMs: 30 })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dir = tempDir()
+    const agent = join(dir, 'agent-1.adf')
+    writeFileSync(agent, '')
+    let reg!: AgentLeaseRegistry
+    reg = registry(dir, {
+      // Under the takeover lock, before the lease is replaced: the id arrives
+      // and the host record is rewritten with it while this acquire waits.
+      beforeTakeoverReplace: async () => {
+        answer('machine-1')
+        const deadline = Date.now() + 5_000
+        while (readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId !== 'machine-1' && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 10))
+        }
+      },
+    })
+    await reg.configure({ kind: 'daemon' })
+    // A lease file left half-written by a crash long ago: replaced through a takeover.
+    const leaseFile = join(dir, 'leases', `${(await import('../../src/main/runtime/agent-lease')).leaseKeyForCanonicalPath(realpathSync.native(agent))}.json`)
+    writeFileSync(leaseFile, '{"v":1,')
+    utimesSync(leaseFile, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+    const lease = await reg.acquire(agent)
+    expect(lease.ok).toBe(true)
+    expect(readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId).toBe('machine-1')
+    expect(readJson<AgentLeaseRecord>(leaseFile).holder.machineId).toBe('machine-1')
+  })
+
+  it('the late id never rewrites a lease another runtime took over meanwhile', async () => {
+    let answer!: (id: string) => void
+    const slow = new Promise<string>((resolve) => { answer = resolve })
+    __setMachineIdReaderForTests(() => slow, { waitMs: 30 })
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dir = tempDir()
+    const agent = join(dir, 'agent-1.adf')
+    writeFileSync(agent, '')
+    const reg = registry(dir)
+    const lease = await reg.acquire(agent)
+    const leaseFile = (lease as { leaseFile: string }).leaseFile
+    const taken = readJson<AgentLeaseRecord>(leaseFile)
+    const other: AgentLeaseRecord = { ...taken, holder: { ...taken.holder, runtimeId: 'another-runtime', pid: 4242, machineId: null } }
+    writeFileSync(leaseFile, JSON.stringify(other, null, 2))
+    answer('machine-1')
+    await expect.poll(() => readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId, { timeout: 5_000 }).toBe('machine-1')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(readJson<AgentLeaseRecord>(leaseFile).holder).toEqual(other.holder)
+  })
+
+  it('the late id waits for a taker in its critical section (the lease takeover lock) before it rewrites the lease', async () => {
+    let answer!: (id: string) => void
+    const slow = new Promise<string>((resolve) => { answer = resolve })
+    __setMachineIdReaderForTests(() => slow, { waitMs: 30 })
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const dir = tempDir()
+    const agent = join(dir, 'agent-1.adf')
+    writeFileSync(agent, '')
+    const reg = registry(dir)
+    const lease = await reg.acquire(agent)
+    const leaseFile = (lease as { leaseFile: string }).leaseFile
+    const before = readFileSync(leaseFile, 'utf-8')
+    // A live taker (this process's pid, no endpoint) holds the lock: it has read the lease bytes it judges.
+    const lock = `${leaseFile}.takeover`
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, runtimeId: 'taker', endpoint: null, at: Date.now() }))
+    answer('machine-1')
+    await expect.poll(() => readJson<{ machineId: string | null }>(reg.hostEntryFile).machineId, { timeout: 5_000 }).toBe('machine-1')
+    await new Promise((r) => setTimeout(r, 300))
+    // Not rewritten under the taker: the bytes it judged are still there.
+    expect(readFileSync(leaseFile, 'utf-8')).toBe(before)
+    rmSync(lock)
+    await expect.poll(() => readJson<AgentLeaseRecord>(leaseFile).holder.machineId, { timeout: 5_000 }).toBe('machine-1')
   })
 })

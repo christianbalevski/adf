@@ -956,10 +956,15 @@ export class AgentLeaseRegistry {
     const record: AgentLeaseRecord = { v: 1, path: target.canonical, agentId, holder: this.holder(), acquiredAt: Date.now() }
     const body = JSON.stringify(record, null, 2)
     const deadline = Date.now() + ACQUIRE_BUDGET_MS
-    const won = (): AgentLeaseResult => {
-      this.held.set(target.key, { file: target.file, record, generation: ++this.generation })
+    const won = async (): Promise<AgentLeaseResult> => {
+      const entry: HeldLease = { file: target.file, record, generation: ++this.generation }
+      this.held.set(target.key, entry)
       this.unusable = null
       this.installExitHook()
+      // The machine id arrived while this acquire was under way (stampMachineId
+      // rewrote only the leases held then): this one gets it now.
+      const id = this.machineIdValue
+      if (id && record.holder.machineId !== id) await this.stampLease(entry, id)
       return { ok: true, leaseFile: target.file }
     }
     let lastError: unknown = null
@@ -971,7 +976,7 @@ export class AgentLeaseRegistry {
     while (Date.now() < deadline) {
       try {
         await fsp.writeFile(target.file, body, { flag: 'wx', mode: FILE_MODE })
-        return won()
+        return await won()
       } catch (err) {
         const code = errCode(err)
         if (code !== 'EEXIST') {
@@ -992,7 +997,7 @@ export class AgentLeaseRegistry {
         const age = Date.now() - existing.mtimeMs
         if (age < PARTIAL_WRITE_GRACE_MS) { await delay(Math.min(250, PARTIAL_WRITE_GRACE_MS - age + 10)); continue }
         console.warn(`[AgentLease] ${name}: replacing an unreadable lease file ${target.file}`)
-        if (await this.takeOver(target.file, existing.raw, body)) return won()
+        if (await this.takeOver(target.file, existing.raw, body)) return await won()
         continue
       }
       const holder = existing.record.holder
@@ -1014,7 +1019,7 @@ export class AgentLeaseRegistry {
         }
       }
       console.warn(`[AgentLease] ${name}: replacing a stale lease held by ${describeHolder(holder)} (${liveness.reason})`)
-      if (await this.takeOver(target.file, existing.raw, body)) return won()
+      if (await this.takeOver(target.file, existing.raw, body)) return await won()
     }
     // Contention that never settled (or a lease file that cannot be replaced).
     // Refuse rather than risk running the agent twice; the message says where
@@ -1347,20 +1352,39 @@ export class AgentLeaseRegistry {
     let leases = 0
     for (const [key, entry] of [...this.held]) {
       await this.withKey(key, async () => {
-        if (this.held.get(key) !== entry) return
-        try {
-          const current = await readLease(entry.file)
-          if (!current?.record || current.record.holder.runtimeId !== this.runtimeId) return
-          const record: AgentLeaseRecord = { ...current.record, holder: { ...current.record.holder, machineId: id } }
-          await writeAtomic(entry.file, JSON.stringify(record, null, 2))
-          entry.record = record
-          leases++
-        } catch (err) {
-          console.warn(`[AgentLease] ${agentNameOf(entry.record.path)}: could not add the machine id to its lease:`, err instanceof Error ? err.message : err)
-        }
+        if (this.held.get(key) === entry && await this.stampLease(entry, id)) leases++
       })
     }
     console.log(`[AgentLease] Read this machine's id late; added it to the host record and ${leases} held lease(s)`)
+  }
+
+  /**
+   * Rewrite one held lease with machine id `id`. The caller holds the key's
+   * chain. The read and the write run under the lease's takeover lock, and
+   * only a lease that still names this runtime is rewritten: a taker that
+   * judged it stale and replaced it keeps its own.
+   */
+  private async stampLease(entry: HeldLease, id: string): Promise<boolean> {
+    const lock = `${entry.file}.takeover`
+    try {
+      if (!(await this.lockTakeover(lock))) return false
+    } catch (err) {
+      console.warn(`[AgentLease] ${agentNameOf(entry.record.path)}: could not add the machine id to its lease:`, err instanceof Error ? err.message : err)
+      return false
+    }
+    try {
+      const current = await readLease(entry.file)
+      if (!current?.record || current.record.holder.runtimeId !== this.runtimeId) return false
+      const record: AgentLeaseRecord = { ...current.record, holder: { ...current.record.holder, machineId: id } }
+      await writeAtomic(entry.file, JSON.stringify(record, null, 2))
+      entry.record = record
+      return true
+    } catch (err) {
+      console.warn(`[AgentLease] ${agentNameOf(entry.record.path)}: could not add the machine id to its lease:`, err instanceof Error ? err.message : err)
+      return false
+    } finally {
+      await unlockTakeover(lock)
+    }
   }
 
   private async startEndpoint(): Promise<void> {
