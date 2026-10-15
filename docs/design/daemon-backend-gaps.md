@@ -161,7 +161,6 @@ Known differences left:
 | MESH_MESSAGE_AGENTS to the open, not running agent: embedded repaints its loop panel (`chat_updated`); daemon mode has no such push while Studio reads the interim adapter. | W2-C2 |
 | TOKEN_COUNT defaults to the open agent's model only while it runs in the daemon (its config is read through the session's hold). | W2-C2 |
 | COMPUTE_CONTAINER_PHASE and the inter-agent message: the daemon publishes both topics (W2-B); Studio reads them once W2-C2 replaces the interim adapter. The bridge mapping of `compute_phase` is tested; the parity comparisons are `todo`s, and neither compute fake goes through a phase. | W2-C2 |
-| Embedded bug: during EMERGENCY_STOP the open agent's startup dispatch reports "Cannot dispatch startup while agent lifecycle is disposed" on AGENT_EVENT (allowlist `e3:emergency-stop-startup-dispatch-error`). | E3 candidate (tracker §6) |
 
 Request for W3-A (E1): MESH_FOUND_AGENT's checks and slug are a second copy in `fleet-client-routes.ts`; extract them from `ipc/index.ts` into a shared function both use.
 
