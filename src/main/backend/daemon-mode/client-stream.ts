@@ -245,6 +245,8 @@ export interface DaemonClientSessionOptions {
   version: string
   /** §8.3: the daemon stops when this session expires and no other is open (local mode, keepDaemonRunning off). */
   exitDaemonWhenClosed: boolean
+  /** Local mode: this Studio's pid, so a relaunch after a crash ends the dead Studio's session at once (it is not "another client"). */
+  pid?: number
   log?: Pick<Console, 'log' | 'warn'>
   /** Retry delay while the daemon cannot be reached to open the session. */
   retryMs?: number
@@ -287,7 +289,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
           listener?.onFatal?.(message)
           return null
         }
-        const created = await client.createClientSession({ client: STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed })
+        const created = await client.createClientSession({ client: STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed, ...(options.pid ? { pid: options.pid } : {}) })
         log.log(`[Backend] Client session ${created.sessionId} opened${options.exitDaemonWhenClosed ? ' (the daemon stops when it expires and no other client is open)' : ''}`)
         return created.sessionId
       } catch (err) {

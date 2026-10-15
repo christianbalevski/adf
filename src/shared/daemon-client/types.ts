@@ -615,6 +615,8 @@ export interface ClientSessionInput {
   exitDaemonWhenClosed?: boolean
   /** Also stream the umbilical envelopes GET /events carries (without turn.delta): the terminal app's state model is built on them. */
   umbilical?: boolean
+  /** The client's process id. A local client gives it: after a crash, its relaunch ends the dead process's sessions at once instead of counting them as other clients. */
+  pid?: number
 }
 
 /** POST /client/sessions answer. `epoch` names the session's cursor space (resume with `?since=&epoch=`). */

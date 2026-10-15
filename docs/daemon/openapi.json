@@ -28175,6 +28175,11 @@
           "umbilical": {
             "type": "boolean",
             "description": "Also stream the umbilical envelopes GET /events carries, as `umbilical` frames, without `turn.delta` (the focused agent's tokens arrive as executor frames). The terminal app sets it. Default false."
+          },
+          "pid": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The client's process id, kept only from a caller on this machine (local proof). A new session of the same client ends that client's sessions whose pid is no longer running and whose stream is closed (a relaunch after a crash), without the orphan rule."
           }
         }
       },

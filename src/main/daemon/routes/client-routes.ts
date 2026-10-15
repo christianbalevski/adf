@@ -44,6 +44,7 @@ import {
   type ClientStreamSink,
 } from '../client-sessions'
 import type { DaemonRouteContext } from './index'
+import { localAccessRefusal } from '../local-access'
 import { badRequest, stringParam } from './route-helpers'
 
 /** Request header naming the client session a write comes from. */
@@ -64,7 +65,7 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     done()
   })
 
-  server.post<{ Body: { client?: unknown; version?: unknown; exitDaemonWhenClosed?: unknown; umbilical?: unknown } }>('/client/sessions', async (request, reply) => {
+  server.post<{ Body: { client?: unknown; version?: unknown; exitDaemonWhenClosed?: unknown; umbilical?: unknown; pid?: unknown } }>('/client/sessions', async (request, reply) => {
     const body = request.body ?? {}
     const client = stringParam(body.client)
     const version = stringParam(body.version)
@@ -73,7 +74,11 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
       return badRequest(reply, 'exitDaemonWhenClosed must be a boolean')
     }
     if (body.umbilical !== undefined && typeof body.umbilical !== 'boolean') return badRequest(reply, 'umbilical must be a boolean')
-    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true })))
+    if (body.pid !== undefined && !(typeof body.pid === 'number' && Number.isInteger(body.pid) && body.pid > 0)) return badRequest(reply, 'pid must be a positive integer')
+    // A pid names a process on the daemon's machine: taken from a local caller only (a remote one's pid means nothing here).
+    const local = body.pid !== undefined && !localAccessRefusal({ remoteAddress: request.socket?.remoteAddress, headers: request.headers }, ctx.localAccess)
+    const pid = local ? body.pid as number : undefined
+    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true, ...(pid ? { pid } : {}) })))
   })
 
   server.get<{ Params: SessionParams; Querystring: { since?: string; epoch?: string } }>('/client/sessions/:id/events', async (request, reply) => {

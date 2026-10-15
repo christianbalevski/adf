@@ -339,6 +339,38 @@ describe('client sessions: expiry, documents and the orphan rule', () => {
     expect(log.some(m => m.startsWith('Stopping the daemon:'))).toBe(true)
   })
 
+  it('a Studio relaunched after a crash ends the dead Studio\'s session at once: no orphan hold, no shutdown, not counted as another client', async () => {
+    const shutdown = vi.fn()
+    const log: string[] = []
+    const alive = new Set([2222, 3333])
+    const sessions = registry({ expiryMs: 60_000, startedBy: 'studio', requestShutdown: shutdown, log: (m) => log.push(m), pidAlive: (pid) => alive.has(pid) })
+    const ended = vi.fn()
+    sessions.onSessionEnded(ended)
+    // The crashed Studio (pid 1111): its stream dropped, its expiry is a minute away.
+    const crashed = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true, pid: 1111 })
+    const crashedSink = new FakeSink()
+    sessions.attach(crashed.sessionId, crashedSink)
+    sessions.detach(crashed.sessionId, crashedSink)
+    // A live terminal app and a live second Studio are left alone.
+    const tui = sessions.create({ client: 'tui', version: '1', pid: 1111 })
+    const otherStudio = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true, pid: 3333 })
+    const relaunched = sessions.create({ client: 'studio', version: '1', exitDaemonWhenClosed: true, pid: 2222 })
+    const sink = new FakeSink()
+    sessions.attach(relaunched.sessionId, sink)
+    await tick()
+    expect(sessions.has(crashed.sessionId)).toBe(false)
+    expect(ended).toHaveBeenCalledWith({ sessionId: crashed.sessionId, client: 'studio', reason: 'expired', documents: [] })
+    expect(sessions.has(tui.sessionId)).toBe(true)
+    expect(sessions.has(otherStudio.sessionId)).toBe(true)
+    expect(sink.frames().filter(f => f.kind === 'push' && f.topic === 'daemon_orphan_hold')).toEqual([])
+    expect(shutdown).not.toHaveBeenCalled()
+    expect(log.some(m => m.includes(`Client session ${crashed.sessionId} (studio, pid 1111) ends now`))).toBe(true)
+    // Without a pid (an older client, or one the daemon cannot check) nothing is ended early.
+    const noPid = sessions.create({ client: 'studio', version: '1' })
+    sessions.create({ client: 'studio', version: '1', pid: 4444 })
+    expect(sessions.has(noPid.sessionId)).toBe(true)
+  })
+
   it('orphan rule: not while another session is open, not for a CLI-started daemon, not on DELETE', async () => {
     const shutdown = vi.fn()
     const log: string[] = []

@@ -476,6 +476,8 @@ class ClientSession {
   flushQueued = false
   /** Also carries umbilical frames (ClientUmbilicalFrame). */
   umbilical = false
+  /** The client's process on this machine, when a local client gave it (POST /client/sessions `pid`). */
+  pid: number | null = null
 
   constructor(
     readonly id: string,
@@ -513,6 +515,17 @@ export interface ClientSessionRegistryOptions {
   /** An agent id, handle or name → the loaded agent's id; null when not loaded. */
   resolveAgentId?: (identifier: string) => string | null
   log?: (message: string) => void
+  /** Is a client's pid (on this machine) still running? Default: signal 0 (EPERM counts as running). */
+  pidAlive?: (pid: number) => boolean
+}
+
+function signalZeroAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'EPERM'
+  }
 }
 
 /** A frame for every session, and optionally a reduced one for sessions not focused on its agent. */
@@ -536,6 +549,7 @@ export class ClientSessionRegistry {
   private readonly maxFrameChars: number
   private readonly expiryMs: number
   private readonly log: (message: string) => void
+  private readonly pidAlive: (pid: number) => boolean
   private readonly endedListeners = new Set<(ended: ClientSessionEnded) => void>()
   /** Loaded agents by path key, for producers that only know the path (mesh). */
   private readonly agentsByPath = new Map<string, string>()
@@ -554,18 +568,21 @@ export class ClientSessionRegistry {
     this.maxFrameChars = options.maxFrameChars ?? MAX_FRAME_CHARS
     this.expiryMs = options.expiryMs ?? CLIENT_SESSION_EXPIRY_MS
     this.log = options.log ?? ((message) => console.log(`[ADF Daemon] ${message}`))
+    this.pidAlive = options.pidAlive ?? signalZeroAlive
     this.documentHost = options.documents ?? null
   }
 
   // --- sessions ---------------------------------------------------------------
 
-  create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean }): { sessionId: string; epoch: string } {
+  create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean; pid?: number }): { sessionId: string; epoch: string } {
     if (this.disposed || this.closing) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
     const session = new ClientSession(randomUUID(), input.client, input.version, input.exitDaemonWhenClosed === true, this.ringFrames, this.ringChars)
     session.umbilical = input.umbilical === true
+    session.pid = typeof input.pid === 'number' && Number.isInteger(input.pid) && input.pid > 0 ? input.pid : null
     this.sessions.set(session.id, session)
     this.armExpiry(session)
     this.log(`Client session ${session.id} opened by ${input.client} ${input.version}${session.exitDaemonWhenClosed ? ' (stops the daemon when it expires)' : ''}`)
+    this.endDeadPredecessors(session)
     if (session.exitDaemonWhenClosed && this.orphanPending) {
       // A new owner (Studio came back): its own expiry decides from now on.
       this.log(`The pending daemon shutdown is cleared: ${input.client} opened a session that owns this daemon run`)
@@ -573,6 +590,24 @@ export class ClientSessionRegistry {
       this.publishPush('daemon_orphan_hold', { holding: false, reason: `${input.client} reconnected`, sessions: this.sessions.size })
     }
     return { sessionId: session.id, epoch: session.epoch }
+  }
+
+  /**
+   * A client relaunched after a crash (same client name, on this machine):
+   * the sessions of its earlier process, whose pid is gone and whose stream
+   * is closed, are waiting out their expiry. They end now, as expired but
+   * without the orphan rule: the new session is their successor, so they
+   * neither stop the daemon nor count as "other clients" (a relaunched
+   * Studio was told the daemon keeps running for one other client: itself).
+   */
+  private endDeadPredecessors(successor: ClientSession): void {
+    if (successor.pid === null) return
+    for (const old of [...this.sessions.values()]) {
+      if (old === successor || old.client !== successor.client || old.pid === null || old.pid === successor.pid || old.connection) continue
+      if (this.pidAlive(old.pid)) continue
+      this.log(`Client session ${old.id} (${old.client}, pid ${old.pid}) ends now: its process is gone and ${old.client} opened ${successor.id} (pid ${successor.pid})`)
+      void this.finish(old, 'expired', { replacedBy: successor.id })
+    }
   }
 
   has(sessionId: string): boolean {
@@ -1012,7 +1047,7 @@ export class ClientSessionRegistry {
     session.expiryTimer.unref?.()
   }
 
-  private async finish(session: ClientSession, reason: ClientSessionEndReason): Promise<void> {
+  private async finish(session: ClientSession, reason: ClientSessionEndReason, opts: { replacedBy?: string } = {}): Promise<void> {
     if (this.sessions.get(session.id) !== session) return
     this.sessions.delete(session.id)
     if (session.expiryTimer) clearTimeout(session.expiryTimer)
@@ -1024,9 +1059,9 @@ export class ClientSessionRegistry {
     } else {
       for (const agentId of documents) await this.releaseQuietly(session.id, agentId)
     }
-    this.log(`Client session ${session.id} (${session.client}) ${reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
+    this.log(`Client session ${session.id} (${session.client}) ${opts.replacedBy ? `ended: replaced by ${opts.replacedBy}` : reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
     this.notifyEnded(session, reason, documents)
-    if (reason === 'expired' && session.exitDaemonWhenClosed) this.applyOrphanRule(session)
+    if (reason === 'expired' && session.exitDaemonWhenClosed && !opts.replacedBy) this.applyOrphanRule(session)
     else if (this.orphanPending) this.recheckOrphan(reason !== 'expired', `${session.client} session ${session.id} ${reason}`)
   }
 
