@@ -112,11 +112,11 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const named = ctx.named
     .filter((n): n is { value: string; name: string } => typeof n.value === 'string' && n.value.length > 0)
     .sort((a, b) => b.value.length - a.value.length)
-  // A named value under the run root is named whole, before R1 rewrites its
-  // root: the lease endpoint is `<root>/leases/hosts/<runtimeId>.sock` on
-  // macOS and Linux (a named pipe outside the root on Windows), and is
-  // `<lease-endpoint:ROLE>` on every platform.
-  const rootedNamed = named.filter((n) => ctx.rootSpellings.some((r) => n.value.includes(r.spelling)))
+  // A lease endpoint is named whole, before R1 rewrites its root: it is
+  // `<root>/leases/hosts/<runtimeId>.sock` on macOS and Linux (a named pipe
+  // outside the root on Windows), and `<lease-endpoint:ROLE>` on every
+  // platform. Every other named value keeps R1 first.
+  const rootedNamed = named.filter((n) => n.name.startsWith('lease-endpoint:') && ctx.rootSpellings.some((r) => n.value.includes(r.spelling)))
 
   // Rule R8 — wall-clock instants inside the run window: epoch-ms numbers,
   // 13-digit epoch-ms runs inside strings (`session-1791991172180`),
