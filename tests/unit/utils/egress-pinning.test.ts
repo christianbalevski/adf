@@ -19,7 +19,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
   }) as typeof real.lookup
   return { ...real, lookup, default: { ...real, lookup } }
 })
-import { checkConnectTarget, checkFetchTarget, embeddedIPv4s, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
+import { checkConnectTarget, checkFetchTarget, embeddedIPv4s, envProxyEnabled, envProxyFor, isCloudMetadataIp } from '../../../src/main/utils/ssrf-guard'
 import { SysFetchTool } from '../../../src/main/tools/built-in/sys-fetch.tool'
 import { pinnedFetch } from '../../../src/main/utils/guarded-fetch'
 import { WsConnectionManager, type WsManagerDelegate } from '../../../src/main/services/ws-connection-manager'
@@ -126,6 +126,21 @@ describe('a host name behind an HTTP proxy (NODE_USE_ENV_PROXY)', () => {
     expect(envProxyFor('ws://a.example/', env)).toBeNull()
     expect(envProxyFor('http://a.example/', { ...env, NO_PROXY: '*' })).toBeNull()
     expect(envProxyFor('http://a.example/', { ...env, NODE_USE_ENV_PROXY: '0' })).toBeNull()
+  })
+
+  it('only what Node honours turns the proxy on: NODE_USE_ENV_PROXY=1 or --use-env-proxy', async () => {
+    const base = { HTTP_PROXY: 'http://proxy:3128' }
+    for (const value of ['true', 'yes', 'on', ' 1']) {
+      expect(envProxyEnabled({ ...base, NODE_USE_ENV_PROXY: value }, []), value).toBe(false)
+      expect(envProxyFor('http://a.example/', { ...base, NODE_USE_ENV_PROXY: value }, []), value).toBeNull()
+    }
+    expect(envProxyEnabled({ NODE_USE_ENV_PROXY: '1' }, [])).toBe(true)
+    expect(envProxyEnabled({}, ['--use-env-proxy'])).toBe(true)
+    expect(envProxyEnabled({ NODE_OPTIONS: '--max-old-space-size=4096 --use-env-proxy' }, [])).toBe(true)
+    expect(envProxyEnabled({ NODE_OPTIONS: '--use-env-proxy-not' }, [])).toBe(false)
+    // `true` is not honoured by Node's fetch, which then connects directly: the guard looks the name up itself.
+    proxyEnv({ NODE_USE_ENV_PROXY: 'true', HTTPS_PROXY: 'http://127.0.0.1:9' })
+    expect(await checkFetchTarget('https://no-such-host.invalid/')).toMatch(/could not be looked up/)
   })
 })
 

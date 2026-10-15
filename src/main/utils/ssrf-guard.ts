@@ -303,17 +303,28 @@ export function isOwnInterfaceIp(ip: string, now = Date.now()): boolean {
 }
 
 /**
- * The proxy Node's fetch sends `target` through when `NODE_USE_ENV_PROXY` is
- * on, else null: `HTTPS_PROXY` (falling back to `HTTP_PROXY`) for https,
+ * Node routes fetch through the env proxy only when `NODE_USE_ENV_PROXY` is
+ * exactly `1` or `--use-env-proxy` is given (on the command line or in
+ * NODE_OPTIONS). Any other value (`true`, `yes`) is not honoured: Node then
+ * connects directly, so the guard must check and pin as usual.
+ */
+export function envProxyEnabled(env: NodeJS.ProcessEnv = process.env, execArgv: readonly string[] = process.execArgv): boolean {
+  if (env.NODE_USE_ENV_PROXY === '1') return true
+  if (execArgv.includes('--use-env-proxy')) return true
+  return (env.NODE_OPTIONS ?? '').split(/\s+/).includes('--use-env-proxy')
+}
+
+/**
+ * The proxy Node's fetch sends `target` through when the env proxy is on
+ * (envProxyEnabled), else null: `HTTPS_PROXY` (falling back to `HTTP_PROXY`) for https,
  * `HTTP_PROXY` for http, none for a host `NO_PROXY` names. NO_PROXY is read
  * as undici's EnvHttpProxyAgent reads it: `*` exempts every host; an entry
  * names an exact host, or a domain and its subdomains with a leading `.` or
  * `*.`; `host:port` limits it to that port. Other schemes (ws, wss) never go
  * through it.
  */
-export function envProxyFor(target: URL | string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const flag = (env.NODE_USE_ENV_PROXY ?? '').trim().toLowerCase()
-  if (!flag || flag === '0' || flag === 'false') return null
+export function envProxyFor(target: URL | string, env: NodeJS.ProcessEnv = process.env, execArgv: readonly string[] = process.execArgv): string | null {
+  if (!envProxyEnabled(env, execArgv)) return null
   let url: URL
   try { url = typeof target === 'string' ? new URL(target) : target } catch { return null }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
