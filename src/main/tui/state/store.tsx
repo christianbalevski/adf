@@ -13,7 +13,7 @@ import { createContext, useContext, useRef, useSyncExternalStore, type ReactNode
  * not use (it reads umbilical frames), so a version-1 daemon still gets a
  * session. Studio stays strict (client-stream.ts).
  */
-export const TUI_MIN_CLIENT_API_VERSION = 1
+export const TUI_MIN_CLIENT_API_VERSION: number = 1
 import type { DaemonClient } from '../api/client'
 import type { ConnectionInfo, EventStream, ResumeInfo, StreamGap } from '../api/sse'
 import {
@@ -1086,7 +1086,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       const info = await c.version()
       const version = info.clientApiVersion
       if (typeof version !== 'number' || version < TUI_MIN_CLIENT_API_VERSION || version > SUPPORTED_CLIENT_API_VERSION) {
-        noticeFallback(`the daemon speaks client API ${version}, this app ${TUI_MIN_CLIENT_API_VERSION === SUPPORTED_CLIENT_API_VERSION ? SUPPORTED_CLIENT_API_VERSION : `${TUI_MIN_CLIENT_API_VERSION}-${SUPPORTED_CLIENT_API_VERSION}`}`)
+        noticeFallback(`the daemon speaks client API ${version}, this app ${TUI_MIN_CLIENT_API_VERSION}-${SUPPORTED_CLIENT_API_VERSION}`)
         return null
       }
     } catch (err) {
