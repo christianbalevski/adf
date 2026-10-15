@@ -28,8 +28,8 @@ import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { withSource } from '../../runtime/execution-context'
-import { fileRevisionKey, observeRevision, runAsWriter } from '../../runtime/resource-revisions'
-import { requestWriter } from './client-routes'
+import { currentResourceWriter, existsAlready, fileRevision, fileRevisionKey, observeRevision, parseBaseRevision, staleRevision, staleRevisionMessage } from '../../runtime/resource-revisions'
+import { runAsRequestWrite } from './client-routes'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
 import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
@@ -289,11 +289,22 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       .send(bytes)
   })
 
-  server.put<{ Params: { id: string }; Querystring: { path?: string; mimeType?: string; unique?: string } }>('/agents/:id/files/raw', async (request, reply) => {
+  server.put<{ Params: { id: string }; Querystring: { path?: string; mimeType?: string; unique?: string; baseRevision?: string; mustNotExist?: string } }>('/agents/:id/files/raw', async (request, reply) => {
     const path = request.query.path
     if (!validInternalPath(path)) return badRequest(reply, 'path is required')
     const unique = parseBool(request.query.unique)
     if (unique === null) return badRequest(reply, 'unique must be true or false')
+    // W3-F, as PUT …/files/content: the base revision as If-Match or
+    // ?baseRevision (the body is the bytes), a create as If-None-Match: * or
+    // ?mustNotExist=true. A unique write never replaces a file: neither applies.
+    const ifMatch = request.headers['if-match']
+    const baseRevision = parseBaseRevision(Array.isArray(ifMatch) ? ifMatch[0] : ifMatch) ?? parseBaseRevision(request.query.baseRevision)
+    if (baseRevision === null) return badRequest(reply, 'baseRevision (or If-Match) must be a revision number from a read of this resource')
+    const noneMatch = request.headers['if-none-match']
+    const mustNotExistQuery = parseBool(request.query.mustNotExist)
+    if (mustNotExistQuery === null) return badRequest(reply, 'mustNotExist must be true or false')
+    const mustNotExist = mustNotExistQuery || (Array.isArray(noneMatch) ? noneMatch[0] : noneMatch)?.trim() === '*'
+    if (unique && (baseRevision !== undefined || mustNotExist)) return badRequest(reply, 'unique writes never replace a file: send no baseRevision, If-Match, If-None-Match or mustNotExist with unique=true')
     const agent = agentFiles(request.params.id)
     if (!agent) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!isOctetStream(request)) return unsupported(reply)
@@ -302,23 +313,35 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     try {
       const bytes = await readCapped(request.body, rawLimit)
       const mimeType = request.query.mimeType || AdfWorkspace.mimeTypeForPath(path)
-      // W3-F: the write runs after the body was read (an await), past the
-      // preHandler's writer: it names its writer itself.
-      const writer = requestWriter(request)
+      // The write runs after the body was read (an await), past the
+      // preHandler's window: it names its writer (W3-F) and its client
+      // session itself, so the file_updated it raises skips the uploader's
+      // own session (D5.1 origin dedup). The revision check and the write
+      // run together, with no await between them.
       let saved = path
       let revision: number | undefined
       if (agent.workspace) {
         const ws = agent.workspace
-        saved = runAsWriter(writer, () => withSource('system:runtime-api', agent.ref.id, () => {
-          if (unique) return ws.writeFileBufferUnique(path, bytes, mimeType)
-          ws.writeFileBuffer(path, bytes, mimeType)
-          return path
-        }))
-        // The bytes in hand are what `saved` holds (a unique write reuses only identical bytes): no re-read.
-        revision = observeRevision(ws, fileRevisionKey(saved), bytes, writer).revision
+        const result = runAsRequestWrite(request, () => {
+          if (!unique) {
+            const current = fileRevision(ws, path)
+            const size = ws.getFileMeta(path)?.size ?? null
+            const refused = (mustNotExist ? existsAlready(path, current, size) : null) ?? staleRevision(path, current, baseRevision, size)
+            if (refused) throw new RuntimeLoopError(staleRevisionMessage(refused), 409, 'stale_revision', { ...refused })
+          }
+          const at = withSource('system:runtime-api', agent.ref.id, () => {
+            if (unique) return ws.writeFileBufferUnique(path, bytes, mimeType)
+            ws.writeFileBuffer(path, bytes, mimeType)
+            return path
+          })
+          // The bytes in hand are what `at` holds (a unique write reuses only identical bytes): no re-read.
+          return { at, revision: observeRevision(ws, fileRevisionKey(at), bytes, currentResourceWriter()).revision }
+        })
+        saved = result.at
+        revision = result.revision
       } else {
         if (unique) return reply.code(409).send({ error: 'unique naming needs a file-backed agent', code: 'not_file_backed' })
-        revision = runAsWriter(writer, () => runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType })).revision
+        revision = runAsRequestWrite(request, () => runtime.writeAgentFile(agent.ref.id, path, { contentBase64: bytes.toString('base64'), mimeType, baseRevision, mustNotExist })).revision
       }
       return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length, ...(revision !== undefined ? { revision } : {}) }
     } catch (err) {

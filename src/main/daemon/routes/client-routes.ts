@@ -289,6 +289,20 @@ export function requestWriter(request: { server: FastifyInstance; headers: Recor
   return writerOf(sessions, liveSession(sessions, request.headers))
 }
 
+/**
+ * Run a route's write that happens after an await (past the preHandler's
+ * window) as its request's: the writer for revisions (W3-F), and the origin
+ * session, so the change frames the write raises synchronously
+ * (`file_updated`, `config_changed`) skip the session that made it (D5.1
+ * origin dedup), as for a write in the handler's synchronous part.
+ */
+export function runAsRequestWrite<T>(request: { server: FastifyInstance; headers: Record<string, string | string[] | undefined> }, fn: () => T): T {
+  const sessions = (request.server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
+  if (!sessions) return runAsWriter({ kind: 'cli' }, fn)
+  const origin = liveSession(sessions, request.headers)
+  return runAsWriter(writerOf(sessions, origin), () => (origin ? runAsClientWrite(origin, fn) : fn()))
+}
+
 /** The live client session a request names, or null. */
 function liveSession(sessions: ClientSessionRegistry, headers: Record<string, string | string[] | undefined>): string | null {
   const sessionId = clientSessionOf(headers)

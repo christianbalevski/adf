@@ -13056,7 +13056,7 @@
           "Files"
         ],
         "summary": "Upload an internal file's bytes",
-        "description": "The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type.",
+        "description": "The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type. W3-F, as PUT /agents/{id}/files/content: a base revision (`If-Match` or `baseRevision`) that is not current, or a create (`If-None-Match: *` or `mustNotExist=true`) of a file that exists, answers 409 `stale_revision` and writes nothing; neither is taken with `unique=true`. The `file_updated` the write raises is not sent to the session named by X-ADF-Client-Session.",
         "operationId": "putAgentFileRaw",
         "parameters": [
           {
@@ -13077,6 +13077,28 @@
             "name": "unique",
             "in": "query",
             "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/BaseRevisionQuery"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatchHeader"
+          },
+          {
+            "$ref": "#/components/parameters/IfNoneMatchHeader"
+          },
+          {
+            "name": "mustNotExist",
+            "in": "query",
+            "required": false,
+            "description": "W3-F: create only, as If-None-Match: *: refused (409 stale_revision) when the file exists",
             "schema": {
               "type": "string",
               "enum": [

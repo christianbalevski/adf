@@ -226,6 +226,50 @@ describe('writers of writes that run after an await', () => {
     await waitFor(() => changes(studio).some(c => c.what === 'file:data.txt'), 5000, 'raw frame')
     expect(changes(studio).find(c => c.what === 'file:data.txt')?.writer).toEqual({ kind: 'client', client: 'tui' })
   })
+
+  it('PUT files/raw takes a base revision and a create as files/content does, and its file_updated skips the uploading session', async () => {
+    const { client, server, one } = await daemon()
+    const tui = await reader(client, 'tui', one.agentId)
+    const studio = await reader(client, 'studio', one.agentId)
+    const a = `/agents/${one.agentId}`
+    const raw = (query: string, body: string, headers: Record<string, string> = {}) => server.inject({
+      method: 'PUT',
+      url: `${a}/files/raw?path=data.txt${query}`,
+      headers: { 'content-type': 'application/octet-stream', 'x-adf-client-session': tui.sessionId, ...headers },
+      payload: Buffer.from(body),
+    })
+
+    // A create: written while absent, refused once the file exists.
+    const created = await raw('&mustNotExist=true', 'first')
+    expect(created.statusCode).toBe(200)
+    const first = (created.json() as { revision: number }).revision
+    const again = await raw('', 'second', { 'if-none-match': '*' })
+    expect(again.statusCode).toBe(409)
+    expect(again.json()).toMatchObject({ code: 'stale_revision', resource: 'data.txt', revision: first, writer: { kind: 'client', client: 'tui' } })
+
+    // A current base (If-Match, or ?baseRevision) writes and answers the next revision.
+    const current = await raw('', 'second', { 'if-match': String(first) })
+    expect(current.statusCode).toBe(200)
+    const second = (current.json() as { revision: number }).revision
+    expect(second).toBeGreaterThan(first)
+
+    // A stale base is refused and writes nothing.
+    const stale = await raw(`&baseRevision=${first}`, 'third')
+    expect(stale.statusCode).toBe(409)
+    expect(stale.json()).toMatchObject({ code: 'stale_revision', resource: 'data.txt', revision: second, baseRevision: first })
+    const now = await client.request<{ content: string; revision: number }>('GET', `${a}/files/content`, { query: { path: 'data.txt' } })
+    expect(now).toMatchObject({ content: 'second', revision: second })
+    expect((await raw('&baseRevision=x', 'nope')).statusCode).toBe(400)
+    expect((await raw('&unique=true&mustNotExist=true', 'nope')).statusCode).toBe(400)
+
+    // Every write reached the other session; none came back to the uploader.
+    await waitFor(() => changes(studio).filter(c => c.what === 'file:data.txt').length >= 2, 5000, 'frames on the other session')
+    expect(changes(studio).filter(c => c.what === 'file:data.txt').map(c => c.revision)).toEqual([first, second])
+    // A later write of another client (no session) reaches the uploader, so its stream is live: the echo was skipped, not late.
+    await client.request('PUT', `${a}/files/content`, { query: { path: 'other.txt' }, body: { content: 'from the cli' } })
+    await waitFor(() => changes(tui).some(c => c.what === 'file:other.txt'), 5000, 'cli frame on the uploader')
+    expect(changes(tui).filter(c => c.what === 'file:data.txt')).toEqual([])
+  })
 })
 
 describe('two clients, one document', () => {
