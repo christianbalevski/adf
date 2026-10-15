@@ -245,7 +245,7 @@
           "Daemon"
         ],
         "summary": "Identify this daemon run",
-        "description": "What a client needs before it attaches to a running daemon: the build version, the internal client API version (`clientApiVersion`; a client refuses to attach on a different number), the settings file and data directory it runs on, the mesh `runtimeId`, its pid, and who launched it (`startedBy`: `studio` when ADF Studio spawned it, `cli` for `adf daemon` / `adf daemon start`, `service` for a service manager). ADF Studio stops only a daemon that reports `startedBy: studio`. `startedBy` comes from `ADF_DAEMON_STARTED_BY` at launch; unset means `cli`.",
+        "description": "What a client needs before it attaches to a running daemon: the build version, the internal client API version (`clientApiVersion`; ADF Studio refuses to attach on a different number, the terminal app on one outside the range it reads), the settings file and data directory it runs on, the mesh `runtimeId`, its pid, and who launched it (`startedBy`: `studio` when ADF Studio spawned it, `cli` for `adf daemon` / `adf daemon start`, `service` for a service manager). ADF Studio stops only a daemon that reports `startedBy: studio`. `startedBy` comes from `ADF_DAEMON_STARTED_BY` at launch; unset means `cli`.",
         "operationId": "getVersion",
         "responses": {
           "200": {
@@ -18813,7 +18813,7 @@
           },
           "clientApiVersion": {
             "type": "integer",
-            "description": "Version of the internal client API (`/client/*`)"
+            "description": "Version of the internal client API (`/client/*` and its frames). 2 since executor frames carry turn ids and the `turn` frame exists. ADF Studio needs exactly its own number; the terminal app reads 1 and 2."
           },
           "settingsPath": {
             "type": [
@@ -18872,7 +18872,7 @@
         },
         "example": {
           "version": "0.7.8",
-          "clientApiVersion": 1,
+          "clientApiVersion": 2,
           "settingsPath": "/Users/me/Library/Application Support/ADF Studio/adf-settings.json",
           "dataDir": "/Users/me/Library/Application Support/ADF Studio",
           "runtimeId": "V1StGXR8_Z5jdHi6B-myT",
