@@ -149,7 +149,7 @@ export interface DaemonModeDeps {
   waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Tests: whether the daemon's pid is alive (local mode exit detection). Default: process liveness. */
   processAlive?: (pid: number) => boolean
-  /** Tests: the pause before Studio starts a daemon it started again (default DAEMON_RESPAWN_DELAY_MS). */
+  /** Tests: the pause after the daemon exited before Studio starts it again, or shows the exit (default DAEMON_RESPAWN_DELAY_MS). */
   respawnDelayMs?: number
   /**
    * Electron's powerMonitor (main/index.ts passes it): on `resume` the
@@ -674,6 +674,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log.warn(`[Backend] ${daemonExitSentence({ pid, cause: cause?.text ?? null })}${cause ? '' : ' Its log has no shutdown line: it was killed or crashed.'} Started by ${startedBy ?? 'unknown'}; ${agentsAtExit.length} agent(s) were running.${auto ? ' Studio starts it again.' : ''}`)
     // The turns its agents ran cannot end any more.
     bridge.failTurns('disconnected')
+    if (!auto) {
+      // A daemon replaced from the terminal (`adf daemon restart`) answers again within moments: no dialog then.
+      await sleep(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
+      if (shutdownPromise || connection.state.state !== 'disconnected') {
+        log.log(`[Backend] Another ADF daemon answered after pid ${pid} exited`)
+        return
+      }
+    }
     connection.markExited({ pid, cause: cause?.text ?? null, startedBy, respawning: auto, ...(detail ? { detail } : {}) })
     if (!auto) return
     lastAutoRespawnAt = Date.now()
