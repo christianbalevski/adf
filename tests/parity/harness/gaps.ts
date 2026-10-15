@@ -335,11 +335,11 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
-    id: 'w5a:restore-delegation-date',
-    ws: 'W5-A',
+    id: 'mode:restore-keeps-delegation',
+    ws: 'mode',
     scenarios: ['owner-import'],
     path: 'runtimeDelegation: IDENTITY_OWNER_STATUS results after the restore, and adf-settings.json',
-    what: 'Visible: after restoring the same owner, embedded Studio re-signs its runtime delegation, so Settings → Identity shows a new signing date and signature; the daemon keeps the delegation it adopted from Studio (§5.3: only Studio writes its runtime identity), still valid, with the old date. W5-A decides: the daemon re-signs, or Studio rewrites the studio-runtime entry after a restore (W4-A).',
+    what: 'Visible: after restoring the same owner, embedded Studio re-signs its runtime delegation, so Settings → Identity shows a new signing date and signature; the daemon keeps the delegation it adopted from Studio (§5.3: only Studio writes its runtime identity), still valid, with the old date. Accepted (W5-A2): the same owner restored leaves the runtime key and its delegation unchanged and valid; only the signing date shown differs.',
     apply(d, e) {
       let n = 0
       const ORIGINAL = '<sig:runtime-delegation>'
@@ -484,24 +484,6 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
           }
         }
       })
-      return n
-    },
-  },
-  {
-    id: 'w0c:daemon-lease-agent-id',
-    ws: 'W0-C',
-    scenarios: ['chat-tool-call', ...W3B_RUNNING, 'fleet-map', ...AGENT_OAUTH],
-    path: 'state.leases: the agent lease\'s agentId',
-    what: 'Bug: the daemon\'s agent lease records agentId null.',
-    apply(d, e) {
-      let n = 0
-      for (const [file, rec] of Object.entries(d.state.leases)) {
-        const base = e.state.leases[file] as Record<string, unknown> | undefined
-        const r = rec as Record<string, unknown>
-        if (!base || !('holder' in r) || r.agentId !== null || base.agentId === null) continue
-        r.agentId = base.agentId
-        n++
-      }
       return n
     },
   },
