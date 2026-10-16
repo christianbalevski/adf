@@ -16,6 +16,7 @@ import {
   experienceValueText,
   factorGroup,
   foldFactors,
+  formatBytes,
   formatWake,
   levelBarParts,
   overviewFacts,
@@ -360,5 +361,15 @@ describe('skills bookshelf', () => {
     const many = Array.from({ length: 300 }, (_, i) => ({ name: `s${i}`, tokens: 1000, files: 1 }))
     expect(shelfSpines(many)).toHaveLength(300)
     expect(shelfSpines(undefined)).toEqual([])
+  })
+})
+
+describe('formatBytes', () => {
+  it('scales by 1024 with one decimal under 10', () => {
+    expect(formatBytes(820)).toBe('820 B')
+    expect(formatBytes(1536)).toBe('1.5 KB')
+    expect(formatBytes(4.2 * 1024 ** 2)).toBe('4.2 MB')
+    expect(formatBytes(12.4 * 1024 ** 2)).toBe('12 MB')
+    expect(formatBytes(1.3 * 1024 ** 3)).toBe('1.3 GB')
   })
 })

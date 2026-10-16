@@ -86,6 +86,31 @@ describe('stopped tracked agents', () => {
     expect(names()).not.toContain('agent-5')
   })
 
+  it('keeps a row the owner picks while a started agent is still being read', async () => {
+    // Hold agent-3's status read: the load is past its toast and the agents
+    // list already maps the selection to agent-3, but has not returned yet.
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    class SlowClient extends DaemonClient {
+      override async status(agentId: string) {
+        if (agentId === 'mock-agent-3') await held
+        return super.status(agentId)
+      }
+    }
+    store = createTuiStore({ client: new SlowClient({ baseUrl: mock.url }) })
+    ui = renderTui(<App store={store} theme={createTheme({ mono: true })} views={[fleet, chat, files]} builtins={[]} />, { columns: 120, rows: 34 })
+    await store.start()
+    await ui.waitFor(f => f.includes('agent-1') && f.includes('agent-3'))
+
+    store.actions.selectAgent(trackedKey(`${LAB}/agent-3.adf`))
+    const loading = store.actions.startTracked(trackedKey(`${LAB}/agent-3.adf`))
+    await ui.waitFor(() => store.getState().selectedAgentId === 'mock-agent-3')
+    store.actions.selectAgent(trackedKey(`${LAB}/agent-5.adf`))
+    release()
+    await loading
+    expect(store.getState().selectedAgentId).toBe(trackedKey(`${LAB}/agent-5.adf`))
+  })
+
   it('s on an agent that needs review opens its review; y accepts, loads and starts it', async () => {
     const tui = await mount()
     store.actions.selectAgent(trackedKey(`${LAB}/agent-4.adf`))

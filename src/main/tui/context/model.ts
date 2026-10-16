@@ -7,7 +7,7 @@ import type { AgentConfig, AgentContextResult, ContextCategory } from '../api/ty
 import { cjs } from '../interop'
 import * as contextNs from '../../../shared/utils/context-breakdown'
 
-const { resolveLoopThreshold } = cjs(contextNs)
+const { resolveLoopThreshold, calibrationNote } = cjs(contextNs)
 
 /** Overlay kind (registered by the shell's overlay host). */
 export const CONTEXT_OVERLAY = 'context'
@@ -51,6 +51,11 @@ const SOURCE_TEXT: Record<AgentContextResult['compactThresholdSource'], string> 
 /** "auto-compacts at 100k (the agent’s context setting)". */
 export function thresholdText(r: Pick<AgentContextResult, 'compactThreshold' | 'compactThresholdSource'>, fmt: (n: number) => string): string {
   return `auto-compacts at ${fmt(r.compactThreshold)} (${SOURCE_TEXT[r.compactThresholdSource]})`
+}
+
+/** Footer line on how the figures were measured. */
+export function calibrationText(cal: NonNullable<AgentContextResult['breakdown']>['calibration'], approx: string, fmt: (n: number) => string): string {
+  return calibrationNote(cal, fmt, approx)
 }
 
 /** One row of the category table: a category, or one of an expanded category's items. */

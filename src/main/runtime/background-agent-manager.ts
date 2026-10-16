@@ -676,9 +676,16 @@ export class BackgroundAgentManager extends EventEmitter {
 
     this.emitEvent({
       type: 'agent_started',
-      payload: { filePath, state: managed.state, handle: config.handle || deriveHandle(filePath) },
+      payload: { filePath, state: managed.state, handle: config.handle || deriveHandle(filePath), loopStates: Object.fromEntries(managed.loopStates) },
       timestamp: Date.now()
     })
+    if (managed.activeLoops > 0) {
+      this.emitEvent({
+        type: 'agent_loops_changed',
+        payload: { filePath, activeLoops: managed.activeLoops },
+        timestamp: Date.now()
+      })
+    }
 
     console.log(`[BackgroundAgent] Transitioned ${basename(filePath, '.adf')} to background (state: ${managed.state})`)
   }
@@ -1009,6 +1016,10 @@ export class BackgroundAgentManager extends EventEmitter {
       throw new Error(`Runtime teardown in progress — cannot adopt agent for ${filePath}`)
     }
     assembledAgent.setWorkspaceOwnership(true)
+    // Seed the inner loops' states: an adopted agent can be mid-turn in any
+    // of them, and a loop that then goes idle must read as a transition, not
+    // as an unchanged count.
+    const loopStates = new Map(Object.entries(assembledAgent.loopPool?.sideLoopStates() ?? {}))
     const managed: BackgroundManagedAgent = {
       assembledAgent,
       hostAttachment: null,
@@ -1019,8 +1030,8 @@ export class BackgroundAgentManager extends EventEmitter {
       triggerEvaluator: assembledAgent.triggerEvaluator,
       config,
       state: toDisplayState(assembledAgent.executor.getState()),
-      loopStates: new Map(),
-      activeLoops: 0,
+      loopStates,
+      activeLoops: countActiveLoops(loopStates),
       toolRegistry: assembledAgent.registry,
       accumulatedText: '',
       mcpManager: assembledAgent.mcpManager,

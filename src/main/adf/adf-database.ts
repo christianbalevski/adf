@@ -515,6 +515,7 @@ export class AdfDatabase {
     clearLoop?: Database.Statement
     getLoopCount?: Database.Statement
     getLastAssistantTokens?: Database.Statement
+    getAssistantTokenRows?: Database.Statement
     getInboxMessages?: Database.Statement
     getInboxByStatus?: Database.Statement
     getInboxMessageById?: Database.Statement
@@ -3239,6 +3240,9 @@ export class AdfDatabase {
     this.stmts.getLastAssistantTokens = this.db.prepare(
       'SELECT tokens FROM adf_loop WHERE loop = ? AND role = \'assistant\' AND tokens IS NOT NULL ORDER BY COALESCE(ord, seq) DESC, seq DESC LIMIT 1'
     )
+    this.stmts.getAssistantTokenRows = this.db.prepare(
+      'SELECT seq, tokens FROM adf_loop WHERE loop = ? AND role = \'assistant\' AND tokens IS NOT NULL ORDER BY COALESCE(ord, seq), seq'
+    )
 
     // Inbox
     this.stmts.getInboxMessages = this.db.prepare(
@@ -3973,6 +3977,17 @@ export class AdfDatabase {
   getLastAssistantTokens(loop: string): LoopTokenUsage | undefined {
     const row = this.stmts.getLastAssistantTokens!.get(loop) as { tokens: string } | undefined
     return AdfDatabase.parseLoopTokens(row?.tokens)
+  }
+
+  /** Every assistant row's usage record, in loop order (oldest first). */
+  getAssistantTokenRows(loop: string): Array<{ seq: number; tokens: LoopTokenUsage }> {
+    const rows = this.stmts.getAssistantTokenRows!.all(loop) as Array<{ seq: number; tokens: string }>
+    const out: Array<{ seq: number; tokens: LoopTokenUsage }> = []
+    for (const row of rows) {
+      const tokens = AdfDatabase.parseLoopTokens(row.tokens)
+      if (tokens) out.push({ seq: row.seq, tokens })
+    }
+    return out
   }
 
   /** Loop rows in display order: each row's seq plus its ordering key

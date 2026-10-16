@@ -65,6 +65,7 @@ export function loopTokensFromLlmMetadata(metadata: LlmCallMetadata): LoopTokenU
     ...(metadata.cache_write_tokens !== undefined ? { cache_write: metadata.cache_write_tokens } : {}),
     ...(metadata.reasoning_tokens !== undefined ? { reasoning: metadata.reasoning_tokens } : {}),
     ...(metadata.cost_usd !== undefined ? { cost_usd: metadata.cost_usd } : {}),
+    ...(metadata.usage_estimated ? { estimated: true } : {}),
   }
 }
 

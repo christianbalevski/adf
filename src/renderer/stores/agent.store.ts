@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { nanoid } from 'nanoid'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
 
@@ -12,7 +11,6 @@ export interface ConfigConflictState {
   /** The agent file the edit belongs to. */
   owner: string | null
 }
-import type { ContentBlock } from '../../shared/types/provider.types'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 
 /** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
@@ -48,13 +46,6 @@ export interface AgentLogEntry {
 /** The implicit host loop. Every stream field without an explicit loop is this one. */
 export const MAIN_LOOP = 'main'
 
-export interface QueuedMessage {
-  id: string
-  text: string
-  content?: ContentBlock[]
-  imagePreviewUrls?: string[]
-}
-
 /**
  * Everything that belongs to ONE loop's stream.
  *
@@ -88,8 +79,6 @@ export interface LoopSlice {
   pendingAsks: Map<string, { requestId: string; question: string }>
   /** Pending suspend request (logEntryId if shown in loop) */
   pendingSuspend: string | null
-  /** Client-side message queue for autonomous mode */
-  messageQueue: QueuedMessage[]
   /**
    * Last REAL (post-call) usage for THIS loop. Every loop runs its own executor
    * against its own context window, so "how full am I" is a per-loop number —
@@ -114,7 +103,6 @@ function emptySlice(): LoopSlice {
     pendingApprovals: new Map(),
     pendingAsks: new Map(),
     pendingSuspend: null,
-    messageQueue: [],
     tokenUsage: { input: 0, output: 0 },
     tokenEstimate: null
   }
@@ -216,9 +204,6 @@ interface AgentStoreState extends LoopSlice {
   addPendingAsk: (logEntryId: string, requestId: string, question: string, loop?: string) => void
   removePendingAsk: (logEntryId: string, loop?: string) => void
   setPendingSuspend: (logEntryId: string | null, loop?: string) => void
-  addToQueue: (text: string, content?: ContentBlock[], imagePreviewUrls?: string[], loop?: string) => void
-  removeFromQueue: (id: string, loop?: string) => void
-  clearQueue: (loop?: string) => void
   reset: () => void
 }
 
@@ -279,7 +264,6 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     pendingApprovals: new Map(),
     pendingAsks: new Map(),
     pendingSuspend: null,
-    messageQueue: [],
 
     setState: (state, loop) => patchSlice(loop, () => ({ state })),
     setStarting: (starting) => set({ starting }),
@@ -390,13 +374,6 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       return { pendingAsks: next }
     }),
     setPendingSuspend: (logEntryId, loop) => patchSlice(loop, () => ({ pendingSuspend: logEntryId })),
-    addToQueue: (text, content, imagePreviewUrls, loop) => patchSlice(loop, (s) => ({
-      messageQueue: [...s.messageQueue, { id: nanoid(), text, content, imagePreviewUrls }]
-    })),
-    removeFromQueue: (id, loop) => patchSlice(loop, (s) => ({
-      messageQueue: s.messageQueue.filter((m) => m.id !== id)
-    })),
-    clearQueue: (loop) => patchSlice(loop, () => ({ messageQueue: [] })),
     reset: () =>
       set({
         ...emptySlice(),

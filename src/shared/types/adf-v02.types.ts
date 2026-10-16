@@ -1136,6 +1136,8 @@ export interface LoopTokenUsage {
   reasoning?: number
   /** USD cost of the call that produced this entry (provider-exact or table estimate). */
   cost_usd?: number
+  /** The provider reported no usage: the figures are a client-side char estimate. */
+  estimated?: boolean
 }
 
 /**

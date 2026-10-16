@@ -3781,6 +3781,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           success: true,
           sessionId: capturedSession.getSessionId(),
           agentState: displayState,
+          // Side loops keep running across a switch; the view starts from their real states.
+          loopStates: handle.loopPool.sideLoopStates(),
           pendingApprovals: handle.executor.getPendingApprovals(),
           pendingAsks: handle.executor.getPendingAsks(),
         }

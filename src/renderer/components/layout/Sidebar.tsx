@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { useMessageQueueStore } from '../../stores/message-queue.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useTrackedDirs, useAutoRefresh } from '../../hooks/useTrackedDirs'
@@ -1807,6 +1808,8 @@ function DeleteAgentDialog({
     try {
       const result = await window.adfApi.deleteFile(target.file.filePath)
       if (result.success) {
+        // An agent created later at this path must not inherit its queue.
+        useMessageQueueStore.getState().clearAgent(target.file.filePath)
         onDeleted(target)
         return
       }

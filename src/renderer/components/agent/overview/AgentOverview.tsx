@@ -46,7 +46,8 @@
  * bookshelf under it instead of Memory's strip (up to 22 px: spines ≤ 20 +
  * shelf, plus 6 between rows), so three full rows are ~29 + 3 x 46 = 167,
  * and folding Contents saves ~142; the age moved from the facts line to a
- * footer (mt-auto: free when the panel has room, +28 when it scrolls).
+ * footer with the file size (mt-auto: free when the panel has room, +28
+ * when it scrolls).
  * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
 
@@ -71,6 +72,7 @@ import {
   agentStatusLabel,
   compactCount,
   formatAge,
+  formatBytes,
   configTargetFor,
   contentsRows,
   decideLevelUp,
@@ -288,6 +290,8 @@ export function AgentOverview() {
   // Age moved to the footer; the facts line keeps what changes week to week.
   const facts = vitals ? overviewFacts(vitals, now).filter((f) => f.id !== 'age' && !(showsWake && f.id === 'wake')) : []
   const age = vitals?.createdAt && Number.isFinite(vitals.ageDays) ? ageFooter(vitals.createdAt, vitals.ageDays) : null
+  const size = vitals?.fileBytes !== undefined ? formatBytes(vitals.fileBytes) : null
+  const footer = [age, size].filter(Boolean).join(' · ')
   const surfaces = useAgentSurfaces()
   const hasSurfaces = !!(surfaces.website || surfaces.computer)
   if (chartFolded && activity) facts.push({ id: 'messages', text: sparkFact(activity.daily) })
@@ -356,8 +360,8 @@ export function AgentOverview() {
         <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
       </div>
 
-      {age && (
-        <footer className="mt-auto pt-3 text-center text-[11px] leading-4 text-[var(--ink-faint)] tabular-nums">{age}</footer>
+      {footer && (
+        <footer className="mt-auto pt-3 text-center text-[11px] leading-4 text-[var(--ink-faint)] tabular-nums">{footer}</footer>
       )}
     </div>
   )

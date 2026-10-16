@@ -116,7 +116,8 @@ export interface AdfApi {
 
   // Agent runtime
   /** `code` names a failure the renderer can resolve in place: 'provider_missing' (the model's provider is not on this install) or 'provider_unconfigured' (it is, but has no key). */
-  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; code?: 'provider_missing' | 'provider_unconfigured' }>
+  /** `loopStates`: side-loop display states, on a re-attach of a running agent. */
+  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; loopStates?: Record<string, string>; code?: 'provider_missing' | 'provider_unconfigured' }>
   stopAgent: () => Promise<{ success: boolean }>
   /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>

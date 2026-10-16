@@ -93,3 +93,46 @@ describe('resolveTokenizer — provider types', () => {
     expect(counter.resolveTokenizer('claude-subscription')).toBe('anthropic')
   })
 })
+
+describe('estimateMessagesTokensSplit — API-reported reasoning', () => {
+  const thinkingMsg = (seq: number) => ({
+    role: 'assistant',
+    seq,
+    content: [
+      { type: 'thinking', thinking: 'x'.repeat(3500) },
+      { type: 'text', text: 'y'.repeat(350) },
+    ],
+  })
+
+  it('counts recorded reasoning tokens instead of the summarized thinking text', () => {
+    const split = tc.estimateMessagesTokensSplit([thinkingMsg(7)], new Map([[7, 4000]]))
+    expect(split.reported).toBe(4000)
+    // Only role overhead + the text block are char-estimated.
+    expect(split.estimated).toBe(Math.ceil((16 + 350) / 3.5))
+  })
+
+  it('falls back to the thinking text when the row recorded no reasoning', () => {
+    const split = tc.estimateMessagesTokensSplit([thinkingMsg(7)], new Map([[8, 4000]]))
+    expect(split.reported).toBe(0)
+    expect(split.estimated).toBe(tc.estimateMessagesTokens([thinkingMsg(7)]))
+  })
+
+  it('ignores reasoning for a message without thinking blocks, and user rows', () => {
+    const plain = { role: 'assistant', seq: 3, content: [{ type: 'text', text: 'hi' }] }
+    const user = { role: 'user', seq: 4, content: [{ type: 'thinking', thinking: 'z' }] }
+    const split = tc.estimateMessagesTokensSplit([plain, user], new Map([[3, 900], [4, 900]]))
+    expect(split.reported).toBe(0)
+    expect(split.estimated).toBe(tc.estimateMessagesTokens([plain, user]))
+  })
+})
+
+describe('resendsReasoning', () => {
+  it('is true for the Anthropic family only', () => {
+    expect(tc.resendsReasoning('anthropic', 'claude-opus-5-5')).toBe(true)
+    expect(tc.resendsReasoning('claude-subscription', 'claude-opus-5-5')).toBe(true)
+    expect(tc.resendsReasoning('openrouter', 'anthropic/claude-opus-5-5')).toBe(true)
+    expect(tc.resendsReasoning('openai', 'gpt-5')).toBe(false)
+    expect(tc.resendsReasoning('chatgpt-subscription', 'gpt-5.6')).toBe(false)
+    expect(tc.resendsReasoning('openrouter', 'openai/gpt-5')).toBe(false)
+  })
+})

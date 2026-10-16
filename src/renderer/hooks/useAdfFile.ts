@@ -1,11 +1,13 @@
 import { useCallback } from 'react'
 import { useDocumentStore } from '../stores/document.store'
-import { useAgentStore } from '../stores/agent.store'
+import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useAppStore } from '../stores/app.store'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/editor-tabs.store'
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
+import { deliverSettledQueues } from '../utils/queued-delivery'
+import { useMessageQueueStore } from '../stores/message-queue.store'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
@@ -63,10 +65,23 @@ export async function fetchFileContents(agentFilePath: string | null): Promise<F
  * re-attach): its executor state, pending approvals and asks. A failed
  * re-attach is said in the status line: the agent still runs in main.
  */
-function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.startAgent>>): void {
+function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.startAgent>>, filePath: string | null): void {
   if (startResult.success) {
     // Use the actual executor state (may be mid-turn: thinking/tool_use)
-    useAgentStore.getState().setState(toDisplayState(startResult.agentState ?? 'idle'))
+    const reattachedState = toDisplayState(startResult.agentState ?? 'idle')
+    useAgentStore.getState().setState(reattachedState)
+    // Inner loops keep running across a switch: show their real
+    // states, not the reset default (idle).
+    const loopStates: Record<string, string> = { [MAIN_LOOP]: reattachedState }
+    for (const [loop, state] of Object.entries(startResult.loopStates ?? {})) {
+      const displayState = toDisplayState(state)
+      loopStates[loop] = displayState
+      useAgentStore.getState().setState(displayState, loop)
+    }
+    // A turn that ended during the switch reported its idle to neither
+    // the background list nor this view: send what was queued for
+    // every loop that is idle now.
+    if (filePath) deliverSettledQueues(filePath, loopStates, reattachedState)
 
     // Restore pending HIL approvals so the user can still approve/reject
     const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals
@@ -326,7 +341,7 @@ export function useAdfFile() {
       // A running agent skips the review check, as openFile's re-attach does.
       useAppStore.getState().addStartingFilePath(filePath)
       const startResult = await window.adfApi.startAgent().finally(() => useAppStore.getState().removeStartingFilePath(filePath))
-      applyReattach(startResult)
+      applyReattach(startResult, filePath)
       return
     }
 
@@ -472,7 +487,7 @@ export function useAdfFile() {
             for (const fp of marked) useAppStore.getState().removeStartingFilePath(fp)
           })
           console.log(`[PERF:renderer] openFile.startAgent IPC: ${(performance.now() - t1).toFixed(1)}ms`)
-          applyReattach(startResult)
+          applyReattach(startResult, result.filePath)
         }
 
         console.log(`[PERF:renderer] openFile total: ${(performance.now() - tTotal).toFixed(1)}ms`)
@@ -581,7 +596,13 @@ export function useAdfFile() {
     if (!confirmDiscardConflicts()) return
     // The password prompt was cancelled (or the file closed): nothing to re-attach after an unlock.
     reattachAfterUnlock.clear()
+    // Closing a running agent moves it to the background, where its queue is
+    // still delivered; a stopped one has no turn left to end, so its queue
+    // goes with it.
+    const closing = useDocumentStore.getState().filePath
+    const stopped = useAgentStore.getState().state === 'off'
     await window.adfApi.closeFile()
+    if (closing && stopped) useMessageQueueStore.getState().clearAgent(closing)
     resetDocument()
     resetAgent()
     useAppStore.getState().resetAgentReview()

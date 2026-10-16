@@ -1090,6 +1090,10 @@ export class AgentVitalsService {
     }
     const ctx = live ? this.deps.getContextGauge(filePath) : undefined
     const cost = heavy.cost7d
+    const [main, wal] = await Promise.all([
+      fsp.stat(filePath).catch(() => null),
+      fsp.stat(`${filePath}-wal`).catch(() => null)
+    ])
     return {
       filePath,
       computedAt: entry.at,
@@ -1101,6 +1105,7 @@ export class AgentVitalsService {
       model: cheap.meta.model ?? undefined,
       createdAt: cheap.meta.createdAt ?? undefined,
       ageDays,
+      fileBytes: main ? main.size + (wal?.size ?? 0) : undefined,
       ...(cheap.meta.status?.trim() ? { status: cheap.meta.status.trim() } : {}),
       ...(cheap.card.description ? { description: cheap.card.description } : {}),
       public: cheap.card.public,

@@ -54,6 +54,8 @@ export interface ThemeGlyphs {
   mark: string
   hbar: string
   ellipsis: string
+  /** Marks an estimated figure: '≈', '~' in ASCII. */
+  approx: string
   collapsed: string
   expanded: string
   spinner: string[]
@@ -117,6 +119,7 @@ const UNICODE_GLYPHS: ThemeGlyphs = {
   mark: '▌',
   hbar: '─',
   ellipsis: '…',
+  approx: '≈',
   collapsed: '▸',
   expanded: '▾',
   spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
@@ -138,6 +141,7 @@ const ASCII_GLYPHS: ThemeGlyphs = {
   mark: '>',
   hbar: '-',
   ellipsis: '...',
+  approx: '~',
   collapsed: '+',
   expanded: '-',
   spinner: ['|', '/', '-', '\\'],

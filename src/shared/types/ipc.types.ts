@@ -517,12 +517,29 @@ export interface ContextBreakdown {
   tools_total_tokens: number
   /** Last built dynamic instructions (0 if none) */
   dynamic_instructions_tokens: number
-  /** Char-based estimate of current conversation messages */
+  /** Current conversation messages; includes calibration.since_last_call_tokens */
   messages_tokens: number
   /** system_prompt + tools — the fixed per-request overhead */
   overhead_tokens: number
   /** epoch ms when computed */
   computed_at: number
+  /**
+   * Present when the parts are calibrated to the loop's last call: they then
+   * sum to that call's real prompt size plus the content added since it.
+   * Absent: every figure is an uncalibrated estimate (no call recorded yet).
+   */
+  calibration?: ContextCalibration
+}
+
+export interface ContextCalibration {
+  /** API-reported prompt size of the last call (cache reads and writes included) */
+  last_call_tokens: number
+  /** Real ÷ estimated, applied to every estimated part */
+  ratio: number
+  /** Part of messages_tokens added since that call: the reply (reply_tokens) plus later content, estimated at ratio */
+  since_last_call_tokens: number
+  /** API-reported output of that call, counted exactly in since_last_call_tokens (0 when not reported) */
+  reply_tokens: number
 }
 
 /**
@@ -720,7 +737,7 @@ export type BackgroundAgentEvent = BackgroundAgentStatusEvent | BackgroundAdfFil
 /** Every background event but `adf_file_created`: `filePath` is the agent's file. */
 export interface BackgroundAgentStatusEvent {
   type: 'agent_started' | 'agent_stopped' | 'agent_state_changed'
-    | 'agent_loops_changed'
+    | 'agent_loops_changed' | 'agent_loop_state_changed'
     | 'agent_starting' | 'agent_start_failed' | 'agent_stopping'
     | 'tool_call_start' | 'tool_call_result'
     | 'ask_request' | 'tool_approval_request'
