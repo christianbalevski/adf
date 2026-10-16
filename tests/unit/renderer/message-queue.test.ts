@@ -384,3 +384,63 @@ describe('a send main does not take', () => {
     expect(queued(AGENT_1).map((m) => [m.text, m.error])).toEqual([['try me', 'IPC closed']])
   })
 })
+
+describe('stale queues', () => {
+  it('moves a queue with its renamed agent, and delivers it there', async () => {
+    const renamed = '/w/agent-1-renamed.adf'
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'follow me')
+    await main.openFile(AGENT_2)
+
+    // What App does on FILE_RENAMED.
+    useMessageQueueStore.getState().rekey(AGENT_1, renamed)
+    expect(queued(AGENT_1)).toEqual([])
+    main.pushBatch([stateChanged(renamed, 'idle')])
+    expect(main.invokeAgent).toHaveBeenCalledWith('follow me', renamed, expect.any(Array), 'main')
+  })
+
+  it('forgets a deleted agent, so a new one at that path starts empty', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'for the old agent')
+    await main.openFile(AGENT_2)
+
+    // What the sidebar does once main deleted the file.
+    useMessageQueueStore.getState().clearAgent(AGENT_1)
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    expect(queued(AGENT_1)).toEqual([])
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+  })
+
+  it('drops the queue of a stopped agent on close, keeps a running one', async () => {
+    main.agents.set(AGENT_2, { state: 'active' })
+    await main.openFile(AGENT_2)
+    queue(AGENT_2, 'still deliverable')
+    await main.closeFile()
+    expect(queued(AGENT_2)).toHaveLength(1)
+    main.pushBatch([stateChanged(AGENT_2, 'idle')])
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+
+    main.agents.delete(AGENT_1)
+    await main.openFile(AGENT_1)
+    expect(useAgentStore.getState().state).toBe('off')
+    queue(AGENT_1, 'nothing will send this')
+    await main.closeFile()
+    expect(queued(AGENT_1)).toEqual([])
+  })
+
+  it('keys one queue per file however its path is spelled', async () => {
+    main.setPlatform('win32')
+    const spelled = String.raw`C:\W\Agent-1.adf`
+    const reported = 'c:/w/agent-1.adf'
+    main.agents.set(spelled, { state: 'active' })
+    await main.openFile(spelled)
+    queue(spelled, 'one file')
+    expect(queued(reported).map((m) => m.text)).toEqual(['one file'])
+    await main.openFile(AGENT_2)
+
+    main.pushBatch([stateChanged(reported, 'idle')])
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    expect(queued(spelled)).toEqual([])
+  })
+})

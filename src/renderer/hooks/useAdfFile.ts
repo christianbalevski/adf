@@ -7,6 +7,7 @@ import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
 import { deliverSettledQueues } from '../utils/queued-delivery'
+import { useMessageQueueStore } from '../stores/message-queue.store'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
@@ -549,7 +550,13 @@ export function useAdfFile() {
   }, [setDirty])
 
   const closeFile = useCallback(async () => {
+    // Closing a running agent moves it to the background, where its queue is
+    // still delivered; a stopped one has no turn left to end, so its queue
+    // goes with it.
+    const closing = useDocumentStore.getState().filePath
+    const stopped = useAgentStore.getState().state === 'off'
     await window.adfApi.closeFile()
+    if (closing && stopped) useMessageQueueStore.getState().clearAgent(closing)
     resetDocument()
     resetAgent()
     useAppStore.getState().resetAgentReview()

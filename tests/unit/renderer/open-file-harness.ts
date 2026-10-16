@@ -26,6 +26,10 @@ interface FakeAgent {
 
 export interface OpenFileHarness {
   openFile: (filePath: string) => Promise<unknown>
+  /** The real closeFile; main backgrounds the closed agent if it runs. */
+  closeFile: () => Promise<void>
+  /** `window.adfApi.platform`, which path keys follow. */
+  setPlatform: (platform: string) => void
   /** Running agents by file. Every running agent not open is "background". */
   agents: Map<string, FakeAgent>
   /** Push one BACKGROUND_AGENT_EVENT_BATCH. */
@@ -42,6 +46,8 @@ export function createOpenFileHarness(): OpenFileHarness {
   let current: string | null = null
   const harness: OpenFileHarness = {
     openFile: async () => undefined,
+    closeFile: async () => {},
+    setPlatform: () => {},
     agents: new Map(),
     pushBatch: (events) => pushBatch(events),
     pushForeground: () => {},
@@ -49,8 +55,7 @@ export function createOpenFileHarness(): OpenFileHarness {
     invokeAgent: vi.fn(async () => ({ success: true }))
   }
 
-  vi.stubGlobal('window', {
-    adfApi: {
+  const adfApi = {
       platform: 'linux',
       openFile: async (filePath: string) => {
         const previous = current
@@ -67,15 +72,18 @@ export function createOpenFileHarness(): OpenFileHarness {
       },
       invokeAgent: harness.invokeAgent,
       getBackgroundAgentStatus: () => new Promise(() => {}),
-      onBackgroundAgentEvents: (cb: typeof pushBatch) => { pushBatch = cb; return () => {} }
-    }
-  })
+      onBackgroundAgentEvents: (cb: typeof pushBatch) => { pushBatch = cb; return () => {} },
+      closeFile: async () => { current = null }
+  }
+  vi.stubGlobal('window', { adfApi })
+  harness.setPlatform = (platform) => { adfApi.platform = platform }
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} })
 
   let api!: ReturnType<typeof useAdfFile>
   const Probe = (): null => { api = useAdfFile(); return null }
   renderToString(createElement(Probe))
   harness.openFile = (filePath) => api.openFile(filePath)
+  harness.closeFile = () => api.closeFile()
 
   useBackgroundAgentEvents()
   harness.pushForeground = createAgentEventHandler()

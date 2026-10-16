@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
-import { useMessageQueueStore, queuedLoops, selectQueue, type QueuedMessage } from '../stores/message-queue.store'
+import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
@@ -33,7 +33,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
   const imagePreviewUrls = queue.flatMap((m) => m.imagePreviewUrls ?? [])
   let bubbleId: string | null = null
   let previousState: AgentState | null = null
-  if (useDocumentStore.getState().filePath === filePath) {
+  if (sameAgentPath(useDocumentStore.getState().filePath, filePath)) {
     const agentStore = useAgentStore.getState()
     previousState = selectLoopSlice(agentStore, loop).state
     bubbleId = nanoid()
@@ -49,7 +49,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
 
   const fail = (error: string): void => {
     useMessageQueueStore.getState().restore(filePath, loop, queue, error)
-    if (!bubbleId || useDocumentStore.getState().filePath !== filePath) return
+    if (!bubbleId || !sameAgentPath(useDocumentStore.getState().filePath, filePath)) return
     const agentStore = useAgentStore.getState()
     const slice = selectLoopSlice(agentStore, loop)
     if (slice.log.some((e) => e.id === bubbleId)) {
@@ -145,6 +145,6 @@ export function deliverSettledBackgroundQueues(
   }
   for (const [filePath, states] of reported) {
     if (skip(filePath)) continue
-    deliverSettledQueues(filePath, states, agents.find((a) => a.filePath === filePath)?.state)
+    deliverSettledQueues(filePath, states, agents.find((a) => sameAgentPath(a.filePath, filePath))?.state)
   }
 }

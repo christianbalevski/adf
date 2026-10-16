@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, Component, type ReactNode } from 'rea
 import { AppShell } from './components/layout/AppShell'
 import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
+import { useMessageQueueStore } from './stores/message-queue.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
 import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
@@ -130,6 +131,8 @@ export default function App() {
     return window.adfApi?.onFileRenamed?.(({ oldPath, newPath }) => {
       const store = useDocumentStore.getState()
       if (store.filePath === oldPath) store.setFilePath(newPath)
+      // Queued messages follow their agent to its new path.
+      useMessageQueueStore.getState().rekey(oldPath, newPath)
     })
   }, [])
 

@@ -4,6 +4,7 @@ import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { foldAgentStatuses } from '../utils/background-agent-statuses'
 import { deliverSettledBackgroundQueues } from '../utils/queued-delivery'
+import { sameAgentPath } from '../stores/message-queue.store'
 import { openingFilePaths } from './useAdfFile'
 import type { RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
@@ -99,7 +100,7 @@ export function useBackgroundAgentEvents() {
       // so the agent being switched AWAY from is already background while it
       // still looks open, and its turn can end inside that window. The agent
       // being switched TO is skipped; its re-attach reads its state and delivers.
-      deliverSettledBackgroundQueues(agents, events, (fp) => openingFilePaths.has(fp))
+      deliverSettledBackgroundQueues(agents, events, (fp) => [...openingFilePaths].some((opening) => sameAgentPath(opening, fp)))
     })
 
     return unsubscribe
