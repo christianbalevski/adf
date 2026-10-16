@@ -242,6 +242,7 @@ const runtime = new RuntimeService({
   toolPrompts,
   compactionPrompt,
   agentRuntimeBuilder,
+  reviewIdentity: ownerIdentity.service,
 })
 // Envelope unlock otherwise only runs at agent load. When the owner identity
 // becomes ready (create/restore/unlock, or a phrase Studio put in the shared

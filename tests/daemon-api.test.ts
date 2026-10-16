@@ -1746,6 +1746,48 @@ describe('daemon HTTP API', () => {
     expect(strictLoad.json()).toEqual(expect.objectContaining({ id: agentId }))
   })
 
+  it('reports the review owner scenario against this install\'s identity', async () => {
+    // summary.identity used to be the bare owner DID string, so the TUI's
+    // `identity.scenario` was always undefined and every agent read as
+    // "no owner (unclaimed)" — including ones owned by someone else.
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-review-identity-'))
+    const filePath = join(dir, 'owned.adf')
+    const created = createHeadlessAgent({ filePath, name: 'owned', provider: new MockLLMProvider() })
+    created.workspace.setMeta('adf_did', 'did:key:z6MkAgent')
+    created.workspace.setMeta('adf_owner_did', 'did:key:z6MkOwner')
+    created.workspace.setMeta('adf_runtime_did', 'did:key:z6MkRuntime')
+    created.dispose()
+
+    const identityOf = (ownerDid: string) => ({
+      getOwnerDid: () => ownerDid,
+      getRuntimeDid: () => 'did:key:z6MkRuntime',
+      getOwnerEncPrivateKey: () => null,
+    })
+    const reviewVia = async (opts: ConstructorParameters<typeof RuntimeService>[0]) => {
+      const server = createDaemonHttpApi(new RuntimeService({ providerFactory: () => new MockLLMProvider(), ...opts }))
+      servers.push(server)
+      const res = await server.inject({ method: 'GET', url: `/agents/review?filePath=${encodeURIComponent(filePath)}` })
+      expect(res.statusCode).toBe(200)
+      return res.json().summary.identity
+    }
+
+    expect(await reviewVia({ reviewIdentity: identityOf('did:key:z6MkOwner') })).toEqual(expect.objectContaining({
+      agentDid: 'did:key:z6MkAgent',
+      fileOwnerDid: 'did:key:z6MkOwner',
+      ownerIsYou: true,
+      scenario: 'mine',
+      needsClaim: false,
+    }))
+    expect(await reviewVia({ reviewIdentity: identityOf('did:key:z6MkSomeoneElse') })).toEqual(expect.objectContaining({
+      ownerIsYou: false,
+      scenario: 'foreign',
+      needsClaim: true,
+    }))
+    // No identity service (Studio-less embedders): settings' DIDs stand in.
+    const settings = { get: (key: string) => ({ ownerDid: 'did:key:z6MkOwner', runtimeDid: 'did:key:z6MkRuntime' } as Record<string, unknown>)[key] }
+    expect(await reviewVia({ settings })).toEqual(expect.objectContaining({ ownerIsYou: true, scenario: 'mine' }))
+  })
+
   it('reports the umbilical replay window as unavailable when the agent has not opted in', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-off-'))
     const filePath = join(dir, 'agent-1.adf')
