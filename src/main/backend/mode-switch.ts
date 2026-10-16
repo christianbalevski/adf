@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 import type { StudioBackendMode } from '../../shared/types/backend.types'
 import { decryptCredential, encryptCredential } from '../utils/credential-cipher'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
+import { showWindowlessMessageBox } from '../utils/windowless-dialog'
 import { DaemonProcessController, decideAttach, type AttachDecision } from './daemon-process'
 import type { DaemonVersionInfo } from '../daemon/routes/meta-routes'
 import { openDaemonSecrets } from './daemon-secrets'
@@ -147,7 +148,7 @@ export function handoverDeps(userDataDir: string, extra: Partial<HandoverDeps> =
 /** §11: both sides hold a session of one provider for different accounts; the user keeps one. */
 async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' | 'daemon'> {
   const buttons = [`Keep ${conflict.studio.account} (Studio)`, `Keep ${conflict.daemon.account} (daemon)`]
-  const { response } = await dialog.showMessageBox({
+  const { response } = await showWindowlessMessageBox(`${conflict.label}: choose which account to keep (Studio: ${conflict.studio.account}; daemon: ${conflict.daemon.account})`, {
     type: 'question',
     title: `${conflict.label}: two accounts`,
     message: `Studio and the ADF daemon are signed in to ${conflict.label.replace(/ session$/, '')} with different accounts.`,
@@ -515,7 +516,7 @@ export async function askVersionMismatch(
     noLink: true,
   }
   const win = window()
-  const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
+  const { response } = await (win ? dialog.showMessageBox(win, options) : showWindowlessMessageBox(`daemon version ${running.version} (pid ${running.pid}) differs from Studio ${app.getVersion()}: restart it or use embedded mode`, options))
   if (response === 0) return 'restart'
   relaunchEmbeddedForSession('daemon version mismatch')
   return 'embedded'
