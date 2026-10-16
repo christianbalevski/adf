@@ -16,7 +16,11 @@ export type StudioBackendSource =
   | 'file'
   /** `ADF_STUDIO_BACKEND` set in the environment (recovery override). */
   | 'env'
-  /** Embedded for this launch only: the user chose it when the daemon's version did not match (§8.2). */
+  /**
+   * This launch only: embedded after a daemon version mismatch (§8.2), or the
+   * mode boot chose for one launch (W5-I: an unusable studio-backend.json
+   * that cannot be rewritten, an older daemon on the port); `sessionReason` says why.
+   */
   | 'session'
 
 export interface BackendSettingsView {
@@ -30,6 +34,8 @@ export interface BackendSettingsView {
      * studio-backend.json were ignored.
      */
     notices: string[]
+    /** Source `session` set by boot (W5-I): why this launch runs its mode for one session. */
+    sessionReason?: string | null
   }
   /** Why the saved remote URL is not used (an unconfirmed plain-http address), or null. */
   remoteUrlProblem: string | null

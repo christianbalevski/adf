@@ -96,6 +96,15 @@ export interface BootBackend {
   /** File fields normalization ignored; the next save writes the file without them (that save says so). */
   dropped?: string[]
   /**
+   * The file exists but its mode cannot be used: it could not be read or
+   * parsed, it is not a JSON object, or it names an unknown mode. Boot asks
+   * the user which backend to use before any credential moves
+   * (first-launch.ts guardBoot); never a silent fallback.
+   */
+  fileProblem?: string | null
+  /** A one-launch mode (source `session`): why, in words for Settings → Backend. */
+  sessionReason?: string | null
+  /**
    * Set at boot (first-launch.ts) when an earlier launch switched this
    * install from Embedded to the new default; Settings → Backend shows it.
    */
@@ -139,18 +148,23 @@ export function remoteTransportRefusal(config: StudioBackendConfig): string | nu
  * their defaults with a warning; warnings never contain the token. `dropped`
  * names, for the user, the fields a later save will not write back.
  */
-export function normalizeBackendConfig(raw: unknown): { config: StudioBackendConfig; warnings: string[]; dropped: string[] } {
+export function normalizeBackendConfig(raw: unknown): { config: StudioBackendConfig; warnings: string[]; dropped: string[]; modeProblem: string | null } {
   const config = defaultBackendConfig()
   const warnings: string[] = []
   const dropped: string[] = []
+  let modeProblem: string | null = null
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    if (raw !== null && raw !== undefined) warnings.push(`the file is not a JSON object; using ${DEFAULT_LABEL}`)
-    return { config, warnings, dropped }
+    if (raw !== null && raw !== undefined) {
+      modeProblem = 'the file is not a JSON object'
+      warnings.push(`${modeProblem}; using ${DEFAULT_LABEL}`)
+    }
+    return { config, warnings, dropped, modeProblem }
   }
   const obj = raw as Record<string, unknown>
   if (obj.mode !== undefined) {
     if (isMode(obj.mode)) config.mode = obj.mode
     else {
+      modeProblem = `the file names the unknown mode ${JSON.stringify(obj.mode)}`
       warnings.push(`unknown mode ${JSON.stringify(obj.mode)}; using ${DEFAULT_LABEL}`)
       dropped.push(`the unknown mode ${JSON.stringify(obj.mode)}`)
     }
@@ -186,7 +200,7 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
   // with a dialog that points at Settings → Backend. Falling back to embedded
   // here would autostart this computer's agents without a word (W4-B review).
   if (config.mode === 'remote' && !config.remote.url) warnings.push('mode is remote but there is no usable remote.url; Studio will say so at launch')
-  return { config, warnings, dropped }
+  return { config, warnings, dropped, modeProblem }
 }
 
 /**
@@ -236,7 +250,7 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
  */
 export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, log: Log = console): BootBackend {
   const file = readBootFile(configPath)
-  const { config, warnings, dropped } = normalizeBackendConfig(file.data)
+  const { config, warnings, dropped, modeProblem } = normalizeBackendConfig(file.data)
   if (file.problem) warnings.push(file.problem)
   for (const w of warnings) log.warn(`[Backend] ${configPath}: ${w}`)
   const notices: string[] = []
@@ -265,7 +279,8 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   }
   if (source === 'env') log.log(`[Backend] ${mode} (from ${BACKEND_ENV_OVERRIDE}; ${configPath} says ${config.mode})`)
   else if (source === 'file') log.log(`[Backend] ${mode} (from ${configPath})`)
-  return { mode, source, configPath, config, writeBlocked: file.writeBlocked, notices, dropped }
+  const fileProblem = file.found ? (file.problem ?? modeProblem) : null
+  return { mode, source, configPath, config, writeBlocked: file.writeBlocked, notices, dropped, fileProblem }
 }
 
 /**
@@ -300,13 +315,13 @@ export function readRemoteToken(config: StudioBackendConfig, codec: SecretCodec)
 
 export function toBackendSettingsView(
   config: StudioBackendConfig,
-  boot: Pick<BootBackend, 'mode' | 'source' | 'notices' | 'defaultSwitch'>,
+  boot: Pick<BootBackend, 'mode' | 'source' | 'notices' | 'defaultSwitch' | 'sessionReason'>,
   codec: SecretCodec,
   daemon: BackendDaemonStatus | null = null,
   pendingSwitch: BackendSettingsView['pendingSwitch'] = null,
 ): BackendSettingsView {
   return {
-    active: { mode: boot.mode, source: boot.source, notices: boot.notices ?? [] },
+    active: { mode: boot.mode, source: boot.source, notices: boot.notices ?? [], sessionReason: boot.sessionReason ?? null },
     remoteUrlProblem: remoteTransportRefusal(config),
     configured: {
       mode: config.mode,

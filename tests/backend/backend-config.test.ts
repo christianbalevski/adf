@@ -59,7 +59,7 @@ describe('resolveBootBackend', () => {
     const path = tempConfigPath()
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    expect(boot).toEqual({ mode: 'local', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null, notices: [], dropped: [] })
+    expect(boot).toEqual({ mode: 'local', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null, notices: [], dropped: [], fileProblem: null })
     expect(lines).toEqual([])
     expect(existsSync(path)).toBe(false)
   })
@@ -112,7 +112,18 @@ describe('resolveBootBackend', () => {
 
   it('honours an explicit mode: embedded in the file', () => {
     const path = embeddedConfigPath()
-    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'embedded', source: 'file', config: { mode: 'embedded' } })
+    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'embedded', source: 'file', config: { mode: 'embedded' }, fileProblem: null })
+  })
+
+  it('names the file problem for boot to ask about (W5-I review): corrupt, not an object, unknown mode, unreadable', () => {
+    const at = (content: string) => { const path = tempConfigPath(); writeFileSync(path, content); return resolveBootBackend(path, {}, recordingLog().log).fileProblem }
+    expect(at('{ not json')).toMatch(/could not be parsed and was moved to/)
+    expect(at('[1]')).toBe('the file is not a JSON object')
+    expect(at(JSON.stringify({ mode: 'hybrid' }))).toBe('the file names the unknown mode "hybrid"')
+    expect(at(JSON.stringify({ v: 1, mode: 'local', remote: { url: 'ftp://x' } }))).toBeNull()
+    const dir = tempConfigPath()
+    mkdirSync(dir)
+    expect(resolveBootBackend(dir, {}, recordingLog().log)).toMatchObject({ fileProblem: expect.stringMatching(/could not be read/), writeBlocked: expect.stringMatching(/Fix its permissions or delete it/) })
   })
 })
 
