@@ -6947,7 +6947,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       try {
         const uvPath = await uvManager.ensureUv()
         probeCommand = uvPath
-        probeArgs = ['tool', 'run', ...args.args]
+        probeArgs = ['tool', 'run', ...probeArgs]
       } catch (e) {
         console.warn('[MCP:probe] Failed to resolve uv binary for uvx command:', e)
       }
