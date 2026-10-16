@@ -73,6 +73,18 @@ describe('context model', () => {
     expect(mcp.items[0]!.tokens).toBeGreaterThanOrEqual(mcp.items[4]!.tokens)
     expect(cats.find(c => c.id === 'system')!.tokens).toBe(b.system_prompt_tokens - 1840)
     expect(cats.find(c => c.id === 'files')!.items).toEqual([{ name: 'mind.md', tokens: 1840 }])
+    // Uncalibrated (no call recorded): every category is an estimate.
+    expect(cats.every(c => c.estimated)).toBe(true)
+  })
+
+  it('calibrated: only the content since the last call is an estimate, and it gets its own row', () => {
+    const b = { ...mockBreakdown(10), calibration: { last_call_tokens: 90_000, ratio: 1.8, since_last_call_tokens: 1_200 } }
+    const cats = contextCategories(b, 5)
+    expect(cats.reduce((n, c) => n + c.tokens, 0)).toBe(contextTotal(b))
+    const recent = cats.find(c => c.id === 'recent')!
+    expect(recent).toMatchObject({ tokens: 1_200, estimated: true })
+    expect(cats.find(c => c.id === 'messages')!.tokens).toBe(b.messages_tokens - 1_200)
+    expect(cats.filter(c => c.id !== 'recent').every(c => !c.estimated)).toBe(true)
   })
 
   it('rows, bars, windows, pressure and the footer gauge', () => {

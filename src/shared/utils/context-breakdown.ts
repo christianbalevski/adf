@@ -63,7 +63,7 @@ export interface ContextCategoryItem {
   detail?: string
 }
 
-export type ContextCategoryKey = 'system' | 'files' | 'tools' | 'mcp' | 'dynamic' | 'messages'
+export type ContextCategoryKey = 'system' | 'files' | 'tools' | 'mcp' | 'dynamic' | 'messages' | 'recent'
 
 export interface ContextCategory {
   /** Stable id: the key, or `mcp:<server>` for one MCP server's tools. */
@@ -77,6 +77,8 @@ export interface ContextCategory {
   items: ContextCategoryItem[]
   /** One line on what the category is. */
   note: string
+  /** True when `tokens` is an estimate, not calibrated to a call's real usage. */
+  estimated: boolean
 }
 
 /**
@@ -93,13 +95,16 @@ const byTokens = <T extends { tokens: number }>(list: T[]): T[] => [...list].sor
  * Split a breakdown into non-overlapping categories that sum to
  * `contextTotal(b)`: system prompt (minus the injected files, which get their
  * own row, as Studio's bar carves them out), built-in tools, one row per MCP
- * server, dynamic instructions, conversation. Zero-token categories are kept:
- * a row that says 0 answers "is it in there?". Sorted biggest first.
+ * server, dynamic instructions, conversation and, when calibrated, what was
+ * added since the last call. Zero-token categories are kept: a row that says
+ * 0 answers "is it in there?". Sorted biggest first.
  */
 export function contextCategories(b: ContextBreakdown, maxItems = 12): ContextCategory[] {
   const fileTokens = b.injected_files.reduce((sum, f) => sum + f.tokens, 0)
   const parts = b.system_prompt_parts
-  const out: ContextCategory[] = [
+  const cal = b.calibration
+  const estimated = !cal
+  const out: Array<Omit<ContextCategory, 'estimated'>> = [
     {
       id: 'system',
       key: 'system',
@@ -161,9 +166,21 @@ export function contextCategories(b: ContextBreakdown, maxItems = 12): ContextCa
     id: 'messages',
     key: 'messages',
     label: 'Conversation',
-    tokens: b.messages_tokens,
+    tokens: b.messages_tokens - (cal?.since_last_call_tokens ?? 0),
     items: [],
-    note: 'This loop’s history, compaction summary included (estimate).',
+    note: 'This loop’s history, compaction summary included.',
   })
-  return byTokens(out)
+  const categories: ContextCategory[] = out.map((c) => ({ ...c, estimated }))
+  if (cal) {
+    categories.push({
+      id: 'recent',
+      key: 'recent',
+      label: 'Since last call',
+      tokens: cal.since_last_call_tokens,
+      items: [],
+      note: 'Added after the last call: estimated at the calibrated ratio.',
+      estimated: true,
+    })
+  }
+  return byTokens(categories)
 }

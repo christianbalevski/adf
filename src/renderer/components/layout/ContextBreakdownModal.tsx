@@ -33,6 +33,7 @@ function Row({
   tokens,
   indent,
   bold,
+  estimate,
   onClick,
   expanded
 }: {
@@ -40,6 +41,8 @@ function Row({
   tokens: number
   indent?: boolean
   bold?: boolean
+  /** Not calibrated to a real call: tagged "≈ estimate". */
+  estimate?: boolean
   /** Present on expandable group rows — toggles the per-tool sub-rows. */
   onClick?: () => void
   expanded?: boolean
@@ -52,6 +55,7 @@ function Row({
         )}
         {label}
       </span>
+      {estimate && <span className="ml-2 shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">≈ estimate</span>}
       <span className={`ml-auto shrink-0 pl-3 font-mono tabular-nums ${bold ? 'font-semibold text-[var(--adf-ui-text)]' : 'text-[var(--adf-ui-text-subtle)]'}`}>
         {formatTokens(tokens)}
       </span>
@@ -238,6 +242,10 @@ export function ContextBreakdownModal({
   const scale = Math.max(total, loopThreshold, 1)
 
   const hasLastCall = tokenUsage.input > 0
+  // Calibrated: every part is scaled to the last call's real prompt size and
+  // only content added since is an estimate. Uncalibrated: all of it is.
+  const cal = b?.calibration
+  const est = !cal
 
   return (
     <Dialog open={open} onClose={onClose} title="Context breakdown" wide>
@@ -291,27 +299,33 @@ export function ContextBreakdownModal({
 
           {/* Per-part rows, settings-table style */}
           <div className="space-y-1.5 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-3 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
-            <Row label="System prompt" tokens={b.system_prompt_tokens} />
+            <Row label="System prompt" tokens={b.system_prompt_tokens} estimate={est} />
             {b.injected_files.map((f) => (
               <Row key={f.path} label={f.path} tokens={f.tokens} indent />
             ))}
-            <Row label="Tools" tokens={b.tools_total_tokens} />
+            <Row label="Tools" tokens={b.tools_total_tokens} estimate={est} />
             {b.tool_groups.map((group) => (
               <ToolGroup key={group.source} group={group} />
             ))}
             {/* Sum of the two sections above — reads as their subtotal. */}
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Fixed overhead" tokens={b.overhead_tokens} bold />
+              <Row label="Fixed overhead" tokens={b.overhead_tokens} bold estimate={est} />
               <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
                 System prompt + tool schemas — sent with every request.
               </p>
             </div>
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Dynamic instructions" tokens={b.dynamic_instructions_tokens} />
+              <Row label="Dynamic instructions" tokens={b.dynamic_instructions_tokens} estimate={est} />
             </div>
-            <Row label="Conversation" tokens={b.messages_tokens} />
+            <Row label="Conversation" tokens={b.messages_tokens - (cal?.since_last_call_tokens ?? 0)} estimate={est} />
+            {cal && <Row label="Since last call" tokens={cal.since_last_call_tokens} estimate />}
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Total" tokens={total} bold />
+              <Row label="Total" tokens={total} bold estimate={!cal || cal.since_last_call_tokens > 0} />
+              <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
+                {cal
+                  ? `Calibrated to the last call’s real prompt (${formatTokens(cal.last_call_tokens)}).`
+                  : 'No call recorded yet: every figure is an estimate.'}
+              </p>
             </div>
           </div>
 

@@ -53,6 +53,13 @@ export function thresholdText(r: Pick<AgentContextResult, 'compactThreshold' | '
   return `auto-compacts at ${fmt(r.compactThreshold)} (${SOURCE_TEXT[r.compactThresholdSource]})`
 }
 
+/** Footer line on how the figures were measured. */
+export function calibrationText(cal: NonNullable<AgentContextResult['breakdown']>['calibration'], approx: string, fmt: (n: number) => string): string {
+  return cal
+    ? `calibrated to the last call (${fmt(cal.last_call_tokens)} real)${cal.since_last_call_tokens > 0 ? `, ${approx} newer content estimated` : ''}`
+    : `${approx} estimate: no call recorded yet`
+}
+
 /** One row of the category table: a category, or one of an expanded category's items. */
 export type ContextRow =
   | { kind: 'category'; category: ContextCategory; expanded: boolean; expandable: boolean }

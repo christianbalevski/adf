@@ -12090,7 +12090,8 @@
             "type": "integer"
           },
           "messages_tokens": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Includes calibration.since_last_call_tokens"
           },
           "overhead_tokens": {
             "type": "integer"
@@ -12098,6 +12099,29 @@
           "computed_at": {
             "type": "integer",
             "description": "Epoch ms"
+          },
+          "calibration": {
+            "type": "object",
+            "description": "Present when the parts are calibrated to the loop's last call: they then sum to that call's real prompt size plus the content added since it. Absent: every figure is an uncalibrated estimate.",
+            "required": [
+              "last_call_tokens",
+              "ratio",
+              "since_last_call_tokens"
+            ],
+            "properties": {
+              "last_call_tokens": {
+                "type": "integer",
+                "description": "API-reported prompt size of the last call, cache reads and writes included"
+              },
+              "ratio": {
+                "type": "number",
+                "description": "Real / estimated, applied to every estimated part"
+              },
+              "since_last_call_tokens": {
+                "type": "integer",
+                "description": "Part of messages_tokens added since that call: an estimate scaled by ratio"
+              }
+            }
           }
         }
       },
@@ -12109,7 +12133,8 @@
           "label",
           "tokens",
           "items",
-          "note"
+          "note",
+          "estimated"
         ],
         "properties": {
           "id": {
@@ -12124,7 +12149,8 @@
               "tools",
               "mcp",
               "dynamic",
-              "messages"
+              "messages",
+              "recent"
             ]
           },
           "label": {
@@ -12159,6 +12185,10 @@
           },
           "note": {
             "type": "string"
+          },
+          "estimated": {
+            "type": "boolean",
+            "description": "True when tokens is an estimate, not calibrated to a call's real usage"
           }
         }
       },
