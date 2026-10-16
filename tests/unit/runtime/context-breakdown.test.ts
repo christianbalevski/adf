@@ -3,6 +3,8 @@ import {
   measureInjectedFiles,
   measureToolSchemas,
   assembleContextBreakdown,
+  calibrateContextBreakdown,
+  apportion,
 } from '../../../src/main/runtime/context-breakdown'
 import { renderInjectedFile, MISSING_FILE_SENTINEL } from '../../../src/main/runtime/prompt-file-injection'
 import { McpTool } from '../../../src/main/tools/mcp-tool'
@@ -133,5 +135,91 @@ describe('assembleContextBreakdown', () => {
     })
     expect(breakdown.computed_at).toBeGreaterThanOrEqual(before)
     expect(breakdown.computed_at).toBeLessThanOrEqual(Date.now())
+  })
+})
+
+describe('apportion', () => {
+  it('splits proportionally and always sums to the target', () => {
+    expect(apportion([1, 1, 1], 10)).toEqual([4, 3, 3])
+    expect(apportion([4600, 8000, 0, 37000], 94000).reduce((a, b) => a + b, 0)).toBe(94000)
+    expect(apportion([0, 0], 5)).toEqual([0, 0])
+  })
+})
+
+describe('calibrateContextBreakdown', () => {
+  const sum = (b: ReturnType<typeof assembleContextBreakdown>) =>
+    b.system_prompt_tokens + b.tools_total_tokens + b.dynamic_instructions_tokens + b.messages_tokens
+
+  /** The crypt-dawg shape: system 4.6k + tools 8.0k + conversation 37k estimated. */
+  function estimated(messagesTokens = 37_000) {
+    return assembleContextBreakdown({
+      systemPromptTokens: 4_600,
+      systemPromptParts: { base_and_sections: 3_000, runtime_blocks: 600, instructions: 1_000 },
+      injectedFiles: [{ path: 'mind.md', tokens: 1_000 }],
+      toolGroups: [
+        { source: 'built-in', tokens: 6_000, tools: [{ name: 'fs_read', tokens: 2_500 }, { name: 'fs_write', tokens: 3_500 }] },
+        { source: 'weather', tokens: 2_000, tools: [{ name: 'mcp_weather_get', tokens: 2_000 }] },
+      ],
+      toolsTotalTokens: 8_000,
+      dynamicInstructionsTokens: 0,
+      messagesTokens,
+      now: 1,
+    })
+  }
+
+  it('crypt-dawg: 49.6k estimated, 94k real — the parts sum to the real figure', () => {
+    const b = calibrateContextBreakdown(estimated(), {
+      lastCallTokens: 94_000,
+      prior: { estimated: 37_000, reported: 0 },
+      since: { estimated: 0, reported: 0 },
+    })
+    expect(sum(b)).toBe(94_000)
+    expect(b.overhead_tokens).toBe(b.system_prompt_tokens + b.tools_total_tokens)
+    expect(b.calibration).toEqual({ last_call_tokens: 94_000, ratio: 94_000 / 49_600, since_last_call_tokens: 0 })
+    // Proportions are kept: conversation stays ~74.6% of the whole.
+    expect(b.messages_tokens).toBe(Math.round(37_000 * (94_000 / 49_600)))
+    // Sub-parts are rescaled consistently with their parent.
+    expect(b.tool_groups.reduce((a, g) => a + g.tokens, 0)).toBe(b.tools_total_tokens)
+    for (const g of b.tool_groups) expect(g.tools.reduce((a, t) => a + t.tokens, 0)).toBe(g.tokens)
+    expect(b.injected_files[0].tokens).toBeLessThanOrEqual(b.system_prompt_tokens)
+    expect(b.injected_files[0].tokens).toBe(Math.round(1_000 * (94_000 / 49_600)))
+  })
+
+  it('keeps API-reported reasoning exact and scales only the estimated parts', () => {
+    const b = calibrateContextBreakdown(estimated(47_000), {
+      lastCallTokens: 94_000,
+      prior: { estimated: 37_000, reported: 10_000 },
+      since: { estimated: 0, reported: 0 },
+    })
+    expect(sum(b)).toBe(94_000)
+    // 84k real over 49.6k estimated; the 10k reasoning is not scaled.
+    expect(b.calibration!.ratio).toBeCloseTo(84_000 / 49_600)
+    expect(b.messages_tokens).toBe(Math.round(37_000 * (84_000 / 49_600)) + 10_000)
+  })
+
+  it('adds content since the last call as an estimate at the same ratio', () => {
+    const b = calibrateContextBreakdown(estimated(39_000), {
+      lastCallTokens: 94_000,
+      prior: { estimated: 37_000, reported: 0 },
+      since: { estimated: 1_500, reported: 500 },
+    })
+    const since = Math.round(1_500 * (94_000 / 49_600)) + 500
+    expect(b.calibration!.since_last_call_tokens).toBe(since)
+    expect(sum(b)).toBe(94_000 + since)
+  })
+
+  it('treats reasoning bigger than the real prompt as not resent', () => {
+    const b = calibrateContextBreakdown(estimated(), {
+      lastCallTokens: 20_000,
+      prior: { estimated: 7_000, reported: 30_000 },
+      since: { estimated: 0, reported: 0 },
+    })
+    expect(sum(b)).toBe(20_000)
+  })
+
+  it('leaves the estimate untouched without a usable last call', () => {
+    const b = estimated()
+    expect(calibrateContextBreakdown(b, { lastCallTokens: 0, prior: { estimated: 37_000, reported: 0 }, since: { estimated: 0, reported: 0 } })).toBe(b)
+    expect(b.calibration).toBeUndefined()
   })
 })

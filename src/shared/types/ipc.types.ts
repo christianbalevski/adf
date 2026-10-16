@@ -485,12 +485,27 @@ export interface ContextBreakdown {
   tools_total_tokens: number
   /** Last built dynamic instructions (0 if none) */
   dynamic_instructions_tokens: number
-  /** Char-based estimate of current conversation messages */
+  /** Current conversation messages; includes calibration.since_last_call_tokens */
   messages_tokens: number
   /** system_prompt + tools — the fixed per-request overhead */
   overhead_tokens: number
   /** epoch ms when computed */
   computed_at: number
+  /**
+   * Present when the parts are calibrated to the loop's last call: they then
+   * sum to that call's real prompt size plus the content added since it.
+   * Absent: every figure is an uncalibrated estimate (no call recorded yet).
+   */
+  calibration?: ContextCalibration
+}
+
+export interface ContextCalibration {
+  /** API-reported prompt size of the last call (cache reads and writes included) */
+  last_call_tokens: number
+  /** Real ÷ estimated, applied to every estimated part */
+  ratio: number
+  /** Part of messages_tokens added since that call: still an estimate (scaled by ratio) */
+  since_last_call_tokens: number
 }
 
 /**

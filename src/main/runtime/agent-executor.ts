@@ -38,7 +38,7 @@ import { LoopCompactionSupersededError } from '../adf/adf-workspace'
 import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
-import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
+import { assembleContextBreakdown, calibrateContextBreakdown, findLastCall, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
 import { withLoop, withSource, withTurn } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
@@ -808,6 +808,9 @@ export class AgentExecutor extends EventEmitter {
    * prompt, tool schemas) come from the builder caches — warmed on demand when
    * no turn has run yet — so a read never re-tokenizes a warm executor.
    * Dynamic-instruction and message figures are cheap and computed per read.
+   * When the loop's last call recorded usage, every part is calibrated to that
+   * call's real prompt size (see calibrateContextBreakdown); thinking counts
+   * the API-reported reasoning tokens where rows recorded them.
    * Never throws: a half-initialized executor returns null.
    */
   getContextBreakdown(): ContextBreakdown | null {
@@ -816,7 +819,18 @@ export class AgentExecutor extends EventEmitter {
       this.buildToolSnapshot()
       if (!this.systemPromptCache || !this.toolSnapshotCache) return null
       const tc = getTokenCounterService()
-      return assembleContextBreakdown({
+      const workspace = this.session.getWorkspace()
+      const rows = workspace.getAssistantTokenRows()
+      const reasoningBySeq = new Map<number, number>()
+      for (const row of rows) {
+        if (row.tokens.reasoning) reasoningBySeq.set(row.seq, row.tokens.reasoning)
+      }
+      const messages = this.session.getMessages()
+      const lastCall = findLastCall(rows, messages, workspace.getContextBaseline()?.estimated ?? false)
+      const cut = lastCall ? lastCall.index : messages.length
+      const prior = tc.estimateMessagesTokensSplit(messages.slice(0, cut), reasoningBySeq)
+      const since = tc.estimateMessagesTokensSplit(messages.slice(cut), reasoningBySeq)
+      const breakdown = assembleContextBreakdown({
         systemPromptTokens: this.systemPromptCache.promptTokens,
         systemPromptParts: this.systemPromptCache.promptParts,
         injectedFiles: this.systemPromptCache.injectedFiles,
@@ -825,8 +839,11 @@ export class AgentExecutor extends EventEmitter {
         dynamicInstructionsTokens: this.currentDynamicInstructions
           ? this.countPromptTokens(this.currentDynamicInstructions)
           : 0,
-        messagesTokens: tc.estimateMessagesTokens(this.session.getMessages()),
+        messagesTokens: prior.estimated + prior.reported + since.estimated + since.reported,
       })
+      return lastCall
+        ? calibrateContextBreakdown(breakdown, { lastCallTokens: lastCall.promptTokens, prior, since })
+        : breakdown
     } catch {
       return null
     }

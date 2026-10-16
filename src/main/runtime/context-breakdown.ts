@@ -17,6 +17,7 @@ import type {
   ContextBreakdownToolGroup,
   SystemPromptParts,
 } from '../../shared/types/ipc.types'
+import type { LoopTokenUsage } from '../../shared/types/adf-v02.types'
 
 /** Provider-bound token counter, e.g. `(t) => counter.countTokens(t, providerId)`. */
 export type CountTokensFn = (text: string) => number
@@ -90,5 +91,108 @@ export function assembleContextBreakdown(parts: {
     messages_tokens: parts.messagesTokens,
     overhead_tokens: parts.systemPromptTokens + parts.toolsTotalTokens,
     computed_at: parts.now ?? Date.now(),
+  }
+}
+
+/** A message-token figure split into its char-estimated and API-reported parts. */
+export interface MessageTokenSplit {
+  estimated: number
+  reported: number
+}
+
+/**
+ * Integer split of `total` in proportion to `weights` (largest remainder), so
+ * the parts always sum to exactly `total`.
+ */
+export function apportion(weights: number[], total: number): number[] {
+  const sum = weights.reduce((acc, w) => acc + Math.max(0, w), 0)
+  if (sum <= 0 || total <= 0) return weights.map(() => 0)
+  const exact = weights.map((w) => (Math.max(0, w) / sum) * total)
+  const out = exact.map(Math.floor)
+  let left = total - out.reduce((acc, n) => acc + n, 0)
+  const order = exact.map((x, i) => ({ i, frac: x - Math.floor(x) })).sort((a, b) => b.frac - a.frac)
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) out[order[k].i]++
+  return out
+}
+
+/**
+ * The loop's last call with recorded usage: the session index of the
+ * assistant message it produced (every message before it was in that call's
+ * prompt) and its real prompt size. `input` is that size on every provider
+ * path — each normalizes it to include cache reads and writes. Null — no
+ * calibration — when no row recorded usage, the provider reported none (a
+ * char estimate), a compaction or clear since (`baselineEstimated`) left the
+ * row describing a context that no longer exists, or the row's message is no
+ * longer in the session.
+ */
+export function findLastCall(
+  rows: Array<{ seq: number; tokens: LoopTokenUsage }>,
+  messages: Array<{ seq?: number }>,
+  baselineEstimated: boolean
+): { index: number; promptTokens: number } | null {
+  const last = rows.length > 0 ? rows[rows.length - 1] : undefined
+  if (!last || last.tokens.estimated || baselineEstimated) return null
+  const promptTokens = last.tokens.input ?? 0
+  if (!(promptTokens > 0)) return null
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].seq === last.seq) return { index: i, promptTokens }
+  }
+  return null
+}
+
+/**
+ * Scale an estimated breakdown to the loop's last call. `lastCallTokens` is
+ * the API-reported prompt size of that call; `prior` is the conversation it
+ * carried, `since` what was added after. Every estimated part — system
+ * prompt, tools, dynamic instructions, prior conversation — is scaled by
+ * real ÷ estimated so the parts sum to exactly `lastCallTokens`; API-reported
+ * reasoning is kept as is. `since` gets the same ratio and stays an estimate.
+ * Returns `b` unchanged when there is nothing to scale.
+ */
+export function calibrateContextBreakdown(
+  b: ContextBreakdown,
+  c: { lastCallTokens: number; prior: MessageTokenSplit; since: MessageTokenSplit }
+): ContextBreakdown {
+  if (!(c.lastCallTokens > 0)) return b
+  const fixed = [b.system_prompt_tokens, b.tools_total_tokens, b.dynamic_instructions_tokens]
+  let priorEstimated = c.prior.estimated
+  let reported = c.prior.reported
+  // Reasoning the provider did not resend (it dropped earlier turns'
+  // thinking) can exceed the real prompt: scale it as an estimate instead.
+  if (reported >= c.lastCallTokens) {
+    priorEstimated += reported
+    reported = 0
+  }
+  const estimated = fixed.reduce((acc, n) => acc + n, 0) + priorEstimated
+  if (estimated <= 0) return b
+  const target = c.lastCallTokens - reported
+  const ratio = target / estimated
+  const [system, tools, dynamic, prior] = apportion([...fixed, priorEstimated], target)
+
+  const fileWeights = b.injected_files.map((f) => f.tokens)
+  const fileRest = Math.max(0, b.system_prompt_tokens - fileWeights.reduce((acc, n) => acc + n, 0))
+  const files = apportion([...fileWeights, fileRest], system)
+  const groupTokens = apportion(b.tool_groups.map((g) => g.tokens), tools)
+  const scale = (n: number): number => Math.round(n * ratio)
+  const since = scale(c.since.estimated) + c.since.reported
+
+  return {
+    ...b,
+    system_prompt_tokens: system,
+    system_prompt_parts: {
+      base_and_sections: scale(b.system_prompt_parts.base_and_sections),
+      runtime_blocks: scale(b.system_prompt_parts.runtime_blocks),
+      instructions: scale(b.system_prompt_parts.instructions),
+    },
+    injected_files: b.injected_files.map((f, i) => ({ ...f, tokens: files[i] })),
+    tool_groups: b.tool_groups.map((g, i) => {
+      const toolTokens = apportion(g.tools.map((t) => t.tokens), groupTokens[i])
+      return { ...g, tokens: groupTokens[i], tools: g.tools.map((t, j) => ({ ...t, tokens: toolTokens[j] })) }
+    }),
+    tools_total_tokens: tools,
+    dynamic_instructions_tokens: dynamic,
+    messages_tokens: prior + reported + since,
+    overhead_tokens: system + tools,
+    calibration: { last_call_tokens: c.lastCallTokens, ratio, since_last_call_tokens: since },
   }
 }
