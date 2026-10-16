@@ -801,6 +801,12 @@ export class AdfDatabase {
    * would have held a lock). On Windows the lock's own handle would block the
    * rename, so the probe closes first: the rename itself then fails while any
    * other program has the file open.
+   *
+   * Known POSIX residual (tracker §6, W5-H): the probe closes after the
+   * rename, and SQLite's close unlinks `<file>-wal` by path. A program that
+   * opens the restored file and writes in that window can lose its WAL.
+   * Closing first would drop the lock, and better-sqlite3 cannot keep the
+   * WAL on close (no SQLITE_FCNTL_PERSIST_WAL), so the window is not closed.
    */
   private static restoreBackupSync(filePath: string): string | null {
     const backupPath = filePath + '.bak'
