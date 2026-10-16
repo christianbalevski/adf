@@ -1,17 +1,12 @@
 import { create } from 'zustand'
-import type { InboxMessage, RendererOutboxMessage } from '../../shared/types/adf.types'
-
-interface InboxData {
-  messages: InboxMessage[]
-  mode: 'unrestricted' | 'only_channels' | 'disabled'
-}
+import type { Inbox, RendererOutboxMessage } from '../../shared/types/adf.types'
 
 interface InboxStore {
-  inboxData: InboxData | null
+  inboxData: Inbox | null
   unreadCount: number
   outboxMessages: RendererOutboxMessage[]
 
-  setInboxData: (data: InboxData | null) => void
+  setInboxData: (data: Inbox | null) => void
   updateUnreadCount: (count: number) => void
   markAsRead: (messageId: string) => void
   markAllAsRead: () => void

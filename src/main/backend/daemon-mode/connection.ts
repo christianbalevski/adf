@@ -97,6 +97,9 @@ export class DaemonConnection {
    */
   private listenerVerified = true
   private verifying: Promise<void> | null = null
+  private disposed = false
+  private verificationTimer: ReturnType<typeof setTimeout> | null = null
+  private wakeVerification: (() => void) | null = null
   private readonly verifiedListeners = new Set<(pid: number) => void>()
 
   constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch) {
@@ -173,19 +176,19 @@ export class DaemonConnection {
 
   /** Driven by the client event stream. */
   markConnected(): void {
-    if (this.status.state === 'failed') return
+    if (this.disposed || this.status.state === 'failed') return
     if (this.status.state !== 'connected') this.set({ state: 'connected' })
   }
 
   /** No session can be used with this daemon (client API version): the connection fails, visibly. */
   markFailed(message: string): void {
-    if (this.status.state === 'failed') return
+    if (this.disposed || this.status.state === 'failed') return
     this.log.error(`[Backend] No usable ADF daemon for this session: ${message}`)
     this.set({ state: 'failed', message })
   }
 
   markDisconnected(error?: string): void {
-    if (this.status.state === 'failed' || this.status.state === 'disconnected') return
+    if (this.disposed || this.status.state === 'failed' || this.status.state === 'disconnected') return
     if (this.connector.verifyListener && this.endpoint) {
       // The daemon may be gone and another program on its port: no token until the pid file names the listener again.
       this.listenerVerified = false
@@ -209,10 +212,10 @@ export class DaemonConnection {
   private verifyListenerLoop(): Promise<void> {
     this.verifying ??= (async () => {
       let lastRefusal: string | null = null
-      while (!this.listenerVerified && this.status.state !== 'failed') {
+      while (!this.disposed && !this.listenerVerified && this.status.state !== 'failed') {
         try {
           const pid = await this.connector.verifyListener!()
-          if ((this.status as ConnectionState).state === 'failed') break
+          if (this.disposed || (this.status as ConnectionState).state === 'failed') break
           this.listenerVerified = true
           this.log.log(`[Backend] The ADF daemon on ${this.baseUrl} is pid ${pid}, as its pid file says; sending the token again`)
           for (const listener of this.verifiedListeners) {
@@ -222,7 +225,12 @@ export class DaemonConnection {
           const message = err instanceof Error ? err.message : String(err)
           if (message !== lastRefusal && !message.startsWith('Nothing answers')) this.log.warn(`[Backend] Not sending the daemon token: ${message}`)
           lastRefusal = message
-          await new Promise<void>((r) => { const t = setTimeout(r, 1_000); t.unref?.() })
+          if (this.disposed) break
+          await new Promise<void>((r) => {
+            this.wakeVerification = r
+            this.verificationTimer = setTimeout(() => { this.verificationTimer = null; this.wakeVerification = null; r() }, 1_000)
+            this.verificationTimer.unref?.()
+          })
         }
       }
     })().finally(() => { this.verifying = null })
@@ -231,7 +239,7 @@ export class DaemonConnection {
 
   /** Local mode: the daemon's process is gone. Shown as such (status line, dialog or notice) until a daemon answers again. */
   markExited(exit: DaemonExit): void {
-    if (this.status.state === 'failed') return
+    if (this.disposed || this.status.state === 'failed') return
     const since = this.status.state === 'disconnected' ? this.status.since : Date.now()
     const error = this.status.state === 'disconnected' ? this.status.error : undefined
     this.set({ state: 'disconnected', since, ...(error ? { error } : {}), exited: exit })
@@ -262,6 +270,17 @@ export class DaemonConnection {
     this.listenerVerified = true
     this.log.log(`[Backend] Using ${endpoint.description}`)
     return endpoint
+  }
+
+  /** Stop background listener verification when Studio shuts down. */
+  dispose(): void {
+    this.disposed = true
+    if (this.verificationTimer) clearTimeout(this.verificationTimer)
+    this.verificationTimer = null
+    this.wakeVerification?.()
+    this.wakeVerification = null
+    this.listeners.clear()
+    this.verifiedListeners.clear()
   }
 
   private set(state: ConnectionState): void {

@@ -14,7 +14,7 @@ import type { ToolResult, ToolProviderFormat } from '@shared/types/tool.types'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolRegistry } from '../tool-registry'
 import type { AgentConfig } from '@shared/types/adf-v02.types'
-import type { McpClientManager } from '../mcp/mcp-client-manager'
+import type { McpClientManager } from '../../services/mcp-client-manager'
 import { parse, ParseError } from './parser/parser'
 import { executeNode, type ExecutorContext } from './executor/pipeline-executor'
 import { EnvironmentResolver } from './executor/environment'
@@ -77,7 +77,7 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
   private env: EnvironmentResolver
 
   /** Callback fired when shell command is intercepted by on_tool_call trigger */
-  onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
+  onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string, systemScopeHandled?: boolean) => void
   /** Callback for HIL approval — returns true if user approves the tool call */
   onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
   /** Callback for HIL override approval when a pipeline tool call hits a data protection */

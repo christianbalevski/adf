@@ -45,6 +45,7 @@ import {
 } from '../client-sessions'
 import type { DaemonRouteContext } from './index'
 import { localAccessRefusal } from '../local-access'
+import { requireLocalCaller } from '../identity-routes'
 import { badRequest, stringParam } from './route-helpers'
 
 /** Request header naming the client session a write comes from. */
@@ -73,6 +74,7 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     if (body.exitDaemonWhenClosed !== undefined && typeof body.exitDaemonWhenClosed !== 'boolean') {
       return badRequest(reply, 'exitDaemonWhenClosed must be a boolean')
     }
+    if (body.exitDaemonWhenClosed === true && !requireLocalCaller(request, reply, ctx.localAccess, 'Ownership of daemon shutdown can be granted')) return reply
     if (body.umbilical !== undefined && typeof body.umbilical !== 'boolean') return badRequest(reply, 'umbilical must be a boolean')
     if (body.pid !== undefined && !(typeof body.pid === 'number' && Number.isInteger(body.pid) && body.pid > 0)) return badRequest(reply, 'pid must be a positive integer')
     // A pid names a process on the daemon's machine: taken from a local caller only (a remote one's pid means nothing here).

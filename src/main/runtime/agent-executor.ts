@@ -922,7 +922,7 @@ export class AgentExecutor extends EventEmitter {
     // remainder of its turn while waiting to be stopped.
     if (targetState === 'off') {
       this._lastTargetState = null
-      if (this.state !== 'stopped') {
+      if (this.getState() !== 'stopped') {
         this.abort()
       }
       this.emitEvent({ type: 'state_changed', payload: { state: 'off' }, timestamp: Date.now() })
@@ -1376,7 +1376,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
     }
-    if (this.state !== 'stopped') this.setState('tool_use')
+    if (this.getState() !== 'stopped') this.setState('tool_use')
     return { approved, modifiedArgs, feedback }
   }
 
@@ -1425,7 +1425,7 @@ export class AgentExecutor extends EventEmitter {
     // If the agent was stopped while awaiting approval, don't resurrect it —
     // abort()/teardown resolve pending HIL as denied, and flipping state back
     // to tool_use here would contradict the stopped-agent guarantee.
-    if (this.state !== 'stopped') {
+    if (this.getState() !== 'stopped') {
       if (!besideTurn) this.setState('tool_use')
       else if (ownsState && !this.isTurnActive() && this.state === 'awaiting_approval') this.setState(priorState)
     }
@@ -1843,7 +1843,7 @@ export class AgentExecutor extends EventEmitter {
       // arrived mid-compaction queued (+_interruptRestart, with nothing to
       // abort) — replay them all; otherwise drain queued triggers.
       this._interruptRestart = false
-      const replayed = this.state !== 'stopped' && this.replayQueuedChats()
+      const replayed = this.getState() !== 'stopped' && this.replayQueuedChats()
       this.activeTurnCount--
       this.activeAgentTurnCount--
       if (!replayed && this.activeAgentTurnCount === 0 && this.state === 'idle') {
@@ -1920,7 +1920,7 @@ export class AgentExecutor extends EventEmitter {
     // Hard stop: refuse all execution when the executor has been killed. A
     // chat refused here (sent after the stop, or a replay scheduled just
     // before it) is reported like the rest of the stop's discards.
-    if (this.state === 'stopped') {
+    if (this.getState() === 'stopped') {
       if (!opts?.nested && 'event' in dispatch && dispatch.event.type === 'chat') {
         this.pendingChats.push(dispatch)
         this.discardQueuedChats('stopped')
@@ -2210,7 +2210,7 @@ export class AgentExecutor extends EventEmitter {
 
       while (continueLoop) {
         // Bail out if the agent was stopped while we were executing tools
-        if (this.state === 'stopped') break
+        if (this.getState() === 'stopped') break
         // Bail out if a user interrupt triggered a restart
         if (this._interruptRestart) break
         // Bail out if the owner ended the turn with a lifecycle transition
@@ -2596,8 +2596,13 @@ export class AgentExecutor extends EventEmitter {
         })
 
         const toolUseBlocks = response.content.filter(
-          (block): block is ContentBlock & { type: 'tool_use' } =>
-            block.type === 'tool_use'
+          (block): block is ContentBlock & { type: 'tool_use'; id: string; name: string } => {
+            if (block.type !== 'tool_use') return false
+            if (typeof block.id !== 'string' || !block.id || typeof block.name !== 'string' || !block.name) {
+              throw new Error('Provider returned a tool call without a valid id and name')
+            }
+            return true
+          }
         )
 
         if (toolUseBlocks.length > 0) {
@@ -3154,7 +3159,7 @@ export class AgentExecutor extends EventEmitter {
             }
 
             // If the agent was stopped, interrupted, or halted mid-tool-execution, stop processing further tools
-            if (this.state === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) break
+            if (this.getState() === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) break
 
             // If the tool signals end of turn, stop after submitting results
             if (result.endTurn) {
@@ -3361,7 +3366,7 @@ export class AgentExecutor extends EventEmitter {
       } else if (this._ownerStateTransitionRequested) {
         // Intentional abort from an owner-requested idle/hibernate transition.
         // The finally block records the boundary and applies the target state.
-      } else if (this.state === 'stopped') {
+      } else if (this.getState() === 'stopped') {
         // Intentional shutdown via abort() — not a real error
       } else {
       const errorMsg = error instanceof Error ? error.message
@@ -3698,7 +3703,7 @@ export class AgentExecutor extends EventEmitter {
         this.failTurnCheckpoint(checkpointId, 'turn_error')
       } else if (ownerTransitioned) {
         this.interruptTurnCheckpoint(checkpointId, 'owner_state_transition')
-      } else if (this.state === 'stopped') {
+      } else if (this.getState() === 'stopped') {
         this.interruptTurnCheckpoint(checkpointId, 'executor_stopped')
       } else if (this._recoveryTimer !== null) {
         // A provider-recovery retry is armed: the turn's work is NOT done.
@@ -3717,7 +3722,7 @@ export class AgentExecutor extends EventEmitter {
       // Only transition to idle and process pending triggers if the agent
       // wasn't explicitly stopped. abort() sets state to 'stopped' and
       // clears pendingTriggers; we must not override that here.
-      if (this.state !== 'stopped') {
+      if (this.getState() !== 'stopped') {
         if (this.state === 'error') {
           // Stay in error state so the UI reflects the failure. Discard
           // queued triggers (API is likely broken), but replay queued owner
@@ -3876,7 +3881,7 @@ export class AgentExecutor extends EventEmitter {
       }],
     })
     this.session.flushToLoop()
-    if (this.state !== 'stopped') this.setState('idle')
+    if (this.getState() !== 'stopped') this.setState('idle')
     this.emitRuntimeEvent('loop.recovered', { reason: 'stale_checkpoint' })
     return recovered
   }
@@ -4846,7 +4851,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       // Borderline — count actual tokens
       const tokenCounter = getTokenCounterService()
-      tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider.modelId)
+      tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider?.modelId)
       if (tokenCount <= maxTokens) return result
     }
 
@@ -6214,7 +6219,7 @@ export class AgentExecutor extends EventEmitter {
    * Strip image_url blocks from messages. Used when a provider chokes on image
    * content (malformed image, no vision support, etc).
    */
-  private stripImageBlocks(messages: Array<{ role: string; content: any; created_at?: number; seq?: number }>): Array<{ role: string; content: any; created_at?: number; seq?: number }> {
+  private stripImageBlocks(messages: LLMMessage[]): LLMMessage[] {
     return messages.map((msg) => {
       if (typeof msg.content === 'string') return msg
       if (!Array.isArray(msg.content)) return msg
@@ -6222,7 +6227,7 @@ export class AgentExecutor extends EventEmitter {
       // Preserve identity/metadata (seq, created_at) — dropping them here
       // would erase every [S<seq>] marker and timestamp for the rest of the
       // session and break the prompt-cache prefix.
-      const filtered = msg.content.filter((block: any) => block.type !== 'image_url')
+      const filtered = msg.content.filter((block) => block.type !== 'image_url')
       if (filtered.length === 0) {
         return { ...msg, content: '[Image content removed — provider does not support it]' }
       }

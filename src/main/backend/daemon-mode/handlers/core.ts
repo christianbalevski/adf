@@ -243,7 +243,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
   [IPC.AGENT_START]: async (ctx, _event, args?: { filePath?: string; hasUserMessage?: boolean }) => {
     const filePath = ctx.session.filePath
     if (!filePath) return { success: false, error: 'No file open' }
-    if (args?.filePath && !samePath(args.filePath, filePath)) {
+    if (args?.filePath && !samePath(args.filePath, filePath, ctx.mode === 'remote')) {
       return { success: false, error: 'Agent file changed since start was requested' }
     }
     const client = await ctx.ready()
@@ -269,7 +269,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
         client.request<{ displayState: string | null }>('GET', `/agents/${enc(running.id)}/triggers`).catch(sideRead('the display state', { displayState: null })),
         client.request<FleetPendingInteraction[]>('GET', '/approvals/interactions').catch(sideRead('the pending approvals and asks', [] as FleetPendingInteraction[])),
       ])
-      const mine = interactions.filter((i) => samePath(i.filePath, agentPath))
+      const mine = interactions.filter((i) => samePath(i.filePath, agentPath, ctx.mode === 'remote'))
       return {
         success: true,
         sessionId: running.sessionId,
@@ -332,7 +332,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     const pending = filePath
       ? await client.request<{ pendingName?: string }>('GET', '/files/agent', { query: { path: filePath } }).then((i) => i.pendingName, () => undefined)
       : undefined
-    const moved = pending && filePath ? ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, filePath)) : null
+    const moved = pending && filePath ? ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, filePath, ctx.mode === 'remote')) : null
     try {
       await client.request('POST', `/agents/${enc(agentId)}/stop`, { timeoutMs: 60_000 })
     } catch (err) {
@@ -360,7 +360,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     let client: Awaited<ReturnType<DaemonModeContext['ready']>>
     try {
       client = await ctx.ready()
-      agentId = samePath(target, ctx.session.filePath) && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(target)
+      agentId = samePath(target, ctx.session.filePath, ctx.mode === 'remote') && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(target)
       if (!agentId || !(await agentStatus(ctx, agentId))) return failed('Agent not running')
     } catch (error) {
       return failed(errorText(error))

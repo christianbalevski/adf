@@ -880,7 +880,7 @@ const LogEntryRow = memo(({
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] font-semibold text-[var(--ink-muted)]">
-                Loop compacted{entry.metadata?.audited ? <> &middot; Prior context audited</> : null}
+                Loop compacted{entry.metadata?.audited === true ? <> &middot; Prior context audited</> : null}
               </span>
             </div>
             {entry.timestamp > 0 && (
@@ -892,7 +892,7 @@ const LogEntryRow = memo(({
           <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
         </div>
       )}
-      {entry.type === 'system' && entry.metadata?.isAsk && (
+      {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && (
         <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
           <div className="p-2.5">
             <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">

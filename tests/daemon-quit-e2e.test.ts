@@ -75,7 +75,16 @@ function kill(child: ChildProcess): void {
 afterEach(async () => {
   for (const child of children.splice(0)) kill(child)
   await new Promise((r) => setTimeout(r, 300))
-  for (const root of roots.splice(0)) removeTreeWithoutLinks(root)
+  const violations: string[] = []
+  for (const root of roots.splice(0)) {
+    const log = join(root, 'violations.log')
+    if (existsSync(log)) {
+      const content = readFileSync(log, 'utf-8').trim()
+      if (content) violations.push(content)
+    }
+    removeTreeWithoutLinks(root)
+  }
+  expect(violations, 'daemon children must not attempt operations outside their isolation fence').toEqual([])
 })
 
 async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon & { root: string; pid: number }> {
@@ -105,6 +114,7 @@ async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon & { root
     ADF_DAEMON_TOKEN: token,
     ADF_DAEMON_STARTED_BY: startedBy,
     ADF_USER_DATA_DIR: userData,
+    ADF_LEASE_DIR: join(root, 'leases'),
     ADF_TEST_SEAMS: '1',
     ADF_COMPUTE: 'fake',
     ADF_KEYCHAIN: '0',
@@ -120,6 +130,7 @@ async function startDaemon(startedBy: 'studio' | 'cli'): Promise<Daemon & { root
     TMPDIR: temp,
     PARITY_FENCE_LOG: join(root, 'violations.log'),
     PARITY_FENCE_ROOT: root,
+    PARITY_FENCE_WRITE_ROOTS: JSON.stringify([root]),
     PARITY_FENCE_PORTS: `${port},${meshPort}`,
   }
   delete env.ADF_SECRET_STORE
@@ -198,7 +209,7 @@ describe.skipIf(!existsSync(BUNDLE))('quit behaviour against the daemon bundle (
     await call(d, 'POST', '/agents/load', { filePath })
     const studio = await openSession(d, 'studio', true)
     // While it runs there, another runtime cannot take the agent.
-    const other = new AgentLeaseRegistry({ kind: 'studio-embedded', pid: 4_000_000 + Math.floor(Math.random() * 1000), sweepDeadEntries: false })
+    const other = new AgentLeaseRegistry({ dir: join(d.root, 'leases'), kind: 'studio-embedded', pid: 4_000_000 + Math.floor(Math.random() * 1000), sweepDeadEntries: false })
     try {
       expect((await other.acquire(filePath)).ok).toBe(false)
       await call(d, 'POST', `/client/sessions/${studio.sessionId}/quit`, { stopDaemon: true })

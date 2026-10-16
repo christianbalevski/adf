@@ -41,7 +41,7 @@ export interface ShellGate {
   /** on_tool_call observer notifier — fired AFTER a command runs one of the
    *  matching tools. Observational: it never blocks the command and creates no
    *  task (see notifyToolCallObservers). */
-  onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
+  onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string, systemScopeHandled?: boolean) => void
 }
 
 export interface CommandContext {

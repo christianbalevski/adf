@@ -9,7 +9,8 @@ export interface CodeResult {
 }
 
 export interface AdfCallResult {
-  result?: string
+  /** adf calls return either tool text or structured values passed through to the VM. */
+  result?: unknown
   error?: string
   errorCode?: string
   /** When true, the proxy won't auto-parse the result as JSON (e.g. model_invoke returns raw text) */

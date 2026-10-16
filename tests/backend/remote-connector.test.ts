@@ -54,7 +54,10 @@ function daemonHandler(seen: Seen[], opts: { clientApiVersion?: number; versionS
 
 const servers: Server[] = []
 afterEach(async () => {
-  await Promise.all(servers.splice(0).map((s) => new Promise<void>((done) => s.close(() => done()))))
+  await Promise.all(servers.splice(0).map((s) => new Promise<void>((done) => {
+    s.closeAllConnections()
+    s.close(() => done())
+  })))
 })
 
 async function listen(server: Server): Promise<number> {
@@ -143,6 +146,22 @@ describe('transport rule (§9.2): URL matrix', () => {
 })
 
 describe('version handshake and its failures', () => {
+  it.each([
+    ['/health', 200], ['/health', 503], ['/version', 200], ['/version', 401],
+  ] as const)('times out a stalled %s HTTP %i body', async (path, status) => {
+    const port = await listen(createHttpServer((req, res) => {
+      if (req.url !== path) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('{"ok":true}')
+        return
+      }
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.write('{"unfinished":')
+    }))
+    await expect(remoteHandshake(`http://127.0.0.1:${port}`, TOKEN, { timeoutMs: 200 }))
+      .rejects.toMatchObject({ problem: 'unreachable', message: expect.stringContaining('did not answer within') })
+  })
+
   it('connects: /health without the token, /version with it; the endpoint carries no local proof and no token-file refresh', async () => {
     const seen: Seen[] = []
     const port = await listen(createHttpServer(daemonHandler(seen)))

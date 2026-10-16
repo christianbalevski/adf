@@ -119,6 +119,8 @@ export function isLocalOnlyRoute(path: string): boolean {
   const p = path.split('?')[0]
   return p === '/daemon/shutdown'
     || p === '/client/reload-credentials'
+    || p === '/client/sessions'
+    || /^\/client\/sessions\/[^/]+\/exit-when-closed$/.test(p)
     || /^\/client\/sessions\/[^/]+\/quit$/.test(p)
     || /^\/identity\/(create|restore|import|unlock|lock|confirm-backup|trust-daemon|untrust-daemon)$/.test(p)
     || /^\/agents\/[^/]+\/identity\/reveal$/.test(p)

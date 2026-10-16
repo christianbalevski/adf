@@ -80,6 +80,7 @@ type Row = Record<string, unknown>
  * background-event-mapping.ts).
  */
 interface ClientOverlay {
+  remote: boolean
   focusedPath: string | null
   background: Map<string, { state: AgentState; activeLoops: number }>
 }
@@ -88,9 +89,9 @@ function clientOverlay(ctx: DaemonModeContext): ClientOverlay {
   const background = new Map<string, { state: AgentState; activeLoops: number }>()
   for (const agent of ctx.bridge.runningAgents()) {
     if (ctx.session.isFocused(agent.agentId, agent.filePath)) continue
-    background.set(pathKey(agent.filePath), { state: agent.mapping.state, activeLoops: countActiveLoops(agent.mapping.loopStates) })
+    background.set(pathKey(agent.filePath, ctx.mode === 'remote'), { state: agent.mapping.state, activeLoops: countActiveLoops(agent.mapping.loopStates) })
   }
-  return { focusedPath: ctx.session.filePath, background }
+  return { remote: ctx.mode === 'remote', focusedPath: ctx.session.filePath, background }
 }
 
 /** Live rows (mesh statuses) and ghost rows (tracked files) of a fleet or mesh answer. */
@@ -98,7 +99,7 @@ function overlayRows(rows: unknown, overlay: ClientOverlay): void {
   if (!Array.isArray(rows)) return
   for (const row of rows as Row[]) {
     if (!row || typeof row.filePath !== 'string') continue
-    const live = overlay.background.get(pathKey(row.filePath))
+    const live = overlay.background.get(pathKey(row.filePath, overlay.remote))
     if (!live) continue
     row.state = live.state
     // A mesh row (getAgentStatuses) carries `canReceive`; embedded overlays the inner-loop count onto it.
@@ -111,7 +112,7 @@ function overlayRows(rows: unknown, overlay: ClientOverlay): void {
 function overlayDebug(debug: Row, overlay: ClientOverlay): void {
   const background = debug.backgroundAgents
   if (!Array.isArray(background) || !overlay.focusedPath) return
-  const at = (background as Row[]).findIndex((a) => typeof a?.filePath === 'string' && samePath(a.filePath, overlay.focusedPath))
+  const at = (background as Row[]).findIndex((a) => typeof a?.filePath === 'string' && samePath(a.filePath, overlay.focusedPath, overlay.remote))
   if (at < 0) return
   const [entry] = (background as Row[]).splice(at, 1)
   const foreground = Array.isArray(debug.foregroundAgents) ? debug.foregroundAgents as Row[] : []

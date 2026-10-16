@@ -210,6 +210,56 @@ describe('timeouts', () => {
     await expect(client.withTimeout(20).agents()).rejects.toMatchObject({ message: expect.stringContaining('timed out after 20ms') })
     expect(seen).toEqual(['Bearer t'])
   })
+
+  it('does not send a mutation when its caller already cancelled it', async () => {
+    const { fetch, calls } = fakeFetch()
+    const client = new SharedDaemonClient({ baseUrl: 'http://daemon.example', fetch })
+    const controller = new AbortController()
+    controller.abort(new Error('cancelled by caller'))
+    await expect(client.request('POST', '/agents/create', { body: {}, signal: controller.signal }))
+      .rejects.toMatchObject({ status: null, message: expect.stringContaining('cancelled by caller') })
+    expect(calls).toHaveLength(0)
+  })
+
+  it.each([200, 401, 500])('keeps the deadline active while an HTTP %i body stalls', async (status) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.write('{"unfinished":')
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const client = new SharedDaemonClient({ baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, timeoutMs: 200 })
+    try {
+      await expect(client.request('GET', '/slow'))
+        .rejects.toMatchObject({ status: null, message: expect.stringContaining('timed out after 200ms') })
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
+  it('honours caller cancellation after response headers arrive', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.write('{"unfinished":')
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const controller = new AbortController()
+    const client = new SharedDaemonClient({
+      baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      fetch: async (input, init) => {
+        const response = await fetch(input, init)
+        setTimeout(() => controller.abort(new Error('cancelled while reading')), 20)
+        return response
+      },
+    })
+    try {
+      await expect(client.request('GET', '/slow', { signal: controller.signal }))
+        .rejects.toMatchObject({ status: null, unreachable: true })
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
 })
 
 describe('origins', () => {

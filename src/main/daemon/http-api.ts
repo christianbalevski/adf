@@ -128,7 +128,7 @@ export interface DaemonComputeService {
   destroyContainer?(name: string): Promise<boolean>
   getContainerDetail?(name: string): Promise<Record<string, unknown>>
   getExecLog?(name?: string): unknown[]
-  setup?(step: 'install' | 'machine_init' | 'machine_start' | 'check', installCommand?: string): Promise<Record<string, unknown>>
+  setup?(step: 'install' | 'machine_init' | 'machine_start' | 'check', installCommand?: string): Promise<import('../../shared/types/compute.types').ComputeSetupResult>
 }
 
 export interface DaemonSettingsStore {
@@ -2446,7 +2446,7 @@ export function createDaemonHttpApi(
   server.get<{ Querystring: { path?: string } }>('/tracked-dirs/agents', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     try {
-      return listFolderAgents(runtime, opts.settingsStore, request.query.path)
+      return await listFolderAgents(runtime, opts.settingsStore, request.query.path)
     } catch (err) {
       return trackedDirsError(reply, err)
     }
@@ -2458,7 +2458,7 @@ export function createDaemonHttpApi(
   server.get('/tracked-dirs/agents/all', async (_request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     try {
-      return listTrackedAgents(runtime, opts.settingsStore)
+      return await listTrackedAgents(runtime, opts.settingsStore)
     } catch (err) {
       return trackedDirsError(reply, err)
     }

@@ -79,6 +79,7 @@ export function registerClientLifecycleRoutes(server: FastifyInstance, ctx: Daem
   server.put<{ Params: { id: string }; Body: { exitDaemonWhenClosed?: unknown } | undefined }>('/client/sessions/:id/exit-when-closed', async (request, reply) => {
     const value = request.body && typeof request.body === 'object' ? request.body.exitDaemonWhenClosed : undefined
     if (typeof value !== 'boolean') return badRequest(reply, 'exitDaemonWhenClosed must be a boolean')
+    if (!requireLocalCaller(request, reply, ctx.localAccess, 'Ownership of daemon shutdown can be changed')) return reply
     const sessions = registry()
     if (!sessions) return reply.code(405).send({ error: 'Client sessions are not available on this daemon.', code: 'method_not_allowed' })
     if (!sessions.has(request.params.id)) return reply.code(404).send({ error: `No client session ${request.params.id} (it ended or expired, or the daemon restarted).`, code: 'session_not_found' })

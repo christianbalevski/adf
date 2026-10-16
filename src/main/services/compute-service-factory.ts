@@ -19,6 +19,7 @@
  */
 
 import { PodmanService } from './podman.service'
+import type { ComputeSetupResult } from '../../shared/types/compute.types'
 import { testSeamsAllowed } from '../utils/test-seams'
 
 
@@ -29,7 +30,7 @@ export class FakeComputeService extends PodmanService {
     return null
   }
 
-  override async setup(): Promise<Record<string, unknown>> {
+  override async setup(): Promise<ComputeSetupResult> {
     return { success: false, error: FAKE_MESSAGE }
   }
 

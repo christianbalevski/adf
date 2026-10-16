@@ -39,8 +39,8 @@ export const useTrackedDirsStore = create<TrackedDirsState>((set) => ({
         const newFiles = files.map((f) => {
           if (f.filePath !== filePath) return f
           // Only spread if a value actually differs
-          const needsUpdate = Object.entries(updates).some(
-            ([k, v]) => (f as Record<string, unknown>)[k] !== v
+          const needsUpdate = (Object.keys(updates) as Array<keyof typeof updates>).some(
+            (key) => f[key] !== updates[key]
           )
           if (!needsUpdate) return f
           changed = true

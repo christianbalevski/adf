@@ -51,6 +51,7 @@ function boot(startedBy: DaemonVersionInfo['startedBy'], opts: { reviveFails?: b
     },
   })
   const logs: string[] = []
+  const processAlive = vi.fn((p: number) => !dead.has(p))
   const handle = registerDaemonModeHandlers({
     mode: 'local',
     userDataDir: dir,
@@ -59,7 +60,7 @@ function boot(startedBy: DaemonVersionInfo['startedBy'], opts: { reviveFails?: b
     ipcMain: { handle: () => {}, on: () => {} } as never,
     fetch: daemon.fetch,
     createSession: () => session,
-    processAlive: (p) => !dead.has(p),
+    processAlive,
     respawnDelayMs: 0,
     log: { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(m) }, error: (m: string) => { logs.push(m) } },
   })
@@ -68,7 +69,7 @@ function boot(startedBy: DaemonVersionInfo['startedBy'], opts: { reviveFails?: b
     dead.add(pid)
     session.listener!.onConnection({ state: 'reconnecting', error: 'fetch failed' })
   }
-  return { handle, session, logFile, revives, logs, kill, pid: () => pid }
+  return { handle, session, logFile, revives, logs, kill, markDead: () => dead.add(pid), processAlive, pid: () => pid }
 }
 
 const dialogs = () => electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox').map((c) => c.args[0] as { title?: string; message: string; detail: string; buttons: string[] })
@@ -253,5 +254,48 @@ describe('sleep and wake (powerMonitor resume)', () => {
 
     await handle.shutdown()
     expect(power.listenerCount('resume')).toBe(0)
+  })
+})
+
+
+describe('disconnected daemon PID observation', () => {
+  it('detects an exit after the old 1.5s observation window without a fresh stream state', async () => {
+    const { handle, session, revives, markDead } = boot('studio')
+    try {
+      expect(await handle.ready).toBe(true)
+      session.listener!.onConnection({ state: 'reconnecting', error: 'stream ended' })
+      await new Promise((r) => setTimeout(r, 1_800))
+      markDead()
+      await vi.waitFor(() => expect(revives).toEqual([1001]))
+      session.listener!.onConnection({ state: 'open' })
+    } finally { await handle.shutdown() }
+  })
+
+  it.each(['recovery', 'shutdown'] as const)('cancels PID observation on %s', async (stop) => {
+    const { handle, session, revives, markDead, processAlive } = boot('studio')
+    try {
+      expect(await handle.ready).toBe(true)
+      session.listener!.onConnection({ state: 'reconnecting', error: 'stream ended' })
+      await new Promise((r) => setTimeout(r, 300))
+      if (stop === 'recovery') session.listener!.onConnection({ state: 'open' })
+      else await handle.shutdown()
+      const observed = processAlive.mock.calls.length
+      markDead()
+      await new Promise((r) => setTimeout(r, 300))
+      expect(processAlive).toHaveBeenCalledTimes(observed)
+      expect(revives).toEqual([])
+    } finally { await handle.shutdown() }
+  })
+
+  it('stops listener verification retries when the connection is disposed', async () => {
+    const verifyListener = vi.fn(async () => { throw new Error('Nothing answers') })
+    const connection = new DaemonConnection(Object.assign(async () => ({ baseUrl: BASE, logFile: null, description: 'fake', source: { token: () => 't' } }), { verifyListener }), { log() {}, warn() {}, error() {} })
+    await connection.client()
+    connection.markConnected()
+    connection.markDisconnected()
+    await vi.waitFor(() => expect(verifyListener).toHaveBeenCalledTimes(1))
+    connection.dispose()
+    await new Promise((r) => setTimeout(r, 1_100))
+    expect(verifyListener).toHaveBeenCalledTimes(1)
   })
 })

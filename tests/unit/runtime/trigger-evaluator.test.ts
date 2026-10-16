@@ -1936,3 +1936,19 @@ describe('TriggerEvaluator — loop routing', () => {
     expect((events[1] as AdfEventDispatch).loop).toBeUndefined()
   })
 })
+
+describe('file deletion during a debounce window', () => {
+  it('dispatches the deletion when the workspace no longer has text to diff', () => {
+    vi.useFakeTimers()
+    const evaluator = new TriggerEvaluator(makeConfig({ on_file_change: makeTriggerConfig([makeTarget('system', { debounce_ms: 100, filter: { watch: '*' } })]) }))
+    evaluator.setDisplayState('active')
+    evaluator.setWorkspace({ readFile: () => null, getFileMeta: () => null } as never)
+    const events = collectEvents(evaluator)
+    try {
+      evaluator.onFileChange('notes.txt', 'deleted', undefined, 'old text', { source: 'system' })
+      expect(() => vi.advanceTimersByTime(100)).not.toThrow()
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({ event: { type: 'file_change', data: { path: 'notes.txt', operation: 'deleted' } } })
+    } finally { evaluator.dispose(); vi.useRealTimers() }
+  })
+})

@@ -58,14 +58,20 @@ let agentsDir: string
 const servers: Array<{ close: () => Promise<unknown> }> = []
 const runtimes: RuntimeService[] = []
 const savedKeychainEnv = process.env.ADF_KEYCHAIN
+const savedSecretStoreEnv = process.env.ADF_SECRET_STORE
 
 beforeAll(() => {
   // Any code path that would open the real OS keychain gets "no keychain" instead.
   process.env.ADF_KEYCHAIN = '0'
+  // This suite injects its own keychain backend; an inherited file override
+  // would bypass that explicit test seam.
+  delete process.env.ADF_SECRET_STORE
 })
 afterAll(() => {
   if (savedKeychainEnv === undefined) delete process.env.ADF_KEYCHAIN
   else process.env.ADF_KEYCHAIN = savedKeychainEnv
+  if (savedSecretStoreEnv === undefined) delete process.env.ADF_SECRET_STORE
+  else process.env.ADF_SECRET_STORE = savedSecretStoreEnv
 })
 
 beforeEach(() => {

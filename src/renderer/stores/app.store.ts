@@ -296,7 +296,7 @@ export interface AppState {
   openShareDialog: (filePath?: string) => void
   setPendingFirstMessage: (pending: { filePath: string; text: string; files?: File[] } | null) => void
   /** Claim the pending message for this file; null if it belongs to another file or was taken. */
-  takePendingFirstMessage: (filePath: string) => { filePath: string; text: string } | null
+  takePendingFirstMessage: (filePath: string) => { filePath: string; text: string; files?: File[] } | null
   setHomeProviderId: (id: string | null) => void
   setHomeFolder: (folder: string | null) => void
   setHomeDraft: (text: string) => void

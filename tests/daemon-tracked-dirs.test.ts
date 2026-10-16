@@ -82,6 +82,40 @@ function setup(initial: Record<string, unknown> = {}) {
 }
 
 describe('daemon tracked folders API', () => {
+  it('yields to other requests during a large tracked-folder scan, preserving depth and skip rules', async () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-tracked-large-')))
+    for (let dir = 0; dir < 100; dir++) {
+      const folder = join(root, `folder-${dir}`)
+      mkdirSync(folder)
+      for (let file = 0; file < 100; file++) writeFileSync(join(folder, `agent-${file}.adf`), '')
+    }
+    for (const name of ['.hidden', 'node_modules']) {
+      mkdirSync(join(root, name))
+      writeFileSync(join(root, name, 'ignored.adf'), '')
+    }
+    mkdirSync(join(root, 'folder-0', 'deep'))
+    writeFileSync(join(root, 'folder-0', 'deep', 'too-deep.adf'), '')
+    const { runtime, server } = setup({ trackedDirectories: [root], maxDirectoryScanDepth: 1 })
+    const synchronous = vi.spyOn(runtime, 'scanAdfFiles').mockImplementation(() => { throw new Error('HTTP must scan asynchronously') })
+    let yielded = false
+    const started = performance.now()
+    let timerDelay = 0
+    let completed = false
+    const scan = server.inject({ method: 'GET', url: '/tracked-dirs' }).then(response => { completed = true; return response })
+    setTimeout(() => { yielded = true; timerDelay = performance.now() - started }, 0)
+    const health = await server.inject({ method: 'GET', url: '/health' })
+    expect(health.statusCode).toBe(200)
+    expect(completed).toBe(false)
+    const response = await scan
+    expect(response.statusCode).toBe(200)
+    expect(response.json().directories[0].agentCount).toBe(10000)
+    expect(yielded).toBe(true)
+    process.stdout.write(`[tracked scan] 10000 files: scan=${(performance.now() - started).toFixed(2)}ms timer=${timerDelay.toFixed(2)}ms\n`)
+    expect(synchronous).not.toHaveBeenCalled()
+    synchronous.mockRestore()
+    expect(await runtime.scanAdfFilesAsync([root, root], 1)).toEqual(runtime.scanAdfFiles([root], 1))
+  })
+
   it('autostart: false (Studio, as embedded Studio tracks a folder) tracks without starting its agents (W5-D2)', async () => {
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'adf-tracked-')))
     const reviewedId = seedAgent(root, 'agent-1')

@@ -47,6 +47,8 @@ export const IDENTITY: { ownerDid: string; runtimeDid: string; runtimeId: string
 
 export interface FixtureSpec {
   name: FixtureName
+  /** Optional stable creation instant for scenarios that compare ordering. */
+  createdAt?: string
   /** Default 'idle': start runs no startup turn unless the scenario asks for one. */
   startInState?: StartInState
   /** A legacy whole-file password (deprecated mechanism, still opened and converted), with one stored value under it. */
@@ -95,6 +97,7 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       if (pinned !== document) workspace.writeDocument(pinned)
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
+      if (spec.createdAt) config.metadata.created_at = spec.createdAt
       for (const name of spec.enableTools ?? []) {
         const tool = config.tools.find((t) => t.name === name)
         if (tool) Object.assign(tool, { enabled: true, visible: true })

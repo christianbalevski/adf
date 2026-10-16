@@ -23,7 +23,7 @@ import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
-import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
+import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
 import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE, REMOTE_OWNER_RESTORE_SENTENCE } from '../../../shared/constants/remote-owner-identity'
@@ -1422,7 +1422,7 @@ export function SettingsPage() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>()
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingSave = useRef<(() => Promise<unknown> | void) | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
@@ -2578,37 +2578,6 @@ export function SettingsPage() {
       </main>
     </div>
   )
-}
-
-interface InstallMethod {
-  command: string
-  label: string
-  autoRunnable: boolean
-  /** A page to open (e.g. an installer download) instead of a command to copy. */
-  url?: string
-}
-
-interface Prerequisite {
-  id: 'wsl'
-  name: string
-  installed: boolean
-  installCommand?: string
-  requiresReboot?: boolean
-  description?: string
-  docsUrl?: string
-}
-
-interface PodmanAvailability {
-  available: boolean
-  binPath?: string
-  version?: string
-  machineRequired: boolean
-  machineRunning?: boolean
-  machineExists?: boolean
-  error?: string
-  platform: string
-  installMethods: InstallMethod[]
-  prerequisites: Prerequisite[]
 }
 
 /** COMPUTE_STATUS as Settings → Compute reads it. `leftRunning`: containers the

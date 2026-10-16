@@ -45,6 +45,19 @@ function llmActivityArgs(payload: ResponseMetadataPayload): string {
   return `${model} · ${formatTok(total)} tok`
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isResponseMetadataPayload(value: unknown): value is ResponseMetadataPayload {
+  if (!isRecord(value) || typeof value.model !== 'string') return false
+  const usage = value.usage
+  if (!isRecord(usage)) return false
+  if (value.estimated !== undefined && typeof value.estimated !== 'boolean') return false
+  const usageFields = ['input', 'output', 'cache_read', 'cache_write', 'reasoning', 'cost_usd'] as const
+  return usageFields.every((field) => usage[field] === undefined || typeof usage[field] === 'number')
+}
+
 function errorActivityArgs(payload: Record<string, unknown>): string {
   const msg = typeof payload.error === 'string' ? payload.error : 'unknown error'
   const firstLine = msg.split('\n')[0]
@@ -259,11 +272,11 @@ export function useMeshGraph() {
             break
           case 'response_metadata':
             // Pre-flight estimates fire before every call — only surface real usage
-            if (!(payload as ResponseMetadataPayload).estimated) {
+            if (isResponseMetadataPayload(payload) && !payload.estimated) {
               apply(applyActivity(draft, foregroundFilePath, {
                 id: nextId(),
                 toolName: 'llm',
-                args: llmActivityArgs(payload as ResponseMetadataPayload),
+                args: llmActivityArgs(payload),
                 timestamp: event.timestamp,
                 type: 'llm'
               }))
@@ -340,11 +353,11 @@ export function useMeshGraph() {
           // ApprovalHub snapshot, not from these events.
           case 'response_metadata':
             // Pre-flight estimates fire before every call — only surface real usage
-            if (!(payload as ResponseMetadataPayload).estimated) {
+            if (isResponseMetadataPayload(payload) && !payload.estimated) {
               apply(applyActivity(draft, filePath, {
                 id: nextId(),
                 toolName: 'llm',
-                args: llmActivityArgs(payload as ResponseMetadataPayload),
+                args: llmActivityArgs(payload),
                 timestamp: event.timestamp,
                 type: 'llm'
               }))

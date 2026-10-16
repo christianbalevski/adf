@@ -1,3 +1,4 @@
+import { CODE_EXECUTION_DEFAULTS } from '../../../shared/types/adf-v02.types'
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
@@ -52,6 +53,7 @@ export class NpmUninstallTool implements Tool {
     workspace.setAgentConfig({
       ...config,
       code_execution: {
+        ...CODE_EXECUTION_DEFAULTS,
         ...config.code_execution,
         packages: updated
       }

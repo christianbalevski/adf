@@ -678,7 +678,7 @@ app.whenReady().then(async () => {
     const rawType = entry.mime_type ?? 'application/octet-stream'
     const contentType = SAFE_MIME_PREFIXES.some(p => rawType.startsWith(p)) ? rawType : 'application/octet-stream'
 
-    return new Response(entry.content, {
+    return new Response(new Uint8Array(entry.content), {
       headers: {
         'Content-Type': contentType,
         'X-Content-Type-Options': 'nosniff'

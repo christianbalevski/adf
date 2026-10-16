@@ -1,0 +1,268 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import * as fsPromises from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createRequire } from 'node:module'
+import Database from 'better-sqlite3'
+import { describe, expect, it } from 'vitest'
+import { createParityEnv, type ActiveParityEnv } from './harness/env'
+
+const req = createRequire(import.meta.url)
+// Load and initialize the native binding before installing a fence. Cached
+// constructors must have the same protection as newly imported ones.
+new Database(':memory:').close()
+
+function outsideState() {
+  const root = mkdtempSync(join(tmpdir(), 'adf-fence-state-'))
+  const leases = join(root, 'adf', 'leases')
+  const hosts = join(leases, 'hosts')
+  mkdirSync(hosts, { recursive: true })
+  const settings = join(root, 'settings.json')
+  writeFileSync(settings, '{"keep":true}')
+  return { root, leases, hosts, settings, realState: { files: [settings], trees: [leases] } }
+}
+
+async function independentWriter(): Promise<{ child: ChildProcessWithoutNullStreams; change(command: object): Promise<void>; close(): Promise<void> }> {
+  const child = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+      const c = JSON.parse(line);
+      if (c.kind === 'touch') { const now = new Date(); fs.utimesSync(c.path, now, now); }
+      if (c.kind === 'write') fs.writeFileSync(c.path, c.text);
+      if (c.kind === 'delete') fs.unlinkSync(c.path);
+      if (c.kind === 'mkdir') fs.mkdirSync(c.path);
+      if (c.kind === 'link') fs.symlinkSync(c.source, c.path, 'junction');
+      console.log('done');
+    });
+    console.log('ready');
+  `], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'pipe' })
+  const next = () => new Promise<void>((resolve, reject) => { child.stdout.once('data', () => resolve()); child.once('error', reject) })
+  await next()
+  return {
+    child,
+    async change(command) { const done = next(); child.stdin.write(`${JSON.stringify(command)}\n`); await done },
+    async close() { const done = new Promise<void>(resolve => child.once('exit', () => resolve())); child.kill('SIGKILL'); await done },
+  }
+}
+
+function hostRecord(pid: number) {
+  return { v: 1, kind: 'daemon', mode: 'daemon', pid, runtimeId: '0123456789abcdef', hostname: 'test-host', settingsPath: '/isolated/settings.json', startedAt: 1, endpoint: null, version: 'test', containers: [] }
+}
+
+async function guarded(label: string, run: (env: ActiveParityEnv, state: ReturnType<typeof outsideState>) => Promise<void>) {
+  const state = outsideState()
+  const env = await createParityEnv(label, { realState: state.realState })
+  try { await run(env, state) } finally { env.dispose(); rmSync(state.root, { recursive: true, force: true }) }
+}
+
+describe('parity causal filesystem fence', () => {
+  it('blocks synchronous, promise, stream, fd, rename and link writes outside its isolated roots', async () => {
+    const state = outsideState()
+    const descriptor = openSync(state.settings, 'r+')
+    const env = await createParityEnv('write-apis', { realState: state.realState })
+    try {
+      const fs = req('node:fs') as typeof import('node:fs')
+      expect(() => writeFileSync(state.settings, 'lost')).toThrow(/refused filesystem/)
+      expect(() => appendFileSync(state.settings, 'lost')).toThrow(/refused filesystem/)
+      await expect(fsPromises.writeFile(state.settings, 'lost')).rejects.toThrow(/refused filesystem/)
+      expect(() => fs.createWriteStream(state.settings)).toThrow(/refused filesystem/)
+      expect(() => fs.writeSync(descriptor, 'lost')).toThrow(/refused filesystem/)
+      const source = join(env.root, 'source')
+      writeFileSync(source, 'safe')
+      expect(() => fs.renameSync(source, state.settings)).toThrow(/refused filesystem/)
+      expect(() => fs.symlinkSync(state.root, join(env.root, 'escape'), 'junction')).toThrow(/refused filesystem/)
+      expect(() => utimesSync(state.settings, new Date(), new Date())).toThrow(/refused filesystem/)
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+      expect(readFileSync(state.settings, 'utf8')).toBe('{"keep":true}')
+    } finally { env.dispose(); closeSync(descriptor); rmSync(state.root, { recursive: true, force: true }) }
+  })
+
+  it('refuses audit-log tampering while preserving caught refusal records', async () => {
+    await guarded('audit-tamper', async (env, state) => {
+      expect(() => writeFileSync(state.settings, 'lost')).toThrow(/refused filesystem/)
+      expect(() => writeFileSync(env.violationsLog, '')).toThrow(/fence audit log is read-only/)
+      const fs = req('node:fs') as typeof import('node:fs')
+      expect(() => fs.unlinkSync(env.violationsLog)).toThrow(/fence audit log is read-only/)
+      expect(() => fs.rmSync(env.root, { recursive: true, force: true })).toThrow(/fence audit log is read-only/)
+      expect(env.violations()).toHaveLength(4)
+      expect(readFileSync(env.violationsLog, 'utf8').trim().split('\n')).toHaveLength(4)
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    })
+  })
+
+  it('fails closed when its audit writer cannot persist a caught refusal', async () => {
+    const state = outsideState()
+    const writer = await independentWriter()
+    const savedExitCode = process.exitCode
+    const env = await createParityEnv('audit-failure', { realState: state.realState })
+    try {
+      await writer.change({ kind: 'delete', path: env.violationsLog })
+      await writer.change({ kind: 'mkdir', path: env.violationsLog })
+      expect(() => writeFileSync(state.settings, 'lost')).toThrow(/refused filesystem/)
+      expect(() => env.assertRealStateUntouched()).toThrow(/log is missing or unreadable|log could not be written/)
+      expect(env.violations().join('\n')).toMatch(/writeFileSync/)
+      expect(process.exitCode).toBe(1)
+    } finally {
+      env.dispose()
+      process.exitCode = savedExitCode
+      await writer.close()
+      rmSync(state.root, { recursive: true, force: true })
+    }
+  })
+
+  it('copies a readonly source into isolated storage without permitting source mutations', async () => {
+    await guarded('copy-source', async (env, state) => {
+      const fs = req('node:fs') as typeof import('node:fs')
+      const target = join(env.root, 'copy.json')
+      fs.copyFileSync(state.settings, target)
+      expect(readFileSync(target, 'utf8')).toBe('{"keep":true}')
+      expect(() => env.assertRealStateUntouched()).not.toThrow()
+      expect(() => fs.renameSync(state.settings, target)).toThrow(/refused filesystem/)
+    })
+  })
+
+  it('checks a preexisting symlink escape and permits ordinary in-root FileHandle writes', async () => {
+    const state = outsideState()
+    const writer = await independentWriter()
+    const env = await createParityEnv('symlink-write', { realState: state.realState })
+    const alias = join(env.root, 'alias')
+    // Use the control directory allocator only for isolated storage; it cannot
+    // whitelist an existing real-state directory.
+    const control = env.createIsolatedDirectory('control')
+    const handle = await fsPromises.open(join(control, 'safe'), 'w+')
+    try {
+      await handle.writeFile('safe')
+      await handle.sync()
+      expect(readFileSync(join(control, 'safe'), 'utf8')).toBe('safe')
+      // Simulate a preexisting alias without using any fenced write API.
+      await writer.change({ kind: 'link', source: state.root, path: alias })
+      expect(() => writeFileSync(join(alias, 'settings.json'), 'lost')).toThrow(/refused filesystem/)
+      await writer.change({ kind: 'delete', path: alias })
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    } finally {
+      await handle.close()
+      if (existsSync(alias)) await writer.change({ kind: 'delete', path: alias })
+      env.dispose()
+      await writer.close()
+      rmSync(state.root, { recursive: true, force: true })
+    }
+  })
+
+  it('protects native SQLite cached constructors, backups and SQL file escapes', async () => {
+    await guarded('sqlite-write', async (env, state) => {
+      const outside = join(state.root, 'outside.adf')
+      expect(() => new Database(outside)).toThrow(/refused filesystem: sqlite open/)
+      const newlyRequired = req('better-sqlite3') as typeof Database
+      expect(() => new newlyRequired(outside)).toThrow(/refused filesystem: sqlite open/)
+      expect(existsSync(outside)).toBe(false)
+      const db = new Database(join(env.agentsDir, 'agent-1.adf'))
+      try {
+        db.exec('CREATE TABLE safe (id INTEGER)')
+        await expect(db.backup(outside)).rejects.toThrow(/refused filesystem: sqlite backup/)
+        expect(() => db.exec(`ATTACH DATABASE '${outside}' AS escaped`)).toThrow(/SQL file access/)
+        expect(() => db.exec(`VACUUM INTO '${outside}'`)).toThrow(/SQL file access/)
+      } finally { db.close() }
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    })
+  })
+
+  it('refuses a native statement prepared before the fence on an outside database', async () => {
+    const state = outsideState()
+    const db = new Database(join(state.root, 'preopened.adf'))
+    db.exec('CREATE TABLE protected (value TEXT)')
+    const insert = db.prepare('INSERT INTO protected VALUES (?)')
+    const env = await createParityEnv('cached-statement', { realState: state.realState })
+    try {
+      expect(() => insert.run('lost')).toThrow(/refused filesystem: sqlite statement run/)
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    } finally { env.dispose(); expect(db.prepare('SELECT * FROM protected').all()).toEqual([]); db.close(); rmSync(state.root, { recursive: true, force: true }) }
+  })
+
+  it('propagates write confinement to workers, clean-env children and grandchildren', async () => {
+    await guarded('descendant-write', async (env, state) => {
+      const code = `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost'); console.log('wrote') } catch (e) { console.log(e.message) }`
+      const { execFileSync } = await import('node:child_process')
+      const out = execFileSync(process.execPath, ['-e', code], { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf8' })
+      expect(out).toMatch(/refused filesystem/)
+      const grandchild = `console.log(require('node:child_process').execFileSync(process.execPath, ['-e', ${JSON.stringify(code)}], { env: { ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8' }))`
+      expect(execFileSync(process.execPath, ['-e', grandchild], { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf8' })).toMatch(/refused filesystem/)
+      const workerCode = `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost'); require('node:worker_threads').parentPort.postMessage('wrote') } catch (e) { require('node:worker_threads').parentPort.postMessage(e.message) }`
+      const { Worker: GuardedWorker } = await import('node:worker_threads')
+      const worker = new GuardedWorker(workerCode, { eval: true, env: {}, execArgv: [] })
+      try { expect(await new Promise(resolve => worker.once('message', resolve))).toMatch(/refused filesystem/) } finally { await worker.terminate() }
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+      expect(readFileSync(state.settings, 'utf8')).toBe('{"keep":true}')
+    })
+  })
+
+  it('installs the fence before inherited and explicit child/worker preloads', async () => {
+    const state = outsideState()
+    const preload = join(state.root, 'preload.cjs')
+    writeFileSync(preload, `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost') } catch (e) { console.log(e.message) }`)
+    const savedOptions = process.env.NODE_OPTIONS
+    process.env.NODE_OPTIONS = `--require "${preload}"`
+    const env = await createParityEnv('preload-write', { realState: state.realState })
+    try {
+      const { execFileSync } = await import('node:child_process')
+      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
+      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: `--require "${preload}"` } })).toMatch(/refused filesystem/)
+      const { Worker } = await import('node:worker_threads')
+      const worker = new Worker(`require('node:worker_threads').parentPort.postMessage('ready')`, { eval: true, env: {}, execArgv: ['--require', preload] })
+      try { expect(await new Promise(resolve => worker.once('message', resolve))).toBe('ready') } finally { await worker.terminate() }
+      expect(readFileSync(state.settings, 'utf8')).toBe('{"keep":true}')
+      expect(env.violations()).toHaveLength(3)
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    } finally {
+      env.dispose()
+      if (savedOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = savedOptions
+      rmSync(state.root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects shell/non-Node helpers which would otherwise write outside the Node fence', async () => {
+    await guarded('shell-write', async (env, state) => {
+      const { exec, spawn } = await import('node:child_process')
+      expect(() => exec(`echo unsafe > ${state.settings}`)).toThrow(/unfenced executable/)
+      expect(() => spawn('sh', ['-c', 'true'])).toThrow(/unfenced executable/)
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    })
+  })
+})
+
+describe('parity live-host heartbeat fingerprints', () => {
+  it('allows only an independent live host to touch unchanged host-record bytes', async () => {
+    const state = outsideState()
+    const writer = await independentWriter()
+    const host = join(state.hosts, `${writer.child.pid}.json`)
+    writeFileSync(host, JSON.stringify(hostRecord(writer.child.pid!)))
+    const env = await createParityEnv('external-heartbeat', { realState: state.realState })
+    try {
+      await writer.change({ kind: 'touch', path: host })
+      expect(() => env.assertRealStateUntouched()).not.toThrow()
+      // An identical operation originating in the test is still a violation,
+      // even though its exception is caught and the file bytes remain intact.
+      expect(() => utimesSync(host, new Date(), new Date())).toThrow(/refused filesystem/)
+      expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    } finally { env.dispose(); await writer.close(); rmSync(state.root, { recursive: true, force: true }) }
+  })
+
+  it.each(['content', 'dead-pid', 'new', 'deleted', 'nonhost', 'hardlink'] as const)('keeps the fingerprint failure for %s mutations', async change => {
+    const state = outsideState()
+    const writer = await independentWriter()
+    const pid = change === 'dead-pid' ? 2_147_483_647 : writer.child.pid!
+    const host = join(state.hosts, `${pid}.json`)
+    writeFileSync(host, JSON.stringify(hostRecord(pid)))
+    if (change === 'hardlink') linkSync(host, join(state.root, 'host-alias.json'))
+    const env = await createParityEnv('unknown-mutation', { realState: state.realState })
+    try {
+      if (change === 'content') await writer.change({ kind: 'write', path: host, text: JSON.stringify({ ...hostRecord(pid), mode: 'embedded' }) })
+      else if (change === 'new') await writer.change({ kind: 'write', path: join(state.hosts, '999.json'), text: '{}' })
+      else if (change === 'deleted') await writer.change({ kind: 'delete', path: host })
+      else await writer.change({ kind: 'touch', path: change === 'nonhost' ? state.settings : host })
+      expect(() => env.assertRealStateUntouched()).toThrow(/real state changed/)
+      expect(env.violations()).toEqual([])
+    } finally { env.dispose(); await writer.close(); rmSync(state.root, { recursive: true, force: true }) }
+  })
+})

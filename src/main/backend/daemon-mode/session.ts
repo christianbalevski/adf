@@ -36,20 +36,22 @@ export interface SessionFile {
 
 type Log = Pick<Console, 'log' | 'warn'>
 
-/** Canonical form for comparing paths: Windows and macOS file systems are case-insensitive. */
-export function pathKey(filePath: string): string {
+/** Local comparison keeps Studio's case rules; remote comparison preserves daemon paths. */
+export function pathKey(filePath: string, remote = false): string {
+  // Remote paths belong to the daemon: Studio cannot resolve or case-fold them.
+  if (remote) return filePath
   const r = resolve(filePath)
   return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r
 }
 
-export function samePath(a: string | null | undefined, b: string | null | undefined): boolean {
-  return !!a && !!b && pathKey(a) === pathKey(b)
+export function samePath(a: string | null | undefined, b: string | null | undefined, remote = false): boolean {
+  return !!a && !!b && pathKey(a, remote) === pathKey(b, remote)
 }
 
 export class DaemonModeSession {
   private file: SessionFile | null = null
-  /** Files unlocked this session whose documents stay held: path key → agent id. */
-  private readonly unlocked = new Map<string, string>()
+  /** Unlocked documents retain both their comparison key and the original daemon path. */
+  private readonly unlocked = new Map<string, { filePath: string; agentId: string }>()
   private focus: string | null = null
   private readonly focusListeners = new Set<(agentId: string | null) => void>()
   private holdUnavailableLogged = false
@@ -69,7 +71,12 @@ export class DaemonModeSession {
     private readonly log: Log = console,
     /** A problem the user must see (a re-hold that failed after a reconnect): a notice. */
     private readonly onProblem: (text: string) => void = () => {},
+    readonly remote = false,
   ) {}
+
+  pathKey(filePath: string): string { return pathKey(filePath, this.remote) }
+
+  samePath(a: string | null | undefined, b: string | null | undefined): boolean { return samePath(a, b, this.remote) }
 
   /** The client session, once connected (the stream starts after the connector). */
   attach(client: ClientSession): void {
@@ -104,7 +111,7 @@ export class DaemonModeSession {
   isFocused(agentId: string | null | undefined, filePath: string | null | undefined): boolean {
     if (!this.file) return false
     if (agentId && this.file.agentId) return agentId === this.file.agentId
-    return samePath(filePath, this.file.filePath)
+    return this.samePath(filePath, this.file.filePath)
   }
 
   onFocusChange(listener: (agentId: string | null) => void): () => void {
@@ -159,7 +166,7 @@ export class DaemonModeSession {
 
   /** The current file's agent became known (a start loaded it) or went away (null). */
   noteAgent(filePath: string, agentId: string | null): void {
-    if (!this.file || !samePath(this.file.filePath, filePath)) return
+    if (!this.file || !this.samePath(this.file.filePath, filePath)) return
     if (this.file.agentId === agentId) return
     this.file = { ...this.file, agentId }
     void this.setFocus(agentId)
@@ -167,26 +174,27 @@ export class DaemonModeSession {
 
   /** A file moved on disk (FILE_RENAMED). */
   rekey(oldPath: string, newPath: string): void {
-    if (this.file && samePath(this.file.filePath, oldPath)) this.file = { ...this.file, filePath: newPath }
-    const id = this.unlocked.get(pathKey(oldPath))
-    if (id !== undefined) {
-      this.unlocked.delete(pathKey(oldPath))
-      this.unlocked.set(pathKey(newPath), id)
+    if (this.file && this.samePath(this.file.filePath, oldPath)) this.file = { ...this.file, filePath: newPath, ...(this.file.opened ? { opened: { ...this.file.opened, filePath: newPath } } : {}) }
+    const unlocked = this.unlocked.get(this.pathKey(oldPath))
+    if (unlocked !== undefined) {
+      this.unlocked.delete(this.pathKey(oldPath))
+      unlocked.filePath = newPath
+      this.unlocked.set(this.pathKey(newPath), unlocked)
     }
   }
 
   /** The user unlocked `filePath` in this session (IDENTITY_PASSWORD_UNLOCK). */
   noteUnlocked(filePath: string, agentId: string): void {
-    this.unlocked.set(pathKey(filePath), agentId)
+    this.unlocked.set(this.pathKey(filePath), { filePath, agentId })
   }
 
   /** The daemon reports `filePath` locked: forget it, as embedded drops a stale cached key. */
   forgetUnlocked(filePath: string): void {
-    this.unlocked.delete(pathKey(filePath))
+    this.unlocked.delete(this.pathKey(filePath))
   }
 
   isUnlocked(filePath: string): boolean {
-    return this.unlocked.has(pathKey(filePath))
+    return this.unlocked.has(this.pathKey(filePath))
   }
 
   /**
@@ -215,34 +223,52 @@ export class DaemonModeSession {
     if (current?.held) {
       const name = current.filePath
       try {
-        const opened = await client.holdDocument(current.filePath)
-        this.file = { ...current, agentId: opened.agentId, opened }
-        if (opened.needsPassword) {
-          this.forgetUnlocked(current.filePath)
-          this.onProblem(`${name} is locked again after the ADF daemon restarted. Open it again to enter its password.`)
+        const opened = await client.holdDocument(current.filePath, current.agentId ?? undefined)
+        // Path changes arrive from replay while the HTTP request is pending.
+        // Merge into live state, and never revive a stale agent assignment.
+        if (this.file && this.file.agentId === current.agentId) {
+          const filePath = this.file.filePath !== current.filePath ? this.file.filePath : opened.filePath ?? this.file.filePath
+          this.rekey(this.file.filePath, filePath)
+          this.file = { ...this.file, filePath, agentId: opened.agentId, opened: { ...opened, filePath } }
+          if (opened.needsPassword) {
+            this.forgetUnlocked(this.file.filePath)
+            this.onProblem(`${name} is locked again after the ADF daemon restarted. Open it again to enter its password.`)
+          }
+          await this.setFocus(opened.agentId)
         }
-        await this.setFocus(opened.agentId)
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         this.log.warn(`[Backend] Could not hold ${name} again after the reconnect: ${message}`)
-        this.file = { ...current, agentId: null, held: false }
-        this.forgetUnlocked(current.filePath)
-        await this.setFocus(null)
-        this.onProblem(`Studio could not reopen ${name} on the ADF daemon after reconnecting (${message}). Open it again.`)
+        if (this.file && this.file.agentId === current.agentId) {
+          this.file = { ...this.file, agentId: null, held: false }
+          this.forgetUnlocked(this.file.filePath)
+          await this.setFocus(null)
+          this.onProblem(`Studio could not reopen ${name} on the ADF daemon after reconnecting (${message}). Open it again.`)
+        }
       }
     }
-    for (const [key, id] of [...this.unlocked]) {
-      if (this.file?.held && pathKey(this.file.filePath) === key) continue
+    for (const entry of [...this.unlocked.values()]) {
+      if (this.file?.held && this.file.agentId === entry.agentId) continue
       try {
-        const opened = await client.holdDocument(key)
+        const requestedPath = entry.filePath
+        const opened = await client.holdDocument(requestedPath, entry.agentId)
+        const key = this.pathKey(entry.filePath)
+        // A replayed rename may have moved this entry while the hold awaited.
+        if (this.unlocked.get(key) !== entry) continue
         if (opened.needsPassword) {
           this.unlocked.delete(key)
           await this.release(opened.agentId)
-          this.log.log(`[Backend] ${key} is locked again after the reconnect; its key is forgotten`)
+          this.log.log(`[Backend] ${entry.filePath} is locked again after the reconnect; its key is forgotten`)
+        } else {
+          this.unlocked.delete(key)
+          entry.filePath = entry.filePath !== requestedPath ? entry.filePath : opened.filePath ?? entry.filePath
+          entry.agentId = opened.agentId
+          this.unlocked.set(this.pathKey(entry.filePath), entry)
         }
       } catch (err) {
-        this.unlocked.delete(key)
-        this.log.warn(`[Backend] Could not hold the unlocked document ${id} again after the reconnect; it is no longer kept: ${err instanceof Error ? err.message : String(err)}`)
+        const key = this.pathKey(entry.filePath)
+        if (this.unlocked.get(key) === entry) this.unlocked.delete(key)
+        this.log.warn(`[Backend] Could not hold the unlocked document ${entry.agentId} again after the reconnect; it is no longer kept: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
     await this.pushFocus()
@@ -251,7 +277,7 @@ export class DaemonModeSession {
   /** Session end: release every document still held, kept ones included. */
   releaseAll(): Promise<void> {
     return this.serial(async () => {
-      const ids = new Set<string>(this.unlocked.values())
+      const ids = new Set<string>([...this.unlocked.values()].map((entry) => entry.agentId))
       if (this.file?.held && this.file.agentId) ids.add(this.file.agentId)
       this.unlocked.clear()
       this.file = null
@@ -264,7 +290,7 @@ export class DaemonModeSession {
     const prev = this.file
     if (!prev?.held || !prev.agentId) return
     // Kept for its derived key (see the class comment).
-    if (this.unlocked.has(pathKey(prev.filePath))) return
+    if (this.unlocked.has(this.pathKey(prev.filePath))) return
     await this.release(prev.agentId)
   }
 

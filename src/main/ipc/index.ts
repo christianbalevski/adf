@@ -14,7 +14,6 @@ import {
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { recentFileSweepDirs } from '../utils/boot-wal-sweep'
 import { verifyCardSignature } from '../services/mesh-server'
-import { verifyAttestation } from '../services/attestation.service'
 import { identityDrafts } from '../services/identity-drafts'
 import { BackgroundEventBatcher } from './background-event-batch'
 import { FileCreateRefusedError, makeFileCreateHandler, runFileCreateTransition, type FileCreateTransitionDeps } from './file-create-handler'
@@ -68,7 +67,7 @@ async function testProviderCredentialsForDashboard(
   return providerChecks.test(cfg, force)
 }
 
-import chokidar from 'chokidar'
+import chokidar, { type FSWatcher } from 'chokidar'
 import { isKeyMaterialPurpose, REVEAL_REFUSED_REASON } from '../../shared/constants/identity-reveal'
 import { lockedCredentialCancelled, lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
 import { askReplaceLockedCredential } from '../services/locked-credential-dialog'
@@ -643,8 +642,8 @@ function getAppOAuthStore(): AppSettingsOAuthStore {
 const MCP_CONNECT_BUDGET_MS = 25_000
 /** Persisted MCP server logs — survives agent stop so the settings Logs viewer works */
 const MCP_LOG_CACHE_MAX_SERVERS = 50
-const mcpLogCache = new Map<string, import('../shared/types/adf-v02.types').McpServerLogEntry[]>()
-function mcpLogCacheSet(name: string, logs: import('../shared/types/adf-v02.types').McpServerLogEntry[]): void {
+const mcpLogCache = new Map<string, import('../../shared/types/adf-v02.types').McpServerLogEntry[]>()
+function mcpLogCacheSet(name: string, logs: import('../../shared/types/adf-v02.types').McpServerLogEntry[]): void {
   mcpLogCache.set(name, logs)
   // Evict oldest entries (Map insertion order) when over limit
   while (mcpLogCache.size > MCP_LOG_CACHE_MAX_SERVERS) {
@@ -900,7 +899,7 @@ function executorToDisplayState(executorState: string): string {
 }
 
 // --- Tracked directory watcher ---
-let dirWatcher: chokidar.FSWatcher | null = null
+let dirWatcher: FSWatcher | null = null
 
 /**
  * Auto-track the parent directory of a newly created ADF file (if not already tracked)
@@ -1205,7 +1204,8 @@ async function cleanupCurrentFile(): Promise<void> {
     meshManager.unregisterAgent(filePath, { keepWsConnections: willTransitionToBackground })
   }
 
-  if (willTransitionToBackground) {
+  const backgroundManager = backgroundAgentManager
+  if (willTransitionToBackground && backgroundManager) {
     const config = workspace.getAgentConfig()
 
     // The handle retains resource ownership; foreground globals are aliases only.
@@ -1217,18 +1217,18 @@ async function cleanupCurrentFile(): Promise<void> {
     currentTapManager = null
 
     const t1 = performance.now()
-    await backgroundAgentManager.transitionToBackground(
+    await backgroundManager.transitionToBackground(
       filePath, config, assembledAgent, derivedKeyCache.get(filePath) ?? null,
     )
     perfLog(`[PERF] cleanupCurrentFile.transitionToBackground: ${(performance.now() - t1).toFixed(1)}ms`)
 
-    if (meshManager?.isEnabled() && backgroundAgentManager.hasAgent(filePath)) {
-      const agentRefs = backgroundAgentManager.getAgent(filePath)
+    if (meshManager?.isEnabled() && backgroundManager.hasAgent(filePath)) {
+      const agentRefs = backgroundManager.getAgent(filePath)
       if (agentRefs) {
         meshManager.registerAgent(
           filePath, agentRefs.config, agentRefs.toolRegistry,
           agentRefs.workspace, agentRefs.session, agentRefs.triggerEvaluator, false,
-          () => backgroundAgentManager!.getIsMessageTriggered(filePath),
+          () => backgroundManager.getIsMessageTriggered(filePath),
           agentRefs.executor,
           agentRefs.adfCallHandler,
           agentRefs.codeSandboxService
@@ -5441,6 +5441,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     canReceive?: boolean
     sendMode?: string
     autonomous?: boolean
+    agentId?: string
+    icon?: string
+    did?: string | null
     isDirectory: boolean
     children?: TrackedDirEntry[]
   }
@@ -7704,7 +7707,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.PROVIDER_AGENT_KEY_SOURCES, async (_event, rawArgs: unknown) => {
     const args = z.object({
       filePath: z.string(),
-      providers: z.array(z.object({ id: z.string(), type: z.string(), baseUrl: z.string() }))
+      providers: z.array(z.object({ id: z.string(), type: z.enum(['anthropic', 'openrouter', 'openai', 'openai-compatible', 'chatgpt-subscription', 'grok-subscription', 'claude-subscription']), baseUrl: z.string() }))
     }).parse(rawArgs)
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)

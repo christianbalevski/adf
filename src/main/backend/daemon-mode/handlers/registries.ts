@@ -97,7 +97,7 @@ export const REGISTRY_HANDLERS: DaemonHandlerTable = {
       throw error
     }
     if (!model || typeof model.provider !== 'string' || typeof model.model_id !== 'string') return { success: false, error: 'Missing model' }
-    if (samePath(canonical, ctx.session.filePath) || samePath(fp, ctx.session.filePath)) {
+    if (samePath(canonical, ctx.session.filePath, ctx.mode === 'remote') || samePath(fp, ctx.session.filePath, ctx.mode === 'remote')) {
       return { success: false, error: 'This agent is open — save its config instead' }
     }
     try {
