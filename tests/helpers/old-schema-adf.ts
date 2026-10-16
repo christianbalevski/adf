@@ -9,6 +9,8 @@ import { AdfDatabase } from '../../src/main/adf/adf-database'
 export interface OldAdfOptions {
   id: string
   name: string
+  /** v31 only: the `Created:` date README.md states (create() writes today's), for recordings. */
+  createdDate?: string
 }
 
 /**
@@ -59,6 +61,13 @@ export function writeV31Adf(filePath: string, opts: OldAdfOptions): void {
   try {
     const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string }
     db.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify({ ...JSON.parse(row.config_json), id: opts.id }))
+    if (opts.createdDate) {
+      const readme = db.prepare("SELECT content FROM adf_files WHERE path = 'README.md'").get() as { content: Buffer } | undefined
+      if (readme) {
+        const pinned = Buffer.from(Buffer.from(readme.content).toString('utf-8').replace(/^Created: \d{4}-\d{2}-\d{2}$/m, `Created: ${opts.createdDate}`))
+        db.prepare("UPDATE adf_files SET content = ?, size = ? WHERE path = 'README.md'").run(pinned, pinned.length)
+      }
+    }
     db.exec('DROP INDEX IF EXISTS idx_adf_outbox_created')
     db.prepare("UPDATE adf_meta SET value = '31' WHERE key = 'adf_schema_version'").run()
   } finally {
