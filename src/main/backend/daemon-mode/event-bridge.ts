@@ -476,22 +476,24 @@ export class EventBridge {
       this.deps.batcher.push({ type: 'agent_stopped', payload: { filePath: gained.filePath }, timestamp: ts })
     }
     this.deps.batcher.flush()
+    // As the background manager's adopt: the busy count follows its
+    // agent_started in the next batch window, not in the flushed one.
+    if (lost && lost.mapping.activeLoops > 0) {
+      this.deps.batcher.push({ type: 'agent_loops_changed', payload: { filePath: lost.filePath, activeLoops: lost.mapping.activeLoops }, timestamp: ts })
+    }
     this.deps.onAgentsChanged?.()
   }
 
   /**
    * As the background manager's adopt: `agent_started` with main's state and
    * every side loop's (a queue waiting on a loop that settles during the
-   * switch reads it there), then the inner-loop count when any is busy.
+   * switch reads it there). focusChanged adds the inner-loop count.
    */
   private showInBackground(agent: BridgeAgent, ts: number): void {
     agent.shownInBackground = true
     const handle = agent.handle
     const loopStates = Object.fromEntries(agent.mapping.loopStates)
     this.deps.batcher.push({ type: 'agent_started', payload: { filePath: agent.filePath, state: agent.mapping.state, ...(handle ? { handle } : {}), loopStates }, timestamp: ts })
-    if (agent.mapping.activeLoops > 0) {
-      this.deps.batcher.push({ type: 'agent_loops_changed', payload: { filePath: agent.filePath, activeLoops: agent.mapping.activeLoops }, timestamp: ts })
-    }
   }
 
   // --- frames --------------------------------------------------------------
@@ -685,9 +687,10 @@ export class EventBridge {
     if (frame.type === 'agent_state_changed') {
       if (agent && typeof frame.payload.state === 'string') agent.mapping.state = frame.payload.state as AgentState
     }
-    if (frame.type === 'agent_loops_changed' && agent && typeof frame.payload.activeLoops === 'number') {
-      agent.mapping.activeLoops = frame.payload.activeLoops
-    }
+    // RuntimeService derives the count from the same executor frames this
+    // bridge folds (onExecutor), which batched it already: a second one would
+    // be a duplicate the background manager never sends.
+    if (frame.type === 'agent_loops_changed') return
     if (frame.type === 'agent_started' && agent) agent.shownInBackground = true
     if (stopped && agent && !agent.shownInBackground && frame.type === 'agent_stopped') return
     this.deps.batcher.push({

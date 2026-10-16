@@ -201,6 +201,10 @@ describe('event bridge', () => {
       ['agent_loop_state_changed', 'reflector', 'idle'],
       ['agent_loops_changed', 1, undefined],
     ])
+    // The daemon's own count (host frame) follows the same executor frames: not batched twice.
+    const count = batched.length
+    bridge.handleFrame({ kind: 'host', agentId: AGENT_2, filePath: FILE_2, type: 'agent_loops_changed', payload: { activeLoops: 1 }, timestamp: 5 })
+    expect(batched).toHaveLength(count)
   })
 
   it("a failed chat to a background agent: the error, and an idle only when its loop reads busy (no repeated idle to retry a queue on)", async () => {
