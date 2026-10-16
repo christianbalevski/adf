@@ -13,7 +13,7 @@ import { nanoid as _nanoid } from 'nanoid'
 const nanoid = () => _nanoid(10)
 import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, promises as fsp } from 'fs'
 import { brotliDecompressSync } from 'zlib'
-import { join, resolve, sep } from 'path'
+import { basename, join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
   AdfProviderConfig,
@@ -107,6 +107,24 @@ export interface AdfOpenOptions {
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
 export const ADF_LATEST_SCHEMA_VERSION = 32
+
+/**
+ * The oldest schema version open() upgrades: its migration ladder starts at
+ * the v3 → v4 step. An older file is refused before anything is written to it.
+ */
+export const ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION = 3
+
+/**
+ * open() refused a file older than ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION.
+ * Nothing was written to it: no backup, no migration step, no sidecars left.
+ */
+export class AdfSchemaTooOldError extends Error {
+  readonly code = 'schema_too_old'
+  constructor(readonly filePath: string, readonly schemaVersion: number) {
+    super(`${basename(filePath)} uses schema v${schemaVersion}, which this version cannot upgrade (it upgrades v${ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION} and later). The file was not changed.`)
+    this.name = 'AdfSchemaTooOldError'
+  }
+}
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -589,6 +607,19 @@ export class AdfDatabase {
       (code.startsWith('SQLITE_BUSY') || code === 'SQLITE_LOCKED')
   }
 
+  /**
+   * The file's schema version: `adf_schema_version`, else the older
+   * `schema_version`, else 0. Null when there is no adf_meta table. Reads only.
+   */
+  private static readSchemaVersion(db: Database.Database): number | null {
+    const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='adf_meta'").get()
+    if (!table) return null
+    const r = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+    if (r) return parseInt(r.value, 10)
+    const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
+    return r2 ? parseInt(r2.value, 10) : 0
+  }
+
   /** Retryable lock-contention error — distinct from the corruption path. */
   private static lockedError(filePath: string): Error {
     return new Error(
@@ -854,6 +885,26 @@ export class AdfDatabase {
     let db = new Database(filePath)
     let needsMigration = false
 
+    // Too old to upgrade: refused before anything below writes to the file
+    // (the clean-close marker delete, the backup, the always-run migration
+    // steps, the constructor's pragmas). Reads only; a file whose version
+    // cannot be read goes on to the integrity check below, as before. A file
+    // with no version at all (0: a clone whose adf_meta was deselected) opens
+    // as before.
+    let tooOld: number | null = null
+    try {
+      const sv = AdfDatabase.readSchemaVersion(db)
+      if (sv !== null && sv > 0 && sv < ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION) tooOld = sv
+    } catch { /* unreadable or busy: handled by the checks below */ }
+    if (tooOld !== null) {
+      db.close()
+      // Sidecars this open created (a WAL file grows -wal/-shm on first read).
+      if (!walExistedBeforeOpen) {
+        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+      }
+      throw new AdfSchemaTooOldError(filePath, tooOld)
+    }
+
     // Integrity-check gating invariant:
     //   close() writes the CLEAN_CLOSE_META_KEY marker as its final write before
     //   closing the connection, and open() deletes it once the file is deemed
@@ -977,12 +1028,7 @@ export class AdfDatabase {
       // source of truth for the schema version and is threaded through the
       // migration ladder below (each step bumps it) instead of re-reading
       // adf_meta before every step.
-      let sv = (() => {
-        const r = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-        if (r) return parseInt(r.value, 10)
-        const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-        return r2 ? parseInt(r2.value, 10) : 0
-      })()
+      let sv = AdfDatabase.readSchemaVersion(db) ?? 0
       needsMigration = sv < ADF_LATEST_SCHEMA_VERSION
 
       if (!needsMigration) {
