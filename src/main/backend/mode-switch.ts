@@ -5,9 +5,11 @@ import type { StudioBackendMode } from '../../shared/types/backend.types'
 import { decryptCredential, encryptCredential } from '../utils/credential-cipher'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { showWindowlessMessageBox } from '../utils/windowless-dialog'
+import { showBootWindow } from '../utils/boot-window'
+import { flushMainLogSync } from '../utils/main-log-file'
 import { DaemonProcessController, decideAttach, type AttachDecision } from './daemon-process'
 import type { DaemonVersionInfo } from '../daemon/routes/meta-routes'
-import { openDaemonSecrets } from './daemon-secrets'
+import { awaitKeychainAccess, openDaemonSecrets } from './daemon-secrets'
 import { BACKEND_ENV_OVERRIDE } from './backend-config'
 import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import type { VersionMismatchChoice } from './daemon-mode/connectors'
@@ -171,6 +173,19 @@ async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' 
 export async function runBootHandover(mode: StudioBackendMode, userDataDir: string, opts: { sessionOnly?: boolean } = {}): Promise<HandoverReport | null> {
   try {
     const keychain = await handoverNeedsKeychain(mode as HandoverTarget, userDataDir, opts)
+    // The handover's keychain reads are sync: read it async first, so a macOS
+    // access prompt waits with Studio responsive, logged and on screen.
+    if (keychain) {
+      await awaitKeychainAccess(process.env, {
+        log: (line) => console.log(line),
+        onSlow: () => {
+          flushMainLogSync()
+          try {
+            showBootWindow(`Waiting for the OS keychain. macOS may be asking whether ${app.isPackaged ? 'ADF Studio' : 'Electron (npm run dev)'} may use its "ADF" keychain items: answer that prompt. It can open behind other windows.`)
+          } catch { /* the log line stands */ }
+        },
+      })
+    }
     return await runHandover(mode as HandoverTarget, handoverDeps(userDataDir, {}, { keychain }), opts)
   } catch (err) {
     console.error('[Handover] The handover at boot failed; every source is kept and the next start retries:', err)

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { openKeychainBackend, type SecretBackend } from '../services/owner-secret-store'
+import { openKeychainBackend, readKeychainItemsAsync, type SecretBackend } from '../services/owner-secret-store'
 import { testSeamsAllowed } from '../utils/test-seams'
 
 /**
@@ -54,6 +54,43 @@ export interface DaemonSecretsChoice {
   backend: SecretBackend | null
   /** Why `backend` is null, as the switch dialog states it. */
   unavailable?: string
+}
+
+export interface KeychainWaitHooks {
+  log: (line: string) => void
+  /** The read is still running after `slowAfterMs`: say so where the user looks. */
+  onSlow: () => void
+  slowAfterMs?: number
+  /** The read itself (tests); defaults to every "ADF" keychain item. */
+  read?: () => Promise<number | null>
+}
+
+/**
+ * Before the handover's sync keychain reads: read the OS keychain the daemon
+ * shares once, asynchronously, with a log line before it and a notice when it
+ * takes long (a macOS access prompt waits on the user). Only where
+ * openDaemonSecrets would use the real keychain. Never throws: a failed read
+ * is logged, and openDaemonSecrets then decides as before.
+ */
+export async function awaitKeychainAccess(env: NodeJS.ProcessEnv, hooks: KeychainWaitHooks): Promise<void> {
+  if (env.ADF_SECRET_STORE === 'file' || env.ADF_KEYCHAIN === '0' || env.ADF_KEYCHAIN === 'off' || env[TEST_KEYCHAIN_FILE_ENV]) return
+  const slowAfterMs = hooks.slowAfterMs ?? 5_000
+  const started = Date.now()
+  hooks.log('[Handover] Reading the OS keychain (service "ADF")…')
+  const slow = setTimeout(() => {
+    hooks.log(`[Handover] Still waiting on the OS keychain after ${Math.round(slowAfterMs / 1000)} s: macOS may be asking whether this app may use its "ADF" keychain items. Answer that prompt (it can be behind other windows).`)
+    hooks.onSlow()
+  }, slowAfterMs)
+  try {
+    const count = await (hooks.read ?? (() => readKeychainItemsAsync()))()
+    hooks.log(count === null
+      ? '[Handover] No OS keychain binding here; the daemon secrets fall back as before'
+      : `[Handover] OS keychain read: ${count} "ADF" item(s) in ${Date.now() - started} ms`)
+  } catch (err) {
+    hooks.log(`[Handover] The OS keychain read failed (${err instanceof Error ? err.message : String(err)}); the handover continues without assuming access`)
+  } finally {
+    clearTimeout(slow)
+  }
 }
 
 export function openDaemonSecrets(env: NodeJS.ProcessEnv = process.env, opts: { packaged?: boolean } = {}): DaemonSecretsChoice {
