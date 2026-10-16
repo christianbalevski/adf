@@ -801,6 +801,12 @@ export class AdfDatabase {
    * would have held a lock). On Windows the lock's own handle would block the
    * rename, so the probe closes first: the rename itself then fails while any
    * other program has the file open.
+   *
+   * Known POSIX residual (tracker §6, W5-H): the probe closes after the
+   * rename, and SQLite's close unlinks `<file>-wal` by path. A program that
+   * opens the restored file and writes in that window can lose its WAL.
+   * Closing first would drop the lock, and better-sqlite3 cannot keep the
+   * WAL on close (no SQLITE_FCNTL_PERSIST_WAL), so the window is not closed.
    */
   private static restoreBackupSync(filePath: string): string | null {
     const backupPath = filePath + '.bak'
@@ -1296,6 +1302,10 @@ export class AdfDatabase {
       // db.transaction() blocks nest as savepoints. Nothing below writes a
       // pragma, vacuums or checkpoints.
       db.exec('BEGIN IMMEDIATE')
+      // No version but a clone's layout (the authoritative read let it
+      // through): a clone made before clone-fixup restamped the version. The
+      // version-gated steps never run for it; it is stamped at the end.
+      const unversionedClone = sv === 0
 
       // Migrate adf_loop: add model, tokens, created_at columns if missing
       const cols = db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>
@@ -2324,6 +2334,13 @@ export class AdfDatabase {
       // transaction (SQLITE_FULL, IOERR, BUSY) inside a best-effort step
       // would have left the rest running in autocommit: fail instead.
       if (!db.inTransaction) throw new Error(`The migration of ${basename(filePath)} was rolled back by SQLite.`)
+      if (unversionedClone) {
+        // Stamped latest, so the next open takes the fast path instead of a
+        // backup copy and this migration again.
+        db.prepare("INSERT INTO adf_meta (key, value, protection) VALUES ('adf_schema_version', ?, 'readonly') ON CONFLICT(key) DO UPDATE SET value = excluded.value, protection = 'readonly'")
+          .run(String(ADF_LATEST_SCHEMA_VERSION))
+        console.log(`[AdfDatabase] Stamped schema v${ADF_LATEST_SCHEMA_VERSION} on an unversioned clone: ${filePath}`)
+      }
       db.exec('COMMIT')
       migrated = true
     } catch (error) {
