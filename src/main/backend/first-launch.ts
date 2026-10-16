@@ -204,11 +204,33 @@ function parsePending(raw: unknown): FirstLaunchNotice | null {
 }
 
 /**
+ * The notice from this launch's handover, merged into one still pending from
+ * an earlier launch: moved is the union, and what is not done is this
+ * launch's (the current state; an earlier failure that this launch fixed is
+ * gone). Exported for tests.
+ */
+export function mergeNotice(pending: FirstLaunchNotice | null, report: HandoverReport | null, settings: Record<string, unknown> | null, version: string): FirstLaunchNotice {
+  const items = report?.items ?? []
+  const moved = items.filter((i) => i.outcome === 'moved' || i.outcome === 'written' || i.outcome === 'deleted').map((i) => i.label)
+  const notDone = items.filter((i) => i.outcome === 'failed' || i.pending).map((i) => `${i.label}: ${i.detail}`)
+  if (!report) notDone.push('The handover could not run; Studio retries at the next start. Details are in the main log.')
+  const kept = items.filter((i) => i.outcome === 'kept' && !i.pending && (i.id === 'runtime-identity' || i.id === 'mcp-oauth')).map((i) => ({ label: i.label, detail: i.detail }))
+  return {
+    record: { at: pending?.record.at ?? new Date().toISOString(), version, moved: [...new Set([...(pending?.record.moved ?? []), ...moved])], notDone },
+    kept: pending && pending.kept.length > 0 ? pending.kept : kept,
+    identityNotShared: (pending?.identityNotShared ?? false) || (typeof settings?.runtimeDid === 'string' && items.some((i) => i.id === 'runtime-identity' && i.outcome === 'kept')),
+    keychainWritten: (pending?.keychainWritten ?? false) || items.some((i) => i.id === 'runtime-identity' && i.outcome === 'written'),
+  }
+}
+
+/**
  * After the boot handover, before the daemon starts. On a launch that
  * resolved the default: save it; on an install that ran Embedded, keep the
  * notice in PENDING_NOTICE_FILE. On a later launch a notice still pending
- * is returned again. Sets `boot.defaultSwitch` for Settings → Backend.
- * Null on a fresh install and when there is nothing to show. Never throws.
+ * is returned again, merged with that launch's handover (mergeNotice), so
+ * it stands in for that launch's summary. Sets `boot.defaultSwitch` for
+ * Settings → Backend. Null on a fresh install and when there is nothing to
+ * show. Never throws.
  */
 export async function settleDefaultBackend(
   boot: BootBackend,
@@ -228,28 +250,28 @@ export async function settleDefaultBackend(
       log(`[Backend] First launch of this install: ${boot.mode} (the default); nothing to move`)
       return pending
     }
-    const items = report?.items ?? []
-    const moved = items.filter((i) => i.outcome === 'moved' || i.outcome === 'written' || i.outcome === 'deleted').map((i) => i.label)
-    const notDone = items.filter((i) => i.outcome === 'failed' || i.pending).map((i) => `${i.label}: ${i.detail}`)
-    if (!report) notDone.push('The handover could not run; Studio retries at the next start. Details are in the main log.')
     // A pending notice from a launch that quit before showing it keeps what that launch moved.
-    pending = {
-      record: { at: pending?.record.at ?? new Date().toISOString(), version: opts.version, moved: [...new Set([...(pending?.record.moved ?? []), ...moved])], notDone },
-      kept: items.filter((i) => i.outcome === 'kept' && !i.pending && (i.id === 'runtime-identity' || i.id === 'mcp-oauth')).map((i) => ({ label: i.label, detail: i.detail })),
-      identityNotShared: typeof settings?.runtimeDid === 'string' && items.some((i) => i.id === 'runtime-identity' && i.outcome === 'kept'),
-      keychainWritten: (pending?.keychainWritten ?? false) || items.some((i) => i.id === 'runtime-identity' && i.outcome === 'written'),
-    }
-    try {
-      await writeJsonAtomicAsync(join(userDataDir, PENDING_NOTICE_FILE), { v: 1, ...pending })
-    } catch (err) {
-      log(`[Backend] Could not write ${PENDING_NOTICE_FILE}: ${errorText(err)}`)
-    }
+    pending = await savePending(userDataDir, mergeNotice(pending, report, settings, opts.version), log)
     boot.defaultSwitch = pending.record
-    log(`[Backend] Switched this install from Embedded to the default, ${boot.mode}: moved ${pending.record.moved.join(', ') || 'nothing'}${notDone.length ? `; not done: ${notDone.length} item(s)` : ''}; the notice is shown once the daemon connected`)
+    log(`[Backend] Switched this install from Embedded to the default, ${boot.mode}: moved ${pending.record.moved.join(', ') || 'nothing'}${pending.record.notDone.length ? `; not done: ${pending.record.notDone.length} item(s)` : ''}; the notice is shown once the daemon connected`)
     return pending
   }
-  // A notice an earlier launch could not show: again, while this launch runs the daemon.
-  return !shown && pending && boot.mode === 'local' && boot.source !== 'session' ? pending : null
+  // A notice an earlier launch could not show: again, while this launch runs the daemon, with this launch's handover merged in.
+  if (shown || !pending || boot.mode !== 'local' || boot.source === 'session') return null
+  const settings = await readJson(join(userDataDir, SETTINGS_FILE)) as Record<string, unknown> | null
+  pending = await savePending(userDataDir, mergeNotice(pending, report, settings, opts.version), log)
+  boot.defaultSwitch = pending.record
+  log(`[Backend] The first-launch notice of an earlier launch is still to be shown; this launch's handover is merged into it (not done now: ${pending.record.notDone.length} item(s))`)
+  return pending
+}
+
+async function savePending(userDataDir: string, notice: FirstLaunchNotice, log: Log): Promise<FirstLaunchNotice> {
+  try {
+    await writeJsonAtomicAsync(join(userDataDir, PENDING_NOTICE_FILE), { v: 1, ...notice })
+  } catch (err) {
+    log(`[Backend] Could not write ${PENDING_NOTICE_FILE}: ${errorText(err)}`)
+  }
+  return notice
 }
 
 /** Record the notice as shown: Settings → Backend's "Default changed", and no notice at later launches. */

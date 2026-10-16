@@ -11,7 +11,7 @@
  * was never used; Studio's safeStorage is a fake codec. Never touches the
  * real keychain.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -262,6 +262,26 @@ describe('upgrade from 0.7.x', () => {
     expect((await boot()).notice).toBeNull()
   })
 
+  it('a pending notice merges this launch\'s handover: moved adds up, and "not done" is the current state', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    // The first launch cannot move the sign-ins: its handover record is unreadable.
+    writeFileSync(join(dir, 'studio-handover.json'), '{')
+    const first = await boot()
+    expect(first.notice?.record.moved).toEqual(['Client settings'])
+    expect(first.notice?.record.notDone).toEqual([expect.stringMatching(/^Sign-ins: not moved/)])
+    // Studio quit before the notice. The record is fixed; the next launch moves the session.
+    unlinkSync(join(dir, 'studio-handover.json'))
+    const second = await boot()
+    expect(second.report?.items.find((i) => i.id === 'chatgpt')).toMatchObject({ outcome: 'moved' })
+    expect(second.notice?.record).toMatchObject({ moved: ['Client settings', 'ChatGPT session', 'MCP sign-ins'], notDone: [] })
+    expect(readJson(join(dir, PENDING_NOTICE_FILE))).toMatchObject({ record: { moved: ['Client settings', 'ChatGPT session', 'MCP sign-ins'], notDone: [] } })
+    // One dialog for both: the notice stands in for this launch's summary.
+    await show(second)
+    expect(h.dialogs.map((d) => d.message)).toEqual(['Studio now runs agents in the ADF daemon.'])
+    expect(h.dialogs[0].detail).toMatch(/^Moved: Client settings, ChatGPT session, MCP sign-ins\./)
+    expect(h.dialogs[0].detail).not.toMatch(/Not done yet/)
+  })
+
   it('the daemon could not be reached: the notice says so instead of promising running agents', async () => {
     write07xUserData({ identity: false })
     const first = await boot()
@@ -386,3 +406,4 @@ describe('an older ADF daemon on the port at the first launch', () => {
     expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(false)
   })
 })
+
