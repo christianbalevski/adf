@@ -30,13 +30,10 @@ The **Authorization** column indicates whether the execution context can call [r
 The sandbox is configured with:
 
 ```javascript
-codeGeneration: { strings: false, wasm: true }
+codeGeneration: { strings: true, wasm: true }
 ```
 
-This disables:
-- `eval()` and `new Function()` — no dynamic code generation from strings
-
-WebAssembly is enabled to support standard library packages that use WASM (e.g., sql.js, mupdf).
+`eval()` and `new Function()` work. They compile inside the sandbox, with the same reach as code you write directly, so a module loader over `adf.fs_read` is fine. WebAssembly is enabled for standard library packages that use it (e.g., sql.js, mupdf).
 
 Native `fetch` and related globals (`Request`, `Response`, `Headers`) are deleted from the worker scope on startup. All network access must go through `adf.sys_fetch()`, which routes through the agent's security middleware pipeline. The `code_execution.network` flag (default `false`) is what changes this — when enabled, the sandbox keeps direct network access.
 
@@ -65,7 +62,6 @@ The sandbox exposes a curated set of standard JavaScript globals:
 | Global | Reason | Alternative |
 |--------|--------|-------------|
 | `fetch` | Deleted on worker startup — no direct network access | `adf.sys_fetch()` |
-| `eval` / `Function` | Disabled by `codeGeneration` policy | Write code directly |
 | `require` / `import` | No arbitrary module loading | `import` from allowed modules and standard library (see below) |
 | `process` | No access to host process | N/A |
 | `__dirname` / `__filename` | No filesystem path context | N/A |

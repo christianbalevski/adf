@@ -8,7 +8,8 @@ import { CodeSandboxService } from '../../../src/main/runtime/code-sandbox'
  *
  * Every sandbox global is now built inside the vm realm, host values are only
  * reachable through a membrane that maps host intrinsics to their vm twins
- * (host Function -> vm Function, which cannot compile strings), and the worker
+ * (host Function -> vm Function, which compiles in the vm realm, where
+ * `process` is the sandbox's stand-in), and the worker
  * realm's own Function-family `.constructor` links are inert stand-ins. The
  * worker also runs in a separate process under Node's permission model — see
  * sandbox-host-permissions.test.ts for what escaped code would still face.
@@ -62,6 +63,20 @@ describe('code sandbox realm escape', () => {
       expect(result.result).toMatch(/^blocked/)
     })
   }
+
+  it('eval and new Function run, in the sandbox realm: process is the stand-in', async () => {
+    const result = await sandbox.execute(agentId, `
+      const viaFunction = new Function('a', 'b', 'return a + b')(2, 3)
+      const viaEval = eval('[1, 2, 3].map((n) => n * 2).join(",")')
+      const mod = { exports: {} }
+      new Function('module', 'exports', 'exports.answer = 42')(mod, mod.exports)
+      const p = new Function('return process')()
+      const real = typeof p.getBuiltinModule === 'function' || typeof p.binding === 'function' || typeof p.pid === 'number'
+      return [viaFunction, viaEval, mod.exports.answer, real ? 'ESCAPED' : 'stand-in'].join('|')
+    `, 5000)
+    expect(result.error).toBeUndefined()
+    expect(result.result).toBe('5|2,4,6|42|stand-in')
+  })
 
   it('keeps async-function detection by constructor name working', async () => {
     const result = await sandbox.execute(agentId, `
