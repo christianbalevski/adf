@@ -1,11 +1,12 @@
 import { useCallback } from 'react'
 import { useDocumentStore } from '../stores/document.store'
-import { useAgentStore } from '../stores/agent.store'
+import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useAppStore } from '../stores/app.store'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/editor-tabs.store'
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
+import { deliverQueuedMessages } from '../utils/queued-delivery'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
@@ -357,7 +358,11 @@ export function useAdfFile() {
           console.log(`[PERF:renderer] openFile.startAgent IPC: ${(performance.now() - t1).toFixed(1)}ms`)
           if (startResult.success) {
             // Use the actual executor state (may be mid-turn: thinking/tool_use)
-            useAgentStore.getState().setState(toDisplayState(startResult.agentState ?? 'idle'))
+            const reattachedState = toDisplayState(startResult.agentState ?? 'idle')
+            useAgentStore.getState().setState(reattachedState)
+            // A turn that ended during the switch reported its idle to neither
+            // the background list nor this view: send what was queued for it.
+            if (reattachedState === 'idle') deliverQueuedMessages(result.filePath, MAIN_LOOP)
 
             // Restore pending HIL approvals so the user can still approve/reject
             const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals

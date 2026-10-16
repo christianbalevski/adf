@@ -3,6 +3,7 @@ import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { foldAgentStatuses } from '../utils/background-agent-statuses'
+import { deliverSettledBackgroundQueues } from '../utils/queued-delivery'
 import { openingFilePaths } from './useAdfFile'
 import type { RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
@@ -36,6 +37,9 @@ export function useBackgroundAgentEvents() {
       let stopping = app.stoppingFilePaths
       let startingChanged = false
       let stoppingChanged = false
+      // Agents whose state moved in this batch: a turn that ended while the
+      // owner was looking at another agent sends what was queued for it.
+      const settledFiles: string[] = []
 
       const dropStarting = (fp: string): void => {
         if (!starting.has(fp)) return
@@ -50,6 +54,9 @@ export function useBackgroundAgentEvents() {
 
       for (const event of events) {
         const filePath = event.payload.filePath
+        if (event.type === 'agent_state_changed' || event.type === 'agent_loops_changed' || event.type === 'agent_started') {
+          settledFiles.push(filePath)
+        }
         switch (event.type) {
           case 'agent_starting': {
             if (starting.has(filePath)) break
@@ -92,6 +99,10 @@ export function useBackgroundAgentEvents() {
           ...(stoppingChanged ? { stoppingFilePaths: stopping } : {})
         })
       }
+      // The open (or opening) agent's queue is its foreground events' job; a
+      // background event for it here is from before the switch.
+      const openPath = useDocumentStore.getState().filePath
+      deliverSettledBackgroundQueues(agents, settledFiles.filter((fp) => fp !== openPath && !openingFilePaths.has(fp)))
     })
 
     return unsubscribe

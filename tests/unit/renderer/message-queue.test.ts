@@ -1,9 +1,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+// Run hook effects inline so the background subscriber is testable without React.
+vi.mock('react', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react')>()),
+  useEffect: (effect: () => void) => { effect() }
+}))
 import { useAgentStore, selectLoopSlice } from '../../../src/renderer/stores/agent.store'
 import { useDocumentStore } from '../../../src/renderer/stores/document.store'
 import { useMessageQueueStore, selectQueue } from '../../../src/renderer/stores/message-queue.store'
+import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
-import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
+import { useBackgroundAgentEvents } from '../../../src/renderer/hooks/useBackgroundAgents'
+import { deliverQueuedMessages } from '../../../src/renderer/utils/queued-delivery'
+import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
 
 /**
@@ -116,5 +125,88 @@ describe('message queue across agent switches', () => {
     createAgentEventHandler()(idle())
     expect(invokeAgent).not.toHaveBeenCalled()
     expect(selectQueue(useMessageQueueStore.getState(), AGENT_1, 'main')).toHaveLength(1)
+  })
+})
+
+describe('message queue of an agent in the background', () => {
+  /** The background-batch subscriber, run outside React (its effect runs inline). */
+  let pushBatch: (events: RendererBackgroundAgentEvent[]) => void
+
+  const stateChanged = (filePath: string, state: 'idle' | 'active' | 'off'): RendererBackgroundAgentEvent =>
+    ({ type: 'agent_state_changed', payload: { filePath, state }, timestamp: 1 })
+  const loopsChanged = (filePath: string, activeLoops: number): RendererBackgroundAgentEvent =>
+    ({ type: 'agent_loops_changed', payload: { filePath, activeLoops }, timestamp: 1 })
+
+  beforeEach(() => {
+    useBackgroundAgentsStore.setState({ agents: [{ filePath: AGENT_1, handle: 'agent-1', state: 'active', activeLoops: 1 }] })
+    vi.stubGlobal('window', {
+      adfApi: {
+        invokeAgent,
+        getBackgroundAgentStatus: () => new Promise(() => {}),
+        onBackgroundAgentEvents: (cb: typeof pushBatch) => { pushBatch = cb; return () => {} }
+      }
+    })
+    useBackgroundAgentEvents()
+  })
+
+  it('delivers exactly once when the turn ends while the owner views another agent', () => {
+    switchTo(AGENT_1)
+    useMessageQueueStore.getState().enqueue(AGENT_1, 'main', { text: 'when you are done' })
+    switchTo(AGENT_2)
+
+    pushBatch([stateChanged(AGENT_1, 'idle')])
+    expect(invokeAgent).toHaveBeenCalledTimes(1)
+    expect(invokeAgent).toHaveBeenCalledWith('when you are done', AGENT_1, [{ type: 'text', text: 'when you are done' }], 'main')
+    // Not drawn into the agent on screen.
+    expect(useAgentStore.getState().log).toEqual([])
+
+    // Every later settle signal finds the queue empty: a repeated idle, the
+    // owner coming back (re-attach reads idle), agent-1's own idle event.
+    pushBatch([stateChanged(AGENT_1, 'idle')])
+    switchTo(AGENT_1)
+    expect(deliverQueuedMessages(AGENT_1, 'main')).toBe(false)
+    createAgentEventHandler()(idle())
+    expect(invokeAgent).toHaveBeenCalledTimes(1)
+    expect(selectQueue(useMessageQueueStore.getState(), AGENT_1, 'main')).toEqual([])
+  })
+
+  it('holds the queue while the background agent is still busy', () => {
+    useMessageQueueStore.getState().enqueue(AGENT_1, 'main', { text: 'later' })
+    switchTo(AGENT_2)
+
+    pushBatch([loopsChanged(AGENT_1, 0)])
+    expect(invokeAgent).not.toHaveBeenCalled()
+    expect(selectQueue(useMessageQueueStore.getState(), AGENT_1, 'main')).toHaveLength(1)
+  })
+
+  it("sends an inner loop's queue once no inner loop is mid-turn", () => {
+    useMessageQueueStore.getState().enqueue(AGENT_1, 'reflector', { text: 'for the reflector' })
+    switchTo(AGENT_2)
+
+    pushBatch([loopsChanged(AGENT_1, 0)])
+    expect(invokeAgent).toHaveBeenCalledTimes(1)
+    expect(invokeAgent).toHaveBeenCalledWith('for the reflector', AGENT_1, [{ type: 'text', text: 'for the reflector' }], 'reflector')
+  })
+
+  it('keeps the queue when the background agent stops instead of finishing', () => {
+    useMessageQueueStore.getState().enqueue(AGENT_1, 'reflector', { text: 'for the reflector' })
+    switchTo(AGENT_2)
+
+    // Main going off empties the inner-loop count too; a send now is refused.
+    pushBatch([stateChanged(AGENT_1, 'off'), loopsChanged(AGENT_1, 0)])
+    expect(invokeAgent).not.toHaveBeenCalled()
+    expect(selectQueue(useMessageQueueStore.getState(), AGENT_1, 'reflector')).toHaveLength(1)
+  })
+
+  it('leaves the open agent to its own events', () => {
+    switchTo(AGENT_1)
+    useMessageQueueStore.getState().enqueue(AGENT_1, 'main', { text: 'mine' })
+
+    // A background idle from before the switch must not send under the view.
+    pushBatch([stateChanged(AGENT_1, 'idle')])
+    expect(invokeAgent).not.toHaveBeenCalled()
+
+    createAgentEventHandler()(idle())
+    expect(invokeAgent).toHaveBeenCalledTimes(1)
   })
 })
