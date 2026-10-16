@@ -36,7 +36,32 @@ export type McpOAuthProviderFactory = (cfg: McpServerConfig) => AdfOAuthClientPr
 // from the working /client entry instead.
 const _require = createRequire(import.meta.url)
 const clientDir = dirname(_require.resolve('@modelcontextprotocol/sdk/client'))
-const { StdioClientTransport } = _require(join(clientDir, 'stdio.js')) as typeof import('@modelcontextprotocol/sdk/client/stdio')
+const { StdioClientTransport } = loadStdioTransportHidden(join(clientDir, 'stdio.js'))
+
+/**
+ * The SDK's StdioClientTransport sets `windowsHide` only when it detects
+ * Electron's main process (`'type' in process`). The daemon and the CLI run
+ * as Node (ELECTRON_RUN_AS_NODE), detached with no console, so on Windows
+ * every host stdio MCP server (npx/uvx shims, node) got its own visible
+ * console window. stdio.js is loaded against a cross-spawn that always sets
+ * `windowsHide`; every other cross-spawn user keeps the real module.
+ */
+function loadStdioTransportHidden(stdioPath: string): typeof import('@modelcontextprotocol/sdk/client/stdio') {
+  const crossSpawnPath = createRequire(stdioPath).resolve('cross-spawn')
+  type CrossSpawn = (command: string, args?: readonly string[], options?: object) => unknown
+  const real = _require(crossSpawnPath) as CrossSpawn
+  const hidden = Object.assign(
+    (command: string, args?: readonly string[], options?: object) => real(command, args, { ...options, windowsHide: true }),
+    real,
+  )
+  const cached = _require.cache[crossSpawnPath]!
+  cached.exports = hidden
+  try {
+    return _require(stdioPath)
+  } finally {
+    cached.exports = real
+  }
+}
 const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp')
 
 /** Env vars that user-supplied MCP config must never override. */
