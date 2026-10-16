@@ -7,7 +7,7 @@ import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppStat
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
-import { queueOwnerMessage } from '../../utils/queued-delivery'
+import { queueOwnerMessage, sendQueuedMessages } from '../../utils/queued-delivery'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -1534,16 +1534,9 @@ function LoopStream({ loop }: { loop: string }) {
   const handleInterruptSend = useCallback((id: string) => {
     if (!filePath) return
     const msg = removeQueued(filePath, loop, id)
-    if (!msg) return
-    addLogEntry({
-      id: nanoid(),
-      type: 'user',
-      content: msg.text,
-      timestamp: Date.now(),
-      metadata: msg.imagePreviewUrls && msg.imagePreviewUrls.length > 0 ? { imagePreviewUrls: msg.imagePreviewUrls } : undefined
-    }, loop)
-    window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content, loop)
-  }, [removeQueued, addLogEntry, filePath, loop])
+    // A send main does not take puts it back in the queue, marked "Not sent".
+    if (msg) sendQueuedMessages(filePath, loop, [msg])
+  }, [removeQueued, filePath, loop])
 
   const handleCancelQueued = useCallback((id: string) => {
     if (filePath) removeQueued(filePath, loop, id)
@@ -2229,6 +2222,14 @@ function LoopStream({ loop }: { loop: string }) {
                   {messageQueue.map((msg) => (
                     <div key={msg.id} className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-1.5 py-0.5 text-xs">
                       <span className="flex-1 truncate text-[var(--ink)]">{msg.text}</span>
+                      {msg.error && (
+                        <span
+                          className="shrink-0 text-[10px] text-[var(--status-deprecated)]"
+                          title={`Not sent: ${msg.error}. It stays queued and goes with the next send.`}
+                        >
+                          Not sent
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleInterruptSend(msg.id)}

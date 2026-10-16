@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid'
-import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
+import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useMessageQueueStore, queuedLoops, selectQueue, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
@@ -8,20 +8,37 @@ import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../
  * Send a loop's queued messages as one chat, now that its turn has ended.
  *
  * Works for any agent, open or not: the queue is taken (removed) first, so a
- * second settle signal for the same turn end finds nothing. Only the open
- * agent gets the optimistic user bubble; a background agent's message is in
- * its loop history when the owner opens it again.
+ * second settle signal for the same turn end finds nothing.
  */
 export function deliverQueuedMessages(filePath: string, loop: string): boolean {
   const queue = useMessageQueueStore.getState().take(filePath, loop)
   if (queue.length === 0) return false
+  sendQueuedMessages(filePath, loop, queue)
+  return true
+}
+
+/**
+ * Send messages already taken off a queue as one chat. Only the open agent
+ * gets the optimistic user bubble; a background agent's message is in its
+ * loop history when the owner opens it again.
+ *
+ * A send main did not take ({success: false}, or a rejected call) is never
+ * dropped: the messages go back to the head of their queue in order, marked
+ * with the error so the queue shows them as not sent, and the bubble that
+ * claimed they went is taken back.
+ */
+export function sendQueuedMessages(filePath: string, loop: string, queue: QueuedMessage[]): void {
   const combined = queue.map((m) => m.text).join('\n\n')
   const content = queue.flatMap((m) => m.content ?? [{ type: 'text' as const, text: m.text }])
   const imagePreviewUrls = queue.flatMap((m) => m.imagePreviewUrls ?? [])
+  let bubbleId: string | null = null
+  let previousState: AgentState | null = null
   if (useDocumentStore.getState().filePath === filePath) {
     const agentStore = useAgentStore.getState()
+    previousState = selectLoopSlice(agentStore, loop).state
+    bubbleId = nanoid()
     agentStore.addLogEntry({
-      id: nanoid(),
+      id: bubbleId,
       type: 'user',
       content: combined,
       timestamp: Date.now(),
@@ -29,8 +46,28 @@ export function deliverQueuedMessages(filePath: string, loop: string): boolean {
     }, loop)
     agentStore.setState('active', loop)
   }
-  window.adfApi?.invokeAgent(combined, filePath, content, loop)
-  return true
+
+  const fail = (error: string): void => {
+    useMessageQueueStore.getState().restore(filePath, loop, queue, error)
+    if (!bubbleId || useDocumentStore.getState().filePath !== filePath) return
+    const agentStore = useAgentStore.getState()
+    const slice = selectLoopSlice(agentStore, loop)
+    if (slice.log.some((e) => e.id === bubbleId)) {
+      agentStore.setLog(slice.log.filter((e) => e.id !== bubbleId), undefined, loop)
+    }
+    // Only undo our own optimistic 'active'; a state main reported since stands.
+    if (previousState && slice.state === 'active') agentStore.setState(previousState, loop)
+  }
+
+  const pending = window.adfApi?.invokeAgent(combined, filePath, content, loop)
+  if (!pending) {
+    fail('Studio is not connected to the agent runtime')
+    return
+  }
+  void Promise.resolve(pending).then(
+    (result) => { if (result && result.success === false) fail(result.error ?? 'The agent did not take the message') },
+    (error: unknown) => fail(error instanceof Error ? error.message : String(error))
+  )
 }
 
 /**

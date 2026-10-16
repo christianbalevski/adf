@@ -8,6 +8,8 @@ export interface QueuedMessage {
   text: string
   content?: ContentBlock[]
   imagePreviewUrls?: string[]
+  /** Why the last send of this message failed; it is queued again (shown as "Not sent"). */
+  error?: string
 }
 
 /**
@@ -31,6 +33,8 @@ interface MessageQueueState {
    * background state event, a re-attach) can never send the same message twice.
    */
   take: (filePath: string, loop: string) => QueuedMessage[]
+  /** Put taken messages back at the head of their queue, in order, marked with why they were not sent. */
+  restore: (filePath: string, loop: string, messages: QueuedMessage[], error: string) => void
 }
 
 /** Stable reference for "nothing queued" so selectors don't churn. */
@@ -75,6 +79,10 @@ export const useMessageQueueStore = create<MessageQueueState>((set, get) => {
       const list = selectQueue(get(), filePath, loop)
       if (list.length > 0) write(filePath, loop, [])
       return list
+    },
+    restore: (filePath, loop, messages, error) => {
+      if (messages.length === 0) return
+      write(filePath, loop, [...messages.map((m) => ({ ...m, error })), ...selectQueue(get(), filePath, loop)])
     }
   }
 })

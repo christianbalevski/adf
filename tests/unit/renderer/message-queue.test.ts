@@ -338,3 +338,49 @@ describe('a new message never jumps ahead of older queued ones', () => {
     expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, [{ type: 'text', text: 'older' }, { type: 'text', text: 'newer' }], 'main')
   })
 })
+
+describe('a send main does not take', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('puts a background queue back at its head, in order, marked not sent', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'first')
+    queue(AGENT_1, 'second')
+    await main.openFile(AGENT_2)
+
+    main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+    main.pushBatch([stateChanged(AGENT_1, 'idle')])
+    // Queued while the failed send was in flight: stays behind the older two.
+    queue(AGENT_1, 'third')
+    await settle()
+
+    expect(queued(AGENT_1).map((m) => [m.text, m.error])).toEqual([
+      ['first', 'Agent not running'],
+      ['second', 'Agent not running'],
+      ['third', undefined]
+    ])
+
+    // Shown as queued (and not sent) when the owner comes back.
+    main.agents.set(AGENT_1, { state: 'active' })
+    await main.openFile(AGENT_1)
+    expect(queued(AGENT_1)).toHaveLength(3)
+
+    // The next turn end retries them, oldest first.
+    main.pushForeground(idle())
+    expect(main.invokeAgent).toHaveBeenLastCalledWith('first\n\nsecond\n\nthird', AGENT_1, expect.any(Array), 'main')
+  })
+
+  it('takes back the bubble and the optimistic state of the open agent on a rejected send', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'try me')
+
+    main.invokeAgent.mockRejectedValueOnce(new Error('IPC closed'))
+    main.pushForeground(idle())
+    expect(useAgentStore.getState().log.at(-1)?.content).toBe('try me')
+    await settle()
+
+    expect(useAgentStore.getState().log.some((e) => e.type === 'user')).toBe(false)
+    expect(useAgentStore.getState().state).toBe('idle')
+    expect(queued(AGENT_1).map((m) => [m.text, m.error])).toEqual([['try me', 'IPC closed']])
+  })
+})
