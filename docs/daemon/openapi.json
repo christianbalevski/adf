@@ -12090,7 +12090,8 @@
             "type": "integer"
           },
           "messages_tokens": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Includes calibration.since_last_call_tokens"
           },
           "overhead_tokens": {
             "type": "integer"
@@ -12098,6 +12099,34 @@
           "computed_at": {
             "type": "integer",
             "description": "Epoch ms"
+          },
+          "calibration": {
+            "type": "object",
+            "description": "Present when the parts are calibrated to the loop's last call: they then sum to that call's real prompt size plus the content added since it. Absent: every figure is an uncalibrated estimate.",
+            "required": [
+              "last_call_tokens",
+              "ratio",
+              "since_last_call_tokens",
+              "reply_tokens"
+            ],
+            "properties": {
+              "last_call_tokens": {
+                "type": "integer",
+                "description": "API-reported prompt size of the last call, cache reads and writes included"
+              },
+              "ratio": {
+                "type": "number",
+                "description": "Real / estimated, applied to every estimated part"
+              },
+              "since_last_call_tokens": {
+                "type": "integer",
+                "description": "Part of messages_tokens added since that call: reply_tokens plus later content estimated at ratio"
+              },
+              "reply_tokens": {
+                "type": "integer",
+                "description": "API-reported output of that call, counted exactly in since_last_call_tokens (0 when not reported)"
+              }
+            }
           }
         }
       },
@@ -12109,7 +12138,8 @@
           "label",
           "tokens",
           "items",
-          "note"
+          "note",
+          "basis"
         ],
         "properties": {
           "id": {
@@ -12124,7 +12154,8 @@
               "tools",
               "mcp",
               "dynamic",
-              "messages"
+              "messages",
+              "recent"
             ]
           },
           "label": {
@@ -12159,6 +12190,15 @@
           },
           "note": {
             "type": "string"
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "estimate",
+              "calibrated",
+              "measured"
+            ],
+            "description": "estimate: not tied to any call. calibrated: an estimate scaled so the calibrated parts sum to the last call's measured prompt (only the sum is measured). measured: the API-reported figure (the last reply's output)."
           }
         }
       },

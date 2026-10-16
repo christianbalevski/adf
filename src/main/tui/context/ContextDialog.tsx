@@ -18,6 +18,7 @@ import type { OverlayProps } from '../views/types'
 import {
   CONTEXT_OVERLAY,
   barText,
+  calibrationText,
   categoryIndex,
   contextRows,
   pressureOf,
@@ -210,7 +211,7 @@ export function ContextDialog({ overlay, close: closeOverlay, width, height }: O
         {rows.length > rowsHeight ? <Text color={theme.color.dim}>{`${start + 1}-${Math.min(rows.length, start + rowsHeight)} of ${rows.length} rows`}</Text> : null}
         <Box marginTop={1}><Text color={theme.color.muted} wrap="truncate-end">{selected ? `${selected.label}: ${selected.note}` : ''}</Text></Box>
         <Text color={theme.color.dim} wrap="truncate-end">
-          {s.compacting ? `Compacting ${s.loop}${g.ellipsis}` : s.loading ? `Re-measuring${g.ellipsis}` : s.measuredAt ? `Measured ${formatClock(s.measuredAt)} ${g.sep} conversation estimated, the rest tokenized` : ''}
+          {s.compacting ? `Compacting ${s.loop}${g.ellipsis}` : s.loading ? `Re-measuring${g.ellipsis}` : s.measuredAt ? `Measured ${formatClock(s.measuredAt)} ${g.sep} ${calibrationText(s.data?.breakdown?.calibration, g.approx, formatCount)}` : ''}
         </Text>
       </Box>
     )
@@ -230,7 +231,7 @@ function RowLine({ row, selectedId, total, labelWidth, rowBar, theme }: { row: C
     const c = row.category
     const isSel = c.id === selectedId
     const marker = row.expandable ? (row.expanded ? g.expanded : g.collapsed) : ' '
-    const label = `${marker} ${c.label}${c.count !== undefined ? ` (${c.count})` : ''}`
+    const label = `${marker} ${c.label}${c.count !== undefined ? ` (${c.count})` : ''}${c.basis !== 'measured' ? ` ${g.approx}` : ''}`
     const bar = barText(c.tokens, total, rowBar, theme.ascii)
     return (
       <Text wrap="truncate-end" inverse={theme.mono && isSel} bold={isSel}>

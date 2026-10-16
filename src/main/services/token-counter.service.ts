@@ -75,6 +75,15 @@ export class TokenCounterService {
   }
 
   /**
+   * Whether earlier turns' reasoning is resent as prompt input: Anthropic
+   * models keep prior thinking blocks; OpenAI-style backends drop reasoning
+   * from earlier turns, so their recorded reasoning tokens are not context.
+   */
+  resendsReasoning(provider: string, model?: string): boolean {
+    return this.resolveTokenizer(provider, model) === 'anthropic'
+  }
+
+  /**
    * Count tokens for a given text. `provider` is a ProviderType, a provider
    * settings key, or a display name — see resolveTokenizer.
    */
@@ -164,18 +173,37 @@ export class TokenCounterService {
    * Cost: O(n) string length reads, no WASM, no allocations.
    */
   estimateMessagesTokens(messages: Array<{ role: string; content: any }>): number {
+    return this.estimateMessagesTokensSplit(messages).estimated
+  }
+
+  /**
+   * estimateMessagesTokens, with thinking taken from the API where it was
+   * recorded: an assistant message whose loop row (`seq`) reported reasoning
+   * tokens counts those, in `reported`, instead of the char estimate of the
+   * (often summarized) thinking text the session holds. `estimated` is the
+   * char-based rest.
+   */
+  estimateMessagesTokensSplit(
+    messages: Array<{ role: string; content: any; seq?: number }>,
+    reasoningBySeq?: ReadonlyMap<number, number>
+  ): { estimated: number; reported: number } {
     let totalChars = 0
     // Binary payloads (data URIs, base64 audio) are counted separately: they
     // are ~30× less token-dense than prose, so folding them into totalChars
     // would inflate a single 2MB image to ~570k tokens and make the
     // auto-compact gate fire forever. See MEDIA_CHARS_PER_TOKEN.
     let mediaChars = 0
+    let reported = 0
 
     for (const msg of messages) {
       totalChars += 16 // role overhead ~4 tokens × ~4 chars
       if (typeof msg.content === 'string') {
         totalChars += msg.content.length
       } else if (Array.isArray(msg.content)) {
+        const reasoning = msg.role === 'assistant' && msg.seq !== undefined ? reasoningBySeq?.get(msg.seq) : undefined
+        const useReported = reasoning !== undefined && reasoning > 0 &&
+          msg.content.some((b: { type?: string }) => b.type === 'thinking')
+        if (useReported) reported += reasoning
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) {
             totalChars += block.text.length
@@ -185,6 +213,7 @@ export class TokenCounterService {
           } else if (block.type === 'tool_result') {
             totalChars += String(block.content ?? '').length
           } else if (block.type === 'thinking') {
+            if (useReported) continue
             // Reasoning text is real context on the next turn, and preserved
             // reasoning_details (encrypted blobs) are round-tripped verbatim.
             totalChars += (block.thinking?.length ?? 0)
@@ -203,7 +232,10 @@ export class TokenCounterService {
       }
     }
     // ~3.5 chars per token for English (conservative)
-    return Math.ceil(totalChars / 3.5) + Math.ceil(mediaChars / MEDIA_CHARS_PER_TOKEN)
+    return {
+      estimated: Math.ceil(totalChars / 3.5) + Math.ceil(mediaChars / MEDIA_CHARS_PER_TOKEN),
+      reported,
+    }
   }
 }
 

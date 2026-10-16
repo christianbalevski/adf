@@ -10,7 +10,7 @@
  */
 
 import type { AgentConfig } from '../types/adf-v02.types'
-import type { ContextBreakdown } from '../types/ipc.types'
+import type { ContextBreakdown, ContextCalibration } from '../types/ipc.types'
 
 /** The executor's fallback auto-compact trigger point. */
 export const DEFAULT_COMPACT_THRESHOLD = 100000
@@ -63,7 +63,7 @@ export interface ContextCategoryItem {
   detail?: string
 }
 
-export type ContextCategoryKey = 'system' | 'files' | 'tools' | 'mcp' | 'dynamic' | 'messages'
+export type ContextCategoryKey = 'system' | 'files' | 'tools' | 'mcp' | 'dynamic' | 'messages' | 'recent'
 
 export interface ContextCategory {
   /** Stable id: the key, or `mcp:<server>` for one MCP server's tools. */
@@ -77,7 +77,17 @@ export interface ContextCategory {
   items: ContextCategoryItem[]
   /** One line on what the category is. */
   note: string
+  /** How `tokens` was obtained — see ContextBasis. */
+  basis: ContextBasis
 }
+
+/**
+ * `estimate`: char/tokenizer estimate, not tied to any call. `calibrated`:
+ * an estimate scaled so the calibrated parts sum to the last call's measured
+ * prompt (still an estimate per part; only their sum is measured).
+ * `measured`: the API-reported figure itself (the last reply's output).
+ */
+export type ContextBasis = 'estimate' | 'calibrated' | 'measured'
 
 /**
  * The per-request total: what the next request would carry. Equals the sum of
@@ -87,19 +97,49 @@ export function contextTotal(b: ContextBreakdown): number {
   return b.system_prompt_tokens + b.tools_total_tokens + b.messages_tokens + b.dynamic_instructions_tokens
 }
 
+/** Tokens added after the last call's reply: the only estimated part of a calibrated total. */
+export function estimatedSinceTokens(cal: ContextCalibration): number {
+  return Math.max(0, cal.since_last_call_tokens - cal.reply_tokens)
+}
+
+/**
+ * Display tags: `part` for every system/tool/dynamic/conversation row and
+ * their sub-rows (calibrated parts are scaled estimates — only their sum is
+ * measured), `recent` for "since last call" and `total` for the total.
+ */
+export function breakdownTags(cal: ContextCalibration | undefined): { part: string; recent: string; total: string } {
+  if (!cal) return { part: '≈ estimate', recent: '≈ estimate', total: '≈ estimate' }
+  const newer = estimatedSinceTokens(cal) > 0 ? '≈ estimate' : 'measured'
+  return { part: '≈ scaled', recent: newer, total: newer }
+}
+
+/**
+ * One line on how the total was measured and how it relates to the context
+ * gauge, which shows the last call's prompt + reply (input + output).
+ */
+export function calibrationNote(cal: ContextCalibration | undefined, fmt: (n: number) => string, approx = '≈'): string {
+  if (!cal) return `${approx} estimate: no call to calibrate to (none recorded yet, or the prompt, tools or model changed since).`
+  const head = `Calibrated to the last call: ${fmt(cal.last_call_tokens)} prompt + ${fmt(cal.reply_tokens)} reply, as the gauge shows`
+  const newer = estimatedSinceTokens(cal)
+  return newer > 0 ? `${head}; ${approx}${fmt(newer)} added since is an estimate the gauge counts after the next call.` : `${head}.`
+}
+
 const byTokens = <T extends { tokens: number }>(list: T[]): T[] => [...list].sort((a, b) => b.tokens - a.tokens)
 
 /**
  * Split a breakdown into non-overlapping categories that sum to
  * `contextTotal(b)`: system prompt (minus the injected files, which get their
  * own row, as Studio's bar carves them out), built-in tools, one row per MCP
- * server, dynamic instructions, conversation. Zero-token categories are kept:
- * a row that says 0 answers "is it in there?". Sorted biggest first.
+ * server, dynamic instructions, conversation and, when calibrated, what was
+ * added since the last call. Zero-token categories are kept: a row that says
+ * 0 answers "is it in there?". Sorted biggest first.
  */
 export function contextCategories(b: ContextBreakdown, maxItems = 12): ContextCategory[] {
   const fileTokens = b.injected_files.reduce((sum, f) => sum + f.tokens, 0)
   const parts = b.system_prompt_parts
-  const out: ContextCategory[] = [
+  const cal = b.calibration
+  const basis: ContextBasis = cal ? 'calibrated' : 'estimate'
+  const out: Array<Omit<ContextCategory, 'basis'>> = [
     {
       id: 'system',
       key: 'system',
@@ -161,9 +201,21 @@ export function contextCategories(b: ContextBreakdown, maxItems = 12): ContextCa
     id: 'messages',
     key: 'messages',
     label: 'Conversation',
-    tokens: b.messages_tokens,
+    tokens: b.messages_tokens - (cal?.since_last_call_tokens ?? 0),
     items: [],
-    note: 'This loop’s history, compaction summary included (estimate).',
+    note: 'This loop’s history, compaction summary included.',
   })
-  return byTokens(out)
+  const categories: ContextCategory[] = out.map((c) => ({ ...c, basis }))
+  if (cal) {
+    categories.push({
+      id: 'recent',
+      key: 'recent',
+      label: 'Since last call',
+      tokens: cal.since_last_call_tokens,
+      items: [],
+      note: 'The last call’s reply (its reported output) plus anything added after it (estimated).',
+      basis: estimatedSinceTokens(cal) > 0 ? 'estimate' : 'measured',
+    })
+  }
+  return byTokens(categories)
 }

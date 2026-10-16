@@ -1552,6 +1552,11 @@ export class AdfWorkspace {
     return this.db.getLastAssistantTokens(this.boundLoop)
   }
 
+  /** Every assistant row's usage record in loop order — see AdfDatabase.getAssistantTokenRows. */
+  getAssistantTokenRows(): Array<{ seq: number; tokens: LoopTokenUsage }> {
+    return this.db.getAssistantTokenRows(this.boundLoop)
+  }
+
   /** Meta key of this loop's context baseline: bare for main, `:<loop>`-suffixed
    *  for side loops (one baseline per cognition stream). */
   private contextBaselineKey(): string {

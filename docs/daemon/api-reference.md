@@ -2598,7 +2598,8 @@ Example 200 (`application/json`):
           "detail": "string"
         }
       ],
-      "note": "string"
+      "note": "string",
+      "basis": "estimate"
     }
   ],
   "breakdown": {
@@ -2630,7 +2631,13 @@ Example 200 (`application/json`):
     "dynamic_instructions_tokens": 0,
     "messages_tokens": 0,
     "overhead_tokens": 0,
-    "computed_at": 0
+    "computed_at": 0,
+    "calibration": {
+      "last_call_tokens": 0,
+      "ratio": 0,
+      "since_last_call_tokens": 0,
+      "reply_tokens": 0
+    }
   }
 }
 ```
@@ -11656,9 +11663,14 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 | `tool_groups[].tools[].tokens` | integer | yes |  |
 | `tools_total_tokens` | integer | yes |  |
 | `dynamic_instructions_tokens` | integer | yes |  |
-| `messages_tokens` | integer | yes |  |
+| `messages_tokens` | integer | yes | Includes calibration.since_last_call_tokens |
 | `overhead_tokens` | integer | yes |  |
 | `computed_at` | integer | yes | Epoch ms |
+| `calibration` | object |  | Present when the parts are calibrated to the loop's last call: they then sum to that call's real prompt size plus the content added since it. Absent: every figure is an uncalibrated estimate. |
+| `calibration.last_call_tokens` | integer | yes | API-reported prompt size of the last call, cache reads and writes included |
+| `calibration.ratio` | number | yes | Real / estimated, applied to every estimated part |
+| `calibration.since_last_call_tokens` | integer | yes | Part of messages_tokens added since that call: reply_tokens plus later content estimated at ratio |
+| `calibration.reply_tokens` | integer | yes | API-reported output of that call, counted exactly in since_last_call_tokens (0 when not reported) |
 
 <a id="schema-contextcategory"></a>
 
@@ -11667,7 +11679,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | The key, or `mcp:<server>` |
-| `key` | `"system"` \| `"files"` \| `"tools"` \| `"mcp"` \| `"dynamic"` \| `"messages"` | yes |  |
+| `key` | `"system"` \| `"files"` \| `"tools"` \| `"mcp"` \| `"dynamic"` \| `"messages"` \| `"recent"` | yes |  |
 | `label` | string | yes |  |
 | `tokens` | integer | yes |  |
 | `count` | integer |  |  |
@@ -11676,6 +11688,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 | `items[].tokens` | integer | yes |  |
 | `items[].detail` | string |  |  |
 | `note` | string | yes |  |
+| `basis` | `"estimate"` \| `"calibrated"` \| `"measured"` | yes | estimate: not tied to any call. calibrated: an estimate scaled so the calibrated parts sum to the last call's measured prompt (only the sum is measured). measured: the API-reported figure (the last reply's output). |
 
 <a id="schema-createagentbody"></a>
 

@@ -36,8 +36,16 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()))
 })
 
-function setup() {
-  const provider = new MockLLMProvider({ tokensPerResponse: 40 })
+/** The mock with a realistic usage record: `promptTokens` as the input, cache fields present. */
+class MeasuredMockProvider extends MockLLMProvider {
+  promptTokens = 0
+  async createMessage(options: Parameters<MockLLMProvider['createMessage']>[0]) {
+    const response = await super.createMessage(options)
+    return { ...response, usage: { ...response.usage, input_tokens: this.promptTokens }, providerMetadata: { adf: { cacheReadTokens: 0 } } }
+  }
+}
+
+function setup(provider: MockLLMProvider = new MockLLMProvider({ tokensPerResponse: 40 })) {
   const runtime = new RuntimeService({ enforceReviewGate: false })
   const ref = runtime.createAgent({ name: 'agent-1', provider })
   const server = createDaemonHttpApi(runtime)
@@ -76,9 +84,37 @@ describe('GET /agents/:id/context', () => {
       if (status.runtimeState === 'idle' && i > 2) break
     }
     const after = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/context?items=2` })).json()
+    // The mock reports a 40-token input for a multi-thousand-token prompt:
+    // far outside the calibration band, so this stays the uncalibrated
+    // estimate, which must grow with the conversation.
+    expect(after.breakdown.calibration).toBeUndefined()
     expect(after.breakdown.messages_tokens).toBeGreaterThan(before.breakdown.messages_tokens)
     for (const c of after.categories) expect(c.items.length).toBeLessThanOrEqual(2)
     expect((await server.inject({ method: 'GET', url: `/agents/${ref.id}/context?items=-1` })).statusCode).toBe(400)
+  })
+
+  it('calibrates to the last call while the fixed parts match, and stops when they change', async () => {
+    const provider = new MeasuredMockProvider({ tokensPerResponse: 40 })
+    const { ref, server } = setup(provider)
+    const context = async () => (await server.inject({ method: 'GET', url: `/agents/${ref.id}/context` })).json()
+    provider.promptTokens = Math.round((await context()).totalTokens * 1.6)
+    await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, payload: { text: 'hello' } })
+    for (let i = 0; i < 40; i++) {
+      await settle()
+      const status = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/status` })).json()
+      if (status.runtimeState === 'idle' && i > 2) break
+    }
+    const after = await context()
+    expect(after.breakdown.calibration.last_call_tokens).toBe(provider.promptTokens)
+    // Nothing after the reply: prompt + the reply's reported output, the gauge's figure.
+    expect(after.breakdown.calibration).toMatchObject({ reply_tokens: 40, since_last_call_tokens: 40 })
+    expect(after.totalTokens).toBe(provider.promptTokens + 40)
+
+    // New instructions: the system prompt measured now is not the one sent.
+    const config = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/config` })).json().config as AgentConfig
+    const put = await server.inject({ method: 'PUT', url: `/agents/${ref.id}/config`, payload: { ...config, instructions: `${config.instructions ?? ''}\nAlways answer in French.` } })
+    expect(put.statusCode, put.body).toBe(200)
+    expect((await context()).breakdown.calibration).toBeUndefined()
   })
 
   it('an inner loop reports its own threshold; unknown loops and agents are 404', async () => {
