@@ -353,3 +353,47 @@ describe('AdfDatabase.open fails closed (W5-H review)', () => {
     expect(readFileSync(`${filePath}-wal`).equals(walBefore)).toBe(true)
   })
 })
+
+describe('AdfDatabase.open migrates in one transaction (W5-H review)', () => {
+  it('a failing step rolls back the steps before it; a second failure reuses the identical backup', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV31Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    const raw = new Database(filePath)
+    const row = raw.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string }
+    // Stripped by a step that runs for every version, before the ladder's v31 → v32 step fails.
+    raw.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify({ ...JSON.parse(row.config_json), security: { allow_protected_writes: true } }))
+    raw.exec('DROP TABLE adf_outbox')
+    raw.close()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log')
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(() => AdfDatabase.open(filePath)).toThrow(/no such table: (main\.)?adf_outbox/)
+      expect(readdirSync(dir).sort()).toEqual(['agent-1.adf', 'agent-1.adf.bak'])
+      expect(readFileSync(filePath).equals(readFileSync(`${filePath}.bak`))).toBe(true)
+      expect(configOf(filePath).security).toEqual({ allow_protected_writes: true })
+      expect(schemaVersion(filePath)).toBe('31')
+      expect(AdfDatabase.openFilePaths()).toEqual([])
+    }
+    expect(log.mock.calls.filter(([line]) => String(line).includes('already on disk, unchanged')).length).toBe(2)
+  })
+
+  it('a constructor failure after the commit keeps the backup and says so when another connection holds the file', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV31Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(AdfDatabase.prototype as unknown as { prepareStatements(): void }, 'prepareStatements')
+      .mockImplementationOnce(() => { throw new Error('forced constructor failure') })
+    const other = new Database(filePath)
+    try {
+      other.prepare('SELECT COUNT(*) FROM adf_meta').get()
+      expect(() => AdfDatabase.open(filePath)).toThrow(/^forced constructor failure\. agent-1\.adf was migrated and could not be put back from its backup because another connection has the file open; the backup is kept at /)
+      expect(existsSync(`${filePath}.bak`)).toBe(true)
+      expect(AdfDatabase.openFilePaths()).toEqual([])
+    } finally {
+      other.close()
+    }
+  })
+})

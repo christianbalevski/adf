@@ -11,9 +11,10 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, promises as fsp } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, fsyncSync, statSync, promises as fsp } from 'fs'
+import { createHash } from 'crypto'
 import { brotliDecompressSync } from 'zlib'
-import { basename, join, resolve, sep } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
   AdfProviderConfig,
@@ -742,77 +743,136 @@ export class AdfDatabase {
    *  A file copy is safe HERE and only here: open() runs before any writer of
    *  this connection exists, so nothing can checkpoint underneath it.
    *  `complete`: the checkpoint folded the whole WAL first, so the copy holds
-   *  every committed write (a failed open may restore from it). */
-  static backupBeforeDestructiveSync(db: Database.Database, filePath: string): { backupPath: string; complete: boolean } {
+   *  every committed write (a failed open may restore from it).
+   *  `reused`: a `.bak` already on disk has the same size and SHA-256 as the
+   *  checkpointed file (a migration that failed before and rolled back), so
+   *  it is kept as is instead of being moved aside and copied again. The
+   *  copy is fsynced. */
+  static backupBeforeDestructiveSync(db: Database.Database, filePath: string): { backupPath: string; complete: boolean; reused: boolean } {
     const backupPath = filePath + '.bak'
-    try { renameSync(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
     let complete = false
     try {
       const [ck] = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>
       complete = ck?.busy === 0
     } catch { /* BUSY fallback — copy anyway */ }
+    if (AdfDatabase.sameFileContent(filePath, backupPath)) return { backupPath, complete, reused: true }
+    try { renameSync(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
     copyFileSync(filePath, backupPath)
-    return { backupPath, complete }
+    AdfDatabase.fsyncFileSync(backupPath)
+    return { backupPath, complete, reused: false }
   }
 
-  /**
-   * A failed open() put the file back as its pre-migration backup: the
-   * migration steps it ran are undone. The `.bak` is kept (it is removed only
-   * after a fully successful open). Only when no other connection, in this
-   * process or another, has the file open (an exclusive-lock probe) and no
-   * -wal is left beside it; copy then rename, so the swap is atomic.
-   */
-  private static restoreBackupSync(filePath: string): boolean {
-    const backupPath = filePath + '.bak'
-    if (!existsSync(backupPath)) return false
-    if (AdfDatabase.openCounts.has(AdfDatabase.canonicalKey(filePath))) return false
-    let probe: Database.Database | null = null
+  /** Both files exist with the same size and SHA-256. */
+  private static sameFileContent(a: string, b: string): boolean {
     try {
-      probe = new Database(filePath, { fileMustExist: true })
-      probe.pragma('busy_timeout = 0')
-      probe.pragma('locking_mode = EXCLUSIVE')
-      probe.exec('BEGIN IMMEDIATE; COMMIT')
+      if (statSync(a).size !== statSync(b).size) return false
+      const hash = (p: string) => createHash('sha256').update(readFileSync(p)).digest('hex')
+      return hash(a) === hash(b)
     } catch {
       return false
-    } finally {
-      try { probe?.close() } catch { /* ignore */ }
     }
-    if (existsSync(`${filePath}-wal`)) return false
+  }
+
+  private static fsyncFileSync(path: string): void {
+    const fd = openSync(path, 'r+')
+    try { fsyncSync(fd) } finally { closeSync(fd) }
+  }
+
+  /** POSIX: make a rename in `dir` durable. Windows cannot open a directory for fsync. */
+  private static fsyncDirSync(dir: string): void {
+    if (process.platform === 'win32') return
+    try {
+      const fd = openSync(dir, 'r')
+      try { fsyncSync(fd) } finally { closeSync(fd) }
+    } catch { /* best-effort */ }
+  }
+
+  /**
+   * After a failure that followed a committed migration (the constructor):
+   * put the file back as its pre-migration backup. The `.bak` is kept (it is
+   * removed only after a fully successful open). Null when restored, else
+   * why not (the caller says so in its error).
+   *
+   * Only when no other connection can hold the file: none in this process,
+   * no -wal left beside it (SQLite removes it at the last close), and an
+   * exclusive lock taken with busy_timeout 0. The copy is fsynced before the
+   * rename. On POSIX the rename happens while that lock is held, so nothing
+   * can open the old file in between (a connection that opened it earlier
+   * would have held a lock). On Windows the lock's own handle would block the
+   * rename, so the probe closes first: the rename itself then fails while any
+   * other program has the file open.
+   */
+  private static restoreBackupSync(filePath: string): string | null {
+    const backupPath = filePath + '.bak'
+    if (!existsSync(backupPath)) return 'there is no backup'
+    const busy = 'another connection has the file open'
+    if (AdfDatabase.openCounts.has(AdfDatabase.canonicalKey(filePath))) return busy
+    if (existsSync(`${filePath}-wal`)) return busy
     const restorePath = `${filePath}.restore`
+    let probe: Database.Database | null = null
     try {
       copyFileSync(backupPath, restorePath)
-      try { unlinkSync(`${filePath}-shm`) } catch { /* none */ }
+      AdfDatabase.fsyncFileSync(restorePath)
+      try {
+        probe = new Database(filePath, { fileMustExist: true })
+        probe.pragma('busy_timeout = 0')
+        probe.pragma('locking_mode = EXCLUSIVE')
+        probe.exec('BEGIN IMMEDIATE; COMMIT')
+      } catch {
+        try { probe?.close() } catch { /* ignore */ }
+        probe = null
+        try { unlinkSync(restorePath) } catch { /* ignore */ }
+        return busy
+      }
+      if (process.platform === 'win32') {
+        probe.close()
+        probe = null
+      }
+      try { unlinkSync(`${filePath}-shm`) } catch { /* none, or held */ }
       renameSync(restorePath, filePath)
-      return true
+      AdfDatabase.fsyncDirSync(dirname(filePath))
+      return null
     } catch (err) {
-      console.warn(`[AdfDatabase] Could not restore ${filePath} from its backup:`, err)
       try { unlinkSync(restorePath) } catch { /* ignore */ }
-      return false
+      const code = (err as { code?: unknown } | null)?.code
+      return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' ? busy : `the restore failed (${err instanceof Error ? err.message : String(err)})`
+    } finally {
+      // POSIX: after the rename. Its (empty) WAL belonged to the old file.
+      try { probe?.close() } catch { /* ignore */ }
     }
   }
 
   /**
-   * A failed open(): close the connection, put the file back from its
-   * pre-migration backup when one was taken (kept either way), and reap the
-   * sidecars this open created.
+   * A failed open(): roll back is the caller's; here the connection is
+   * closed, the file is put back from the backup when `restore` (the failure
+   * followed a committed migration), and the sidecars this open created are
+   * reaped. Returns the sentence to add to the error when the file could not
+   * be restored, else null.
    */
   private static abandonOpen(
     db: Database.Database,
     filePath: string,
-    backup: { complete: boolean } | null,
-    walExistedBeforeOpen: boolean,
-  ): void {
+    opts: { backup: { complete: boolean } | null; restore: boolean; walExistedBeforeOpen: boolean },
+  ): string | null {
     try { db.close() } catch { /* may already be closed */ }
-    if (backup) {
-      if (backup.complete && AdfDatabase.restoreBackupSync(filePath)) {
+    let note: string | null = null
+    if (opts.backup && !opts.restore) {
+      console.error(`[AdfDatabase] Open failed; the migration was rolled back, the file is unchanged. Backup kept at: ${filePath}.bak`)
+    } else if (opts.restore) {
+      const why = !opts.backup ? 'there is no backup'
+        : !opts.backup.complete ? 'the backup may lack writes another connection had not checkpointed'
+        : AdfDatabase.restoreBackupSync(filePath)
+      if (why === null) {
         console.error(`[AdfDatabase] Open failed after migrating; restored ${filePath} from its backup, kept at ${filePath}.bak`)
       } else {
-        console.error(`[AdfDatabase] Migration failed. Backup preserved at: ${filePath}.bak`)
+        note = `${basename(filePath)} was migrated and could not be put back from its backup because ${why}; the backup is kept at ${filePath}.bak`
+        console.error(`[AdfDatabase] ${note}`)
       }
     }
-    if (!walExistedBeforeOpen) {
+    if (!opts.walExistedBeforeOpen) {
       try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
     }
+    return note
   }
 
   /** Remove a transient .bak file after a successful destructive operation. */
@@ -1220,12 +1280,22 @@ export class AdfDatabase {
 
       if (needsMigration) {
         try {
-          backup = AdfDatabase.backupBeforeDestructiveSync(db, filePath)
-          console.log(`[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
+          const made = AdfDatabase.backupBeforeDestructiveSync(db, filePath)
+          backup = made
+          console.log(made.reused
+            ? `[AdfDatabase] Backup before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}) already on disk, unchanged: ${filePath}.bak`
+            : `[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
         }
       }
+
+      // The whole migration (the steps that run for every version and the
+      // versioned ladder) is one write transaction: a failure rolls all of it
+      // back, and the file stays as the backup has it. The ladder's own
+      // db.transaction() blocks nest as savepoints. Nothing below writes a
+      // pragma, vacuums or checkpoints.
+      db.exec('BEGIN IMMEDIATE')
 
       // Migrate adf_loop: add model, tokens, created_at columns if missing
       const cols = db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>
@@ -2250,19 +2320,30 @@ export class AdfDatabase {
         }
       } catch { /* trigger migration is best-effort */ }
 
+      // A statement error SQLite answers with a rollback of the whole
+      // transaction (SQLITE_FULL, IOERR, BUSY) inside a best-effort step
+      // would have left the rest running in autocommit: fail instead.
+      if (!db.inTransaction) throw new Error(`The migration of ${basename(filePath)} was rolled back by SQLite.`)
+      db.exec('COMMIT')
+      migrated = true
     } catch (error) {
-      AdfDatabase.abandonOpen(db, filePath, backup, walExistedBeforeOpen)
+      if (db.inTransaction) {
+        try { db.exec('ROLLBACK') } catch { /* closing rolls back too */ }
+      }
+      AdfDatabase.abandonOpen(db, filePath, { backup, restore: false, walExistedBeforeOpen })
       throw error
     }
 
-    // The constructor's statements can still fail (a shape no step fixed):
-    // the open is abandoned the same way, and the backup is removed only
-    // once the whole open succeeded.
+    // The constructor's statements can still fail (a shape no step fixed),
+    // after the migration committed: the file is put back from the backup
+    // when that can be done safely, and the backup is removed only once the
+    // whole open succeeded.
     let opened: AdfDatabase
     try {
       opened = new AdfDatabase(db, filePath)
     } catch (error) {
-      AdfDatabase.abandonOpen(db, filePath, backup, walExistedBeforeOpen)
+      const note = AdfDatabase.abandonOpen(db, filePath, { backup, restore: migrated, walExistedBeforeOpen })
+      if (note) throw new Error(`${error instanceof Error ? error.message : String(error)}. ${note}`, { cause: error })
       throw error
     }
     if (backup) AdfDatabase.removeBackupSync(filePath)
