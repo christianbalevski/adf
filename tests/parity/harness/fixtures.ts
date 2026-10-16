@@ -69,6 +69,8 @@ export interface FixtureSpec {
   reviewed?: boolean
   /** Trigger entries replacing the defaults of the same name (`config.triggers`), e.g. an `on_inbox` with a debounce. */
   triggers?: Record<string, unknown>
+  /** `config.autostart`: started by the boot autostart when its folder is tracked. */
+  autostart?: boolean
 }
 
 export interface FixtureAgent {
@@ -98,6 +100,7 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
       if (spec.createdAt) config.metadata.created_at = spec.createdAt
+      if (spec.autostart) config.autostart = true
       for (const name of spec.enableTools ?? []) {
         const tool = config.tools.find((t) => t.name === name)
         if (tool) Object.assign(tool, { enabled: true, visible: true })

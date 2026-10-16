@@ -139,7 +139,9 @@ export async function releaseRunResources(resources: RunResources, _env: ParityE
 type IpcModule = typeof import('../../../src/main/ipc/index')
 type LeaseModule = typeof import('../../../src/main/runtime/agent-lease')
 
-export const embeddedBackend: ParityBackend = {
+/** Embedded Studio, with extra host hooks for registerAllIpcHandlers (main/index.ts passes them at boot). */
+export function embeddedBackendWith(extraHooks: { skipBootAutostart?: string } = {}): ParityBackend {
+  return {
   name: 'embedded',
   async boot(env, electron) {
     vi.resetModules()
@@ -154,6 +156,7 @@ export const embeddedBackend: ParityBackend = {
         return null
       },
       openFile: (filePath) => { electron.localCalls.push({ api: 'hooks.openFile', args: [filePath] }) },
+      ...extraHooks,
     })
     // The boot envelope sweep (2 s after boot) never runs on its timer in a
     // recording: there it ran inside any scenario that outlasted 2 s on a
@@ -178,4 +181,7 @@ export const embeddedBackend: ParityBackend = {
       computeCalls: () => resources.compute.calls,
     }
   },
+  }
 }
+
+export const embeddedBackend: ParityBackend = embeddedBackendWith()
