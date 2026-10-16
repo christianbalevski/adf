@@ -951,6 +951,8 @@ function notifyAdfFileCreated(newFilePath: string): void {
  * only works against a tracked root, not an arbitrary nested parent dir.
  */
 let watchedDirectoryRoots: string[] = []
+/** IpcHostHooks.skipBootAutostart for this process: the watcher does not autostart new files either (E3, W5-I). */
+let autostartSkippedReason: string | null = null
 
 function findTrackedRootFor(filePath: string): string | null {
   // Prefer the longest match in case of nested tracked dirs.
@@ -1105,6 +1107,10 @@ function startDirWatcher(directories: string[]): void {
  */
 function maybeAutostartTrackedFile(filePath: string): void {
   if (!filePath.endsWith('.adf') || !backgroundAgentManager) return
+  if (autostartSkippedReason) {
+    console.warn(`[autostart] Watcher autostart skipped for ${basename(filePath)}: ${autostartSkippedReason}`)
+    return
+  }
   if (currentFilePath && canonicalizePath(filePath) === canonicalizePath(currentFilePath)) return
   backgroundAgentManager.tryAutostart(filePath).catch((err) =>
     console.warn(`[autostart] Watcher autostart failed for ${basename(filePath)}:`, err)
@@ -1805,7 +1811,8 @@ export interface IpcHostHooks {
   /** Open an .adf in the main window, as a Finder double-click does. */
   openFile?: (filePath: string) => void
   /**
-   * Skip the boot autostart of tracked folders, for this reason (logged).
+   * Skip the boot autostart of tracked folders, and the watcher's autostart
+   * of new files in them, for this reason (logged).
    * W5-I: a first launch that found an older ADF daemon running these
    * settings' agents (it takes no agent lease) runs Embedded for one session.
    */
@@ -1815,6 +1822,7 @@ export interface IpcHostHooks {
 export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   showMainWindowHook = hooks.showMainWindow ?? null
   openFileHook = hooks.openFile ?? null
+  autostartSkippedReason = hooks.skipBootAutostart ?? null
   settings = new SettingsService()
   initApplicationMenu(settings)
 
