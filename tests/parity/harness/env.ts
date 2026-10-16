@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import Module from 'node:module'
 
 /**
@@ -265,6 +265,45 @@ function rootParent(): string {
   return tmpdir()
 }
 
+/** realpath of the deepest existing ancestor, the rest appended: one spelling for a path that may not exist yet. */
+function canonicalPath(p: string): string {
+  try { return realpathSync.native(p) } catch {
+    const parent = dirname(p)
+    return parent === p ? p : join(canonicalPath(parent), relative(parent, p))
+  }
+}
+
+function strictlyInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`)
+}
+
+const REPO_ROOT = resolve(__dirname, '..', '..', '..')
+
+/**
+ * PARITY_DAEMON_LOG_DIR (CI: <runner.temp>/parity-daemon-logs), checked
+ * before the run's own TEMP replaces the OS one: an absolute directory
+ * strictly inside the OS temp dir or RUNNER_TEMP, and never a filesystem
+ * root, the home directory or the repository (or a folder holding either).
+ * The fence makes it writable for the harness process, so a wrong value
+ * would open real state to writes. Null when unset; throws when refused.
+ */
+export function parityDaemonLogDir(env: NodeJS.ProcessEnv = process.env, osTemp: string = tmpdir()): string | null {
+  const raw = env.PARITY_DAEMON_LOG_DIR
+  if (!raw) return null
+  const refuse = (why: string): never => { throw new Error(`parity harness: refusing PARITY_DAEMON_LOG_DIR=${raw}: ${why}`) }
+  if (!isAbsolute(raw)) refuse('it must be an absolute path')
+  const dir = canonicalPath(resolve(raw))
+  if (dir === parse(dir).root) refuse('it is a filesystem root')
+  const home = canonicalPath(env.USERPROFILE || env.HOME || homedir())
+  if (dir === home || strictlyInside(dir, home)) refuse('it is or holds the home directory')
+  const repo = canonicalPath(REPO_ROOT)
+  if (dir === repo || strictlyInside(dir, repo) || strictlyInside(repo, dir)) refuse('it is, holds or is inside the repository')
+  const temps = [osTemp, env.RUNNER_TEMP].filter((t): t is string => !!t && isAbsolute(t)).map(canonicalPath)
+  if (!temps.some(t => strictlyInside(t, dir))) refuse(`it must be inside the OS temp dir or RUNNER_TEMP (${temps.join(', ')})`)
+  return dir
+}
+
 function rootSpellingsOf(rawRoot: string, root: string): { spelling: string; token: string }[] {
   const out: { spelling: string; token: string }[] = []
   const add = (spelling: string, token: string) => {
@@ -284,6 +323,8 @@ function rootSpellingsOf(rawRoot: string, root: string): { spelling: string; tok
 
 export async function createParityEnv(label: string, options: { realState?: { files: string[]; trees: string[] } } = {}): Promise<ActiveParityEnv> {
   const startedAt = Date.now()
+  // Before the run's TEMP replaces the OS one (see parityDaemonLogDir).
+  const daemonLogDir = parityDaemonLogDir()
   const real = options.realState ?? realStatePaths()
   const realFingerprints = new Map(real.files.map(p => [p, fingerprintFile(p)]))
   const isLeaseRegistry = (p: string): boolean => /[\\/]adf[\\/]leases$/.test(p)
@@ -359,8 +400,8 @@ export async function createParityEnv(label: string, options: { realState?: { fi
   const outsideDirectories: string[] = []
   // PARITY_DAEMON_LOG_DIR (CI: <runner.temp>/parity-daemon-logs): the daemon
   // backend copies each run's daemon log there at shutdown, from this
-  // process. That one directory is writable here only; children never get it.
-  const daemonLogDir = process.env.PARITY_DAEMON_LOG_DIR ? resolve(process.env.PARITY_DAEMON_LOG_DIR) : null
+  // process. That one directory (validated above) is writable here only;
+  // children never get it.
   fence.install({ logFile: violationsLog, root, ports, ownWriteRoots: daemonLogDir ? [daemonLogDir] : [] })
   // SettingsService adds a process 'exit' flush per instance; each run boots
   // a fresh module graph, so listeners of finished runs are removed at dispose.

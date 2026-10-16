@@ -1,12 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join, parse } from 'node:path'
 import { createRequire } from 'node:module'
 import Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
-import { createParityEnv, type ActiveParityEnv } from './harness/env'
+import { createParityEnv, parityDaemonLogDir, type ActiveParityEnv } from './harness/env'
 
 const req = createRequire(import.meta.url)
 // Load and initialize the native binding before installing a fence. Cached
@@ -252,6 +252,26 @@ describe('parity causal filesystem fence', () => {
       else process.env.PARITY_DAEMON_LOG_DIR = saved
       rmSync(state.root, { recursive: true, force: true })
     }
+  })
+
+  it('accepts PARITY_DAEMON_LOG_DIR only as an absolute directory inside the OS temp dir or RUNNER_TEMP', () => {
+    const home = homedir()
+    const repo = join(__dirname, '..', '..')
+    const runnerTemp = mkdtempSync(join(tmpdir(), 'adf-runner-temp-'))
+    const check = (dir: string, extra: Record<string, string> = {}) => parityDaemonLogDir({ ...process.env, PARITY_DAEMON_LOG_DIR: dir, ...extra })
+    try {
+      expect(parityDaemonLogDir({ ...process.env, PARITY_DAEMON_LOG_DIR: '' })).toBeNull()
+      expect(check(join(tmpdir(), 'parity-daemon-logs'))).toMatch(/parity-daemon-logs$/)
+      expect(check(join(runnerTemp, 'parity-daemon-logs'), { RUNNER_TEMP: runnerTemp })).toMatch(/parity-daemon-logs$/)
+      expect(() => check('parity-daemon-logs')).toThrow(/absolute/)
+      expect(() => check(parse(tmpdir()).root)).toThrow(/filesystem root/)
+      expect(() => check(home)).toThrow(/home directory/)
+      expect(() => check(dirname(home))).toThrow(/home directory/)
+      expect(() => check(repo)).toThrow(/repository/)
+      expect(() => check(join(repo, 'logs'))).toThrow(/repository/)
+      expect(() => check(join(home, 'parity-daemon-logs'))).toThrow(/OS temp dir or RUNNER_TEMP/)
+      expect(() => check(tmpdir())).toThrow(/OS temp dir or RUNNER_TEMP/) // the temp dir itself, not inside it
+    } finally { rmSync(runnerTemp, { recursive: true, force: true }) }
   })
 
   it('rejects shell/non-Node helpers which would otherwise write outside the Node fence', async () => {
