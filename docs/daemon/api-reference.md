@@ -17625,6 +17625,7 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 | `degraded` | string |  | Set when the agent loaded but cannot fully function (CREDENTIALS_LOCKED: its credentials envelope is locked); cleared once the owner identity unlocks it |
 | `running` | boolean |  | GET /agents/{id}/status: false for an open document that is not running (runtimeState `stopped`). |
 | `sessionId` | string |  | GET /agents/{id}/status of a running agent: its runtime session id (Studio's AGENT_START answers it). |
+| `loopStates` | map<string, string> |  | GET /agents/{id}/status of a running agent: each inner loop's display state (active, idle, suspended, error, off), keyed by loop name. Main is not in it (runtimeState is main's). A loop that accepted a dispatch but has not started thinking reads active. |
 
 <a id="schema-agentsuccess"></a>
 

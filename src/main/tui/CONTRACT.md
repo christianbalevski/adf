@@ -338,8 +338,11 @@ track the real shapes.
   protection rules client-side — the owner PUT path does no lock checks —
   and PUTs only the edited fields)
 - context: `agentContext(id, loop?, items?)` (GET /agents/:id/context:
-  categories with top items, compactThreshold + source, totalTokens,
-  percent, Studio's raw breakdown; computed by `src/shared/utils/context-breakdown.ts`)
+  categories with top items and each one's `basis` (estimate / calibrated /
+  measured), compactThreshold + source, totalTokens, percent, Studio's raw
+  breakdown with `calibration` (last_call_tokens, ratio,
+  since_last_call_tokens, reply_tokens) when calibrated; computed by
+  `src/shared/utils/context-breakdown.ts`)
 - templates: `templates templateDetail(id) createTemplate({name, fromId?})
   updateTemplate(id, {name?, description?, warning?}) (a rename returns the
   new id) deleteTemplate(id) (moves the file to the daemon's templates-trash)

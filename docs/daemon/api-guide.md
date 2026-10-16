@@ -759,6 +759,17 @@ loop: what the next request would carry, by category (`system`, `files`,
 (and where it comes from). `available: false` means the loop has no live
 executor (disabled or asleep).
 
+After a call, the figures are calibrated to it: `breakdown.calibration` holds
+that call's reported prompt size (`last_call_tokens`), the ratio applied to
+every estimated part, and what was added since (`since_last_call_tokens`, of
+which `reply_tokens` is the reply's reported output); the category `recent`
+("Since last call") carries it. Each category's `basis` says how its figure
+was obtained: `estimate` (not tied to a call), `calibrated` (an estimate
+scaled so the parts sum to the last call's prompt) or `measured` (the
+reported output). No `calibration` means no call to calibrate to: none
+recorded yet, or the prompt, tools or model changed since, or the reported
+size is outside 0.5 to 3 times the estimate.
+
 `POST /agents/:id/compact?loop=` compacts one loop's history now (summarize and
 replace). `409` while that loop is mid-turn or already compacting, or when
 there is nothing to compact; `502` when the summarizing model call fails
