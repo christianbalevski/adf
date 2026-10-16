@@ -123,8 +123,6 @@ export interface HandoverItemResult {
   detail: string
   /** Not done: the credentials stay with the daemon's role (marker unchanged) and the next start retries. */
   pending?: boolean
-  /** Set when the accounts question was deferred (`chooseSession` answered 'defer'): both sessions are kept, each on its side. */
-  conflict?: SessionConflict
 }
 
 export interface HandoverReport {
@@ -172,13 +170,6 @@ export interface SessionTokens {
 
 type SubscriptionId = 'chatgpt' | 'grok'
 
-/**
- * The answer to an accounts conflict: keep Studio's or the daemon's session,
- * or `defer` (ask once Studio's window is up; until then each side keeps its
- * own session and nothing moves).
- */
-export type SessionChoice = 'studio' | 'daemon' | 'defer'
-
 /** Both sides hold a session of one provider for different accounts (§11 accounts conflict). */
 export interface SessionConflict {
   provider: SubscriptionId
@@ -210,8 +201,8 @@ export interface HandoverDeps {
    * embedded.
    */
   daemonRunning?: () => Promise<string | null>
-  /** Which session to keep when both sides hold one for different accounts, or 'defer'. Default: the source side's. */
-  chooseSession?: (conflict: SessionConflict) => Promise<SessionChoice>
+  /** Which session to keep when both sides hold one for different accounts. Default: the source side's. */
+  chooseSession?: (conflict: SessionConflict) => Promise<'studio' | 'daemon'>
   log?: (line: string) => void
   /** Tests: runs after a destination was written and verified, before its source is deleted. */
   beforeSourceDelete?: (id: HandoverItemId) => void | Promise<void>
@@ -579,10 +570,6 @@ async function moveSubscription(
         replacedDir: dir,
       }
       const choice = deps.chooseSession ? await deps.chooseSession(conflict) : (toDaemon ? 'studio' : 'daemon')
-      if (choice === 'defer') {
-        // Nothing moves and nothing is set aside: each side keeps its own session until the user answers.
-        return { item: { id: sub.id, label: sub.label, outcome: 'kept', pending: true, conflict, detail: `Studio (${conflict.studio.account}) and the daemon (${conflict.daemon.account}) are signed in with different accounts; both sessions are kept, each on its side, until you choose one` } }
-      }
       keep = choice === 'studio' ? studio : daemon
       const dropped = keep === source ? dest : source
       // The account not kept is saved, encrypted with the daemon's cipher (the format of auth.daemon.json), once per account.
