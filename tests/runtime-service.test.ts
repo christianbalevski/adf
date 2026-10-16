@@ -118,6 +118,31 @@ describe('RuntimeService', () => {
     await runtime.unloadAgent(ref.id)
   })
 
+  it('a running agent\'s config read follows a write its own tool made to the file (mcp_install)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-config-sync-'))
+    const { filePath, agentId } = createTempAgent(dir, 'installer')
+    const runtime = new RuntimeService({
+      settings: { get: (key: string) => (key === 'reviewedAgents' ? [agentId] : undefined) },
+      providerFactory: () => new MockLLMProvider(),
+    })
+    const ref = await runtime.loadAgent(filePath)
+    const before = runtime.getAgentConfig(ref.id)
+
+    // mcp_install writes the agent's workspace directly, not through setAgentConfig.
+    const workspace = (runtime as unknown as { resolveAgent(id: string): { agent: { workspace: { getAgentConfig(): typeof before.config; setAgentConfig(c: typeof before.config): void } } } }).resolveAgent(ref.id).agent.workspace
+    const installed = workspace.getAgentConfig()
+    installed.mcp = { ...installed.mcp, servers: [...(installed.mcp?.servers ?? []), { name: 'playwright', transport: 'stdio', command: 'npx', args: ['@playwright/mcp'] }] } as typeof installed.mcp
+    workspace.setAgentConfig(installed)
+
+    const after = runtime.getAgentConfig(ref.id)
+    expect(after.revision).not.toBe(before.revision)
+    expect(after.config.mcp?.servers?.map((s) => s.name)).toContain('playwright')
+    // A client editing what it read saves over the install, not over the server.
+    await runtime.setAgentConfig(ref.id, { ...after.config, description: 'edited' }, { baseRevision: after.revision })
+    expect(workspace.getAgentConfig().mcp?.servers?.map((s) => s.name)).toContain('playwright')
+    await runtime.unloadAgent(ref.id)
+  })
+
   it('enforces reviewedAgents when loading an existing .adf file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-service-'))
     const filePath = join(dir, 'review-gated.adf')

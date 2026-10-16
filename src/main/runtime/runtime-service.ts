@@ -2383,7 +2383,7 @@ export class RuntimeService extends EventEmitter {
   getAgentConfig(agentId: string): { agentId: string; config: AgentConfig; revision: number } {
     const target = this.requireTarget(agentId)
     const revision = configRevision(target.workspace).revision
-    if (target.managed) return { agentId: target.id, config: target.managed.config, revision }
+    if (target.managed) return { agentId: target.id, config: this.syncManagedConfig(target.managed), revision }
     // An open document's config is the file's (another handle may have written it).
     const doc = target.doc!
     doc.config = doc.workspace.getAgentConfig() as AgentConfig
@@ -4047,6 +4047,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   private runningTarget(managed: ManagedRuntimeAgent): AgentTarget {
+    const config = (): AgentConfig => this.syncManagedConfig(managed)
     return {
       id: managed.id,
       filePath: managed.filePath,
@@ -4054,8 +4055,21 @@ export class RuntimeService extends EventEmitter {
       keyCell: managed.keyCell,
       managed,
       doc: this.documents.get(managed.filePath) ?? null,
-      get config() { return managed.config },
+      get config() { return config() },
     }
+  }
+
+  /**
+   * A running agent's config as its file holds it. A tool that writes the
+   * file itself (mcp_install, mcp_uninstall) does not pass through
+   * onConfigChanged, so the cached copy can be behind the file: handed out
+   * with the file's revision, a client saved it back over the change (an
+   * installed MCP server missing from Studio, then gone from the file).
+   */
+  private syncManagedConfig(managed: ManagedRuntimeAgent): AgentConfig {
+    const onDisk = managed.agent.workspace.getAgentConfig() as AgentConfig
+    if (JSON.stringify(onDisk) !== JSON.stringify(managed.config)) managed.config = onDisk
+    return managed.config
   }
 
   private documentTarget(doc: OpenDocument): AgentTarget {
