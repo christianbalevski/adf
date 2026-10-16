@@ -55,7 +55,7 @@ const errorText = (err: unknown): string => (err instanceof Error ? err.message 
 
 async function readJson(path: string): Promise<unknown> {
   try {
-    return JSON.parse((await fsp.readFile(path, 'utf-8')).replace(/^﻿/, '')) as unknown
+    return JSON.parse((await fsp.readFile(path, 'utf-8')).replace(/^\uFEFF/, '')) as unknown
   } catch {
     return null
   }
