@@ -36,7 +36,7 @@ async function independentWriter(): Promise<{ child: ChildProcessWithoutNullStre
       console.log('done');
     });
     console.log('ready');
-  `], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'pipe' })
+  `], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'pipe', windowsHide: true })
   const next = () => new Promise<void>((resolve, reject) => { child.stdout.once('data', () => resolve()); child.once('error', reject) })
   await next()
   return {
@@ -183,10 +183,10 @@ describe('parity causal filesystem fence', () => {
     await guarded('descendant-write', async (env, state) => {
       const code = `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost'); console.log('wrote') } catch (e) { console.log(e.message) }`
       const { execFileSync } = await import('node:child_process')
-      const out = execFileSync(process.execPath, ['-e', code], { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf8' })
+      const out = execFileSync(process.execPath, ['-e', code], { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf8', windowsHide: true })
       expect(out).toMatch(/refused filesystem/)
       const grandchild = `console.log(require('node:child_process').execFileSync(process.execPath, ['-e', ${JSON.stringify(code)}], { env: { ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8' }))`
-      expect(execFileSync(process.execPath, ['-e', grandchild], { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf8' })).toMatch(/refused filesystem/)
+      expect(execFileSync(process.execPath, ['-e', grandchild], { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf8', windowsHide: true })).toMatch(/refused filesystem/)
       const workerCode = `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost'); require('node:worker_threads').parentPort.postMessage('wrote') } catch (e) { require('node:worker_threads').parentPort.postMessage(e.message) }`
       const { Worker: GuardedWorker } = await import('node:worker_threads')
       const worker = new GuardedWorker(workerCode, { eval: true, env: {}, execArgv: [] })
@@ -205,8 +205,8 @@ describe('parity causal filesystem fence', () => {
     const env = await createParityEnv('preload-write', { realState: state.realState })
     try {
       const { execFileSync } = await import('node:child_process')
-      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
-      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: `--require "${preload}"` } })).toMatch(/refused filesystem/)
+      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
+      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', windowsHide: true, env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: `--require "${preload}"` } })).toMatch(/refused filesystem/)
       const { Worker } = await import('node:worker_threads')
       const worker = new Worker(`require('node:worker_threads').parentPort.postMessage('ready')`, { eval: true, env: {}, execArgv: ['--require', preload] })
       try { expect(await new Promise(resolve => worker.once('message', resolve))).toBe('ready') } finally { await worker.terminate() }

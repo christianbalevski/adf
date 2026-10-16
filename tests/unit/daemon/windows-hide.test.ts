@@ -35,6 +35,8 @@ const ALLOW = new Set([
   "tests/parity/harness.test.ts:esm.spawn('sh', ['-c', 'cd /x && podman ps'])",
   "tests/parity/harness.test.ts:esm.spawn('echo podman.exe', [], { shell: true })",
   "tests/parity/harness.test.ts:esm.execSync('wsl -l')",
+  'tests/parity/fence-write-safety.test.ts:exec(`echo unsafe > ${state.settings}`)',
+  "tests/parity/fence-write-safety.test.ts:spawn('sh', ['-c', 'true'])",
   // Probe source run inside the sandbox, which denies the spawn.
   "tests/unit/security/sandbox-host-permissions.test.ts:cp.execFileSync(process.execPath, ['-e', '1'])",
 ])
@@ -74,6 +76,8 @@ function childProcessNames(src: string): string[] {
   for (const m of src.matchAll(/import\s+(\w+)\s+from\s*['"]cross-spawn['"]/g)) names.add(m[1])
   if (names.size === 0) return []
   for (const m of src.matchAll(/const\s+(\w+)\s*=\s*promisify\(([\w.]+)\)/g)) if (names.has(m[2])) names.add(m[1])
+  // Plain aliases, e.g. an injectable default `run = spawnSync`.
+  for (const m of src.matchAll(/(\w+)\s*=\s*([\w.]+)\s*[,;)\n]/g)) if (names.has(m[2])) names.add(m[1])
   return [...names]
 }
 
@@ -130,6 +134,7 @@ describe('windowsHide on every child_process call', () => {
       ["const cjs = createRequire(x)('child_process')\ncjs.spawnSync('cmd')", 1],
       ["import { execFile } from 'child_process'\nconst run = promisify(execFile)\nrun('podman', [])", 1],
       ["import crossSpawn from 'cross-spawn'\ncrossSpawn('npx', [])", 1],
+      ["import { spawnSync } from 'node:child_process'\nfunction f(run = spawnSync) { run('tsc', []) }", 1],
       ["import { spawn } from 'node:child_process'\nspawn('cmd', [], { windowsHide: true })", 0],
       ["import { spawn } from 'child_process'\nspawn(bin, [...args, file], { detached: true })", 1],
     ]
