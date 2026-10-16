@@ -14,7 +14,7 @@ if (!tag) {
   process.exit(1)
 }
 
-const sh = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim()
+const sh = (cmd) => execSync(cmd, { encoding: 'utf8', windowsHide: true }).trim()
 const repo =
   process.env.GITHUB_REPOSITORY ||
   sh('git config --get remote.origin.url')

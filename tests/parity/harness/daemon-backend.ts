@@ -402,7 +402,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
               // The controller's spawn, fenced as the harness's own child is; tracked so it is killed the same hard way.
               spawn: (command, args, spawnOptions) => {
                 writeStdlibManifest(env)
-                const child = spawn(command, ['--require', FENCE_PATH, ...args], { ...spawnOptions, env: { ...spawnOptions.env, NODE_OPTIONS: `--require "${FENCE_PATH.replace(/\\/g, '/')}"` } })
+                const child = spawn(command, ['--require', FENCE_PATH, ...args], { ...spawnOptions, windowsHide: true, env: { ...spawnOptions.env, NODE_OPTIONS: `--require "${FENCE_PATH.replace(/\\/g, '/')}"` } })
                 let exitCode: number | null = null
                 if (child.pid !== undefined) LIVE_DAEMONS.add(child.pid)
                 child.once('exit', (code) => {
