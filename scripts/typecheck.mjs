@@ -13,6 +13,7 @@ export function runTypecheckProjects(run = spawnSync) {
     const result = run(process.execPath, [tsc, '--noEmit', '-p', project], {
       cwd: join(root, '..'),
       stdio: 'inherit',
+      windowsHide: true,
     })
     if (result.error) {
       console.error(`Could not run TypeScript check for ${project}:`, result.error)

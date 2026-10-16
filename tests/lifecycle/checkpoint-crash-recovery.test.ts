@@ -90,6 +90,7 @@ describe('assembled-agent crash checkpoint recovery', () => {
         cwd: fileURLToPath(new URL('../..', import.meta.url)),
         env: { ...process.env, NODE_ENV: 'test' },
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       })
       child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
 

@@ -38,6 +38,7 @@ function spawnWriter(adfPath: string): Promise<ChildProcess> {
   const child = spawn(process.execPath, ['-e', script, sqlitePath, adfPath], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    windowsHide: true,
   })
   return new Promise<ChildProcess>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('writer never reported ready')), 15_000)

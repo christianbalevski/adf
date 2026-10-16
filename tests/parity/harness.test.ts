@@ -397,7 +397,7 @@ describe('parity harness: fences', () => {
       await w.terminate()
       const { execFileSync } = await import('node:child_process')
       const out = execFileSync(process.execPath, ['-e', "try { require('net').connect(7385, '127.0.0.1'); console.log('connected') } catch (e) { console.log(e.message) }"],
-        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8' })
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8', windowsHide: true })
       expect(out).toMatch(/refused net: 127.0.0.1:7385/)
       // Both refusals are in the run's log, written by the worker and by the child.
       expect(env.violations().length).toBe(2)
@@ -411,7 +411,7 @@ describe('parity harness: fences', () => {
     try {
       const { execFileSync } = await import('node:child_process')
       const out = execFileSync(process.execPath, ['-e', "try { require('@napi-rs/keyring'); console.log('loaded') } catch (e) { console.log(e.message) }"],
-        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8' })
+        { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf-8', windowsHide: true })
       expect(out).toMatch(/refused keychain: load of @napi-rs\/keyring/)
       expect(env.violations().map((v) => JSON.parse(v).kind)).toEqual(['keychain'])
     } finally {
@@ -442,7 +442,7 @@ describe('parity harness: fences', () => {
     try {
       const { execFileSync } = await import('node:child_process')
       const out = execFileSync(process.execPath, ['-e', "try { require('net').connect(7385, '127.0.0.1'); console.log('connected') } catch (e) { console.log(e.message) }"],
-        { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf-8' })
+        { env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '' }, encoding: 'utf-8', windowsHide: true })
       expect(out).toMatch(/refused net: 127.0.0.1:7385/)
       expect(env.violations().length).toBe(1)
     } finally {
