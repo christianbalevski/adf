@@ -108,8 +108,7 @@ export async function probeMcpServer(rawArgs: unknown, deps: McpProbeDeps): Prom
     try {
       const uvPath = await deps.uvManager.ensureUv()
       probeCommand = uvPath
-      // No args: the spread throws and the catch below keeps uv with no args (as before the move).
-      probeArgs = ['tool', 'run', ...(args.args as string[])]
+      probeArgs = ['tool', 'run', ...probeArgs]
     } catch (e) {
       console.warn('[MCP:probe] Failed to resolve uv binary for uvx command:', e)
     }

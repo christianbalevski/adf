@@ -68,6 +68,14 @@ describe('probeMcpServer', () => {
     expect(onLog).toHaveBeenCalledWith('py', { timestamp: 1, stream: 'stderr', message: 'started' })
   })
 
+  it('stdio: a uvx probe without args still runs uv tool run, so uv reports the missing package', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await probeMcpServer({ name: 'py', command: 'uvx' }, { uvManager, onLog: () => {} })
+    expect(h.FakeManager.instances[0].connects[0].cfg).toMatchObject({ command: '/bin/uv', args: ['tool', 'run'] })
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('Failed to resolve uv binary'), expect.anything())
+    warn.mockRestore()
+  })
+
   it('http: maps headerEnv and the bearer env var; a failed connect reports the server error', async () => {
     h.FakeManager.tools = null
     const result = await probeMcpServer({
