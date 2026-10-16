@@ -515,7 +515,9 @@ export async function askVersionMismatch(
     cancelId: 1,
     noLink: true,
   }
-  const win = window()
+  // The main window stays hidden until ready-to-show: a sheet on it would not be seen.
+  const shown = window()
+  const win = shown && !shown.isDestroyed() && shown.isVisible() ? shown : null
   const { response } = await (win ? dialog.showMessageBox(win, options) : showWindowlessMessageBox(`daemon version ${running.version} (pid ${running.pid}) differs from Studio ${app.getVersion()}: restart it or use embedded mode`, options))
   if (response === 0) return 'restart'
   relaunchEmbeddedForSession('daemon version mismatch')

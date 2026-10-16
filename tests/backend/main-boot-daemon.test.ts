@@ -62,7 +62,8 @@ it('daemon mode: never loads the embedded IPC layer, constructs no PodmanService
   expect(h.calls).toContain('new BrowserWindow')
   // Only Studio's own files: studio-backend.json, studio-client-settings.json,
   // the handover marker studio-handover.json (and the test setup's lease dir).
-  const files = readdirSync(h.state.userData).filter((f) => !/^studio-(backend|client-settings|handover)\.json$/.test(f) && f !== 'agent-leases')
+  // An atomic write of one of them may still be in flight: its <name>.<pid>.<hex>.tmp is Studio's too.
+  const files = readdirSync(h.state.userData).filter((f) => !/^studio-(backend|client-settings|handover)\.json(\.\d+\.[0-9a-f]+\.tmp)?$/.test(f) && f !== 'agent-leases')
   expect(files).toEqual([])
   expect(existsSync(join(h.state.userData, 'adf-settings.json'))).toBe(false)
 })
