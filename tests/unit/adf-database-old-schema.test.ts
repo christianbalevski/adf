@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, openSync, writeSync, closeSync, copyFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
@@ -116,7 +116,7 @@ describe('AdfDatabase.open of a file too old to upgrade (W5-H)', () => {
       let thrown: unknown
       try { AdfDatabase.open(filePath).close() } catch (err) { thrown = err }
       expect(thrown).toBeInstanceOf(AdfSchemaTooOldError)
-      expect((thrown as Error).message).toBe('agent-1.adf uses schema v2, which this version cannot upgrade (it upgrades v3 and later). The file was not changed.')
+      expect((thrown as Error).message).toBe('agent-1.adf uses schema v2, which this version cannot upgrade (it upgrades v3 and later; no released version upgrades older files). The file was not changed. See "An agent file uses schema v2" in the ADF troubleshooting guide.')
       expect((thrown as AdfSchemaTooOldError).code).toBe('schema_too_old')
       expect(readdirSync(dir).sort()).toEqual(['agent-1.adf'])
       expect(readFileSync(filePath).equals(before)).toBe(true)
@@ -227,5 +227,129 @@ describe('AdfDatabase.open that fails (W5-H)', () => {
     expect(AdfDatabase.openFilePaths()).toEqual([])
     const db = AdfDatabase.open(filePath)
     db.close()
+  })
+})
+
+const tableNames = (filePath: string) => {
+  const db = new Database(filePath, { readonly: true })
+  try {
+    return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name)
+  } finally {
+    db.close()
+  }
+}
+const configOf = (filePath: string) => {
+  const db = new Database(filePath, { readonly: true })
+  try {
+    return JSON.parse((db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string }).config_json)
+  } finally {
+    db.close()
+  }
+}
+
+/** W5-H review: every path to a migration is closed for files too old to upgrade. */
+describe('AdfDatabase.open fails closed (W5-H review)', () => {
+  it('refuses a v2-shaped file with no schema version row before any write', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV2Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    const raw = new Database(filePath)
+    raw.prepare("DELETE FROM adf_meta WHERE key = 'schema_version'").run()
+    raw.close()
+    const before = readFileSync(filePath)
+
+    expect(() => AdfDatabase.open(filePath)).toThrow(/^agent-1\.adf has no schema version and an older layout, which this version cannot upgrade .* The file was not changed\./)
+    expect(readdirSync(dir)).toEqual(['agent-1.adf'])
+    expect(readFileSync(filePath).equals(before)).toBe(true)
+  })
+
+  it('refuses a legacy-shaped file with no version even when adf_meta has a protection column', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV2Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    const raw = new Database(filePath)
+    raw.prepare("DELETE FROM adf_meta WHERE key = 'schema_version'").run()
+    raw.exec("ALTER TABLE adf_meta ADD COLUMN protection TEXT NOT NULL DEFAULT 'none'")
+    raw.close()
+
+    expect(() => AdfDatabase.open(filePath)).toThrow(AdfSchemaTooOldError)
+    expect(tableNames(filePath)).toContain('adf_archive')
+    expect(configOf(filePath).triggers).toEqual({ document: { enabled: true }, agent: { enabled: true } })
+  })
+
+  it('a busy pre-check fails as locked, never migrates', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV2Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    const before = readFileSync(filePath)
+    vi.spyOn(AdfDatabase as unknown as { readSchemaVersion(db: unknown): number | null }, 'readSchemaVersion')
+      .mockImplementationOnce(() => { throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }) })
+
+    expect(() => AdfDatabase.open(filePath)).toThrow(/locked by another process/)
+    expect(readdirSync(dir)).toEqual(['agent-1.adf'])
+    expect(readFileSync(filePath).equals(before)).toBe(true)
+  })
+
+  it('a pre-check that throws (not busy) does not fall through: the authoritative read refuses before any write', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV2Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    const before = readFileSync(filePath)
+    const read = vi.spyOn(AdfDatabase as unknown as { readSchemaVersion(db: unknown): number | null }, 'readSchemaVersion')
+      .mockImplementationOnce(() => { throw new Error('disk I/O error') })
+
+    expect(() => AdfDatabase.open(filePath)).toThrow(AdfSchemaTooOldError)
+    expect(read.mock.calls.length).toBe(2)
+    expect(readdirSync(dir)).toEqual(['agent-1.adf'])
+    expect(readFileSync(filePath).equals(before)).toBe(true)
+    expect(tableNames(filePath)).toContain('adf_archive')
+  })
+
+  it('a pre-check that cannot read (corrupt adf_meta index) never leads to a migration', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV2Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    const raw = new Database(filePath)
+    const root = (raw.prepare("SELECT rootpage FROM sqlite_master WHERE name = 'sqlite_autoindex_adf_meta_1'").get() as { rootpage: number }).rootpage
+    const pageSize = raw.pragma('page_size', { simple: true }) as number
+    raw.pragma('journal_mode = DELETE')
+    raw.close()
+    const fd = openSync(filePath, 'r+')
+    writeSync(fd, Buffer.alloc(pageSize, 0xab), 0, pageSize, (root - 1) * pageSize)
+    closeSync(fd)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    let thrown: unknown
+    try { AdfDatabase.open(filePath).close() } catch (err) { thrown = err }
+    // Unrepairable here; a repaired file would be refused by the authoritative read.
+    expect(String((thrown as Error)?.message)).toMatch(/corrupt|cannot upgrade/)
+    if (thrown instanceof AdfSchemaTooOldError) expect(thrown.message).not.toContain('The file was not changed')
+    expect(tableNames(filePath)).toContain('adf_archive')
+    expect(tableNames(filePath)).not.toContain('adf_audit')
+    expect(readdirSync(dir).some((n) => n.endsWith('.bak'))).toBe(false)
+  })
+
+  it('a refused file with a hot -wal: the WAL is not folded into it', () => {
+    const dir = newDir()
+    const source = join(dir, 'source.adf')
+    writeV2Adf(source, { id: AGENT_ID, name: 'agent-1' })
+    const writer = new Database(source)
+    writer.pragma('wal_autocheckpoint = 0')
+    writer.prepare("INSERT INTO adf_loop (role, content_json) VALUES ('user', '[]')").run()
+    // A crash: the main file and its WAL with committed frames, no -shm.
+    const filePath = join(dir, 'agent-1.adf')
+    copyFileSync(source, filePath)
+    copyFileSync(`${source}-wal`, `${filePath}-wal`)
+    writer.close()
+    const before = readFileSync(filePath)
+    const walBefore = readFileSync(`${filePath}-wal`)
+
+    let thrown: unknown
+    try { AdfDatabase.open(filePath).close() } catch (err) { thrown = err }
+    expect(thrown).toBeInstanceOf(AdfSchemaTooOldError)
+    expect((thrown as Error).message).toContain('The file was not changed.')
+    expect(readFileSync(filePath).equals(before)).toBe(true)
+    expect(readFileSync(`${filePath}-wal`).equals(walBefore)).toBe(true)
   })
 })

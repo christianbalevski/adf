@@ -115,13 +115,24 @@ export const ADF_LATEST_SCHEMA_VERSION = 32
 export const ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION = 3
 
 /**
- * open() refused a file older than ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION.
- * Nothing was written to it: no backup, no migration step, no sidecars left.
+ * open() refused a file older than ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION, or
+ * one with no schema version that does not have the layout of a clone
+ * (schemaVersion 0). No backup, no migration step, no marker delete.
+ * `unchanged`: refused before any connection could fold a -wal into the
+ * file (the usual case), so the sentence can say the file was not changed.
  */
 export class AdfSchemaTooOldError extends Error {
   readonly code = 'schema_too_old'
-  constructor(readonly filePath: string, readonly schemaVersion: number) {
-    super(`${basename(filePath)} uses schema v${schemaVersion}, which this version cannot upgrade (it upgrades v${ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION} and later). The file was not changed.`)
+  constructor(readonly filePath: string, readonly schemaVersion: number, opts: { unchanged?: boolean } = {}) {
+    const name = basename(filePath)
+    super(
+      (schemaVersion > 0
+        ? `${name} uses schema v${schemaVersion}, which this version cannot upgrade`
+        : `${name} has no schema version and an older layout, which this version cannot upgrade`) +
+      ` (it upgrades v${ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION} and later; no released version upgrades older files).` +
+      `${opts.unchanged === false ? '' : ' The file was not changed.'}` +
+      ' See "An agent file uses schema v2" in the ADF troubleshooting guide.'
+    )
     this.name = 'AdfSchemaTooOldError'
   }
 }
@@ -621,9 +632,31 @@ export class AdfDatabase {
     const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='adf_meta'").get()
     if (!table) return null
     const r = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-    if (r) return parseInt(r.value, 10)
+    const parse = (v: string) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0 }
+    if (r) return parse(r.value)
     const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-    return r2 ? parseInt(r2.value, 10) : 0
+    return r2 ? parse(r2.value) : 0
+  }
+
+  /**
+   * The schema version open() refuses for this file, or null when it may be
+   * opened (and migrated). 1 <= v < 3 is refused. No version at all (0, or
+   * unparsable) is refused unless the file has a clone's layout: a clone
+   * whose adf_meta was deselected (before clone-fixup restamped the version)
+   * has `adf_audit`, `adf_loop.loop` and no `adf_archive`. Null too without
+   * an adf_meta table (the v0.2 check reports that). Reads only.
+   */
+  private static refusedSchemaVersion(db: Database.Database): number | null {
+    const sv = AdfDatabase.readSchemaVersion(db)
+    if (sv === null) return null
+    if (sv > 0 && sv < ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION) return sv
+    if (sv > 0) return null
+    const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name))
+    const loopCols = tables.has('adf_loop')
+      ? new Set((db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>).map((c) => c.name))
+      : new Set<string>()
+    const cloneShape = tables.has('adf_audit') && !tables.has('adf_archive') && loopCols.has('loop')
+    return cloneShape ? null : 0
   }
 
   /** Retryable lock-contention error — distinct from the corruption path. */
@@ -954,29 +987,54 @@ export class AdfDatabase {
     // Capture sidecar state BEFORE the open below replays any WAL.
     const walExistedBeforeOpen = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
 
+    // Too old to upgrade: refused before anything below writes to the file
+    // (the clean-close marker delete, the backup, the migration, the
+    // constructor's pragmas). With a -wal beside the file the check reads
+    // through a read-only connection first, which never checkpoints, so a
+    // refused file's WAL is not folded into it. A busy read fails as locked;
+    // any other error goes on to the integrity check (and its repair), and
+    // the authoritative read below refuses the same files: nothing too old
+    // is ever migrated.
+    if (walExistedBeforeOpen) {
+      let ro: Database.Database | null = null
+      let refused: number | null = null
+      try {
+        ro = new Database(filePath, { readonly: true, fileMustExist: true })
+        refused = AdfDatabase.refusedSchemaVersion(ro)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) throw AdfDatabase.lockedError(filePath)
+      } finally {
+        try { ro?.close() } catch { /* ignore */ }
+      }
+      if (refused !== null) throw new AdfSchemaTooOldError(filePath, refused)
+    }
+
     let db = new Database(filePath)
     let needsMigration = false
     /** The pre-migration backup, once taken: removed only after a fully successful open. */
     let backup: { complete: boolean } | null = null
+    /** The migration committed: a later failure puts the file back from `backup`. */
+    let migrated = false
+    /** tryRepair swapped the file: a refusal can no longer say it was not changed. */
+    let repaired = false
 
-    // Too old to upgrade: refused before anything below writes to the file
-    // (the clean-close marker delete, the backup, the always-run migration
-    // steps, the constructor's pragmas). Reads only; a file whose version
-    // cannot be read goes on to the integrity check below, as before. A file
-    // with no version at all (0: a clone whose adf_meta was deselected) opens
-    // as before.
-    let tooOld: number | null = null
-    try {
-      const sv = AdfDatabase.readSchemaVersion(db)
-      if (sv !== null && sv > 0 && sv < ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION) tooOld = sv
-    } catch { /* unreadable or busy: handled by the checks below */ }
-    if (tooOld !== null) {
-      db.close()
-      // Sidecars this open created (a WAL file grows -wal/-shm on first read).
-      if (!walExistedBeforeOpen) {
-        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+    if (!walExistedBeforeOpen) {
+      let refused: number | null = null
+      try {
+        refused = AdfDatabase.refusedSchemaVersion(db)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) {
+          db.close()
+          throw AdfDatabase.lockedError(filePath)
+        }
       }
-      throw new AdfSchemaTooOldError(filePath, tooOld)
+      if (refused !== null) {
+        // No WAL existed, so closing folds nothing; reap the empty sidecars
+        // this read created.
+        db.close()
+        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+        throw new AdfSchemaTooOldError(filePath, refused)
+      }
     }
 
     // Integrity-check gating invariant:
@@ -1028,6 +1086,7 @@ export class AdfDatabase {
 
         if (AdfDatabase.tryRepair(filePath)) {
           db = new Database(filePath)
+          repaired = true
           // Verify repair succeeded
           const recheck = db.pragma('integrity_check') as Array<{ integrity_check: string }>
           if (recheck[0]?.integrity_check !== 'ok') {
@@ -1062,6 +1121,7 @@ export class AdfDatabase {
 
       if (AdfDatabase.tryRepair(filePath)) {
         db = new Database(filePath)
+        repaired = true
       } else {
         throw new Error(
           `ADF file is corrupt and could not be repaired. ` +
@@ -1082,6 +1142,24 @@ export class AdfDatabase {
           'This ADF file does not have the v0.2 schema. ' +
           'Please delete and recreate the file.'
         )
+      }
+
+      // The authoritative schema read, before the first write below. It
+      // refuses what the pre-check refuses (the pre-check may have failed to
+      // read, or tryRepair replaced the file since). A read that fails here
+      // fails the open: never migrate a file whose version is unknown.
+      let refused: number | null
+      try {
+        refused = AdfDatabase.refusedSchemaVersion(db)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) throw AdfDatabase.lockedError(filePath)
+        throw new Error(
+          `Cannot read the schema version of ${basename(filePath)}: ${err instanceof Error ? err.message : String(err)}. The file was not migrated.`,
+          { cause: err },
+        )
+      }
+      if (refused !== null) {
+        throw new AdfSchemaTooOldError(filePath, refused, { unchanged: !walExistedBeforeOpen && !repaired })
       }
 
       // File is healthy — clear the clean-close marker so a crash from here on
