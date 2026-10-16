@@ -485,6 +485,7 @@
     payload:
       filePath: "<ROOT>/agents/agent-2.adf"
       handle: "agent-2"
+      loopStates: {}
       state: "idle"
     timestamp: "<t>"
     type: "agent_started"

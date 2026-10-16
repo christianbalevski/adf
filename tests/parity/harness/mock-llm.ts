@@ -26,6 +26,12 @@ export interface LlmReply {
   text?: string
   toolCalls?: LlmToolCall[]
   usage?: { prompt: number; completion: number }
+  /**
+   * The reply is written once this settles: the request has arrived (the
+   * loop is mid-turn) and stays open until the scenario lets it end, so a
+   * scenario can act while a turn runs (switch agents) without racing it.
+   */
+  hold?: Promise<unknown>
 }
 
 export interface LlmMessageView {
@@ -245,7 +251,9 @@ export async function startMockLlm(
           requests.push(view)
           const timing: StreamTiming = { request: requests.length - 1, textWrites: [] }
           if (view.stream) streams.push(timing)
-          await respond(res, view, state.script(view), { gapMs, now, timing })
+          const reply = state.script(view)
+          if (reply.hold) await reply.hold
+          await respond(res, view, reply, { gapMs, now, timing })
           return
         }
         res.writeHead(404, { 'content-type': 'application/json' })

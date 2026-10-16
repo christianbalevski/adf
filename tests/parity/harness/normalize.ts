@@ -247,7 +247,8 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const BYTES_RE = /^<bytes len=(\d+) sha256=([0-9a-f]+)>$/
 
   // Rule R12 — the turn checkpoint in `adf_meta` (key
-  // `adf_runtime_turn_checkpoint`) carries a random 10-character turn id.
+  // `adf_runtime_turn_checkpoint`, or `adf_runtime_turn_checkpoint:<loop>`
+  // for an inner loop) carries a random 10-character turn id.
   // Numbered as `<turn-id#n>`; scoped to that row.
   const UPSERT_TABLE_ROWS = /^state\.adf\..*\.tables\.(adf_meta|adf_config|adf_files|adf_identity)\.rows$/
   const META_ROW_PATH =/^state\.adf\..*\.tables\.adf_meta\.rows\[\d+\]$/
@@ -275,7 +276,8 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     return out
   }
   const preprocessRow = (path: string, row: Record<string, unknown>): Record<string, unknown> => {
-    if (META_ROW_PATH.test(path) && row.key === 'adf_runtime_turn_checkpoint' && typeof row.value === 'string') {
+    // Per loop too: an inner loop's checkpoint is `adf_runtime_turn_checkpoint:<loop>`.
+    if (META_ROW_PATH.test(path) && typeof row.key === 'string' && /^adf_runtime_turn_checkpoint(:|$)/.test(row.key) && typeof row.value === 'string') {
       return { ...row, value: row.value.replace(/"id":"([A-Za-z0-9_-]{10})"/, (_m, id: string) => `"id":"${numbered('turn-id', id)}"`) }
     }
     if (MESSAGE_ROW_PATH.test(path)) return messageRow(row)
