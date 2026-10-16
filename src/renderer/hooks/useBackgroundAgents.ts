@@ -99,10 +99,12 @@ export function useBackgroundAgentEvents() {
           ...(stoppingChanged ? { stoppingFilePaths: stopping } : {})
         })
       }
-      // The open (or opening) agent's queue is its foreground events' job; a
-      // background event for it here is from before the switch.
-      const openPath = useDocumentStore.getState().filePath
-      deliverSettledBackgroundQueues(agents, settledFiles.filter((fp) => fp !== openPath && !openingFilePaths.has(fp)))
+      // Keyed off each event's own agent, not the open file: main moves its
+      // workspace before the renderer's filePath follows, so the agent being
+      // switched AWAY from is already background while it still looks open,
+      // and its turn can end inside that window. The agent being switched TO
+      // is skipped; its re-attach reads its state and delivers.
+      deliverSettledBackgroundQueues(agents, settledFiles.filter((fp) => !openingFilePaths.has(fp)))
     })
 
     return unsubscribe
