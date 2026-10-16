@@ -38,6 +38,7 @@ import { ancestorScope, permits, denialReason } from './scope-resolver'
 import type { MdnsService, DiscoveredRuntime } from '../services/mdns-service'
 import type { DirectoryFetchCache } from '../services/directory-fetch-cache'
 import { currentAgentDerivedKey, subscribeAgentRuntimeSignals } from './agent-runtime-signals'
+import { isUrlRecipient, urlRecipientError } from '../utils/message-recipient'
 
 /**
  * Which cognition stream an inbound owner message is pre-appended to, or `null`
@@ -903,6 +904,9 @@ export class MeshManager extends EventEmitter {
     const senderDid = senderReg.workspace.getDid() || senderHandle
     const network = senderConfig.messaging?.network ?? 'devnet'
 
+    // A URL is not `{adapterType}:{id}`: "http://host/..." must not read as adapter "http".
+    if (isUrlRecipient(recipient)) return { success: false, error: urlRecipientError(recipient) }
+
     // --- Adapter routing: recipient matching `{adapterType}:{id}` ---
     const adapterManager = this.adapterManagers.get(fromFilePath)
     const colonIdx = recipient.indexOf(':')
@@ -1442,7 +1446,7 @@ export class MeshManager extends EventEmitter {
       try {
         const now = Date.now()
         for (const t of reg.workspace.getTimers()) {
-          if (t.expired || t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
+          if (t.expired || !t.next_wake_at || t.next_wake_at <= now) continue
           if (nextWakeAt === undefined || t.next_wake_at < nextWakeAt) {
             nextWakeAt = t.next_wake_at
             nextWakeLabel = t.payload ? t.payload.slice(0, 48) : undefined

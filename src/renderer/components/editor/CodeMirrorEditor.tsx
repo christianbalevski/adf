@@ -122,13 +122,14 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
       parent: containerRef.current
     })
     viewRef.current = view
+    let disposed = false
     // The doc starts as the prop, so the first sync pass has nothing to do.
     lastSynced.current = content
 
     // Load language support
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     loadLanguage(ext).then((lang) => {
-      if (lang && !view.destroyed) {
+      if (lang && !disposed) {
         view.dispatch({
           effects: languageCompartment.current.reconfigure(lang)
         })
@@ -138,6 +139,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
     return () => {
       // Never drop keystrokes typed inside the debounce window.
       flushChange()
+      disposed = true
       view.destroy()
       viewRef.current = null
     }
@@ -148,7 +150,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
   // Sync external content changes
   useEffect(() => {
     const view = viewRef.current
-    if (!view || view.destroyed) return
+    if (!view) return
     // Our own echo — the prop came back from a flush we made. Comparing against
     // the live doc here would treat any keystroke typed since that flush as a
     // conflict and clobber it.
@@ -168,9 +170,12 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
   // React to theme changes (including OS preference changes when theme is 'system')
   useEffect(() => {
     const view = viewRef.current
-    if (!view || view.destroyed) return
+    if (!view) return
 
     const applyDark = (isDark: boolean) => {
+      // The theme listener belongs to the editor it captured. A filePath swap
+      // recreates the view without necessarily changing the selected theme.
+      if (viewRef.current !== view) return
       view.dispatch({
         effects: themeCompartment.current.reconfigure(isDark ? githubDarkDimmed : githubLight)
       })
@@ -180,19 +185,19 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
       const mq = window.matchMedia('(prefers-color-scheme: dark)')
       applyDark(mq.matches)
       const handler = (e: MediaQueryListEvent) => {
-        if (!view.destroyed) applyDark(e.matches)
+        if (viewRef.current === view) applyDark(e.matches)
       }
       mq.addEventListener('change', handler)
       return () => mq.removeEventListener('change', handler)
     } else {
       applyDark(theme === 'dark')
     }
-  }, [theme])
+  }, [theme, filePath])
 
   // React to readOnly changes
   useEffect(() => {
     const view = viewRef.current
-    if (!view || view.destroyed) return
+    if (!view) return
     view.dispatch({
       effects: readOnlyCompartment.current.reconfigure(readOnlyExtensions(!!readOnly))
     })
@@ -201,7 +206,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
   // React to line-wrap changes
   useEffect(() => {
     const view = viewRef.current
-    if (!view || view.destroyed) return
+    if (!view) return
     view.dispatch({
       effects: lineWrapCompartment.current.reconfigure(lineWrap ? EditorView.lineWrapping : [])
     })

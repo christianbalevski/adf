@@ -18,7 +18,7 @@ import { EventEmitter } from 'events'
 import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
-import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent } from '../../shared/types/compute.types'
+import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1623,7 +1623,7 @@ export class PodmanService extends EventEmitter {
   async setup(
     step: 'install' | 'machine_init' | 'machine_start' | 'check',
     installCommand?: string
-  ): Promise<Record<string, unknown>> {
+  ): Promise<ComputeSetupResult> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
 
@@ -2022,7 +2022,7 @@ export class PodmanService extends EventEmitter {
         this.setPhase(containerName, 'provisioning', 'Installing packages (a minute or two)', agentId)
         // Detect package manager: apt-get for Debian-based, apk for Alpine
         const isAlpine = image.includes('alpine')
-        let pkgResult: { stdout: string; stderr: string; code: number }
+        let pkgResult: Awaited<ReturnType<PodmanService['exec0']>>
         if (isAlpine) {
           pkgResult = await this.exec0(bin, ['exec', containerName, 'apk', 'add', '--no-cache', ...pkgs], 300_000)
         } else {

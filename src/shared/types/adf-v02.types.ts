@@ -677,7 +677,7 @@ export interface CreateAgentOptions {
   start_in_state?: StartInState
   model?: Partial<ModelConfig>
   context?: Partial<ContextConfig>
-  tools?: ToolDeclaration[]
+  tools?: Array<Omit<ToolDeclaration, 'visible'> & { visible?: boolean }>
   triggers?: Partial<TriggersConfigV3>
   security?: Partial<SecurityConfig>
   limits?: Partial<LimitsConfig>
@@ -685,7 +685,7 @@ export interface CreateAgentOptions {
   audit?: AuditConfig
   pre_llm_hook?: PreLlmHookConfig
   code_execution?: Partial<CodeExecutionConfig>
-  logging?: LoggingConfig
+  logging?: Partial<LoggingConfig>
   mcp?: McpConfig
   adapters?: AdaptersConfig
   serving?: ServingConfig

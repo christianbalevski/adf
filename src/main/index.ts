@@ -12,6 +12,7 @@ import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
 import { showOrCreateMainWindow } from './utils/main-window'
+import { closeBootWindow } from './utils/boot-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
@@ -398,6 +399,8 @@ function createWindow(): BrowserWindow {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
+    // The boot window (a dialog or keychain wait before this window existed) is done.
+    closeBootWindow()
   })
 
   // Windows logoff/shutdown fires 'session-end' on each BrowserWindow (there
@@ -678,7 +681,7 @@ app.whenReady().then(async () => {
     const rawType = entry.mime_type ?? 'application/octet-stream'
     const contentType = SAFE_MIME_PREFIXES.some(p => rawType.startsWith(p)) ? rawType : 'application/octet-stream'
 
-    return new Response(entry.content, {
+    return new Response(new Uint8Array(entry.content), {
       headers: {
         'Content-Type': contentType,
         'X-Content-Type-Options': 'nosniff'

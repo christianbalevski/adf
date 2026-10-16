@@ -109,8 +109,6 @@ export const TURN_DISCONNECT_GRACE_MS = 15_000
  */
 export const DAEMON_RESPAWN_DELAY_MS = 2_000
 export const DAEMON_RESPAWN_WINDOW_MS = 10 * 60_000
-/** How long a dropped stream waits for the daemon's pid to go before the drop counts as "lost", not "exited". */
-const EXIT_CHECK_MS = 1_500
 
 export interface DaemonModeDeps {
   mode: Exclude<StudioBackendMode, 'embedded'>
@@ -278,7 +276,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     statusUi.notice(remoteWaitingNotice(state.progress))
   })
   // A re-hold that failed after a reconnect is a notice (statusUi exists by the time a reconnect happens).
-  const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) })
+  const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) }, deps.mode === 'remote')
 
   const firstWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
@@ -652,21 +650,41 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     return pid !== null && connection.state.state === 'disconnected' && !alive(pid)
   }
   let exitChecked: number | null = null
+  let exitWatchGeneration = 0
+  let exitWatchTimer: ReturnType<typeof setTimeout> | null = null
+  let wakeExitWatch: (() => void) | null = null
+  let exitWatch: Promise<void> | null = null
+  const stopExitWatch = (): void => {
+    exitWatchGeneration++
+    if (exitWatchTimer) clearTimeout(exitWatchTimer)
+    exitWatchTimer = null
+    wakeExitWatch?.()
+    wakeExitWatch = null
+    exitWatch = null
+  }
   let lastAutoRespawnAt = 0
   let reviving: Promise<boolean> | null = null
   /** Agents running when the daemon exited: started again with the new daemon. */
   let agentsAtExit: string[] = []
-  const sleep = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.() })
+  const waitExitWatch = (ms: number) => new Promise<void>((resolve) => {
+    wakeExitWatch = resolve
+    exitWatchTimer = setTimeout(() => { exitWatchTimer = null; wakeExitWatch = null; resolve() }, ms)
+    exitWatchTimer.unref?.()
+  })
 
-  const checkDaemonExit = async (): Promise<void> => {
+  const checkDaemonExit = async (generation: number): Promise<void> => {
     const pid = daemonPid()
     if (pid === null || exitChecked === pid) return
-    // The stream can drop a moment before the process is gone.
-    const deadline = Date.now() + EXIT_CHECK_MS
-    while (alive(pid) && Date.now() < deadline) await sleep(250)
-    if (alive(pid) || shutdownPromise || exitChecked === pid || connection.state.state !== 'disconnected' || daemonPid() !== pid) return
+    const watching = () => generation === exitWatchGeneration && !shutdownPromise && connection.state.state === 'disconnected' && daemonPid() === pid
+    // A graceful daemon shutdown can outlast the stream by many seconds.
+    // Observe its PID for the entire outage, even if SSE emits no new state.
+    while (watching() && alive(pid)) {
+      await waitExitWatch(250)
+    }
+    if (!watching() || exitChecked === pid) return
     exitChecked = pid
     const cause = await readDaemonExitCause(connection.logFile)
+    if (!watching()) return
     const startedBy = versionInfo?.startedBy ?? connection.endpointInfo?.daemon?.startedBy ?? null
     agentsAtExit = bridge.runningAgents().map((a) => a.filePath)
     const recent = lastAutoRespawnAt > 0 && Date.now() - lastAutoRespawnAt < DAEMON_RESPAWN_WINDOW_MS
@@ -681,8 +699,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     bridge.failTurns('exited')
     if (!auto) {
       // A daemon replaced from the terminal (`adf daemon restart`) answers again within moments: no dialog then.
-      await sleep(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
-      if (shutdownPromise || connection.state.state !== 'disconnected') {
+      await waitExitWatch(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
+      if (!watching()) {
         log.log(`[Backend] Another ADF daemon answered after pid ${pid} exited`)
         return
       }
@@ -690,15 +708,21 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     connection.markExited({ pid, cause: cause?.text ?? null, startedBy, respawning: auto, ...(detail ? { detail } : {}) })
     if (!auto) return
     lastAutoRespawnAt = Date.now()
-    await sleep(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
-    if (shutdownPromise || connection.state.state !== 'disconnected') return
+    await waitExitWatch(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
+    if (!watching()) return
     void reviveDaemon('automatic')
   }
   if (deps.mode === 'local') {
     // The token goes out again only once the listener is the daemon its pid file names (connection.ts): re-dial then, not at the next backoff.
     connection.onListenerVerified(() => { if (connection.state.state !== 'connected') clientSession?.reconnect() })
     connection.onState((state) => {
-      if (state.state === 'disconnected' && !state.exited && !shutdownPromise && !reviving) void checkDaemonExit()
+      if (state.state === 'connected' || state.state === 'failed') stopExitWatch()
+      if (state.state === 'disconnected' && !state.exited && !shutdownPromise && !reviving && !exitWatch) {
+        const generation = exitWatchGeneration
+        exitWatch = checkDaemonExit(generation).catch((err) => log.warn('[Backend] Checking the daemon process failed:', err)).finally(() => {
+          if (generation === exitWatchGeneration) exitWatch = null
+        })
+      }
     })
   }
 
@@ -766,7 +790,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         const loaded = toStart.length ? await (await started).request<AgentSummary[]>('GET', '/agents').catch(() => [] as AgentSummary[]) : []
         for (const filePath of toStart) {
           const name = basename(filePath, '.adf')
-          if (loaded.some((a) => a.filePath && samePath(a.filePath, filePath))) { restarted.push(name); continue }
+          if (loaded.some((a) => a.filePath && samePath(a.filePath, filePath, deps.mode === 'remote'))) { restarted.push(name); continue }
           const result = await startAgentAgain(filePath)
           if (result.success) restarted.push(name)
           else failed.push(`${name} (${result.error ?? 'failed'})`)
@@ -866,6 +890,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   let shutdownPromise: Promise<void> | null = null
   const shutdown = (opts: { waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
+      stopExitWatch()
+      if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
+      connection.dispose()
       deps.powerMonitor?.removeListener('resume', onSystemResume)
       statusUi.dispose()
       approvals.dispose()
@@ -946,7 +973,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
 
   /** An agent that ran when the daemon exited: the open file's through AGENT_START (as its Start button), any other in the background. */
   const startAgentAgain = async (filePath: string): Promise<{ success: boolean; error?: string }> => {
-    if (!samePath(filePath, session.filePath)) return startBackgroundAgent(filePath)
+    if (!samePath(filePath, session.filePath, deps.mode === 'remote')) return startBackgroundAgent(filePath)
     const handler = DAEMON_MODE_HANDLERS[IPC.AGENT_START]
     if (!handler) return { success: false, error: 'Agent start is not available in daemon mode' }
     try {

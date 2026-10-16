@@ -691,10 +691,9 @@ export class SlackAdapter implements ChannelAdapter {
           if (!att.data) continue
           try {
             const upload = await this.web.filesUploadV2({
-              channel_id: channel,
               file: att.data,
               filename: att.filename,
-              ...(threadTs ? { thread_ts: threadTs } : {})
+              ...(threadTs ? { channel_id: channel, thread_ts: threadTs } : { channel_id: channel })
             })
             if (upload.ok === false) {
               throw new Error(String((upload as { error?: string }).error ?? 'upload returned ok=false'))

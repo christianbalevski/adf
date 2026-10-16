@@ -269,7 +269,7 @@ const grepHandler: CommandHandler = {
       for (const file of files) {
         if (file.mime_type && !isTextMime(file.mime_type)) continue
         const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, file.path)
-        if (readErr) continue
+        if (readErr !== null) continue
         const lines = splitLines(content)
         const sel = await select(lines, content?.length ?? 0)
         if ('failure' in sel) return sel.failure
@@ -298,7 +298,7 @@ const grepHandler: CommandHandler = {
     let text = ctx.stdin
     if (fileArgs.length === 1) {
       const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(fileArgs[0]))
-      if (readErr) return err(`grep: ${fileArgs[0]}: No such file or directory`)
+      if (readErr !== null) return err(`grep: ${fileArgs[0]}: No such file or directory`)
       text = content
     }
     if (!text) {
@@ -439,7 +439,7 @@ const sedHandler: CommandHandler = {
     if (ctx.args.length > 1) {
       filePath = vfsPath(ctx.args[1])
       const [sedContent, sedErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, filePath)
-      if (sedErr) return err(`sed: ${filePath}: No such file or directory`)
+      if (sedErr !== null) return err(`sed: ${filePath}: No such file or directory`)
       text = sedContent
     } else if (!text) {
       return ok('')

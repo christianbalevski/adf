@@ -117,6 +117,27 @@ export function openKeychainBackend(): KeychainSecretBackend | null {
   }
 }
 
+type FindCredentialsAsync = (service: string, target?: string | null, signal?: AbortSignal | null) => Promise<Array<{ account: string }>>
+
+/**
+ * Read every keychain item of `service` off the main thread, and say how many
+ * there are; null when no keychain binding loads here. The sync reads block
+ * the main thread while macOS asks whether this binary may use an item (an
+ * unsigned dev "Electron", or a rebuilt one): reading the items this way
+ * first lets those prompts be answered while Studio stays responsive.
+ */
+export async function readKeychainItemsAsync(service = KEYCHAIN_SERVICE): Promise<number | null> {
+  let find: FindCredentialsAsync | undefined
+  try {
+    const req = createRequire(import.meta.url)
+    find = (req('@napi-rs/keyring') as { findCredentialsAsync?: FindCredentialsAsync }).findCredentialsAsync
+  } catch {
+    return null
+  }
+  if (!find) return null
+  return (await find(service)).length
+}
+
 /** One keychain probe: the backend when usable; whether a keychain binding exists here; why the read failed. */
 export interface KeychainProbe {
   backend: KeychainSecretBackend | null

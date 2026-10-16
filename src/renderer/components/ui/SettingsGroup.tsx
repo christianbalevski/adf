@@ -2,7 +2,7 @@ import { DocsLink, InfoHint } from '../common/DocsLink'
 
 interface SettingsGroupProps {
   title?: string
-  description?: string
+  description?: React.ReactNode
   children: React.ReactNode
   className?: string
   /** Guide URL for this group — a small "Docs" link on the title row. */

@@ -973,7 +973,6 @@ interface ToolCall {
 }
 
 interface ReasoningPart {
-  type: 'text'
   text: string
 }
 

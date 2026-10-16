@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
@@ -25,9 +25,11 @@ import Module from 'node:module'
  *   backend, and any load of `@napi-rs/keyring` is refused and recorded.
  * - Real state: the owner's settings, backend selection, daemon token and pid
  *   files, lease registry, `~/.adf`, and Claude/Codex credential files are
- *   fingerprinted (size + mtime, never read) before the run and checked after.
- *   A real Studio running on the same machine can write its own settings
- *   during a run and trip this check; rerun when that happens.
+ *   fingerprinted before the run and checked after. Credentials and settings
+ *   are never read; validated non-secret host records are hashed for heartbeat checks.
+ *   Test-origin filesystem writes are confined to isolated roots, including
+ *   native SQLite opens. Only unchanged live-host heartbeat records may
+ *   advance their mtime; all other ambient fingerprint changes still fail.
  */
 export interface ParityEnv {
   /** Canonical (realpath) root of everything this run touches. */
@@ -46,6 +48,8 @@ export interface ParityEnv {
   readonly startedAt: number
   /** Fence violations land here, one JSON line each (also from fenced child processes). */
   readonly violationsLog: string
+  /** Allocate a fresh harness-control directory outside backend state. */
+  createIsolatedDirectory(label: string): string
   /** Electron `app.getPath(name)` for this run. */
   appPath(name: string): string
   /** Let the fence accept connections to one more loopback port (a backend's own server). */
@@ -56,6 +60,8 @@ type Fence = {
   install(o: { logFile: string; root: string; ports: number[] }): unknown
   uninstall(): void
   allowPort(port: number): void
+  createIsolatedDirectory(label: string): string
+  violations(): Array<{ kind: string; detail: string; pid: number }>
 }
 export const FENCE_PATH = join(__dirname, 'fence.cjs')
 const fence = createRequire(__filename)('./fence.cjs') as Fence
@@ -65,10 +71,10 @@ const OWN_ENV = [
   'ADF_USER_DATA_DIR', 'ADF_LEASE_DIR', 'ADF_TEMP_DIR', 'ADF_SECRET_STORE', 'ADF_KEYCHAIN', 'ADF_MACHINE_ID', 'ADF_TEST_ENVELOPE_SWEEP', 'ADF_TEST_SEAMS',
   'MESH_PORT', 'MESH_HOST', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'TMPDIR', 'TEMP', 'TMP',
-  'PARITY_FENCE_LOG', 'PARITY_FENCE_ROOT', 'PARITY_FENCE_PORTS', 'NODE_OPTIONS',
+  'PARITY_FENCE_LOG', 'PARITY_FENCE_ROOT', 'PARITY_FENCE_PORTS', 'PARITY_FENCE_WRITE_ROOTS', 'NODE_OPTIONS',
 ] as const
 
-/** The owner's real per-user state. Fingerprinted, never read. */
+/** The owner's real per-user paths; settings and credential contents are never read. */
 function realStatePaths(): { files: string[]; trees: string[] } {
   const home = process.env.USERPROFILE || process.env.HOME || homedir()
   const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming')
@@ -109,22 +115,77 @@ function fingerprintFile(path: string): string {
   }
 }
 
-function fingerprintTree(path: string, limit = 5000): string {
-  const out: string[] = []
-  const walk = (dir: string) => {
+interface TreeEntry {
+  stamp: string
+  identity: string
+  mtimeMs: number
+  heartbeat?: { pid: number; digest: string }
+}
+
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+/** Host records carry no secrets. All other real-state files remain metadata-only. */
+function hostHeartbeat(path: string, name: string): TreeEntry['heartbeat'] {
+  if (!/^hosts[\\/][1-9]\d*\.json$/.test(name)) return undefined
+  try {
+    const entry = statSync(path)
+    if (entry.size > 64 * 1024 || entry.nlink !== 1) return undefined
+    const bytes = readFileSync(path)
+    const record = JSON.parse(bytes.toString())
+    const pid = Number(name.split(/[\\/]/).pop()!.slice(0, -5))
+    if (record.v !== 1 || record.pid !== pid || pid === process.pid || !pidAlive(pid)
+      || !['daemon', 'studio-embedded'].includes(record.kind) || !/^[0-9a-f]{16}$/.test(record.runtimeId)
+      || typeof record.startedAt !== 'number' || typeof record.settingsPath !== 'string'
+      || typeof record.hostname !== 'string' || !['daemon', 'embedded'].includes(record.mode)) return undefined
+    return { pid, digest: createHash('sha256').update(bytes).digest('hex') }
+  } catch { return undefined }
+}
+
+function fingerprintTree(path: string, leaseRegistry: boolean, limit = 5000): Map<string, TreeEntry> {
+  const out = new Map<string, TreeEntry>()
+  const walk = (dir: string): void => {
     let entries: string[]
     try { entries = readdirSync(dir) } catch { return }
     for (const name of entries.sort()) {
-      if (out.length >= limit) return
+      if (out.size >= limit) throw new Error(`parity harness: real-state fingerprint exceeds ${limit} entries: ${path}`)
       const p = join(dir, name)
       let s
       try { s = lstatSync(p) } catch { continue }
-      out.push(`${relative(path, p)}:${s.size}:${s.mtimeMs}`)
+      const key = relative(path, p)
+      out.set(key, {
+        stamp: `${s.size}:${s.mtimeMs}`,
+        identity: `${s.dev}:${s.ino}:${s.mode}:${s.uid}:${s.gid}:${s.nlink}:${s.size}`,
+        mtimeMs: s.mtimeMs,
+        ...(leaseRegistry && s.isFile() ? { heartbeat: hostHeartbeat(p, key) } : {}),
+      })
       if (s.isDirectory()) walk(p)
     }
   }
+  try {
+    const root = lstatSync(path)
+    out.set('', { stamp: `${root.size}:${root.mtimeMs}`, identity: `${root.dev}:${root.ino}:${root.mode}:${root.uid}:${root.gid}:${root.nlink}:${root.size}`, mtimeMs: root.mtimeMs })
+  } catch { /* absent */ }
   walk(path)
-  return out.join('|') || 'absent'
+  return out
+}
+
+function sameTree(before: Map<string, TreeEntry>, after: Map<string, TreeEntry>, startedAt: number): boolean {
+  if (before.size !== after.size) return false
+  for (const [name, old] of before) {
+    const current = after.get(name)
+    if (!current) return false
+    if (old.stamp === current.stamp && old.identity === current.identity
+      && (!old.heartbeat || old.heartbeat.digest === current.heartbeat?.digest)) continue
+    // compute-users only utimes an existing host record. Preserve every other
+    // fingerprint check: contents, identity, membership and PID liveness.
+    if (!old.heartbeat || !current.heartbeat || old.heartbeat.pid !== current.heartbeat.pid
+      || old.heartbeat.digest !== current.heartbeat.digest || old.identity !== current.identity
+      || current.mtimeMs < old.mtimeMs || current.mtimeMs < startedAt
+      || current.mtimeMs > Date.now() + 1000 || !pidAlive(old.heartbeat.pid)) return false
+  }
+  return true
 }
 
 async function freePort(): Promise<number> {
@@ -221,13 +282,12 @@ function rootSpellingsOf(rawRoot: string, root: string): { spelling: string; tok
   return out.sort((a, b) => b.spelling.length - a.spelling.length)
 }
 
-export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
+export async function createParityEnv(label: string, options: { realState?: { files: string[]; trees: string[] } } = {}): Promise<ActiveParityEnv> {
   const startedAt = Date.now()
-  const real = realStatePaths()
-  const realFingerprints = new Map<string, string>([
-    ...real.files.map((p) => [p, fingerprintFile(p)] as [string, string]),
-    ...real.trees.map((p) => [p, fingerprintTree(p)] as [string, string]),
-  ])
+  const real = options.realState ?? realStatePaths()
+  const realFingerprints = new Map(real.files.map(p => [p, fingerprintFile(p)]))
+  const isLeaseRegistry = (p: string): boolean => /[\\/]adf[\\/]leases$/.test(p)
+  const realTrees = new Map(real.trees.map(p => [p, fingerprintTree(p, isLeaseRegistry(p))]))
   const rawRoot = mkdtempSync(join(rootParent(), `adf-parity-${label}-`))
   const root = realpathSync.native(rawRoot)
   const dir = (...parts: string[]) => {
@@ -244,6 +304,7 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
   const localAppDataDir = dir('home', 'AppData', 'Local')
   const meshPort = await freePort()
   const violationsLog = join(root, 'violations.log')
+  writeFileSync(violationsLog, '', { flag: 'wx', mode: 0o600 })
 
   const saved = new Map<string, string | undefined>()
   for (const k of Object.keys(process.env)) if (k.startsWith('ADF_')) saved.set(k, process.env[k])
@@ -283,10 +344,11 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     PARITY_FENCE_LOG: violationsLog,
     PARITY_FENCE_ROOT: root,
     PARITY_FENCE_PORTS: String(meshPort),
+    PARITY_FENCE_WRITE_ROOTS: JSON.stringify([root]),
     // Every Node / Electron-as-Node child (and grandchild) loads the fence
     // first. NODE_OPTIONS unescapes backslashes inside quotes, so the path is
     // written with forward slashes (valid on every OS).
-    NODE_OPTIONS: [saved.get('NODE_OPTIONS'), `--require "${FENCE_PATH.replace(/\\/g, '/')}"`].filter(Boolean).join(' '),
+    NODE_OPTIONS: [`--require "${FENCE_PATH.replace(/\\/g, '/')}"`, saved.get('NODE_OPTIONS')].filter(Boolean).join(' '),
   }
   for (const [k, v] of Object.entries(set)) process.env[k] = v
 
@@ -294,6 +356,7 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
   keyringTripwire = installKeyringTripwire()
   const tripwire = keyringTripwire
   const ports = [meshPort]
+  const outsideDirectories: string[] = []
   fence.install({ logFile: violationsLog, root, ports })
   // SettingsService adds a process 'exit' flush per instance; each run boots
   // a fresh module graph, so listeners of finished runs are removed at dispose.
@@ -314,11 +377,20 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
 
   const readViolations = (): string[] => {
     let text = ''
-    try { text = readFileSync(violationsLog, 'utf-8') } catch { /* none */ }
-    return [
-      ...text.split('\n').filter(Boolean),
-      ...tripwire.hits.map((h) => `keychain addon requested: ${h}`),
-    ]
+    try { text = readFileSync(violationsLog, 'utf-8') } catch {
+      text = JSON.stringify({ kind: 'audit', detail: 'fence violation log is missing or unreadable', pid: process.pid })
+    }
+    const logged = text.split('\n').filter(Boolean)
+    // Keep multiplicity while merging the in-process audit fallback. The
+    // file also contains child/worker refusals absent from this instance.
+    const counts = new Map<string, number>()
+    for (const entry of logged) counts.set(entry, (counts.get(entry) ?? 0) + 1)
+    for (const entry of fence.violations().map(value => JSON.stringify(value))) {
+      const remaining = counts.get(entry) ?? 0
+      if (remaining > 0) counts.set(entry, remaining - 1)
+      else logged.push(entry)
+    }
+    return [...logged, ...tripwire.hits.map(h => `keychain addon requested: ${h}`)]
   }
 
   return {
@@ -332,6 +404,14 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     meshPort,
     startedAt,
     violationsLog,
+    createIsolatedDirectory(label: string): string {
+      // Allocation is harness-owned; expose only a freshly minted directory.
+      // The fence offers this primitive so arbitrary existing roots cannot be allowed.
+      const p = fence.createIsolatedDirectory(label)
+      outsideDirectories.push(p)
+      process.env.PARITY_FENCE_WRITE_ROOTS = JSON.stringify([root, ...outsideDirectories])
+      return p
+    },
     appPath(name: string): string {
       const p = appPaths[name]
       if (!p) throw new Error(`parity harness: app.getPath('${name}') is not mapped`)
@@ -344,8 +424,10 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
     },
     violations: readViolations,
     assertRealStateUntouched(): void {
-      const changed = [...realFingerprints].filter(([p, before]) =>
-        (real.trees.includes(p) ? fingerprintTree(p) : fingerprintFile(p)) !== before).map(([p]) => p)
+      const changed = [
+        ...[...realFingerprints].filter(([p, before]) => fingerprintFile(p) !== before).map(([p]) => p),
+        ...[...realTrees].filter(([p, before]) => !sameTree(before, fingerprintTree(p, isLeaseRegistry(p)), startedAt)).map(([p]) => p),
+      ]
       const v = readViolations()
       if (changed.length || v.length) {
         throw new Error([
@@ -365,6 +447,10 @@ export async function createParityEnv(label: string): Promise<ActiveParityEnv> {
       for (const [k, v] of saved) {
         if (v === undefined) delete process.env[k]
         else process.env[k] = v
+      }
+      for (const p of outsideDirectories) {
+        const links = removeTreeWithoutLinks(p)
+        if (links.length) throw new Error(`parity harness: refusing to delete ${p}; it contains links: ${links.join(', ')}`)
       }
       const links = removeTreeWithoutLinks(root)
       if (links.length) throw new Error(`parity harness: refusing to delete ${root}; it contains links: ${links.join(', ')}`)

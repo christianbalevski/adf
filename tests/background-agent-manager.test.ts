@@ -168,3 +168,20 @@ describe('BackgroundAgentManager start races', () => {
     await manager.stopAgent(filePath)
   })
 })
+
+describe('BackgroundAgentManager adapter inbox pushes', () => {
+  it('preserves canonical inbox sender, content and reply metadata in the renderer snapshot', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-bam-inbox-'))
+    const filePath = createAdfFile(dir, 'agent-1')
+    const manager = makeManager()
+    expect(await manager.startAgent(filePath)).toBe(true)
+    const agent = manager.getAgent(filePath)!
+    const messageId = agent.workspace.addToInbox({ from: 'telegram:123', content: 'hello team', source: 'telegram', parent_id: 'parent-1', source_context: { chat_id: '123' }, received_at: 1234, status: 'unread' })
+    const pushes: unknown[] = []
+    manager.on('inbox_updated', (push: unknown) => pushes.push(push))
+    expect(agent.adapterManager).not.toBeNull()
+    agent.adapterManager!.emit('inbound', 'telegram', { sender: '123', payload: 'hello team' }, { inboxId: messageId })
+    expect(pushes).toEqual([{ filePath: agent.workspace.getFilePath(), inbox: { version: 1, messages: agent.workspace.getInbox() } }])
+    expect(pushes).toEqual([expect.objectContaining({ inbox: expect.objectContaining({ messages: [expect.objectContaining({ from: 'telegram:123', content: 'hello team', parent_id: 'parent-1', source_context: { chat_id: '123' } })] }) })])
+  })
+})

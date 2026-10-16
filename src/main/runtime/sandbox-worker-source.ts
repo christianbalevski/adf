@@ -202,9 +202,13 @@ const ALLOWED_MODULES = new Set([
 // =====================================================================
 // vm realm + prelude
 // =====================================================================
+// eval / new Function are allowed: they compile in this realm, with the same
+// reach as code the agent writes directly. The boundary is the membrane (host
+// values reach the realm only as their vm twins; the worker realm's own
+// Function-family constructors are inert) and the --permission host process.
 const context = vm.createContext(vm.constants.DONT_CONTEXTIFY, {
   name: 'adf-sandbox',
-  codeGeneration: { strings: false, wasm: true }
+  codeGeneration: { strings: true, wasm: true }
 });
 const installPrelude = new vm.Script(PRELUDE, { filename: 'adf-sandbox-prelude.js' }).runInContext(context);
 

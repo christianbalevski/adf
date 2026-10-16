@@ -41,6 +41,13 @@ const https = require('node:https')
 const dgram = require('node:dgram')
 const workerThreads = require('node:worker_threads')
 const fs = require('node:fs')
+const fsPromises = require('node:fs/promises')
+const path = require('node:path')
+const { tmpdir } = require('node:os')
+const { fileURLToPath } = require('node:url')
+const Module = require('node:module')
+const rawFs = { ...fs }
+const ISOLATED_DIRECTORY_PARENT = tmpdir()
 const { promisify } = require('node:util')
 const { syncBuiltinESMExports } = require('node:module')
 
@@ -56,11 +63,217 @@ function record(kind, detail) {
   const entry = { kind, detail, pid: process.pid }
   if (state) {
     state.violations.push(entry)
-    try { fs.appendFileSync(state.logFile, JSON.stringify(entry) + '\n') } catch { /* log dir gone */ }
+    let descriptor
+    try {
+      descriptor = rawFs.openSync(state.logFile, 'a', 0o600)
+      rawFs.writeSync(descriptor, JSON.stringify(entry) + '\n')
+    } catch {
+      state.loggingFailed = true
+      // A caught refusal cannot erase its audit trail by breaking the logger.
+      // Children also exit nonzero if their log could not reach the parent.
+      process.exitCode = 1
+    } finally {
+      if (descriptor !== undefined) try { rawFs.closeSync(descriptor) } catch { /* already closed */ }
+    }
   }
   const err = new Error(`parity fence: refused ${kind}: ${detail}`)
   err.code = 'PARITY_FENCE'
   return err
+}
+
+// --- filesystem -----------------------------------------------------------
+
+function canonical(input) {
+  if (input instanceof URL) input = fileURLToPath(input)
+  if (Buffer.isBuffer(input)) input = input.toString()
+  const absolute = path.resolve(String(input))
+  try { return rawFs.realpathSync.native(absolute) } catch {
+    const parent = path.dirname(absolute)
+    return parent === absolute ? absolute : path.join(canonical(parent), path.basename(absolute))
+  }
+}
+
+function inside(root, target) {
+  const rel = path.relative(root, target)
+  return rel === '' || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`))
+}
+
+function checkWrite(operation, target) {
+  if (!state) return
+  if (target && typeof target === 'object' && typeof target.fd === 'number') target = target.fd
+  if (typeof target === 'number') {
+    if (target === 1 || target === 2) return // process output, never an inherited file handle
+    const known = state.fds.get(target)
+    if (!known) throw record('filesystem', `${operation}: untracked fd ${target}`)
+    return checkWrite(operation, known)
+  }
+  const resolved = canonical(target)
+  const audit = canonical(state.logFile)
+  const removesAuditParent = /^(rm|rmdir|rename|chmod|chown)(Sync)?$/.test(operation) && inside(resolved, audit)
+  if (resolved === audit || removesAuditParent) throw record('filesystem', `${operation}: fence audit log is read-only`)
+  if (!state.writeRoots.some(root => inside(root, resolved))) throw record('filesystem', `${operation}: ${resolved}`)
+  try {
+    const entry = rawFs.statSync(resolved)
+    if (entry.isFile() && entry.nlink > 1) throw record('filesystem', `${operation}: multiply linked file ${resolved}`)
+  } catch (err) { if (err.code === 'PARITY_FENCE') throw err }
+}
+
+function writable(flags) {
+  return typeof flags === 'number'
+    ? (flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND)) !== 0
+    : /[wa+]/.test(flags === undefined ? 'r' : String(flags))
+}
+
+function installFilesystem(patch) {
+  const single = ['appendFile', 'writeFile', 'truncate', 'unlink', 'rm', 'rmdir', 'mkdir', 'mkdtemp', 'chmod', 'chown', 'lchmod', 'lchown', 'utimes', 'lutimes']
+  const fd = ['write', 'writev', 'ftruncate', 'fchmod', 'fchown', 'futimes', 'fsync', 'fdatasync']
+  for (const name of [...single, ...fd]) {
+    for (const suffix of ['', 'Sync']) {
+      const method = name + suffix
+      if (typeof fs[method] !== 'function') continue
+      const original = fs[method]
+      patch(fs, method, function (...args) { checkWrite(method, args[0]); return original.apply(this, args) })
+    }
+    if (typeof fsPromises[name] === 'function') {
+      const original = fsPromises[name]
+      patch(fsPromises, name, async function (...args) { checkWrite(name, args[0]); return original.apply(this, args) })
+    }
+  }
+  // A rename changes both paths; a link must not become a writable alias.
+  // copyFile reads its source and mutates only the checked destination.
+  for (const name of ['rename', 'copyFile', 'cp', 'link', 'symlink']) {
+    const check = args => {
+      if (name === 'cp') throw record('filesystem', 'cp: recursive copies require individually guarded copyFile operations')
+      const source = name === 'symlink' && !path.isAbsolute(String(args[0])) ? path.resolve(path.dirname(String(args[1])), String(args[0])) : args[0]
+      if (name !== 'copyFile') checkWrite(name, source)
+      checkWrite(name, args[1])
+    }
+    for (const suffix of ['', 'Sync']) {
+      const method = name + suffix
+      if (typeof fs[method] !== 'function') continue
+      const original = fs[method]
+      patch(fs, method, function (...args) { check(args); return original.apply(this, args) })
+    }
+    if (typeof fsPromises[name] === 'function') {
+      const original = fsPromises[name]
+      patch(fsPromises, name, async function (...args) { check(args); return original.apply(this, args) })
+    }
+  }
+  const originalOpen = fs.open
+  patch(fs, 'open', function (...args) {
+    const target = canonical(args[0])
+    if (writable(args[1])) checkWrite('open', target)
+    const callback = args.pop()
+    args.push(function (err, descriptor) {
+      if (!err && state) state.fds.set(descriptor, target)
+      callback(err, descriptor)
+    })
+    return originalOpen.apply(this, args)
+  })
+  const originalOpenSync = fs.openSync
+  patch(fs, 'openSync', function (target, flags, ...args) {
+    const resolved = canonical(target)
+    if (writable(flags)) checkWrite('openSync', resolved)
+    const descriptor = originalOpenSync.call(this, target, flags, ...args)
+    if (state) state.fds.set(descriptor, resolved)
+    return descriptor
+  })
+  const originalCloseSync = fs.closeSync
+  patch(fs, 'closeSync', function (fd) {
+    const result = originalCloseSync.call(this, fd)
+    if (state) state.fds.delete(fd)
+    return result
+  })
+  const originalClose = fs.close
+  patch(fs, 'close', function (fd, callback) {
+    return originalClose.call(this, fd, err => { if (!err && state) state.fds.delete(fd); callback(err) })
+  })
+  const originalPromiseOpen = fsPromises.open
+  patch(fsPromises, 'open', async function (target, flags, ...args) {
+    const resolved = canonical(target)
+    if (writable(flags)) checkWrite('open', resolved)
+    const handle = await originalPromiseOpen.call(this, target, flags, ...args)
+    if (state) state.fds.set(handle.fd, resolved)
+    for (const name of ['appendFile', 'writeFile', 'write', 'writev', 'truncate', 'chmod', 'chown', 'utimes', 'sync', 'datasync', 'createWriteStream']) {
+      if (typeof handle[name] !== 'function') continue
+      const original = handle[name]
+      handle[name] = function (...values) { checkWrite(`FileHandle.${name}`, resolved); return original.apply(this, values) }
+    }
+    const close = handle.close
+    handle.close = async function () {
+      const descriptor = handle.fd
+      const result = await close.call(this)
+      if (state) state.fds.delete(descriptor)
+      return result
+    }
+    return handle
+  })
+  const originalStream = fs.createWriteStream
+  patch(fs, 'createWriteStream', function (target, options) {
+    checkWrite('createWriteStream', options && options.fd !== undefined ? options.fd : target)
+    return originalStream.apply(this, arguments)
+  })
+}
+
+// The native addon's constructor is checked as well as the JS wrapper.
+// Cached/imported-before-fence better-sqlite3 constructors retain this same
+// addon object, so they cannot bypass the guard with a saved JS reference.
+function installSqliteGuard(patch) {
+  let trustedVec
+  const patched = new WeakSet()
+  const guardAddon = addon => {
+    if (!addon || typeof addon.Database !== 'function' || patched.has(addon)) return
+    patched.add(addon)
+    const Original = addon.Database
+    patch(addon, 'Database', new Proxy(Original, { construct(target, args, newTarget) {
+      if (!args[2]) checkWrite('sqlite open', args[0]) // anonymous in-memory DBs write no file
+      return Reflect.construct(target, args, newTarget)
+    } }))
+    for (const name of ['prepare', 'exec', 'backup', 'close', 'loadExtension']) {
+      const original = Original.prototype[name]
+      if (typeof original !== 'function') continue
+      patch(Original.prototype, name, function (...args) {
+        if (!this.memory) checkWrite(`sqlite ${name}`, this.name)
+        if (name === 'backup') checkWrite('sqlite backup', args[2])
+        if (name === 'loadExtension') {
+          trustedVec ??= canonical(require('sqlite-vec').getLoadablePath())
+          if (canonical(args[0]) !== trustedVec) throw record('filesystem', 'sqlite loadExtension is forbidden except the bundled sqlite-vec')
+        }
+        if ((name === 'prepare' || name === 'exec') && /\bATTACH\b|\bVACUUM\b[\s\S]*?\bINTO\b|\bload_extension\s*\(/i.test(String(args[0]))) {
+          throw record('filesystem', 'sqlite SQL file access (ATTACH, VACUUM INTO or load_extension) is forbidden')
+        }
+        return original.apply(this, args)
+      })
+    }
+    // Statements can outlive a run boundary too. Patch the shared native
+    // statement prototype, so a prepared-before-fence write stays guarded.
+    const Database = require('better-sqlite3')
+    const memory = new Database(':memory:')
+    try {
+      const prototype = Object.getPrototypeOf(memory.prepare('SELECT 1'))
+      if (!patched.has(prototype)) {
+        patched.add(prototype)
+        for (const name of ['run', 'get', 'all', 'iterate']) {
+          const original = prototype[name]
+          patch(prototype, name, function (...args) {
+            if (!this.database.memory) checkWrite(`sqlite statement ${name}`, this.database.name)
+            if (/\bATTACH\b|\bVACUUM\b[\s\S]*?\bINTO\b|\bload_extension\s*\(/i.test(this.source)) {
+              throw record('filesystem', 'sqlite SQL file access (ATTACH, VACUUM INTO or load_extension) is forbidden')
+            }
+            return original.apply(this, args)
+          })
+        }
+      }
+    } finally { memory.close() }
+
+  }
+  for (const [filename, cached] of Object.entries(require.cache)) if (/better_sqlite3\.node$/.test(filename)) guardAddon(cached.exports)
+  const originalLoad = Module._load
+  patch(Module, '_load', function (request, ...rest) {
+    const result = originalLoad.call(this, request, ...rest)
+    if (/better_sqlite3\.node$/.test(String(request))) guardAddon(result)
+    return result
+  })
 }
 
 // --- spawn ----------------------------------------------------------------
@@ -115,7 +328,7 @@ function withFenceEnv(args) {
   // given through NODE_OPTIONS is added to its read allowlist, or it could
   // not load the fence and would exit at once.
   if (Array.isArray(out[1]) && out[1].includes('--permission')) {
-    out[1] = ['--permission', `--allow-fs-read=${__filename}`, ...out[1].filter((a) => a !== '--permission')]
+    out[1] = ['--permission', `--allow-fs-read=${__filename}`, `--allow-fs-write=${state.logFile}`, ...out[1].filter((a) => a !== '--permission')]
   }
   for (let i = 1; i < out.length; i++) {
     const a = out[i]
@@ -129,7 +342,8 @@ function withFenceEnv(args) {
         PARITY_FENCE_LOG: state.logFile,
         PARITY_FENCE_ROOT: state.root ?? '',
         PARITY_FENCE_PORTS: [...state.ports].join(','),
-        NODE_OPTIONS: nodeOptions.includes(REQUIRE_SELF) ? nodeOptions : [nodeOptions, REQUIRE_SELF].filter(Boolean).join(' '),
+        PARITY_FENCE_WRITE_ROOTS: JSON.stringify(state.writeRoots),
+        NODE_OPTIONS: [REQUIRE_SELF, nodeOptions.replaceAll(REQUIRE_SELF, '').trim()].filter(Boolean).join(' '),
       },
     }
     return out
@@ -141,10 +355,23 @@ function fencedSpawner(name, original) {
   const check = (args) => {
     const hit = forbiddenWord(spawnStrings(name, args).filter((s) => typeof s === 'string'))
     if (hit) throw record('spawn', `${name}: ${spawnStrings(name, args).filter((s) => typeof s === 'string').join(' ')}`)
+    const options = (Array.isArray(args[1]) ? args[2] : args[1]) || {}
+    const binary = name === 'fork' ? options.execPath || process.execPath : args[0]
+    const isOwnNode = typeof binary === 'string' && canonical(binary) === canonical(process.execPath)
+    const values = Array.isArray(args[1]) ? args[1] : []
+    const pidAt = values.findIndex(value => String(value).toUpperCase() === '/PID')
+    const ownTaskkill = process.platform === 'win32' && /^taskkill(?:\.exe)?$/i.test(String(binary))
+      && values.length === 4 && values.some(value => String(value).toUpperCase() === '/T')
+      && values.some(value => String(value).toUpperCase() === '/F') && pidAt >= 0 && state.children.has(Number(values[pidAt + 1]))
+    if (name === 'exec' || name === 'execSync' || options.shell || (!isOwnNode && !ownTaskkill)) {
+      throw record('spawn', `${name}: unfenced executable ${binary}`)
+    }
   }
   const fenced = function (...args) {
     check(args)
-    return original.apply(this, withFenceEnv(args))
+    const child = original.apply(this, withFenceEnv(args))
+    if (child && child.pid && state) state.children.add(child.pid)
+    return child
   }
   // exec/execFile resolve `{ stdout, stderr }` under promisify only through this symbol.
   const custom = original[promisify.custom]
@@ -248,10 +475,10 @@ function fencedWorkerClass(Original) {
   const self = __filename
   return class FencedWorker extends Original {
     constructor(file, options = {}) {
-      const execArgv = [...(options.execArgv ?? process.execArgv), '--require', self]
+      const execArgv = ['--require', self, ...(options.execArgv ?? process.execArgv)]
       // A worker with its own env object would not see the fence settings.
       const env = options.env && typeof options.env === 'object'
-        ? { ...options.env, PARITY_FENCE_LOG: state.logFile, PARITY_FENCE_ROOT: state.root ?? '', PARITY_FENCE_PORTS: [...state.ports].join(',') }
+        ? { ...options.env, PARITY_FENCE_LOG: state.logFile, PARITY_FENCE_ROOT: state.root ?? '', PARITY_FENCE_PORTS: [...state.ports].join(','), PARITY_FENCE_WRITE_ROOTS: JSON.stringify(state.writeRoots) }
         : options.env
       super(file, { ...options, execArgv, ...(env !== undefined ? { env } : {}) })
     }
@@ -270,10 +497,16 @@ function install(options) {
   state = {
     logFile: options.logFile,
     root: options.root,
+    writeRoots: (options.writeRoots || (options.root ? [options.root] : [])).map(canonical),
+    fds: new Map(),
+    children: new Set(),
     ports: new Set((options.ports || []).map(Number)),
     violations: [],
+    loggingFailed: false,
     saved,
   }
+  installFilesystem(patch)
+  installSqliteGuard(patch)
   for (const name of SPAWNERS) {
     if (typeof childProcess[name] === 'function') patch(childProcess, name, fencedSpawner(name, childProcess[name]))
   }
@@ -330,15 +563,22 @@ function uninstall() {
   state = null
 }
 
+function createIsolatedDirectory(label) {
+  if (!state || !/^[a-z0-9-]+$/i.test(label)) throw new Error('parity fence: invalid isolated-directory label')
+  const root = canonical(rawFs.mkdtempSync(path.join(ISOLATED_DIRECTORY_PARENT, `adf-parity-${label}-`)))
+  state.writeRoots.push(root)
+  return root
+}
+
 function allowPort(port) {
   if (state) state.ports.add(Number(port))
 }
 
 function violations() {
-  return state ? state.violations.slice() : []
+  return state ? [...state.violations, ...(state.loggingFailed ? [{ kind: 'audit', detail: 'fence violation log could not be written', pid: process.pid }] : [])] : []
 }
 
-const api = { install, uninstall, allowPort, violations, FORBIDDEN_PORTS }
+const api = { install, uninstall, allowPort, createIsolatedDirectory, violations, FORBIDDEN_PORTS }
 module.exports = api
 
 /**
@@ -362,6 +602,7 @@ if (process.env.PARITY_FENCE_LOG) {
   install({
     logFile: process.env.PARITY_FENCE_LOG,
     root: process.env.PARITY_FENCE_ROOT,
+    writeRoots: process.env.PARITY_FENCE_WRITE_ROOTS ? JSON.parse(process.env.PARITY_FENCE_WRITE_ROOTS) : undefined,
     ports: (process.env.PARITY_FENCE_PORTS || '').split(',').filter(Boolean),
   })
   installKeyringTripwire()

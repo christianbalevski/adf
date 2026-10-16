@@ -1,4 +1,4 @@
-import type { ChatHistoryEntry } from '@shared/types/adf.types'
+import type { AgentLogEntry } from '../stores/agent.store'
 
 /**
  * Pick the log entry a HIL approval prompt belongs to.
@@ -15,7 +15,7 @@ import type { ChatHistoryEntry } from '@shared/types/adf.types'
  * synthesize one for the approval.
  */
 export function findApprovalTargetEntry(
-  log: ReadonlyArray<ChatHistoryEntry>,
+  log: ReadonlyArray<Pick<AgentLogEntry, 'id' | 'type' | 'metadata'>>,
   toolName: string,
   isClaimed: (entryId: string) => boolean,
 ): string | null {

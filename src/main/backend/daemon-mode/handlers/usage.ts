@@ -82,7 +82,7 @@ export const USAGE_HANDLERS: DaemonHandlerTable = {
   [IPC.CONTEXT_BREAKDOWN_GET]: async (ctx, _event, args: { filePath: string; loop?: string }): Promise<ContextBreakdown | null> => {
     const filePath = args?.filePath
     if (!filePath) return null
-    const agentId = samePath(filePath, ctx.session.filePath) && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(filePath)
+    const agentId = samePath(filePath, ctx.session.filePath, ctx.mode === 'remote') && ctx.session.agentId ? ctx.session.agentId : await ctx.runningAgentAt(filePath)
     if (!agentId) return null
     const client = await ctx.ready()
     try {

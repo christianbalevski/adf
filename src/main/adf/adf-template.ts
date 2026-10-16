@@ -379,7 +379,7 @@ type ToolMergeResult =
 
 function mergeTools(
   templateTools: ToolDeclaration[],
-  overrideTools?: ToolDeclaration[]
+  overrideTools?: CreateAgentOptions['tools']
 ): ToolMergeResult {
   if (!overrideTools) {
     return { ok: true, value: templateTools }
@@ -408,7 +408,7 @@ function mergeTools(
   // Append new tools not in template
   for (const overrideTool of overrideTools) {
     if (!templateTools.some((t) => t.name === overrideTool.name)) {
-      merged.push(overrideTool)
+      merged.push({ visible: true, ...overrideTool })
     }
   }
 

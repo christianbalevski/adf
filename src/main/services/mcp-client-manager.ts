@@ -4,7 +4,7 @@ import { inheritableEnv } from '../utils/child-env'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type {
   McpServerConfig,
   McpToolInfo,
@@ -36,8 +36,8 @@ export type McpOAuthProviderFactory = (cfg: McpServerConfig) => AdfOAuthClientPr
 // from the working /client entry instead.
 const _require = createRequire(import.meta.url)
 const clientDir = dirname(_require.resolve('@modelcontextprotocol/sdk/client'))
-const { StdioClientTransport } = _require(join(clientDir, 'stdio.js')) as typeof import('@modelcontextprotocol/sdk/client/stdio')
-const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp')
+const { StdioClientTransport } = _require(join(clientDir, 'stdio.js')) as typeof import('@modelcontextprotocol/sdk/client/stdio.js')
+const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')
 
 /** Env vars that user-supplied MCP config must never override. */
 const BLOCKED_ENV_VARS = new Set([

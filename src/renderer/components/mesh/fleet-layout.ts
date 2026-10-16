@@ -792,7 +792,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
         style: { pointerEvents: 'none' as const },
         initialWidth: NODE_WIDTH,
         initialHeight: NODE_EST_HEIGHT,
-        data: toNodeData(agent)
+        data: { ...toNodeData(agent) }
       })
     }
   }

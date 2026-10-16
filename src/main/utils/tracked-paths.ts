@@ -17,7 +17,7 @@ const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform ===
 export interface ContainsPathOptions {
   caseInsensitive?: boolean
   /** Path implementation, injectable for cross-platform tests. */
-  pathMod?: nodePath.PlatformPath
+  pathMod?: typeof nodePath.posix
 }
 
 /**

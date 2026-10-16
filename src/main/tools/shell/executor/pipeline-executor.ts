@@ -16,7 +16,7 @@ import type { AgentConfig } from '@shared/types/adf-v02.types'
 import { resolveWithDefault, type EnvironmentResolver } from './environment'
 import { parseBracedExpansion } from '../parser/tokenizer'
 import { getCommand } from '../commands/index'
-import type { McpClientManager } from '../../mcp/mcp-client-manager'
+import type { McpClientManager } from '../../../services/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
 import { evaluateCommand, enforceToolGate, evaluateToolNames, notifyToolCallObservers } from './preflight'
 import type { ShellGate } from '../commands/types'
@@ -318,7 +318,7 @@ async function executeCommand(
   for (const r of redirects) {
     if (r.type === 'in' && r.target !== undefined) {
       const [redirectContent, redirectErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(r.target))
-      if (redirectErr) {
+      if (redirectErr !== null) {
         return err(`${name}: ${redirectErr}`)
       }
       stdin = redirectContent

@@ -56,7 +56,10 @@ describe('MCP child environment', () => {
       expect(env.ADF_DAEMON_URL).toBe('http://127.0.0.1:7499')
       expect(env.ADF_DAEMON_SETTINGS).toBe('/tmp/adf-settings.json')
       for (const key of ['ADF_DAEMON_TOKEN', 'ADF_OWNER_PASSPHRASE', 'ADF_OWNER_PASSPHRASE_FILE']) expect(env[key]).toBeUndefined()
-      expect(readFileSync(out, 'utf-8')).not.toMatch(/SECRET/)
+      const recordedEnv = readFileSync(out, 'utf-8')
+      for (const key of ['ADF_DAEMON_TOKEN', 'ADF_OWNER_PASSPHRASE', 'ADF_OWNER_PASSPHRASE_FILE']) {
+        expect(recordedEnv).not.toContain(SET[key as keyof typeof SET])
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

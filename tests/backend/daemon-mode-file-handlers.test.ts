@@ -63,7 +63,7 @@ function setup(mode: 'local' | 'remote' = 'local'): void {
   const client = createStudioDaemonClient({ baseUrl: BASE, source: { token: () => 't'.repeat(43) }, fetch: daemon.fetch })
   const fake = createFakeClientSession((p) => (p.endsWith('agent-2.adf') ? AGENT_2 : AGENT_1))
   fake.holdsAvailable = true
-  const session = new DaemonModeSession(fake, quiet)
+  const session = new DaemonModeSession(fake, quiet, undefined, mode === 'remote')
   recent = []
   ctx = {
     mode,
@@ -100,6 +100,15 @@ describe('FILE_SAVE', () => {
 })
 
 describe('FILE_CREATE_QUICK / FILE_CREATE', () => {
+  it.each(['C:\\agents', '/agents/MixedCase'])('preserves remote folder %s and uses the daemon-created name', async (folder) => {
+    setup('remote')
+    const made = folder + (folder.includes('\\') ? '\\' : '/') + 'Agent.adf'
+    daemon.routes.set('POST /agents/create', () => ({ agentId: AGENT_2, filePath: made, name: 'Agent', did: 'did:key:z6Mk1' }))
+    expect(await call(IPC.FILE_CREATE_QUICK, { folder, name: 'Agent' })).toEqual({ success: true, filePath: made, name: 'Agent', did: 'did:key:z6Mk1' })
+    expect(daemon.requests.find((r) => r.path === '/agents/create')?.body).toMatchObject({ directory: folder })
+    expect(ctx.session.filePath).toBe(made)
+  })
+
   it('creates closed through the daemon, then makes the new file the open file', async () => {
     const made = join(dir, 'agent-2.adf')
     daemon.routes.set('POST /agents/create', ({ body }) => ({ status: 201, body: { agentId: AGENT_2, name: 'agent-2', filePath: made, did: 'did:key:z6Mk1', loaded: false, started: false, echo: body } }))

@@ -17,8 +17,8 @@ import { createRequire } from 'module'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
-import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport'
-import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types'
+import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { NPM_CACHE_MOUNT } from './podman.service'
 import { ensureManagedBrowserForSpawn } from './managed-browser-hook'
 
@@ -27,7 +27,7 @@ import { ensureManagedBrowserForSpawn } from './managed-browser-hook'
 const _require = createRequire(import.meta.url)
 const clientDir = dirname(_require.resolve('@modelcontextprotocol/sdk/client'))
 const sharedDir = join(clientDir, '..', 'shared')
-const { ReadBuffer, serializeMessage } = _require(join(sharedDir, 'stdio.js')) as typeof import('@modelcontextprotocol/sdk/shared/stdio')
+const { ReadBuffer, serializeMessage } = _require(join(sharedDir, 'stdio.js')) as typeof import('@modelcontextprotocol/sdk/shared/stdio.js')
 
 /** Sentinel printed to stderr by the in-container `sh` wrapper before it execs
  *  the MCP server. `exec` keeps the PID, so parsing this once gives us the

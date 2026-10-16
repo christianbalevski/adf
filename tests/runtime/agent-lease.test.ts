@@ -65,6 +65,13 @@ function tempDir(prefix: string): string {
   return dir
 }
 
+/** A short Unix root for lease socket paths, which are capped at 100 bytes. */
+function shortTempDir(prefix: string): string {
+  const dir = mkdtempSync(join(IS_WIN ? tmpdir() : '/tmp', prefix))
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+  return dir
+}
+
 /** A registry standing in for one process (own runtime id and endpoint). */
 function registry(dir: string, opts: ConstructorParameters<typeof AgentLeaseRegistry>[0] = {}): AgentLeaseRegistry {
   const reg = new AgentLeaseRegistry({ dir, kind: 'daemon', settingsPath: join(dir, 'adf-settings.json'), ...opts })
@@ -113,7 +120,7 @@ function waitForExit(child: ChildProcess): Promise<void> {
 class Child {
   readonly lines: string[] = []
   stderr = ''
-  private waiters: Array<{ prefix: string; resolve: (line: string) => void }> = []
+  private waiters: Array<{ prefix: string; resolve: (line: string) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = []
 
   constructor(readonly proc: ChildProcess) {
     let buf = ''
@@ -133,6 +140,13 @@ class Child {
       }
     })
     proc.stderr!.on('data', (chunk: Buffer) => { this.stderr += chunk.toString() })
+    proc.once('exit', (code, signal) => {
+      const error = new Error(`child exited (${signal ?? code}) while waiting; stderr:\n${this.stderr}`)
+      for (const waiter of this.waiters.splice(0)) {
+        clearTimeout(waiter.timer)
+        waiter.reject(error)
+      }
+    })
     cleanups.push(async () => {
       if (proc.exitCode === null && proc.signalCode === null) killTree(proc.pid!)
       await waitForExit(proc)
@@ -147,9 +161,20 @@ class Child {
   next(prefix: string, timeoutMs = 30_000): Promise<string> {
     const seen = this.lines.findIndex((l) => l.startsWith(prefix))
     if (seen >= 0) return Promise.resolve(this.lines.splice(seen, 1)[0])
+    if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
+      return Promise.reject(new Error(`child already exited (${this.proc.signalCode ?? this.proc.exitCode}) while waiting for "${prefix}"; stderr:\n${this.stderr}`))
+    }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timed out waiting for "${prefix}"; stderr:\n${this.stderr}`)), timeoutMs)
-      this.waiters.push({ prefix, resolve: (line) => { clearTimeout(timer); this.lines.splice(this.lines.indexOf(line), 1); resolve(line) } })
+      const waiter = {
+        prefix,
+        resolve: (line: string) => { clearTimeout(waiter.timer); this.lines.splice(this.lines.indexOf(line), 1); resolve(line) },
+        reject,
+        timer: setTimeout(() => {
+          this.waiters.splice(this.waiters.indexOf(waiter), 1)
+          reject(new Error(`timed out waiting for "${prefix}"; stderr:\n${this.stderr}`))
+        }, timeoutMs),
+      }
+      this.waiters.push(waiter)
     })
   }
 
@@ -298,7 +323,7 @@ describe('agent lease across processes', () => {
   }, 120_000)
 
   it('five processes racing to take over one stale lease: exactly one wins, 300 trials in a row', async () => {
-    const leases = tempDir('adf-lease-takeover-race-')
+    const leases = shortTempDir('adf-l-race-')
     const work = tempDir('adf-lease-takeover-race-work-')
     const { filePath } = seedAgent(work, 'agent-1', false)
     // The stale holder: its pid exited and its endpoint is dead. The endpoint
@@ -335,7 +360,7 @@ describe('agent lease across processes', () => {
   }, 300_000)
 
   it('a taker that stalls after reading the stale lease keeps its live takeover lock: one holder', async () => {
-    const leases = tempDir('adf-lease-stall-')
+    const leases = shortTempDir('adf-l-stall-')
     const work = tempDir('adf-lease-stall-work-')
     const { filePath } = seedAgent(work, 'agent-1', false)
     const sleeper = spawnSleeper()
@@ -437,7 +462,7 @@ describe('agent lease across processes', () => {
   }, 30_000)
 
   it('a taker whose event loop is blocked (not awaiting) keeps its takeover lock: one holder', async () => {
-    const leases = tempDir('adf-lease-blocked-')
+    const leases = shortTempDir('adf-l-blocked-')
     const work = tempDir('adf-lease-blocked-work-')
     const { filePath } = seedAgent(work, 'agent-1', false)
     const sleeper = spawnSleeper()
@@ -474,7 +499,7 @@ describe('agent lease across processes', () => {
   }, 60_000)
 
   it('replaces a lease whose pid now belongs to another program (pid reuse)', async () => {
-    const leases = tempDir('adf-lease-reuse-')
+    const leases = shortTempDir('adf-l-reuse-')
     mkdirSync(join(leases, 'hosts'), { recursive: true })
     const work = tempDir('adf-lease-reuse-work-')
     const { filePath } = seedAgent(work, 'agent-1', false)
@@ -1010,7 +1035,7 @@ describe('holder liveness: a missing endpoint', () => {
   })
 
   it.skipIf(process.platform === 'win32')('a missing socket in the hosts dir is a dead holder', async () => {
-    const leases = tempDir('adf-lease-live-')
+    const leases = shortTempDir('adf-l-')
     const verdict = await holderLiveness({ pid: process.pid, runtimeId, endpoint: join(leases, 'hosts', `${runtimeId}.sock`) }, leases)
     expect(verdict.alive).toBe(false)
   })

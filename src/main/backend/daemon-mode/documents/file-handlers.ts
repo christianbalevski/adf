@@ -266,7 +266,7 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     try {
       let directory: string | undefined
       if (typeof args?.folder === 'string' && args.folder.trim() !== '') {
-        const wanted = resolve(args.folder.trim())
+        const wanted = ctx.mode === 'remote' ? args.folder.trim() : resolve(args.folder.trim())
         // Local mode: the folder is on this machine, checked as embedded does.
         // Remote mode: the daemon's own refusal (directory does not exist) answers.
         if (ctx.mode !== 'remote') {
@@ -292,14 +292,14 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
         // A proposed name that is already a file is refused, not suffixed (embedded's sentence names the folder).
         if (proposed && made.result.error.startsWith(`An agent named "${proposed}" already exists`)) {
           const folder = directory ?? (await client.request<{ path: string }>('GET', '/files/agents-folder')).path
-          return { success: false, code: 'name_taken', error: `An agent named "${proposed}" already exists in ${basename(folder)}.` }
+          return { success: false, code: 'name_taken', error: `An agent named "${proposed}" already exists in ${(ctx.mode === 'remote' ? folder.replace(/\\/g, '/').split('/').filter(Boolean).pop() : basename(folder))}.` }
         }
         if (/^directory does not exist/.test(made.result.error)) return { success: false, error: 'That folder does not exist' }
         return made.result
       }
       const { filePath, did } = made.created
       // The new file is the open file now, so embedded answers its DID.
-      return { success: true, filePath, name: basename(filePath, '.adf'), did: did ?? undefined }
+      return { success: true, filePath, name: ctx.mode === 'remote' ? made.created.name : basename(filePath, '.adf'), did: did ?? undefined }
     } catch (error) {
       if (error instanceof DaemonModeUnavailableError) throw error
       ctx.log.error('[IPC] FILE_CREATE_QUICK error:', error)
@@ -311,7 +311,7 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     try {
       const { filePath } = args
       // The open file first, as embedded: its document is released before the file goes.
-      if (samePath(filePath, ctx.session.filePath)) await ctx.session.closeFile()
+      if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) await ctx.session.closeFile()
       const client = await ctx.ready()
       // Stops a running agent first (W1-E), closes the open document for every client.
       await client.request('DELETE', '/files', { query: { path: filePath }, timeoutMs: 60_000 })
@@ -466,7 +466,7 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     const filePath = ctx.session.filePath
     if (!filePath) return { success: false, error: 'No workspace open' }
     // The verdict is bound to the file the dialog reviewed.
-    if (!args?.expectedPath || !samePath(args.expectedPath, filePath)) {
+    if (!args?.expectedPath || !samePath(args.expectedPath, filePath, ctx.mode === 'remote')) {
       return { success: false, error: 'The open file changed while the review dialog was up — review the current file again' }
     }
     const client = await ctx.ready()
@@ -488,7 +488,7 @@ export const FILE_HANDLERS: DaemonHandlerTable = {
     const at = accepted.filePath ?? filePath
     // Embedded pushes TRACKED_DIRS_CHANGED and FILE_RENAMED of the move before
     // it answers: the answer waits for the rename push (it comes last).
-    const renamed = ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, at))
+    const renamed = ctx.bridge.awaitPush('file_renamed', (p) => samePath((p as { oldPath?: string })?.oldPath, at, ctx.mode === 'remote'))
     try {
       const moved = await client.request<{ movedTo?: string; moveError?: string }>('POST', '/files/relocate', { body: { path: at }, timeoutMs: 60_000 })
       if (moved.movedTo) {

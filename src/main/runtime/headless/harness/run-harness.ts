@@ -22,42 +22,44 @@ export async function runHarness(scenario: ScenarioConfig): Promise<HarnessResul
   const agentIds: string[] = []
   const targets: Array<{ id: string; dispatch: (dispatch: Parameters<RuntimeService['trigger']>[1]) => Promise<void> }> = []
   const providers: MockLLMProvider[] = []
-  for (let i = 0; i < scenario.agents; i++) {
-    const id = `bench-${i}`
-    const provider = new MockLLMProvider(scenario.provider)
-    const ref = runtime.createAgent({
-      name: id,
-      provider,
-      profile: 'benchmark',
-      createOptions: { autonomous: scenario.autonomous ?? false },
-    })
-    const target = {
-      id,
-      dispatch: (dispatch: Parameters<RuntimeService['trigger']>[1]) => runtime.trigger(ref.id, dispatch),
+  let driver: LoadDriver | null = null
+  let metrics: MetricsReport | undefined
+  let collectorStarted = false
+  try {
+    for (let i = 0; i < scenario.agents; i++) {
+      const id = `bench-${i}`
+      const provider = new MockLLMProvider(scenario.provider)
+      const ref = runtime.createAgent({
+        name: id,
+        provider,
+        profile: 'benchmark',
+        createOptions: { autonomous: scenario.autonomous ?? false },
+      })
+      const target = {
+        id,
+        dispatch: (dispatch: Parameters<RuntimeService['trigger']>[1]) => runtime.trigger(ref.id, dispatch),
+      }
+      collector.wrapDispatch(id, target)
+      agentIds.push(ref.id)
+      targets.push(target)
+      providers.push(provider)
     }
-    collector.wrapExecutor(id, target)
-    agentIds.push(ref.id)
-    targets.push(target)
-    providers.push(provider)
-  }
 
-  const driver = new LoadDriver(
-    targets,
-    {
+    driver = new LoadDriver(targets, {
       turnsPerAgentPerMin: scenario.turnsPerAgentPerMin,
       maxConcurrent: scenario.maxConcurrentTurns,
-    },
-  )
+    })
+    collector.start()
+    collectorStarted = true
+    driver.start()
+    await new Promise<void>(resolve => setTimeout(resolve, scenario.durationMs))
+  } finally {
+    if (driver) await driver.stop()
+    if (collectorStarted) metrics = collector.stop()
+    await Promise.allSettled(agentIds.map(id => runtime.unloadAgent(id)))
+  }
 
-  collector.start()
-  driver.start()
-
-  await new Promise<void>(resolve => setTimeout(resolve, scenario.durationMs))
-
-  await driver.stop()
-  const metrics = collector.stop()
-
-  await Promise.all(agentIds.map(id => runtime.unloadAgent(id)))
+  if (!metrics) throw new Error(`stress harness did not collect metrics for scenario ${scenario.name}`)
 
   return {
     scenario: scenario.name,

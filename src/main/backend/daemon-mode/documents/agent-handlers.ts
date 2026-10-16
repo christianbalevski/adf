@@ -59,7 +59,7 @@ function staleRequest(err: unknown): boolean {
 
 /** The running background agent at `filePath`: null when nothing runs there or it is the open file's agent. */
 async function backgroundAgentAt(ctx: DaemonModeContext, filePath: string): Promise<string | null> {
-  if (samePath(filePath, ctx.session.filePath)) return null
+  if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return null
   return ctx.runningAgentAt(filePath)
 }
 
@@ -170,7 +170,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
   /** Embedded startBackgroundAgentGated: foreground, review and password gates, then the start. */
   [IPC.BACKGROUND_AGENT_START]: async (ctx, _event, args: { filePath: string }) => {
     const filePath = args?.filePath
-    if (samePath(filePath, ctx.session.filePath)) return { success: false, error: 'Cannot start background agent for the foreground file' }
+    if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return { success: false, error: 'Cannot start background agent for the foreground file' }
     const client = await ctx.ready()
     // GET /files/agent peeks a file that is not loaded: its review mark and its legacy file password.
     const info = await client.request<{ loaded: boolean; reviewed?: boolean; passwordProtected?: boolean }>('GET', '/files/agent', { query: { path: filePath } })
@@ -297,7 +297,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
       const client = await ctx.ready()
       const files = await adfFilesIn(client, args.dirPath)
       const settled = await mapSettled(files, DIRECTORY_START_CONCURRENCY, async (filePath) => {
-        if (samePath(filePath, ctx.session.filePath)) return
+        if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return
         if (await ctx.runningAgentAt(filePath)) return
         try {
           await startInBackground(client, filePath, false)
@@ -320,7 +320,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     try {
       const client = await ctx.ready()
       for (const filePath of await adfFilesIn(client, args.dirPath)) {
-        if (samePath(filePath, ctx.session.filePath)) continue
+        if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) continue
         const agentId = await ctx.runningAgentAt(filePath)
         if (!agentId) continue
         try {

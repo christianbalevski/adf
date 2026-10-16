@@ -296,3 +296,22 @@ describe('POST /agents/load after an emergency stop', () => {
     expect(chat.chatHistory?.uiLog.length ?? 0).toBeGreaterThan(1)
   })
 })
+
+describe('RuntimeService review identity summary', () => {
+  it('derives the identity object from the workspace for both review and accept', () => {
+    const ownerDid = 'did:key:owner-1'
+    const { dir, runtime } = setup({}, { ownerDid })
+    const agent = seedAgent(dir, 1)
+    const workspace = AdfWorkspace.open(agent.filePath)
+    let agentDid: string | null
+    try {
+      agentDid = workspace.getDid()
+      workspace.setMeta('adf_owner_did', ownerDid)
+    } finally { workspace.close() }
+    const expected = { agentDid, fileOwnerDid: ownerDid, ownerIsYou: true, scenario: 'mine', needsClaim: false, sharePasswordSet: false, credentialsLocked: false, filePasswordProtected: false, seedUnavailable: false }
+    expect(runtime.getReviewInfo(agent.filePath).summary.identity).toEqual(expected)
+    const accepted = runtime.acceptReview(agent.filePath)
+    expect(accepted.reviewed).toBe(true)
+    expect(accepted.summary.identity).toEqual(expected)
+  })
+})

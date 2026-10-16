@@ -8,6 +8,9 @@ import { describe, expect, it } from 'vitest'
 import { DaemonClient, SUPPORTED_CLIENT_API_VERSION } from '../../src/shared/daemon-client'
 import { createDaemonClientSession, type ClientFrame, type ClientStreamListener, type StreamGap } from '../../src/main/backend/daemon-mode/client-stream'
 import { createFakeDaemon } from './daemon-mode-fakes'
+import { DaemonModeSession } from '../../src/main/backend/daemon-mode/session'
+import { EventBridge } from '../../src/main/backend/daemon-mode/event-bridge'
+import { IPC } from '../../src/shared/constants/ipc-channels'
 
 const BASE = 'http://127.0.0.1:47385'
 const quiet = { log: () => {}, warn: () => {} }
@@ -122,5 +125,165 @@ describe('Studio client session (W2-B)', () => {
     expect(daemon.requests.some((q) => q.path === '/client/sessions/s2/events')).toBe(false)
     expect(r.gaps.some((g) => g.reason === 'new_session')).toBe(false)
     expect(session.sessionId).toBeNull()
+  })
+})
+
+describe('Studio replay ordering', () => {
+  it.each([false, true])('delivers exact replay after reattachment and cancels pending replay on end (end=%s)', async (endDuringReattach) => {
+    let streams = 0
+    let release!: () => void
+    let reattaching = false
+    const pending = new Promise<void>((r) => { release = r })
+    const hello = 'event: stream.hello\ndata: {"epoch":"e1","oldestCursor":1,"latestCursor":2}\n\n'
+    const fetchImpl = (async (input: unknown) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/version') return Response.json({ clientApiVersion: SUPPORTED_CLIENT_API_VERSION })
+      if (path === '/client/sessions') return Response.json({ sessionId: 's1' })
+      if (path.endsWith('/events')) {
+        if (++streams === 1) return new Response(hello)
+        return new Response(new ReadableStream({ start(c) {
+          c.enqueue(new TextEncoder().encode(hello + frame({ kind: 'push', cursor: 1, topic: 'file_renamed', payload: { oldPath: '/agents/old.adf', newPath: '/agents/new.adf' } }) + frame({ kind: 'push', cursor: 2, topic: 'templates', payload: {} })))
+        } }))
+      }
+      return Response.json({})
+    }) as typeof fetch
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: fetchImpl }), { version: '1', exitDaemonWhenClosed: false, log: quiet })
+    const r = recorder()
+    r.listener.onReattached = async () => { reattaching = true; await pending }
+    try {
+      session.start(r.listener)
+      await waitFor(() => reattaching, 'the re-hold')
+      await new Promise((res) => setTimeout(res, 30))
+      expect(r.frames).toEqual([])
+      if (endDuringReattach) {
+        await session.end()
+        release()
+        await new Promise((res) => setTimeout(res, 30))
+        expect(r.frames).toEqual([])
+        expect(r.gaps).toEqual([])
+      } else {
+        release()
+        await waitFor(() => r.frames.length === 2, 'the ordered replay')
+        expect(r.frames.map((f) => f.kind === 'push' ? f.topic : f.kind)).toEqual(['file_renamed', 'templates'])
+      }
+    } finally { release(); await session.end() }
+  })
+
+  it('resyncs on bounded replay overflow', async () => {
+    let streams = 0
+    let release!: () => void
+    let reattaching = false
+    const pending = new Promise<void>((r) => { release = r })
+    const hello = 'event: stream.hello\ndata: {"epoch":"e1","oldestCursor":1,"latestCursor":4100}\n\n'
+    const fetchImpl = (async (input: unknown) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/version') return Response.json({ clientApiVersion: SUPPORTED_CLIENT_API_VERSION })
+      if (path === '/client/sessions') return Response.json({ sessionId: 's1' })
+      if (path.endsWith('/events')) {
+        if (++streams === 1) return new Response(hello)
+        return new Response(new ReadableStream({ start(c) {
+          const frames = Array.from({ length: 4100 }, (_, n) => frame({ kind: 'push', cursor: n + 1, topic: 'templates', payload: {} })).join('')
+          c.enqueue(new TextEncoder().encode(hello + frames))
+        } }))
+      }
+      return Response.json({})
+    }) as typeof fetch
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: fetchImpl }), { version: '1', exitDaemonWhenClosed: false, log: quiet })
+    const r = recorder()
+    r.listener.onReattached = async () => { reattaching = true; await pending }
+    try {
+      session.start(r.listener)
+      await waitFor(() => reattaching, 'the re-hold')
+      await new Promise((res) => setTimeout(res, 50))
+      expect(r.frames).toEqual([])
+      release()
+      await waitFor(() => r.gaps.length > 0, 'the replay overflow gap')
+      expect(r.gaps).toContainEqual({ reason: 'evicted', dropped: 4096 })
+      expect(r.frames).toHaveLength(4)
+    } finally { release(); await session.end() }
+  })
+
+  it('re-holds a renamed document by stable agent identity, falling back to its path after restart', async () => {
+    const daemon = createFakeDaemon(BASE)
+    daemon.routes.set('GET /version', () => ({ clientApiVersion: SUPPORTED_CLIENT_API_VERSION }))
+    daemon.routes.set('POST /client/sessions', () => ({ sessionId: 's1' }))
+    daemon.routes.set('GET /client/sessions/s1/events', () => sse())
+    daemon.routes.set('POST /client/sessions/s1/documents', ({ body }) => {
+      if ((body as { agentId?: string }).agentId === 'missing') return { status: 404, body: { code: 'agent_not_found' } }
+      return { agentId: 'a1', filePath: '/agents/new.adf' }
+    })
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1', exitDaemonWhenClosed: false, log: quiet })
+    try {
+      session.start(recorder().listener)
+      expect(await session.holdDocument('/agents/old.adf', 'a1')).toMatchObject({ filePath: '/agents/new.adf' })
+      expect(daemon.requests.filter((r) => r.path.endsWith('/documents')).map((r) => r.body)).toEqual([{ agentId: 'a1' }])
+      await session.holdDocument('/agents/old.adf', 'missing')
+      expect(daemon.requests.filter((r) => r.path.endsWith('/documents')).slice(-2).map((r) => r.body)).toEqual([{ agentId: 'missing' }, { filePath: '/agents/old.adf' }])
+    } finally { await session.end() }
+  })
+})
+
+
+describe('reattach across daemon document lifecycle changes', () => {
+  it('forwards a replayed rename to the renderer after identity re-hold already adopted its canonical path', async () => {
+    let streams = 0
+    const holds: unknown[] = []
+    const oldPath = '/agents/old.adf'
+    const newPath = '/agents/new.adf'
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname
+      if (path === '/version') return Response.json({ clientApiVersion: SUPPORTED_CLIENT_API_VERSION })
+      if (path === '/client/sessions') return Response.json({ sessionId: 's1' })
+      if (path.endsWith('/documents')) {
+        const body = JSON.parse(String(init?.body))
+        holds.push(body)
+        return Response.json({ agentId: 'a1', filePath: body.agentId ? newPath : oldPath })
+      }
+      if (path.endsWith('/events')) {
+        streams++
+        return new Response(new ReadableStream({ start(c) {
+          const hello = 'event: stream.hello\ndata: {"epoch":"e1","oldestCursor":1,"latestCursor":1}\n\n'
+          c.enqueue(new TextEncoder().encode(hello + (streams > 1 ? frame({ kind: 'push', cursor: 1, topic: 'file_renamed', agentId: 'a1', payload: { oldPath, newPath } }) : '')))
+        } }))
+      }
+      return Response.json({})
+    }) as typeof fetch
+    const client = new DaemonClient({ baseUrl: BASE, fetch: fetchImpl })
+    const clientSession = createDaemonClientSession(client, { version: '1', exitDaemonWhenClosed: false, log: quiet })
+    const session = new DaemonModeSession(clientSession, quiet, undefined, true)
+    const sent: Array<{ channel: string; args: unknown[] }> = []
+    const bridge = new EventBridge({ session, output: { send: (channel, ...args) => { sent.push({ channel, args }) }, sendAll() {} }, batcher: { push() {}, flush() {} }, client: () => client, onFileRenamed: (a, b) => session.rekey(a, b), log: quiet })
+    try {
+      clientSession.start({ onConnection() {}, onGap() {}, onFrame: (f) => bridge.handleFrame(f), onReattached: () => session.reattach() })
+      await session.openFile(oldPath, async () => null)
+      await waitFor(() => streams === 1, 'the initial stream')
+      clientSession.reconnect()
+      await waitFor(() => sent.some((p) => p.channel === IPC.FILE_RENAMED), 'the renderer rename')
+      expect(holds).toEqual([{ filePath: oldPath }, { agentId: 'a1' }])
+      expect(session.filePath).toBe(newPath)
+      expect(session.current?.opened?.filePath).toBe(newPath)
+      expect(sent).toContainEqual({ channel: IPC.FILE_RENAMED, args: [{ oldPath, newPath }] })
+    } finally { bridge.dispose(); await clientSession.end() }
+  })
+
+  it('replaces an expired session during FILE_OPEN without waiting on its own serialized reattach', async () => {
+    const daemon = createFakeDaemon(BASE)
+    let created = 0
+    daemon.routes.set('GET /version', () => ({ clientApiVersion: SUPPORTED_CLIENT_API_VERSION }))
+    daemon.routes.set('POST /client/sessions', () => ({ sessionId: `s${++created}` }))
+    daemon.routes.set('GET /client/sessions/s1/events', () => sse())
+    daemon.routes.set('GET /client/sessions/s2/events', () => sse())
+    daemon.routes.set('POST /client/sessions/s1/documents', () => ({ status: 404, body: { code: 'session_not_found' } }))
+    daemon.routes.set('POST /client/sessions/s2/documents', () => ({ agentId: 'a1', filePath: '/agents/agent-1.adf' }))
+    daemon.routes.set('PUT /client/sessions/s2/focus', () => ({}))
+    const clientSession = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1', exitDaemonWhenClosed: false, log: quiet })
+    const session = new DaemonModeSession(clientSession, quiet)
+    try {
+      clientSession.start({ onConnection() {}, onGap() {}, onFrame() {}, onReattached: () => session.reattach() })
+      await session.openFile('/agents/agent-1.adf', async () => null)
+      expect(session.agentId).toBe('a1')
+      expect(clientSession.sessionId).toBe('s2')
+      await waitFor(() => daemon.requests.some((r) => r.path === '/client/sessions/s2/events'), 'the replacement stream')
+    } finally { await clientSession.end() }
   })
 })

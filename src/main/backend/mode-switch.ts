@@ -1,12 +1,15 @@
-import { app, dialog, Notification, safeStorage, type BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog, Notification, safeStorage } from 'electron'
 import { promises as fsp } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { StudioBackendMode } from '../../shared/types/backend.types'
 import { decryptCredential, encryptCredential } from '../utils/credential-cipher'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
+import { showWindowlessMessageBox } from '../utils/windowless-dialog'
+import { showBootWindow } from '../utils/boot-window'
+import { flushMainLogSync } from '../utils/main-log-file'
 import { DaemonProcessController, decideAttach, type AttachDecision } from './daemon-process'
 import type { DaemonVersionInfo } from '../daemon/routes/meta-routes'
-import { openDaemonSecrets } from './daemon-secrets'
+import { awaitKeychainAccess, openDaemonSecrets } from './daemon-secrets'
 import { BACKEND_ENV_OVERRIDE } from './backend-config'
 import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import type { VersionMismatchChoice } from './daemon-mode/connectors'
@@ -148,7 +151,7 @@ export function handoverDeps(userDataDir: string, extra: Partial<HandoverDeps> =
 /** §11: both sides hold a session of one provider for different accounts; the user keeps one. */
 async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' | 'daemon'> {
   const buttons = [`Keep ${conflict.studio.account} (Studio)`, `Keep ${conflict.daemon.account} (daemon)`]
-  const { response } = await dialog.showMessageBox({
+  const { response } = await showWindowlessMessageBox(`${conflict.label}: choose which account to keep (Studio: ${conflict.studio.account}; daemon: ${conflict.daemon.account})`, {
     type: 'question',
     title: `${conflict.label}: two accounts`,
     message: `Studio and the ADF daemon are signed in to ${conflict.label.replace(/ session$/, '')} with different accounts.`,
@@ -177,6 +180,19 @@ export async function runBootHandover(
 ): Promise<HandoverReport | null> {
   try {
     const keychain = await handoverNeedsKeychain(mode as HandoverTarget, userDataDir, opts)
+    // The handover's keychain reads are sync: read it async first, so a macOS
+    // access prompt waits with Studio responsive, logged and on screen.
+    if (keychain) {
+      await awaitKeychainAccess(process.env, {
+        log: (line) => console.log(line),
+        onSlow: () => {
+          flushMainLogSync()
+          try {
+            showBootWindow(`Waiting for the OS keychain. macOS may be asking whether ${app.isPackaged ? 'ADF Studio' : 'Electron (npm run dev)'} may use its "ADF" keychain items: answer that prompt. It can open behind other windows.`)
+          } catch { /* the log line stands */ }
+        },
+      })
+    }
     const choose = opts.chooseSession
     const extra = choose ? { chooseSession: async (c: SessionConflict) => (await choose(c)) ?? chooseSessionDialog(c) } : {}
     return await runHandover(mode as HandoverTarget, handoverDeps(userDataDir, extra, { keychain }), { sessionOnly: opts.sessionOnly })
@@ -523,8 +539,10 @@ export async function askVersionMismatch(
     cancelId: 1,
     noLink: true,
   }
-  const win = window()
-  const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
+  // The main window stays hidden until ready-to-show: a sheet on it would not be seen.
+  const shown = window()
+  const win = shown && !shown.isDestroyed() && shown.isVisible() ? shown : null
+  const { response } = await (win ? dialog.showMessageBox(win, options) : showWindowlessMessageBox(`daemon version ${running.version} (pid ${running.pid}) differs from Studio ${app.getVersion()}: restart it or use embedded mode`, options))
   if (response === 0) return 'restart'
   relaunchEmbeddedForSession('daemon version mismatch')
   return 'embedded'
@@ -547,6 +565,19 @@ function relaunchStarted(reason: string): boolean {
 }
 
 /**
+ * Under electron-vite (npm run dev) app.relaunch() brings nothing back: the
+ * dev server and its renderer URL go with this process. Said once, in the
+ * log and in a dialog when a window has focus, instead of Studio vanishing.
+ */
+function noteDevRelaunch(into: string): void {
+  if (app.isPackaged !== false || !process.env.ELECTRON_RENDERER_URL) return
+  const line = `Development build: Studio quits now and does not start again by itself. Run npm run dev again to start it in ${into}.`
+  console.warn(`[Backend] ${line}`)
+  const win = BrowserWindow?.getFocusedWindow?.()
+  if (win) dialog.showMessageBoxSync(win, { type: 'info', message: 'Run npm run dev again', detail: line, buttons: ['OK'], noLink: true })
+}
+
+/**
  * Restart Studio in embedded mode for this launch only (SESSION_BACKEND_ARG):
  * after a daemon version mismatch, or a launch whose daemon could not be
  * reached. The saved mode, the daemon, its agents and its sign-ins stay as
@@ -555,6 +586,7 @@ function relaunchStarted(reason: string): boolean {
 export function relaunchEmbeddedForSession(reason: string): void {
   if (relaunchStarted(reason)) return
   console.log(`[Backend] Restarting Studio in embedded mode for this session (${reason}); credentials stay where the saved mode keeps them`)
+  noteDevRelaunch(`embedded mode for one session (${BACKEND_ENV_OVERRIDE}=embedded npm run dev)`)
   app.relaunch({ args: [...process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG), SESSION_BACKEND_ARG] })
   app.quit()
 }
@@ -578,6 +610,7 @@ export async function syncRuntimeEntryAfterImport(userDataDir: string, phrase: s
 export function relaunchStudio(reason: string): void {
   if (relaunchStarted(reason)) return
   console.log(`[Backend] Restarting Studio: ${reason}`)
+  noteDevRelaunch('the backend just chosen')
   app.relaunch({ args: process.argv.slice(1).filter((arg) => arg !== SESSION_BACKEND_ARG) })
   app.quit()
 }

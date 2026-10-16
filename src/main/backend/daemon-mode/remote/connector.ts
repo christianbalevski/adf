@@ -84,24 +84,23 @@ export function describeFetchFailure(url: string, err: unknown, timedOut: boolea
   return new RemoteConnectError('unreachable', `Cannot reach the ADF daemon at ${url} (${what}). Check the address, that the daemon runs on the server (adf daemon status), and that the tunnel or tailnet is up.`)
 }
 
-async function bodyOf(res: Response): Promise<{ error?: unknown; code?: unknown } | null> {
+async function bodyOf(res: Response): Promise<Record<string, unknown> | null> {
+  const text = await res.text()
   try {
-    const text = await res.text()
     const parsed = text.trim() ? JSON.parse(text) : null
-    return parsed && typeof parsed === 'object' ? parsed as { error?: unknown; code?: unknown } : null
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
   } catch {
     return null
   }
 }
 
 /** An answer that is not the daemon's success: one sentence per known case. */
-async function describeAnswer(url: string, res: Response, step: 'health' | 'version'): Promise<RemoteConnectError> {
+function describeAnswer(url: string, res: Response, step: 'health' | 'version', body: Record<string, unknown> | null): RemoteConnectError {
   if (res.status >= 300 && res.status < 400) {
     void res.body?.cancel().catch(() => {})
     const location = res.headers.get('location')
     return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Backend.`)
   }
-  const body = await bodyOf(res)
   if (res.status === 403 && body?.code === 'host_not_allowed') {
     const host = (() => { try { return new URL(url).hostname } catch { return url } })()
     return new RemoteConnectError('host_not_allowed', `The ADF daemon at ${url} does not accept the host name ${host}. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon).`)
@@ -144,12 +143,16 @@ export const REMOTE_WAITING_PREFIX = 'Waiting for the remote ADF daemon'
 export async function remoteHandshake(url: string, token: string, opts: HandshakeOptions = {}): Promise<DaemonVersion> {
   const doFetch = opts.fetch ?? fetch
   const timeoutMs = opts.timeoutMs ?? HANDSHAKE_TIMEOUT_MS
-  const get = async (path: '/health' | '/version', headers: Record<string, string>): Promise<Response> => {
+  const get = async (path: '/health' | '/version', headers: Record<string, string>) => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
       // Never followed: a redirect would carry the token to another address.
-      return await doFetch(`${url}${path}`, { headers: { Accept: 'application/json', ...headers }, redirect: 'manual', signal: controller.signal })
+      const res = await doFetch(`${url}${path}`, { headers: { Accept: 'application/json', ...headers }, redirect: 'manual', signal: controller.signal })
+      // Refuse redirects without consuming their body. Every other answer,
+      // including an error, must finish within the handshake deadline.
+      const body = res.status >= 300 && res.status < 400 ? null : await bodyOf(res)
+      return { res, body }
     } catch (err) {
       throw describeFetchFailure(url, err, controller.signal.aborted)
     } finally {
@@ -157,16 +160,15 @@ export async function remoteHandshake(url: string, token: string, opts: Handshak
     }
   }
 
-  const health = await get('/health', {})
-  const healthBody = health.ok ? await bodyOf(health) as { ok?: unknown } | null : null
+  const { res: health, body: healthBody } = await get('/health', {})
   if (!health.ok || healthBody?.ok !== true) {
     if (health.ok) throw new RemoteConnectError('not_a_daemon', `${url} does not answer as an ADF daemon (its /health answer is not the daemon's). Check the address and port.`)
-    throw await describeAnswer(url, health, 'health')
+    throw describeAnswer(url, health, 'health', healthBody)
   }
 
-  const res = await get('/version', { Authorization: `Bearer ${token}` })
-  if (!res.ok) throw await describeAnswer(url, res, 'version')
-  const info = await bodyOf(res) as Partial<DaemonVersion> | null
+  const { res, body } = await get('/version', { Authorization: `Bearer ${token}` })
+  if (!res.ok) throw describeAnswer(url, res, 'version', body)
+  const info = body as Partial<DaemonVersion> | null
   if (!info || typeof info.clientApiVersion !== 'number') {
     throw new RemoteConnectError('not_a_daemon', `${url} does not answer as an ADF daemon (no client API version in its /version answer). Update the daemon on the server.`)
   }

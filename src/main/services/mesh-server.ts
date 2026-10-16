@@ -621,6 +621,7 @@ export class MeshServer {
       return
     }
 
+    const codeSandbox = agent.codeSandboxService
     const lastColon = route.lambda.lastIndexOf(':')
     if (lastColon <= 0) {
       agent.workspace.insertLog('error', 'serving', 'api_request', route.lambda, `${reqLabel} → 500 (invalid lambda format)`)
@@ -751,7 +752,7 @@ if (typeof ${fnName} === 'function') {
         payload: { lambda_path: filePath, function_name: fnName, kind: 'api_route' }
       })
       const result = await withSource(`lambda:${filePath}:${fnName}`, agent.config.id, () =>
-        agent.codeSandboxService.execute(
+        codeSandbox.execute(
           sandboxId,
           wrappedCode,
           timeout,

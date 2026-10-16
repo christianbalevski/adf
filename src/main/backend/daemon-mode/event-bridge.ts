@@ -4,8 +4,8 @@ import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, Notificatio
 import { applyBackgroundEvent, type BackgroundMappingState } from '../../runtime/background-event-mapping'
 import { toDisplayState } from '../../runtime/display-state'
 import { turnEndOf, type ClientFrame, type ExecutorFrame, type HostFrame, type PushFrame, type PushTopic, type StreamGap, type TurnFrame } from './client-stream'
-import { dirname } from 'node:path'
-import { pathKey, samePath, type DaemonModeSession } from './session'
+import { dirname, win32 } from 'node:path'
+import type { DaemonModeSession } from './session'
 
 /**
  * Client-stream frames → IPC pushes (design D6, §7).
@@ -407,7 +407,7 @@ export class EventBridge {
    * release sends only the events of the file focused then.
    */
   holdForeground(filePath: string): () => void {
-    for (const h of this.holds) if (samePath(h.filePath, filePath)) return () => {}
+    for (const h of this.holds) if (this.deps.session.samePath(h.filePath, filePath)) return () => {}
     const hold: ForegroundHold = { filePath, events: [] }
     this.holds.add(hold)
     return () => {
@@ -420,7 +420,7 @@ export class EventBridge {
 
   private sendForeground(agentId: string, filePath: string | null, event: unknown): void {
     for (const hold of this.holds) {
-      if (!samePath(hold.filePath, filePath)) continue
+      if (!this.deps.session.samePath(hold.filePath, filePath)) continue
       hold.events.push({ agentId, event })
       return
     }
@@ -575,12 +575,12 @@ export class EventBridge {
     const client = this.deps.client()
     if (!client) return
     try {
-      const dirPath = dirname(filePath)
+      const dirPath = this.deps.session.remote && filePath.includes('\\') ? win32.dirname(filePath) : dirname(filePath)
       const { directories } = await client.request<{ directories: Array<string | { path: string }> }>('GET', '/tracked-dirs')
       const roots = (directories ?? []).map((d) => (typeof d === 'string' ? d : d.path)).filter((d): d is string => !!d)
       const within = (parent: string, child: string): boolean => {
-        const p = pathKey(parent)
-        const c = pathKey(child)
+        const p = this.deps.session.pathKey(parent)
+        const c = this.deps.session.pathKey(child)
         return c === p || c.startsWith(p.endsWith('/') || p.endsWith('\\') ? p : `${p}${p.includes('\\') ? '\\' : '/'}`)
       }
       const parent = roots.find((root) => within(root, dirPath))
@@ -710,7 +710,7 @@ export class EventBridge {
       const p = frame.payload as { oldFilePath?: unknown; filePath?: unknown }
       if (typeof p?.oldFilePath === 'string' && typeof p.filePath === 'string') {
         this.deps.onFileRenamed?.(p.oldFilePath, p.filePath)
-        for (const agent of this.agents.values()) if (samePath(agent.filePath, p.oldFilePath)) agent.filePath = p.filePath
+        for (const agent of this.agents.values()) if (this.deps.session.samePath(agent.filePath, p.oldFilePath)) agent.filePath = p.filePath
       }
       return
     }

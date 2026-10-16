@@ -119,8 +119,8 @@ export interface ClientStreamListener {
   /**
    * The stream is open again after a drop, or a new session replaced an
    * expired one. The client re-establishes what the session held: it
-   * re-sends the focus and re-holds its documents. For a new session this is
-   * awaited before its stream starts.
+   * re-sends the focus and re-holds its documents. Resumed frames wait for
+   * it to finish; a new session awaits it before starting its stream.
    */
   onReattached?(info: { epochChanged: boolean }): void | Promise<void>
   /** No session can be used with this daemon (client API version): shown, and the connection is failed. */
@@ -134,8 +134,8 @@ export interface ClientSession {
   start(listener: ClientStreamListener): void
   /** The agent whose deltas and full payloads the stream carries (D5). */
   setFocus(agentId: string | null): Promise<void>
-  /** Hold an `.adf` as an open document (D4); resolves its agent id and the open answer. */
-  holdDocument(filePath: string): Promise<HeldDocument>
+  /** Hold an `.adf` (D4), preferring a known agent's identity when its path may have changed. */
+  holdDocument(filePath: string, agentId?: string): Promise<HeldDocument>
   releaseDocument(agentId: string): Promise<void>
   /** Drop the stream connection and reconnect now. */
   reconnect(): void
@@ -274,6 +274,8 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
   let listener: ClientStreamListener | null = null
   let sessionId: string | null = null
   let stream: EventStream<WireFrame> | null = null
+  let clearReplay: (() => void) | null = null
+  let streamGeneration = 0
   let focus: string | null = null
   let ended = false
   let opening: Promise<string | null> | null = null
@@ -312,27 +314,77 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
 
   const startStream = (id: string): void => {
     const l = listener!
+    const generation = ++streamGeneration
+    let reattaching: Promise<void> = Promise.resolve()
+    let pendingReattachments = 0
+    let buffered: Array<{ frame?: ClientFrame; gap?: StreamGap; size: number }> = []
+    let bufferedSize = 0
+    let dropped = 0
+    const active = () => !ended && sessionId === id && generation === streamGeneration
+    clearReplay = () => { buffered = []; bufferedSize = 0; dropped = 0 }
+    const emit = (item: { frame?: ClientFrame; gap?: StreamGap }): void => {
+      if (!active()) return
+      try {
+        if (item.frame) l.onFrame(item.frame)
+        else if (item.gap) l.onGap(item.gap)
+      } catch (err) {
+        log.warn(`[Backend] Client stream listener failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    const deliver = (item: { frame?: ClientFrame; gap?: StreamGap; size: number }): void => {
+      if (!active()) return
+      if (!pendingReattachments) { emit(item); return }
+      // HTTP re-holds must not race replayed writes. Bound the replay held
+      // behind them; a slow re-hold produces a visible resync on overflow.
+      if (buffered.length >= 4096 || bufferedSize + item.size > 8 * 1024 * 1024) {
+        dropped += buffered.length
+        buffered = []
+        bufferedSize = 0
+      }
+      if (item.size > 8 * 1024 * 1024) { dropped++; return }
+      buffered.push(item)
+      bufferedSize += item.size
+    }
     stream = client.clientSessionEvents(id, {
       ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
       onEvent: (wire) => {
         const frame = translateClientFrame(wire)
-        if (frame) l.onFrame(frame)
+        if (frame) deliver({ frame, size: pendingReattachments ? JSON.stringify(wire).length * 2 : 0 })
       },
       onState: (info) => {
-        if (stream === null || sessionId !== id) return
+        if (stream === null || !active()) return
         l.onConnection({ state: info.state === 'idle' ? 'connecting' : info.state, ...(info.error ? { error: info.error } : {}) })
         // The session is gone (expired while we were away, or a restarted daemon): open a new one.
         if (info.state === 'reconnecting' && info.error?.startsWith('HTTP 404')) void reopen()
       },
       onResume: (info) => {
-        if (sessionId !== id) return
-        void l.onReattached?.({ epochChanged: info.reason === 'epoch_changed' })
-        if (!info.exact && info.reason === 'epoch_changed') l.onGap({ reason: 'epoch_changed', epoch: info.epoch })
+        if (!active()) return
+        pendingReattachments++
+        reattaching = reattaching.then(async () => {
+          if (!active()) return
+          await l.onReattached?.({ epochChanged: info.reason === 'epoch_changed' })
+        }).catch((err) => {
+          log.warn(`[Backend] Re-holding the documents after resume failed: ${err instanceof Error ? err.message : String(err)}`)
+        }).then(() => {
+          pendingReattachments--
+          if (!active() || pendingReattachments) return
+          const replay = buffered
+          const lost = dropped
+          buffered = []
+          bufferedSize = 0
+          dropped = 0
+          if (lost) emit({ gap: { reason: 'evicted', dropped: lost } })
+          for (const item of replay) {
+            if (!active()) break
+            emit(item)
+          }
+        })
+        if (!info.exact && info.reason === 'epoch_changed') deliver({ gap: { reason: 'epoch_changed', epoch: info.epoch }, size: 0 })
       },
       onGap: (gap: WireGap) => {
-        if (sessionId !== id) return
+        if (!active()) return
         const raw = (gap as { reason: string }).reason
-        l.onGap({ reason: raw === 'oversized' || raw === 'epoch_changed' ? raw : 'evicted', epoch: gap.epoch, ...(gap.dropped !== undefined ? { dropped: gap.dropped } : {}) })
+        deliver({ gap: { reason: raw === 'oversized' || raw === 'epoch_changed' ? raw : 'evicted', epoch: gap.epoch, ...(gap.dropped !== undefined ? { dropped: gap.dropped } : {}) }, size: 0 })
       },
     }).start()
   }
@@ -355,6 +407,8 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
   const reopen = (): Promise<void> => {
     reopening ??= (async () => {
       const old = stream
+      streamGeneration++
+      clearReplay?.()
       stream = null
       old?.close()
       const previous = sessionId
@@ -411,8 +465,17 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
       if (!sessionId) return // sent when the session opens
       await withSession('Setting the session focus', (id) => client.setClientSessionFocus(id, agentId))
     },
-    async holdDocument(filePath) {
-      return withSession('Opening the file', (id) => client.holdClientSessionDocument(id, { filePath })) as Promise<HeldDocument>
+    async holdDocument(filePath, agentId) {
+      return withSession('Opening the file', async (id) => {
+        // A resumed session may have missed a rename. Resolve the known
+        // document by identity before falling back to its last path on restart.
+        if (agentId) {
+          try { return await client.holdClientSessionDocument(id, { agentId }) } catch (err) {
+            if (!isGone(err) || sessionGone(err)) throw err
+          }
+        }
+        return client.holdClientSessionDocument(id, { filePath })
+      }) as Promise<HeldDocument>
     },
     async releaseDocument(agentId) {
       if (!sessionId) return
@@ -428,6 +491,8 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
     },
     async quit(stopDaemon) {
       ended = true
+      streamGeneration++
+      clearReplay?.()
       if (retryTimer) clearTimeout(retryTimer)
       stream?.close()
       stream = null
@@ -445,6 +510,8 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
     },
     async end() {
       ended = true
+      streamGeneration++
+      clearReplay?.()
       if (retryTimer) clearTimeout(retryTimer)
       stream?.close()
       stream = null
