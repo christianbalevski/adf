@@ -1121,6 +1121,11 @@ export class AdfWorkspace {
     return this.db.configWriteCount()
   }
 
+  /** Commits by other connections to this file (AdfDatabase.dataVersion); no table read. */
+  dataVersion(): number {
+    return this.db.dataVersion()
+  }
+
   setAgentConfig(config: AgentConfig): void {
     let previous: AgentConfig | null = null
     try { previous = this.db.getConfig() } catch { previous = null }

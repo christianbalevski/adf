@@ -3821,14 +3821,25 @@ export class AdfDatabase {
   }
 
   /**
-   * setConfig calls through this connection: a cheap "did the config change"
-   * check for callers that cache it (RuntimeService's running-agent config).
-   * Writes through another connection to the same file are not counted.
+   * setConfig calls through this connection: with dataVersion(), a cheap "did
+   * the config change" check for callers that cache it (RuntimeService's
+   * running-agent config).
    */
   private configWrites = 0
+  private dataVersionStmt: Database.Statement | null = null
 
   configWriteCount(): number {
     return this.configWrites
+  }
+
+  /**
+   * SQLite's `PRAGMA data_version`: changes when another connection (another
+   * process, or another handle in this one) commits to the file; this
+   * connection's own writes leave it unchanged (configWriteCount counts those).
+   */
+  dataVersion(): number {
+    this.dataVersionStmt ??= this.db.prepare('PRAGMA data_version').pluck()
+    return this.dataVersionStmt.get() as number
   }
 
   setConfig(config: AgentConfig): void {
