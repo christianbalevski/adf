@@ -125,3 +125,14 @@ describe('estimateMessagesTokensSplit — API-reported reasoning', () => {
     expect(split.estimated).toBe(tc.estimateMessagesTokens([plain, user]))
   })
 })
+
+describe('resendsReasoning', () => {
+  it('is true for the Anthropic family only', () => {
+    expect(tc.resendsReasoning('anthropic', 'claude-opus-5-5')).toBe(true)
+    expect(tc.resendsReasoning('claude-subscription', 'claude-opus-5-5')).toBe(true)
+    expect(tc.resendsReasoning('openrouter', 'anthropic/claude-opus-5-5')).toBe(true)
+    expect(tc.resendsReasoning('openai', 'gpt-5')).toBe(false)
+    expect(tc.resendsReasoning('chatgpt-subscription', 'gpt-5.6')).toBe(false)
+    expect(tc.resendsReasoning('openrouter', 'openai/gpt-5')).toBe(false)
+  })
+})

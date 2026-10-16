@@ -851,9 +851,13 @@ export class AgentExecutor extends EventEmitter {
       const tc = getTokenCounterService()
       const workspace = this.session.getWorkspace()
       const rows = workspace.getAssistantTokenRows()
+      // Recorded reasoning replaces the thinking-text estimate only where the
+      // provider resends it; elsewhere the char estimate stands.
       const reasoningBySeq = new Map<number, number>()
-      for (const row of rows) {
-        if (row.tokens.reasoning) reasoningBySeq.set(row.seq, row.tokens.reasoning)
+      if (tc.resendsReasoning(this.tokenizerProviderId(), this.provider?.modelId)) {
+        for (const row of rows) {
+          if (row.tokens.reasoning) reasoningBySeq.set(row.seq, row.tokens.reasoning)
+        }
       }
       const messages = this.session.getMessages()
       const fingerprint = this.fixedPartsFingerprint()

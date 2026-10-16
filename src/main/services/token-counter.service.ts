@@ -75,6 +75,15 @@ export class TokenCounterService {
   }
 
   /**
+   * Whether earlier turns' reasoning is resent as prompt input: Anthropic
+   * models keep prior thinking blocks; OpenAI-style backends drop reasoning
+   * from earlier turns, so their recorded reasoning tokens are not context.
+   */
+  resendsReasoning(provider: string, model?: string): boolean {
+    return this.resolveTokenizer(provider, model) === 'anthropic'
+  }
+
+  /**
    * Count tokens for a given text. `provider` is a ProviderType, a provider
    * settings key, or a display name — see resolveTokenizer.
    */
