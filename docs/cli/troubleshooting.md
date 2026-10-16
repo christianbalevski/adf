@@ -252,8 +252,17 @@ See [Locked credentials](identity-and-security.md#locked-credentials).
 
 Opening an agent file older than storage schema v3 fails with "agent-1.adf
 uses schema v2, which this version cannot upgrade (it upgrades v3 and
-later). The file was not changed." Nothing is written to the file: no
-backup, no upgrade step, no `-wal`/`-shm` files.
+later; no released version upgrades older files). The file was not
+changed." A file with no schema version and an older layout (an
+`adf_archive` table, or no `adf_audit`) fails the same way ("… has no schema
+version and an older layout …"). Nothing is written to the file: no backup,
+no upgrade step, and a `-wal` beside it is not folded into it. Only when a
+corrupt file was repaired first does the sentence leave out "The file was
+not changed".
+
+No released ADF version upgrades these files. Their content is plain
+SQLite: `sqlite3 agent-1.adf .dump > agent-1.sql` exports every table, and
+a new agent can take over the parts you need.
 
 The boot envelope sweep (Studio and the daemon, at every launch) does not
 open a tracked file that needs a schema upgrade or has not been reviewed.

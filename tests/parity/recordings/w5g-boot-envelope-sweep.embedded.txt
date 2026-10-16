@@ -6,7 +6,7 @@
     -
       filePath: "<ROOT>/agents/agent-5.adf"
   result:
-    error: "agent-5.adf uses schema v2, which this version cannot upgrade (it upgrades v3 and later). The file was not changed."
+    error: "agent-5.adf uses schema v2, which this version cannot upgrade (it upgrades v3 and later; no released version upgrades older files). The file was not changed. See \"An agent file uses schema v2\" in the ADF troubleshooting guide."
     success: false
 2. shutdown  [pushes 0→0]
 
