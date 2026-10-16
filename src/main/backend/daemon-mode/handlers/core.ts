@@ -381,7 +381,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
         // The turn can never end: the chat gets what embedded's executor sends on a failed turn (an error row, then idle).
         const error = 'The ADF daemon exited while the message waited for its turn; the chat shows what arrived.'
         ctx.bridge.reportChatFailure({ agentId, filePath: target }, args?.loop, error)
-        return { success: false, accepted: true, error }
+        return { success: false, accepted: true, code: 'daemon_exited', error }
       }
       if (outcome === 'disconnected') {
         // The daemon may still run the turn: no error; its state is read on reconnect (EventBridge.recheckTurns).

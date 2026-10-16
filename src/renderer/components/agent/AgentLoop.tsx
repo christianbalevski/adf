@@ -1601,7 +1601,7 @@ function LoopStream({ loop }: { loop: string }) {
       setState('active', loop)
     }
 
-    sendOwnerMessage(targetFilePath, loop, message, content)
+    sendOwnerMessage(targetFilePath, loop, message, content, previews)
   }
 
   // A message typed into the home composer arrives here once the agent it
@@ -2226,7 +2226,7 @@ function LoopStream({ loop }: { loop: string }) {
                         <span
                           className="shrink-0 text-[10px] text-[var(--status-deprecated)]"
                           title={(msg.failures ?? 0) >= MAX_AUTOMATIC_SENDS
-                            ? `Not sent: ${msg.error}. Sending failed ${msg.failures} times, so it is no longer retried when the turn ends: use Send now, or it goes with your next message.`
+                            ? `Not sent: ${msg.error}. Sending failed ${msg.failures} times, so it is no longer retried when the turn ends: use Send now, or send another message and this one goes first.`
                             : `Not sent: ${msg.error}. It stays queued and goes with the next send.`}
                         >
                           Not sent

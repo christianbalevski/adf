@@ -244,7 +244,7 @@ describe('daemon-mode handlers: review fixes', () => {
     const exited = Promise.resolve(electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' }))
     await new Promise((r) => setTimeout(r, 20))
     handle.bridge.failTurns('exited')
-    expect(await exited).toEqual({ success: false, accepted: true, error: expect.stringContaining('The ADF daemon exited while the message waited') })
+    expect(await exited).toEqual({ success: false, accepted: true, code: 'daemon_exited', error: expect.stringContaining('The ADF daemon exited while the message waited') })
     expect(agentEvents()).toEqual([
       { type: 'error', payload: { error: expect.stringContaining('The ADF daemon exited while the message waited') }, timestamp: expect.any(Number) },
       { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number) },

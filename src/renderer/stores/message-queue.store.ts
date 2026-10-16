@@ -16,7 +16,8 @@ export interface QueuedMessage {
 
 /**
  * Failed sends after which a turn end no longer retries a queue on its own:
- * it waits for the owner (Send now, or the next message). A send that keeps
+ * it waits for the owner (Send now, or a new message, which gives the
+ * queue its retries back and goes after it). A send that keeps
  * failing (an agent that is not running, a message over the size limit)
  * would otherwise be retried on every idle, and a failure that itself
  * reports an idle would retry in a tight loop.
@@ -54,6 +55,12 @@ interface MessageQueueState {
    * background state event, a re-attach) can never send the same message twice.
    */
   take: (filePath: string, loop: string) => QueuedMessage[]
+  /**
+   * The owner sent again: the queue's failed messages get their automatic
+   * retries back (they keep their "Not sent" reason until they go), so the
+   * next turn end sends them, oldest first, with the new message.
+   */
+  releaseHold: (filePath: string, loop: string) => void
   /** Put taken messages back at the head of their queue, in order, marked with why they were not sent (one more failure each). */
   restore: (filePath: string, loop: string, messages: QueuedMessage[], error: string) => void
   /** Forget every queue of an agent file (deleted). */
@@ -121,6 +128,11 @@ export const useMessageQueueStore = create<MessageQueueState>((set, get) => {
       const list = selectQueue(get(), filePath, loop)
       if (list.length > 0) write(filePath, loop, [])
       return list
+    },
+    releaseHold: (filePath, loop) => {
+      const list = selectQueue(get(), filePath, loop)
+      if (!list.some((m) => m.failures)) return
+      write(filePath, loop, list.map((m) => (m.failures ? { ...m, failures: 0 } : m)))
     },
     restore: (filePath, loop, messages, error) => {
       if (messages.length === 0) return

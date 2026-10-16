@@ -124,8 +124,10 @@ export interface AdfApi {
    * `accepted` (daemon mode): the daemon took the message, but its turn's end
    * never reached Studio (connection lost, daemon exited, wait timed out). The
    * message is delivered; `error` says what is unknown. Never resend it.
+   * `code: 'daemon_exited'`: the daemon's process exited before the turn
+   * ended, so the turn never finished.
    */
-  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean }>
+  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean; code?: 'daemon_exited' }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>

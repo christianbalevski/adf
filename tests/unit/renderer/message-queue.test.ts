@@ -11,7 +11,7 @@ import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../..
 import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
-import { queueOwnerMessage, sendOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
+import { queueOwnerMessage, sendOwnerMessage, sendProblem, sendFleetOrders, DAEMON_EXITED } from '../../../src/renderer/utils/queued-delivery'
 import { createOpenFileHarness, type OpenFileHarness } from './open-file-harness'
 
 /**
@@ -513,5 +513,105 @@ describe('a message sent straight to an idle loop', () => {
     await settle()
     expect(useAgentStore.getState().log).toHaveLength(before)
     expect(useAgentStore.getState().state).toBe('active')
+  })
+})
+
+describe('W5-L review: holds, refusals after a switch, a daemon that exited', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a new message queued while the loop is busy releases the hold: the old "Not sent" messages go first, then the new one', async () => {
+    await main.openFile(AGENT_1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    queue(AGENT_1, 'old')
+    main.invokeAgent.mockResolvedValue({ success: false, error: 'Agent not running' })
+    for (let i = 0; i < MAX_AUTOMATIC_SENDS; i++) {
+      main.pushForeground(idle())
+      await settle()
+    }
+    expect(queued(AGENT_1)[0]).toMatchObject({ text: 'old', failures: MAX_AUTOMATIC_SENDS })
+    // Held: a turn end alone sends nothing.
+    main.invokeAgent.mockClear()
+    main.pushForeground(idle())
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+
+    // The loop is busy again and the owner queues a new message.
+    useAgentStore.getState().setState('active')
+    const store = useAgentStore.getState()
+    expect(queueOwnerMessage(AGENT_1, 'main', selectLoopSlice(store, 'main').state, store.state, { text: 'new' })).toBe(true)
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+    expect(queued(AGENT_1).map((m) => [m.text, m.error, m.failures ?? 0])).toEqual([['old', 'Agent not running', 0], ['new', undefined, 0]])
+
+    // Its turn ends: both go, oldest first.
+    main.invokeAgent.mockResolvedValue({ success: true })
+    main.pushForeground(idle())
+    expect(main.invokeAgent).toHaveBeenCalledWith('old\n\nnew', AGENT_1, expect.any(Array), 'main')
+    warn.mockRestore()
+  })
+
+  it('a direct send refused after the owner switched away goes into its own agent\'s queue, marked "Not sent"', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let answer: (value: unknown) => void = () => {}
+    main.invokeAgent.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    sendOwnerMessage(AGENT_1, 'critic', 'hello', [{ type: 'text', text: 'hello' }], ['adf-file://a.png'])
+    await main.openFile(AGENT_2)
+    answer({ success: false, error: 'Agent not running' })
+    await settle()
+    expect(queued(AGENT_1, 'critic')).toEqual([expect.objectContaining({ text: 'hello', error: 'Agent not running', failures: 1, imagePreviewUrls: ['adf-file://a.png'] })])
+    expect(useAgentStore.getState().log.some((e) => e.type === 'error')).toBe(false)
+    warn.mockRestore()
+  })
+
+  it('a background queue whose daemon exited before the turn ended goes back as "Not sent"; on the open agent the chat shows the error instead', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'to the critic', 'critic')
+    await main.openFile(AGENT_2)
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, code: 'daemon_exited', error: 'The ADF daemon exited while the message waited for its turn' })
+    main.pushBatch([loopState(AGENT_1, 'critic', 'idle')])
+    await settle()
+    expect(queued(AGENT_1, 'critic').map((m) => [m.text, m.error])).toEqual([['to the critic', DAEMON_EXITED]])
+
+    // The open agent: its chat shows the daemon's error row; the message is not requeued.
+    queue(AGENT_2, 'here')
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, code: 'daemon_exited', error: 'exited' })
+    main.pushForeground(idle())
+    await settle()
+    expect(queued(AGENT_2)).toEqual([])
+  })
+})
+
+describe('sendProblem: what a steward order or a send says when it went wrong', () => {
+  it('names refusals and exits as not sent, an unseen end as sent, and nothing for a success', () => {
+    expect(sendProblem({ success: true })).toBeNull()
+    expect(sendProblem(undefined)).toBeNull()
+    expect(sendProblem({ success: false, error: 'Agent not running' })).toEqual({ reason: 'Agent not running', notSent: true })
+    expect(sendProblem({ success: false, accepted: true, error: 'connection lost' })).toEqual({ reason: 'connection lost', notSent: false })
+    expect(sendProblem({ success: false, accepted: true, code: 'daemon_exited', error: 'x' })).toEqual({ reason: DAEMON_EXITED, notSent: true })
+  })
+})
+
+describe('fleet map orders (a steward appointment)', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a refused order is said, an unseen end is said, a delivered one is not', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const notices: string[] = []
+    main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, error: 'The connection to the ADF daemon was lost' })
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    main.invokeAgent.mockResolvedValueOnce({ success: true })
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    main.invokeAgent.mockRejectedValueOnce(new Error('IPC closed'))
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    await settle()
+    expect(notices).toEqual([
+      'Orders not sent to agent-1: Agent not running',
+      'Orders sent to agent-1, but The connection to the ADF daemon was lost',
+      'Orders not sent to agent-1: IPC closed',
+    ])
+    expect(main.invokeAgent).toHaveBeenCalledWith('You are the steward.', AGENT_1)
+    warn.mockRestore()
   })
 })
