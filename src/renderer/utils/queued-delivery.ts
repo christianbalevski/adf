@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
-import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, type QueuedMessage } from '../stores/message-queue.store'
+import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, heldForOwner, MAX_AUTOMATIC_SENDS, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
@@ -9,8 +9,17 @@ import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../
  *
  * Works for any agent, open or not: the queue is taken (removed) first, so a
  * second settle signal for the same turn end finds nothing.
+ *
+ * `automatic`: a turn end sends it, not the owner. A queue whose send failed
+ * MAX_AUTOMATIC_SENDS times in a row is then left alone: it stays shown as
+ * "Not sent" with the reason until the owner sends it (Send now, or the next
+ * message, which takes the whole queue along).
  */
-export function deliverQueuedMessages(filePath: string, loop: string): boolean {
+export function deliverQueuedMessages(filePath: string, loop: string, opts: { automatic?: boolean } = {}): boolean {
+  if (opts.automatic && heldForOwner(selectQueue(useMessageQueueStore.getState(), filePath, loop))) {
+    console.warn(`[queue] Not retrying the queue of ${filePath} (${loop}) on this turn end: its send failed ${MAX_AUTOMATIC_SENDS} times; it waits for the owner`)
+    return false
+  }
   const queue = useMessageQueueStore.getState().take(filePath, loop)
   if (queue.length === 0) return false
   sendQueuedMessages(filePath, loop, queue)
@@ -114,7 +123,7 @@ export function deliverSettledQueues(filePath: string, loopStates: Record<string
   for (const loop of queuedLoops(useMessageQueueStore.getState(), filePath)) {
     if (loopStates[loop] !== 'idle') continue
     if (loop !== MAIN_LOOP && mainState === 'off') continue
-    deliverQueuedMessages(filePath, loop)
+    deliverQueuedMessages(filePath, loop, { automatic: true })
   }
 }
 

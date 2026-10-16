@@ -7,7 +7,7 @@ vi.mock('react', async (importOriginal) => ({
 }))
 import { useAgentStore, selectLoopSlice } from '../../../src/renderer/stores/agent.store'
 import { useDocumentStore } from '../../../src/renderer/stores/document.store'
-import { useMessageQueueStore, selectQueue } from '../../../src/renderer/stores/message-queue.store'
+import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../../src/renderer/stores/message-queue.store'
 import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
@@ -384,6 +384,31 @@ describe('a send main does not take', () => {
     main.pushBatch([stateChanged(AGENT_1, 'active'), stateChanged(AGENT_1, 'idle')])
     await settle()
     expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("stops retrying on turn ends after repeated failures; the owner's next message still takes the queue along", async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'too big')
+    await main.openFile(AGENT_2)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    main.invokeAgent.mockResolvedValue({ success: false, error: 'This message is too large to send' })
+    for (let i = 0; i < MAX_AUTOMATIC_SENDS + 2; i++) {
+      main.pushBatch([stateChanged(AGENT_1, 'active'), stateChanged(AGENT_1, 'idle')])
+      await settle()
+    }
+    expect(main.invokeAgent).toHaveBeenCalledTimes(MAX_AUTOMATIC_SENDS)
+    expect(queued(AGENT_1).map((m) => [m.text, m.error, m.failures])).toEqual([['too big', 'This message is too large to send', MAX_AUTOMATIC_SENDS]])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('waits for the owner'))
+
+    // The owner sends again: the held message goes first, with the new one.
+    main.invokeAgent.mockResolvedValue({ success: true })
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    const store = useAgentStore.getState()
+    expect(queueOwnerMessage(AGENT_1, 'main', selectLoopSlice(store, 'main').state, store.state, { text: 'smaller' })).toBe(true)
+    expect(main.invokeAgent).toHaveBeenLastCalledWith('too big\n\nsmaller', AGENT_1, expect.any(Array), 'main')
+    warn.mockRestore()
   })
 
   it('takes back the bubble and the optimistic state of the open agent on a rejected send', async () => {

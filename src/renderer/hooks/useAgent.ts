@@ -165,7 +165,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // open agent's (foreground events are only ever about the open file).
         if (displayState === 'idle') {
           const currentFile = useDocumentStore.getState().filePath
-          if (currentFile) deliverQueuedMessages(currentFile, loop)
+          if (currentFile) deliverQueuedMessages(currentFile, loop, { automatic: true })
         }
         break
       }

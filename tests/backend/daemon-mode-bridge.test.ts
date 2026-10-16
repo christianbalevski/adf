@@ -203,6 +203,24 @@ describe('event bridge', () => {
     ])
   })
 
+  it("a failed chat to a background agent: the error, and an idle only when its loop reads busy (no repeated idle to retry a queue on)", async () => {
+    const { batched, session, bridge } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_2, filePath: FILE_2, event: { type: 'state_changed', payload: { state: 'idle' }, timestamp: 1 } })
+    batched.length = 0
+    bridge.reportChatFailure({ agentId: AGENT_2, filePath: FILE_2 }, undefined, 'too large')
+    expect(batched.map((e) => e.type)).toEqual(['error'])
+
+    batched.length = 0
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_2, filePath: FILE_2, event: { type: 'state_changed', payload: { state: 'thinking' }, timestamp: 2, loop: 'critic' } })
+    batched.length = 0
+    bridge.reportChatFailure({ agentId: AGENT_2, filePath: FILE_2 }, 'critic', 'gone')
+    expect(batched.map((e) => [e.type, e.payload.loop ?? null, e.payload.state ?? null])).toEqual([
+      ['agent_loop_state_changed', 'critic', 'idle'],
+      ['agent_loops_changed', null, null],
+    ])
+  })
+
   it("the agent losing the window is announced with its side loops' states, as the background manager adopts it", async () => {
     const { batched, session, bridge } = setup()
     await focus(session, FILE_1, AGENT_1)

@@ -301,14 +301,21 @@ export class EventBridge {
    * answer, so the chat gets what embedded's executor sends on a failed
    * turn: an `error` event, then `state_changed` idle, routed as the
    * daemon's own events (open file: AGENT_EVENT; else the background list).
+   *
+   * The idle ends the open file's spinner. An agent in the background shows
+   * none, so its idle is sent only when its loop reads busy: an idle loop's
+   * repeated idle would read as a turn end and send its queue again at once,
+   * where this same failure waits (a tight retry loop).
    */
   reportChatFailure(target: { agentId: string | null; filePath: string }, loop: string | undefined, error: string): void {
     const timestamp = this.now()
     const onLoop = loop && loop !== 'main' ? { loop } : {}
     this.log.warn(`[Backend] The chat to ${target.filePath}${loop && loop !== 'main' ? ` (${loop})` : ''} did not run: ${error}`)
+    const background = !this.deps.session.isFocused(target.agentId ?? '', target.filePath)
+    const settled = background && (!target.agentId || !this.loopBusy(target.agentId, loop ?? 'main'))
     this.emitSynthetic(target, [
       { type: 'error', payload: { error }, timestamp, ...onLoop },
-      { type: 'state_changed', payload: { state: 'idle' }, timestamp, ...onLoop },
+      ...(settled ? [] : [{ type: 'state_changed', payload: { state: 'idle' }, timestamp, ...onLoop }]),
     ] as AgentExecutionEvent[])
   }
 

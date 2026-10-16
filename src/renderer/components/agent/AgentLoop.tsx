@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useMessageQueueStore, selectQueue } from '../../stores/message-queue.store'
+import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
@@ -2225,7 +2225,9 @@ function LoopStream({ loop }: { loop: string }) {
                       {msg.error && (
                         <span
                           className="shrink-0 text-[10px] text-[var(--status-deprecated)]"
-                          title={`Not sent: ${msg.error}. It stays queued and goes with the next send.`}
+                          title={(msg.failures ?? 0) >= MAX_AUTOMATIC_SENDS
+                            ? `Not sent: ${msg.error}. Sending failed ${msg.failures} times, so it is no longer retried when the turn ends: use Send now, or it goes with your next message.`
+                            : `Not sent: ${msg.error}. It stays queued and goes with the next send.`}
                         >
                           Not sent
                         </span>
