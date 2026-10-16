@@ -231,7 +231,7 @@ function RowLine({ row, selectedId, total, labelWidth, rowBar, theme }: { row: C
     const c = row.category
     const isSel = c.id === selectedId
     const marker = row.expandable ? (row.expanded ? g.expanded : g.collapsed) : ' '
-    const label = `${marker} ${c.label}${c.count !== undefined ? ` (${c.count})` : ''}${c.estimated ? ` ${g.approx}` : ''}`
+    const label = `${marker} ${c.label}${c.count !== undefined ? ` (${c.count})` : ''}${c.basis !== 'measured' ? ` ${g.approx}` : ''}`
     const bar = barText(c.tokens, total, rowBar, theme.ascii)
     return (
       <Text wrap="truncate-end" inverse={theme.mono && isSel} bold={isSel}>

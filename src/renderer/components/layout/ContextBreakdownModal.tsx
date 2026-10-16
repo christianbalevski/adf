@@ -4,7 +4,7 @@ import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { MAIN_LOOP, selectLoopSlice, useAgentStore } from '../../stores/agent.store'
 import { loopColor } from '../../utils/loop-color'
-import { calibrationNote, estimatedSinceTokens, resolveHostThreshold, resolveLoopThreshold } from '../../../shared/utils/context-breakdown'
+import { breakdownTags, calibrationNote, resolveHostThreshold, resolveLoopThreshold } from '../../../shared/utils/context-breakdown'
 import type { ContextBreakdown, ContextBreakdownToolGroup } from '../../../shared/types/ipc.types'
 import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
@@ -33,7 +33,7 @@ function Row({
   tokens,
   indent,
   bold,
-  estimate,
+  tag,
   onClick,
   expanded
 }: {
@@ -41,8 +41,8 @@ function Row({
   tokens: number
   indent?: boolean
   bold?: boolean
-  /** Not calibrated to a real call: tagged "≈ estimate". */
-  estimate?: boolean
+  /** How the figure was obtained: "≈ estimate", "≈ scaled" (calibrated) or "measured". */
+  tag?: string
   /** Present on expandable group rows — toggles the per-tool sub-rows. */
   onClick?: () => void
   expanded?: boolean
@@ -55,7 +55,7 @@ function Row({
         )}
         {label}
       </span>
-      {estimate && <span className="ml-2 shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">≈ estimate</span>}
+      {tag && <span className="ml-2 shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">{tag}</span>}
       <span className={`ml-auto shrink-0 pl-3 font-mono tabular-nums ${bold ? 'font-semibold text-[var(--adf-ui-text)]' : 'text-[var(--adf-ui-text-subtle)]'}`}>
         {formatTokens(tokens)}
       </span>
@@ -74,7 +74,7 @@ function Row({
   return <div className={cls}>{inner}</div>
 }
 
-function ToolGroup({ group }: { group: ContextBreakdownToolGroup }) {
+function ToolGroup({ group, tag }: { group: ContextBreakdownToolGroup; tag?: string }) {
   const [expanded, setExpanded] = useState(false)
   const sorted = [...group.tools].sort((a, b) => b.tokens - a.tokens)
   return (
@@ -83,6 +83,7 @@ function ToolGroup({ group }: { group: ContextBreakdownToolGroup }) {
         label={`${group.source} (${group.tools.length})`}
         tokens={group.tokens}
         indent
+        tag={tag}
         onClick={() => setExpanded((e) => !e)}
         expanded={expanded}
       />
@@ -93,6 +94,7 @@ function ToolGroup({ group }: { group: ContextBreakdownToolGroup }) {
           {sorted.map((tool) => (
             <div key={tool.name} className="flex items-baseline pl-8 pr-1 text-xs">
               <span className="truncate font-mono text-[var(--adf-ui-text-subtle)]">{tool.name}</span>
+              {tag && <span className="ml-2 shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">{tag}</span>}
               <span className="ml-auto shrink-0 pl-3 font-mono tabular-nums text-[var(--adf-ui-text-subtle)]">
                 {formatTokens(tool.tokens)}
               </span>
@@ -245,7 +247,8 @@ export function ContextBreakdownModal({
   // Calibrated: every part is scaled to the last call's real prompt size and
   // only content added since is an estimate. Uncalibrated: all of it is.
   const cal = b?.calibration
-  const est = !cal
+  const tags = breakdownTags(cal)
+  const partTag = tags.part
 
   return (
     <Dialog open={open} onClose={onClose} title="Context breakdown" wide>
@@ -299,28 +302,28 @@ export function ContextBreakdownModal({
 
           {/* Per-part rows, settings-table style */}
           <div className="space-y-1.5 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-3 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
-            <Row label="System prompt" tokens={b.system_prompt_tokens} estimate={est} />
+            <Row label="System prompt" tokens={b.system_prompt_tokens} tag={partTag} />
             {b.injected_files.map((f) => (
-              <Row key={f.path} label={f.path} tokens={f.tokens} indent />
+              <Row key={f.path} label={f.path} tokens={f.tokens} indent tag={partTag} />
             ))}
-            <Row label="Tools" tokens={b.tools_total_tokens} estimate={est} />
+            <Row label="Tools" tokens={b.tools_total_tokens} tag={partTag} />
             {b.tool_groups.map((group) => (
-              <ToolGroup key={group.source} group={group} />
+              <ToolGroup key={group.source} group={group} tag={partTag} />
             ))}
             {/* Sum of the two sections above — reads as their subtotal. */}
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Fixed overhead" tokens={b.overhead_tokens} bold estimate={est} />
+              <Row label="Fixed overhead" tokens={b.overhead_tokens} bold tag={partTag} />
               <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
                 System prompt + tool schemas — sent with every request.
               </p>
             </div>
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Dynamic instructions" tokens={b.dynamic_instructions_tokens} estimate={est} />
+              <Row label="Dynamic instructions" tokens={b.dynamic_instructions_tokens} tag={partTag} />
             </div>
-            <Row label="Conversation" tokens={b.messages_tokens - (cal?.since_last_call_tokens ?? 0)} estimate={est} />
-            {cal && <Row label="Since last call" tokens={cal.since_last_call_tokens} estimate={estimatedSinceTokens(cal) > 0} />}
+            <Row label="Conversation" tokens={b.messages_tokens - (cal?.since_last_call_tokens ?? 0)} tag={partTag} />
+            {cal && <Row label="Since last call" tokens={cal.since_last_call_tokens} tag={tags.recent} />}
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Total" tokens={total} bold estimate={!cal || estimatedSinceTokens(cal) > 0} />
+              <Row label="Total" tokens={total} bold tag={tags.total} />
               <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">{calibrationNote(cal, formatTokens)}</p>
             </div>
           </div>

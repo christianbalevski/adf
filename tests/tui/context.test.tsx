@@ -6,7 +6,7 @@ import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
 import { BUILTIN_COMMANDS } from '../../src/main/tui/commands/builtin'
 import { barFill, barText, contextRows, loopContextPercent, pressureOf, thresholdText, windowStart } from '../../src/main/tui/context/model'
-import { contextCategories, contextTotal, resolveCompactThreshold } from '../../src/shared/utils/context-breakdown'
+import { breakdownTags, contextCategories, contextTotal, resolveCompactThreshold } from '../../src/shared/utils/context-breakdown'
 import { formatCount } from '../../src/main/tui/ui/text'
 import type { AgentConfig } from '../../src/shared/types/adf-v02.types'
 import { AGENT_1_ID, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
@@ -74,7 +74,7 @@ describe('context model', () => {
     expect(cats.find(c => c.id === 'system')!.tokens).toBe(b.system_prompt_tokens - 1840)
     expect(cats.find(c => c.id === 'files')!.items).toEqual([{ name: 'mind.md', tokens: 1840 }])
     // Uncalibrated (no call recorded): every category is an estimate.
-    expect(cats.every(c => c.estimated)).toBe(true)
+    expect(cats.every(c => c.basis === 'estimate')).toBe(true)
   })
 
   it('calibrated: only the content since the last call is an estimate, and it gets its own row', () => {
@@ -82,9 +82,16 @@ describe('context model', () => {
     const cats = contextCategories(b, 5)
     expect(cats.reduce((n, c) => n + c.tokens, 0)).toBe(contextTotal(b))
     const recent = cats.find(c => c.id === 'recent')!
-    expect(recent).toMatchObject({ tokens: 1_200, estimated: true })
+    expect(recent).toMatchObject({ tokens: 1_200, basis: 'estimate' })
     expect(cats.find(c => c.id === 'messages')!.tokens).toBe(b.messages_tokens - 1_200)
-    expect(cats.filter(c => c.id !== 'recent').every(c => !c.estimated)).toBe(true)
+    // Calibrated parts are scaled estimates, never 'measured'.
+    expect(cats.filter(c => c.id !== 'recent').every(c => c.basis === 'calibrated')).toBe(true)
+    const replyOnly = { ...b, calibration: { ...b.calibration, since_last_call_tokens: 200 } }
+    expect(contextCategories(replyOnly).find(c => c.id === 'recent')!.basis).toBe('measured')
+    // Studio's row tags: calibrated parts (and their file/tool sub-rows) say "scaled", never bare.
+    expect(breakdownTags(undefined)).toEqual({ part: '≈ estimate', recent: '≈ estimate', total: '≈ estimate' })
+    expect(breakdownTags(b.calibration)).toEqual({ part: '≈ scaled', recent: '≈ estimate', total: '≈ estimate' })
+    expect(breakdownTags(replyOnly.calibration)).toEqual({ part: '≈ scaled', recent: 'measured', total: 'measured' })
   })
 
   it('rows, bars, windows, pressure and the footer gauge', () => {

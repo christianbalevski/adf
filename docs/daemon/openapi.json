@@ -12106,7 +12106,8 @@
             "required": [
               "last_call_tokens",
               "ratio",
-              "since_last_call_tokens"
+              "since_last_call_tokens",
+              "reply_tokens"
             ],
             "properties": {
               "last_call_tokens": {
@@ -12119,7 +12120,11 @@
               },
               "since_last_call_tokens": {
                 "type": "integer",
-                "description": "Part of messages_tokens added since that call: an estimate scaled by ratio"
+                "description": "Part of messages_tokens added since that call: reply_tokens plus later content estimated at ratio"
+              },
+              "reply_tokens": {
+                "type": "integer",
+                "description": "API-reported output of that call, counted exactly in since_last_call_tokens (0 when not reported)"
               }
             }
           }
@@ -12134,7 +12139,7 @@
           "tokens",
           "items",
           "note",
-          "estimated"
+          "basis"
         ],
         "properties": {
           "id": {
@@ -12186,9 +12191,14 @@
           "note": {
             "type": "string"
           },
-          "estimated": {
-            "type": "boolean",
-            "description": "True when tokens is an estimate, not calibrated to a call's real usage"
+          "basis": {
+            "type": "string",
+            "enum": [
+              "estimate",
+              "calibrated",
+              "measured"
+            ],
+            "description": "estimate: not tied to any call. calibrated: an estimate scaled so the calibrated parts sum to the last call's measured prompt (only the sum is measured). measured: the API-reported figure (the last reply's output)."
           }
         }
       },
