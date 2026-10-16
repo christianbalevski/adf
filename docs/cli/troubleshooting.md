@@ -247,3 +247,56 @@ See [Locked credentials](identity-and-security.md#locked-credentials).
   In scripts use the one-shot commands (`adf agents`, `adf chat …`).
 - Garbled boxes or glyphs: `adf --ascii`. No colors wanted: `--mono` or
   `NO_COLOR=1`.
+
+## An agent file uses schema v2
+
+Opening an agent file older than storage schema v3 fails with "agent-1.adf
+uses schema v2, which this version cannot upgrade (it upgrades v3 and
+later; no released version upgrades older files). The file was not
+changed." A file with no schema version and an older layout (an
+`adf_archive` table, or no `adf_audit`) fails the same way ("… has no schema
+version and an older layout …"). Nothing is written to the file: no backup,
+no upgrade step, and a `-wal` beside it is not folded into it. Only when a
+corrupt file was repaired first does the sentence leave out "The file was
+not changed".
+
+No released ADF version upgrades these files. Their content is plain
+SQLite: `sqlite3 agent-1.adf .dump > agent-1.sql` exports every table, and
+a new agent can take over the parts you need.
+
+The boot envelope sweep (Studio and the daemon, at every launch) does not
+open a tracked file that needs a schema upgrade or has not been reviewed.
+Its log line counts them once: "… 3 skipped: need upgrade or review". A file
+that needs an upgrade is upgraded when you open it.
+
+**Earlier builds damaged these files.** Studio at every launch, and the
+daemon since 0.8.0-daemon.2, opened every tracked file.
+For a v2 file the log showed "Backup created before migration (v2 → v32)"
+and then "table adf_meta has no column named protection". Before that error
+the upgrade steps that run for every version had already changed the file,
+and the backup was deleted:
+
+- the `adf_archive` table was dropped, with every archived snapshot in it;
+- a trigger config in the old shape (`triggers.document`, `triggers.agent`)
+  was replaced with the default triggers;
+- `security.allow_protected_writes` was removed from the config, and a
+  `container_exec` tool entry was renamed `compute_exec`;
+- columns were added to `adf_loop` and `adf_files`, and an empty `adf_audit`
+  table was created.
+
+To check a file:
+
+```bash
+sqlite3 agent-1.adf "SELECT key, value FROM adf_meta WHERE key LIKE '%schema_version'; SELECT name FROM sqlite_master WHERE type = 'table'"
+```
+
+A file at schema 2 that lists `adf_audit` and no `adf_archive` went through
+these steps. Its tables do not show whether `adf_archive` held rows before.
+
+To get the data back, restore the file from a backup made before the first
+such launch (Time Machine, File History, a copy). Without one, the dropped
+table's pages may still be in the file: on a copy, `sqlite3 copy.adf
+.recover > recovered.sql` writes what SQLite can still read, including
+pages no table uses (in a `lost_and_found` table). Nothing is guaranteed.
+Work on a copy only, and leave the `-wal`/`-shm` files beside the original
+alone.

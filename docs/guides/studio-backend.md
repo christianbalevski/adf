@@ -598,6 +598,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Connected to the ADF daemon at …" (Test connection) and the remote sentences | [Remote daemon in Studio](#remote-daemon-in-studio) |
 | "I trust this network; the token is sent unencrypted." | [Remote daemon in Studio](#remote-daemon-in-studio) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
+| "*file* uses schema v2, which this version cannot upgrade …" / "… skipped: need upgrade or review" | [Troubleshooting](../cli/troubleshooting.md#an-agent-file-uses-schema-v2) |
 | "*name*.adf is on this computer, not on *host*." / Upload a copy… | [Files on the server](#files-on-the-server) |
 | "*name*.adf already exists in this folder. Replace it?" | [Files on the server](#files-on-the-server) |
 | "Open a sign-in page on …?" / "The ADF daemon sent a sign-in page Studio does not open: …" | [Sign-in pages](#sign-in-pages) |

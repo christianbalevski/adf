@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import Database from 'better-sqlite3'
 
 const h = vi.hoisted(() => ({ userDataDir: '' }))
 
@@ -19,6 +20,7 @@ import { describeEnvelopeSweep } from '../../../src/main/services/owner-identity
 import { AgentLeaseRegistry, openHereOrLeasedElsewhere } from '../../../src/main/runtime/agent-lease'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { readAdfAttestations, verifyAttestation } from '../../../src/main/services/attestation.service'
+import { writeV2Adf, writeV31Adf } from '../../helpers/old-schema-adf'
 
 let rootDir: string
 let trackedDir: string
@@ -157,7 +159,7 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
 
     // Second sweep is a no-op (fast path)
     const again = await svc.sweepEnvelopeMigration()
-    expect(again).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
+    expect(again).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [] })
 
     // Both files unlock with this install's runtime key
     for (const name of ['a', 'b']) {
@@ -178,7 +180,7 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     AdfWorkspace.create(join(trackedDir, 'dropped.adf'), { name: 'dropped' }).close()
 
     const sweep = await svc.sweepEnvelopeMigration()
-    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [] })
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [join(trackedDir, 'dropped.adf')] })
 
     const ws = AdfWorkspace.open(join(trackedDir, 'dropped.adf'))
     try {
@@ -207,7 +209,7 @@ describe('sweepEnvelopeMigration: files another runtime runs (W5-G)', () => {
 
     const sweep = await svc.sweepEnvelopeMigration({ skip: async (filePath) => { asked.push(filePath); return filePath === leased } })
     expect(asked.sort()).toEqual([join(trackedDir, 'agent-1.adf'), leased].sort())
-    expect(sweep).toEqual({ provisioned: 1, sealed: 0, failures: [], skipped: [leased] })
+    expect(sweep).toEqual({ provisioned: 1, sealed: 0, failures: [], skipped: [leased], needUpgradeOrReview: [] })
     for (const [name, provisioned] of [['agent-1', true], ['agent-2', false]] as const) {
       const ws = AdfWorkspace.open(join(trackedDir, `${name}.adf`))
       try {
@@ -228,16 +230,88 @@ describe('sweepEnvelopeMigration: files another runtime runs (W5-G)', () => {
     const svc = settings.getOwnerIdentity()
     vi.spyOn(svc, 'getEnvelopeRecipients').mockReturnValue(null)
     const sweep = await svc.sweepEnvelopeMigration()
-    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true })
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [], ownerNotReady: true })
     // Said, not silent.
     expect(describeEnvelopeSweep(sweep, 1)).toMatch(/Envelope sweep skipped: the owner identity is not ready/)
   })
 
   it('the log line names each failed file', () => {
-    const line = describeEnvelopeSweep({ provisioned: 1, sealed: 0, failures: ['/agents/agent-2.adf: database disk image is malformed'], skipped: ['/agents/agent-3.adf'] }, 12)
+    const line = describeEnvelopeSweep({ provisioned: 1, sealed: 0, failures: ['/agents/agent-2.adf: database disk image is malformed'], skipped: ['/agents/agent-3.adf'], needUpgradeOrReview: [] }, 12)
     expect(line).toContain('1 provisioned')
     expect(line).toContain('1 open here or run by another runtime')
     expect(line).toContain('/agents/agent-2.adf: database disk image is malformed')
+  })
+})
+
+describe('sweepEnvelopeMigration never migrates (W5-H)', () => {
+  it('leaves a v2 and a v31 file byte-identical, reviewed or not, and says so in one summary', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const v2 = join(trackedDir, 'agent-1.adf')
+    const v31 = join(trackedDir, 'agent-2.adf')
+    const unreviewed = join(trackedDir, 'agent-3.adf')
+    const current = join(trackedDir, 'agent-4.adf')
+    writeV2Adf(v2, { id: '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01', name: 'agent-1' })
+    writeV31Adf(v31, { id: '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e02', name: 'agent-2' })
+    AdfWorkspace.create(unreviewed, { name: 'agent-3' }).close()
+    const ws = AdfWorkspace.create(current, { name: 'agent-4' })
+    const currentId = ws.getAgentConfig().id
+    ws.close()
+    // Both old files are reviewed: the version alone keeps them closed.
+    settings.set('reviewedAgents', {
+      '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01': 'accepted',
+      '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e02': 'accepted',
+      [currentId]: 'accepted',
+    })
+    const before = new Map([v2, v31, unreviewed].map((p) => [p, readFileSync(p)]))
+    const listing = readdirSync(trackedDir).sort()
+    const log = vi.spyOn(console, 'log')
+    const provisioned: string[] = []
+
+    // Embedded's recipe (ensureWorkspaceIdentity) and the daemon's (`provision`) alike.
+    for (const provision of [undefined, (w: AdfWorkspace, busy: { busyTimeoutMs: number }) => {
+      provisioned.push(w.getFilePath())
+      return svc.ensureWorkspaceIdentity(w, busy)
+    }]) {
+      const sweep = await svc.sweepEnvelopeMigration(provision ? { provision } : {})
+      expect(sweep.failures).toEqual([])
+      expect(sweep.needUpgradeOrReview.sort()).toEqual([v2, v31, unreviewed].sort())
+      expect(describeEnvelopeSweep(sweep, 1)).toContain(', 3 skipped: need upgrade or review in ')
+      for (const [p, bytes] of before) expect(readFileSync(p).equals(bytes), p).toBe(true)
+      expect(readdirSync(trackedDir).sort()).toEqual(listing)
+    }
+    expect(provisioned).toEqual([])
+    expect(log.mock.calls.some(([line]) => String(line).includes('Backup created before migration'))).toBe(false)
+    // The current, reviewed file was provisioned by the first sweep.
+    const opened = AdfWorkspace.open(current)
+    try {
+      expect(opened.getDid()).not.toBeNull()
+    } finally {
+      opened.close()
+    }
+  })
+})
+
+describe('sweepEnvelopeMigration read-only peek (W5-H review)', () => {
+  it('waits at most the sweep busy timeout for a locked file and names it busy', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    settings.set('reviewedAgents', { [ws.getAgentConfig().id]: 'accepted' })
+    ws.close()
+    // A holder of the exclusive lock: readers too wait on it.
+    const holder = new Database(filePath)
+    holder.pragma('locking_mode = EXCLUSIVE')
+    holder.exec('BEGIN IMMEDIATE; COMMIT')
+    try {
+      const t0 = performance.now()
+      const sweep = await svc.sweepEnvelopeMigration()
+      expect(performance.now() - t0).toBeLessThan(1_000)
+      expect(sweep.failures).toEqual([`${filePath}: busy (another connection is writing it)`])
+    } finally {
+      holder.close()
+    }
   })
 })
 

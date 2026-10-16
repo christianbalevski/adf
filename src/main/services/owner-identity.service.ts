@@ -18,7 +18,7 @@ import { readdir } from 'fs/promises'
 import { basename, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
-import { AdfDatabase } from '../adf/adf-database'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../adf/adf-database'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey, openKeySlot, type KeySlotRecord } from '../crypto/envelope-crypto'
@@ -124,6 +124,11 @@ export interface EnvelopeSweepResult {
   failures: string[]
   /** Files left alone: open or running in this process, or run by another runtime. */
   skipped: string[]
+  /**
+   * Files not opened because they need a schema migration (which runs only
+   * when the user opens the file) or are not reviewed. Decided read-only.
+   */
+  needUpgradeOrReview: string[]
   /** No owner identity to provision with: nothing was opened. */
   ownerNotReady?: true
 }
@@ -131,9 +136,10 @@ export interface EnvelopeSweepResult {
 /** The sweep's log line, the same in both modes; null when it did nothing. Failures are named with their paths. */
 export function describeEnvelopeSweep(sweep: EnvelopeSweepResult, ms: number): string | null {
   if (sweep.ownerNotReady) return '[OwnerIdentity] Envelope sweep skipped: the owner identity is not ready, so no tracked agent was provisioned'
-  if (!sweep.provisioned && !sweep.sealed && !sweep.failures.length && !sweep.skipped.length) return null
+  if (!sweep.provisioned && !sweep.sealed && !sweep.failures.length && !sweep.skipped.length && !sweep.needUpgradeOrReview.length) return null
   return `[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s)` +
-    `${sweep.skipped.length ? `, ${sweep.skipped.length} open here or run by another runtime (provisioned when next opened)` : ''} in ${ms.toFixed(0)}ms` +
+    `${sweep.skipped.length ? `, ${sweep.skipped.length} open here or run by another runtime (provisioned when next opened)` : ''}` +
+    `${sweep.needUpgradeOrReview.length ? `, ${sweep.needUpgradeOrReview.length} skipped: need upgrade or review` : ''} in ${ms.toFixed(0)}ms` +
     `${sweep.failures.length ? ` — failed (retried at the next boot or open): ${sweep.failures.join('; ')}` : ''}`
 }
 
@@ -945,7 +951,10 @@ export class OwnerIdentityService {
    *
    * Unreviewed files are left untouched: a file someone dropped into a
    * tracked directory must go through review + claim before we stamp
-   * ownership or seal anything into our envelopes.
+   * ownership or seal anything into our envelopes. Nor does the sweep
+   * migrate: a file below the latest schema version is migrated only when
+   * the user opens it. Both are decided read-only (peekSweepStatus) before
+   * the file is opened, and counted in one summary (`needUpgradeOrReview`).
    *
    * One sweep for both modes (embedded Studio and the daemon run it 2 s
    * after boot). The folder walk is async and the sweep yields after every
@@ -962,7 +971,7 @@ export class OwnerIdentityService {
       provision?: (workspace: AdfWorkspace, opts: { busyTimeoutMs: number }) => { keysGenerated: boolean; sealed: number }
     } = {},
   ): Promise<EnvelopeSweepResult> {
-    const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [] }
+    const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [] }
     if (!this.getEnvelopeRecipients()) return { ...result, ownerNotReady: true }
 
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
@@ -983,6 +992,23 @@ export class OwnerIdentityService {
       try {
         if (await opts.skip?.(filePath)) {
           result.skipped.push(filePath)
+          continue
+        }
+        // Read-only first: never migrate (an open would; W5-H: a file too old
+        // to upgrade was damaged at every boot), never open an unreviewed file.
+        let status: ReturnType<typeof AdfDatabase.peekSweepStatus>
+        try {
+          status = AdfDatabase.peekSweepStatus(filePath, SWEEP_BUSY_TIMEOUT_MS)
+        } catch (err) {
+          if (!agentFileBusy(err, filePath)) throw err
+          result.failures.push(`${filePath}: busy (another connection is writing it)`)
+          continue
+        }
+        if (
+          !(status.schemaVersion !== null && status.schemaVersion >= ADF_LATEST_SCHEMA_VERSION) ||
+          !status.agentId || !reviewedIds.has(status.agentId)
+        ) {
+          result.needUpgradeOrReview.push(filePath)
           continue
         }
         // Another connection is writing it: opening would block in the open's

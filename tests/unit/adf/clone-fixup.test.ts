@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { AdfWorkspace, type EnvelopeRecipients } from '../../../src/main/adf/adf-workspace'
+import { ADF_LATEST_SCHEMA_VERSION } from '../../../src/main/adf/adf-database'
 import {
   applyCloneFixup,
   clearUnselectedTables,
@@ -417,6 +418,20 @@ describe('clone fixup (FILE_CLONE post-copy)', () => {
       expect(ws.getAgentConfig().name).toBe('source_clone')
       // Nothing but the two agents remains — no .partial, no -wal/-shm
       expect(listing).toEqual(['source.adf', 'source_clone.adf'])
+    })
+
+    it('restamps the schema version when adf_meta was deselected, so later opens do not migrate (W5-H)', () => {
+      const src = makeSource()
+      const { ws, result } = cloneVia(src.path, ['adf_meta'])
+      expect(ws.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
+      ws.close()
+      const log = vi.spyOn(console, 'log')
+      try {
+        AdfWorkspace.open(result.filePath).close()
+        expect(log.mock.calls.some(([line]) => String(line).includes('before migration'))).toBe(false)
+      } finally {
+        log.mockRestore()
+      }
     })
 
     it('gives every clone a new config.id — kept identity included (review gate keys on id)', () => {
