@@ -19,11 +19,11 @@ describe('findLastCall', () => {
   const ok = () => true
 
   it('returns null when the system prompt, tools, provider or model changed since that call', () => {
-    expect(findLastCall([row(3, { input: 94_000 })], messages, false, () => false)).toBeNull()
+    expect(findLastCall([row(3, { input: 94_000, cache_read: 0 })], messages, false, () => false)).toBeNull()
   })
 
   it('cuts at the newest usage row and returns its real prompt size', () => {
-    expect(findLastCall([row(2, { input: 50_000 }), row(3, { input: 94_000, output: 300 })], messages, false, ok))
+    expect(findLastCall([row(2, { input: 50_000, cache_read: 0 }), row(3, { input: 94_000, output: 300, cache_read: 0 })], messages, false, ok))
       .toEqual({ index: 2, promptTokens: 94_000 })
   })
 
@@ -36,12 +36,17 @@ describe('findLastCall', () => {
     expect(findLastCall([row(3, { input: 94_000, estimated: true })], messages, false, ok)).toBeNull()
   })
 
+  it('returns null for an older row holding only input/output (no usage fields at all)', () => {
+    expect(findLastCall([row(3, { input: 94_000, output: 300 })], messages, false, ok)).toBeNull()
+    expect(findLastCall([row(3, { input: 94_000, output: 300, cost_usd: 0.1 })], messages, false, ok)).not.toBeNull()
+  })
+
   it('returns null after a compaction or clear (estimated baseline)', () => {
-    expect(findLastCall([row(3, { input: 94_000 })], messages, true, ok)).toBeNull()
+    expect(findLastCall([row(3, { input: 94_000, cache_read: 0 })], messages, true, ok)).toBeNull()
   })
 
   it('returns null when the row is no longer in the session', () => {
-    expect(findLastCall([row(9, { input: 94_000 })], messages, false, ok)).toBeNull()
+    expect(findLastCall([row(9, { input: 94_000, cache_read: 0 })], messages, false, ok)).toBeNull()
   })
 })
 

@@ -135,12 +135,25 @@ export function findLastCall(
 ): { index: number; promptTokens: number } | null {
   const last = rows.length > 0 ? rows[rows.length - 1] : undefined
   if (!last || last.tokens.estimated || baselineEstimated || !fixedPartsMatch(last.seq)) return null
+  if (!hasReportedUsage(last.tokens)) return null
   const promptTokens = last.tokens.input ?? 0
   if (!(promptTokens > 0)) return null
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].seq === last.seq) return { index: i, promptTokens }
   }
   return null
+}
+
+/**
+ * Whether a row's usage came from the provider. Every path that reports
+ * usage records at least `cache_read` (0 when nothing was cached); a row
+ * holding only input/output predates the `estimated` flag and was a char
+ * estimate from a provider that reported nothing.
+ */
+export function hasReportedUsage(t: LoopTokenUsage): boolean {
+  if (t.estimated) return false
+  return t.cache_read !== undefined || t.cache_write !== undefined ||
+    t.reasoning !== undefined || t.cost_usd !== undefined
 }
 
 /**
