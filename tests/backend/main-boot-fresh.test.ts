@@ -34,6 +34,15 @@ vi.mock('../../src/main/backend/daemon-mode/connectors', () => ({
   remoteDaemonConnector: () => Object.assign(() => new Promise(() => {}), { logFile: null }),
 }))
 
+vi.mock('../../src/main/backend/daemon-process', async (importOriginal) => {
+  // The first-launch probe of the daemon port: never the real 127.0.0.1:7385.
+  const actual = await importOriginal<typeof import('../../src/main/backend/daemon-process')>()
+  class Controller extends actual.DaemonProcessController {
+    async detect() { return { state: 'absent' as const } }
+  }
+  return { ...actual, DaemonProcessController: Controller }
+})
+
 import { bootMain, fireReadyToShow, h } from './main-boot-harness'
 
 h.state.userData = mkdtempSync(join(tmpdir(), 'adf-main-boot-'))

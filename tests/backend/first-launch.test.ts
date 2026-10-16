@@ -2,8 +2,10 @@
  * The first launch of the release that made Local daemon the default (W5-I,
  * owner decision 2026-10-16): a 0.7.x-shaped user data folder (no
  * studio-backend.json) upgrades to Local daemon, the handover moves what
- * Studio held, one notice says so over the window, and nothing asks before
- * the window exists. A fresh install sees no dialog.
+ * Studio held, and one notice says so over the window once the daemon
+ * connected. A fresh install sees no dialog. An unusable studio-backend.json
+ * is asked about before anything moves; an older daemon on the port makes
+ * the first launch Embedded for one session, with nothing moved.
  *
  * The handover is the real one (handover.ts) on an in-memory keychain that
  * was never used; Studio's safeStorage is a fake codec. Never touches the
@@ -45,13 +47,15 @@ const { backendConfigPath, resolveBootBackend } = await import('../../src/main/b
 const { runHandover } = await import('../../src/main/backend/handover')
 const { resumeSwitchedAgents } = await import('../../src/main/backend/mode-switch')
 const {
-  bootSessionChooser,
   DEFAULT_SWITCH_FILE,
-  SESSION_CHOICE_FILE,
+  guardBoot,
+  oldDaemonProblem,
+  PENDING_NOTICE_FILE,
   settleDefaultBackend,
   showBootNotices,
   UPGRADE_GUIDE_URL,
 } = await import('../../src/main/backend/first-launch')
+const { CLIENT_API_VERSION } = await import('../../src/main/daemon/routes/meta-routes')
 const { decryptCredential, encryptCredential, resetCredentialKeyCache } = await import('../../src/main/utils/credential-cipher')
 const { createSubscriptionTokenStore } = await import('../../src/main/providers/subscription-token-store')
 const { MCP_OAUTH_SETTINGS_KEY } = await import('../../src/main/services/mcp-oauth-store')
@@ -62,8 +66,9 @@ const { generateX25519KeyPair, extractRawX25519PublicKey } = await import('../..
 const { deriveOwnerIdentity, generateMnemonic } = await import('../../src/main/crypto/mnemonic-identity')
 const { createAttestation } = await import('../../src/main/services/attestation.service')
 const { fakeKeychain } = await import('../helpers/studio-runtime-entry')
-import type { HandoverDeps, HandoverReport, SessionConflict, StudioSecretCodec } from '../../src/main/backend/handover'
-import type { BrowserWindow } from 'electron'
+import type { HandoverDeps, HandoverReport, StudioSecretCodec } from '../../src/main/backend/handover'
+import type { BootGuardDeps } from '../../src/main/backend/first-launch'
+import type { BrowserWindow, MessageBoxOptions } from 'electron'
 
 const studioCodec: StudioSecretCodec = {
   available: () => true,
@@ -75,7 +80,7 @@ const studioCodec: StudioSecretCodec = {
   },
 }
 
-const WINDOW = { id: 'main-window' } as unknown as BrowserWindow
+const WINDOW = { id: 'main-window', isDestroyed: () => false } as unknown as BrowserWindow
 const AGENT_1 = 'C:/agents/agent-1.adf'
 const quiet = () => {}
 
@@ -140,10 +145,19 @@ function write07xUserData(opts: { identity?: boolean; chatgpt?: string } = {}): 
   return { phrase }
 }
 
-/** One Studio boot as main/index.ts runs it: resolve, handover (with the boot chooser), settle. */
-async function boot(opts: { keychain?: boolean } = {}) {
+type Detection = Awaited<ReturnType<NonNullable<BootGuardDeps['detectDaemon']>>>
+const absent = async (): Promise<Detection> => ({ state: 'absent' })
+
+/** One Studio boot as main/index.ts runs it: resolve, guard, handover, settle. */
+async function boot(opts: { keychain?: boolean; detect?: () => Promise<Detection>; answer?: number } = {}) {
   const backend = resolveBootBackend(backendConfigPath(dir), {}, { log: quiet, warn: quiet })
-  const chooser = bootSessionChooser(dir, { defer: backend.source === 'default', log: quiet })
+  const asked: MessageBoxOptions[] = []
+  const guard = await guardBoot(backend, dir, {
+    detectDaemon: opts.detect ?? absent,
+    ask: async (_waitingOn, options) => { asked.push(options); return { response: opts.answer ?? 0 } },
+    log: quiet,
+  })
+  const sessionOnly = backend.source === 'env' || backend.source === 'session'
   const deps: HandoverDeps = {
     userDataDir: dir,
     settingsPath,
@@ -151,13 +165,15 @@ async function boot(opts: { keychain?: boolean } = {}) {
     daemonCipher: { encrypt: encryptCredential, decrypt: (raw) => decryptCredential(raw, '[test]') },
     daemonSecrets: opts.keychain === false ? null : keychain.backend,
     daemonSecretsUnavailable: opts.keychain === false ? 'no OS keychain is available (Linux without a Secret Service)' : undefined,
-    chooseSession: async (c: SessionConflict) => (await chooser(c)) ?? (() => { throw new Error('the windowless accounts dialog must not be asked') })(),
     log: quiet,
   }
-  const report: HandoverReport = await runHandover(backend.mode as 'local', deps)
+  const report: HandoverReport | null = guard.skipHandover ? null : await runHandover(backend.mode as 'local' | 'embedded', deps, { sessionOnly })
   const notice = await settleDefaultBackend(backend, dir, report, { version: '0.8.0', log: quiet })
-  return { backend, report, notice }
+  return { backend, guard, asked, report, notice }
 }
+
+const show = (b: Awaited<ReturnType<typeof boot>>, ready?: Promise<boolean>) =>
+  showBootNotices({ report: b.report, mode: b.backend.mode, notice: b.notice, guard: b.guard.notice, window: WINDOW, ready: ready ?? Promise.resolve(true), userDataDir: dir, log: quiet })
 
 describe('fresh install', () => {
   it('boots Local daemon, saves it, and shows no dialog', async () => {
@@ -166,11 +182,10 @@ describe('fresh install', () => {
     expect(first.report).toMatchObject({ changed: false, failed: false })
     expect(first.notice).toBeNull()
     expect(readJson(backendConfigPath(dir))).toMatchObject({ v: 1, mode: 'local' })
-    expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(false)
+    expect(existsSync(join(dir, PENDING_NOTICE_FILE))).toBe(false)
     expect(existsSync(settingsPath)).toBe(false)
-    await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, window: WINDOW, userDataDir: dir, log: quiet })
+    await show(first)
     expect(h.dialogs).toEqual([])
-    // Settings → Backend: no default switch to report.
     expect(first.backend.defaultSwitch).toBeNull()
     const second = await boot()
     expect(second.backend.source).toBe('file')
@@ -179,37 +194,46 @@ describe('fresh install', () => {
 })
 
 describe('upgrade from 0.7.x', () => {
-  it('moves what Studio held into the daemon on a keychain never used, and says so once, over the window', async () => {
+  it('moves what Studio held into the daemon on a keychain never used, and says so once the daemon connected', async () => {
     const { phrase } = write07xUserData({ chatgpt: 'acct-1' })
     const first = await boot()
     expect(first.backend).toMatchObject({ mode: 'local', source: 'default' })
-    expect(first.report.failed).toBe(false)
+    expect(first.report?.failed).toBe(false)
     // K12 adoption on an empty keychain: the runtime entry and the owner phrase are written.
     expect(keychain.backend.get(studioRuntimeAccount(studioRuntimeScope(settingsPath)))).not.toBeNull()
     expect(keychain.backend.get(OWNER_MNEMONIC_ACCOUNT)).toBe(phrase)
     expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(false)
     expect(createSubscriptionTokenStore('chatgpt-subscription').readTokens()).toMatchObject({ account_id: 'acct-1' })
     expect(readJson(settingsPath)).not.toHaveProperty(MCP_OAUTH_SETTINGS_KEY)
-    // The daemon's autostart reads the same tracked folders as Studio did.
     expect(readJson(settingsPath).trackedDirectories).toEqual(['C:/agents'])
     expect(readJson(join(dir, 'studio-client-settings.json'))).toMatchObject({ theme: 'dark', recentFiles: [AGENT_1] })
-    // Saved explicitly, and recorded for Settings → Backend.
     expect(readJson(backendConfigPath(dir))).toMatchObject({ mode: 'local' })
-    expect(first.notice?.record.moved).toEqual(expect.arrayContaining(['Client settings', 'Owner phrase', 'Runtime identity', 'ChatGPT session', 'MCP sign-ins']))
-    expect(first.notice?.record.notDone).toEqual([])
-    expect(readJson(join(dir, DEFAULT_SWITCH_FILE))).toMatchObject({ v: 1, from: 'embedded', to: 'local', version: '0.8.0' })
+    expect(first.notice?.record.moved).toEqual(['Client settings', 'Owner phrase', 'Runtime identity', 'ChatGPT session', 'MCP sign-ins'])
+    // Pending until shown: the shown-record is not written yet.
+    expect(existsSync(join(dir, PENDING_NOTICE_FILE))).toBe(true)
+    expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(false)
     expect(first.backend.defaultSwitch).toEqual(first.notice?.record)
 
+    // Not before the daemon connected.
+    let connect!: (ok: boolean) => void
+    const ready = new Promise<boolean>((r) => { connect = r })
     h.responses.push(1)
-    await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, window: WINDOW, userDataDir: dir, log: quiet })
+    const shown = show(first, ready)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(h.dialogs).toEqual([])
+    connect(true)
+    await shown
     expect(h.dialogs).toHaveLength(1)
-    const [shown] = h.dialogs
-    expect(shown.parent).toBe(WINDOW)
-    expect(shown.message).toBe('Studio now runs agents in the ADF daemon.')
-    expect(shown.detail).toMatch(/^Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session, MCP sign-ins\./)
-    expect(shown.detail).toMatch(/Settings → Backend has the details\.$/)
-    expect(shown.buttons).toEqual(['OK', 'Open the Guide'])
+    const [dialog1] = h.dialogs
+    expect(dialog1.parent).toBe(WINDOW)
+    expect(dialog1.message).toBe('Studio now runs agents in the ADF daemon.')
+    expect(dialog1.detail).toMatch(/^Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session, MCP sign-ins\./)
+    expect(dialog1.detail).toMatch(/Agents set to start automatically now start in the daemon/)
+    expect(dialog1.detail).toMatch(/Settings → Backend has the details\.$/)
+    expect(dialog1.buttons).toEqual(['OK', 'Open the Guide'])
     expect(h.opened).toEqual([UPGRADE_GUIDE_URL])
+    expect(readJson(join(dir, DEFAULT_SWITCH_FILE))).toMatchObject({ from: 'embedded', to: 'local', version: '0.8.0', moved: first.notice!.record.moved, shownAt: expect.any(String) })
+    expect(existsSync(join(dir, PENDING_NOTICE_FILE))).toBe(false)
 
     // The next launch: an explicit file, nothing to move, no dialog; Settings → Backend still has the record.
     h.dialogs.length = 0
@@ -218,73 +242,47 @@ describe('upgrade from 0.7.x', () => {
     expect(second.report).toMatchObject({ changed: false, failed: false })
     expect(second.notice).toBeNull()
     expect(second.backend.defaultSwitch).toMatchObject({ moved: first.notice!.record.moved })
-    await showBootNotices({ report: second.report, mode: 'local', notice: second.notice, window: WINDOW, userDataDir: dir, log: quiet })
+    await show(second)
     expect(h.dialogs).toEqual([])
+  })
+
+  it('Studio quit before the notice was shown: the next launch shows it, with what the first launch moved', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    const first = await boot()
+    expect(first.notice?.record.moved).toContain('ChatGPT session')
+    // No showBootNotices: Studio quit. The next launch reads the saved file, moves nothing, and still owes the notice.
+    const second = await boot()
+    expect(second.backend.source).toBe('file')
+    expect(second.report?.changed).toBe(false)
+    expect(second.notice?.record.moved).toEqual(first.notice?.record.moved)
+    await show(second)
+    expect(h.dialogs.map((d) => d.message)).toEqual(['Studio now runs agents in the ADF daemon.'])
+    expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(true)
+    h.dialogs.length = 0
+    expect((await boot()).notice).toBeNull()
+  })
+
+  it('the daemon could not be reached: the notice says so instead of promising running agents', async () => {
+    write07xUserData({ identity: false })
+    const first = await boot()
+    await show(first, Promise.resolve(false))
+    expect(h.dialogs).toHaveLength(1)
+    expect(h.dialogs[0].message).toBe('Studio now runs agents in the ADF daemon, but could not connect to it.')
+    expect(h.dialogs[0].detail).toMatch(/Studio could not connect to the ADF daemon, so no agent runs yet/)
+    expect(h.dialogs[0].detail).not.toMatch(/now start in the daemon/)
+    expect(h.dialogs[0].type).toBe('warning')
   })
 
   it('without a keychain the daemon can read (K12): the identity stays in Studio and the notice says what that means', async () => {
     write07xUserData()
     const first = await boot({ keychain: false })
-    expect(first.report.failed).toBe(false)
+    expect(first.report?.failed).toBe(false)
     expect(first.notice?.identityNotShared).toBe(true)
-    await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, window: WINDOW, userDataDir: dir, log: quiet })
+    await show(first)
     expect(h.dialogs).toHaveLength(1)
     expect(h.dialogs[0].detail).toMatch(/Stays in Studio: Runtime identity \(no OS keychain is available/)
     expect(h.dialogs[0].detail).toMatch(/MCP sign-ins \(left in Studio/)
     expect(h.dialogs[0].detail).toMatch(/adf identity trust-daemon/)
-  })
-
-  it('two accounts: nothing is asked before the window; both sessions stay; the answer over the window applies at the next start', async () => {
-    write07xUserData({ identity: false, chatgpt: 'acct-studio' })
-    // A CLI daemon signed in on its own before the upgrade (adf auth login).
-    createSubscriptionTokenStore('chatgpt-subscription').writeTokens(session('acct-daemon'))
-    const first = await boot()
-    const item = first.report.items.find((i) => i.id === 'chatgpt')
-    expect(item).toMatchObject({ outcome: 'kept', pending: true })
-    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)
-    expect(createSubscriptionTokenStore('chatgpt-subscription').readTokens()).toMatchObject({ account_id: 'acct-daemon' })
-    expect(readJson(join(dir, SESSION_CHOICE_FILE))).toMatchObject({ conflicts: [{ provider: 'chatgpt', studio: 'acct-studio', daemon: 'acct-daemon', keep: null }] })
-    // A deferred question is not a failure in the notice.
-    expect(first.notice?.record.notDone).toEqual([])
-
-    h.responses.push(0, 0) // the notice: OK; the question: Keep acct-studio (Studio)
-    await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, window: WINDOW, userDataDir: dir, log: quiet })
-    expect(h.dialogs.map((d) => d.message)).toEqual([
-      'Studio now runs agents in the ADF daemon.',
-      'Studio and the ADF daemon are signed in to ChatGPT with different accounts.',
-    ])
-    expect(h.dialogs.every((d) => d.parent === WINDOW)).toBe(true)
-    expect(h.dialogs[0].detail).toMatch(/Two accounts: ChatGPT session \(Studio: acct-studio, daemon: acct-daemon\)/)
-    expect(h.dialogs[1].buttons).toEqual(['Keep acct-studio (Studio)', 'Keep acct-daemon (daemon)', 'Decide Later'])
-    expect(readJson(join(dir, SESSION_CHOICE_FILE))).toMatchObject({ conflicts: [{ keep: 'studio' }] })
-
-    // The next start applies it without a dialog before the window.
-    h.dialogs.length = 0
-    const second = await boot()
-    expect(second.report.items.find((i) => i.id === 'chatgpt')).toMatchObject({ outcome: 'moved' })
-    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(false)
-    expect(createSubscriptionTokenStore('chatgpt-subscription').readTokens()).toMatchObject({ account_id: 'acct-studio' })
-    expect(readJson(join(dir, SESSION_CHOICE_FILE))).toMatchObject({ conflicts: [] })
-    await showBootNotices({ report: second.report, mode: 'local', notice: second.notice, window: WINDOW, userDataDir: dir, log: quiet })
-    // The summary of that move, over the window.
-    expect(h.dialogs).toHaveLength(1)
-    expect(h.dialogs[0]).toMatchObject({ parent: WINDOW, message: 'Studio now runs Local daemon.' })
-  })
-
-  it('"Decide Later" keeps deferring at later starts, over the window, never in the windowless dialog', async () => {
-    write07xUserData({ identity: false, chatgpt: 'acct-studio' })
-    createSubscriptionTokenStore('chatgpt-subscription').writeTokens(session('acct-daemon'))
-    const first = await boot()
-    h.responses.push(0, 2)
-    await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, window: WINDOW, userDataDir: dir, log: quiet })
-    h.dialogs.length = 0
-    const second = await boot()
-    expect(second.backend.source).toBe('file')
-    expect(second.report.items.find((i) => i.id === 'chatgpt')).toMatchObject({ outcome: 'kept', pending: true })
-    h.responses.push(2)
-    await showBootNotices({ report: second.report, mode: 'local', notice: second.notice, window: WINDOW, userDataDir: dir, log: quiet })
-    // Only the question; the summary does not report the deferred conflict as a failure.
-    expect(h.dialogs.map((d) => d.message)).toEqual(['Studio and the ADF daemon are signed in to ChatGPT with different accounts.'])
   })
 
   it('agents that ran under 0.7.x: no switch record, so nothing is started twice; the daemon autostarts them from the same tracked folders', async () => {
@@ -300,10 +298,91 @@ describe('upgrade from 0.7.x', () => {
   it('an explicit mode: embedded is kept: no handover to local, no notice', async () => {
     write07xUserData({ identity: false, chatgpt: 'acct-1' })
     writeFileSync(backendConfigPath(dir), JSON.stringify({ v: 1, mode: 'embedded' }))
-    const backend = resolveBootBackend(backendConfigPath(dir), {}, { log: quiet, warn: quiet })
-    expect(backend).toMatchObject({ mode: 'embedded', source: 'file' })
-    expect(await settleDefaultBackend(backend, dir, null, { version: '0.8.0', log: quiet })).toBeNull()
+    const b = await boot()
+    expect(b.backend).toMatchObject({ mode: 'embedded', source: 'file' })
+    expect(b.asked).toEqual([])
+    expect(b.notice).toBeNull()
     expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)
     expect(readJson(backendConfigPath(dir))).toEqual({ v: 1, mode: 'embedded' })
+  })
+})
+
+describe('an unusable studio-backend.json', () => {
+  it('a corrupt file: asked before anything moves; the answer is saved, then the handover runs for it', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    writeFileSync(backendConfigPath(dir), '{ not json')
+    const b = await boot({ answer: 1 })
+    expect(b.asked).toHaveLength(1)
+    expect(b.asked[0].detail).toContain(backendConfigPath(dir))
+    expect(b.asked[0].detail).toMatch(/could not be parsed and was moved to .*corrupt/)
+    expect(b.asked[0].buttons).toEqual(['Use Local Daemon (Recommended)', 'Use Embedded'])
+    expect(b.backend).toMatchObject({ mode: 'embedded', source: 'file', fileProblem: null })
+    expect(readJson(backendConfigPath(dir))).toMatchObject({ mode: 'embedded' })
+    // Embedded: Studio's sign-in stays with Studio.
+    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)
+    expect(b.notice).toBeNull()
+  })
+
+  it('an unknown mode, answered Local daemon: saved, and the handover moves the sign-ins', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    writeFileSync(backendConfigPath(dir), JSON.stringify({ v: 1, mode: 'hybrid' }))
+    const b = await boot({ answer: 0 })
+    expect(b.asked[0].detail).toMatch(/names the unknown mode "hybrid"/)
+    expect(b.backend).toMatchObject({ mode: 'local', source: 'file' })
+    expect(readJson(backendConfigPath(dir))).toMatchObject({ mode: 'local' })
+    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(false)
+  })
+
+  it('a file Studio cannot read or replace (EACCES-like): the path, the error and the fix; this launch only, and no sign-in moves', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    mkdirSync(backendConfigPath(dir)) // readFileSync fails (EISDIR), as for EACCES: writeBlocked
+    const b = await boot({ answer: 0 })
+    expect(b.asked).toHaveLength(1)
+    expect(b.asked[0].detail).toContain(backendConfigPath(dir))
+    expect(b.asked[0].detail).toMatch(/could not be read \(EISDIR\)/)
+    expect(b.asked[0].detail).toMatch(/Fix its permissions or delete it, then restart Studio/)
+    expect(b.asked[0].buttons).toEqual(['Use Local Daemon for This Launch', 'Use Embedded for This Launch'])
+    expect(b.backend).toMatchObject({ mode: 'local', source: 'session', sessionReason: expect.stringContaining(backendConfigPath(dir)) })
+    // Session-only: client keys follow, credentials stay.
+    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)
+    expect(b.notice).toBeNull()
+  })
+})
+
+describe('an older ADF daemon on the port at the first launch', () => {
+  it('unidentified (no /version): no handover, nothing saved, Embedded for this session without the boot autostart, and the dialog over the window', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    const b = await boot({ detect: async () => ({ state: 'unidentified', status: 404, message: 'A daemon is running on port 7385 but has no GET /version; it is an older ADF build.' }) })
+    expect(b.guard.skipHandover).toBe(true)
+    expect(b.guard.skipAutostart).toMatch(/older ADF daemon/)
+    expect(b.backend).toMatchObject({ mode: 'embedded', source: 'session' })
+    expect(b.report).toBeNull()
+    expect(existsSync(backendConfigPath(dir))).toBe(false)
+    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)
+    expect(existsSync(join(dir, 'studio-handover.json'))).toBe(false)
+    expect(b.notice).toBeNull()
+    await show(b)
+    expect(h.dialogs).toHaveLength(1)
+    expect(h.dialogs[0]).toMatchObject({ parent: WINDOW, message: expect.stringMatching(/^An ADF daemon that Studio cannot identify is running on port 7385/) })
+    expect(h.dialogs[0].detail).toMatch(/^Stop it with `adf daemon stop`, update the CLI \(`npm i -g @agentdocumentformat\/cli@latest`\), then restart Studio\./)
+    expect(h.dialogs[0].detail).toMatch(/Studio did not start your agents set to start automatically/)
+    expect(h.dialogs[0].detail).toMatch(/stop it in that daemon \(`adf stop <name>`, or `adf daemon stop` for all\), then open it in Studio and press Start/)
+  })
+
+  it('an older client API on the same settings: named with its version and starter', () => {
+    const info = { version: '0.7.8', clientApiVersion: 1, settingsPath, dataDir: dir, runtimeId: null, pid: 4242, startedBy: 'cli' as const }
+    expect(oldDaemonProblem({ state: 'running', info }, settingsPath, 7385)).toBe('An older ADF daemon (adf 0.7.8, started by the npm CLI) is running and uses the same settings.')
+    // This Studio's client API, or nothing on the port: no problem; the connector attaches or starts one.
+    expect(oldDaemonProblem({ state: 'running', info: { ...info, clientApiVersion: CLIENT_API_VERSION } }, settingsPath, 7385)).toBeNull()
+    expect(oldDaemonProblem({ state: 'absent' }, settingsPath, 7385)).toBeNull()
+  })
+
+  it('a current daemon on the port: the first launch hands over as usual', async () => {
+    write07xUserData({ identity: false, chatgpt: 'acct-1' })
+    const info = { version: '0.8.0', clientApiVersion: CLIENT_API_VERSION, settingsPath, dataDir: dir, runtimeId: null, pid: 4242, startedBy: 'cli' as const }
+    const b = await boot({ detect: async () => ({ state: 'running', info }) })
+    expect(b.guard.skipHandover).toBe(false)
+    expect(b.backend).toMatchObject({ mode: 'local', source: 'default' })
+    expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(false)
   })
 })
