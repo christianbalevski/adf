@@ -31,10 +31,10 @@ import {
   resumeSwitchedAgents,
   runBootHandover,
   sessionBackendEnv,
-  showHandoverSummary,
   SWITCH_DAEMON_EXIT_WAIT_MS,
   syncRuntimeEntryAfterImport,
 } from './backend/mode-switch'
+import { bootSessionChooser, settleDefaultBackend, showBootNotices } from './backend/first-launch'
 import { processAgentLeases } from './runtime/agent-lease'
 import type { StudioBackendMode } from '../shared/types/backend.types'
 
@@ -552,7 +552,7 @@ app.whenReady().then(async () => {
   }
 
   // Backend selection (design D9): decided once, before any handler exists.
-  // No studio-backend.json and no ADF_STUDIO_BACKEND means embedded, as before.
+  // No studio-backend.json and no ADF_STUDIO_BACKEND means Local daemon (W5-I, first-launch.ts).
   // SESSION_BACKEND_ARG: the user chose embedded for one launch (§8.2 version mismatch).
   const sessionBackend = sessionBackendEnv(process.argv, process.env)
   const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), sessionBackend.env)
@@ -564,7 +564,10 @@ app.whenReady().then(async () => {
   // Mode-switch handover (§11): move what belongs to this mode's side before
   // any backend handler, store or daemon exists. Idempotent; a no-op when
   // everything is already where it belongs.
-  const handover = await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly })
+  // An accounts conflict is asked over the window, never before it: deferred at the first launch on the default.
+  const handover = await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly, chooseSession: bootSessionChooser(getUserDataPath(), { defer: backend.source === 'default' }) })
+  // First launch without studio-backend.json: save the default, and on an install that ran Embedded prepare the one notice.
+  const firstLaunch = await settleDefaultBackend(backend, getUserDataPath(), handover, { version: app.getVersion() })
   let backendStore: BackendSettingsStore | null = null
   if (backend.mode === 'embedded') {
     try {
@@ -689,11 +692,9 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
-  // What the handover moved, once, in the window the switch restarted into.
-  if (handover && (handover.changed || handover.failed)) {
-    const win = mainWindow
-    win?.once('ready-to-show', () => showHandoverSummary(handover, backend.mode, win))
-  }
+  // What the handover moved (or the first-launch notice), once, and the deferred accounts questions, over the window.
+  const bootWindow = mainWindow
+  if (bootWindow) bootWindow.once('ready-to-show', () => void showBootNotices({ report: handover, mode: backend.mode, notice: firstLaunch, window: bootWindow, userDataDir: getUserDataPath() }))
 
   initAppUpdater({
     // Read per check, not cached: turning it off in Settings stops the next one.
