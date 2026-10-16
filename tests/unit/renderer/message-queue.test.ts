@@ -28,8 +28,10 @@ const AGENT_2 = '/w/agent-2.adf'
 
 const idle = (loop?: string): AgentExecutionEvent =>
   ({ type: 'state_changed', timestamp: 1, payload: { state: 'idle' }, ...(loop ? { loop } : {}) })
-const started = (filePath: string, state: string): RendererBackgroundAgentEvent =>
-  ({ type: 'agent_started', payload: { filePath, state: state as never, handle: 'h' }, timestamp: 1 })
+const started = (filePath: string, state: string, loopStates?: Record<string, string>): RendererBackgroundAgentEvent =>
+  ({ type: 'agent_started', payload: { filePath, state: state as never, handle: 'h', loopStates }, timestamp: 1 })
+const loopState = (filePath: string, loop: string, state: string): RendererBackgroundAgentEvent =>
+  ({ type: 'agent_loop_state_changed', payload: { filePath, loop, state: state as never }, timestamp: 1 })
 const stopped = (filePath: string): RendererBackgroundAgentEvent =>
   ({ type: 'agent_stopped', payload: { filePath }, timestamp: 1 })
 const stateChanged = (filePath: string, state: 'idle' | 'active' | 'off' | 'suspended' | 'error'): RendererBackgroundAgentEvent =>
@@ -49,7 +51,7 @@ let main: OpenFileHarness
 function backgroundOnSwitch(next: string, previous: string | null): void {
   const events: RendererBackgroundAgentEvent[] = []
   if (main.agents.has(next) && useBackgroundAgentsStore.getState().agents.some((a) => a.filePath === next)) events.push(stopped(next))
-  if (previous && main.agents.has(previous)) events.push(started(previous, main.agents.get(previous)!.state))
+  if (previous && main.agents.has(previous)) events.push(started(previous, main.agents.get(previous)!.state, main.agents.get(previous)!.loopStates))
   if (events.length > 0) main.pushBatch(events)
 }
 
@@ -215,5 +217,81 @@ describe('message queue of an agent in the background', () => {
     await main.openFile(AGENT_1)
     expect(main.invokeAgent).toHaveBeenCalledTimes(1)
     expect(useAgentStore.getState().log.at(-1)?.content).toBe('on return')
+  })
+})
+
+describe('only a real idle sends the queue', () => {
+  it.each(['suspended', 'error', 'off'] as const)('keeps a background queue on %s', async (state) => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'wait for idle')
+    await main.openFile(AGENT_2)
+
+    main.pushBatch([stateChanged(AGENT_1, state)])
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+    expect(queued(AGENT_1)).toHaveLength(1)
+  })
+
+  it.each(['suspended', 'error'] as const)('keeps an inner loop queue on %s', async (state) => {
+    main.agents.set(AGENT_1, { state: 'idle', loopStates: { reflector: 'active' } })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'for the reflector', 'reflector')
+    await main.openFile(AGENT_2)
+
+    main.pushBatch([loopState(AGENT_1, 'reflector', state)])
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+  })
+
+  it('keeps the open agent queue while it waits on an approval', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'after the approval')
+    main.pushForeground({ type: 'state_changed', timestamp: 1, payload: { state: 'awaiting_approval' } })
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+  })
+})
+
+describe('inner-loop queues', () => {
+  it("sends on that loop's own turn end in the background, not on a count", async () => {
+    main.agents.set(AGENT_1, { state: 'idle', loopStates: { reflector: 'active', auditor: 'idle' } })
+    await main.openFile(AGENT_1)
+    expect(selectLoopSlice(useAgentStore.getState(), 'reflector').state).toBe('active')
+    queue(AGENT_1, 'for the reflector', 'reflector')
+
+    // Adopted busy: the seed says so, nothing goes.
+    await main.openFile(AGENT_2)
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+
+    // Another loop's activity does not send it.
+    main.pushBatch([loopState(AGENT_1, 'auditor', 'active'), loopState(AGENT_1, 'auditor', 'idle')])
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+
+    main.pushBatch([loopState(AGENT_1, 'reflector', 'idle')])
+    main.pushBatch([loopState(AGENT_1, 'reflector', 'idle')])
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    expect(main.invokeAgent).toHaveBeenCalledWith('for the reflector', AGENT_1, [{ type: 'text', text: 'for the reflector' }], 'reflector')
+  })
+
+  it('keeps an inner loop queue while the agent is off', async () => {
+    main.agents.set(AGENT_1, { state: 'idle', loopStates: { reflector: 'active' } })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'for the reflector', 'reflector')
+    await main.openFile(AGENT_2)
+
+    main.pushBatch([stateChanged(AGENT_1, 'off'), loopState(AGENT_1, 'reflector', 'idle')])
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+  })
+
+  it('sends a settled inner loop queue on the re-attach, leaving a busy main alone', async () => {
+    main.agents.set(AGENT_1, { state: 'active', loopStates: { reflector: 'active' } })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'for main')
+    queue(AGENT_1, 'for the reflector', 'reflector')
+    await main.openFile(AGENT_2)
+
+    // The reflector finished during the switch back; main is still working.
+    main.agents.set(AGENT_1, { state: 'active', loopStates: { reflector: 'idle' } })
+    await main.openFile(AGENT_1)
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    expect(main.invokeAgent).toHaveBeenCalledWith('for the reflector', AGENT_1, [{ type: 'text', text: 'for the reflector' }], 'reflector')
+    expect(queued(AGENT_1).map((m) => m.text)).toEqual(['for main'])
   })
 })

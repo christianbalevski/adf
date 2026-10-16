@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid'
 import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useMessageQueueStore, queuedLoops } from '../stores/message-queue.store'
-import type { BackgroundAgentStatus } from '../../shared/types/ipc.types'
+import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
  * Send a loop's queued messages as one chat, now that its turn has ended.
@@ -34,25 +34,58 @@ export function deliverQueuedMessages(filePath: string, loop: string): boolean {
 }
 
 /**
- * Background agents whose state just moved: send what is queued for any loop
- * that has settled. The open agent is not handled here; its own state events
- * (and the re-attach on open) deliver its queue.
+ * Send the queues of an agent's loops that have settled, given the state each
+ * loop reported (main under MAIN_LOOP).
  *
- * Main settles on idle. A background status carries no per-loop state, only
- * how many inner loops are mid-turn, so an inner loop's queue goes once none
- * is, and only while the agent is up: main refuses a loop dispatch while it is
- * off or suspended, and the message would be lost.
+ * Only `idle` settles, as on the open agent's own path: a loop waiting on an
+ * approval or an ask, or one that errored, keeps its queue. An inner loop also
+ * needs main up; main refuses a loop dispatch while the agent is off.
  */
-export function deliverSettledBackgroundQueues(agents: BackgroundAgentStatus[], filePaths: Iterable<string>): void {
-  for (const filePath of new Set(filePaths)) {
-    const loops = queuedLoops(useMessageQueueStore.getState(), filePath)
-    if (loops.length === 0) continue
-    const status = agents.find((a) => a.filePath === filePath)
-    if (!status) continue
-    const up = status.state === 'idle' || status.state === 'active'
-    for (const loop of loops) {
-      const settled = loop === MAIN_LOOP ? status.state === 'idle' : up && (status.activeLoops ?? 0) === 0
-      if (settled) deliverQueuedMessages(filePath, loop)
+export function deliverSettledQueues(filePath: string, loopStates: Record<string, string>, mainState: string | undefined): void {
+  for (const loop of queuedLoops(useMessageQueueStore.getState(), filePath)) {
+    if (loopStates[loop] !== 'idle') continue
+    if (loop !== MAIN_LOOP && mainState === 'off') continue
+    deliverQueuedMessages(filePath, loop)
+  }
+}
+
+/**
+ * One background batch: send the queue of every loop whose LAST reported state
+ * in the batch is idle. Per loop, from the loop's own transition, never from
+ * the inner-loop count (a count that stays 0 → 0 hides a loop's turn end).
+ * `skip` names agents whose queue is someone else's job (the file being opened).
+ */
+export function deliverSettledBackgroundQueues(
+  agents: BackgroundAgentStatus[],
+  events: RendererBackgroundAgentEvent[],
+  skip: (filePath: string) => boolean
+): void {
+  const reported = new Map<string, Record<string, string>>()
+  const note = (filePath: string, loop: string, state: unknown): void => {
+    if (typeof state !== 'string') return
+    const states = reported.get(filePath) ?? {}
+    states[loop] = state
+    reported.set(filePath, states)
+  }
+  for (const event of events) {
+    const payload = event.payload as RendererBackgroundAgentEvent['payload'] & { loop?: unknown; loopStates?: unknown; state?: unknown }
+    switch (event.type) {
+      case 'agent_started':
+        note(payload.filePath, MAIN_LOOP, payload.state)
+        if (payload.loopStates && typeof payload.loopStates === 'object') {
+          for (const [loop, state] of Object.entries(payload.loopStates)) note(payload.filePath, loop, state)
+        }
+        break
+      case 'agent_state_changed':
+        note(payload.filePath, MAIN_LOOP, payload.state)
+        break
+      case 'agent_loop_state_changed':
+        if (typeof payload.loop === 'string') note(payload.filePath, payload.loop, payload.state)
+        break
     }
+  }
+  for (const [filePath, states] of reported) {
+    if (skip(filePath)) continue
+    deliverSettledQueues(filePath, states, agents.find((a) => a.filePath === filePath)?.state)
   }
 }

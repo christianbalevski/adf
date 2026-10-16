@@ -20,7 +20,7 @@
  * system lambdas (§2.3) and the agent has exactly one face to the mesh.
  */
 
-import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, AgentState } from '../../shared/types/ipc.types'
 import type { AgentConfig, LoopConfig } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import {
@@ -36,6 +36,7 @@ import { ToolRegistry } from '../tools/tool-registry'
 import type { McpClientManager } from '../services/mcp-client-manager'
 import type { CodeSandboxService } from './code-sandbox'
 import { AgentExecutor } from './agent-executor'
+import { toDisplayState } from './display-state'
 import { AgentSession } from './agent-session'
 import type { AdfCallHandler } from './adf-call-handler'
 import { PreLlmHookRunner } from './pre-llm-hook'
@@ -477,6 +478,21 @@ export class LoopPool implements LoopPoolApi {
 
   getRuntime(name: string): LoopRuntime | undefined {
     return this.runtimes.get(name)
+  }
+
+  /**
+   * Every live side loop's display state, for a host that starts watching
+   * mid-stream (a background adopt, a foreground re-attach) and would
+   * otherwise know nothing until each loop's next `state_changed`. A loop the
+   * executor reports idle inside an accepted dispatch is busy (see isBusy).
+   */
+  sideLoopStates(): Record<string, AgentState> {
+    const states: Record<string, AgentState> = {}
+    for (const runtime of this.runtimes.values()) {
+      const state = toDisplayState(runtime.executor.getState())
+      states[runtime.name] = state === 'idle' && runtime.isBusy() ? 'active' : state
+    }
+    return states
   }
 
   /** True when ANY side loop is mid-turn — the derived rollup of §6.3. Never

@@ -37,9 +37,6 @@ export function useBackgroundAgentEvents() {
       let stopping = app.stoppingFilePaths
       let startingChanged = false
       let stoppingChanged = false
-      // Agents whose state moved in this batch: a turn that ended while the
-      // owner was looking at another agent sends what was queued for it.
-      const settledFiles: string[] = []
 
       const dropStarting = (fp: string): void => {
         if (!starting.has(fp)) return
@@ -54,9 +51,6 @@ export function useBackgroundAgentEvents() {
 
       for (const event of events) {
         const filePath = event.payload.filePath
-        if (event.type === 'agent_state_changed' || event.type === 'agent_loops_changed' || event.type === 'agent_started') {
-          settledFiles.push(filePath)
-        }
         switch (event.type) {
           case 'agent_starting': {
             if (starting.has(filePath)) break
@@ -99,12 +93,13 @@ export function useBackgroundAgentEvents() {
           ...(stoppingChanged ? { stoppingFilePaths: stopping } : {})
         })
       }
-      // Keyed off each event's own agent, not the open file: main moves its
-      // workspace before the renderer's filePath follows, so the agent being
-      // switched AWAY from is already background while it still looks open,
-      // and its turn can end inside that window. The agent being switched TO
-      // is skipped; its re-attach reads its state and delivers.
-      deliverSettledBackgroundQueues(agents, settledFiles.filter((fp) => !openingFilePaths.has(fp)))
+      // A turn that ended while the owner was looking at another agent sends
+      // what was queued for it. Keyed off each event's own agent, not the open
+      // file: main moves its workspace before the renderer's filePath follows,
+      // so the agent being switched AWAY from is already background while it
+      // still looks open, and its turn can end inside that window. The agent
+      // being switched TO is skipped; its re-attach reads its state and delivers.
+      deliverSettledBackgroundQueues(agents, events, (fp) => openingFilePaths.has(fp))
     })
 
     return unsubscribe
