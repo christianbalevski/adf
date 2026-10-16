@@ -26,7 +26,7 @@ function setup() {
   return { dir, leases, files }
 }
 
-const DONE: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [] }
+const DONE: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [] }
 
 describe('daemon boot envelope sweep', () => {
   it('skips the files the daemon has loaded or holds open; sweeps the rest', async () => {

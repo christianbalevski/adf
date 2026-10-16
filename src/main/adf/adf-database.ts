@@ -2705,6 +2705,27 @@ export class AdfDatabase {
     }
   }
 
+  /**
+   * What the boot envelope sweep decides on before opening a file, read
+   * read-only: its schema version (null without an adf_meta table, 0 with no
+   * version) and its agent id (null without a config). Errors propagate.
+   */
+  static peekSweepStatus(filePath: string): { schemaVersion: number | null; agentId: string | null } {
+    return AdfDatabase.peekReadonly(filePath, (db) => {
+      const schemaVersion = AdfDatabase.readSchemaVersion(db)
+      const hasConfig = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='adf_config'").get()
+      const row = hasConfig
+        ? db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+        : undefined
+      let agentId: string | null = null
+      try {
+        const id = row ? (JSON.parse(row.config_json) as { id?: unknown }).id : undefined
+        if (typeof id === 'string' && id) agentId = id
+      } catch { /* unparsable config: no id */ }
+      return { schemaVersion, agentId }
+    })
+  }
+
   static peekBootStatusDetailed(filePath: string): AdfBootStatusResult {
     try {
       return AdfDatabase.peekReadonly<AdfBootStatusResult>(filePath, (db) => {

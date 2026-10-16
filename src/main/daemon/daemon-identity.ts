@@ -883,7 +883,7 @@ export class DaemonIdentity {
    * `ownerNotReady`, nothing opened). Files `skip` names are not opened.
    */
   async sweepEnvelopes(skip?: (filePath: string) => Promise<boolean>): Promise<EnvelopeSweepResult> {
-    if (!this.isReady()) return { provisioned: 0, sealed: 0, failures: [], skipped: [], ownerNotReady: true }
+    if (!this.isReady()) return { provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [], ownerNotReady: true }
     return this.service.sweepEnvelopeMigration({
       skip,
       provision: (workspace, busy) => {
