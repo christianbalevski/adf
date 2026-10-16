@@ -377,15 +377,18 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       const { turnId } = await client.request<{ turnId: string }>('POST', `/agents/${enc(agentId)}/chat`, { body })
       // Embedded resolves once the dispatched turn has run; so does this.
       const outcome = await ctx.bridge.waitForTurn(agentId, turnId, args?.loop ?? 'main')
+      // From here the daemon HAS the message (the chat route answered its
+      // turnId): `accepted` tells the renderer's queue it went, so it is
+      // never put back and sent a second time. Only a refused send requeues.
       // Only a daemon that is gone ends the chat with an error (its turn cannot end).
-      if (outcome === 'exited') return failed('The ADF daemon exited while the message waited for its turn; the chat shows what arrived.')
+      if (outcome === 'exited') return { ...failed('The ADF daemon exited while the message waited for its turn; the chat shows what arrived.'), accepted: true }
       if (outcome === 'disconnected') {
         // The daemon may still run the turn: no error; its state is read on reconnect (EventBridge.recheckTurns).
         ctx.bridge.recheckOnReconnect({ agentId, filePath: target }, args?.loop)
-        return { success: false, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }
+        return { success: false, accepted: true, error: 'The connection to the ADF daemon was lost while the message waited for its turn; the chat shows what arrived.' }
       }
       // Embedded has no such limit and the turn's events keep arriving: nothing is shown.
-      if (outcome === 'timeout') return { success: false, error: `No end of the turn arrived from the ADF daemon within ${TURN_WAIT_TIMEOUT_MS / 60_000} minutes.` }
+      if (outcome === 'timeout') return { success: false, accepted: true, error: `No end of the turn arrived from the ADF daemon within ${TURN_WAIT_TIMEOUT_MS / 60_000} minutes.` }
       return { success: true }
     } catch (error) {
       // A daemon of another build may hold a smaller limit than this Studio checks.

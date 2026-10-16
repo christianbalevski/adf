@@ -25,7 +25,10 @@ export function deliverQueuedMessages(filePath: string, loop: string): boolean {
  * A send main did not take ({success: false}, or a rejected call) is never
  * dropped: the messages go back to the head of their queue in order, marked
  * with the error so the queue shows them as not sent, and the bubble that
- * claimed they went is taken back.
+ * claimed they went is taken back. A send the backend took but could not see
+ * through (`accepted`: daemon mode, the connection dropped or the wait timed
+ * out after the daemon answered the chat) was delivered: it stays sent, or
+ * the next idle would send it twice.
  */
 export function sendQueuedMessages(filePath: string, loop: string, queue: QueuedMessage[]): void {
   const combined = queue.map((m) => m.text).join('\n\n')
@@ -65,7 +68,14 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
     return
   }
   void Promise.resolve(pending).then(
-    (result) => { if (result && result.success === false) fail(result.error ?? 'The agent did not take the message') },
+    (result) => {
+      if (!result || result.success !== false) return
+      if (result.accepted) {
+        console.warn(`[queue] Queued message to ${filePath} (${loop}) was delivered; its turn's end was not seen: ${result.error ?? 'unknown'}`)
+        return
+      }
+      fail(result.error ?? 'The agent did not take the message')
+    },
     (error: unknown) => fail(error instanceof Error ? error.message : String(error))
   )
 }

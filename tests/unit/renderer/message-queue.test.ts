@@ -370,6 +370,22 @@ describe('a send main does not take', () => {
     expect(main.invokeAgent).toHaveBeenLastCalledWith('first\n\nsecond\n\nthird', AGENT_1, expect.any(Array), 'main')
   })
 
+  it('keeps a send the backend accepted but could not see through as sent: never requeued, never sent twice', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'once')
+    await main.openFile(AGENT_2)
+
+    // Daemon mode: the chat route took it, then the connection dropped before its turn ended.
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, error: 'The connection to the ADF daemon was lost' })
+    main.pushBatch([stateChanged(AGENT_1, 'idle')])
+    await settle()
+    expect(queued(AGENT_1)).toEqual([])
+
+    main.pushBatch([stateChanged(AGENT_1, 'active'), stateChanged(AGENT_1, 'idle')])
+    await settle()
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+  })
+
   it('takes back the bubble and the optimistic state of the open agent on a rejected send', async () => {
     await main.openFile(AGENT_1)
     queue(AGENT_1, 'try me')

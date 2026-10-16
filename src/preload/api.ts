@@ -120,7 +120,12 @@ export interface AdfApi {
   startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; loopStates?: Record<string, string>; code?: 'provider_missing' | 'provider_unconfigured' }>
   stopAgent: () => Promise<{ success: boolean }>
   /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
-  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>
+  /**
+   * `accepted` (daemon mode): the daemon took the message, but its turn's end
+   * never reached Studio (connection lost, daemon exited, wait timed out). The
+   * message is delivered; `error` says what is unknown. Never resend it.
+   */
+  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
