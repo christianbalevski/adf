@@ -24,8 +24,8 @@ Modes:
 
 | Mode | Backend | Agents run in |
 |---|---|---|
-| `embedded` | `registerAllIpcHandlers` (`src/main/ipc/index.ts:1864`) | Studio main process |
-| `local` | Daemon on this machine, same settings file and data dir as Studio | Daemon process spawned or attached by Studio |
+| `embedded` | `registerAllIpcHandlers` (`src/main/ipc/index.ts:1864`) | Studio main process. Legacy since Q6 (§14): a fallback for one release |
+| `local` | Daemon on this machine, same settings file and data dir as Studio | Daemon process spawned or attached by Studio. The default since Q6 (§4.4) |
 | `remote` | Daemon on another machine, reached by URL and token | Remote daemon |
 
 R2 applies to `embedded` vs `local`. `remote` differs where the machine boundary forces it (§9.3), and each such difference is listed.
@@ -303,7 +303,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 |---|---|---|
 | **Client** (Studio presentation and Studio-host behaviour) | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars`, `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `nativeNotificationsEnabled`, `menuBarEnabled`, `recentFiles`, `remoteRecentFiles` (remote mode's Open Recent; stays in the client file on a switch to embedded), `updateChecksEnabled`, `spellcheckDownloadsEnabled` | `studio-client-settings.json` (Studio userData) |
 | **Backend** (read by runtime, providers, MCP, adapters, mesh, review, compute, tracked dirs) | every other key, including `trackedDirectories`, `agentsFolder`, `compute`, `remoteCatalogsEnabled`, `providerChecksEnabled`, `skillCatalogSources` (the terminal app reads it) | The daemon's settings file, through `GET/PATCH /settings` and the dedicated routes |
-| **Backend selection** | `mode`, `keepDaemonRunning`, `remote.url`, `remote.token` | `studio-backend.json` (Studio userData), token as `safe:` |
+| **Backend selection** | `mode` (default `local`, §4.4), `keepDaemonRunning` (default `false`), `remote.url`, `remote.token` | `studio-backend.json` (Studio userData), token as `safe:` |
 
 `fleetMapState` carries `burnTotals`, which `ipc/index.ts:5866` reads; in daemon mode the fleet-burn handler reads it from the client file and sends it to the daemon route as a parameter.
 
@@ -321,6 +321,21 @@ Rationale: in `local` mode both processes could share `adf-settings.json`, but t
 ### 4.3 Seeding on switch
 
 Client keys are copied from `adf-settings.json` into `studio-client-settings.json` when switching to a daemon mode, and back when switching to embedded (§11). Nothing else is copied: in `local` mode backend keys already live in the shared file.
+
+### 4.4 Default backend (Q6, W5-I)
+
+No `studio-backend.json` and no `ADF_STUDIO_BACKEND` resolve to `local` (`DEFAULT_BACKEND_MODE`, `backend-config.ts`), for new installs and for 0.7.x installs upgrading. A file that cannot be read or names an unknown mode also falls back to `local`, with a notice in Settings → Backend. An explicit `"mode": "embedded"` is honoured.
+
+| Step | Behaviour (`src/main/backend/first-launch.ts`) |
+|---|---|
+| Handover | The boot handover to `local` runs as after a switch (§11.1): client keys, ChatGPT and Grok sessions, app MCP sign-ins, owner phrase mirror and runtime entry. On a keychain never used the entries are created; without a keychain the daemon can read, the K12 fallback applies (§5.3) and the notice says so. |
+| Persist | After the handover, before the daemon starts, `persistDefaultBackend` writes the resolved config to `studio-backend.json`. Not on an override launch (`env`, `session`) and not over a file that could not be read. A failed write is logged; the next launch resolves the default again. |
+| Notice | An install with an `adf-settings.json` (it ran Embedded) gets one dialog over the main window at `ready-to-show`: "Studio now runs agents in the ADF daemon.", "Moved: …", what stays in Studio, what is not done, deferred accounts conflicts, the macOS keychain question, "Settings → Backend has the details.", buttons OK / Open the Guide. `studio-default-switch.json` records the date, the version, what moved and what was not done; it makes the notice one-time, and Settings → Backend shows it as "Default changed". A fresh install moves nothing and shows no dialog. |
+| Accounts conflict | Never asked before the window exists (macOS: a parentless dialog is app-modal and can open hidden behind a full-screen window, which hung boot). On the first launch `bootSessionChooser` answers `defer`: nothing moves, nothing is set aside, each side keeps its own session (item `kept`, `pending`, with the conflict). The question is asked over the window; the answer goes to `studio-session-choice.json` and the next start's handover applies it. An unanswered conflict (Decide Later, or a quit before the answer) is deferred again at every start. Other boots keep the §11.1 dialog. |
+| Running agents | 0.7.x writes no `studio-switch-resume.json`, so nothing is resumed. The daemon autostarts agents from the same `trackedDirectories` in the same settings file, as embedded Studio did. |
+| Fallback | Settings → Backend → "Embedded (legacy, removed in the next release)" is the persistent switch with the reverse handover. `ADF_STUDIO_BACKEND=embedded` is a session-only override that moves no credential back and is not the fallback. |
+
+Tests: `tests/backend/backend-config.test.ts` (resolution: no file, explicit file, env; `persistDefaultBackend`), `tests/backend/first-launch.test.ts` (fresh install, 0.7.x upgrade with credentials on an empty keychain, K12, deferred conflict, Decide Later, running agents, explicit embedded), `tests/backend/main-boot-default.test.ts` and `main-boot-fresh.test.ts` (the real boot: no dialog before the window, one notice over it).
 
 ## 5. Identity, runtime DID and envelopes
 
@@ -713,9 +728,11 @@ Code: `src/main/backend/handover.ts` (moves, Electron-free), `mode-switch.ts` (d
 
 Embedded code is deleted when all hold: parity harness green on the three OSes; zero open parity bugs of severity "visible"; one week of daily use in `local` mode with no fallback to embedded; the checklist signed off by the owner. Deletion is its own project and is not scheduled here.
 
-## 14. Owner decisions (2026-10-14)
+Q6 (§14, 2026-10-16) schedules it: the PR that merges this branch makes Local daemon the default and keeps Embedded as a fallback for that release; a follow-up PR a few days later deletes Embedded. Its scope is in the tracker, "Embedded removal".
 
-All five were accepted as recommended. Q2 and Q4 were decided by the lead; Q1, Q3 and Q5 by the owner.
+## 14. Owner decisions (2026-10-14, Q6 2026-10-16)
+
+Q1-Q5 (2026-10-14) were accepted as recommended. Q2 and Q4 were decided by the lead; Q1, Q3 and Q5 by the owner. Q6 (2026-10-16) was decided by the owner.
 
 | # | Question | Decision |
 |---|---|---|
@@ -724,3 +741,4 @@ All five were accepted as recommended. Q2 and Q4 were decided by the lead; Q1, Q
 | Q3 | Remote transport: https, loopback tunnel and tailnet only, with an explicit opt-in for other plain-HTTP URLs; no TLS in the daemon? | Yes. |
 | Q4 | R6 reading: existing `window.adfApi` members keep their signatures and semantics, and new members are allowed for backend selection, daemon status and remote file transfer? | Yes. Settings → Backend cannot exist without new members. |
 | Q5 | Embedded code may change only under Rules E1-E3 (§3.2)? | Yes. Copying instead of extracting recreates drift. |
+| Q6 | Which backend is the default, and for how long does Embedded stay? (2026-10-16) | Local daemon for every install: new installs and 0.7.x users upgrading (§4.4). The first launch runs the handover automatically and shows one notice. Embedded stays selectable for that one release as a fallback, labelled legacy, through the persistent switch; a follow-up PR a few days later deletes it. Goal: one backend to maintain. |

@@ -3,7 +3,7 @@
 **Status: test plan for `feat/daemon-backend`.** Walked by the owner during the
 one-week daily-driver period, before the Embedded backend code is deleted.
 Corrected against what W0-W4 built (W4-C, 2026-10-14). R items describe remote
-mode as built by W4-B and reconciled with W4-A's switch dialog. W5-D3 (2026-10-15) added the W5 fixes and the daily-driver gaps (FILE-25, CHAT-26, LOOP-11, TIME-15, TIME-16, CHAN-10, COMP-09, MESH-18, MESH-19, PROV-13, DMN-39..DMN-41); W5-D2 added FILE-26 and DMN-42 and set the wording of FILE-19, TIME-16, DMN-26, DMN-39 and DMN-40 to what it built. The user guide for these features is
+mode as built by W4-B and reconciled with W4-A's switch dialog. W5-D3 (2026-10-15) added the W5 fixes and the daily-driver gaps (FILE-25, CHAT-26, LOOP-11, TIME-15, TIME-16, CHAN-10, COMP-09, MESH-18, MESH-19, PROV-13, DMN-39..DMN-41); W5-D2 added FILE-26 and DMN-42 and set the wording of FILE-19, TIME-16, DMN-26, DMN-39 and DMN-40 to what it built. W5-I (2026-10-16) made Local daemon the default: it rewrote MODE-01 and added UPG-01..UPG-10. The user guide for these features is
 [Studio backend](../guides/studio-backend.md); expected messages are quoted
 from the code.
 
@@ -13,8 +13,8 @@ Studio has three backend modes:
 
 | Column | Mode | Agents run in |
 |---|---|---|
-| **E** | Embedded | Studio's main process (today's behaviour) |
-| **L** | Local daemon | A daemon on this machine that Studio spawns or attaches to |
+| **E** | Embedded (legacy, removed in the next release) | Studio's main process (the behaviour of 0.7.x) |
+| **L** | Local daemon (the default) | A daemon on this machine that Studio spawns or attaches to |
 | **R** | Remote daemon | A daemon on another machine, reached by URL + token |
 
 Rules:
@@ -29,7 +29,8 @@ Rules:
 - "keep-running" is Settings → Backend → "Keep the daemon running when Studio
   quits" (L only, default off).
 - An item whose steps change modes is walked in the column of the mode it
-  switches to (MODE-03 and SW-01: L; MODE-05 and SW-06: E).
+  switches to (MODE-03 and SW-01: L; MODE-05 and SW-06: E). UPG items start
+  from 0.7.x and are walked in L.
 - "Within 1 s" and similar bounds are perceptual, not measured, unless the
   item says to measure.
 - Record the daemon version (`adf daemon status`) and Studio version (About)
@@ -68,7 +69,7 @@ daemon while Studio runs (DMN-17).
 
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
-| MODE-01 | Launch with a fresh profile (`--instance=9`). | Home renders. Settings → Backend: Embedded selected, "This launch runs Embedded." No `studio-backend.json` in the instance's user data folder; no daemon process (`adf daemon status` with that instance's settings: not running). | [ ] | N/A | N/A |
+| MODE-01 | Launch with a fresh profile (`--instance=9`). | Home renders. No dialog at launch or after the window opens. Settings → Backend: Local daemon selected, "This launch runs Local daemon.", no "Default changed" row; the Embedded option reads "Embedded (legacy, removed in the next release)". The instance's user data folder has `studio-backend.json` with `"mode": "local"` and no `studio-default-switch.json`. `adf daemon status` with that instance's settings: running, `started   by studio`. | N/A | [ ] | N/A |
 | MODE-02 | Settings → Backend in each mode. | Run agents in: Embedded / Local daemon / Remote daemon, the configured one selected, with "This launch runs …". L and R: an "ADF daemon" row: "Connected · <url> · pid N · version V · started by this Studio" (or "started by Studio", "started by the ADF CLI", "started by a service"). "Keep the daemon running when Studio quits" shown when L is configured or running. Remote daemon group: Daemon URL, Token ("A token is saved. Enter a new one to replace it." once saved; the field never shows it), Test connection, Save, Use this daemon (Switch to This Daemon). | [ ] | [ ] | [ ] |
 | MODE-03 | E → L with no agent running and no agent open (close the open agent first: in E the open agent counts as running). | Switch dialog "Switch the backend from Embedded to Local daemon?": "Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.", "Moves at the restart:" with each item, "No agent runs now.", buttons Switch and Restart / Cancel. After the restart: summary "Studio now runs Local daemon." listing what moved; Settings → Backend "ADF daemon" row "Connected … started by this Studio"; `adf daemon status` shows Studio's version, `started   by studio`. Sidebar, tracked folders unchanged. | N/A | [ ] | N/A |
 | MODE-04 | E → L with agent-1 idle and agent-2 running, no turn in flight. | The switch dialog says "Running agents keep running: agent-1, agent-2 stop here and Studio starts them in the daemon after the restart." After the restart one notification: "Running again after the switch: agent-1, agent-2." `adf agents` lists both. Each runs once: one load each in the daemon log, none in Studio's main log, one Telegram poller (CHAN-08). Turns in flight: SW-01..SW-05. | N/A | [ ] | N/A |
@@ -645,6 +646,27 @@ Guide: [Studio backend › Remote daemon in Studio](../guides/studio-backend.md#
 | REM-17 | agent-6: Identity tab Reveal; provider override key field (Settings → Providers → agent overrides); Settings → MCP servers credential panel; save untouched; then edit one character of a placeholder and save, in the override key field and in the MCP panel. | Reveal and the provider key field say "Stored credential values stay on the daemon's machine: a remote daemon never sends them to Studio." The MCP panel shows a placeholder. Saving untouched keeps the stored values (the server still connects). An edited placeholder is refused in both places and the error is shown: "… was shown as a placeholder (…), so an edit of it cannot be saved. Clear the field and type the whole value." | N/A | N/A | [ ] |
 | REM-18 | On an agent whose credentials are locked on the server, save a per-agent provider key (Settings → Providers → agent overrides) or an Identity tab value. | The question says "This agent's credentials are locked on the daemon's machine." (for a sealed value: "The saved <purpose> of this agent is sealed, and its credentials are locked on the daemon's machine."); L and E say "on this machine". Replace / Cancel. | N/A | N/A | [ ] |
 | REM-19 | In R with agent-2 running on the server, switch R → E; later R → L. | R → E: no "Moves back to Studio at the restart:" block (nothing moves back), and "Nothing comes from the remote daemon: its agents, sign-ins and keys stay on it." R → L: "Moves at the restart:" lists what moves from Studio into the local daemon (ChatGPT and Grok sessions, MCP sign-ins, runtime identity, as HAND-01), plus the same "Nothing comes from the remote daemon" line. Both: "The remote daemon keeps running its agents (agent-2). Studio does not start them …"; no Wait for Them to Finish even mid-turn. After the restart agent-2 still runs on the server (`adf --url … agents`) and is not started here. | N/A | N/A | [ ] |
+
+## 30. Upgrading from 0.7.x (UPG)
+
+Guide: [Studio backend › Upgrading from 0.7.x](../guides/studio-backend.md#upgrading-from-07x).
+Setup for each item: Studio 0.7.8 installed and used (it ran Embedded: no
+`studio-backend.json`), quit; then install this build and launch it. Paths are
+in Studio's user data folder (`%APPDATA%\ADF Studio`). Keep a copy of the
+folder to repeat an item.
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| UPG-01 | 0.7.8 with ChatGPT and Grok signed in, one app-level HTTP OAuth MCP server signed in, theme dark, agent-2 and agent-3 set to autostart, an owner identity, and no `ADF` entries in Credential Manager (or Keychain Access). Upgrade, launch. | The window opens first; no dialog before it. Then one dialog over the window: "Studio now runs agents in the ADF daemon." with "Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session, Grok session, MCP sign-ins." (the items that applied), "Agents set to start automatically now start in the daemon, …", "Embedded stays in Settings → Backend for this release only, …" and "Settings → Backend has the details.", buttons OK and Open the Guide. Theme still dark. `studio-backend.json` says `"mode": "local"`. agent-2 and agent-3 run (`adf agents`), each once (one Telegram poller for agent-3, CHAN-08). ChatGPT and Grok agents run without signing in. | N/A | [ ] | N/A |
+| UPG-02 | After UPG-01: the notice's Open the Guide. | The browser opens the guide at "Upgrading from 0.7.x". | N/A | [ ] | N/A |
+| UPG-03 | After UPG-01: Settings → Backend; then quit and launch again. | A "Default changed" row: "On *date*, Studio *version* switched this install from Embedded to Local daemon, the new default. Moved: …." The second launch shows no notice and no summary dialog; the row is still there. | N/A | [ ] | N/A |
+| UPG-04 | After UPG-01: `adf identity`; Credential Manager; agent-1's review panel. | As HAND-02: runtime `studio (adopted)`, an `ADF` entry `studio-runtime:<12 hex>` and `ADF / owner-mnemonic`, agent-1 shows as yours. macOS: one keychain question for the daemon ("Always Allow"), and the notice says "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | N/A | [ ] | N/A |
+| UPG-05 | Fresh install of this build on a machine that never ran Studio (or `--instance=9` with an empty folder). | No dialog at all (MODE-01). | N/A | [ ] | N/A |
+| UPG-06 | Setup as HAND-04 on 0.7.8: Studio signed in to ChatGPT as A; quit; `adf daemon start`; `adf auth login chatgpt` as B; `adf daemon stop`. Upgrade, launch. Answer the notice, then **Keep A (Studio)**. | No dialog before the window (macOS: also with Studio full screen). The notice lists "Two accounts: ChatGPT session (Studio: A, daemon: B). Both stay signed in where they are; Studio asks next which one to keep." Then, over the window: "Studio and the ADF daemon are signed in to ChatGPT with different accounts." with Keep A (Studio), Keep B (daemon), Decide Later, and "Studio applies your choice at its next start." Until the next start `adf auth` shows B. After a restart: `adf auth` shows A; B is in `chatgpt-subscription\auth.replaced.<time>.json`; the summary "Studio now runs Local daemon." lists the ChatGPT session moved. | N/A | [ ] | N/A |
+| UPG-07 | UPG-06 with **Decide Later**, then restart Studio twice. | Each start asks again over the window, after the window opens; nothing moves; no summary reports the ChatGPT session as not done. | N/A | [ ] | N/A |
+| UPG-08 | Linux without a Secret Service only: UPG-01. | The notice says "Stays in Studio: Runtime identity (…); MCP sign-ins (left in Studio: …)." and "The daemon runs as its own runtime: files it stamps show as "recognized" in Studio's review, and agents made in Studio unlock in the daemon only with the owner phrase (adf identity restore) or after adf identity trust-daemon." Windows and macOS: N/A. | N/A | [ ] | N/A |
+| UPG-09 | After UPG-01: Settings → Backend → Embedded (legacy, removed in the next release). | The switch dialog "Switch the backend from Local daemon to Embedded?" lists the sign-ins that move back (MODE-05, HAND-03). After the restart the summary lists them moved back; `studio-backend.json` says `"mode": "embedded"`; the next launch stays Embedded and shows no upgrade notice. | [ ] | N/A | N/A |
+| UPG-10 | After UPG-09: quit, `adf daemon stop`, install 0.7.8, launch. | 0.7.8 runs the agents, signed in to ChatGPT, Grok and the MCP server, theme kept. (Installing 0.7.8 straight after UPG-01, without UPG-09: the sign-ins and the theme are missing; the guide says so.) | [ ] | N/A | N/A |
 
 ---
 

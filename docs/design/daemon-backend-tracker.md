@@ -72,6 +72,7 @@ A file listed here MUST be edited only by its owner in that wave. Others request
 | W4-C | Documentation | 4 | W4-A | MERGED |
 | W5-C | UX code fixes found by the checklist review | 5 | W4-C review | MERGED |
 | W5-A | Full parity run and triage | 5 | W4-A | MERGED (W5-A1, W5-A2) |
+| W5-I | Local daemon is the default backend; first-launch handover and notice; Embedded labelled legacy (owner decision 2026-10-16, design §4.4, Q6) | 5 | W4-A | DONE on ws/w5-i |
 | W5-B | OS matrix, packaging, Defender, soak | 5 | W4-A | IN PROGRESS (Windows packaged build, smoke, 75-min soak and CI job done on ws/w5-b; macOS/Linux packaged smoke, 24 h soak, K11 keychain prompts and an exclusion-free Defender check not met: `daemon-backend-soak.md`) |
 
 ## 4. Workstreams
@@ -266,6 +267,29 @@ Each W3 workstream implements the daemon-mode handlers for its channels in `src/
 - **Owns**: CI workflow changes, `docs/design/daemon-backend-checklist.md` inputs (the checklist itself is written separately).
 - **Acceptance**: packaged builds on Windows (`windows-2022` runner), macOS arm64, Linux AppImage start in `local` mode and run the smoke scenario; Defender detections checked with `Get-MpThreatDetection` after a 24 h soak with 5 agents; keychain prompts on macOS observed and documented.
 
+#### W5-I Local daemon is the default backend
+
+- **Goal**: design §4.4, §14 Q6 (owner, 2026-10-16). The PR that merges this branch into `main` makes Local daemon the default for every install; Embedded stays one release as a fallback.
+- **Owns**: `src/main/backend/backend-config.ts` (default), `src/main/backend/first-launch.ts` (new), the renderer Settings → Backend, small hunks in `src/main/index.ts`, `handover.ts` (the `defer` answer) and `mode-switch.ts` (`runBootHandover` option), docs.
+- **Built**: no file and no `ADF_STUDIO_BACKEND` resolve `local` and the first boot writes it; the boot handover runs as after a switch; an install that ran Embedded gets one notice over the window ("Studio now runs agents in the ADF daemon. Moved: …. Settings → Backend has the details.", Open the Guide) and a "Default changed" row; a fresh install shows no dialog. Accounts conflicts at the first launch are deferred and asked over the window, applied at the next start (the macOS boot hang: a parentless dialog before any window). Embedded reads "Embedded (legacy, removed in the next release)".
+- **Tests**: `tests/backend/backend-config.test.ts`, `tests/backend/first-launch.test.ts`, `tests/backend/main-boot-default.test.ts`, `tests/backend/main-boot-fresh.test.ts`, `tests/unit/renderer/backend-settings-default.test.ts`; boot and Settings tests that assumed Embedded as the default now write `mode: embedded`.
+- **Open**: the macOS boot fix (`fix/mac-local-boot`: window before the handover, `windowless-dialog.ts`) changes the order around the same hunks of `index.ts`; with the window created first, `showBootNotices` must still be registered before `ready-to-show` fires (or called at once when the window is already shown).
+
+### Embedded removal (PR-2)
+
+A follow-up PR, a few days after the merge (Q6). Goal: one backend.
+
+| Area | Change |
+|---|---|
+| Boot | `resolveBootBackend` resolves only `local` or `remote`. A file that says `embedded` (installs that chose the fallback) boots `local`: the boot handover moves the sign-ins into the daemon, and the first-launch notice of W5-I is shown with "Embedded was removed in this release". `ADF_STUDIO_BACKEND=embedded` and `--adf-session-backend=embedded` are ignored with a log line |
+| Studio main | Delete the embedded branch of `src/main/index.ts`, the lazy `./ipc` import, `registerAllIpcHandlers` and the embedded-only handlers in `src/main/ipc/**` once no daemon-mode code imports them (shared services stay); `protocol.handle('adf-file')` keeps only the daemon path |
+| Switch | Remove Embedded from Settings → Backend and `MODE_LABELS`; the switch dialog's embedded branches; `relaunchEmbeddedForSession`, `SESSION_BACKEND_ARG`, "Use Embedded Mode for This Session" (version mismatch) and "Use Embedded for This Session" (connection failure, Help menu): the version-mismatch dialog keeps Restart and gains Quit |
+| Handover | Keep `toLocal`. `toEmbedded`, `deleteStudioRuntimeEntry` and the moves back follow the rollback decision below |
+| Tests | Delete `main-boot-embedded*.test.ts` and the embedded switch cases. The parity harness keeps `recordings/*.embedded.txt` as the frozen baseline the daemon side is diffed against; `embeddedBackend` is deleted with `ipc/index.ts` |
+| Docs | Guide, design (§3.2 rules E1-E3 retire, §13), checklist column E, README |
+
+Rollback to 0.7.x after PR-2, decision needed (owner): (a) **re-login** (recommended): no export code; installing 0.7.x finds Studio's runtime identity, owner phrase, providers and agent files untouched (the handover never removed them from `adf-settings.json`), but ChatGPT, Grok and MCP sign-ins must be signed in again, and theme, recent files and fleet layout reset (they live in `studio-client-settings.json`). The guide says so, and that `adf daemon stop` comes first. (b) **sign-ins export back**: keep `runHandover('embedded')` behind a Help menu action "Move Sign-ins Back for 0.7.x" that runs it at the next start and then quits; it keeps the reverse handover, its tests and the marker logic alive for one more release. Until PR-2, the way back is the persistent switch to Embedded (guide, Upgrading from 0.7.x).
+
 ## 5. Risk register
 
 | ID | Risk | Likelihood | Impact | Mitigation | Owner |
@@ -404,6 +428,8 @@ Low-severity items accepted at merge, each with the workstream that picks it up.
 | W5-F | Lease keys and `samePath` (`agent-lease.ts`) fold case on macOS, assuming a case-insensitive volume. On a case-sensitive APFS volume, `Agent-1.adf` and `agent-1.adf` are two files that share one lease (the second is refused with `agent_leased`). NFC folding in `samePath` now matches the key (W5-F) | open: Lead (needs a per-volume case check; behaviour unchanged) |
 | W5-G | `AdfWorkspace.open` runs maintenance writes (skill registry, migrations, meta) under the connection's 5 s `busy_timeout`. Opening a file another program is writing blocks Studio's main process or the daemon's event loop for up to 5 s per write (a daemon review accept of a closed, busy file took 23 s before its 409). The boot sweep probes the lock first (`AdfDatabase.writeLockFree`) and the identity mint waits at most 100 ms; the open itself does not | open: Lead (a short busy_timeout for the open's own writes, or a read-only open, see the W2-A row above) |
 | W5-G | The non-minting paths of `ensureWorkspaceIdentity` run without the file's write lock (pre-existing): the dead-credentials-envelope heal (`dropDeadCredentialsEnvelope` then `provisionEnvelopes`), the runtime-slot re-wrap on unlock, trusted-daemon slots, and owner stamps and attestations for a plain key. Two runtimes healing one file at once can each write a credentials envelope, the last one winning, so the other's cached DEK seals rows no one can open. Only minting (no envelopes, no signing key) runs in BEGIN IMMEDIATE (15172196, 99686322) | open: Lead (run the heal in the same immediate transaction after a read-only check, as the mint does) |
+| W5-I | A conflict deferred at the first launch is answered over the window and applied at the next start, not at once (the daemon already runs on its own session). A "Restart to Apply" button would apply it in the same sitting | open: Lead (after `fix/mac-local-boot` merges; the other boots could defer too, then the accounts dialog before the window goes away) |
+| W5-I | A `studio-backend.json` that cannot be read or names an unknown mode now falls back to Local daemon (was Embedded), so the boot moves credentials to the daemon; the notice in Settings → Backend says the file was ignored | accepted (one default) |
 | W5-H | POSIX residual of the post-commit restore (`AdfDatabase.restoreBackupSync`): the exclusive-lock probe closes after the rename, and SQLite's close unlinks `<file>-wal` by path. A program that opens the restored file and writes between the rename and that close can lose its WAL. Closing the probe first drops the exclusive guarantee (a writer could open the old inode, whose writes the rename orphans), and better-sqlite3 exposes no `SQLITE_FCNTL_PERSIST_WAL` to keep the WAL on close. Reached only when the constructor fails after a committed migration, on macOS or Linux, with another program opening the file in a sub-millisecond window. Fix candidates: a native `PERSIST_WAL` file control, or restoring through the SQLite backup API into the locked connection (async). | Unassigned (accepted at the W5-H merge) |
 
 ## 7. Parity triage (filled in W5-A)

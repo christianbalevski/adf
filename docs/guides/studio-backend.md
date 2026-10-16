@@ -1,6 +1,6 @@
 ---
 type: guide
-description: Where ADF Studio runs agents (Embedded, Local daemon, Remote daemon), switching between them, what moves, quitting, Studio and the terminal app together, version mismatch, recovery, and every message these features show
+description: Where ADF Studio runs agents (Local daemon, the default; Remote daemon; Embedded, legacy), upgrading from 0.7.x, switching between them, what moves, quitting, Studio and the terminal app together, version mismatch, recovery, and every message these features show
 see_also:
   - ../cli/remote-daemon.md — setting up a daemon on another machine (SSH tunnel, LAN, TLS proxy, tailscale serve)
   - ../daemon/operations.md — running the daemon itself: start, stop, data directory, ports, token
@@ -15,18 +15,65 @@ after a restart.
 
 | Backend | Agents run in | Typical use |
 |---|---|---|
-| **Embedded** | Studio's own process | The default. Agents stop when Studio quits |
-| **Local daemon** | An ADF daemon on this computer, with the same settings file and agent files as Studio | Agents keep running without Studio, and Studio and the terminal app (`adf`) show the same agents at the same time |
+| **Local daemon** | An ADF daemon on this computer, with the same settings file and agent files as Studio | The default. Studio and the terminal app (`adf`) show the same agents at the same time; with **Keep the daemon running** on, agents keep running without Studio |
 | **Remote daemon** | An ADF daemon on another computer, reached by URL and token | Agents on a server; Studio on a laptop |
+| **Embedded (legacy, removed in the next release)** | Studio's own process | A fallback for this release only, if the daemon does not work for you. Agents stop when Studio quits |
 
 Without a `studio-backend.json` in Studio's user data folder, Studio runs
-Embedded. The file holds the mode, `keepDaemonRunning`, the remote URL and
-the remote token, encrypted with Electron's safeStorage (DPAPI on Windows,
-the Keychain on macOS, the Secret Service on Linux).
+Local daemon and writes that choice into the file at its first launch, so a
+later release reads an explicit choice. A file that says `"mode": "embedded"`
+keeps Embedded. The file holds the mode, `keepDaemonRunning`, the remote URL
+and the remote token, encrypted with Electron's safeStorage (DPAPI on
+Windows, the Keychain on macOS, the Secret Service on Linux).
 
 Embedded and Local daemon look and behave the same. Remote daemon differs
 where the machine boundary forces it; [Remote daemon in
 Studio](#remote-daemon-in-studio) lists each difference.
+
+## Upgrading from 0.7.x
+
+Studio 0.7.x ran agents itself (Embedded). From this release on, every install
+runs Local daemon, including an install that ran 0.7.x. The first launch after
+the upgrade does what a switch from Embedded to Local daemon in Settings →
+Backend does (see [What moves](#what-moves-during-a-switch)):
+
+1. Studio moves your client settings, ChatGPT and Grok sessions, app-level MCP
+   sign-ins and the runtime identity into the daemon's stores, before it
+   starts the daemon. Agent files, tracked folders, providers and every other
+   setting stay where they are; the daemon uses the same settings file.
+2. It saves `"mode": "local"` to `studio-backend.json`.
+3. It starts the daemon, which starts the agents set to start automatically,
+   from the same tracked folders as Studio did.
+4. Once the window is open, one dialog says "Studio now runs agents in the ADF
+   daemon." and lists what moved ("Moved: Client settings, Owner phrase,
+   Runtime identity, ChatGPT session, MCP sign-ins."). **Open the Guide** opens
+   this section. The dialog appears once; Settings → Backend keeps a
+   **Default changed** row with the date, the version and what moved.
+
+The dialog also says, when it applies:
+
+| Text | Meaning |
+|---|---|
+| "Not done yet, retried at the next start: …" | An item did not move; it stays where it was and Studio retries at each start. See [When a move is not done](#when-a-move-is-not-done) |
+| "Stays in Studio: Runtime identity (…)" and "The daemon runs as its own runtime: …" | This computer has no keychain the daemon can read (Linux without a Secret Service). Agents made in Studio unlock in the daemon only with the owner phrase (`adf identity restore`) or after `adf identity trust-daemon` |
+| "Two accounts: ChatGPT session (Studio: *A*, daemon: *B*). …" | The daemon was signed in to another account before the upgrade (`adf auth login`). Studio asks next which one to keep; see [Two accounts](#two-accounts-the-conflict-dialog) |
+| "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | macOS shows that question when the daemon first reads the key. Choose **Always Allow** |
+
+A fresh install has nothing to move: no dialog appears.
+
+To keep running agents in Studio for this release, choose **Settings →
+Backend → Embedded (legacy, removed in the next release)**. That is the real
+switch: the switch dialog lists what moves back, and Studio restarts and moves
+your sign-ins back into Studio. Do not use `ADF_STUDIO_BACKEND=embedded` for
+this; it starts Studio embedded for one launch without moving anything back.
+
+To go back to 0.7.x, first switch to Embedded as above, check that the summary
+after the restart lists no pending item, quit Studio, stop the daemon
+(`adf daemon stop`) and install 0.7.x. Installing 0.7.x without that switch
+leaves the ChatGPT, Grok and MCP sign-ins with the daemon, and the theme,
+recent files and fleet layout in `studio-client-settings.json`, where 0.7.x
+does not read them: sign in again in 0.7.x. Agent files, providers and the
+owner identity are not affected.
 
 ## Before your daily-driver week
 
@@ -199,7 +246,14 @@ folder. Do not edit it.
 If Studio and the daemon are signed in to the same provider with different
 accounts, Studio asks "Studio and the ADF daemon are signed in to ChatGPT with
 different accounts." (or Grok). Choose **Keep *account* (Studio)** or **Keep
-*account* (daemon)**. The other account's session is signed out here and saved,
+*account* (daemon)**.
+
+At the first launch after an upgrade from 0.7.x, Studio asks this over its
+window, after the upgrade notice, never before the window opens. Until you
+answer, nothing moves: the daemon uses its own session and Studio keeps its
+own, unused. Your answer is saved in `studio-session-choice.json` and applied
+at the next start of Studio. **Decide Later** keeps both, and Studio asks
+again over the window after each start. The other account's session is signed out here and saved,
 encrypted with the daemon's key, as `<provider>/auth.replaced.<time>.json` in
 Studio's user data folder (the dialog names the folder, the summary the file).
 Each account set aside has its own file: a later conflict over another account
@@ -401,11 +455,13 @@ without a question. Settings → Backend shows its version.
 
 ## Run Embedded when the daemon does not work
 
-There are two ways to run agents in Studio again:
+Embedded is the legacy backend. It stays for this release only, as a fallback;
+the next release removes it. There are two ways to run agents in Studio again:
 
-- **Settings → Backend → Embedded**. Studio restarts, and sign-ins and the
-  runtime identity move back (if a daemon still runs on these settings, they
-  stay with it until you stop it).
+- **Settings → Backend → Embedded (legacy, removed in the next release)**.
+  Studio restarts, and sign-ins and the runtime identity move back (if a
+  daemon still runs on these settings, they stay with it until you stop it).
+  This is the persistent way back.
 - **One session**: start Studio with `ADF_STUDIO_BACKEND=embedded`. Only
   client settings move; sign-ins and the runtime identity stay as the saved
   backend keeps them. Settings →
@@ -566,6 +622,10 @@ Every message the backend features show, and where it is explained. Text in
 | "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | [Switch the backend](#switch-the-backend), [Troubleshooting](../cli/troubleshooting.md#macos-keeps-asking-for-keychain-access) |
 | "ADF_STUDIO_BACKEND is set in this environment and overrides this choice …" | [Switch the backend](#switch-the-backend) |
 | "Studio now runs *B*." / "… part of the handover is not done." | [What moves](#what-moves-during-a-switch), [When a move is not done](#when-a-move-is-not-done) |
+| "Studio now runs agents in the ADF daemon." / Open the Guide | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "Default changed" (Settings → Backend) | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "Embedded (legacy, removed in the next release)" | [Run Embedded when the daemon does not work](#run-embedded-when-the-daemon-does-not-work) |
+| "… Studio applies your choice at its next start." / Decide Later | [Two accounts](#two-accounts-the-conflict-dialog) |
 | "Studio and the ADF daemon are signed in to … with different accounts." | [Two accounts](#two-accounts-the-conflict-dialog) |
 | `auth.replaced.<time>.json` | [Two accounts](#two-accounts-the-conflict-dialog) |
 | "not moved back: … still runs on these settings" | [When a move is not done](#when-a-move-is-not-done) |
