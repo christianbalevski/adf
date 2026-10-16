@@ -35,7 +35,7 @@ codeGeneration: { strings: true, wasm: true }
 
 `eval()` and `new Function()` work. They compile inside the sandbox, with the same reach as the code that calls them, and they run under the caller's authorization.
 
-> **Warning:** evaluating file contents from [authorized code](authorized-code.md) gives that file the caller's authorization. `eval((await adf.fs_read({ path })).content)` in an authorized lambda runs whatever the agent last wrote to that file, and it can call restricted tools and methods and `task_resolve` without a HIL prompt. Authorized code MUST NOT evaluate a file unless `fs_read` returns `authorized: true` for it, and that file SHOULD have `protection: 'read_only'`. Prefer `import` for packages, and `adf.sys_lambda` to run another file under its own authorization. See [Evaluating file contents](authorized-code.md#evaluating-file-contents).
+> **Warning:** evaluating file contents from [authorized code](authorized-code.md) gives that file the caller's authorization. `eval((await adf.fs_read({ path })).content)` in an authorized lambda runs whatever the agent last wrote to that file, and it can call restricted tools and methods and `task_resolve` without a HIL prompt. The rules for authorized code are in [Evaluating File Contents](authorized-code.md#evaluating-file-contents).
 
 WebAssembly is enabled for standard library packages that use it (e.g., sql.js, mupdf).
 
