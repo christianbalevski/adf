@@ -44,11 +44,14 @@ Backend does (see [What moves](#what-moves-during-a-switch)):
 2. It saves `"mode": "local"` to `studio-backend.json`.
 3. It starts the daemon, which starts the agents set to start automatically,
    from the same tracked folders as Studio did.
-4. Once the window is open, one dialog says "Studio now runs agents in the ADF
-   daemon." and lists what moved ("Moved: Client settings, Owner phrase,
-   Runtime identity, ChatGPT session, MCP sign-ins."). **Open the Guide** opens
-   this section. The dialog appears once; Settings → Backend keeps a
-   **Default changed** row with the date, the version and what moved.
+4. Once the window is open and Studio has connected to the daemon, one
+   dialog says "Studio now runs agents in the ADF daemon." and lists what moved
+   ("Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session,
+   MCP sign-ins."). **Open the Guide** opens this section. If Studio could not
+   connect, the dialog says "… but could not connect to it." and that no agent
+   runs yet. The dialog appears once: if Studio quits before it was shown, the
+   next launch shows it. Settings → Backend keeps a **Default changed** row
+   with the date, the version and what moved.
 
 The dialog also says, when it applies:
 
@@ -56,10 +59,21 @@ The dialog also says, when it applies:
 |---|---|
 | "Not done yet, retried at the next start: …" | An item did not move; it stays where it was and Studio retries at each start. See [When a move is not done](#when-a-move-is-not-done) |
 | "Stays in Studio: Runtime identity (…)" and "The daemon runs as its own runtime: …" | This computer has no keychain the daemon can read (Linux without a Secret Service). Agents made in Studio unlock in the daemon only with the owner phrase (`adf identity restore`) or after `adf identity trust-daemon` |
-| "Two accounts: ChatGPT session (Studio: *A*, daemon: *B*). …" | The daemon was signed in to another account before the upgrade (`adf auth login`). Studio asks next which one to keep; see [Two accounts](#two-accounts-the-conflict-dialog) |
 | "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | macOS shows that question when the daemon first reads the key. Choose **Always Allow** |
 
 A fresh install has nothing to move: no dialog appears.
+
+If the daemon was signed in to another account before the upgrade
+(`adf auth login`), the accounts dialog of [Two accounts](#two-accounts-the-conflict-dialog)
+appears during the first launch, on the small "ADF Studio is starting" window.
+
+Two cases stop the first launch from moving anything:
+
+| Dialog | Meaning | What to do |
+|---|---|---|
+| "An older ADF daemon (adf *X.Y*, started by the npm CLI) is running and uses the same settings." (or "An ADF daemon that Studio cannot identify is running on port *N* …") | An `adf` installed from npm before this release runs a daemon on Studio's settings. Studio runs Embedded for this launch only: nothing moves, the default is not saved, and Studio does not start your agents set to start automatically, since that daemon may run them | Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio. To run one agent in Studio before that, stop it in the daemon (`adf stop <name>`), then open it in Studio and press Start |
+| "Studio cannot use its backend settings file." with **Use Local Daemon (Recommended)** and **Use Embedded** | `studio-backend.json` could not be parsed (Studio moved it aside as `studio-backend.json.corrupt-*`) or names an unknown mode | Choose one. Studio saves it, then moves your sign-ins to that side |
+| "Studio cannot use or replace its backend settings file." with **… for This Launch** | The file cannot be read (for example `EACCES`); the dialog names the path and the error | Fix its permissions or delete it, then restart Studio. Until then the choice applies to one launch, and no sign-in moves |
 
 To keep running agents in Studio for this release, choose **Settings →
 Backend → Embedded (legacy, removed in the next release)**. That is the real
@@ -248,12 +262,8 @@ accounts, Studio asks "Studio and the ADF daemon are signed in to ChatGPT with
 different accounts." (or Grok). Choose **Keep *account* (Studio)** or **Keep
 *account* (daemon)**.
 
-At the first launch after an upgrade from 0.7.x, Studio asks this over its
-window, after the upgrade notice, never before the window opens. Until you
-answer, nothing moves: the daemon uses its own session and Studio keeps its
-own, unused. Your answer is saved in `studio-session-choice.json` and applied
-at the next start of Studio. **Decide Later** keeps both, and Studio asks
-again over the window after each start. The other account's session is signed out here and saved,
+The dialog opens during the start, before the main window, on a small "ADF
+Studio is starting" window in front. The other account's session is signed out here and saved,
 encrypted with the daemon's key, as `<provider>/auth.replaced.<time>.json` in
 Studio's user data folder (the dialog names the folder, the summary the file).
 Each account set aside has its own file: a later conflict over another account
@@ -625,7 +635,9 @@ Every message the backend features show, and where it is explained. Text in
 | "Studio now runs agents in the ADF daemon." / Open the Guide | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Default changed" (Settings → Backend) | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Embedded (legacy, removed in the next release)" | [Run Embedded when the daemon does not work](#run-embedded-when-the-daemon-does-not-work) |
-| "… Studio applies your choice at its next start." / Decide Later | [Two accounts](#two-accounts-the-conflict-dialog) |
+| "Studio now runs agents in the ADF daemon, but could not connect to it." | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "An older ADF daemon (adf …) is running and uses the same settings." / "An ADF daemon that Studio cannot identify …" | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "Studio cannot use its backend settings file." / "… or replace its backend settings file." | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Studio and the ADF daemon are signed in to … with different accounts." | [Two accounts](#two-accounts-the-conflict-dialog) |
 | `auth.replaced.<time>.json` | [Two accounts](#two-accounts-the-conflict-dialog) |
 | "not moved back: … still runs on these settings" | [When a move is not done](#when-a-move-is-not-done) |
