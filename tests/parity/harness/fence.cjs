@@ -312,12 +312,33 @@ function spawnStrings(name, args) {
 
 const SPAWNERS = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']
 
-/** `name` on PATH, or `%SystemRoot%\System32\name.exe` by full path. */
-function windowsTool(binary, name) {
+/**
+ * True when `binary` runs `%SystemRoot%\System32\<name>.exe`: that absolute
+ * path, or a bare `name` / `name.exe` that libuv resolves to it. libuv looks
+ * in the spawn's cwd first, then each PATH entry, trying `.com` then `.exe`
+ * for a name without an extension; the first file found is run. A bare name
+ * whose first hit is anywhere else (a planted icacls.exe in the cwd or an
+ * earlier PATH entry) is not the system tool.
+ */
+function systemTool(binary, name, options) {
+  const system32 = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', `${name}.exe`).toLowerCase()
   const value = String(binary)
-  if (value.toLowerCase() === name || value.toLowerCase() === `${name}.exe`) return true
-  const system32 = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', `${name}.exe`)
-  return path.win32.normalize(value).toLowerCase() === system32.toLowerCase()
+  if (path.win32.isAbsolute(value)) return path.win32.normalize(value).toLowerCase() === system32
+  const lower = value.toLowerCase()
+  if (lower !== name && lower !== `${name}.exe`) return false
+  const env = options.env && typeof options.env === 'object' ? options.env : process.env
+  const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH')
+  const dirs = [options.cwd ? String(options.cwd) : process.cwd(), ...String(pathKey ? env[pathKey] : '').split(';').filter(Boolean)]
+  const candidates = lower === name ? [`${value}.com`, `${value}.exe`] : [value]
+  for (const dir of dirs) {
+    for (const candidate of candidates) {
+      const full = path.win32.resolve(dir.replace(/^"(.*)"$/, '$1'), candidate)
+      let file = false
+      try { file = rawFs.statSync(full).isFile() } catch { /* not here */ }
+      if (file) return canonical(full).toLowerCase() === canonical(system32).toLowerCase()
+    }
+  }
+  return false
 }
 
 /** daemon/file-ops.ts findDocumentsDir: the Documents shell folder. */
@@ -338,14 +359,14 @@ function currentWindowsUser() {
  * - reg reading the Documents shell folder (daemon/file-ops.ts
  *   findDocumentsDir), a read of one value of one key.
  */
-function allowedWindowsTool(binary, values) {
+function allowedWindowsTool(binary, values, options) {
   if (process.platform !== 'win32' || typeof binary !== 'string') return false
   const argv = values.map(String)
-  if (windowsTool(binary, 'icacls')) {
+  if (systemTool(binary, 'icacls', options)) {
     return argv.length === 4 && argv[1] === '/inheritance:r' && argv[2] === '/grant:r' && argv[3] === `${currentWindowsUser()}:F`
       && path.isAbsolute(argv[0]) && state.writeRoots.some(root => inside(root, canonical(argv[0])))
   }
-  if (windowsTool(binary, 'reg')) return argv.length === DOCUMENTS_KEY.length && argv.every((value, i) => value === DOCUMENTS_KEY[i])
+  if (systemTool(binary, 'reg', options)) return argv.length === DOCUMENTS_KEY.length && argv.every((value, i) => value === DOCUMENTS_KEY[i])
   return false
 }
 
@@ -402,7 +423,7 @@ function fencedSpawner(name, original) {
     const ownTaskkill = process.platform === 'win32' && /^taskkill(?:\.exe)?$/i.test(String(binary))
       && values.length === 4 && values.some(value => String(value).toUpperCase() === '/T')
       && values.some(value => String(value).toUpperCase() === '/F') && pidAt >= 0 && state.children.has(Number(values[pidAt + 1]))
-    const productionTool = (name === 'execFile' || name === 'execFileSync' || name === 'spawn' || name === 'spawnSync') && allowedWindowsTool(binary, values)
+    const productionTool = (name === 'execFile' || name === 'execFileSync' || name === 'spawn' || name === 'spawnSync') && allowedWindowsTool(binary, values, options)
     if (name === 'exec' || name === 'execSync' || options.shell || (!isOwnNode && !ownTaskkill && !productionTool)) {
       throw record('spawn', `${name}: unfenced executable ${binary}`)
     }

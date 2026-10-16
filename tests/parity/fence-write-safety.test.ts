@@ -286,6 +286,28 @@ describe.runIf(process.platform === 'win32')('parity spawn fence: Windows produc
     })
   })
 
+  it('allows them only when they resolve to the System32 binaries', async () => {
+    await guarded('windows-helpers-resolution', async (env) => {
+      const { execFileSync } = await import('node:child_process')
+      const system32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+      // By absolute path: allowed.
+      try { execFileSync(join(system32, 'reg.exe'), DOCUMENTS_KEY, { windowsHide: true, stdio: 'ignore' }) } catch (err) { expect(String(err)).not.toMatch(/parity fence/) }
+      expect(env.violations()).toEqual([])
+      // A planted reg.exe in the spawn's cwd, or in a PATH entry before System32: refused.
+      const planted = join(env.root, 'planted')
+      mkdirSync(planted)
+      writeFileSync(join(planted, 'reg.exe'), '')
+      expect(() => execFileSync('reg', DOCUMENTS_KEY, { cwd: planted, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      expect(() => execFileSync('reg.exe', DOCUMENTS_KEY, { cwd: planted, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      const pathFirst = { ...process.env, PATH: `${planted};${process.env.PATH ?? ''}` }
+      delete (pathFirst as Record<string, string | undefined>).Path
+      expect(() => execFileSync('reg', DOCUMENTS_KEY, { env: pathFirst, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      // Another absolute path: refused.
+      expect(() => execFileSync(join(planted, 'reg.exe'), DOCUMENTS_KEY, { windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      expect(env.violations()).toHaveLength(4)
+    })
+  })
+
   it('refuses every other icacls and reg shape', async () => {
     await guarded('windows-helpers-refused', async (env, state) => {
       const { execFile, execFileSync } = await import('node:child_process')
