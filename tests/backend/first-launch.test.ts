@@ -434,3 +434,14 @@ describe('app before-quit', () => {
     expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(false)
   })
 })
+
+describe('reading its own JSON files', () => {
+  it('strips a leading byte order mark (a file saved by a Windows editor)', async () => {
+    const userData = mkdtempSync(join(tmpdir(), 'adf-first-launch-bom-'))
+    const record = { v: 1, from: 'embedded', to: 'local', at: '2026-10-16T00:00:00.000Z', version: '0.8.0', moved: ['Client settings'], notDone: [], shownAt: '2026-10-16T00:00:01.000Z' }
+    writeFileSync(join(userData, DEFAULT_SWITCH_FILE), String.fromCharCode(0xfeff) + JSON.stringify(record))
+    const backend = { mode: 'local', source: 'file' } as Parameters<typeof settleDefaultBackend>[0]
+    expect(await settleDefaultBackend(backend, userData, null, { version: '0.8.0', log: quiet })).toBeNull()
+    expect(backend.defaultSwitch).toEqual({ at: record.at, version: '0.8.0', moved: ['Client settings'], notDone: [] })
+  })
+})
