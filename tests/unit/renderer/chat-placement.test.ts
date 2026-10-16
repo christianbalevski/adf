@@ -211,10 +211,9 @@ describe('expandRightPanelToTab follows the chat', () => {
 })
 
 /**
- * B6 — the dock tab actually shown. Adds the map-open combination the raw
- * `rightPanel` misses: a center-mode chat that has yielded to the map lends its
- * Loops tab back to the dock, so the dock shows the chat that yielded rather
- * than the non-loop tab parked under it (boot-vs-toggle consistency).
+ * B6 — the dock tab actually shown. A center-mode chat that yields to the map
+ * lends its Loops tab back to the dock: opening the map lands there once, and
+ * the dock's tabs then switch as usual (a permanent override left them dead).
  */
 describe('selectActiveDockPanel', () => {
   it('side placement shows the raw panel', () => {
@@ -227,9 +226,16 @@ describe('selectActiveDockPanel', () => {
     expect(selectActiveDockPanel(useAppStore.getState())).toBe('overview')
   })
 
-  it('center placement yielded to the map shows Loops, whatever was parked under it', () => {
-    useAppStore.setState({ chatPlacement: 'center', rightPanel: 'inbox', showMeshGraph: true })
+  it('center placement: opening the map lands the dock on Loops, and its tabs then switch', () => {
+    useAppStore.setState({ chatPlacement: 'center', rightPanel: 'inbox', showMeshGraph: false })
+    useAppStore.getState().setShowMeshGraph(true)
     expect(selectActiveDockPanel(useAppStore.getState())).toBe('loop')
+    useAppStore.getState().setRightPanel('agent')
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('agent')
+    // Leaving the map: the chat goes back to the stage, so a dock on Loops shows Overview.
+    useAppStore.getState().setRightPanel('loop')
+    useAppStore.getState().setShowMeshGraph(false)
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('overview')
   })
 
   it('side placement on the map is untouched — the dock keeps its real tab', () => {
