@@ -164,3 +164,68 @@ describe('AdfDatabase.open of a file too old to upgrade (W5-H)', () => {
     expect(thrown).not.toBeInstanceOf(AdfSchemaTooOldError)
   })
 })
+
+/**
+ * W5-H: an open that fails after the connection is up (a migration step, or
+ * the constructor's statements) closes the connection, gives back its open
+ * count, leaves no sidecars, and puts the file back from its pre-migration
+ * backup, which it keeps. The backup goes only after a fully successful open.
+ */
+describe('AdfDatabase.open that fails (W5-H)', () => {
+  const forceConstructorFailure = () =>
+    vi.spyOn(AdfDatabase.prototype as unknown as { prepareStatements(): void }, 'prepareStatements')
+      .mockImplementationOnce(() => { throw new Error('forced constructor failure') })
+
+  it('a constructor failure after a migration restores the file from its backup and keeps the backup', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV31Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    forceConstructorFailure()
+
+    expect(() => AdfDatabase.open(filePath)).toThrow('forced constructor failure')
+    expect(readdirSync(dir).sort()).toEqual(['agent-1.adf', 'agent-1.adf.bak'])
+    expect(readFileSync(filePath).equals(readFileSync(`${filePath}.bak`))).toBe(true)
+    expect(AdfDatabase.openFilePaths()).toEqual([])
+    expect(schemaVersion(filePath)).toBe('31')
+    expect(hasIndex(filePath, 'idx_adf_outbox_created')).toBe(false)
+
+    // The next open migrates it.
+    const db = AdfDatabase.open(filePath)
+    try {
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
+      expect(db.getConfig().id).toBe(AGENT_ID)
+    } finally {
+      db.close()
+    }
+  })
+
+  it('a failed migration step restores the file from its backup and keeps the backup', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    writeV31Adf(filePath, { id: AGENT_ID, name: 'agent-1' })
+    // The v31 → v32 step indexes adf_outbox: without the table it throws.
+    const raw = new Database(filePath)
+    raw.exec('DROP TABLE adf_outbox')
+    raw.close()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    expect(() => AdfDatabase.open(filePath)).toThrow(/no such table: (main\.)?adf_outbox/)
+    expect(readdirSync(dir).sort()).toEqual(['agent-1.adf', 'agent-1.adf.bak'])
+    expect(readFileSync(filePath).equals(readFileSync(`${filePath}.bak`))).toBe(true)
+    expect(AdfDatabase.openFilePaths()).toEqual([])
+    expect(schemaVersion(filePath)).toBe('31')
+  })
+
+  it('a constructor failure on a current file closes the connection and leaves no sidecars', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    AdfDatabase.create(filePath, { name: 'agent-1' }).close()
+    forceConstructorFailure()
+
+    expect(() => AdfDatabase.open(filePath)).toThrow('forced constructor failure')
+    expect(readdirSync(dir).sort()).toEqual(['agent-1.adf'])
+    expect(AdfDatabase.openFilePaths()).toEqual([])
+    const db = AdfDatabase.open(filePath)
+    db.close()
+  })
+})
