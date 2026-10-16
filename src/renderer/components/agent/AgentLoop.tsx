@@ -2,10 +2,12 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { useMessageQueueStore, selectQueue } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
+import { queueOwnerMessage, sendQueuedMessages } from '../../utils/queued-delivery'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -1012,9 +1014,9 @@ function LoopStream({ loop }: { loop: string }) {
   const updateEntryAt = useAgentStore((s) => s.updateEntryAt)
   const pendingSuspend = useAgentStore((s) => selectLoopSlice(s, loop).pendingSuspend)
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
-  const messageQueue = useAgentStore((s) => selectLoopSlice(s, loop).messageQueue)
-  const addToQueue = useAgentStore((s) => s.addToQueue)
-  const removeFromQueue = useAgentStore((s) => s.removeFromQueue)
+  // Keyed by agent file, not held in the view: a queue outlives an agent switch.
+  const messageQueue = useMessageQueueStore((s) => selectQueue(s, filePath, loop))
+  const removeQueued = useMessageQueueStore((s) => s.remove)
   const setLog = useAgentStore((s) => s.setLog)
   const config = useAgentStore((s) => s.config)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -1530,18 +1532,15 @@ function LoopStream({ loop }: { loop: string }) {
   }, [input, setInput])
 
   const handleInterruptSend = useCallback((id: string) => {
-    const msg = messageQueue.find(m => m.id === id)
-    if (!msg) return
-    removeFromQueue(id, loop)
-    addLogEntry({
-      id: nanoid(),
-      type: 'user',
-      content: msg.text,
-      timestamp: Date.now(),
-      metadata: msg.imagePreviewUrls && msg.imagePreviewUrls.length > 0 ? { imagePreviewUrls: msg.imagePreviewUrls } : undefined
-    }, loop)
-    window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content, loop)
-  }, [messageQueue, removeFromQueue, addLogEntry, filePath, loop])
+    if (!filePath) return
+    const msg = removeQueued(filePath, loop, id)
+    // A send main does not take puts it back in the queue, marked "Not sent".
+    if (msg) sendQueuedMessages(filePath, loop, [msg])
+  }, [removeQueued, filePath, loop])
+
+  const handleCancelQueued = useCallback((id: string) => {
+    if (filePath) removeQueued(filePath, loop, id)
+  }, [removeQueued, filePath, loop])
 
   const buildSubmitContent = useCallback(
     (message: string, items: PendingAttachment[] = attachments): ContentBlock[] => buildContentBlocks(message, items),
@@ -1569,10 +1568,11 @@ function LoopStream({ loop }: { loop: string }) {
     pinToBottom()
 
     // Autonomous + active: queue message instead of sending directly
-    if (state === 'active') {
-      // Callers already cleared the composer; the queue is keyed by loop so a
-      // message typed into an inner loop's tab is sent to that loop.
-      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, previews, loop)
+    // Callers already cleared the composer; the queue is keyed by agent and
+    // loop so a message typed into an inner loop's tab is sent to that loop,
+    // and it is still there (and still sent) after the owner switches agents.
+    // Older queued messages go first: this one never jumps ahead of them.
+    if (queueOwnerMessage(targetFilePath, loop, state, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews })) {
       return
     }
 
@@ -2222,6 +2222,14 @@ function LoopStream({ loop }: { loop: string }) {
                   {messageQueue.map((msg) => (
                     <div key={msg.id} className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-1.5 py-0.5 text-xs">
                       <span className="flex-1 truncate text-[var(--ink)]">{msg.text}</span>
+                      {msg.error && (
+                        <span
+                          className="shrink-0 text-[10px] text-[var(--status-deprecated)]"
+                          title={`Not sent: ${msg.error}. It stays queued and goes with the next send.`}
+                        >
+                          Not sent
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleInterruptSend(msg.id)}
@@ -2232,7 +2240,7 @@ function LoopStream({ loop }: { loop: string }) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => removeFromQueue(msg.id)}
+                        onClick={() => handleCancelQueued(msg.id)}
                         className="text-[10px] text-[var(--ink-faint)] hover:text-[var(--ink)]"
                       >
                         &times;

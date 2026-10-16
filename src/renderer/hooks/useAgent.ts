@@ -9,6 +9,7 @@ import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
 import { findApprovalTargetEntry } from './approval-target'
 import { pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
+import { deliverQueuedMessages } from '../utils/queued-delivery'
 
 /**
  * Search backwards for the last entry of the given type, but only if it's
@@ -158,25 +159,11 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
           flushLoopDeliveries(loop)
         }
 
-        // Auto-send queued messages when agent goes idle
+        // Auto-send queued messages when the loop goes idle. The queue is the
+        // open agent's (foreground events are only ever about the open file).
         if (displayState === 'idle') {
-          const queue = slice.messageQueue
-          if (queue.length > 0) {
-            const combined = queue.map(m => m.text).join('\n\n')
-            const content = queue.flatMap((m) => m.content ?? [{ type: 'text' as const, text: m.text }])
-            const imagePreviewUrls = queue.flatMap((m) => m.imagePreviewUrls ?? [])
-            const currentFile = useDocumentStore.getState().filePath
-            agentStore.clearQueue(loop)
-            agentStore.addLogEntry({
-              id: nanoid(),
-              type: 'user',
-              content: combined,
-              timestamp: Date.now(),
-              metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
-            }, loop)
-            agentStore.setState('active', loop)
-            window.adfApi?.invokeAgent(combined, currentFile ?? undefined, content, loop)
-          }
+          const currentFile = useDocumentStore.getState().filePath
+          if (currentFile) deliverQueuedMessages(currentFile, loop)
         }
         break
       }
