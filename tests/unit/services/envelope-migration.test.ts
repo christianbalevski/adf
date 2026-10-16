@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import Database from 'better-sqlite3'
 
 const h = vi.hoisted(() => ({ userDataDir: '' }))
 
@@ -287,6 +288,29 @@ describe('sweepEnvelopeMigration never migrates (W5-H)', () => {
       expect(opened.getDid()).not.toBeNull()
     } finally {
       opened.close()
+    }
+  })
+})
+
+describe('sweepEnvelopeMigration read-only peek (W5-H review)', () => {
+  it('waits at most the sweep busy timeout for a locked file and names it busy', async () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'agent-1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'agent-1' })
+    settings.set('reviewedAgents', { [ws.getAgentConfig().id]: 'accepted' })
+    ws.close()
+    // A holder of the exclusive lock: readers too wait on it.
+    const holder = new Database(filePath)
+    holder.pragma('locking_mode = EXCLUSIVE')
+    holder.exec('BEGIN IMMEDIATE; COMMIT')
+    try {
+      const t0 = performance.now()
+      const sweep = await svc.sweepEnvelopeMigration()
+      expect(performance.now() - t0).toBeLessThan(1_000)
+      expect(sweep.failures).toEqual([`${filePath}: busy (another connection is writing it)`])
+    } finally {
+      holder.close()
     }
   })
 })

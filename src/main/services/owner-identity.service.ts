@@ -996,7 +996,14 @@ export class OwnerIdentityService {
         }
         // Read-only first: never migrate (an open would; W5-H: a file too old
         // to upgrade was damaged at every boot), never open an unreviewed file.
-        const status = AdfDatabase.peekSweepStatus(filePath)
+        let status: ReturnType<typeof AdfDatabase.peekSweepStatus>
+        try {
+          status = AdfDatabase.peekSweepStatus(filePath, SWEEP_BUSY_TIMEOUT_MS)
+        } catch (err) {
+          if (!agentFileBusy(err, filePath)) throw err
+          result.failures.push(`${filePath}: busy (another connection is writing it)`)
+          continue
+        }
         if (
           !(status.schemaVersion !== null && status.schemaVersion >= ADF_LATEST_SCHEMA_VERSION) ||
           !status.agentId || !reviewedIds.has(status.agentId)

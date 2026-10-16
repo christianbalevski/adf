@@ -2642,11 +2642,12 @@ export class AdfDatabase {
    * crash leftovers owned by the sweeps — left untouched here. Errors from
    * `fn` (and the open) propagate to the caller's existing catch.
    */
-  private static peekReadonly<T>(filePath: string, fn: (db: Database.Database) => T): T {
+  private static peekReadonly<T>(filePath: string, fn: (db: Database.Database) => T, busyTimeoutMs?: number): T {
     const hadSidecars = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
     let db: Database.Database | null = null
     try {
       db = new Database(filePath, { readonly: true })
+      if (busyTimeoutMs !== undefined) db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`)
       return fn(db)
     } finally {
       try { db?.close() } catch { /* ignore */ }
@@ -2867,9 +2868,10 @@ export class AdfDatabase {
   /**
    * What the boot envelope sweep decides on before opening a file, read
    * read-only: its schema version (null without an adf_meta table, 0 with no
-   * version) and its agent id (null without a config). Errors propagate.
+   * version) and its agent id (null without a config). Errors propagate;
+   * `busyTimeoutMs` bounds the wait for a lock (the sweep's 25 ms).
    */
-  static peekSweepStatus(filePath: string): { schemaVersion: number | null; agentId: string | null } {
+  static peekSweepStatus(filePath: string, busyTimeoutMs?: number): { schemaVersion: number | null; agentId: string | null } {
     return AdfDatabase.peekReadonly(filePath, (db) => {
       const schemaVersion = AdfDatabase.readSchemaVersion(db)
       const hasConfig = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='adf_config'").get()
@@ -2882,7 +2884,7 @@ export class AdfDatabase {
         if (typeof id === 'string' && id) agentId = id
       } catch { /* unparsable config: no id */ }
       return { schemaVersion, agentId }
-    })
+    }, busyTimeoutMs)
   }
 
   static peekBootStatusDetailed(filePath: string): AdfBootStatusResult {
