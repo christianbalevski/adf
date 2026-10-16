@@ -7,7 +7,7 @@ import { join } from 'node:path'
  */
 function createBootHarness() {
   const calls: string[] = []
-  const state = { userData: '', windows: [] as unknown[] }
+  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void> }
   const rec = (name: string) => (...args: unknown[]) => {
     calls.push(args.length && typeof args[0] === 'string' ? `${name}(${args[0]})` : name)
   }
@@ -24,7 +24,8 @@ function createBootHarness() {
     static getFocusedWindow = () => null
     webContents = new FakeWebContents()
     constructor() { calls.push('new BrowserWindow'); state.windows.push(this) }
-    once = () => this
+    /** 'ready-to-show' handlers are kept; a test fires them (fireReadyToShow). */
+    once = (event?: string, fn?: () => void) => { if (event === 'ready-to-show' && fn) state.readyToShow.push(fn); return this }
     on = () => this
     loadURL = rec('window.loadURL')
     loadFile = () => { calls.push('window.loadFile') }
@@ -73,7 +74,16 @@ function createBootHarness() {
     },
     session: { defaultSession: { webRequest: { onHeadersReceived: rec('session.onHeadersReceived') } } },
     shell: { openExternal: async () => {}, openPath: async () => '' },
-    dialog: { showMessageBox: async () => ({ response: 0 }), showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showErrorBox: rec('dialog.showErrorBox') },
+    dialog: {
+      // Recorded with whether it has a parent window: a parentless dialog at boot can hang it (macOS app-modal).
+      showMessageBox: async (...args: unknown[]) => {
+        const opts = (args.length > 1 ? args[1] : args[0]) as { message?: string }
+        calls.push(`dialog.showMessageBox(${args.length > 1 && state.windows.includes(args[0]) ? 'window' : 'no parent'}: ${opts?.message ?? ''})`)
+        return { response: 0 }
+      },
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showErrorBox: rec('dialog.showErrorBox'),
+    },
     Notification: class { static isSupported() { return false } on() { return this } show() {} close() {} },
     Menu: { buildFromTemplate: (t: unknown) => ({ items: t }), setApplicationMenu: rec('Menu.setApplicationMenu') },
     // Daemon mode's ApprovalsUi creates the macOS menu bar icon on darwin.
@@ -95,6 +105,12 @@ function createBootHarness() {
 export const h = createBootHarness()
 
 const EVENTS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK', 'unhandledRejection', 'uncaughtException', 'exit']
+
+/** Fire the main window's 'ready-to-show' handlers, then let their dialogs run. */
+export async function fireReadyToShow(): Promise<void> {
+  for (const fn of h.state.readyToShow.splice(0)) fn()
+  await new Promise((r) => setTimeout(r, 50))
+}
 
 /** Import src/main/index.ts and wait until boot finished (the updater is its last step). Returns a listener cleanup. */
 export async function bootMain(): Promise<() => void> {

@@ -1804,6 +1804,12 @@ export interface IpcHostHooks {
   showMainWindow?: () => BrowserWindow | null
   /** Open an .adf in the main window, as a Finder double-click does. */
   openFile?: (filePath: string) => void
+  /**
+   * Skip the boot autostart of tracked folders, for this reason (logged).
+   * W5-I: a first launch that found an older ADF daemon running these
+   * settings' agents (it takes no agent lease) runs Embedded for one session.
+   */
+  skipBootAutostart?: string
 }
 
 export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
@@ -2100,7 +2106,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     timer.unref?.()
   }
 
-  if (trackedDirs.length > 0) {
+  if (hooks.skipBootAutostart && trackedDirs.length > 0) {
+    console.warn(`[autostart] Boot autostart skipped: ${hooks.skipBootAutostart}`)
+    scheduleBootWalSweep()
+  } else if (trackedDirs.length > 0) {
     const bootScanDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
     void meshBoot.then(() =>
       backgroundAgentManager?.autostartFromDirectories(trackedDirs, bootScanDepth)

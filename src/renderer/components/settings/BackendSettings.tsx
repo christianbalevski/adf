@@ -23,15 +23,32 @@ const MODE_LABELS: Record<StudioBackendMode, string> = {
   remote: 'Remote daemon',
 }
 
+/** The control's options: Embedded is the legacy backend, kept for this release only (owner decision 2026-10-16). */
+const OPTION_LABELS: Record<StudioBackendMode, string> = {
+  ...MODE_LABELS,
+  embedded: 'Embedded (legacy, removed in the next release)',
+}
+
+const EMBEDDED_LEGACY = 'Embedded runs agents inside Studio as before; it stays for this release as a fallback if the daemon does not work for you, and the next release removes it.'
+
 const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
   embedded: 'Agents run inside Studio and stop when Studio quits.',
   local: 'Agents run in an ADF daemon on this computer, with the same settings and files as Studio. Studio starts the daemon or attaches to a running one.',
   remote: 'Agents run in an ADF daemon on another computer, reached by URL and token.',
 }
 
+/** The launch that moved this install off Embedded to the new default (W5-I), in one line. */
+export function defaultSwitchLine(record: NonNullable<BackendSettingsView['defaultSwitch']>): string {
+  const when = Number.isNaN(Date.parse(record.at)) ? record.at : new Date(record.at).toLocaleString()
+  const moved = record.moved.length > 0 ? record.moved.join(', ') : 'nothing'
+  const notDone = record.notDone.length > 0 ? ` Not done then, retried at each start: ${record.notDone.join(' ')}` : ''
+  return `On ${when}, Studio${record.version ? ` ${record.version}` : ''} switched this install from Embedded to Local daemon, the new default. Moved: ${moved}.${notDone}`
+}
+
 function activeLine(view: BackendSettingsView): string {
   const mode = MODE_LABELS[view.active.mode]
   if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
+  if (view.active.source === 'session' && view.active.sessionReason) return `This launch runs ${mode} for this session only: ${view.active.sessionReason}`
   if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match, or it could not be reached). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   return `This launch runs ${mode}.`
@@ -216,14 +233,14 @@ export function BackendSettings() {
       >
         <SettingsRow
           label="Run agents in"
-          description={MODE_DESCRIPTIONS[view.configured.mode]}
+          description={`${MODE_DESCRIPTIONS[view.configured.mode]} ${EMBEDDED_LEGACY}`}
           help={`${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`}
         >
           <SegmentedControl
             value={view.configured.mode}
             options={(['embedded', 'local', 'remote'] as const).map((mode) => ({
               value: mode,
-              label: MODE_LABELS[mode],
+              label: OPTION_LABELS[mode],
               disabled: saving,
             }))}
             onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved.') }}
@@ -243,6 +260,13 @@ export function BackendSettings() {
               <Button disabled={saving} onClick={() => void save('backend', { switchAction: 'cancel' }, '')}>Cancel Switch</Button>
             </div>
           </SettingsRow>
+        )}
+        {view.defaultSwitch && (
+          <SettingsRow
+            separator
+            label="Default changed"
+            description={defaultSwitchLine(view.defaultSwitch)}
+          />
         )}
         {view.daemon && (
           <SettingsRow

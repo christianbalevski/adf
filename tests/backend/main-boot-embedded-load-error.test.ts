@@ -3,7 +3,7 @@
  * same outcome as the static import it replaced (Electron's main-process
  * error dialog, then exit), never a logged rejection with no window.
  */
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, expect, it, vi } from 'vitest'
@@ -27,6 +27,8 @@ h.state.userData = mkdtempSync(join(tmpdir(), 'adf-main-boot-'))
 process.env.ADF_USER_DATA_DIR = h.state.userData
 delete process.env.ADF_STUDIO_BACKEND
 delete process.env.ADF_INSTANCE
+// Embedded explicitly: no studio-backend.json means Local daemon since W5-I.
+writeFileSync(join(h.state.userData, 'studio-backend.json'), JSON.stringify({ v: 1, mode: 'embedded' }))
 const shown: Array<{ title: string; body: string }> = []
 ;(h.electron.dialog as Record<string, unknown>).showErrorBox = (title: string, body: string) => {
   shown.push({ title, body })

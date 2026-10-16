@@ -24,8 +24,8 @@ Modes:
 
 | Mode | Backend | Agents run in |
 |---|---|---|
-| `embedded` | `registerAllIpcHandlers` (`src/main/ipc/index.ts:1864`) | Studio main process |
-| `local` | Daemon on this machine, same settings file and data dir as Studio | Daemon process spawned or attached by Studio |
+| `embedded` | `registerAllIpcHandlers` (`src/main/ipc/index.ts:1864`) | Studio main process. Legacy since Q6 (§14): a fallback for one release |
+| `local` | Daemon on this machine, same settings file and data dir as Studio | Daemon process spawned or attached by Studio. The default since Q6 (§4.4) |
 | `remote` | Daemon on another machine, reached by URL and token | Remote daemon |
 
 R2 applies to `embedded` vs `local`. `remote` differs where the machine boundary forces it (§9.3), and each such difference is listed.
@@ -294,6 +294,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 | f19f3f2e (W5-H review) | `open()` fails closed: the authoritative schema read, moved before the clean-close marker delete, refuses again what the pre-check refuses, and a failed read there fails the open; a busy pre-check fails as locked. An unversioned file (0, or unparsable) is refused unless it has a clone's layout (`adf_audit`, `adf_loop.loop`, no `adf_archive`). With a -wal beside the file the pre-check reads read-only, so a refused file's WAL is not folded into it. The sentence adds "no released version upgrades older files" and points to Troubleshooting. Tests: `adf-database-old-schema.test.ts` "AdfDatabase.open fails closed". | E3 (W5-H review). A pre-check that threw, a repaired file, or an unversioned legacy file still reached the migration; a refused file's hot WAL was checkpointed by the close. |
 | e19e9fb1 (W5-H review; supersedes the migration-step restore of 7771ce09) | The whole migration runs in one `BEGIN IMMEDIATE` transaction (the ladder's transactions nest as savepoints; nothing inside writes a pragma, vacuums or checkpoints); a failure rolls back. File restore only after a committed migration (the constructor), only with no connection in this process, no -wal, and an exclusive lock (busy_timeout 0); POSIX renames under the lock, Windows' rename refuses while another program holds the file; fsync before the rename. Otherwise the `.bak` is kept and the error says why. An existing `.bak` with the same size and SHA-256 is reused. Tests: "AdfDatabase.open migrates in one transaction". | E3 (W5-H review). Non-transactional steps left a half-migrated file; the restore could rename over a file another process had just opened; each failed retry left another `.bak.<time>`. |
 | ef05d6cb (W5-H review) | Clone-fixup writes `adf_schema_version` (latest) when `adf_meta` was deselected. Test: `tests/unit/adf/clone-fixup.test.ts` "restamps the schema version". Clones made before keep version 0 and still migrate on each open. | E3 (W5-H review). Such clones got a backup and the whole migration on every open. |
+| fa36f649 (W5-I E3; characterization first: 82af4a8d) | `IpcHostHooks.skipBootAutostart`: when the host passes a reason, `registerAllIpcHandlers` skips the boot autostart of tracked folders and logs `[autostart] Boot autostart skipped: <reason>`. main/index.ts passes it only for a first launch on the Local daemon default that found an older ADF daemon on these settings and runs Embedded for that session (§4.4); every other boot is unchanged. The watcher's autostart of a new file still runs. Test: `tests/parity/boot-sweep/embedded-boot-autostart.test.ts`. | E3 (W5-I review, accepted by the lead). A 0.7.x daemon takes no agent lease, so an embedded session next to it would start the same agents twice. |
 | 0c5edd3a (W5-H review) | The sweep's read-only peek uses `SWEEP_BUSY_TIMEOUT_MS` (25 ms); a locked file is a named "busy" failure. Test: `envelope-migration.test.ts` "sweepEnvelopeMigration read-only peek". | E3 (W5-H review). The peek waited the default 5 s per locked file. |
 
 ## 4. Settings model
@@ -304,7 +305,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 |---|---|---|
 | **Client** (Studio presentation and Studio-host behaviour) | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars`, `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `nativeNotificationsEnabled`, `menuBarEnabled`, `recentFiles`, `remoteRecentFiles` (remote mode's Open Recent; stays in the client file on a switch to embedded), `updateChecksEnabled`, `spellcheckDownloadsEnabled` | `studio-client-settings.json` (Studio userData) |
 | **Backend** (read by runtime, providers, MCP, adapters, mesh, review, compute, tracked dirs) | every other key, including `trackedDirectories`, `agentsFolder`, `compute`, `remoteCatalogsEnabled`, `providerChecksEnabled`, `skillCatalogSources` (the terminal app reads it) | The daemon's settings file, through `GET/PATCH /settings` and the dedicated routes |
-| **Backend selection** | `mode`, `keepDaemonRunning`, `remote.url`, `remote.token` | `studio-backend.json` (Studio userData), token as `safe:` |
+| **Backend selection** | `mode` (default `local`, §4.4), `keepDaemonRunning` (default `false`), `remote.url`, `remote.token` | `studio-backend.json` (Studio userData), token as `safe:` |
 
 `fleetMapState` carries `burnTotals`, which `ipc/index.ts:5866` reads; in daemon mode the fleet-burn handler reads it from the client file and sends it to the daemon route as a parameter.
 
@@ -322,6 +323,23 @@ Rationale: in `local` mode both processes could share `adf-settings.json`, but t
 ### 4.3 Seeding on switch
 
 Client keys are copied from `adf-settings.json` into `studio-client-settings.json` when switching to a daemon mode, and back when switching to embedded (§11). Nothing else is copied: in `local` mode backend keys already live in the shared file.
+
+### 4.4 Default backend (Q6, W5-I)
+
+No `studio-backend.json` and no `ADF_STUDIO_BACKEND` resolve to `local` (`DEFAULT_BACKEND_MODE`, `backend-config.ts`), for new installs and for 0.7.x installs upgrading. An explicit `"mode": "embedded"` is honoured. A file that exists but cannot be used is never a silent fallback (Bad file below).
+
+| Step | Behaviour (`src/main/backend/first-launch.ts`) |
+|---|---|
+| Handover | The boot handover to `local` runs as after a switch (§11.1): client keys, ChatGPT and Grok sessions, app MCP sign-ins, owner phrase mirror and runtime entry. On a keychain never used the entries are created; without a keychain the daemon can read, the K12 fallback applies (§5.3) and the notice says so. |
+| Bad file (`guardBoot`, before the handover) | `fileProblem` (unreadable, corrupt and quarantined, not an object, unknown mode): a dialog on the boot window (`utils/windowless-dialog.ts`) names the path and the problem and offers Use Local Daemon (Recommended) / Use Embedded; the answer is saved, then the handover runs for it. `writeBlocked` (cannot be read or replaced, e.g. EACCES): the dialog adds the fix, the answer applies to this launch only (source `session`, `sessionReason`; session-only handover, no credential moves), and the next launch asks again. |
+| Older daemon (`guardBoot`) | First launch on the default only: `DaemonProcessController.detect()` on Studio's settings. `unidentified` (no `/version`, another token) or `running` with a lower client API: no handover, the default is not saved, the launch runs Embedded (source `session`) with `IpcHostHooks.skipBootAutostart` (that daemon runs those agents and takes no lease), and a dialog over the main window: "An older ADF daemon (adf X.Y, started by the npm CLI) is running and uses the same settings." with "Stop it with `adf daemon stop`, update the CLI (…), then restart Studio." A current daemon is attached as usual. |
+| Persist | After the handover, before the daemon starts, `persistDefaultBackend` writes the resolved config to `studio-backend.json`. Not on an override launch (`env`, `session`) and not over a file that could not be read. A failed write is logged; the next launch resolves the default again. |
+| Notice | An install with an `adf-settings.json` (it ran Embedded): the notice is kept in `studio-default-switch.pending.json` and shown over the main window once it is ready and the daemon connection settled (`DaemonModeHandle.ready`): "Studio now runs agents in the ADF daemon.", "Moved: …", what stays in Studio, what is not done, the macOS keychain question, "Settings → Backend has the details.", buttons OK / Open the Guide; when the connection failed, "… but could not connect to it." and that no agent runs yet. Once shown, `studio-default-switch.json` records it (one-time; Settings → Backend's "Default changed") and the pending file is removed; a launch that quit before shows it again. A fresh install moves nothing and shows no dialog. |
+| Accounts conflict | The §11.1 accounts dialog, at boot, on the visible boot window (7f6b702a); its answer applies in the same handover. |
+| Running agents | 0.7.x writes no `studio-switch-resume.json`, so nothing is resumed. The daemon autostarts agents from the same `trackedDirectories` in the same settings file, as embedded Studio did. |
+| Fallback | Settings → Backend → "Embedded (legacy, removed in the next release)" is the persistent switch with the reverse handover. `ADF_STUDIO_BACKEND=embedded` is a session-only override that moves no credential back and is not the fallback. |
+
+Tests: `tests/backend/backend-config.test.ts` (resolution: no file, explicit file, env; `persistDefaultBackend`), `tests/backend/first-launch.test.ts` (fresh install, 0.7.x upgrade with credentials on an empty keychain, the notice after the connection or its failure, a quit before the notice, K12, running agents, explicit embedded, bad file, EACCES, older daemon), `tests/backend/main-boot-default.test.ts`, `main-boot-fresh.test.ts` and `main-boot-old-daemon.test.ts` (the real boot).
 
 ## 5. Identity, runtime DID and envelopes
 
@@ -714,9 +732,11 @@ Code: `src/main/backend/handover.ts` (moves, Electron-free), `mode-switch.ts` (d
 
 Embedded code is deleted when all hold: parity harness green on the three OSes; zero open parity bugs of severity "visible"; one week of daily use in `local` mode with no fallback to embedded; the checklist signed off by the owner. Deletion is its own project and is not scheduled here.
 
-## 14. Owner decisions (2026-10-14)
+Q6 (§14, 2026-10-16) schedules it: the PR that merges this branch makes Local daemon the default and keeps Embedded as a fallback for that release; a follow-up PR a few days later deletes Embedded. Its scope is in the tracker, "Embedded removal".
 
-All five were accepted as recommended. Q2 and Q4 were decided by the lead; Q1, Q3 and Q5 by the owner.
+## 14. Owner decisions (2026-10-14, Q6 2026-10-16)
+
+Q1-Q5 (2026-10-14) were accepted as recommended. Q2 and Q4 were decided by the lead; Q1, Q3 and Q5 by the owner. Q6 (2026-10-16) was decided by the owner.
 
 | # | Question | Decision |
 |---|---|---|
@@ -725,3 +745,4 @@ All five were accepted as recommended. Q2 and Q4 were decided by the lead; Q1, Q
 | Q3 | Remote transport: https, loopback tunnel and tailnet only, with an explicit opt-in for other plain-HTTP URLs; no TLS in the daemon? | Yes. |
 | Q4 | R6 reading: existing `window.adfApi` members keep their signatures and semantics, and new members are allowed for backend selection, daemon status and remote file transfer? | Yes. Settings → Backend cannot exist without new members. |
 | Q5 | Embedded code may change only under Rules E1-E3 (§3.2)? | Yes. Copying instead of extracting recreates drift. |
+| Q6 | Which backend is the default, and for how long does Embedded stay? (2026-10-16) | Local daemon for every install: new installs and 0.7.x users upgrading (§4.4). The first launch runs the handover automatically and shows one notice. Embedded stays selectable for that one release as a fallback, labelled legacy, through the persistent switch; a follow-up PR a few days later deletes it. Goal: one backend to maintain. |
