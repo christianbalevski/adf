@@ -872,6 +872,10 @@
 17. invoke adf:agent:invoke  [pushes 9→10]
   args:
     -
+      content:
+        -
+          text: "Queued for main."
+          type: "text"
       filePath: "<ROOT>/agents/agent-2.adf"
       loop: "main"
       userMessage: "Queued for main."
@@ -890,6 +894,10 @@
 21. invoke adf:agent:invoke  [pushes 12→13]
   args:
     -
+      content:
+        -
+          text: "Queued for critic."
+          type: "text"
       filePath: "<ROOT>/agents/agent-2.adf"
       loop: "critic"
       userMessage: "Queued for critic."

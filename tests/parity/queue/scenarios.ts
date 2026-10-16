@@ -1,14 +1,19 @@
 import { IPC } from '../../../src/shared/constants/ipc-channels'
+import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
+import { useMessageQueueStore, queuedLoops } from '../../../src/renderer/stores/message-queue.store'
+import { deliverSettledBackgroundQueues, deliverSettledQueues, queueOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
+import { foldAgentStatuses } from '../../../src/renderer/utils/background-agent-statuses'
 import type { LlmReply, LlmRequestView } from '../harness/mock-llm'
 import type { ParityScenario, ScenarioContext } from '../harness/scenario'
 
 /**
  * W5-L's parity scenarios: the queued-message fix (fix/queued-message-nav)
  * and the calibrated context breakdown (fix/context-breakdown) from main,
- * as the renderer drives them. The queue itself is renderer state; what the
- * backends must agree on is every signal it acts on (each loop's own turn
- * end in the background batch, the loop states a re-attach answers) and
- * what a send answers.
+ * as the renderer drives them. The queue is renderer state: the queue
+ * scenario runs the renderer's own store and delivery code against the
+ * backend, so what is compared is every signal the queue acts on (each
+ * loop's own turn end in the background batch, the loop states a re-attach
+ * answers) and the sends it makes on them.
  */
 
 type AgentEvent = { type?: string; loop?: string; payload?: { state?: string; filePath?: string; loop?: string } }
@@ -56,10 +61,33 @@ const held = (hold: Hold, text: string): LlmReply => {
 }
 const said = (req: LlmRequestView, text: string) => req.messages.some((m) => m.role === 'user' && m.text.includes(text))
 
+/**
+ * The renderer's `window.adfApi.invokeAgent` over this run's backend (the
+ * preload's own argument shape), for the renderer queue code the scenario
+ * runs. Every send it makes is kept, so the scenario can wait for it.
+ * Undone by the returned function.
+ */
+function rendererBridge(ctx: ScenarioContext): { sends: Promise<unknown>[]; restore: () => void } {
+  const sends: Promise<unknown>[] = []
+  const g = globalThis as { window?: unknown }
+  const before = g.window
+  g.window = {
+    adfApi: {
+      platform: process.platform,
+      invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) => {
+        const sent = ctx.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop })
+        sends.push(sent)
+        return sent
+      },
+    },
+  }
+  return { sends, restore: () => { g.window = before } }
+}
+
 export const queuedAcrossSwitchScenario: ParityScenario = {
   name: 'queued-across-switch',
   description:
-    'agent-2 is mid-turn in main and in its inner loop critic when the owner switches to agent-1 (a message is queued for each). Each loop\'s turn end arrives in the background batch on its own, the queued messages go then, and the switch back re-attaches with the loop states.',
+    'agent-2 is mid-turn in main and in its inner loop critic; the owner queues a message for each (the renderer queue) and switches to agent-1. Each loop\'s turn end arrives in the background batch on its own and the renderer\'s delivery sends that loop\'s queue then; the switch back re-attaches with the loop states and finds nothing left to send.',
   fixtures: [
     { name: 'agent-1' },
     { name: 'agent-2', loops: [{ name: 'critic', goal: 'Review what agent-2 writes.', enabled: true, autostart: false, tools: [] }] },
@@ -77,6 +105,17 @@ export const queuedAcrossSwitchScenario: ParityScenario = {
     holds = { main: { arrived: gate(), reply: gate() }, critic: { arrived: gate(), reply: gate() } }
     const agent1 = ctx.agent('agent-1')
     const agent2 = ctx.agent('agent-2')
+    useMessageQueueStore.setState({ queues: {} })
+    const renderer = rendererBridge(ctx)
+    /** What useBackgroundAgents does with each batch: fold the list, then deliver settled queues. */
+    let agents: BackgroundAgentStatus[] = []
+    const onBatch = (batch: unknown) => {
+      const events = batch as RendererBackgroundAgentEvent[]
+      agents = foldAgentStatuses(agents, events)
+      deliverSettledBackgroundQueues(agents, events, () => false)
+    }
+    /** The renderer's sends made since `from`, awaited (each resolves once its turn ended). */
+    const sendsSettled = (from: number) => Promise.all(renderer.sends.slice(from))
     try {
       await openAgent(ctx, agent2.filePath)
       await ctx.invoke(IPC.AGENT_START, { filePath: agent2.filePath, hasUserMessage: true })
@@ -91,34 +130,53 @@ export const queuedAcrossSwitchScenario: ParityScenario = {
       await ctx.waitForPush(IPC.AGENT_EVENT, 'critic thinking', isLoopState('thinking', 'critic'))
       await holds.critic.arrived.promise
 
+      // The owner types into each busy loop's composer: queued, nothing sent.
+      if (!queueOwnerMessage(agent2.filePath, 'main', 'active', 'active', { text: 'Queued for main.' })) throw new Error('main: not queued')
+      if (!queueOwnerMessage(agent2.filePath, 'critic', 'active', 'active', { text: 'Queued for critic.' })) throw new Error('critic: not queued')
+
       // The owner switches away: agent-2 is announced in the background with
       // both loops busy, then (next batch window) its busy inner-loop count.
       await ctx.invoke(IPC.FILE_OPEN, { filePath: agent1.filePath })
-      await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 listed in the background', inBatch('agent_started', agent2.filePath))
-      await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 inner loop busy', inBatch('agent_loops_changed', agent2.filePath))
+      onBatch(await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 listed in the background', inBatch('agent_started', agent2.filePath)))
+      onBatch(await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 inner loop busy', inBatch('agent_loops_changed', agent2.filePath)))
       await ctx.invoke(IPC.DOC_GET_BATCH)
       for (const path of ['mind.md', 'soul.md']) await ctx.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: false })
+      // Daemon mode: the bridge re-learns every running agent here, inner loops mid-turn included (seed).
       await ctx.invoke(IPC.BACKGROUND_AGENT_STATUS)
+      if (renderer.sends.length > 0) throw new Error('a queue was sent while its loop was busy')
 
-      // main's turn ends in the background: deliverSettledBackgroundQueues sends main's queue.
+      // main's turn ends in the background: the renderer sends main's queue.
       holds.main.reply.open()
-      await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 main idle', inBatch('agent_state_changed', agent2.filePath, (p) => p?.state === 'idle'))
+      const mainIdle = await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 main idle', inBatch('agent_state_changed', agent2.filePath, (p) => p?.state === 'idle'))
       await mainTurn
       await nextSecond()
-      await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Queued for main.', filePath: agent2.filePath, loop: 'main' })
+      let from = renderer.sends.length
+      onBatch(mainIdle)
+      if (renderer.sends.length !== from + 1) throw new Error('main: the queue was not sent on its turn end')
+      await sendsSettled(from)
       await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 main idle after the queued message', inBatch('agent_state_changed', agent2.filePath, (p) => p?.state === 'idle'))
 
       // critic's turn ends: its own transition (the busy count alone would not say which loop).
       holds.critic.reply.open()
-      await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 critic idle', inBatch('agent_loop_state_changed', agent2.filePath, (p) => p?.loop === 'critic' && p?.state === 'idle'))
+      const criticIdle = await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 critic idle', inBatch('agent_loop_state_changed', agent2.filePath, (p) => p?.loop === 'critic' && p?.state === 'idle'))
       await criticTurn
       await nextSecond()
-      await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Queued for critic.', filePath: agent2.filePath, loop: 'critic' })
+      from = renderer.sends.length
+      onBatch(criticIdle)
+      if (renderer.sends.length !== from + 1) throw new Error('critic: the queue was not sent on its turn end')
+      await sendsSettled(from)
       await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 critic idle after the queued message', inBatch('agent_loop_state_changed', agent2.filePath, (p) => p?.loop === 'critic' && p?.state === 'idle'))
+      if (queuedLoops(useMessageQueueStore.getState(), agent2.filePath).length > 0) throw new Error('a queued message was not delivered')
 
-      // Back to agent-2: the re-attach answers main's state and every inner loop's.
+      // Back to agent-2: the re-attach answers main's state and every inner
+      // loop's; the renderer's re-attach delivery finds nothing left.
       const back = await openAgent(ctx, agent2.filePath)
-      if (back?.agentWasRunning) await ctx.invoke(IPC.AGENT_START)
+      if (back?.agentWasRunning) {
+        const started = await ctx.invoke<{ agentState?: string; loopStates?: Record<string, string> }>(IPC.AGENT_START)
+        from = renderer.sends.length
+        deliverSettledQueues(agent2.filePath, { main: started?.agentState ?? 'off', ...started?.loopStates }, started?.agentState)
+        if (renderer.sends.length !== from) throw new Error('the re-attach sent a queue that was already delivered')
+      }
       await ctx.invoke(IPC.DOC_GET_CHAT, {})
       await ctx.invoke(IPC.DOC_GET_CHAT, { loop: 'critic' })
       await ctx.invoke(IPC.AGENT_STOP)
@@ -126,6 +184,8 @@ export const queuedAcrossSwitchScenario: ParityScenario = {
       holds.main.reply.open()
       holds.critic.reply.open()
       holds = null
+      renderer.restore()
+      useMessageQueueStore.setState({ queues: {} })
     }
   },
 }
@@ -133,22 +193,30 @@ export const queuedAcrossSwitchScenario: ParityScenario = {
 export const failedSendScenario: ParityScenario = {
   name: 'failed-send',
   description:
-    'Sends that are refused: to the open agent before it runs, and to another agent that is not running. Each is only answered (the renderer shows "Not sent"); then the open agent starts and the retried send goes through.',
-  fixtures: [{ name: 'agent-1' }, { name: 'agent-2' }],
+    'Sends that are refused: to the open agent before it runs (main and its inner loop critic), and to another agent that is not running. Each is only answered (the renderer shows "Not sent"); then the open agent starts and the retried sends go through.',
+  fixtures: [
+    { name: 'agent-1', loops: [{ name: 'critic', goal: 'Review what agent-1 writes.', enabled: true, autostart: false, tools: [] }] },
+    { name: 'agent-2' },
+  ],
   quietMs: 1000,
-  llm: (req) => (req.isPreflight ? { text: 'ok' } : { text: 'Got it this time.' }),
+  llm: (req) => (req.isPreflight ? { text: 'ok' } : { text: said(req, 'To the critic.') ? 'Critic got it this time.' : 'Got it this time.' }),
   async run(ctx) {
     const agent1 = ctx.agent('agent-1')
     const agent2 = ctx.agent('agent-2')
     await openAgent(ctx, agent1.filePath)
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Before the start.', filePath: agent1.filePath })
+    await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'To the critic.', filePath: agent1.filePath, loop: 'critic' })
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'To a stopped agent.', filePath: agent2.filePath })
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'To a stopped loop.', filePath: agent1.filePath, loop: 'main' })
     await ctx.invoke(IPC.AGENT_START, { filePath: agent1.filePath, hasUserMessage: true })
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Before the start.', filePath: agent1.filePath })
     await ctx.waitForPush(IPC.AGENT_EVENT, 'turn complete', isEvent('turn_complete'))
     await ctx.waitForPush(IPC.AGENT_EVENT, 'back to idle', isLoopState('idle'))
+    await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'To the critic.', filePath: agent1.filePath, loop: 'critic' })
+    await ctx.waitForPush(IPC.AGENT_EVENT, 'critic turn complete', (p) => isEvent('turn_complete')(p) && (p as AgentEvent).loop === 'critic')
+    await ctx.waitForPush(IPC.AGENT_EVENT, 'critic back to idle', isLoopState('idle', 'critic'))
     await ctx.invoke(IPC.DOC_GET_CHAT, {})
+    await ctx.invoke(IPC.DOC_GET_CHAT, { loop: 'critic' })
     await ctx.invoke(IPC.AGENT_STOP)
   },
 }

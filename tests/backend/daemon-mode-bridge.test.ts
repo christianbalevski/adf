@@ -207,6 +207,19 @@ describe('event bridge', () => {
     expect(batched).toHaveLength(count)
   })
 
+  it("seed: an agent first learned mid-turn in an inner loop reads busy there, so that loop's turn end is a transition", async () => {
+    const { batched, session, bridge } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    // Studio connects (or pulls BACKGROUND_AGENT_STATUS) while agent-2's critic is mid-turn.
+    bridge.seed([{ id: AGENT_2, filePath: FILE_2, handle: 'agent-2', runtimeState: 'idle', loopStates: { critic: 'thinking' } } as never])
+    expect(bridge.runningAgents().find((a) => a.agentId === AGENT_2)?.mapping).toMatchObject({ activeLoops: 1, loopStates: new Map([['critic', 'active']]) })
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_2, filePath: FILE_2, event: { type: 'state_changed', payload: { state: 'idle' }, timestamp: 1, loop: 'critic' } })
+    expect(batched.map((e) => [e.type, e.payload.loop ?? e.payload.activeLoops, e.payload.state])).toEqual([
+      ['agent_loop_state_changed', 'critic', 'idle'],
+      ['agent_loops_changed', 0, undefined],
+    ])
+  })
+
   it("a failed chat to a background agent: the error, and an idle only when its loop reads busy (no repeated idle to retry a queue on)", async () => {
     const { batched, session, bridge } = setup()
     await focus(session, FILE_1, AGENT_1)
