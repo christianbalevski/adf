@@ -114,6 +114,23 @@ The owner's daily use does not replace the 24 h soak or the Defender check. It r
 
 The lead builds the daily-use installer from `feat/daemon-backend` after all merges, versioned `0.8.0-daemon.N`. It is not built from this branch.
 
+### Build 0.8.0-daemon.2 (2026-10-16)
+
+| Item | Value |
+|---|---|
+| Source | `feat/daemon-backend` at `45d76b2d` (W5-G merge; CI green on all five jobs, run 38768596787) |
+| Version | `0.8.0-daemon.2`, set in the build copy's `package.json` and `package-lock.json` only (not committed) |
+| Installer | `%TEMP%\adf-daemon-dist\ADF Studio Setup 0.8.0-daemon.2.exe`, unsigned (the `.1` installer is kept next to it) |
+| Size | 171,190,429 bytes |
+| SHA-256 | `622958688bfd2fab69bcfb86351a8c04e42fbdd7a85bbc75fa75cb76d6c6249d` |
+| Recipe | as for 0.8.0-daemon.1; the copy was deleted afterwards |
+
+Checks on this build:
+
+- asar: same contents as 0.8.0-daemon.1 (daemon bundle, 7 chunks, native modules, `better_sqlite3.node` unpacked); all 56 bare imports resolve; `package.json` in the asar reads `0.8.0-daemon.2`; the daemon bundle sets `maxParamLength: 16 * 1024`.
+- Smoke, isolated as before (`--instance=d9`, port 7495, `CONTAINER_HOST` blocked): started in Embedded, whose boot sweep logged "Envelope sweep: 2 provisioned, 0 rows sealed, 0 failure(s)"; About shows "Version 0.8.0-daemon.2"; the switch to Local daemon restarted Studio on a daemon reporting 0.8.0-daemon.2; the daemon logged its boot sweep line ("Envelope sweep skipped: the owner identity is not ready, so no tracked agent was provisioned; it runs when the owner identity becomes ready in this daemon run": the isolated daemon has no owner identity); `agent-1` and `agent-2` answered from the mock LLM. `agent-2` lives at a 156-character path (178 URL-encoded): Studio opened, started and chatted with it, and after the daemon kill restarted it, with no 414 anywhere in Studio's or the daemon's log; `GET /agents/<encoded path>/status` answered 404 "Unknown agent" (the router accepts the id; that route looks up ids, handles and names), not 414. After `taskkill /T /F` of the daemon Studio started it again within 3 s ("Agents running again: 2 of 2") and the next turn was answered; closing the window stopped the daemon and left no process. The owner's containers were the same before and after.
+- Updater: unchanged. "Update for version 0.8.0-daemon.2 is not available (latest version: 0.7.8, downgrade is disallowed)"; About → Check for updates shows "v0.8.0-daemon.2 is the latest version."
+
 ### Build 0.8.0-daemon.1 (2026-10-15)
 
 | Item | Value |
