@@ -870,7 +870,11 @@ export class AgentExecutor extends EventEmitter {
       )
       const cut = lastCall ? lastCall.index : messages.length
       const prior = tc.estimateMessagesTokensSplit(messages.slice(0, cut), reasoningBySeq)
-      const since = tc.estimateMessagesTokensSplit(messages.slice(cut), reasoningBySeq)
+      // The reply the call produced counts its exact output (what the gauge
+      // adds to the input); only content after it is estimated.
+      const replyTokens = lastCall?.replyTokens
+      const since = tc.estimateMessagesTokensSplit(messages.slice(replyTokens !== undefined ? cut + 1 : cut), reasoningBySeq)
+      if (replyTokens !== undefined) since.reported += replyTokens
       const breakdown = assembleContextBreakdown({
         systemPromptTokens: this.systemPromptCache.promptTokens,
         systemPromptParts: this.systemPromptCache.promptParts,
@@ -883,7 +887,7 @@ export class AgentExecutor extends EventEmitter {
         messagesTokens: prior.estimated + prior.reported + since.estimated + since.reported,
       })
       return lastCall
-        ? calibrateContextBreakdown(breakdown, { lastCallTokens: lastCall.promptTokens, prior, since })
+        ? calibrateContextBreakdown(breakdown, { lastCallTokens: lastCall.promptTokens, prior, since, replyTokens })
         : breakdown
     } catch {
       return null

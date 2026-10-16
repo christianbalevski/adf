@@ -10,7 +10,7 @@
  */
 
 import type { AgentConfig } from '../types/adf-v02.types'
-import type { ContextBreakdown } from '../types/ipc.types'
+import type { ContextBreakdown, ContextCalibration } from '../types/ipc.types'
 
 /** The executor's fallback auto-compact trigger point. */
 export const DEFAULT_COMPACT_THRESHOLD = 100000
@@ -87,6 +87,22 @@ export interface ContextCategory {
  */
 export function contextTotal(b: ContextBreakdown): number {
   return b.system_prompt_tokens + b.tools_total_tokens + b.messages_tokens + b.dynamic_instructions_tokens
+}
+
+/** Tokens added after the last call's reply: the only estimated part of a calibrated total. */
+export function estimatedSinceTokens(cal: ContextCalibration): number {
+  return Math.max(0, cal.since_last_call_tokens - cal.reply_tokens)
+}
+
+/**
+ * One line on how the total was measured and how it relates to the context
+ * gauge, which shows the last call's prompt + reply (input + output).
+ */
+export function calibrationNote(cal: ContextCalibration | undefined, fmt: (n: number) => string, approx = '≈'): string {
+  if (!cal) return `${approx} estimate: no call to calibrate to (none recorded yet, or the prompt, tools or model changed since).`
+  const head = `Calibrated to the last call: ${fmt(cal.last_call_tokens)} prompt + ${fmt(cal.reply_tokens)} reply, as the gauge shows`
+  const newer = estimatedSinceTokens(cal)
+  return newer > 0 ? `${head}; ${approx}${fmt(newer)} added since is an estimate the gauge counts after the next call.` : `${head}.`
 }
 
 const byTokens = <T extends { tokens: number }>(list: T[]): T[] => [...list].sort((a, b) => b.tokens - a.tokens)
@@ -178,8 +194,8 @@ export function contextCategories(b: ContextBreakdown, maxItems = 12): ContextCa
       label: 'Since last call',
       tokens: cal.since_last_call_tokens,
       items: [],
-      note: 'Added after the last call: estimated at the calibrated ratio.',
-      estimated: true,
+      note: 'The last call’s reply (its reported output) plus anything added after it (estimated).',
+      estimated: estimatedSinceTokens(cal) > 0,
     })
   }
   return byTokens(categories)

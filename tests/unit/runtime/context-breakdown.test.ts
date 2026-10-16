@@ -7,6 +7,7 @@ import {
   apportion,
 } from '../../../src/main/runtime/context-breakdown'
 import { renderInjectedFile, MISSING_FILE_SENTINEL } from '../../../src/main/runtime/prompt-file-injection'
+import { calibrationNote } from '../../../src/shared/utils/context-breakdown'
 import { McpTool } from '../../../src/main/tools/mcp-tool'
 import type { McpClientManager } from '../../../src/main/services/mcp-client-manager'
 import type { ToolProviderFormat } from '../../../src/shared/types/tool.types'
@@ -175,7 +176,7 @@ describe('calibrateContextBreakdown', () => {
     })
     expect(sum(b)).toBe(94_000)
     expect(b.overhead_tokens).toBe(b.system_prompt_tokens + b.tools_total_tokens)
-    expect(b.calibration).toEqual({ last_call_tokens: 94_000, ratio: 94_000 / 49_600, since_last_call_tokens: 0 })
+    expect(b.calibration).toEqual({ last_call_tokens: 94_000, ratio: 94_000 / 49_600, since_last_call_tokens: 0, reply_tokens: 0 })
     // Proportions are kept: conversation stays ~74.6% of the whole.
     expect(b.messages_tokens).toBe(Math.round(37_000 * (94_000 / 49_600)))
     // Sub-parts are rescaled consistently with their parent.
@@ -206,6 +207,26 @@ describe('calibrateContextBreakdown', () => {
     const since = Math.round(1_500 * (94_000 / 49_600)) + 500
     expect(b.calibration!.since_last_call_tokens).toBe(since)
     expect(sum(b)).toBe(94_000 + since)
+  })
+
+  it('counts the reply from its exact output: prompt + reply equals the gauge', () => {
+    const b = calibrateContextBreakdown(estimated(39_000), {
+      lastCallTokens: 94_000,
+      prior: { estimated: 37_000, reported: 0 },
+      since: { estimated: 0, reported: 1_800 },
+      replyTokens: 1_800,
+    })
+    expect(b.calibration).toMatchObject({ since_last_call_tokens: 1_800, reply_tokens: 1_800 })
+    expect(sum(b)).toBe(94_000 + 1_800)
+    expect(calibrationNote(b.calibration, String)).toBe('Calibrated to the last call: 94000 prompt + 1800 reply, as the gauge shows.')
+    expect(calibrationNote(undefined, String)).toMatch(/^≈ estimate/)
+    const later = calibrateContextBreakdown(estimated(40_000), {
+      lastCallTokens: 94_000,
+      prior: { estimated: 37_000, reported: 0 },
+      since: { estimated: 1_000, reported: 1_800 },
+      replyTokens: 1_800,
+    })
+    expect(calibrationNote(later.calibration, String)).toContain(`≈${Math.round(1_000 * (94_000 / 49_600))} added since is an estimate`)
   })
 
   it('treats reasoning that over-subtracts as an estimate', () => {

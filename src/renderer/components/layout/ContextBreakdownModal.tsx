@@ -4,7 +4,7 @@ import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { MAIN_LOOP, selectLoopSlice, useAgentStore } from '../../stores/agent.store'
 import { loopColor } from '../../utils/loop-color'
-import { resolveHostThreshold, resolveLoopThreshold } from '../../../shared/utils/context-breakdown'
+import { calibrationNote, estimatedSinceTokens, resolveHostThreshold, resolveLoopThreshold } from '../../../shared/utils/context-breakdown'
 import type { ContextBreakdown, ContextBreakdownToolGroup } from '../../../shared/types/ipc.types'
 import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
@@ -318,14 +318,10 @@ export function ContextBreakdownModal({
               <Row label="Dynamic instructions" tokens={b.dynamic_instructions_tokens} estimate={est} />
             </div>
             <Row label="Conversation" tokens={b.messages_tokens - (cal?.since_last_call_tokens ?? 0)} estimate={est} />
-            {cal && <Row label="Since last call" tokens={cal.since_last_call_tokens} estimate />}
+            {cal && <Row label="Since last call" tokens={cal.since_last_call_tokens} estimate={estimatedSinceTokens(cal) > 0} />}
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
-              <Row label="Total" tokens={total} bold estimate={!cal || cal.since_last_call_tokens > 0} />
-              <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
-                {cal
-                  ? `Calibrated to the last call’s real prompt (${formatTokens(cal.last_call_tokens)}).`
-                  : 'No call recorded yet: every figure is an estimate.'}
-              </p>
+              <Row label="Total" tokens={total} bold estimate={!cal || estimatedSinceTokens(cal) > 0} />
+              <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">{calibrationNote(cal, formatTokens)}</p>
             </div>
           </div>
 

@@ -78,7 +78,7 @@ describe('context model', () => {
   })
 
   it('calibrated: only the content since the last call is an estimate, and it gets its own row', () => {
-    const b = { ...mockBreakdown(10), calibration: { last_call_tokens: 90_000, ratio: 1.8, since_last_call_tokens: 1_200 } }
+    const b = { ...mockBreakdown(10), calibration: { last_call_tokens: 90_000, ratio: 1.8, since_last_call_tokens: 1_200, reply_tokens: 200 } }
     const cats = contextCategories(b, 5)
     expect(cats.reduce((n, c) => n + c.tokens, 0)).toBe(contextTotal(b))
     const recent = cats.find(c => c.id === 'recent')!

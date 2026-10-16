@@ -24,7 +24,7 @@ describe('findLastCall', () => {
 
   it('cuts at the newest usage row and returns its real prompt size', () => {
     expect(findLastCall([row(2, { input: 50_000, cache_read: 0 }), row(3, { input: 94_000, output: 300, cache_read: 0 })], messages, false, ok))
-      .toEqual({ index: 2, promptTokens: 94_000 })
+      .toEqual({ index: 2, promptTokens: 94_000, replyTokens: 300 })
   })
 
   it('returns null with no recorded usage', () => {

@@ -132,14 +132,14 @@ export function findLastCall(
   messages: Array<{ seq?: number }>,
   baselineEstimated: boolean,
   fixedPartsMatch: (seq: number) => boolean
-): { index: number; promptTokens: number } | null {
+): { index: number; promptTokens: number; replyTokens: number | undefined } | null {
   const last = rows.length > 0 ? rows[rows.length - 1] : undefined
   if (!last || last.tokens.estimated || baselineEstimated || !fixedPartsMatch(last.seq)) return null
   if (!hasReportedUsage(last.tokens)) return null
   const promptTokens = last.tokens.input ?? 0
   if (!(promptTokens > 0)) return null
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].seq === last.seq) return { index: i, promptTokens }
+    if (messages[i].seq === last.seq) return { index: i, promptTokens, replyTokens: last.tokens.output }
   }
   return null
 }
@@ -175,7 +175,14 @@ export const CALIBRATION_RATIO_MAX = 3
  */
 export function calibrateContextBreakdown(
   b: ContextBreakdown,
-  c: { lastCallTokens: number; prior: MessageTokenSplit; since: MessageTokenSplit }
+  c: {
+    lastCallTokens: number
+    prior: MessageTokenSplit
+    /** Added after the call; `reported` already includes `replyTokens`. */
+    since: MessageTokenSplit
+    /** The call's API-reported output, when the reply is counted from it. */
+    replyTokens?: number
+  }
 ): ContextBreakdown {
   if (!(c.lastCallTokens > 0)) return b
   const fixed = [b.system_prompt_tokens, b.tools_total_tokens, b.dynamic_instructions_tokens]
@@ -224,6 +231,6 @@ export function calibrateContextBreakdown(
     dynamic_instructions_tokens: dynamic,
     messages_tokens: prior + reported + since,
     overhead_tokens: system + tools,
-    calibration: { last_call_tokens: c.lastCallTokens, ratio, since_last_call_tokens: since },
+    calibration: { last_call_tokens: c.lastCallTokens, ratio, since_last_call_tokens: since, reply_tokens: c.replyTokens ?? 0 },
   }
 }

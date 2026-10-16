@@ -106,7 +106,9 @@ describe('GET /agents/:id/context', () => {
     }
     const after = await context()
     expect(after.breakdown.calibration.last_call_tokens).toBe(provider.promptTokens)
-    expect(after.totalTokens).toBe(provider.promptTokens + after.breakdown.calibration.since_last_call_tokens)
+    // Nothing after the reply: prompt + the reply's reported output, the gauge's figure.
+    expect(after.breakdown.calibration).toMatchObject({ reply_tokens: 40, since_last_call_tokens: 40 })
+    expect(after.totalTokens).toBe(provider.promptTokens + 40)
 
     // New instructions: the system prompt measured now is not the one sent.
     const config = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/config` })).json().config as AgentConfig

@@ -504,8 +504,10 @@ export interface ContextCalibration {
   last_call_tokens: number
   /** Real ÷ estimated, applied to every estimated part */
   ratio: number
-  /** Part of messages_tokens added since that call: still an estimate (scaled by ratio) */
+  /** Part of messages_tokens added since that call: the reply (reply_tokens) plus later content, estimated at ratio */
   since_last_call_tokens: number
+  /** API-reported output of that call, counted exactly in since_last_call_tokens (0 when not reported) */
+  reply_tokens: number
 }
 
 /**
