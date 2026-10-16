@@ -127,6 +127,7 @@ const InputSchema = z.object({
   tools: z.array(z.object({
     name: z.string(),
     enabled: z.boolean(),
+    visible: z.boolean().optional(),
     restricted: z.boolean().optional(),
     locked: z.boolean().optional()
   })).optional().describe('Tool enablement overrides. Merged with defaults by tool name.'),

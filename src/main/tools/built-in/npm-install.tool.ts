@@ -1,3 +1,4 @@
+import { CODE_EXECUTION_DEFAULTS } from '../../../shared/types/adf-v02.types'
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
@@ -87,6 +88,7 @@ export class NpmInstallTool implements Tool {
       workspace.setAgentConfig({
         ...freshConfig,
         code_execution: {
+          ...CODE_EXECUTION_DEFAULTS,
           ...freshConfig.code_execution,
           packages
         }

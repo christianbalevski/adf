@@ -1,9 +1,8 @@
 import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http'
 import { createServer } from 'node:net'
 import { RELAY_HOST } from './relay-host'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { vi } from 'vitest'
@@ -36,8 +35,6 @@ import { FENCE_PATH, removeTreeWithoutLinks, type ParityEnv } from './env'
 const REPO = resolve(__dirname, '../../..')
 const ELECTRON = resolve(REPO, 'node_modules/electron/dist', process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron')
 export const DAEMON_BUNDLE = resolve(REPO, 'out/main/daemon.js')
-/** The OS temp dir before any run points TEMP into its root: harness files that are not the backend's state go here. */
-const OUTSIDE_TMP = tmpdir()
 const BOOT_TIMEOUT_MS = 90_000
 
 /**
@@ -294,7 +291,7 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
       env.allowPort(port)
       const url = `http://127.0.0.1:${port}`
       const token = randomBytes(32).toString('base64url')
-      const outside = mkdtempSync(join(OUTSIDE_TMP, 'adf-parity-daemon-'))
+      const outside = env.createIsolatedDirectory('daemon')
       const logFile = join(outside, 'adf-daemon.log')
       const keychainFile = join(outside, 'keychain.json')
       const settingsPath = join(env.userDataDir, 'adf-settings.json')

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { mcpConnectorFor } from './mcp-connectors'
 import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'node:fs'
+import { readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
@@ -10,7 +11,7 @@ import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspace
 import { encrypt } from '../crypto/identity-crypto'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
 import { lockedCredentialWrite, replaceLockedCredential, type LockedCredential } from '../services/locked-credential'
-import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { buildConfigSummary, deriveReviewIdentity, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
 import { providerSelectionChanged } from '../providers/provider-selection'
@@ -75,7 +76,7 @@ import { RuntimeGate } from './runtime-gate'
 import { currentAgentId, currentTurnId, withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
-import { issueOwnerAttestation } from '../services/attestation.service'
+import { issueOwnerAttestation, readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
 import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/sys-get-config.tool'
 import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
@@ -139,6 +140,7 @@ export interface RuntimeSettingsStore {
   getOwnerIdentity?(): {
     getOwnerDid(): string
     getRuntimeDid(): string
+    getOwnerEncPrivateKey?(): Buffer | null
     getOwnerSigningKey(): Buffer | null
     getRuntimeSigningKey(): Buffer | null
   }
@@ -1534,7 +1536,7 @@ export class RuntimeService extends EventEmitter {
     opts: RuntimeAutostartOptions = {},
   ): Promise<RuntimeAutostartReport> {
     RuntimeGate.resume()
-    const files = this.collectAdfFiles(trackedDirs, opts.maxDepth ?? 5)
+    const files = await this.scanAdfFilesAsync(trackedDirs, opts.maxDepth ?? 5)
     const report: RuntimeAutostartReport = {
       scanned: files.length,
       started: [],
@@ -1633,15 +1635,37 @@ export class RuntimeService extends EventEmitter {
     return report
   }
 
+  private buildReviewSummary(workspace: AdfWorkspace, config: AgentConfig): AgentConfigSummary {
+    const owner = this.settings?.getOwnerIdentity?.()
+    const settingsDid = (key: string): string => {
+      const value = this.settings?.get(key)
+      return typeof value === 'string' ? value : ''
+    }
+    const agentDid = workspace.getDid()
+    const ownerAttestation = readAdfAttestations(workspace)
+      .find((attestation) => attestation.role === 'owner' && verifyAttestation(attestation, agentDid ? { expectedSubject: agentDid } : undefined))
+    return buildConfigSummary(config, deriveReviewIdentity({
+      agentDid,
+      fileOwnerDid: ownerAttestation?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
+      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
+      localOwnerDid: owner?.getOwnerDid() ?? settingsDid('ownerDid'),
+      localRuntimeDid: owner?.getRuntimeDid() ?? settingsDid('runtimeDid'),
+      identityEnvelope: workspace.getEnvelopeState('identity'),
+      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
+      sharePasswordSet: (workspace.readEnvelopeSlots('credentials') ?? []).some((slot) => slot.type === 'password'),
+      filePasswordProtected: workspace.isPasswordProtected(),
+      ownerKeyAvailable: owner?.getOwnerEncPrivateKey?.() != null,
+    }))
+  }
+
   getReviewInfo(filePath: string): RuntimeReviewInfo {
     return this.withAgentFile(filePath, (workspace, canonicalPath) => {
       const config = workspace.getAgentConfig() as AgentConfig
-      const ownerDid = (this.settings?.get('ownerDid') as string | undefined) ?? null
       return {
         agentId: config.id,
         filePath: canonicalPath,
         reviewed: isConfigReviewed(this.settings?.get('reviewedAgents'), config),
-        summary: buildConfigSummary(config, ownerDid),
+        summary: this.buildReviewSummary(workspace, config),
       }
     })
   }
@@ -1653,12 +1677,11 @@ export class RuntimeService extends EventEmitter {
     return this.withAgentFile(filePath, (workspace, canonicalPath) => {
       const config = workspace.getAgentConfig() as AgentConfig
       this.settings!.set!('reviewedAgents', markConfigReviewed(this.settings!.get('reviewedAgents'), config))
-      const ownerDid = (this.settings?.get('ownerDid') as string | undefined) ?? null
       return {
         agentId: config.id,
         filePath: canonicalPath,
         reviewed: true,
-        summary: buildConfigSummary(config, ownerDid),
+        summary: this.buildReviewSummary(workspace, config),
       }
     })
   }
@@ -2383,7 +2406,7 @@ export class RuntimeService extends EventEmitter {
   getAgentConfig(agentId: string): { agentId: string; config: AgentConfig; revision: number } {
     const target = this.requireTarget(agentId)
     const revision = configRevision(target.workspace).revision
-    if (target.managed) return { agentId: target.id, config: target.managed.config, revision }
+    if (target.managed) return { agentId: target.id, config: this.syncManagedConfig(target.managed), revision }
     // An open document's config is the file's (another handle may have written it).
     const doc = target.doc!
     doc.config = doc.workspace.getAgentConfig() as AgentConfig
@@ -3275,7 +3298,7 @@ export class RuntimeService extends EventEmitter {
   async detachAgentProvider(agentId: string, providerId: string): Promise<{ agentId: string; providerId: string; success: true; deletedCredentials: number; config: AgentConfig }> {
     const target = this.requireTarget(agentId)
     const providers = (target.config.providers ?? []).filter(provider => provider.id !== providerId)
-    const nextConfig = { ...target.config, providers }
+    const nextConfig: AgentConfig = { ...target.config, providers }
     if (providers.length === 0) delete nextConfig.providers
     const result = await this.setAgentConfig(target.id, nextConfig)
     const deletedCredentials = target.workspace.deleteIdentityByPrefix(`provider:${providerId}:`)
@@ -3359,7 +3382,7 @@ export class RuntimeService extends EventEmitter {
     const target = this.requireTarget(agentId)
     const adapters = { ...(target.config.adapters ?? {}) }
     delete adapters[adapterType]
-    const nextConfig = { ...target.config, adapters }
+    const nextConfig: AgentConfig = { ...target.config, adapters }
     if (Object.keys(adapters).length === 0) delete nextConfig.adapters
     const result = await this.setAgentConfig(target.id, nextConfig)
     const deletedCredentials = target.workspace.deleteIdentityByPrefix(`adapter:${adapterType}:`)
@@ -4047,6 +4070,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   private runningTarget(managed: ManagedRuntimeAgent): AgentTarget {
+    const config = (): AgentConfig => this.syncManagedConfig(managed)
     return {
       id: managed.id,
       filePath: managed.filePath,
@@ -4054,8 +4078,21 @@ export class RuntimeService extends EventEmitter {
       keyCell: managed.keyCell,
       managed,
       doc: this.documents.get(managed.filePath) ?? null,
-      get config() { return managed.config },
+      get config() { return config() },
     }
+  }
+
+  /**
+   * A running agent's config as its file holds it. A tool that writes the
+   * file itself (mcp_install, mcp_uninstall) does not pass through
+   * onConfigChanged, so the cached copy can be behind the file: handed out
+   * with the file's revision, a client saved it back over the change (an
+   * installed MCP server missing from Studio, then gone from the file).
+   */
+  private syncManagedConfig(managed: ManagedRuntimeAgent): AgentConfig {
+    const onDisk = managed.agent.workspace.getAgentConfig() as AgentConfig
+    if (JSON.stringify(onDisk) !== JSON.stringify(managed.config)) managed.config = onDisk
+    return managed.config
   }
 
   private documentTarget(doc: OpenDocument): AgentTarget {
@@ -4363,6 +4400,38 @@ export class RuntimeService extends EventEmitter {
     return this.collectAdfFiles(dirs, maxDepth)
   }
 
+  /** HTTP and autostart scans yield during filesystem work; realpath batches stay bounded. */
+  async scanAdfFilesAsync(dirs: string[], maxDepth = 5): Promise<string[]> {
+    const seen = new Set<string>()
+    const results: string[] = []
+    const collect = async (dir: string, depth: number): Promise<void> => {
+      if (depth > maxDepth) return
+      let entries: import('node:fs').Dirent[]
+      try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+      for (let offset = 0; offset < entries.length; offset += 32) {
+        // Even a flat directory of irrelevant entries must yield to timers and requests.
+        await new Promise<void>(resolve => setImmediate(resolve))
+        const batch = entries.slice(offset, offset + 32)
+        const paths = await Promise.all(batch.map(async entry => {
+          if (!entry.isFile() || !entry.name.endsWith('.adf')) return null
+          const full = join(dir, entry.name)
+          try { return await realpath(full) } catch { return full }
+        }))
+        for (let index = 0; index < batch.length; index++) {
+          const path = paths[index]
+          const entry = batch[index]
+          if (path !== null) {
+            if (!seen.has(path)) { seen.add(path); results.push(path) }
+          } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+            await collect(join(dir, entry.name), depth + 1)
+          }
+        }
+      }
+    }
+    for (const dir of dirs) await collect(dir, 0)
+    return results
+  }
+
   private collectAdfFiles(trackedDirs: string[], maxDepth: number): string[] {
     const seen = new Set<string>()
     const results: string[] = []
@@ -4555,8 +4624,8 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return !!value && typeof (value as { then?: unknown }).then === 'function'
 }
 
-function parseMaybeJson(value: string | undefined): unknown {
-  if (value === undefined) return undefined
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value
   try { return JSON.parse(value) } catch { return value }
 }
 

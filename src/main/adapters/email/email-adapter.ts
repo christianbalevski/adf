@@ -1,7 +1,7 @@
 import { ImapFlow, FetchMessageObject } from 'imapflow'
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
-import { simpleParser } from 'mailparser'
+import { simpleParser, type AddressObject } from 'mailparser'
 import { convert } from 'html-to-text'
 import { marked } from 'marked'
 import { buildGroupMeta } from '../group-meta'
@@ -647,6 +647,10 @@ export class EmailAdapter implements ChannelAdapter {
     maxAttachmentSize: number
   ): Promise<void> {
     if (!this.ctx) return
+    if (!msg.source) {
+      // Leave this UID unseen so a later fetch can retry the incomplete result.
+      throw new Error(`IMAP did not return the source for email UID ${msg.uid}`)
+    }
 
     const parsed = await simpleParser(msg.source)
 
@@ -728,13 +732,17 @@ export class EmailAdapter implements ChannelAdapter {
     // Group context (meta.group): email has no live roster, but the visible
     // recipients ARE the thread's participants — record to/cc when the message
     // went to more than just us.
-    const toAddrs = parsed.to?.value?.map(v => v.address).filter(Boolean) as string[] ?? []
-    const ccAddrs = parsed.cc?.value?.map(v => v.address).filter(Boolean) as string[] ?? []
+    const addresses = (value: AddressObject | AddressObject[] | undefined) =>
+      (Array.isArray(value) ? value : value ? [value] : []).flatMap(group => group.value)
+    const to = addresses(parsed.to)
+    const cc = addresses(parsed.cc)
+    const toAddrs = to.flatMap(v => v.address ? [v.address] : [])
+    const ccAddrs = cc.flatMap(v => v.address ? [v.address] : [])
     const allRecipients = [...toAddrs, ...ccAddrs]
     let meta: Record<string, unknown> | undefined
     if (allRecipients.length > 1) {
       const named = new Map<string, string | undefined>()
-      for (const v of [...(parsed.to?.value ?? []), ...(parsed.cc?.value ?? [])]) {
+      for (const v of [...to, ...cc]) {
         if (v.address) named.set(v.address, v.name || undefined)
       }
       meta = {

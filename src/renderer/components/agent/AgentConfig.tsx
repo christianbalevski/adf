@@ -929,7 +929,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     const t0 = performance.now()
     // Always fetch runtime host setting (it can change between Settings visits)
     window.adfApi?.getSettings().then((s) => {
-      setRuntimeHostEnabled(!!(s?.compute as Record<string, unknown>)?.hostAccessEnabled)
+      setRuntimeHostEnabled(s?.compute?.hostAccessEnabled ?? false)
       setExecutionTargets(s.compute?.executionTargets ?? [])
     })
     if (_cachedProviders && _cachedMcpRegistrations && _cachedAdapterRegistrations) {
@@ -945,7 +945,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         setProviders(_cachedProviders)
         setMcpRegistrations(_cachedMcpRegistrations)
         setAdapterRegistrations(_cachedAdapterRegistrations)
-        setRuntimeHostEnabled(!!(settings.compute as Record<string, unknown>)?.hostAccessEnabled)
+        setRuntimeHostEnabled(settings.compute?.hostAccessEnabled ?? false)
         setExecutionTargets(settings.compute?.executionTargets ?? [])
         // console.log(`[PERF:renderer] AgentConfig.getSettings: ${(performance.now() - t0).toFixed(1)}ms (fetched)`)
       })

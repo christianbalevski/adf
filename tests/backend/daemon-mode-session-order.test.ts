@@ -108,3 +108,92 @@ describe('DaemonModeSession ordering', () => {
     expect(session.agentId).toBe('id-1')
   })
 })
+
+describe('reattach preserves daemon identity and replayed paths', () => {
+  it.each([false, true])('keeps a replayed foreground rename after a delayed re-hold (failure=%s)', async (fails) => {
+    const { client } = scriptedClient()
+    const session = new DaemonModeSession(client, quiet)
+    await session.openFile(FILE_A, async () => null)
+    let resolve!: (answer: HeldDocument) => void
+    let reject!: (error: Error) => void
+    client.setHold(() => new Promise((yes, no) => { resolve = yes; reject = no }))
+    const reattach = session.reattach()
+    while (!resolve) await sleep(0)
+    session.rekey(FILE_A, FILE_B)
+    if (fails) reject(new Error('old path is gone'))
+    else resolve({ agentId: 'id-1', filePath: FILE_A })
+    await reattach
+    expect(session.filePath).toBe(FILE_B)
+    expect(session.current?.opened?.filePath).toBe(FILE_B)
+    expect(session.agentId).toBe(fails ? null : 'id-1')
+  })
+
+  it('does not undo a rename of an unlocked background document while its re-hold awaits', async () => {
+    const { client } = scriptedClient()
+    const session = new DaemonModeSession(client, quiet)
+    session.noteUnlocked(FILE_A, 'id-1')
+    let finish!: (answer: HeldDocument) => void
+    client.setHold(() => new Promise((r) => { finish = r }))
+    const reattach = session.reattach()
+    while (!finish) await sleep(0)
+    session.rekey(FILE_A, FILE_B)
+    finish({ agentId: 'id-1', filePath: FILE_A })
+    await reattach
+    expect(session.isUnlocked(FILE_A)).toBe(false)
+    expect(session.isUnlocked(FILE_B)).toBe(true)
+  })
+
+  it.each([false, true])('re-holds unlocked paths with their original spelling (remote=%s)', async (remote) => {
+    const { client } = scriptedClient()
+    const requested: string[] = []
+    client.setHold(async (filePath) => { requested.push(filePath); return { agentId: 'id-1', filePath } })
+    const session = new DaemonModeSession(client, quiet, undefined, remote)
+    session.noteUnlocked('/agents/Foo.adf', 'id-1')
+    await session.reattach()
+    expect(requested).toEqual(['/agents/Foo.adf'])
+    expect(session.isUnlocked('/agents/Foo.adf')).toBe(true)
+    if (remote) expect(session.isUnlocked('/agents/foo.adf')).toBe(false)
+  })
+
+  it('preserves remote path case and Windows spelling when identifying the focused file', async () => {
+    const { client } = scriptedClient()
+    client.setHold(async () => ({ agentId: 'id-1' }))
+    const session = new DaemonModeSession(client, quiet, undefined, true)
+    await session.openFile('/agents/Foo.adf', async () => null)
+    expect(session.isFocused(null, '/agents/foo.adf')).toBe(false)
+    expect(session.isFocused(null, '/agents/Foo.adf')).toBe(true)
+    expect(session.pathKey('C:\\agents\\Foo.adf')).toBe('C:\\agents\\Foo.adf')
+    session.noteAgent('/agents/foo.adf', 'id-2')
+    expect(session.agentId).toBe('id-1')
+  })
+})
+
+
+describe('reattach canonical daemon path', () => {
+  it.each([false, true])('moves the foreground unlocked cache to a renamed canonical path, even without replay (locked=%s)', async (needsPassword) => {
+    const { client } = scriptedClient()
+    const session = new DaemonModeSession(client, quiet, undefined, true)
+    await session.openFile(FILE_A, async () => null)
+    session.noteUnlocked(FILE_A, 'id-1')
+    client.setHold(async () => ({ agentId: 'id-1', filePath: FILE_B, needsPassword }))
+    await session.reattach()
+    expect(session.filePath).toBe(FILE_B)
+    expect(session.isUnlocked(FILE_A)).toBe(false)
+    expect(session.isUnlocked(FILE_B)).toBe(!needsPassword)
+  })
+
+  it('does not overwrite a newer agent assignment that arrived during the re-hold', async () => {
+    const { client } = scriptedClient()
+    const session = new DaemonModeSession(client, quiet)
+    await session.openFile(FILE_A, async () => null)
+    let finish!: (answer: HeldDocument) => void
+    client.setHold(() => new Promise((r) => { finish = r }))
+    const reattach = session.reattach()
+    while (!finish) await sleep(0)
+    session.noteAgent(FILE_A, 'id-new')
+    finish({ agentId: 'id-1', filePath: FILE_A })
+    await reattach
+    expect(session.agentId).toBe('id-new')
+    expect(session.focusAgentId).toBe('id-new')
+  })
+})

@@ -17,7 +17,7 @@ import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Text
  * Settings > Agent templates.
  *
  * A template is an ordinary .adf file in <userData>/templates; this tab lists
- * the folder and edits one template at a time in place. Every edit is a write
+ * the folder, and a row opens that template on its own page. Every edit is a write
  * to that file through main (config, seed files, extra files), debounced so
  * typing does not write per keystroke and flushed when the selection changes
  * or the tab unmounts. The list re-reads itself whenever main reports the
@@ -146,6 +146,12 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
   // editor.
   const pending = useRef(new Map<string, { timer: ReturnType<typeof setTimeout>; run: () => void }>())
   const dirty = useRef(false)
+  // Writes sent and not yet answered; "Saved" shows once none are queued or in flight.
+  const inFlight = useRef(0)
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const settle = useCallback(() => {
+    if (pending.current.size === 0 && inFlight.current === 0) setSaveState('saved')
+  }, [])
 
   const flushPending = useCallback(() => {
     const queued = [...pending.current.values()]
@@ -164,6 +170,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
       run()
     }, SAVE_DEBOUNCE_MS)
     pending.current.set(key, { timer, run })
+    setSaveState('saving')
   }, [])
 
   useEffect(() => () => { flushPending() }, [flushPending])
@@ -191,6 +198,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
   }, [])
 
   const runWrite = useCallback(async (id: string, op: () => Promise<{ success: boolean; error?: string }>) => {
+    inFlight.current++
     try {
       const res = await op()
       if (!res?.success) {
@@ -201,6 +209,9 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     } catch (err) {
       setWriteError(err instanceof Error ? err.message : 'The template could not be saved.')
       return
+    } finally {
+      inFlight.current--
+      settle()
     }
     // Re-read once the queue has drained, so the editor shows what is on disk
     // without clobbering an edit the user is still making.
@@ -208,7 +219,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
       dirty.current = false
       await refreshContents(id)
     }
-  }, [refreshContents])
+  }, [refreshContents, settle])
 
   // --- selection ------------------------------------------------------------
   const select = useCallback((id: string | null) => {
@@ -216,6 +227,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     dirty.current = false
     setWriteError(null)
     setContentsError(null)
+    setSaveState('idle')
     setSelectedId(id)
     // Kept in step here, not only at the next render: the fetch below resolves
     // against this ref and must not be judged stale by a not-yet-rendered id.
@@ -275,11 +287,15 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     setNotes(next)
     schedule('meta', () => {
       void (async () => {
+        inFlight.current++
         try {
           const res = await window.adfApi.setTemplateMeta({ id, description: next.description, warning: next.warning })
           setMetaError(res?.success ? null : res?.error || 'The notes could not be saved.')
         } catch (err) {
           setMetaError(err instanceof Error ? err.message : 'The notes could not be saved.')
+        } finally {
+          inFlight.current--
+          settle()
         }
       })()
     })
@@ -470,6 +486,12 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
 
   const selected = selectedId ? sorted.find((t) => t.id === selectedId) ?? null : null
 
+  // Opening a template is a page change: start it at the top, not where the list was scrolled.
+  const editorTop = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (selectedId) editorTop.current?.scrollIntoView({ block: 'start' })
+  }, [selectedId])
+
   // Notes come from the list summary, not from the contents read. Seeded once
   // per selection, so a list refresh never overwrites what is being typed.
   useEffect(() => {
@@ -482,278 +504,8 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     setMetaError(null)
   }, [selected])
 
-  return (
+  const dialogs = (
     <>
-      {migrated && (
-        <div className="flex items-start justify-between gap-3 rounded-[var(--adf-ui-container-radius)] border border-hairline bg-[var(--adf-ui-surface)] px-4 py-3">
-          <p className="text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Your previous template was saved as {templates.find((t) => t.id === migrated.id)?.name ?? migrated.id}.
-          </p>
-          <Button onClick={() => void dismissMigration()} variant="ghost" size="compact" className="shrink-0">
-            Dismiss
-          </Button>
-        </div>
-      )}
-
-      <SettingsGroup
-        title="Templates"
-        description="Every agent you create starts from one of these. Pick one to edit it."
-      >
-        {!loaded ? (
-          <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">Loading templates…</p>
-        ) : sorted.length === 0 ? (
-          <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">No templates in the folder.</p>
-        ) : (
-          <ul>
-            {sorted.map((t) => {
-              const isSelected = t.id === selectedId
-              return (
-                <li
-                  key={t.id}
-                  className={`flex items-center gap-2 border-t border-[var(--adf-ui-separator)] px-4 py-2.5 ${
-                    isSelected ? 'bg-[var(--adf-ui-surface-hover)]' : ''
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => select(isSelected ? null : t.id)}
-                    aria-expanded={isSelected}
-                    title={t.filePath}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[var(--adf-ui-control-radius)] text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
-                  >
-                    <TemplateGlyph name={t.name} icon={t.icon} />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-center gap-1.5">
-                        <span className="truncate text-[13px] font-medium text-[var(--adf-ui-text)]">{t.name}</span>
-                        {t.shipped && <Tag>Shipped</Tag>}
-                        {t.id === defaultId && <Tag tone="accent">Default</Tag>}
-                        {!t.reviewed && <Tag tone="warning">Not reviewed</Tag>}
-                      </span>
-                      {(t.templateDescription ?? t.description) && (
-                        <span className="mt-0.5 block truncate text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-                          {t.templateDescription ?? t.description}
-                        </span>
-                      )}
-                      {t.warning && (
-                        <span className="mt-0.5 flex items-center gap-1 text-[12px] leading-5 text-[var(--adf-ui-warning)]">
-                          <WarningTriangle />
-                          <span className="min-w-0 truncate">{t.warning}</span>
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                  {t.hasHistory && (
-                    <span
-                      className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]"
-                      title="This file has run. New agents start with no history either way."
-                    >
-                      Has run
-                    </span>
-                  )}
-                  {!t.reviewed && (
-                    <Button onClick={() => void reviewTemplate(t)} size="compact" className="shrink-0">
-                      Review
-                    </Button>
-                  )}
-                  <IconButton
-                    aria-label={`Actions for ${t.name}`}
-                    title="Actions"
-                    disabled={busy}
-                    onClick={(e) => {
-                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                      setMenu({ x: r.left, y: r.bottom + 2, template: t })
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                      <circle cx="12" cy="5" r="1.6" />
-                      <circle cx="12" cy="12" r="1.6" />
-                      <circle cx="12" cy="19" r="1.6" />
-                    </svg>
-                  </IconButton>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-
-        <div className="border-t border-[var(--adf-ui-separator)] px-4 py-3">
-          {newName === null ? (
-            <Button onClick={() => { setNewName(''); setNewNameError(null) }} variant="ghost" size="compact" disabled={busy}>
-              New template…
-            </Button>
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                aria-label="Template name"
-                value={newName}
-                autoFocus
-                spellCheck={false}
-                placeholder="Template name"
-                onChange={(e) => { setNewName(e.target.value); setNewNameError(null) }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); submitNewName() }
-                  if (e.key === 'Escape') { e.preventDefault(); setNewName(null); setNewNameError(null) }
-                }}
-                className="h-[var(--adf-ui-control-height-compact)] w-56 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 text-[12px] text-[var(--adf-ui-text)] outline-none focus:border-[var(--adf-ui-accent)] focus:ring-2 focus:ring-[var(--adf-ui-focus)]"
-              />
-              <Button onClick={submitNewName} size="compact" variant="primary" disabled={busy}>
-                Create
-              </Button>
-              <Button onClick={() => { setNewName(null); setNewNameError(null) }} size="compact" variant="ghost" disabled={busy}>
-                Cancel
-              </Button>
-            </div>
-          )}
-          {newNameError && <p className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]">{newNameError}</p>}
-          {listError && <p className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]" role="alert">{listError}</p>}
-          <p className="mt-2 text-[11px] leading-5 text-[var(--adf-ui-text-subtle)]">{INSTANTIATE_RULE}</p>
-          {folder && (
-            <p className="mt-0.5 break-all text-[11px] leading-5 text-[var(--adf-ui-text-subtle)]">
-              Templates folder: {folder}
-            </p>
-          )}
-        </div>
-      </SettingsGroup>
-
-      {selected && (
-        <>
-          <SettingsGroup
-            title={`Files in ${selected.name}`}
-            description="Starting content for a new agent's files."
-          >
-            {loadingContents && !contents && (
-              <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">Loading…</p>
-            )}
-            {contentsError && (
-              <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-danger)]" role="alert">{contentsError}</p>
-            )}
-            {contents && (
-              <>
-                {SEED_FILES.map((f, i) => (
-                  <SettingsRow key={f.key} label={f.path} description="Starting content." stacked separator={i > 0}>
-                    <Textarea
-                      aria-label={f.path}
-                      value={contents.files[f.key] ?? ''}
-                      onChange={(e) => setSeedFile(selected.id, f.key, f.path, e.target.value)}
-                      rows={f.rows}
-                      className="font-mono text-xs resize-y"
-                    />
-                  </SettingsRow>
-                ))}
-                <SettingsRow
-                  label="Extra files"
-                  description="Copied into every new agent."
-                  stacked
-                  separator
-                  error={writeError}
-                >
-                  {contents.extra.length > 0 && (
-                    <ul className="flex flex-col gap-1.5">
-                      {contents.extra.map((f) => (
-                        <li key={f.path} className="flex items-center gap-2">
-                          <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--adf-ui-text)]">{f.path}</span>
-                          <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-[var(--adf-ui-text-subtle)]">
-                            {formatSize(f.size)}
-                          </span>
-                          <Button
-                            onClick={() => void removeFile(selected.id, f.path)}
-                            variant="ghost"
-                            size="compact"
-                            aria-label={`Remove ${f.path}`}
-                            title="Remove"
-                            className="shrink-0 px-2"
-                          >
-                            ×
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <div className={contents.extra.length > 0 ? 'mt-2' : ''}>
-                    <Button onClick={() => void addFiles(selected.id)} variant="ghost" size="compact" disabled={adding}>
-                      {adding ? 'Adding…' : 'Add files…'}
-                    </Button>
-                  </div>
-                </SettingsRow>
-              </>
-            )}
-          </SettingsGroup>
-
-          <SettingsGroup
-            title="Template notes"
-            description="Shown wherever this template is offered. Neither line is copied into agents made from it."
-          >
-            <SettingsRow label="Description" stacked>
-              <TextInput
-                aria-label="Template description"
-                spellCheck={false}
-                placeholder="What this template is for. Shown in the list and the composer chip."
-                value={notes.description}
-                onChange={(e) => setMeta(selected.id, { description: e.target.value })}
-              />
-            </SettingsRow>
-            <SettingsRow label="Warning" stacked separator error={metaError}>
-              <TextInput
-                aria-label="Template warning"
-                spellCheck={false}
-                placeholder="A caution shown in amber wherever this template is offered."
-                value={notes.warning}
-                onChange={(e) => setMeta(selected.id, { warning: e.target.value })}
-              />
-            </SettingsRow>
-          </SettingsGroup>
-
-          {contents && (
-            <AgentConfig
-              key={selected.id}
-              template={{ value: contents.config, onChange: (next) => setConfig(selected.id, next) }}
-            />
-          )}
-        </>
-      )}
-
-      <SettingsGroup title="Applies to" description="Agents you create in Studio always start from a template.">
-        <SettingsRow
-          label="Template for agents created by agents"
-          description="Agents made with sys_create_adf start from this template, without its credentials or identity. A parent that names a template .adf of its own uses that instead."
-        >
-          <Select
-            aria-label="Template for agents created by agents"
-            className="w-64"
-            value={childTemplateId}
-            onChange={(e) => pickChildTemplate(e.target.value)}
-          >
-            <option value="">None (code defaults)</option>
-            {sorted.map((t) => (
-              <option key={t.id} value={t.id}>{t.name}</option>
-            ))}
-            {/* A template that left the folder still shows, so the setting is not read as None. */}
-            {childTemplateId && !sorted.some((t) => t.id === childTemplateId) && (
-              <option value={childTemplateId}>{childTemplateId} (not in the folder)</option>
-            )}
-          </Select>
-        </SettingsRow>
-      </SettingsGroup>
-
-      <SettingsGroup title="Default provider" description="Used when the template leaves Provider unset. Its default model fills Model ID.">
-        <SettingsRow label="Default provider">
-          {providers.length === 0 ? (
-            <span className="text-[12px] text-[var(--adf-ui-text-subtle)]">No providers configured.</span>
-          ) : (
-            <Select
-              aria-label="Default provider"
-              className="w-64"
-              value={defaultProviderId ?? ''}
-              onChange={(e) => onDefaultProviderChange(e.target.value || undefined)}
-            >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name || p.type}</option>
-              ))}
-            </Select>
-          )}
-        </SettingsRow>
-      </SettingsGroup>
-
       <ContextMenu
         position={menu ? { x: menu.x, y: menu.y } : null}
         items={menu ? menuItems(menu.template) : []}
@@ -799,6 +551,318 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
           </div>
         </div>
       </Dialog>
+    </>
+  )
+
+  const actionsButton = (t: AgentTemplateSummary) => (
+    <IconButton
+      aria-label={`Actions for ${t.name}`}
+      title="Actions"
+      disabled={busy}
+      onClick={(e) => {
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+        setMenu({ x: r.left, y: r.bottom + 2, template: t })
+      }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <circle cx="12" cy="5" r="1.6" />
+        <circle cx="12" cy="12" r="1.6" />
+        <circle cx="12" cy="19" r="1.6" />
+      </svg>
+    </IconButton>
+  )
+
+  if (selected) {
+    const saveError = writeError ?? metaError
+    return (
+      <>
+        <div ref={editorTop} className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => select(null)}
+            className="self-start rounded-[var(--adf-ui-control-radius)] text-[12px] text-[var(--adf-ui-text-muted)] outline-none hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
+          >
+            ← Templates
+          </button>
+          <div className="flex items-center gap-2.5">
+            <TemplateGlyph name={selected.name} icon={selected.icon} />
+            <h2 className="min-w-0 truncate text-[15px] font-semibold text-[var(--adf-ui-text)]">{selected.name}</h2>
+            {selected.shipped && <Tag>Shipped</Tag>}
+            {selected.id === defaultId && <Tag tone="accent">Default</Tag>}
+            {!selected.reviewed && <Tag tone="warning">Not reviewed</Tag>}
+            <span className="flex-1" />
+            <span
+              className={`min-w-0 truncate text-[11px] ${saveError ? 'text-[var(--adf-ui-danger)]' : 'shrink-0 text-[var(--adf-ui-text-subtle)]'}`}
+              role={saveError ? 'alert' : 'status'}
+              title={saveError ?? 'Edits save to the template file as you type.'}
+            >
+              {saveError ? `Not saved: ${saveError}` : saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : 'Edits save as you type'}
+            </span>
+            {!selected.reviewed && (
+              <Button onClick={() => void reviewTemplate(selected)} size="compact" className="shrink-0">
+                Review
+              </Button>
+            )}
+            {actionsButton(selected)}
+          </div>
+          {listError && <p className="text-[11px] text-[var(--adf-ui-danger)]" role="alert">{listError}</p>}
+        </div>
+      <SettingsGroup
+        title={`Files in ${selected.name}`}
+        description="Starting content for a new agent's files."
+      >
+        {loadingContents && !contents && (
+          <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">Loading…</p>
+        )}
+        {contentsError && (
+          <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-danger)]" role="alert">{contentsError}</p>
+        )}
+        {contents && (
+          <>
+            {SEED_FILES.map((f, i) => (
+              <SettingsRow key={f.key} label={f.path} description="Starting content." stacked separator={i > 0}>
+                <Textarea
+                  aria-label={f.path}
+                  value={contents.files[f.key] ?? ''}
+                  onChange={(e) => setSeedFile(selected.id, f.key, f.path, e.target.value)}
+                  rows={f.rows}
+                  className="font-mono text-xs resize-y"
+                />
+              </SettingsRow>
+            ))}
+            <SettingsRow
+              label="Extra files"
+              description="Copied into every new agent."
+              stacked
+              separator
+              error={writeError}
+            >
+              {contents.extra.length > 0 && (
+                <ul className="flex flex-col gap-1.5">
+                  {contents.extra.map((f) => (
+                    <li key={f.path} className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--adf-ui-text)]">{f.path}</span>
+                      <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-[var(--adf-ui-text-subtle)]">
+                        {formatSize(f.size)}
+                      </span>
+                      <Button
+                        onClick={() => void removeFile(selected.id, f.path)}
+                        variant="ghost"
+                        size="compact"
+                        aria-label={`Remove ${f.path}`}
+                        title="Remove"
+                        className="shrink-0 px-2"
+                      >
+                        ×
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className={contents.extra.length > 0 ? 'mt-2' : ''}>
+                <Button onClick={() => void addFiles(selected.id)} variant="ghost" size="compact" disabled={adding}>
+                  {adding ? 'Adding…' : 'Add files…'}
+                </Button>
+              </div>
+            </SettingsRow>
+          </>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Template notes"
+        description="Shown wherever this template is offered. Neither line is copied into agents made from it."
+      >
+        <SettingsRow label="Description" stacked>
+          <TextInput
+            aria-label="Template description"
+            spellCheck={false}
+            placeholder="What this template is for. Shown in the list and the composer chip."
+            value={notes.description}
+            onChange={(e) => setMeta(selected.id, { description: e.target.value })}
+          />
+        </SettingsRow>
+        <SettingsRow label="Warning" stacked separator error={metaError}>
+          <TextInput
+            aria-label="Template warning"
+            spellCheck={false}
+            placeholder="A caution shown in amber wherever this template is offered."
+            value={notes.warning}
+            onChange={(e) => setMeta(selected.id, { warning: e.target.value })}
+          />
+        </SettingsRow>
+      </SettingsGroup>
+
+      {contents && (
+        <AgentConfig
+          key={selected.id}
+          template={{ value: contents.config, onChange: (next) => setConfig(selected.id, next) }}
+        />
+      )}
+        {dialogs}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {migrated && (
+        <div className="flex items-start justify-between gap-3 rounded-[var(--adf-ui-container-radius)] border border-hairline bg-[var(--adf-ui-surface)] px-4 py-3">
+          <p className="text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
+            Your previous template was saved as {templates.find((t) => t.id === migrated.id)?.name ?? migrated.id}.
+          </p>
+          <Button onClick={() => void dismissMigration()} variant="ghost" size="compact" className="shrink-0">
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      <SettingsGroup
+        title="Templates"
+        description="Every agent you create starts from one of these. Open one to edit it."
+      >
+        {!loaded ? (
+          <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">Loading templates…</p>
+        ) : sorted.length === 0 ? (
+          <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">No templates in the folder.</p>
+        ) : (
+          <ul>
+            {sorted.map((t) => {
+              return (
+                <li
+                  key={t.id}
+                  className="flex items-center gap-2 border-t border-[var(--adf-ui-separator)] px-4 py-2.5 hover:bg-[var(--adf-ui-surface-hover)]"
+                >
+                  <button
+                    type="button"
+                    onClick={() => select(t.id)}
+                    title={t.filePath}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[var(--adf-ui-control-radius)] text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
+                  >
+                    <TemplateGlyph name={t.name} icon={t.icon} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate text-[13px] font-medium text-[var(--adf-ui-text)]">{t.name}</span>
+                        {t.shipped && <Tag>Shipped</Tag>}
+                        {t.id === defaultId && <Tag tone="accent">Default</Tag>}
+                        {!t.reviewed && <Tag tone="warning">Not reviewed</Tag>}
+                      </span>
+                      {(t.templateDescription ?? t.description) && (
+                        <span className="mt-0.5 block truncate text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
+                          {t.templateDescription ?? t.description}
+                        </span>
+                      )}
+                      {t.warning && (
+                        <span className="mt-0.5 flex items-center gap-1 text-[12px] leading-5 text-[var(--adf-ui-warning)]">
+                          <WarningTriangle />
+                          <span className="min-w-0 truncate">{t.warning}</span>
+                        </span>
+                      )}
+                    </span>
+                    <span aria-hidden="true" className="shrink-0 text-[14px] text-[var(--adf-ui-text-subtle)]">›</span>
+                  </button>
+                  {t.hasHistory && (
+                    <span
+                      className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]"
+                      title="This file has run. New agents start with no history either way."
+                    >
+                      Has run
+                    </span>
+                  )}
+                  {!t.reviewed && (
+                    <Button onClick={() => void reviewTemplate(t)} size="compact" className="shrink-0">
+                      Review
+                    </Button>
+                  )}
+                  {actionsButton(t)}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+
+        <div className="border-t border-[var(--adf-ui-separator)] px-4 py-3">
+          {newName === null ? (
+            <Button onClick={() => { setNewName(''); setNewNameError(null) }} variant="ghost" size="compact" disabled={busy}>
+              New template…
+            </Button>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                aria-label="Template name"
+                value={newName}
+                autoFocus
+                spellCheck={false}
+                placeholder="Template name"
+                onChange={(e) => { setNewName(e.target.value); setNewNameError(null) }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); submitNewName() }
+                  if (e.key === 'Escape') { e.preventDefault(); setNewName(null); setNewNameError(null) }
+                }}
+                className="h-[var(--adf-ui-control-height-compact)] w-56 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 text-[12px] text-[var(--adf-ui-text)] outline-none focus:border-[var(--adf-ui-accent)] focus:ring-2 focus:ring-[var(--adf-ui-focus)]"
+              />
+              <Button onClick={submitNewName} size="compact" variant="primary" disabled={busy}>
+                Create
+              </Button>
+              <Button onClick={() => { setNewName(null); setNewNameError(null) }} size="compact" variant="ghost" disabled={busy}>
+                Cancel
+              </Button>
+            </div>
+          )}
+          {newNameError && <p className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]">{newNameError}</p>}
+          {listError && <p className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]" role="alert">{listError}</p>}
+          <p className="mt-2 text-[11px] leading-5 text-[var(--adf-ui-text-subtle)]">{INSTANTIATE_RULE}</p>
+          {folder && (
+            <p className="mt-0.5 break-all text-[11px] leading-5 text-[var(--adf-ui-text-subtle)]">
+              Templates folder: {folder}
+            </p>
+          )}
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title="Applies to" description="Agents you create in Studio always start from a template.">
+        <SettingsRow
+          label="Template for agents created by agents"
+          description="Agents made with sys_create_adf start from this template, without its credentials or identity. A parent that names a template .adf of its own uses that instead."
+        >
+          <Select
+            aria-label="Template for agents created by agents"
+            className="w-64"
+            value={childTemplateId}
+            onChange={(e) => pickChildTemplate(e.target.value)}
+          >
+            <option value="">None (code defaults)</option>
+            {sorted.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+            {/* A template that left the folder still shows, so the setting is not read as None. */}
+            {childTemplateId && !sorted.some((t) => t.id === childTemplateId) && (
+              <option value={childTemplateId}>{childTemplateId} (not in the folder)</option>
+            )}
+          </Select>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Default provider" description="Used when the template leaves Provider unset. Its default model fills Model ID.">
+        <SettingsRow label="Default provider">
+          {providers.length === 0 ? (
+            <span className="text-[12px] text-[var(--adf-ui-text-subtle)]">No providers configured.</span>
+          ) : (
+            <Select
+              aria-label="Default provider"
+              className="w-64"
+              value={defaultProviderId ?? ''}
+              onChange={(e) => onDefaultProviderChange(e.target.value || undefined)}
+            >
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>{p.name || p.type}</option>
+              ))}
+            </Select>
+          )}
+        </SettingsRow>
+      </SettingsGroup>
+
+      {dialogs}
     </>
   )
 }

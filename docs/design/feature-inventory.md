@@ -496,7 +496,7 @@ Grouped by area, then category.
 - **config tools** — Lists every tool (incl. hidden/absorbed/disabled) with schema lookup by name/substring.
 
 ### Code Execution Sandbox
-- **Sandbox runtime** — Node.js Worker Threads + V8 VM Contexts; `codeGeneration: { strings: false, wasm: true }` (no eval/new Function, WASM allowed).
+- **Sandbox runtime** — Node.js Worker Threads + V8 VM Contexts; `codeGeneration: { strings: true, wasm: true }` (eval/new Function compile in the VM realm; WASM allowed).
 - **Execution contexts** — `sys_code` (persistent worker, unauthorized), `sys_lambda`/trigger/timer/API-route/middleware lambdas (fresh VM context unless `warm: true`).
 - **Import/export transform** — Rewrites `import` to `await __require()` and strips `export` keywords pre-execution.
 - **TS transpilation** — `ts-transpiler.ts`: Node `stripTypeScriptTypes` (mode `transform`) primary, sucrase fallback; SHA-256 content-hash cached.
@@ -1549,7 +1549,7 @@ Grouped by area, then category.
 ### Security Architecture — Trust Boundaries
 
 - **Renderer-to-main isolation** — `contextIsolation`, `sandbox`, `nodeIntegration:false`, strict CSP (`script-src 'self'`, `connect-src` localhost-only, `frame-src`/`object-src 'none'`), DOMPurify on LLM/message markdown, `will-navigate` blocked, `shell.openExternal` protocol allowlist.
-- **Sandbox-to-main (code execution)** — Worker Thread + V8 VM context; `codeGeneration.strings:false`, frozen built-in prototypes, deleted `fetch`/`Request`/etc. (only reachable via `adf.sys_fetch`), module allowlist, execution timeout (default 60s, ceiling `min(configured,300s)`, 10s bare fallback), RPC-bridge tool-call validation.
+- **Sandbox-to-main (code execution)** — Worker Thread + V8 VM context; realm membrane, frozen built-in prototypes, deleted `fetch`/`Request`/etc. (only reachable via `adf.sys_fetch`), module allowlist, execution timeout (default 60s, ceiling `min(configured,300s)`, 10s bare fallback), RPC-bridge tool-call validation.
 - **Network boundary** — mesh server binds `127.0.0.1` by default (`meshLan` opt-in), Ed25519 envelope/payload signature verification, configurable `allow_unsigned`, DID allow/block lists, inbox middleware pipeline.
 - **External process boundary (MCP/packages)** — blocked env vars (`ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`, `LD_PRELOAD`, etc.), health-check auto-restart (60s/10s), 120s connect timeout, native-addon-install blocking (`binding.gyp`/`node-gyp`/`gypfile` scan), per-package 50MB / total 200MB size limits.
 - **Settings-install vs agent-install trust split** — a user-initiated Settings MCP install defaults to host with a persistent host badge; an agent-initiated `mcp_install` defaults to container and needs the two-tier host gate.

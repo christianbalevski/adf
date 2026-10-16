@@ -29,6 +29,7 @@ import { basename } from 'node:path'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { currentResourceWriter, existsAlready, fileRevision, fileRevisionKey, observeRevision, parseBaseRevision, staleRevision, staleRevisionMessage, runAsApiWrite } from '../../runtime/resource-revisions'
 import { runAsRequestWrite } from './client-routes'
+import { AGENT_LEASED_CODE } from '../../runtime/agent-lease'
 import { RuntimeLoopError, RuntimeReviewRequiredError, type RuntimeAgentFileRenamedEvent, type RuntimeAgentPathChangedEvent } from '../../runtime/runtime-service'
 import { TrackedDirWatcher } from '../dir-watcher'
 import { AgentFileOps, FileOpError, browse, readCapped, resolveAgentsFolder, snapshotToTemp, streamSnapshot, type SnapshotMode } from '../file-ops'
@@ -329,11 +330,32 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
     if (!isOctetStream(request)) return unsupported(reply)
     const declared = Number(request.headers['content-length'])
     if (Number.isFinite(declared) && declared > rawLimit) return tooLarge(request, reply, rawLimit)
+    const originalPath = agent.ref.filePath
+    const originalWorkspace = agent.workspace
+    let releaseProbe: (() => void) | undefined
     try {
       const bytes = await readCapped(request.body, rawLimit)
+      // Body streaming yields to moves, document closure and other runtimes.
+      // Check the current workspace again, then keep a lease through the write.
+      const currentAgent = () => {
+        if (runtime.isFileMoving(request.params.id)) throw new RuntimeLoopError('The file is being moved; try again in a moment.', 409, 'file_moving')
+        const current = agentFiles(request.params.id)
+        if (!current) throw new RuntimeLoopError(`Unknown agent "${request.params.id}"`, 404, 'not_found')
+        if (current.workspace !== originalWorkspace || current.ref.filePath !== originalPath) {
+          throw new RuntimeLoopError('The file changed while the upload was being read; try again.', 409, 'file_moving')
+        }
+        return current
+      }
+      currentAgent()
+      if (originalWorkspace && originalPath && runtime.agentLeaseRegistry) {
+        const filePath = originalPath
+        releaseProbe = runtime.agentLeaseRegistry.addHostedPathsProbe(() => [filePath])
+        const lease = await runtime.agentLeaseRegistry.acquire(filePath)
+        if (!lease.ok) throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
+        currentAgent()
+      }
       const mimeType = request.query.mimeType || AdfWorkspace.mimeTypeForPath(path)
-      // The write runs after the body was read (an await), past the
-      // preHandler's window: it names its writer (W3-F) and its client
+      // The write names its writer (W3-F) and its client
       // session itself, so the file_updated it raises skips the uploader's
       // own session (D5.1 origin dedup). The revision check and the write
       // run together, with no await between them.
@@ -366,6 +388,11 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
       return { agentId: agent.ref.id, success: true, path: saved, size: bytes.length, ...(revision !== undefined ? { revision } : {}) }
     } catch (err) {
       return fail(reply, err, request)
+    } finally {
+      if (releaseProbe) {
+        releaseProbe()
+        await runtime.agentLeaseRegistry?.reconcile()
+      }
     }
   })
 

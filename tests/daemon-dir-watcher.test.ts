@@ -179,7 +179,7 @@ describe('tracked-dir watcher', () => {
     expect(notices[0].outcome === 'skipped' && notices[0].message).toMatch(/agent-1/)
     expect(warn.mock.calls.some(args => String(args[0]).includes('Not autostarted'))).toBe(true)
     // The fleet listing carries the sentence.
-    const listed = listFolderAgents(runtime, settings.store, root).agents.find(x => x.filePath === a.filePath)
+    const listed = (await listFolderAgents(runtime, settings.store, root)).agents.find(x => x.filePath === a.filePath)
     expect(listed?.error).toMatch(/agent-1/)
   })
 

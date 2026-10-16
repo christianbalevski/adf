@@ -67,6 +67,39 @@ function daemon(startedBy: DaemonStartedBy, runtime = new RuntimeService({ enfor
 const settle = () => new Promise((r) => setTimeout(r, 120))
 
 describe('POST /client/sessions/:id/quit (§8.3 quit behaviour)', () => {
+  it('remote clients cannot grant or change shutdown ownership, while ordinary remote sessions work', async () => {
+    const d = daemon('studio')
+    const remote = { ...auth, 'x-forwarded-for': '203.0.113.9' }
+    const grant = await d.server.inject({ method: 'POST', url: '/client/sessions', headers: remote, payload: { client: 'studio', version: '1.0.0', exitDaemonWhenClosed: true } })
+    expect(grant.statusCode).toBe(403)
+    expect(grant.json().code).toBe('loopback_only')
+    const ordinary = await d.server.inject({ method: 'POST', url: '/client/sessions', remoteAddress: '203.0.113.9', headers: auth, payload: { client: 'tui', version: '1.0.0' } })
+    expect(ordinary.statusCode).toBe(201)
+    const id = await d.open('studio', true)
+    for (const exitDaemonWhenClosed of [true, false]) {
+      const changed = await d.server.inject({ method: 'PUT', url: `/client/sessions/${id}/exit-when-closed`, headers: remote, payload: { exitDaemonWhenClosed } })
+      expect(changed.statusCode).toBe(403)
+    }
+    expect((await d.server.inject({ method: 'GET', url: '/client/sessions', headers: auth })).json().sessions).toContainEqual({ client: 'studio', version: '1.0.0', exitDaemonWhenClosed: true })
+    expect(d.requestShutdown).not.toHaveBeenCalled()
+  })
+
+  it('shutdown ownership behind a proxy requires local proof, and proxy headers cannot grant it', async () => {
+    const proof = 'local-proof-for-shutdown-ownership-0123456789'
+    const runtime = new RuntimeService({ agentLeases: null, enforceReviewGate: false })
+    const server = createDaemonHttpApi(runtime, { routes: { startedBy: 'studio' }, security: { token: TOKEN, behindProxy: true, localProof: proof } })
+    servers.push(server)
+    const create = (headers: Record<string, string>, exitDaemonWhenClosed = true) => server.inject({ method: 'POST', url: '/client/sessions', headers: { ...auth, ...headers }, payload: { client: 'studio', version: '1.0.0', exitDaemonWhenClosed } })
+    expect((await create({})).statusCode).toBe(403)
+    expect((await create({}, false)).statusCode).toBe(201)
+    expect((await create({ 'x-adf-local-proof': proof, via: 'proxy' })).statusCode).toBe(403)
+    const opened = await create({ 'x-adf-local-proof': proof })
+    expect(opened.statusCode).toBe(201)
+    const url = `/client/sessions/${opened.json().sessionId}/exit-when-closed`
+    expect((await server.inject({ method: 'PUT', url, headers: auth, payload: { exitDaemonWhenClosed: false } })).statusCode).toBe(403)
+    expect((await server.inject({ method: 'PUT', url, headers: { ...auth, 'x-adf-local-proof': proof }, payload: { exitDaemonWhenClosed: false } })).statusCode).toBe(200)
+  })
+
   it('keepDaemonRunning off: a daemon Studio started stops when no other client session is open', async () => {
     const d = daemon('studio')
     const id = await d.open('studio', true)

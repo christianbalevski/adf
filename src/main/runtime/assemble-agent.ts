@@ -13,7 +13,7 @@ import type { ToolRegistry } from '../tools/tool-registry'
 import type { Tool } from '../tools/tool.interface'
 import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 import type { McpClientManager } from '../services/mcp-client-manager'
-import type { ChannelAdapterManager } from '../services/channel-adapter-manager'
+import type { ChannelAdapterManager, ChannelAdapterManagerEvents } from '../services/channel-adapter-manager'
 import type { CodeSandboxService } from './code-sandbox'
 import type { StreamBindingManager } from './stream-binding-manager'
 import type { TapManager } from './tap-manager'
@@ -374,6 +374,7 @@ export function assembleAgent<P extends AgentProfileName>(
   triggerEvaluator.setWorkspace(workspace)
 
   let state: AgentLifecycleState = 'created'
+  const getLifecycleState = (): AgentLifecycleState => state
   let startPromise: Promise<void> | null = null
   let stopPromise: Promise<void> | null = null
   let disposePromise: Promise<void> | null = null
@@ -690,7 +691,7 @@ export function assembleAgent<P extends AgentProfileName>(
   // 'created').
   try { workspace.refreshSkillIndex() } catch { /* diagnostics land in adf_logs */ }
 
-  executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
+  executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled = false) => {
     triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
   }
   executor.onTaskCreated = (task) => triggerEvaluator.onTaskCreate(task)
@@ -868,7 +869,7 @@ export function assembleAgent<P extends AgentProfileName>(
   shellTool.setConfigProvider(() => executor.getConfig())
   // Named closures so teardown can identity-check ownership (see cleanupWiring).
   const shellOnToolCallIntercepted: ShellTool['onToolCallIntercepted'] =
-    (tool, args, taskId, origin, systemScopeHandled) => {
+    (tool, args, taskId, origin, systemScopeHandled = false) => {
       triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
     }
   const shellOnApprovalRequired: ShellTool['onApprovalRequired'] =
@@ -882,9 +883,8 @@ export function assembleAgent<P extends AgentProfileName>(
   shellTool.onApprovalRequired = shellOnApprovalRequired
   shellTool.onProtectionBlocked = shellOnProtectionBlocked
 
-  const onAdapterInbound = (adapterType: string, message: unknown, meta: unknown): void => {
-    const adapterMessage = message as { sender?: string; payload?: unknown; sourceMeta?: unknown }
-    const inboundMeta = meta as { inboxId?: string; parentId?: string; agentWake?: boolean }
+  const onAdapterInbound: ChannelAdapterManagerEvents['inbound'] = (adapterType, message, inboundMeta) => {
+    const adapterMessage = message
     triggerEvaluator.onInbox(`${adapterType}:${adapterMessage.sender ?? ''}`, adapterMessage.payload, {
       source: adapterType,
       messageId: inboundMeta.inboxId,
@@ -893,7 +893,7 @@ export function assembleAgent<P extends AgentProfileName>(
       // Catch-up drain: only the last message of the backlog wakes the agent.
       skipAgentScope: inboundMeta.agentWake === false,
     })
-    for (const bindings of hostBindings()) bindings.onAdapterInbound?.(adapterType, message, meta)
+    for (const bindings of hostBindings()) bindings.onAdapterInbound?.(adapterType, message, inboundMeta)
   }
   if (adapterManager) {
     adapterManager.on('inbound', onAdapterInbound)
@@ -1057,7 +1057,7 @@ export function assembleAgent<P extends AgentProfileName>(
       const immediate = mode === 'immediate' || mode === 'owner-off' || mode === 'emergency'
       if (!immediate) await waitForTrackedDispatches(graceMs)
       await teardown()
-      if (state !== 'disposed') state = 'stopped'
+      if (getLifecycleState() !== 'disposed') state = 'stopped'
     })()
     return stopPromise
   }
@@ -1090,7 +1090,7 @@ export function assembleAgent<P extends AgentProfileName>(
     get tapManager() { return options.getTapManager?.() ?? tapManager },
     scratchDir,
     loopPool,
-    getLifecycleState: () => state,
+    getLifecycleState,
     hasInFlightDispatch: () => inFlight.size > 0,
     dispatch,
     dispatchTo,

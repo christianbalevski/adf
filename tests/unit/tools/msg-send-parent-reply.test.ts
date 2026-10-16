@@ -141,3 +141,27 @@ describe('resolveParentReplyAddress boundaries', () => {
     expect(resolveParentReplyAddress({ return_path: OBSERVED_ROUTE, source: 'mesh' })).toBeUndefined()
   })
 })
+
+describe('msg_send recipient written as a URL', () => {
+  it('is refused, naming DID and inbox address, and nothing is sent', async () => {
+    const { tool, sendFn } = makeTool()
+    const result = await tool.execute(
+      { recipient: 'http://192.0.2.10:7295/agents/peer/card', content: 'hi' },
+      workspaceWith({ id: 'none' }),
+    )
+    expect(result.isError).toBe(true)
+    expect(result.content).toMatch(/is a URL/)
+    expect(result.content).toMatch(/DID/)
+    expect(result.content).toMatch(/\/inbox/)
+    expect(result.content).not.toMatch(/Adapter "http"/)
+    expect(sendFn).not.toHaveBeenCalled()
+  })
+
+  it('still lets adapter recipients and DIDs through', async () => {
+    for (const recipient of ['telegram:123', 'did:key:z6MkPeer']) {
+      const { tool, sendFn } = makeTool()
+      await tool.execute({ recipient, address: recipient.startsWith('did:') ? 'http://192.0.2.20:7295/agents/peer/inbox' : undefined, content: 'hi' }, workspaceWith({ id: 'none' }))
+      expect(sendFn).toHaveBeenCalled()
+    }
+  })
+})

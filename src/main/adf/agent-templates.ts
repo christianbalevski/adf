@@ -61,6 +61,7 @@ import {
   TEMPLATE_EXTRA_FILE_MAX_BYTES,
   validateTemplateFilePath
 } from '../../shared/utils/agent-template'
+import { deriveHandle } from '../utils/handle'
 import { getUserDataPath } from '../utils/user-data-path'
 import { AdfDatabase } from './adf-database'
 import { AgentConfigSchema } from './adf-schema'
@@ -224,6 +225,11 @@ export async function instantiateTemplateFile(args: InstantiateFileArgs): Promis
       const nowIso = new Date().toISOString()
       config.id = nanoid(12)
       config.name = name
+      // The handle names this agent on the mesh (/agents/:handle), so it is
+      // the instance's own, from its file name, like the id: a template's
+      // handle (one a duplicated template picked up from its name) would give
+      // every instance the same one.
+      config.handle = deriveHandle(destPath)
       // The live `state` of a template that has run is not a setting. An
       // instance always starts where its config says a new agent starts.
       config.state = config.start_in_state ?? AGENT_DEFAULTS.state
@@ -237,7 +243,7 @@ export async function instantiateTemplateFile(args: InstantiateFileArgs): Promis
         'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
       )
       setMeta.run('adf_name', name, 'readonly')
-      setMeta.run('adf_handle', config.handle || slugifyTemplateId(name), 'readonly')
+      setMeta.run('adf_handle', config.handle, 'readonly')
       setMeta.run('adf_created_at', nowIso, 'readonly')
       setMeta.run('adf_updated_at', nowIso, 'readonly')
       setMeta.run('adf_parent_did', parentDid, 'readonly')
@@ -812,9 +818,11 @@ export class AgentTemplatesService {
       try {
         const config = workspace.getAgentConfig()
         config.name = name
+        // A template's handle follows its file, so a renamed template does not keep the old name's.
+        config.handle = newId
         workspace.setAgentConfig(config)
         workspace.setMeta('adf_name', name, 'readonly')
-        workspace.setMeta('adf_handle', config.handle || newId, 'readonly')
+        workspace.setMeta('adf_handle', newId, 'readonly')
       } finally {
         // Checkpoints the WAL, so the sidecars below hold nothing the file
         // needs and the renamed .adf is self-contained.

@@ -1875,27 +1875,7 @@ export class BackgroundAgentManager extends EventEmitter {
           filePath,
           inbox: {
             version: 1,
-            messages: allMessages.map(m => ({
-              id: m.id,
-              from: m.sender,
-              sender: m.sender,
-              reply_to: m.reply_to,
-              source: m.source,
-              content: m.payload,
-              payload: m.payload,
-              type: (m.intent ?? 'broadcast') as const,
-              direction: 'incoming' as const,
-              status: m.status,
-              timestamp: m.received_at,
-              received_at: m.received_at,
-              sent_at: m.sent_at,
-              trace_id: m.trace_id,
-              parent_id: m.parent_id,
-              replyTo: m.parent_id,
-              intent: m.intent,
-              attachments: m.attachments,
-              source_meta: m.source_meta
-            }))
+            messages: allMessages
           }
         })
       },

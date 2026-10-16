@@ -287,10 +287,13 @@ export class DaemonClient {
     const timeoutMs = options.timeoutMs ?? this.timeoutMs
     const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
     const onAbort = () => controller.abort(options.signal?.reason)
-    options.signal?.addEventListener('abort', onAbort, { once: true })
+    if (options.signal?.aborted) onAbort()
+    else options.signal?.addEventListener('abort', onAbort, { once: true })
     const url = this.url(path, options.query)
     let response: Response
+    let text: string
     try {
+      controller.signal.throwIfAborted()
       response = await this.fetchImpl(url, {
         method,
         // Proxy-mode daemons (ADF_DAEMON_BEHIND_PROXY) need this machine's proof on local-only routes.
@@ -300,18 +303,21 @@ export class DaemonClient {
         // Never followed: a 302 would forward the token / local proof, a 307 the body.
         redirect: 'manual',
       })
+      if (isRedirect(response)) {
+        void response.body?.cancel().catch(() => {})
+        throw new DaemonError(redirectMessage(this.baseUrl, response), response.status)
+      }
+      // Receiving headers does not finish a request: downloads and error
+      // bodies share its deadline and the caller's cancellation signal.
+      text = await response.text()
     } catch (err) {
+      if (err instanceof DaemonError) throw err
       const reason = controller.signal.aborted && !options.signal?.aborted ? `timed out after ${timeoutMs}ms` : errorMessage(err)
       throw new DaemonError(`Cannot reach daemon at ${this.baseUrl}: ${reason}`, null)
     } finally {
       clearTimeout(timer)
       options.signal?.removeEventListener('abort', onAbort)
     }
-    if (isRedirect(response)) {
-      void response.body?.cancel().catch(() => {})
-      throw new DaemonError(redirectMessage(this.baseUrl, response), response.status)
-    }
-    const text = await response.text()
     let body: unknown = null
     if (text.trim()) {
       try { body = JSON.parse(text) } catch { body = text }

@@ -259,7 +259,7 @@ class Parser {
   }
 
   private parseChain(): ShellNode {
-    let left = this.parsePipeline()
+    const left = this.parsePipeline()
 
     while (this.isChainOp(this.peek())) {
       const opToken = this.advance()
@@ -283,7 +283,7 @@ class Parser {
       if (this.peek().type === 'eof') return left
 
       const right = this.parseChain()
-      left = { kind: 'chain', left, operator, right }
+      return { kind: 'chain', left, operator, right }
     }
 
     return left

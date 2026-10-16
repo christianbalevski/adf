@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo } from 'react'
+import { memo, useEffect, useMemo, type ReactElement } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
@@ -113,7 +113,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
   const hue = hueFromPath(dir)
   const label = pathSegments(dir).slice(-2).join('/')
 
-  const stat = (value: string, name: string, accent?: string): JSX.Element => (
+  const stat = (value: string, name: string, accent?: string): ReactElement => (
     <div className="flex flex-col items-center px-4 py-2">
       <span className={`text-lg font-semibold tabular-nums ${accent ?? 'text-neutral-800 dark:text-neutral-100'}`}>{value}</span>
       <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">{name}</span>

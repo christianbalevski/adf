@@ -4,7 +4,7 @@ import { inheritableEnv } from '../utils/child-env'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type {
   McpServerConfig,
   McpToolInfo,
@@ -46,7 +46,7 @@ const { StdioClientTransport } = loadStdioTransportHidden(join(clientDir, 'stdio
  * console window. stdio.js is loaded against a cross-spawn that always sets
  * `windowsHide`; every other cross-spawn user keeps the real module.
  */
-function loadStdioTransportHidden(stdioPath: string): typeof import('@modelcontextprotocol/sdk/client/stdio') {
+function loadStdioTransportHidden(stdioPath: string): typeof import('@modelcontextprotocol/sdk/client/stdio.js') {
   const crossSpawnPath = createRequire(stdioPath).resolve('cross-spawn')
   type CrossSpawn = (command: string, args?: readonly string[], options?: object) => unknown
   const real = _require(crossSpawnPath) as CrossSpawn
@@ -62,7 +62,7 @@ function loadStdioTransportHidden(stdioPath: string): typeof import('@modelconte
     cached.exports = real
   }
 }
-const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp')
+const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')
 
 /** Env vars that user-supplied MCP config must never override. */
 const BLOCKED_ENV_VARS = new Set([

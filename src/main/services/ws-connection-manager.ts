@@ -1267,7 +1267,7 @@ export class WsConnectionManager {
         payload: { lambda_path: filePath, function_name: fnName, kind: 'ws', connection_id: conn.id }
       })
       const result = await withSource(`lambda:${filePath}:${fnName}`, agentId, () =>
-        codeSandbox.execute(sandboxId, wrappedCode, timeout, onAdfCall, toolConfig,
+        codeSandbox.execute(sandboxId, wrappedCode, timeout, onAdfCall, { ...toolConfig, isAuthorized: fileAuthorized },
           { handlerAuthorized: fileAuthorized, agent: conn.agentFilePath })
       )
       const durationMs = +(performance.now() - t0).toFixed(2)

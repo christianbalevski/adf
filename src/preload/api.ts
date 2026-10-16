@@ -9,7 +9,7 @@ import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallP
 import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { ResourceConflict, ResourceWriter } from '../shared/types/resource-revision.types'
-import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
+import type { BrowserSessionEvent, BrowserSessionInfo, ComputeSetupResult, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
@@ -197,7 +197,7 @@ export interface AdfApi {
   computeStartContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
   computeDestroyContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
   computeRebuildContainer: (args: { name: string }) => Promise<{ success: boolean; recreated?: boolean; error?: string }>
-  computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => Promise<Record<string, unknown>>
+  computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => Promise<ComputeSetupResult>
   computeContainerDetail: (args: { name: string }) => Promise<Record<string, unknown>>
   computeExecLog: (args: { name?: string }) => Promise<{ entries: unknown[] }>
   computeTestExecutionTarget: (target: LocalContainerExecutionTarget) => Promise<ExecutionTargetProbeResult>

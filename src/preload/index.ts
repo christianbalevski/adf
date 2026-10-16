@@ -7,6 +7,10 @@ import type { AdfApi } from './api'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch, RemoteCheckRequest, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
 
+type SubscriptionPayload<Subscription> = Subscription extends (callback: (data: infer Payload) => void) => () => void
+  ? Payload
+  : never
+
 const api: AdfApi = {
   // App
   getAppVersion: () => ipcRenderer.invoke(IPC.APP_GET_VERSION),
@@ -124,11 +128,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MODELS_LIST, { provider, filePath }),
 
   // Events (main -> renderer)
-  onAgentEvent: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onAgentEvent: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onAgentEvent']>) => callback(data)
     ipcRenderer.on(IPC.AGENT_EVENT, handler)
-    return () => ipcRenderer.removeListener(IPC.AGENT_EVENT, handler)
+    return () => { ipcRenderer.removeListener(IPC.AGENT_EVENT, handler) }
   },
 
   // Settings
@@ -184,11 +187,10 @@ const api: AdfApi = {
   getAgentActivity: (filePath: string, opts?: { force?: boolean }) =>
     ipcRenderer.invoke(IPC.AGENT_ACTIVITY, { filePath, force: opts?.force }),
   getMeshTokenBurn: () => ipcRenderer.invoke(IPC.MESH_TOKEN_BURN),
-  onMeshEvent: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onMeshEvent: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onMeshEvent']>) => callback(data)
     ipcRenderer.on(IPC.MESH_EVENT, handler)
-    return () => ipcRenderer.removeListener(IPC.MESH_EVENT, handler)
+    return () => { ipcRenderer.removeListener(IPC.MESH_EVENT, handler) }
   },
   getMeshDebug: () =>
     ipcRenderer.invoke(IPC.MESH_STATUS, { debug: true }),
@@ -234,11 +236,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_STATUS),
   stopBackgroundAgent: (filePath: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_STOP, { filePath }),
-  onBackgroundAgentEvents: (callback: (events: unknown[]) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown[]) =>
-      callback(data)
+  onBackgroundAgentEvents: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onBackgroundAgentEvents']>) => callback(data)
     ipcRenderer.on(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler)
-    return () => ipcRenderer.removeListener(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler)
+    return () => { ipcRenderer.removeListener(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler) }
   },
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answer }),
@@ -348,11 +349,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.DOC_DROP_LOCAL_TABLE, { table }),
 
   // Inbox push updates (main -> renderer)
-  onInboxUpdated: (callback: (data: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onInboxUpdated: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onInboxUpdated']>) => callback(data)
     ipcRenderer.on(IPC.INBOX_UPDATED, handler)
-    return () => ipcRenderer.removeListener(IPC.INBOX_UPDATED, handler)
+    return () => { ipcRenderer.removeListener(IPC.INBOX_UPDATED, handler) }
   },
 
   // Workspace data-change push (main -> renderer): inbox/outbox/tables mutated
@@ -399,17 +399,15 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MCP_OAUTH_SIGNOUT, args),
   mcpOAuthStatus: (args: { url: string }) =>
     ipcRenderer.invoke(IPC.MCP_OAUTH_STATUS, args),
-  onMcpInstallProgress: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onMcpInstallProgress: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onMcpInstallProgress']>) => callback(data)
     ipcRenderer.on(IPC.MCP_INSTALL_PROGRESS, handler)
-    return () => ipcRenderer.removeListener(IPC.MCP_INSTALL_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IPC.MCP_INSTALL_PROGRESS, handler) }
   },
-  onMcpServerStatusChanged: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onMcpServerStatusChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onMcpServerStatusChanged']>) => callback(data)
     ipcRenderer.on(IPC.MCP_SERVER_STATUS_CHANGED, handler)
-    return () => ipcRenderer.removeListener(IPC.MCP_SERVER_STATUS_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.MCP_SERVER_STATUS_CHANGED, handler) }
   },
 
   // Skill catalogs
@@ -445,19 +443,17 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.COMPUTE_EXEC_LOG, args),
   computeTestExecutionTarget: (target: import('../shared/types/compute.types').LocalContainerExecutionTarget) =>
     ipcRenderer.invoke(IPC.COMPUTE_TEST_EXECUTION_TARGET, target),
-  onBrowserSession: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onBrowserSession: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onBrowserSession']>) => callback(data)
     ipcRenderer.on(IPC.COMPUTE_BROWSER_SESSION, handler)
-    return () => ipcRenderer.removeListener(IPC.COMPUTE_BROWSER_SESSION, handler)
+    return () => { ipcRenderer.removeListener(IPC.COMPUTE_BROWSER_SESSION, handler) }
   },
   getBrowserSessionInfo: (args: { agentName: string; agentId: string }) =>
     ipcRenderer.invoke(IPC.COMPUTE_BROWSER_INFO, args),
-  onContainerPhase: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onContainerPhase: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onContainerPhase']>) => callback(data)
     ipcRenderer.on(IPC.COMPUTE_CONTAINER_PHASE, handler)
-    return () => ipcRenderer.removeListener(IPC.COMPUTE_CONTAINER_PHASE, handler)
+    return () => { ipcRenderer.removeListener(IPC.COMPUTE_CONTAINER_PHASE, handler) }
   },
 
   // Python MCP packages (uvx)
@@ -473,11 +469,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.SANDBOX_CHECK_MISSING, packages),
   installSandboxPackages: (packages: Array<{ name: string; version: string }>) =>
     ipcRenderer.invoke(IPC.SANDBOX_INSTALL_PACKAGES, packages),
-  onSandboxInstallProgress: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onSandboxInstallProgress: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onSandboxInstallProgress']>) => callback(data)
     ipcRenderer.on(IPC.SANDBOX_INSTALL_PROGRESS, handler)
-    return () => ipcRenderer.removeListener(IPC.SANDBOX_INSTALL_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IPC.SANDBOX_INSTALL_PROGRESS, handler) }
   },
   listInstalledSandboxPackages: () =>
     ipcRenderer.invoke(IPC.SANDBOX_LIST_INSTALLED),
@@ -509,17 +504,15 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.ADAPTER_RESTART, args),
   getAdapterLogs: (args: { type: string; filePath?: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_GET_LOGS, args),
-  onAdapterInstallProgress: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onAdapterInstallProgress: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onAdapterInstallProgress']>) => callback(data)
     ipcRenderer.on(IPC.ADAPTER_INSTALL_PROGRESS, handler)
-    return () => ipcRenderer.removeListener(IPC.ADAPTER_INSTALL_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IPC.ADAPTER_INSTALL_PROGRESS, handler) }
   },
-  onAdapterStatusChanged: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
-      callback(data)
+  onAdapterStatusChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SubscriptionPayload<AdfApi['onAdapterStatusChanged']>) => callback(data)
     ipcRenderer.on(IPC.ADAPTER_STATUS_CHANGED, handler)
-    return () => ipcRenderer.removeListener(IPC.ADAPTER_STATUS_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.ADAPTER_STATUS_CHANGED, handler) }
   },
   setAdapterCredential: (args: { filePath: string; adapterType: string; envKey: string; value: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_CREDENTIAL_SET, args),

@@ -270,3 +270,15 @@ describe('background agents and folders', () => {
     expect(daemon.requests.some((r) => r.path === '/agents/load' && (r.body as { filePath: string }).filePath === file1)).toBe(false)
   })
 })
+
+
+describe('remote paths belong to the daemon filesystem', () => {
+  it('allows a lowercase Linux agent to start beside a distinct uppercase foreground agent', async () => {
+    ctx.mode = 'remote'
+    ctx.session = new DaemonModeSession(fake, quiet, undefined, true)
+    await ctx.session.openFile('/agents/Foo.adf', async () => null)
+    daemon.routes.set('GET /files/agent', () => ({ loaded: true, agentId: OTHER, filePath: '/agents/foo.adf' }))
+    expect(await call(IPC.BACKGROUND_AGENT_START, { filePath: '/agents/foo.adf' })).toEqual({ success: true })
+    expect(last('GET', '/files/agent')?.query).toEqual({ path: '/agents/foo.adf' })
+  })
+})

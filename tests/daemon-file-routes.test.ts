@@ -524,6 +524,84 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
 })
 
 describe('daemon file routes: raw internal files', () => {
+  it('holds a lease through a raw write and releases it when the document remains stopped', async () => {
+    const root = tempDir('adf-stream-write-lease-')
+    const { id, filePath } = seedAgent(root, 'agent-1')
+    const leaseDir = join(root, 'leases')
+    const own = new AgentLeaseRegistry({ dir: leaseDir, kind: 'daemon', settingsPath: join(root, 'own.json') })
+    const other = new AgentLeaseRegistry({ dir: leaseDir, kind: 'studio-embedded', settingsPath: join(root, 'other.json') })
+    const runtime = new RuntimeService({ agentLeases: own, enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    const { server } = setup({}, { runtime })
+    await runtime.openDocument(filePath, { holder: '00000000-0000-4000-8000-000000000001' })
+    const acquire = own.acquire.bind(own)
+    const protectedWrite = vi.spyOn(own, 'acquire').mockImplementation(async path => {
+      const lease = await acquire(path)
+      expect(lease.ok).toBe(true)
+      expect((await other.acquire(path)).ok).toBe(false)
+      return lease
+    })
+    try {
+      const answer = await server.inject({ method: 'PUT', url: `/agents/${id}/files/raw?path=notes.txt`, payload: Buffer.from('saved'), headers: { 'content-type': 'application/octet-stream' } })
+      expect(answer.statusCode).toBe(200)
+      expect(protectedWrite).toHaveBeenCalledTimes(1)
+      expect(runtime.getAgentWorkspace(id)!.workspace.readFileBuffer('notes.txt')?.toString()).toBe('saved')
+      expect((await other.acquire(filePath)).ok).toBe(true)
+    } finally {
+      protectedWrite.mockRestore()
+      runtime.closeDocument(filePath, 'released')
+      await other.close()
+      await own.close()
+    }
+  })
+
+  it.each(['lease', 'move', 'close'] as const)('rechecks %s after a partial HTTP upload before writing', async change => {
+    const root = tempDir('adf-stream-race-')
+    const { id, filePath } = seedAgent(root, 'agent-1')
+    const leaseDir = join(root, 'leases')
+    const own = new AgentLeaseRegistry({ dir: leaseDir, kind: 'daemon', settingsPath: join(root, 'own.json') })
+    const other = new AgentLeaseRegistry({ dir: leaseDir, kind: 'studio-embedded', settingsPath: join(root, 'other.json') })
+    const runtime = new RuntimeService({ agentLeases: own, enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    const { server } = setup({}, { runtime })
+    const holder = '00000000-0000-4000-8000-000000000001'
+    let entered!: () => void
+    const reading = new Promise<void>(resolve => { entered = resolve })
+    server.addHook('preHandler', async request => {
+      if (request.routeOptions.url === '/agents/:id/files/raw') entered()
+    })
+    await runtime.openDocument(filePath, { holder })
+    await server.listen({ host: '127.0.0.1', port: 0 })
+    const port = (server.server.address() as AddressInfo).port
+    let upload!: ReturnType<typeof httpRequest>
+    const response = new Promise<{ status: number; body: any }>((resolve, reject) => {
+      upload = httpRequest({ host: '127.0.0.1', port, method: 'PUT', path: `/agents/${id}/files/raw?path=notes.txt`, headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '2' } }, res => {
+        let body = ''
+        res.on('data', chunk => { body += chunk })
+        res.on('end', () => resolve({ status: res.statusCode!, body: JSON.parse(body) }))
+      })
+      upload.on('error', reject)
+    })
+    try {
+      upload.write('a')
+      await reading
+      if (change === 'lease') expect((await other.acquire(filePath, { agentId: id })).ok).toBe(true)
+      else if (change === 'close') await runtime.releaseDocument(id, holder)
+      else expect((await server.inject({ method: 'POST', url: '/files/rename', payload: { path: filePath, newName: 'agent-2' } })).statusCode).toBe(200)
+      upload.end('b')
+      const answer = await response
+      expect(answer.status).toBe(change === 'close' ? 404 : 409)
+      expect(answer.body.code).toBe(change === 'lease' ? 'agent_leased' : change === 'move' ? 'file_moving' : 'not_found')
+      const current = runtime.getAgentWorkspace(id)
+      if (current) expect(current.workspace.readFileBuffer('notes.txt')).toBeNull()
+    } finally {
+      upload.destroy()
+      await server.close()
+      const current = runtime.getAgentWorkspace(id)
+      if (current?.filePath) runtime.closeDocument(current.filePath, 'released')
+      await other.close()
+      await own.close()
+    }
+  })
+
   it('uploads 20 MiB as octet-stream and reads it back byte for byte', async () => {
     const root = tempDir('adf-files-')
     const a = seedAgent(root, 'agent-1')

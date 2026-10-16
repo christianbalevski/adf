@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   handoverNeedsKeychain,
+  conflictAccountLabels,
   planHandover,
   readCredentialHolder,
   readHandoverMarker,
@@ -332,6 +333,15 @@ describe('accounts conflict and ownership', () => {
     expect(report.items.find((i) => i.id === 'chatgpt')?.detail).toMatch(/kept acct-daemon, signed out acct-studio/)
     expect(studioTokens(sub).exists()).toBe(false)
     expect(daemonTokens(sub).read()?.refresh_token).toBe(daemonOwn.refresh_token)
+  })
+
+  it('one email on both sides, two account ids: the dialog tells them apart by the id', () => {
+    const jwt = (email: string): string => `h.${Buffer.from(JSON.stringify({ email })).toString('base64url')}.s`
+    const studio = { ...auth.issue('acct-personal'), access_token: jwt('owner@example.com') }
+    const daemon = { ...auth.issue('acct-team'), access_token: jwt('owner@example.com') }
+    expect(conflictAccountLabels(studio, daemon)).toEqual(['owner@example.com (account acct-personal)', 'owner@example.com (account acct-team)'])
+    expect(conflictAccountLabels(studio, { ...daemon, account_id: '' })[1]).toBe('owner@example.com (no account id recorded)')
+    expect(conflictAccountLabels(studio, { ...daemon, access_token: jwt('other@example.com') })).toEqual(['owner@example.com', 'other@example.com'])
   })
 
   it('probe H: the CLI daemon signed in to the same account on its own; both logins survive the round trip', async () => {

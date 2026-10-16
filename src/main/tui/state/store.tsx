@@ -233,6 +233,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   let current = new WeakSet<DaemonClient>([client])
   const pageSize = options.pageSize ?? 100
   let state = initialState(client.baseUrl, options.initialView)
+  // Explicit selection changes invalidate a pending start's auto-selection;
+  // reducer reconciliation from a tracked path to a loaded ID does not.
+  let selectionRevision = 0
   const listeners = new Set<() => void>()
   const confirmResolvers = new Map<string, (value: boolean) => void>()
   const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -263,6 +266,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   const dispatch = (action: TuiAction) => {
     const next = tuiReducer(state, action)
     if (next === state) return
+    if (action.type === 'select/agent') selectionRevision++
     state = next
     for (const listener of listeners) listener()
     // The session follows the agent whose chat view is open.
@@ -495,6 +499,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       }
       if (agent.status === 'needs_review') return review()
       const start = options.start ?? true
+      const selectionAtStart = selectionRevision
       const c = client
       dispatch({ type: 'tracked/busy', filePath, busy: 'loading' })
       dispatch({ type: 'tracked/file-error', filePath, error: undefined })
@@ -530,7 +535,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       const wasSelected = state.selectedAgentId === key || state.selectedAgentId === entry.key
       await actions.refreshAgents()
       void actions.refreshTracked()
-      if ((wasSelected || !state.selectedAgentId || isTrackedKey(state.selectedAgentId)) && state.agents[ref.id]) actions.selectAgent(ref.id)
+      if (selectionRevision === selectionAtStart && (wasSelected || !state.selectedAgentId || isTrackedKey(state.selectedAgentId)) && state.agents[ref.id]) actions.selectAgent(ref.id)
       actions.notice(ref.id, MAIN_LOOP, text, level === 'success' ? 'info' : 'warn')
       return ref.id
     },

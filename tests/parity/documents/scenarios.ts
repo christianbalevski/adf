@@ -1,5 +1,6 @@
 import { dirname, join } from 'node:path'
 import { IPC } from '../../../src/shared/constants/ipc-channels'
+import { FIXTURE_CREATED_DATE } from '../harness/fixtures'
 import type { ParityScenario, ScenarioContext } from '../harness/scenario'
 
 /**
@@ -78,7 +79,7 @@ export const passwordUnlockScenario: ParityScenario = {
 export const configDuringStartScenario: ParityScenario = {
   name: 'config-during-start',
   description: 'Open agent-1 and save a config edit while its start is in flight: the running agent and the file keep the edit.',
-  fixtures: [{ name: 'agent-1' }],
+  fixtures: [{ name: 'agent-1', createdAt: `${FIXTURE_CREATED_DATE}T00:00:00.000Z` }],
   quietMs: 1000,
   async run(ctx) {
     const agent = ctx.agent('agent-1')
@@ -97,7 +98,7 @@ export const configDuringStartScenario: ParityScenario = {
 export const reviewAcceptForeignScenario: ParityScenario = {
   name: 'review-accept-foreign',
   description: 'Open agent-2, a file this owner never reviewed and that has no identity: the review asks to claim it, the accept claims it.',
-  fixtures: [{ name: 'agent-2', reviewed: false }],
+  fixtures: [{ name: 'agent-2', reviewed: false, createdAt: `${FIXTURE_CREATED_DATE}T00:00:00.000Z` }],
   quietMs: 1000,
   async run(ctx) {
     const agent = ctx.agent('agent-2')

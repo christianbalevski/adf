@@ -39,6 +39,7 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import {
   DEFAULT_TOOLS as defaultTools,
+  AUDIT_DEFAULTS,
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT,
   DEFAULT_MIND_LOG_CONTENT,
@@ -2506,7 +2507,7 @@ export class AdfDatabase {
         // Add any tools not in defaults (e.g. custom tool declarations)
         for (const t of options.tools) {
           if (!tools.some(dt => dt.name === t.name)) {
-            tools.push(t)
+            tools.push({ visible: true, ...t })
           }
         }
       }
@@ -2541,7 +2542,7 @@ export class AdfDatabase {
         context: {
           ...base.context,
           ...options.context,
-          audit: { ...base.context.audit, ...options.context?.audit },
+          audit: { ...AUDIT_DEFAULTS, ...base.context.audit, ...options.context?.audit },
           dynamic_instructions: { ...base.context.dynamic_instructions, ...options.context?.dynamic_instructions }
         },
         tools,
@@ -2706,7 +2707,7 @@ export class AdfDatabase {
               'Snapshot timed out: the agent is being written to continuously — stop it and try again'
             )
           }
-          return undefined // keep the default transfer rate
+          return 100 // better-sqlite3 defaults to 100 pages per step
         }
       })
     } finally {
