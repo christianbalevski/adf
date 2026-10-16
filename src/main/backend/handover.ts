@@ -409,6 +409,20 @@ export function sessionAccountLabel(tokens: SessionTokens): string {
   return tokens.account_id || 'unknown account'
 }
 
+/**
+ * The two sides of an accounts conflict, told apart. One email can hold two
+ * accounts (a ChatGPT login's personal and team workspaces have their own
+ * account ids), and an older build may not have recorded the id at all: the
+ * email alone would show the same name twice.
+ */
+export function conflictAccountLabels(studio: SessionTokens, daemon: SessionTokens): [string, string] {
+  const a = sessionAccountLabel(studio)
+  const b = sessionAccountLabel(daemon)
+  if (a !== b) return [a, b]
+  const id = (tokens: SessionTokens): string => tokens.account_id ? `account ${tokens.account_id}` : 'no account id recorded'
+  return [`${a} (${id(studio)})`, `${b} (${id(daemon)})`]
+}
+
 function decryptStudioToken(deps: HandoverDeps, raw: string): string | null {
   if (raw.startsWith(SAFE_PREFIX)) return deps.studioSecrets.decrypt(raw)
   // Studio falls back to the key-file cipher without safeStorage; plaintext is a pre-split legacy file.
@@ -547,11 +561,12 @@ async function moveSubscription(
     } else {
       const studio = toDaemon ? source : dest
       const daemon = toDaemon ? dest : source
+      const [studioAccount, daemonAccount] = conflictAccountLabels(studio, daemon)
       const conflict: SessionConflict = {
         provider: sub.id,
         label: sub.label,
-        studio: { account: sessionAccountLabel(studio), expiresAt: studio.expires_at },
-        daemon: { account: sessionAccountLabel(daemon), expiresAt: daemon.expires_at },
+        studio: { account: studioAccount, expiresAt: studio.expires_at },
+        daemon: { account: daemonAccount, expiresAt: daemon.expires_at },
         replacedDir: dir,
       }
       const choice = deps.chooseSession ? await deps.chooseSession(conflict) : (toDaemon ? 'studio' : 'daemon')
@@ -560,7 +575,7 @@ async function moveSubscription(
       // The account not kept is saved, encrypted with the daemon's cipher (the format of auth.daemon.json), once per account.
       const replacedPath = await replacedTokenPath(dir, dropped, (stored) => deps.daemonCipher.decrypt(stored))
       await writeTokenFile(replacedPath, deps.daemonCipher.encrypt(JSON.stringify(dropped)))
-      note = `; both sides were signed in (Studio: ${conflict.studio.account}, daemon: ${conflict.daemon.account}); kept ${sessionAccountLabel(keep)}, signed out ${sessionAccountLabel(dropped)} (saved encrypted in ${replacedPath}: stop the daemon and rename it to ${DAEMON_TOKEN_FILE} to use that account in the daemon)`
+      note = `; both sides were signed in (Studio: ${conflict.studio.account}, daemon: ${conflict.daemon.account}); kept ${keep === studio ? studioAccount : daemonAccount}, signed out ${dropped === studio ? studioAccount : daemonAccount} (saved encrypted in ${replacedPath}: stop the daemon and rename it to ${DAEMON_TOKEN_FILE} to use that account in the daemon)`
     }
   }
 
