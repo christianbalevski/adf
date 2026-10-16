@@ -163,6 +163,8 @@ export interface AgentVitals {
   /** ISO adf_created_at. */
   createdAt?: string
   ageDays: number
+  /** Bytes on disk: the .adf file plus its `-wal`. Absent when the file could not be read. */
+  fileBytes?: number
   /** adf_meta `status`: the agent's own status line. Absent when unset or blank. */
   status?: string
   /** config.description, the ALF card's `description`. Absent when blank. */

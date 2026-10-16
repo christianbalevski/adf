@@ -281,6 +281,18 @@ export function formatAge(ageDays: number): string {
   return `${plural(d, 'day')} old`
 }
 
+/** 1024-based, one decimal under 10: "820 B", "4.2 MB", "12 MB", "1.3 GB". */
+export function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = bytes
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${i === 0 || v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
 export function formatWake(nextWakeAt: number, now: number): string {
   const ms = nextWakeAt - now
   if (ms <= 0) return 'wake due'
