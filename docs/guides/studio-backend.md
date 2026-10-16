@@ -49,8 +49,9 @@ Backend does (see [What moves](#what-moves-during-a-switch)):
    ("Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session,
    MCP sign-ins."). **Open the Guide** opens this section. If Studio could not
    connect, the dialog says "… but could not connect to it." and that no agent
-   runs yet. The dialog appears once: if Studio quits before it was shown, the
-   next launch shows it. Settings → Backend keeps a **Default changed** row
+   runs yet. The dialog appears once: if Studio quits or restarts before it
+   was shown, the next launch shows it, together with what that launch moved
+   and what is still not done. Settings → Backend keeps a **Default changed** row
    with the date, the version and what moved.
 
 The dialog also says, when it applies:
