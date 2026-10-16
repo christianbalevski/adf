@@ -7,6 +7,7 @@ import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppStat
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
+import { queueOwnerMessage } from '../../utils/queued-delivery'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -1015,7 +1016,6 @@ function LoopStream({ loop }: { loop: string }) {
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
   // Keyed by agent file, not held in the view: a queue outlives an agent switch.
   const messageQueue = useMessageQueueStore((s) => selectQueue(s, filePath, loop))
-  const enqueue = useMessageQueueStore((s) => s.enqueue)
   const removeQueued = useMessageQueueStore((s) => s.remove)
   const setLog = useAgentStore((s) => s.setLog)
   const config = useAgentStore((s) => s.config)
@@ -1575,11 +1575,11 @@ function LoopStream({ loop }: { loop: string }) {
     pinToBottom()
 
     // Autonomous + active: queue message instead of sending directly
-    if (state === 'active' && targetFilePath) {
-      // Callers already cleared the composer; the queue is keyed by agent and
-      // loop so a message typed into an inner loop's tab is sent to that loop,
-      // and it is still there (and still sent) after the owner switches agents.
-      enqueue(targetFilePath, loop, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews })
+    // Callers already cleared the composer; the queue is keyed by agent and
+    // loop so a message typed into an inner loop's tab is sent to that loop,
+    // and it is still there (and still sent) after the owner switches agents.
+    // Older queued messages go first: this one never jumps ahead of them.
+    if (queueOwnerMessage(targetFilePath, loop, state, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews })) {
       return
     }
 

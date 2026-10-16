@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid'
 import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
-import { useMessageQueueStore, queuedLoops } from '../stores/message-queue.store'
+import { useMessageQueueStore, queuedLoops, selectQueue, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
@@ -30,6 +30,28 @@ export function deliverQueuedMessages(filePath: string, loop: string): boolean {
     agentStore.setState('active', loop)
   }
   window.adfApi?.invokeAgent(combined, filePath, content, loop)
+  return true
+}
+
+/**
+ * Route a message the owner just sent from the composer. It is queued while
+ * the loop is mid-turn, and also while older queued messages still wait (a
+ * send that failed, a loop held on an approval), so it can never jump ahead of
+ * them. On an idle loop the whole queue then goes now, oldest first.
+ * False: nothing is queued, the caller sends it directly.
+ */
+export function queueOwnerMessage(
+  filePath: string | null,
+  loop: string,
+  loopState: string,
+  agentState: string,
+  message: Omit<QueuedMessage, 'id'>
+): boolean {
+  if (!filePath) return false
+  const waiting = selectQueue(useMessageQueueStore.getState(), filePath, loop).length > 0
+  if (loopState !== 'active' && !waiting) return false
+  useMessageQueueStore.getState().enqueue(filePath, loop, message)
+  if (loopState === 'idle' && agentState !== 'off') deliverQueuedMessages(filePath, loop)
   return true
 }
 

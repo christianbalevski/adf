@@ -11,6 +11,7 @@ import { useMessageQueueStore, selectQueue } from '../../../src/renderer/stores/
 import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
+import { queueOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
 import { createOpenFileHarness, type OpenFileHarness } from './open-file-harness'
 
 /**
@@ -293,5 +294,47 @@ describe('inner-loop queues', () => {
     expect(main.invokeAgent).toHaveBeenCalledTimes(1)
     expect(main.invokeAgent).toHaveBeenCalledWith('for the reflector', AGENT_1, [{ type: 'text', text: 'for the reflector' }], 'reflector')
     expect(queued(AGENT_1).map((m) => m.text)).toEqual(['for main'])
+  })
+})
+
+describe('a new message never jumps ahead of older queued ones', () => {
+  /** What the composer does on submit, with the open loop's current states. */
+  const send = (text: string, loop = 'main') => {
+    const store = useAgentStore.getState()
+    return queueOwnerMessage(useDocumentStore.getState().filePath, loop, selectLoopSlice(store, loop).state, store.state, { text })
+  }
+
+  it('sends directly when nothing waits and the loop is idle', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    expect(send('hello')).toBe(false)
+    expect(queued(AGENT_1)).toEqual([])
+  })
+
+  it('queues behind a waiting message and sends both in order on idle', async () => {
+    main.agents.set(AGENT_1, { state: 'suspended' })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'older')
+    await main.openFile(AGENT_2)
+    await main.openFile(AGENT_1)
+
+    // Held on an approval: a direct send would overtake "older".
+    expect(send('newer')).toBe(true)
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+    expect(queued(AGENT_1).map((m) => m.text)).toEqual(['older', 'newer'])
+
+    main.pushForeground(idle())
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, [{ type: 'text', text: 'older' }, { type: 'text', text: 'newer' }], 'main')
+  })
+
+  it('on an idle loop with a waiting queue, sends the lot now, oldest first', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'older')
+
+    expect(send('newer')).toBe(true)
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, [{ type: 'text', text: 'older' }, { type: 'text', text: 'newer' }], 'main')
   })
 })
