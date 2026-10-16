@@ -45,7 +45,7 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { AdapterInstanceConfig, AdapterState } from '../../shared/types/channel-adapter.types'
-import type { AgentConfigSummary, AgentExecutionEvent, ProviderConfig } from '../../shared/types/ipc.types'
+import type { AgentConfigSummary, AgentExecutionEvent, AgentState as DisplayAgentState, ProviderConfig } from '../../shared/types/ipc.types'
 import type { AgentState } from './agent-executor'
 import {
   type AdfBatchDispatch,
@@ -272,6 +272,12 @@ export interface RuntimeTargetStatus extends RuntimeAgentStatus {
   running: boolean
   /** A running agent's session id (Studio's AGENT_START answers it, the reuse path included). */
   sessionId?: string
+  /**
+   * A running agent's side loops and their display states (LoopPool.sideLoopStates):
+   * what embedded's re-attach answers, and what a client that starts
+   * watching mid-stream needs before each loop's next `state_changed`.
+   */
+  loopStates?: Record<string, DisplayAgentState>
 }
 
 /** Studio's DOC_GET_HEADER: what the header shows, read in one call. */
@@ -2134,7 +2140,9 @@ export class RuntimeService extends EventEmitter {
   getAgentOrDocumentStatus(identifier: string): RuntimeTargetStatus | undefined {
     const target = this.resolveTarget(identifier)
     if (!target) return undefined
-    if (target.managed) return { ...this.toStatus(target.managed), running: true, sessionId: target.managed.agent.session.getSessionId() }
+    if (target.managed) {
+      return { ...this.toStatus(target.managed), running: true, sessionId: target.managed.agent.session.getSessionId(), loopStates: target.managed.agent.loopPool.sideLoopStates() }
+    }
     const config = target.config
     return {
       id: target.id,

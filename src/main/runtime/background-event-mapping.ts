@@ -94,8 +94,7 @@ export function* mapBackgroundEvent(
   now: () => number = Date.now,
 ): Generator<BackgroundMappingStep, void, void> {
   const loop = event.loop ?? MAIN_LOOP
-  const loopStep = foldLoopState(filePath, event, loop, current, now)
-  if (loopStep) yield loopStep
+  yield* foldLoopState(filePath, event, loop, current, now)
   if (loop !== MAIN_LOOP) return
 
   if (event.type === 'state_changed') {
@@ -135,28 +134,40 @@ export function* mapBackgroundEvent(
 /**
  * Fold a `state_changed` into the side-loop table. A side loop's state is
  * recorded; main's only matters when it goes off with side loops present,
- * which empties the table. Emits `agent_loops_changed` only when the active
- * count moved.
+ * which empties the table. Emits `agent_loop_state_changed` when a side loop's
+ * own state moved (a queue waiting on that loop has to see its turn end even
+ * when the count does not move: one loop busy → idle while another goes idle
+ * → busy), then `agent_loops_changed` only when the active count moved.
  */
-function foldLoopState(
+function* foldLoopState(
   filePath: string,
   event: BackgroundSourceEvent,
   loop: string,
   current: Readonly<BackgroundMappingState>,
   now: () => number,
-): BackgroundMappingStep | null {
-  if (event.type !== 'state_changed') return null
+): Generator<BackgroundMappingStep, void, void> {
+  if (event.type !== 'state_changed') return
   const state = toDisplayState((event.payload as { state: string }).state)
   let loopStates: Map<string, AgentState>
   if (loop === MAIN_LOOP) {
-    if (state !== 'off' || current.loopStates.size === 0) return null
+    if (state !== 'off' || current.loopStates.size === 0) return
     loopStates = new Map()
   } else {
+    const previous = current.loopStates.get(loop)
     loopStates = new Map(current.loopStates).set(loop, state)
+    if (previous !== state) {
+      yield {
+        patch: { loopStates },
+        event: { type: 'agent_loop_state_changed', payload: { filePath, loop, state }, timestamp: now() },
+      }
+    }
   }
   const activeLoops = countActiveLoops(loopStates)
-  if (activeLoops === current.activeLoops) return { patch: { loopStates } }
-  return {
+  if (activeLoops === current.activeLoops) {
+    yield { patch: { loopStates } }
+    return
+  }
+  yield {
     patch: { loopStates, activeLoops },
     event: { type: 'agent_loops_changed', payload: { filePath, activeLoops }, timestamp: now() },
   }

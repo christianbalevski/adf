@@ -144,7 +144,7 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
   })
 
   it('AGENT_START reuse: display state, session id, main\'s pending approvals and asks', async () => {
-    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'awaiting_approval', sessionId: 'session-7' }))
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'awaiting_approval', sessionId: 'session-7', loopStates: { reflector: 'active', critic: 'idle' } }))
     daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ agentId: AGENT, displayState: 'active', configured: [] }))
     daemon.routes.set('GET /approvals/interactions', () => ([
       { filePath: file1, handle: 'agent-1', type: 'ask', requestId: 'ask_1', question: 'Why?' },
@@ -156,6 +156,8 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
       success: true,
       sessionId: 'session-7',
       agentState: 'active',
+      // Side loops keep running across a switch: the re-attach answers their states (embedded: sideLoopStates()).
+      loopStates: { reflector: 'active', critic: 'idle' },
       pendingApprovals: [{ requestId: 'task_1', name: 'fs_write', input: { path: 'a' }, reason: 'restricted', canAlwaysApprove: true }],
       pendingAsks: [{ requestId: 'ask_1', question: 'Why?' }],
     })
@@ -165,7 +167,7 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
     daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ status: 500, body: { error: 'boom' } }))
     daemon.routes.set('GET /approvals/interactions', () => ({ status: 500, body: { error: 'boom' } }))
     await call(IPC.FILE_OPEN, { filePath: file1 })
-    expect(await call(IPC.AGENT_START, {})).toEqual({ success: true, sessionId: 'session-8', agentState: 'idle', pendingApprovals: [], pendingAsks: [] })
+    expect(await call(IPC.AGENT_START, {})).toEqual({ success: true, sessionId: 'session-8', agentState: 'idle', loopStates: {}, pendingApprovals: [], pendingAsks: [] })
   })
 })
 

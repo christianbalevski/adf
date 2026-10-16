@@ -1,7 +1,7 @@
 import { IPC } from '../../../shared/constants/ipc-channels'
 import type { DaemonClient, AgentSummary, AgentStatus } from '../../../shared/daemon-client'
 import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, NotificationsSnapshot } from '../../../shared/types/ipc.types'
-import { applyBackgroundEvent, type BackgroundMappingState } from '../../runtime/background-event-mapping'
+import { applyBackgroundEvent, countActiveLoops, type BackgroundMappingState } from '../../runtime/background-event-mapping'
 import { toDisplayState } from '../../runtime/display-state'
 import { turnEndOf, type ClientFrame, type ExecutorFrame, type HostFrame, type PushFrame, type PushTopic, type StreamGap, type TurnFrame } from './client-stream'
 import { dirname, win32 } from 'node:path'
@@ -224,13 +224,20 @@ export class EventBridge {
   }
 
   /** Learn the running agents without pushing anything (start of the session). */
-  seed(statuses: ReadonlyArray<Pick<AgentStatus, 'id' | 'filePath' | 'handle' | 'runtimeState'>>): void {
+  seed(statuses: ReadonlyArray<Pick<AgentStatus, 'id' | 'filePath' | 'handle' | 'runtimeState'> & { loopStates?: Record<string, string> }>): void {
     for (const s of statuses) {
       if (!s.filePath) continue
       const existing = this.agents.get(s.id)
       const state = toDisplayState(String(s.runtimeState))
-      if (existing) existing.mapping.state = state
-      else this.agents.set(s.id, { agentId: s.id, filePath: s.filePath, handle: s.handle, mapping: initialMapping(state), shownInBackground: false })
+      const agent = existing ?? { agentId: s.id, filePath: s.filePath, handle: s.handle, mapping: initialMapping(state), shownInBackground: false }
+      agent.mapping.state = state
+      // GET /agents/:id/status answers a running agent's side loops: an agent
+      // first seen mid-turn in one of them reads as busy there, not settled.
+      if (s.loopStates) {
+        agent.mapping.loopStates = new Map(Object.entries(s.loopStates).map(([loop, st]) => [loop, toDisplayState(st)]))
+        agent.mapping.activeLoops = countActiveLoops(agent.mapping.loopStates)
+      }
+      if (!existing) this.agents.set(s.id, agent)
     }
   }
 
@@ -465,10 +472,19 @@ export class EventBridge {
     this.deps.onAgentsChanged?.()
   }
 
+  /**
+   * As the background manager's adopt: `agent_started` with main's state and
+   * every side loop's (a queue waiting on a loop that settles during the
+   * switch reads it there), then the inner-loop count when any is busy.
+   */
   private showInBackground(agent: BridgeAgent, ts: number): void {
     agent.shownInBackground = true
     const handle = agent.handle
-    this.deps.batcher.push({ type: 'agent_started', payload: { filePath: agent.filePath, state: agent.mapping.state, ...(handle ? { handle } : {}) }, timestamp: ts })
+    const loopStates = Object.fromEntries(agent.mapping.loopStates)
+    this.deps.batcher.push({ type: 'agent_started', payload: { filePath: agent.filePath, state: agent.mapping.state, ...(handle ? { handle } : {}), loopStates }, timestamp: ts })
+    if (agent.mapping.activeLoops > 0) {
+      this.deps.batcher.push({ type: 'agent_loops_changed', payload: { filePath: agent.filePath, activeLoops: agent.mapping.activeLoops }, timestamp: ts })
+    }
   }
 
   // --- frames --------------------------------------------------------------
@@ -807,8 +823,11 @@ export class EventBridge {
         agent.shownInBackground = true
         const state = toDisplayState(String(s.runtimeState))
         const handle = s.handle ?? undefined
-        this.deps.batcher.push({ type: 'agent_started', payload: { filePath: s.filePath!, state, ...(handle ? { handle } : {}) }, timestamp: ts })
+        const loopStates = Object.fromEntries(agent.mapping.loopStates)
+        this.deps.batcher.push({ type: 'agent_started', payload: { filePath: s.filePath!, state, ...(handle ? { handle } : {}), loopStates }, timestamp: ts })
         this.deps.batcher.push({ type: 'agent_state_changed', payload: { filePath: s.filePath!, state }, timestamp: ts })
+        // agent_started counts no inner loop busy (as the background manager's adopt).
+        if (agent.mapping.activeLoops > 0) this.deps.batcher.push({ type: 'agent_loops_changed', payload: { filePath: s.filePath!, activeLoops: agent.mapping.activeLoops }, timestamp: ts })
       }
       this.deps.batcher.flush()
       this.deps.onAgentsChanged?.()

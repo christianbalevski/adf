@@ -17677,6 +17677,13 @@
               "sessionId": {
                 "type": "string",
                 "description": "GET /agents/{id}/status of a running agent: its runtime session id (Studio's AGENT_START answers it)."
+              },
+              "loopStates": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "GET /agents/{id}/status of a running agent: each inner loop's display state (active, idle, suspended, error, off), keyed by loop name. Main is not in it (runtimeState is main's). A loop that accepted a dispatch but has not started thinking reads active."
               }
             }
           }

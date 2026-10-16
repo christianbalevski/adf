@@ -164,8 +164,56 @@ describe('event bridge', () => {
     ])
     // The running-agent batch: every running agent but the focused one.
     expect(batched).toEqual([
-      { type: 'agent_started', payload: { filePath: FILE_2, state: 'idle', handle: 'agent-2' }, timestamp: 1000 },
+      { type: 'agent_started', payload: { filePath: FILE_2, state: 'idle', handle: 'agent-2', loopStates: {} }, timestamp: 1000 },
       { type: 'agent_state_changed', payload: { filePath: FILE_2, state: 'idle' }, timestamp: 1000 },
+    ])
+  })
+
+  it("a resync announces each running agent's side loops from its status, and the busy count", async () => {
+    const { batched, daemon, session, bridge } = setup()
+    daemon.routes.set('GET /agents', () => [{ id: AGENT_2, filePath: FILE_2, name: 'agent-2', handle: 'agent-2', autostart: false }])
+    daemon.routes.set(`GET /agents/${AGENT_2}/status`, () => ({ id: AGENT_2, filePath: FILE_2, name: 'agent-2', handle: 'agent-2', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0, loopStates: { reflector: 'thinking', critic: 'idle' } }))
+    daemon.routes.set('GET /tracked-dirs', () => ({ maxDepth: 5, directories: [] }))
+    daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
+    await focus(session, FILE_1, AGENT_1)
+    await bridge.handleGap({ reason: 'evicted' })
+    expect(batched).toEqual([
+      { type: 'agent_started', payload: { filePath: FILE_2, state: 'idle', handle: 'agent-2', loopStates: { reflector: 'active', critic: 'idle' } }, timestamp: 1000 },
+      { type: 'agent_state_changed', payload: { filePath: FILE_2, state: 'idle' }, timestamp: 1000 },
+      { type: 'agent_loops_changed', payload: { filePath: FILE_2, activeLoops: 1 }, timestamp: 1000 },
+    ])
+  })
+
+  it("other agents' side loops: each loop's own transition is batched, also when the busy count does not move", async () => {
+    const { batched, session, bridge } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    const side = (loop: string, state: string, timestamp: number) =>
+      bridge.handleFrame({ kind: 'executor', agentId: AGENT_2, filePath: FILE_2, event: { type: 'state_changed', payload: { state }, timestamp, loop } })
+    side('reflector', 'thinking', 1)
+    side('critic', 'thinking', 2)
+    side('reflector', 'idle', 3)
+    side('reflector', 'idle', 4)
+    expect(batched.map((e) => [e.type, e.payload.loop ?? e.payload.activeLoops, e.payload.state])).toEqual([
+      ['agent_loop_state_changed', 'reflector', 'active'],
+      ['agent_loops_changed', 1, undefined],
+      ['agent_loop_state_changed', 'critic', 'active'],
+      ['agent_loops_changed', 2, undefined],
+      ['agent_loop_state_changed', 'reflector', 'idle'],
+      ['agent_loops_changed', 1, undefined],
+    ])
+  })
+
+  it("the agent losing the window is announced with its side loops' states, as the background manager adopts it", async () => {
+    const { batched, session, bridge } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    // Focused: folded without being batched.
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event: { type: 'state_changed', payload: { state: 'thinking' }, timestamp: 1, loop: 'reflector' } })
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event: { type: 'state_changed', payload: { state: 'idle' }, timestamp: 2, loop: 'critic' } })
+    expect(batched).toEqual([])
+    await focus(session, FILE_2, AGENT_2)
+    expect(batched).toEqual([
+      { type: 'agent_started', payload: { filePath: FILE_1, state: 'idle', loopStates: { reflector: 'active', critic: 'idle' } }, timestamp: 1003 },
+      { type: 'agent_loops_changed', payload: { filePath: FILE_1, activeLoops: 1 }, timestamp: 1003 },
     ])
   })
 
@@ -417,7 +465,7 @@ describe('event bridge: focus and lifecycle', () => {
     await session.openFile(FILE_2, async () => AGENT_2)
     expect(order).toEqual(['flush', 'push agent_started', 'push agent_stopped', 'flush'])
     expect(batched).toEqual([
-      { type: 'agent_started', payload: { filePath: FILE_1, state: 'active' }, timestamp: expect.any(Number) },
+      { type: 'agent_started', payload: { filePath: FILE_1, state: 'active', loopStates: {} }, timestamp: expect.any(Number) },
       { type: 'agent_stopped', payload: { filePath: FILE_2 }, timestamp: expect.any(Number) },
     ])
   })

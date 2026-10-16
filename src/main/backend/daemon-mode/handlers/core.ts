@@ -51,7 +51,7 @@ function mapChat(history: ChatHistory['chatHistory']): { version: number; uiLog:
 }
 
 /** GET /agents/:id/status: answers an open document too (`running: false`). */
-type TargetStatus = AgentStatus & { running?: boolean; sessionId?: string }
+type TargetStatus = AgentStatus & { running?: boolean; sessionId?: string; loopStates?: Record<string, string> }
 
 /** The agent's status while it runs in the daemon; null for an open document that is not running, or an unknown id. */
 async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Promise<TargetStatus | null> {
@@ -274,6 +274,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
         success: true,
         sessionId: running.sessionId,
         agentState: triggers.displayState ?? running.runtimeState,
+        // Side loops keep running across a switch; the view starts from their real states (embedded: sideLoopStates()).
+        loopStates: running.loopStates ?? {},
         pendingApprovals: mine.filter((i) => i.type === 'approval').map((i) => ({
           requestId: i.requestId,
           name: i.toolName,
