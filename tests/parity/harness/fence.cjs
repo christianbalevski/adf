@@ -312,6 +312,43 @@ function spawnStrings(name, args) {
 
 const SPAWNERS = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']
 
+/** `name` on PATH, or `%SystemRoot%\System32\name.exe` by full path. */
+function windowsTool(binary, name) {
+  const value = String(binary)
+  if (value.toLowerCase() === name || value.toLowerCase() === `${name}.exe`) return true
+  const system32 = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', `${name}.exe`)
+  return path.win32.normalize(value).toLowerCase() === system32.toLowerCase()
+}
+
+/** daemon/file-ops.ts findDocumentsDir: the Documents shell folder. */
+const DOCUMENTS_KEY = ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Personal']
+
+function currentWindowsUser() {
+  return process.env.USERDOMAIN && process.env.USERNAME
+    ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
+    : require('node:os').userInfo().username
+}
+
+/**
+ * Windows subprocesses of production code the fence lets through, by exact
+ * argv shape (win32 only, never through a shell):
+ * - icacls restricting a secret file inside a write root to the current
+ *   user (utils/secret-file.ts restrictToCurrentUserWindows: the daemon's
+ *   local proof, token, encryption key, edit-recovery copies);
+ * - reg reading the Documents shell folder (daemon/file-ops.ts
+ *   findDocumentsDir), a read of one value of one key.
+ */
+function allowedWindowsTool(binary, values) {
+  if (process.platform !== 'win32' || typeof binary !== 'string') return false
+  const argv = values.map(String)
+  if (windowsTool(binary, 'icacls')) {
+    return argv.length === 4 && argv[1] === '/inheritance:r' && argv[2] === '/grant:r' && argv[3] === `${currentWindowsUser()}:F`
+      && path.isAbsolute(argv[0]) && state.writeRoots.some(root => inside(root, canonical(argv[0])))
+  }
+  if (windowsTool(binary, 'reg')) return argv.length === DOCUMENTS_KEY.length && argv.every((value, i) => value === DOCUMENTS_KEY[i])
+  return false
+}
+
 /** `--require "<this file>"`, forward slashes: NODE_OPTIONS unescapes backslashes inside quotes. */
 const REQUIRE_SELF = `--require "${__filename.split('\\').join('/')}"`
 
@@ -365,7 +402,8 @@ function fencedSpawner(name, original) {
     const ownTaskkill = process.platform === 'win32' && /^taskkill(?:\.exe)?$/i.test(String(binary))
       && values.length === 4 && values.some(value => String(value).toUpperCase() === '/T')
       && values.some(value => String(value).toUpperCase() === '/F') && pidAt >= 0 && state.children.has(Number(values[pidAt + 1]))
-    if (name === 'exec' || name === 'execSync' || options.shell || (!isOwnNode && !ownTaskkill)) {
+    const productionTool = (name === 'execFile' || name === 'execFileSync' || name === 'spawn' || name === 'spawnSync') && allowedWindowsTool(binary, values)
+    if (name === 'exec' || name === 'execSync' || options.shell || (!isOwnNode && !ownTaskkill && !productionTool)) {
       throw record('spawn', `${name}: unfenced executable ${binary}`)
     }
   }

@@ -264,6 +264,55 @@ describe('parity causal filesystem fence', () => {
   })
 })
 
+describe.runIf(process.platform === 'win32')('parity spawn fence: Windows production helpers', () => {
+  const DOCUMENTS_KEY = ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Personal']
+
+  it('lets the daemon mint its local proof (icacls on a file inside the run root)', async () => {
+    await guarded('icacls-proof', async (env) => {
+      const { mintLocalProof, readLocalProof } = await import('../../src/main/daemon/local-access')
+      const settingsDir = join(env.root, 'proof-settings')
+      const minted = mintLocalProof(settingsDir, 41234)
+      expect(readLocalProof(settingsDir, 41234)).toBe(minted.proof)
+      expect(env.violations()).toEqual([])
+    })
+  })
+
+  it('lets the Documents-folder lookup run reg with exactly its argv', async () => {
+    await guarded('reg-documents', async (env) => {
+      const { execFileSync } = await import('node:child_process')
+      // The value may be missing on a runner; only the fence's verdict matters.
+      try { execFileSync('reg', DOCUMENTS_KEY, { windowsHide: true, stdio: 'ignore' }) } catch (err) { expect(String(err)).not.toMatch(/parity fence/) }
+      expect(env.violations()).toEqual([])
+    })
+  })
+
+  it('refuses every other icacls and reg shape', async () => {
+    await guarded('windows-helpers-refused', async (env, state) => {
+      const { execFile, execFileSync } = await import('node:child_process')
+      const { userInfo } = await import('node:os')
+      const user = process.env.USERDOMAIN && process.env.USERNAME ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : userInfo().username
+      const inRoot = join(env.root, 'secret')
+      writeFileSync(inRoot, '')
+      const refused: Array<[string, string[]]> = [
+        ['icacls', [state.settings, '/inheritance:r', '/grant:r', `${user}:F`]], // outside every write root
+        ['icacls', [inRoot, '/inheritance:r', '/grant:r', 'Everyone:F']],
+        ['icacls', [inRoot, '/reset']],
+        ['icacls', [inRoot, '/inheritance:r', '/grant:r', `${user}:F`, '/T']],
+        ['reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']],
+        ['reg', ['add', ...DOCUMENTS_KEY.slice(1), '/d', 'x']],
+        ['reg', [...DOCUMENTS_KEY, '/s']],
+      ]
+      for (const [file, args] of refused) {
+        expect(() => execFileSync(file, args, { stdio: 'ignore' })).toThrow(/unfenced executable/)
+        expect(() => execFile(file, args, () => {})).toThrow(/unfenced executable/)
+      }
+      // Never through a shell.
+      expect(() => execFileSync('reg', DOCUMENTS_KEY, { shell: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      expect(env.violations()).toHaveLength(refused.length * 2 + 1)
+    })
+  })
+})
+
 describe('parity live-host heartbeat fingerprints', () => {
   it('allows only an independent live host to touch unchanged host-record bytes', async () => {
     const state = outsideState()
