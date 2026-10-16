@@ -16,27 +16,32 @@ import type { LoopTokenUsage } from '../../../src/shared/types/adf-v02.types'
 describe('findLastCall', () => {
   const messages = [{ seq: 1 }, { seq: 2 }, { seq: 3 }, { seq: 4 }]
   const row = (seq: number, tokens: LoopTokenUsage) => ({ seq, tokens })
+  const ok = () => true
+
+  it('returns null when the system prompt, tools, provider or model changed since that call', () => {
+    expect(findLastCall([row(3, { input: 94_000 })], messages, false, () => false)).toBeNull()
+  })
 
   it('cuts at the newest usage row and returns its real prompt size', () => {
-    expect(findLastCall([row(2, { input: 50_000 }), row(3, { input: 94_000, output: 300 })], messages, false))
+    expect(findLastCall([row(2, { input: 50_000 }), row(3, { input: 94_000, output: 300 })], messages, false, ok))
       .toEqual({ index: 2, promptTokens: 94_000 })
   })
 
   it('returns null with no recorded usage', () => {
-    expect(findLastCall([], messages, false)).toBeNull()
-    expect(findLastCall([row(3, { input: 0, output: 0 })], messages, false)).toBeNull()
+    expect(findLastCall([], messages, false, ok)).toBeNull()
+    expect(findLastCall([row(3, { input: 0, output: 0 })], messages, false, ok)).toBeNull()
   })
 
   it('returns null when the provider reported no usage (char estimate)', () => {
-    expect(findLastCall([row(3, { input: 94_000, estimated: true })], messages, false)).toBeNull()
+    expect(findLastCall([row(3, { input: 94_000, estimated: true })], messages, false, ok)).toBeNull()
   })
 
   it('returns null after a compaction or clear (estimated baseline)', () => {
-    expect(findLastCall([row(3, { input: 94_000 })], messages, true)).toBeNull()
+    expect(findLastCall([row(3, { input: 94_000 })], messages, true, ok)).toBeNull()
   })
 
   it('returns null when the row is no longer in the session', () => {
-    expect(findLastCall([row(9, { input: 94_000 })], messages, false)).toBeNull()
+    expect(findLastCall([row(9, { input: 94_000 })], messages, false, ok)).toBeNull()
   })
 })
 
@@ -117,7 +122,7 @@ describe('real prompt size per provider usage shape', () => {
     })
     const t = await recordedTokens(wrap(custom('m'), 'openai-compatible'))
     expect(t.estimated).toBe(true)
-    expect(findLastCall([{ seq: 1, tokens: t }], [{ seq: 1 }], false)).toBeNull()
+    expect(findLastCall([{ seq: 1, tokens: t }], [{ seq: 1 }], false, () => true)).toBeNull()
   })
 
   it('claude-subscription: input + cache read + cache write', () => {

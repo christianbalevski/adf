@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { createHash } from 'node:crypto'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
@@ -675,6 +676,11 @@ export class AgentExecutor extends EventEmitter {
     injectedFiles: ContextBreakdownFileEntry[]
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
+  /** Fixed-parts fingerprint of the newest main-turn call, keyed by the seq
+   *  of the assistant row it produced — the breakdown calibrates to that
+   *  row only while the current fixed parts still match. In memory: rows
+   *  from an earlier process are never calibrated to. */
+  private lastCallFingerprint: { seq: number; fingerprint: string } | null = null
 
   /** Per-turn short-circuit for buildSystemPrompt — see the guard there. Holds
    *  the systemPromptCache entry it was derived from, so anything that drops
@@ -804,6 +810,30 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * What the breakdown's fixed parts measure: provider, model, system prompt
+   * (cache keys + size) and tool schemas (per-tool size). Null while either
+   * cache is cold. Cheap: no re-serialization.
+   */
+  private fixedPartsFingerprint(): string | null {
+    const prompt = this.systemPromptCache
+    const tools = this.toolSnapshotCache
+    if (!prompt || !tools) return null
+    const toolSig = tools.toolGroups
+      .map((g) => `${g.source}:${g.tools.map((t) => `${t.name}=${t.tokens}`).join(',')}`)
+      .join(';')
+    return createHash('sha1')
+      .update([
+        this.provider?.providerId ?? '', this.provider?.providerType ?? '', this.provider?.modelId ?? '',
+        prompt.configHash, prompt.injectedFilesHash, String(prompt.promptTokens), toolSig,
+      ].join('\n'))
+      .digest('hex')
+  }
+
+  private noteCallFingerprint(seq: number | undefined, fingerprint: string | null): void {
+    this.lastCallFingerprint = seq !== undefined && fingerprint !== null ? { seq, fingerprint } : null
+  }
+
+  /**
    * Per-request context token breakdown (pull IPC). Expensive figures (system
    * prompt, tool schemas) come from the builder caches — warmed on demand when
    * no turn has run yet — so a read never re-tokenizes a warm executor.
@@ -826,7 +856,14 @@ export class AgentExecutor extends EventEmitter {
         if (row.tokens.reasoning) reasoningBySeq.set(row.seq, row.tokens.reasoning)
       }
       const messages = this.session.getMessages()
-      const lastCall = findLastCall(rows, messages, workspace.getContextBaseline()?.estimated ?? false)
+      const fingerprint = this.fixedPartsFingerprint()
+      const lastCall = findLastCall(
+        rows,
+        messages,
+        workspace.getContextBaseline()?.estimated ?? false,
+        (seq) => fingerprint !== null && this.lastCallFingerprint?.seq === seq &&
+          this.lastCallFingerprint.fingerprint === fingerprint
+      )
       const cut = lastCall ? lastCall.index : messages.length
       const prior = tc.estimateMessagesTokensSplit(messages.slice(0, cut), reasoningBySeq)
       const since = tc.estimateMessagesTokensSplit(messages.slice(cut), reasoningBySeq)
@@ -2427,6 +2464,9 @@ export class AgentExecutor extends EventEmitter {
         // and its cloned replacement never reaches AgentSession/history.
         const transformedRequest = this.transformPreLlmRequest(baseRequest, this.abortController?.signal)
         const request = transformedRequest ? await transformedRequest : baseRequest
+        // A hook may rewrite system/tools: the measured fixed parts then do
+        // not describe what was sent.
+        const callFingerprint = transformedRequest ? null : this.fixedPartsFingerprint()
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
           messages: request.messages,
@@ -2561,6 +2601,7 @@ export class AgentExecutor extends EventEmitter {
             assistantMsg,
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
+          this.noteCallFingerprint(assistantMsg.seq, callFingerprint)
           const assistantSeq = assistantMsg.seq
 
           const toolResults: ContentBlock[] = []
@@ -3240,6 +3281,7 @@ export class AgentExecutor extends EventEmitter {
             textOnlyMsg,
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
+          this.noteCallFingerprint(textOnlyMsg.seq, callFingerprint)
           // Write-through already persisted this step; retry-flush any failed
           // insert (see the tool-results flush above for rationale).
           this.session.flushToLoop()

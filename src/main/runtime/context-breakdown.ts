@@ -122,16 +122,19 @@ export function apportion(weights: number[], total: number): number[] {
  * path — each normalizes it to include cache reads and writes. Null — no
  * calibration — when no row recorded usage, the provider reported none (a
  * char estimate), a compaction or clear since (`baselineEstimated`) left the
- * row describing a context that no longer exists, or the row's message is no
- * longer in the session.
+ * row describing a context that no longer exists, the system prompt, tools,
+ * provider or model changed since that call (`fixedPartsMatch` false: the
+ * fixed parts measured now are not the ones it sent), or the row's message
+ * is no longer in the session.
  */
 export function findLastCall(
   rows: Array<{ seq: number; tokens: LoopTokenUsage }>,
   messages: Array<{ seq?: number }>,
-  baselineEstimated: boolean
+  baselineEstimated: boolean,
+  fixedPartsMatch: (seq: number) => boolean
 ): { index: number; promptTokens: number } | null {
   const last = rows.length > 0 ? rows[rows.length - 1] : undefined
-  if (!last || last.tokens.estimated || baselineEstimated) return null
+  if (!last || last.tokens.estimated || baselineEstimated || !fixedPartsMatch(last.seq)) return null
   const promptTokens = last.tokens.input ?? 0
   if (!(promptTokens > 0)) return null
   for (let i = messages.length - 1; i >= 0; i--) {
