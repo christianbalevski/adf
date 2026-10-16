@@ -1,4 +1,4 @@
-import { dialog, shell, type BrowserWindow, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
+import { app, dialog, shell, type BrowserWindow, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
 import type { BackendDefaultSwitch, StudioBackendMode } from '../../shared/types/backend.types'
@@ -174,6 +174,23 @@ export async function guardBoot(boot: BootBackend, userDataDir: string, deps: Bo
 
 // --- after the handover --------------------------------------------------------------
 
+let quitTracked = false
+let quitSeen = false
+
+/**
+ * Note when Studio starts to quit or restart (a switch, "Use Embedded Mode
+ * for This Session" after a version mismatch, which can come before the
+ * main window is ready): the first-launch notice then waits for a launch
+ * that stays. Called from settleDefaultBackend, early in boot.
+ */
+function trackQuit(): void {
+  if (quitTracked) return
+  quitTracked = true
+  try {
+    app.once('before-quit', () => { quitSeen = true })
+  } catch { /* no app (tests without it): never quitting */ }
+}
+
 /** The first-launch notice: what the handover of the switch to the default did. */
 export interface FirstLaunchNotice {
   record: BackendDefaultSwitch
@@ -238,6 +255,7 @@ export async function settleDefaultBackend(
   report: HandoverReport | null,
   opts: { version: string; log?: Log },
 ): Promise<FirstLaunchNotice | null> {
+  trackQuit()
   const log = opts.log ?? defaultLog
   const shown = parseRecord(await readJson(join(userDataDir, DEFAULT_SWITCH_FILE)))
   let pending = parsePending(await readJson(join(userDataDir, PENDING_NOTICE_FILE)))
@@ -329,15 +347,22 @@ export async function showBootNotices(opts: {
   ready?: Promise<boolean>
   userDataDir: string
   log?: Log
+  /** Studio is quitting or restarting (default: app 'before-quit' seen since boot, trackQuit). */
+  quitting?: () => boolean
 }): Promise<void> {
+  trackQuit()
   const log = opts.log ?? defaultLog
   const { window } = opts
+  const quitting = opts.quitting ?? (() => quitSeen)
   if (opts.guard) {
     await dialog.showMessageBox(window, { ...opts.guard, buttons: ['OK'], noLink: true }).catch((err) => log(`[Backend] The boot dialog could not be shown: ${errorText(err)}`))
   }
   if (opts.notice) {
     const connected = opts.ready ? await opts.ready.catch(() => false) : true
-    if (window.isDestroyed()) return
+    if (quitting() || window.isDestroyed()) {
+      log('[Backend] Studio is quitting or restarting: the first-launch notice is not shown and stays pending for the next launch')
+      return
+    }
     try {
       const { response } = await dialog.showMessageBox(window, firstLaunchNoticeOptions(opts.notice, connected))
       await markNoticeShown(opts.userDataDir, opts.notice, log)

@@ -21,10 +21,14 @@ const h = vi.hoisted(() => ({
   dialogs: [] as Array<{ parent: unknown; message: string; detail: string; buttons: string[]; type?: string }>,
   opened: [] as string[],
   notifications: [] as string[],
+  beforeQuit: [] as Array<() => void>,
 }))
 
 vi.mock('electron', () => ({
-  app: { getVersion: () => '0.8.0', isPackaged: false, relaunch: () => {}, quit: () => {} },
+  app: {
+    getVersion: () => '0.8.0', isPackaged: false, relaunch: () => {}, quit: () => {},
+    once: (event: string, fn: () => void) => { if (event === 'before-quit') h.beforeQuit.push(fn) },
+  },
   dialog: {
     showMessageBox: async (...args: unknown[]) => {
       const opts = (args.length > 1 ? args[1] : args[0]) as { message: string; detail: string; buttons: string[]; type?: string }
@@ -262,6 +266,16 @@ describe('upgrade from 0.7.x', () => {
     expect((await boot()).notice).toBeNull()
   })
 
+  it('Studio quitting or restarting (e.g. "Use Embedded Mode for This Session"): no notice, and it stays pending', async () => {
+    write07xUserData({ identity: false })
+    const first = await boot()
+    await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, guard: null, window: WINDOW, ready: Promise.resolve(false), userDataDir: dir, log: quiet, quitting: () => true })
+    expect(h.dialogs).toEqual([])
+    expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(false)
+    expect(existsSync(join(dir, PENDING_NOTICE_FILE))).toBe(true)
+    expect((await boot()).notice?.record.moved).toEqual(first.notice?.record.moved)
+  })
+
   it('a pending notice merges this launch\'s handover: moved adds up, and "not done" is the current state', async () => {
     write07xUserData({ identity: false, chatgpt: 'acct-1' })
     // The first launch cannot move the sign-ins: its handover record is unreadable.
@@ -407,3 +421,16 @@ describe('an older ADF daemon on the port at the first launch', () => {
   })
 })
 
+// Last: the quit seen here stays seen for this module (as in a quitting Studio).
+describe('app before-quit', () => {
+  it('a quit that started before the notice keeps it pending', async () => {
+    write07xUserData({ identity: false })
+    const first = await boot()
+    expect(h.beforeQuit).toHaveLength(1)
+    for (const fn of h.beforeQuit) fn()
+    await show(first)
+    expect(h.dialogs).toEqual([])
+    expect(existsSync(join(dir, PENDING_NOTICE_FILE))).toBe(true)
+    expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(false)
+  })
+})
