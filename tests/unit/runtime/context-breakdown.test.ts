@@ -208,13 +208,24 @@ describe('calibrateContextBreakdown', () => {
     expect(sum(b)).toBe(94_000 + since)
   })
 
-  it('treats reasoning bigger than the real prompt as not resent', () => {
+  it('treats reasoning that over-subtracts as an estimate', () => {
+    // 34k reported reasoning leaves 6k for 19.6k estimated parts (ratio
+    // 0.31, out of band): it was not all resent, so it is scaled with the rest.
     const b = calibrateContextBreakdown(estimated(), {
-      lastCallTokens: 20_000,
-      prior: { estimated: 7_000, reported: 30_000 },
+      lastCallTokens: 40_000,
+      prior: { estimated: 7_000, reported: 34_000 },
       since: { estimated: 0, reported: 0 },
     })
-    expect(sum(b)).toBe(20_000)
+    expect(sum(b)).toBe(40_000)
+    expect(b.calibration!.ratio).toBeCloseTo(40_000 / (19_600 + 34_000))
+  })
+
+  it('skips calibration when real / estimated leaves the 0.5–3 band', () => {
+    const b = estimated()
+    const none = { estimated: 0, reported: 0 }
+    expect(calibrateContextBreakdown(b, { lastCallTokens: 40, prior: { estimated: 37_000, reported: 0 }, since: none })).toBe(b)
+    expect(calibrateContextBreakdown(b, { lastCallTokens: 200_000, prior: { estimated: 37_000, reported: 0 }, since: none })).toBe(b)
+    expect(calibrateContextBreakdown(b, { lastCallTokens: 148_800, prior: { estimated: 37_000, reported: 0 }, since: none }).calibration!.ratio).toBe(3)
   })
 
   it('leaves the estimate untouched without a usable last call', () => {

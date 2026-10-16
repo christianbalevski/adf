@@ -141,13 +141,21 @@ export function findLastCall(
 }
 
 /**
+ * Real ÷ estimated outside this band means the estimate and the call do not
+ * describe the same prompt (or the usage is wrong): no calibration then.
+ */
+export const CALIBRATION_RATIO_MIN = 0.5
+export const CALIBRATION_RATIO_MAX = 3
+
+/**
  * Scale an estimated breakdown to the loop's last call. `lastCallTokens` is
  * the API-reported prompt size of that call; `prior` is the conversation it
  * carried, `since` what was added after. Every estimated part — system
  * prompt, tools, dynamic instructions, prior conversation — is scaled by
  * real ÷ estimated so the parts sum to exactly `lastCallTokens`; API-reported
  * reasoning is kept as is. `since` gets the same ratio and stays an estimate.
- * Returns `b` unchanged when there is nothing to scale.
+ * Returns `b` unchanged (an uncalibrated estimate) when there is nothing to
+ * scale or the ratio falls outside [CALIBRATION_RATIO_MIN, CALIBRATION_RATIO_MAX].
  */
 export function calibrateContextBreakdown(
   b: ContextBreakdown,
@@ -155,18 +163,25 @@ export function calibrateContextBreakdown(
 ): ContextBreakdown {
   if (!(c.lastCallTokens > 0)) return b
   const fixed = [b.system_prompt_tokens, b.tools_total_tokens, b.dynamic_instructions_tokens]
+  const fixedSum = fixed.reduce((acc, n) => acc + n, 0)
+  const ratioFor = (estimated: number, reported: number): number | null => {
+    const target = c.lastCallTokens - reported
+    if (target <= 0 || estimated <= 0) return null
+    const r = target / estimated
+    return r >= CALIBRATION_RATIO_MIN && r <= CALIBRATION_RATIO_MAX ? r : null
+  }
   let priorEstimated = c.prior.estimated
   let reported = c.prior.reported
-  // Reasoning the provider did not resend (it dropped earlier turns'
-  // thinking) can exceed the real prompt: scale it as an estimate instead.
-  if (reported >= c.lastCallTokens) {
+  let ratio = ratioFor(fixedSum + priorEstimated, reported)
+  // Recorded reasoning the provider did not (fully) resend over-subtracts:
+  // the rest no longer fits. Scale it as an estimate instead.
+  if (ratio === null && reported > 0) {
     priorEstimated += reported
     reported = 0
+    ratio = ratioFor(fixedSum + priorEstimated, 0)
   }
-  const estimated = fixed.reduce((acc, n) => acc + n, 0) + priorEstimated
-  if (estimated <= 0) return b
+  if (ratio === null) return b
   const target = c.lastCallTokens - reported
-  const ratio = target / estimated
   const [system, tools, dynamic, prior] = apportion([...fixed, priorEstimated], target)
 
   const fileWeights = b.injected_files.map((f) => f.tokens)

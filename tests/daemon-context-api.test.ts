@@ -76,13 +76,11 @@ describe('GET /agents/:id/context', () => {
       if (status.runtimeState === 'idle' && i > 2) break
     }
     const after = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/context?items=2` })).json()
-    expect(before.breakdown.calibration).toBeUndefined()
-    // After a call the parts are calibrated to its reported prompt size (the
-    // mock's input_tokens), plus the reply added since as an estimate.
-    const cal = after.breakdown.calibration
-    expect(cal.last_call_tokens).toBeGreaterThan(0)
-    expect(cal.since_last_call_tokens).toBeGreaterThanOrEqual(0)
-    expect(after.totalTokens).toBe(cal.last_call_tokens + cal.since_last_call_tokens)
+    // The mock reports a 40-token input for a multi-thousand-token prompt:
+    // far outside the calibration band, so this stays the uncalibrated
+    // estimate, which must grow with the conversation.
+    expect(after.breakdown.calibration).toBeUndefined()
+    expect(after.breakdown.messages_tokens).toBeGreaterThan(before.breakdown.messages_tokens)
     for (const c of after.categories) expect(c.items.length).toBeLessThanOrEqual(2)
     expect((await server.inject({ method: 'GET', url: `/agents/${ref.id}/context?items=-1` })).statusCode).toBe(400)
   })
