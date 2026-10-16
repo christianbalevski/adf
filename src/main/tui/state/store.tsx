@@ -473,10 +473,16 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       if (stale(c)) return null
       const text = `Loaded ${name}${started}`
       toast(text, level, 5000)
-      const wasSelected = state.selectedAgentId === key || state.selectedAgentId === entry.key
+      const selectedBefore = state.selectedAgentId
+      const wasSelected = selectedBefore === key || selectedBefore === entry.key
       await actions.refreshAgents()
       void actions.refreshTracked()
-      if ((wasSelected || !state.selectedAgentId || isTrackedKey(state.selectedAgentId)) && state.agents[ref.id]) actions.selectAgent(ref.id)
+      // The refresh already maps this file's tracked row to its loaded id. A
+      // selection that moved anywhere else while it ran is the owner's: never
+      // take it back (it used to, whenever the owner picked a stopped row).
+      const current = state.selectedAgentId
+      const untouched = current === selectedBefore || current === ref.id
+      if (untouched && (wasSelected || !selectedBefore || isTrackedKey(selectedBefore)) && state.agents[ref.id]) actions.selectAgent(ref.id)
       actions.notice(ref.id, MAIN_LOOP, text, level === 'success' ? 'info' : 'warn')
       return ref.id
     },
