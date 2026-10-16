@@ -11,12 +11,16 @@ export type StudioBackendMode = 'embedded' | 'local' | 'remote'
 
 /** Where the running Studio's mode came from. */
 export type StudioBackendSource =
-  /** No `studio-backend.json`: embedded, as before backend selection existed. */
+  /** No `studio-backend.json`: the default, Local daemon (owner decision 2026-10-16); the first boot saves it to the file. */
   | 'default'
   | 'file'
   /** `ADF_STUDIO_BACKEND` set in the environment (recovery override). */
   | 'env'
-  /** Embedded for this launch only: the user chose it when the daemon's version did not match (§8.2). */
+  /**
+   * This launch only: embedded after a daemon version mismatch (§8.2), or the
+   * mode boot chose for one launch (W5-I: an unusable studio-backend.json
+   * that cannot be rewritten, an older daemon on the port); `sessionReason` says why.
+   */
   | 'session'
 
 export interface BackendSettingsView {
@@ -30,6 +34,8 @@ export interface BackendSettingsView {
      * studio-backend.json were ignored.
      */
     notices: string[]
+    /** Source `session` set by boot (W5-I): why this launch runs its mode for one session. */
+    sessionReason?: string | null
   }
   /** Why the saved remote URL is not used (an unconfirmed plain-http address), or null. */
   remoteUrlProblem: string | null
@@ -51,10 +57,28 @@ export interface BackendSettingsView {
    * offers Finish Switch Now and Cancel Switch.
    */
   pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
+  /** The launch that switched this install from Embedded to the new default, Local daemon; null when none did. */
+  defaultSwitch?: BackendDefaultSwitch | null
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
   /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
   encryptionUnavailableReason: string | null
+}
+
+/**
+ * The first launch of the release that made Local daemon the default, on an
+ * install that had run Embedded (owner decision 2026-10-16): what its
+ * handover did. Recorded once, in `studio-default-switch.json`.
+ */
+export interface BackendDefaultSwitch {
+  /** ISO time of that launch. */
+  at: string
+  /** Studio's version at that launch. */
+  version: string
+  /** What the handover moved or wrote (item labels). */
+  moved: string[]
+  /** What it did not do, one sentence each. */
+  notDone: string[]
 }
 
 /** Settings → Backend's daemon line (MODE-02): what Studio is connected to. */

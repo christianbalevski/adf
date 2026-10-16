@@ -32,10 +32,10 @@ import {
   resumeSwitchedAgents,
   runBootHandover,
   sessionBackendEnv,
-  showHandoverSummary,
   SWITCH_DAEMON_EXIT_WAIT_MS,
   syncRuntimeEntryAfterImport,
 } from './backend/mode-switch'
+import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
 import { processAgentLeases } from './runtime/agent-lease'
 import type { StudioBackendMode } from '../shared/types/backend.types'
 
@@ -555,11 +555,13 @@ app.whenReady().then(async () => {
   }
 
   // Backend selection (design D9): decided once, before any handler exists.
-  // No studio-backend.json and no ADF_STUDIO_BACKEND means embedded, as before.
+  // No studio-backend.json and no ADF_STUDIO_BACKEND means Local daemon (W5-I, first-launch.ts).
   // SESSION_BACKEND_ARG: the user chose embedded for one launch (§8.2 version mismatch).
   const sessionBackend = sessionBackendEnv(process.argv, process.env)
   const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), sessionBackend.env)
   if (sessionBackend.session) backend.source = 'session'
+  // W5-I: an unusable studio-backend.json is asked about first; an older daemon on the port makes a first launch Embedded for one session.
+  const bootGuard = await guardBoot(backend, getUserDataPath())
   // A mode this launch overrides for one session (ADF_STUDIO_BACKEND, or the
   // version-mismatch choice) moves client keys only: credentials stay where
   // the configured mode keeps them (§8.2).
@@ -567,7 +569,9 @@ app.whenReady().then(async () => {
   // Mode-switch handover (§11): move what belongs to this mode's side before
   // any backend handler, store or daemon exists. Idempotent; a no-op when
   // everything is already where it belongs.
-  const handover = await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly })
+  const handover = bootGuard.skipHandover ? null : await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly })
+  // First launch without studio-backend.json: save the default, and on an install that ran Embedded prepare the one notice.
+  const firstLaunch = await settleDefaultBackend(backend, getUserDataPath(), handover, { version: app.getVersion() })
   let backendStore: BackendSettingsStore | null = null
   if (backend.mode === 'embedded') {
     try {
@@ -578,7 +582,7 @@ app.whenReady().then(async () => {
       failedMainLoad(err)
       return
     }
-    embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
+    embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile, ...(bootGuard.skipAutostart ? { skipBootAutostart: bootGuard.skipAutostart } : {}) })
     // A daemon that keeps running on these settings re-reads the stores the handover emptied.
     if (handover?.changed && !sessionOnly) void notifyDaemonOfHandover(getUserDataPath())
     // The agents that ran before a switch run again here (§11.1), once the
@@ -692,11 +696,9 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
-  // What the handover moved, once, in the window the switch restarted into.
-  if (handover && (handover.changed || handover.failed)) {
-    const win = mainWindow
-    win?.once('ready-to-show', () => showHandoverSummary(handover, backend.mode, win))
-  }
+  // Over the main window once it is ready: the boot guard's dialog, the first-launch notice (once the daemon connected) or the handover summary.
+  const bootWindow = mainWindow
+  if (bootWindow) bootWindow.once('ready-to-show', () => void showBootNotices({ report: handover, mode: backend.mode, notice: firstLaunch, guard: bootGuard.notice, window: bootWindow, ready: daemonMode?.ready, userDataDir: getUserDataPath() }))
 
   initAppUpdater({
     // Read per check, not cached: turning it off in Settings stops the next one.

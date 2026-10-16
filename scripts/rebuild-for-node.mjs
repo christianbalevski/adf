@@ -52,7 +52,7 @@ const cachePath = (abi) => join(cacheDir, `better_sqlite3-abi${abi}.node`)
  */
 function loadable() {
   try {
-    execFileSync(process.execPath, ['-e', `require(${JSON.stringify(binding)})`], { stdio: 'pipe' })
+    execFileSync(process.execPath, ['-e', `require(${JSON.stringify(binding)})`], { stdio: 'pipe', windowsHide: true })
     return { ok: true, message: '' }
   } catch (err) {
     return { ok: false, message: String(err.stderr || err.message || err) }
@@ -100,7 +100,7 @@ if (existsSync(cachePath(targetAbi))) {
 // Slow path: full node-gyp recompile.
 console.log(`[rebuild] better-sqlite3 needs rebuild for Node ${process.version} (ABI ${targetAbi})...`)
 try {
-  execSync('npm rebuild better-sqlite3', { stdio: 'inherit', cwd: npmRoot })
+  execSync('npm rebuild better-sqlite3', { stdio: 'inherit', cwd: npmRoot, windowsHide: true })
 } catch {
   console.error('')
   console.error('[rebuild] npm rebuild better-sqlite3 FAILED.')

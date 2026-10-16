@@ -36,7 +36,7 @@ function buildHtml() {
     execFileSync(process.execPath, [
       join(root, 'node_modules/@redocly/cli/bin/cli.js'), 'build-docs', specPath,
       '--output', out, '--title', spec.info.title, '--disableGoogleFont', '--config', join(root, 'redocly.yaml'),
-    ], { cwd: root, stdio: ['ignore', 'ignore', 'inherit'] })
+    ], { cwd: root, stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true })
     let html = readFileSync(out, 'utf8')
 
     // Inline the Redoc bundle the page would load from the CDN, after checking
