@@ -4774,7 +4774,8 @@ export class AgentExecutor extends EventEmitter {
     } else {
       // Borderline — count actual tokens
       const tokenCounter = getTokenCounterService()
-      tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider.modelId)
+      // abort() nulls the provider while a tool may still be finishing.
+      tokenCount = tokenCounter.countTokens(content, this.tokenizerProviderId(), this.provider?.modelId ?? this.config.model?.model_id)
       if (tokenCount <= maxTokens) return result
     }
 
