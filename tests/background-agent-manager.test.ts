@@ -184,4 +184,19 @@ describe('BackgroundAgentManager adapter inbox pushes', () => {
     expect(pushes).toEqual([{ filePath: agent.workspace.getFilePath(), inbox: { version: 1, messages: agent.workspace.getInbox() } }])
     expect(pushes).toEqual([expect.objectContaining({ inbox: expect.objectContaining({ messages: [expect.objectContaining({ from: 'telegram:123', content: 'hello team', parent_id: 'parent-1', source_context: { chat_id: '123' } })] }) })])
   })
+
+  it('includes archived messages, unread then read then archived, like the foreground push', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-bam-inbox-archived-'))
+    const filePath = createAdfFile(dir, 'agent-1')
+    const manager = makeManager()
+    expect(await manager.startAgent(filePath)).toBe(true)
+    const agent = manager.getAgent(filePath)!
+    const archived = agent.workspace.addToInbox({ from: 'telegram:1', content: 'old', source: 'telegram', received_at: 1, status: 'archived' })
+    const read = agent.workspace.addToInbox({ from: 'telegram:2', content: 'seen', source: 'telegram', received_at: 2, status: 'read' })
+    const unread = agent.workspace.addToInbox({ from: 'telegram:3', content: 'new', source: 'telegram', received_at: 3, status: 'unread' })
+    const pushes: Array<{ inbox: { messages: Array<{ id: string }> } }> = []
+    manager.on('inbox_updated', (push) => pushes.push(push))
+    agent.adapterManager!.emit('inbound', 'telegram', { sender: '3', payload: 'new' }, { inboxId: unread })
+    expect(pushes[0].inbox.messages.map((m) => m.id)).toEqual([unread, read, archived])
+  })
 })
