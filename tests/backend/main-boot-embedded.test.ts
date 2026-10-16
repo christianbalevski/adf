@@ -1,10 +1,11 @@
 /**
- * Studio's embedded boot (src/main/index.ts with no studio-backend.json),
+ * Studio's embedded boot (src/main/index.ts with studio-backend.json saying
+ * `mode: embedded`; no file means Local daemon since 2026-10-16),
  * Electron and the services stubbed: what boot does and in which order.
  * Characterization written before the embedded IPC layer became a lazy
  * import; the lazy import must leave it unchanged.
  */
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, expect, it, vi } from 'vitest'
@@ -51,6 +52,7 @@ h.state.userData = mkdtempSync(join(tmpdir(), 'adf-main-boot-'))
 process.env.ADF_USER_DATA_DIR = h.state.userData
 delete process.env.ADF_STUDIO_BACKEND
 delete process.env.ADF_INSTANCE
+writeFileSync(join(h.state.userData, 'studio-backend.json'), JSON.stringify({ v: 1, mode: 'embedded' }))
 let restore = () => {}
 afterAll(() => restore())
 

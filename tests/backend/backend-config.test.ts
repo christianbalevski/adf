@@ -9,6 +9,7 @@ import {
   createBackendSettingsStore,
   defaultBackendConfig,
   normalizeBackendConfig,
+  persistDefaultBackend,
   readRemoteToken,
   resolveBootBackend,
   type SecretCodec,
@@ -46,12 +47,19 @@ function tempConfigPath(): string {
   return backendConfigPath(mkdtempSync(join(tmpdir(), 'adf-backend-config-')))
 }
 
+/** A studio-backend.json that says embedded explicitly (the default is Local daemon since 2026-10-16). */
+function embeddedConfigPath(): string {
+  const path = tempConfigPath()
+  writeFileSync(path, JSON.stringify({ v: 1, mode: 'embedded' }))
+  return path
+}
+
 describe('resolveBootBackend', () => {
-  it('boots embedded, logs nothing and writes nothing when there is no file', () => {
+  it('boots the default, Local daemon, logs nothing and writes nothing when there is no file', () => {
     const path = tempConfigPath()
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    expect(boot).toEqual({ mode: 'embedded', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null, notices: [], dropped: [] })
+    expect(boot).toEqual({ mode: 'local', source: 'default', configPath: path, config: defaultBackendConfig(), writeBlocked: null, notices: [], dropped: [] })
     expect(lines).toEqual([])
     expect(existsSync(path)).toBe(false)
   })
@@ -81,25 +89,78 @@ describe('resolveBootBackend', () => {
   it('ignores an unknown override value with a warning', () => {
     const path = tempConfigPath()
     const { lines, log } = recordingLog()
-    expect(resolveBootBackend(path, { ADF_STUDIO_BACKEND: 'daemon' }, log)).toMatchObject({ mode: 'embedded', source: 'default' })
+    expect(resolveBootBackend(path, { ADF_STUDIO_BACKEND: 'daemon' }, log)).toMatchObject({ mode: 'local', source: 'default' })
     expect(lines.some((l) => l.includes('Ignoring ADF_STUDIO_BACKEND'))).toBe(true)
   })
 
-  it('falls back to embedded and keeps a copy of a corrupt file', () => {
+  it('falls back to the default and keeps a copy of a corrupt file', () => {
     const path = tempConfigPath()
     writeFileSync(path, '{ not json')
     const { lines, log } = recordingLog()
-    expect(resolveBootBackend(path, {}, log)).toMatchObject({ mode: 'embedded', source: 'file' })
+    expect(resolveBootBackend(path, {}, log)).toMatchObject({ mode: 'local', source: 'file' })
     expect(readdirSync(join(path, '..')).some((n) => n.startsWith(`${BACKEND_CONFIG_FILE}.corrupt-`))).toBe(true)
-    expect(lines.some((l) => l.includes('could not be parsed'))).toBe(true)
+    expect(lines.some((l) => l.includes('could not be parsed') && l.includes('using the default, Local daemon'))).toBe(true)
   })
 
-  it('falls back to embedded on an unknown mode', () => {
+  it('falls back to the default on an unknown mode', () => {
     const path = tempConfigPath()
     writeFileSync(path, JSON.stringify({ mode: 'hybrid' }))
     const { lines, log } = recordingLog()
-    expect(resolveBootBackend(path, {}, log).mode).toBe('embedded')
-    expect(lines.some((l) => l.includes('unknown mode'))).toBe(true)
+    expect(resolveBootBackend(path, {}, log).mode).toBe('local')
+    expect(lines.some((l) => l.includes('unknown mode') && l.includes('using the default, Local daemon'))).toBe(true)
+  })
+
+  it('honours an explicit mode: embedded in the file', () => {
+    const path = embeddedConfigPath()
+    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'embedded', source: 'file', config: { mode: 'embedded' } })
+  })
+})
+
+describe('persistDefaultBackend (owner decision 2026-10-16)', () => {
+  it('writes the resolved default at the first boot, so the next one reads an explicit choice', async () => {
+    const path = tempConfigPath()
+    const { lines, log } = recordingLog()
+    const boot = resolveBootBackend(path, {}, log)
+    expect(await persistDefaultBackend(boot, log)).toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toEqual({ v: 1, mode: 'local', keepDaemonRunning: false, remote: { url: null, token: null, allowInsecureHttp: false } })
+    expect(lines.join('\n')).toContain('this launch runs the default, local; saved it to')
+    const next = resolveBootBackend(path, {}, recordingLog().log)
+    expect(next).toMatchObject({ mode: 'local', source: 'file', notices: [] })
+    expect(await persistDefaultBackend(next, log)).toBe(false)
+  })
+
+  it('leaves an explicit file as it is', async () => {
+    const path = embeddedConfigPath()
+    const before = readFileSync(path, 'utf-8')
+    expect(await persistDefaultBackend(resolveBootBackend(path, {}, recordingLog().log), recordingLog().log)).toBe(false)
+    expect(readFileSync(path, 'utf-8')).toBe(before)
+  })
+
+  it('writes nothing in a launch ADF_STUDIO_BACKEND overrides; the next launch without it resolves the default', async () => {
+    const path = tempConfigPath()
+    const boot = resolveBootBackend(path, { ADF_STUDIO_BACKEND: 'embedded' }, recordingLog().log)
+    expect(boot).toMatchObject({ mode: 'embedded', source: 'env', config: { mode: 'local' } })
+    expect(await persistDefaultBackend(boot, recordingLog().log)).toBe(false)
+    expect(existsSync(path)).toBe(false)
+    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'local', source: 'default' })
+  })
+
+  it('does not overwrite a file it could not read', async () => {
+    const path = tempConfigPath()
+    mkdirSync(path)
+    const boot = resolveBootBackend(path, {}, recordingLog().log)
+    expect(boot.writeBlocked).toBeTruthy()
+    expect(await persistDefaultBackend(boot, recordingLog().log)).toBe(false)
+  })
+
+  it('says so when the write fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-backend-config-'))
+    const blocker = join(dir, 'not-a-dir')
+    writeFileSync(blocker, '')
+    const { lines, log } = recordingLog()
+    const boot = resolveBootBackend(backendConfigPath(blocker), {}, log)
+    expect(await persistDefaultBackend(boot, log)).toBe(false)
+    expect(lines.join('\n')).toContain('Could not save the default backend')
   })
 })
 
@@ -122,7 +183,7 @@ describe('Settings → Backend store', () => {
     confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
     applyModeSwitch?: (target: StudioBackendMode) => void
   } = {}) {
-    const path = opts.path ?? tempConfigPath()
+    const path = opts.path ?? embeddedConfigPath()
     const rec = recordingLog()
     const boot = resolveBootBackend(path, {}, rec.log)
     const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), log: rec.log, confirmModeSwitch: opts.confirmModeSwitch, applyModeSwitch: opts.applyModeSwitch })
@@ -143,7 +204,7 @@ describe('Settings → Backend store', () => {
     let answer = false
     const { path, s } = store({ confirmModeSwitch: async (target) => { asked.push(target); return answer }, applyModeSwitch: (target) => { restarted.push(target) } })
     expect(await s.set({ mode: 'local' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
-    expect(existsSync(path)).toBe(false)
+    expect(readFileSync(path, 'utf-8')).toBe(JSON.stringify({ v: 1, mode: 'embedded' }))
     expect(restarted).toEqual([])
     answer = true
     const result = await s.set({ mode: 'local' })
@@ -156,7 +217,7 @@ describe('Settings → Backend store', () => {
   it('Cancel Switch on a waiting switch saves the running mode again; Finish Switch Now restarts (W4-A)', async () => {
     let waiting: 'local' | null = null
     const restarted: string[] = []
-    const path = tempConfigPath()
+    const path = embeddedConfigPath()
     const rec = recordingLog()
     const boot = resolveBootBackend(path, {}, rec.log)
     const s = createBackendSettingsStore({
@@ -180,7 +241,7 @@ describe('Settings → Backend store', () => {
 
   it('choosing the running mode while a switch waits cancels that switch, as the latest choice (W5-F)', async () => {
     let waiting: 'local' | null = null
-    const path = tempConfigPath()
+    const path = embeddedConfigPath()
     const rec = recordingLog()
     const s = createBackendSettingsStore({
       boot: resolveBootBackend(path, {}, rec.log), codec: fakeCodec(), log: rec.log,
@@ -200,7 +261,7 @@ describe('Settings → Backend store', () => {
   it('once a switch\'s restart has started, a mode change or a switch action is refused and nothing is saved (W5-F)', async () => {
     let restarting: string | null = null
     const cancels: string[] = []
-    const path = tempConfigPath()
+    const path = embeddedConfigPath()
     const rec = recordingLog()
     const s = createBackendSettingsStore({
       boot: resolveBootBackend(path, {}, rec.log), codec: fakeCodec(), log: rec.log,
@@ -284,7 +345,7 @@ describe('Settings → Backend store', () => {
     const { path, s } = store({ codec: fakeCodec(false) })
     const result = await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })
     expect(result).toMatchObject({ ok: false, code: 'encryption_unavailable' })
-    expect(existsSync(path)).toBe(false)
+    expect(readFileSync(path, 'utf-8')).toBe(JSON.stringify({ v: 1, mode: 'embedded' }))
   })
 
   it('refuses a token without a URL and a token with spaces', async () => {
@@ -432,7 +493,7 @@ describe('review fixes', () => {
     mkdirSync(path) // a directory where the file should be: readFileSync fails with EISDIR
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    expect(boot).toMatchObject({ mode: 'embedded', source: 'file' })
+    expect(boot).toMatchObject({ mode: 'local', source: 'file' })
     expect(boot.writeBlocked).toContain('could not be read')
     expect(lines.some((l) => l.includes('could not be read'))).toBe(true)
     const s = createBackendSettingsStore({ boot, codec, log })

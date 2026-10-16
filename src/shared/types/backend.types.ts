@@ -11,7 +11,7 @@ export type StudioBackendMode = 'embedded' | 'local' | 'remote'
 
 /** Where the running Studio's mode came from. */
 export type StudioBackendSource =
-  /** No `studio-backend.json`: embedded, as before backend selection existed. */
+  /** No `studio-backend.json`: the default, Local daemon (owner decision 2026-10-16); the first boot saves it to the file. */
   | 'default'
   | 'file'
   /** `ADF_STUDIO_BACKEND` set in the environment (recovery override). */
@@ -51,10 +51,28 @@ export interface BackendSettingsView {
    * offers Finish Switch Now and Cancel Switch.
    */
   pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
+  /** The launch that switched this install from Embedded to the new default, Local daemon; null when none did. */
+  defaultSwitch?: BackendDefaultSwitch | null
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
   encryptionAvailable: boolean
   /** Why encryption is unavailable, when main knows (e.g. Linux without a keyring). */
   encryptionUnavailableReason: string | null
+}
+
+/**
+ * The first launch of the release that made Local daemon the default, on an
+ * install that had run Embedded (owner decision 2026-10-16): what its
+ * handover did. Recorded once, in `studio-default-switch.json`.
+ */
+export interface BackendDefaultSwitch {
+  /** ISO time of that launch. */
+  at: string
+  /** Studio's version at that launch. */
+  version: string
+  /** What the handover moved or wrote (item labels). */
+  moved: string[]
+  /** What it did not do, one sentence each. */
+  notDone: string[]
 }
 
 /** Settings → Backend's daemon line (MODE-02): what Studio is connected to. */

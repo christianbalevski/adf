@@ -5,6 +5,7 @@ import { readJsonOrQuarantine, writeJsonAtomicAsync } from '../utils/atomic-json
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type {
   BackendDaemonStatus,
+  BackendDefaultSwitch,
   BackendSettingsErrorCode,
   BackendSettingsPatch,
   BackendSettingsSaveResult,
@@ -19,7 +20,10 @@ import type {
  * is a client of an ADF daemon (local, remote). The file is read once, before
  * any IPC handler is registered; a change takes effect at the next launch.
  *
- * No file means embedded, exactly as before backend selection existed.
+ * No file means DEFAULT_BACKEND_MODE, Local daemon (owner decision
+ * 2026-10-16): new installs and 0.7.x installs upgrading alike. The first
+ * boot writes that choice into the file (persistDefaultBackend), so a later
+ * release sees an explicit mode. An explicit `mode: embedded` is honoured.
  *
  * The remote token is stored as `safe:` (Electron safeStorage) and MUST NOT
  * reach logs or the renderer. Only `readRemoteToken` returns it, for the
@@ -39,6 +43,14 @@ const MAX_TOKEN_LENGTH = 4096
 const TOKEN_PATTERN = /^[\x21-\x7e]+$/
 
 const MODES: readonly StudioBackendMode[] = ['embedded', 'local', 'remote']
+
+/**
+ * The backend of a Studio with no `studio-backend.json` (owner decision
+ * 2026-10-16): the ADF daemon on this computer. Also what a file that cannot
+ * be read or names an unknown mode falls back to.
+ */
+export const DEFAULT_BACKEND_MODE: StudioBackendMode = 'local'
+const DEFAULT_LABEL = 'the default, Local daemon'
 
 export interface StudioBackendConfig {
   v: 1
@@ -77,18 +89,23 @@ export interface BootBackend {
   writeBlocked: string | null
   /**
    * What the user should know about this launch's backend, token-free: the
-   * configured mode could not be used (Studio started embedded), or fields
-   * of the file were ignored. Shown in Settings → Backend.
+   * configured mode could not be used, or fields of the file were ignored.
+   * Shown in Settings → Backend.
    */
   notices?: string[]
   /** File fields normalization ignored; the next save writes the file without them (that save says so). */
   dropped?: string[]
+  /**
+   * Set at boot (first-launch.ts) when an earlier launch switched this
+   * install from Embedded to the new default; Settings → Backend shows it.
+   */
+  defaultSwitch?: BackendDefaultSwitch | null
 }
 
 type Log = Pick<Console, 'log' | 'warn'>
 
 export function defaultBackendConfig(): StudioBackendConfig {
-  return { v: 1, mode: 'embedded', keepDaemonRunning: false, remote: { url: null, token: null, allowInsecureHttp: false } }
+  return { v: 1, mode: DEFAULT_BACKEND_MODE, keepDaemonRunning: false, remote: { url: null, token: null, allowInsecureHttp: false } }
 }
 
 export function backendConfigPath(userDataDir: string): string {
@@ -127,14 +144,14 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
   const warnings: string[] = []
   const dropped: string[] = []
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    if (raw !== null && raw !== undefined) warnings.push('the file is not a JSON object; using embedded')
+    if (raw !== null && raw !== undefined) warnings.push(`the file is not a JSON object; using ${DEFAULT_LABEL}`)
     return { config, warnings, dropped }
   }
   const obj = raw as Record<string, unknown>
   if (obj.mode !== undefined) {
     if (isMode(obj.mode)) config.mode = obj.mode
     else {
-      warnings.push(`unknown mode ${JSON.stringify(obj.mode)}; using embedded`)
+      warnings.push(`unknown mode ${JSON.stringify(obj.mode)}; using ${DEFAULT_LABEL}`)
       dropped.push(`the unknown mode ${JSON.stringify(obj.mode)}`)
     }
   }
@@ -187,7 +204,7 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
     return {
       found: true,
       data: null,
-      problem: `the file could not be read (${code}); using embedded, and Settings → Backend will not overwrite it`,
+      problem: `the file could not be read (${code}); using ${DEFAULT_LABEL}, and Settings → Backend will not overwrite it`,
       writeBlocked: `${configPath} could not be read (${code}). Fix its permissions or delete it, then restart Studio.`,
     }
   }
@@ -196,25 +213,26 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
   } catch {
     const { quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<unknown>(configPath)
     if (quarantinedTo) {
-      return { found: true, data: null, problem: `the file could not be parsed and was moved to ${quarantinedTo}; using embedded`, writeBlocked: null }
+      return { found: true, data: null, problem: `the file could not be parsed and was moved to ${quarantinedTo}; using ${DEFAULT_LABEL}`, writeBlocked: null }
     }
     if (corruptUnpreserved) {
       return {
         found: true,
         data: null,
-        problem: 'the file could not be parsed or moved aside; using embedded, and Settings → Backend will not overwrite it',
+        problem: `the file could not be parsed or moved aside; using ${DEFAULT_LABEL}, and Settings → Backend will not overwrite it`,
         writeBlocked: `${configPath} is corrupt and could not be moved aside. Fix or delete it, then restart Studio.`,
       }
     }
     // Readable on the second read: the file changed in between.
-    return { found: true, data: null, problem: 'the file changed while it was read; using embedded', writeBlocked: `${configPath} changed while Studio read it. Restart Studio.` }
+    return { found: true, data: null, problem: `the file changed while it was read; using ${DEFAULT_LABEL}`, writeBlocked: `${configPath} changed while Studio read it. Restart Studio.` }
   }
 }
 
 /**
  * Decide the backend for this launch. Synchronous and called once, before
  * any IPC handler is registered (D9). With no file and no override it is a
- * single existence check and logs nothing.
+ * single existence check, logs nothing and resolves DEFAULT_BACKEND_MODE
+ * with source `default`; persistDefaultBackend then writes it.
  */
 export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, log: Log = console): BootBackend {
   const file = readBootFile(configPath)
@@ -251,6 +269,26 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
 }
 
 /**
+ * First boot without `studio-backend.json` (source `default`): write the
+ * mode this launch resolved, so a later release reads an explicit choice
+ * instead of its own default. Not for an override launch (`env`,
+ * `session`), nor when the file exists but could not be read. Returns
+ * whether the file was written; logged either way, never throws.
+ */
+export async function persistDefaultBackend(boot: BootBackend, log: Log = console): Promise<boolean> {
+  if (boot.source !== 'default' || boot.writeBlocked) return false
+  try {
+    await mkdir(dirname(boot.configPath), { recursive: true })
+    await writeJsonAtomicAsync(boot.configPath, boot.config)
+    log.log(`[Backend] No ${BACKEND_CONFIG_FILE}: this launch runs the default, ${boot.config.mode}; saved it to ${boot.configPath}`)
+    return true
+  } catch (err) {
+    log.warn(`[Backend] Could not save the default backend to ${boot.configPath}: ${(err as Error)?.message ?? 'unknown error'}; the next launch resolves the default again`)
+    return false
+  }
+}
+
+/**
  * The saved remote token in plain text, for the daemon client in main only.
  * Null when the transport rule refuses the saved URL (remoteTransportRefusal):
  * the token is never handed out for an address it may not be sent to.
@@ -262,7 +300,7 @@ export function readRemoteToken(config: StudioBackendConfig, codec: SecretCodec)
 
 export function toBackendSettingsView(
   config: StudioBackendConfig,
-  boot: Pick<BootBackend, 'mode' | 'source' | 'notices'>,
+  boot: Pick<BootBackend, 'mode' | 'source' | 'notices' | 'defaultSwitch'>,
   codec: SecretCodec,
   daemon: BackendDaemonStatus | null = null,
   pendingSwitch: BackendSettingsView['pendingSwitch'] = null,
@@ -279,6 +317,7 @@ export function toBackendSettingsView(
     },
     daemon,
     pendingSwitch,
+    defaultSwitch: boot.defaultSwitch ?? null,
     encryptionAvailable: codec.available(),
     encryptionUnavailableReason: codec.available() ? null : (codec.unavailableReason?.() ?? null),
   }
