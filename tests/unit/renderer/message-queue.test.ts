@@ -11,7 +11,7 @@ import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../..
 import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
-import { queueOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
+import { queueOwnerMessage, sendOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
 import { createOpenFileHarness, type OpenFileHarness } from './open-file-harness'
 
 /**
@@ -483,5 +483,35 @@ describe('stale queues', () => {
     main.pushBatch([stateChanged(reported, 'idle')])
     expect(main.invokeAgent).toHaveBeenCalledTimes(1)
     expect(queued(spelled)).toEqual([])
+  })
+})
+
+describe('a message sent straight to an idle loop', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a refused send ends in the chat: an error row, the optimistic state back to idle, no retry', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    useAgentStore.getState().setState('active')
+    main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+    sendOwnerMessage(AGENT_1, 'main', 'hello', [{ type: 'text', text: 'hello' }])
+    await settle()
+    expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'Not sent: Agent not running' })
+    expect(useAgentStore.getState().state).toBe('idle')
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('an accepted send whose end was not seen shows nothing extra', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    useAgentStore.getState().setState('active')
+    const before = useAgentStore.getState().log.length
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, error: 'The connection to the ADF daemon was lost' })
+    sendOwnerMessage(AGENT_1, 'main', 'hello', [{ type: 'text', text: 'hello' }])
+    await settle()
+    expect(useAgentStore.getState().log).toHaveLength(before)
+    expect(useAgentStore.getState().state).toBe('active')
   })
 })

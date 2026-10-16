@@ -206,7 +206,7 @@ describe('daemon-mode handlers: review fixes', () => {
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
   })
 
-  it('a failed AGENT_INVOKE ends in the chat: an error row and idle, as embedded ends a failed turn (W5-D2)', async () => {
+  it('AGENT_INVOKE: a chat the daemon took and lost ends in the chat; a refused one is only answered, as embedded answers it', async () => {
     daemon.routes.set('GET /files/agent', () => ({ filePath: join(dir, 'agent-1.adf'), agentId: AGENT, loaded: true, tracked: false }))
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false, runtimeState: 'idle', targetState: null, loopCount: 0 }))
     daemon.routes.set(`GET /agents/${AGENT}/identity/password`, () => ({ agentId: AGENT, needsPassword: false, unlocked: false }))
@@ -257,16 +257,14 @@ describe('daemon-mode handlers: review fixes', () => {
     const big = await electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { content, loop: 'reflection' }) as { success: boolean; error: string }
     expect(big.success).toBe(false)
     expect(big.error).toMatch(/^This message is too large to send: 0\.0 MB encoded; the ADF daemon accepts at most 128 MB per chat message/)
-    expect(agentEvents()).toEqual([
-      { type: 'error', payload: { error: big.error }, timestamp: expect.any(Number), loop: 'reflection' },
-      { type: 'state_changed', payload: { state: 'idle' }, timestamp: expect.any(Number), loop: 'reflection' },
-    ])
+    // Refused: answered only (the renderer shows it; no idle that a queue would read as a turn end).
+    expect(agentEvents()).toEqual([])
 
     // Not running: refused before anything is sent, shown the same way.
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ status: 404, body: { error: 'Unknown agent' } }))
     electronStub.pushes.length = 0
     expect(await electronStub.handlers.get(IPC.AGENT_INVOKE)!({}, { userMessage: 'hi' })).toEqual({ success: false, error: 'Agent not running' })
-    expect(agentEvents().map((e) => [e.type, e.payload.error ?? e.payload.state])).toEqual([['error', 'Agent not running'], ['state_changed', 'idle']])
+    expect(agentEvents()).toEqual([])
     await electronStub.handlers.get(IPC.FILE_CLOSE)!({})
   })
 

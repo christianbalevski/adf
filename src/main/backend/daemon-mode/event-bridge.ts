@@ -295,12 +295,12 @@ export class EventBridge {
   }
 
   /**
-   * A chat Studio sent did not run (AGENT_INVOKE failed: not delivered,
-   * refused, the daemon went away before its turn ended). The renderer
-   * already shows the message and its spinner and reads no AGENT_INVOKE
-   * answer, so the chat gets what embedded's executor sends on a failed
+   * A chat the daemon accepted can never end: its process exited before the
+   * turn did. The chat gets what embedded's executor sends on a failed
    * turn: an `error` event, then `state_changed` idle, routed as the
    * daemon's own events (open file: AGENT_EVENT; else the background list).
+   * A chat the daemon refused is not reported here: AGENT_INVOKE answers
+   * it, as embedded does, and the renderer shows it.
    *
    * The idle ends the open file's spinner. An agent in the background shows
    * none, so its idle is sent only when its loop reads busy: an idle loop's

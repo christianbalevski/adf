@@ -3,6 +3,7 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState } from '../s
 import { useDocumentStore } from '../stores/document.store'
 import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, heldForOwner, MAX_AUTOMATIC_SENDS, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
+import type { ContentBlock } from '../../shared/types/provider.types'
 
 /**
  * Send a loop's queued messages as one chat, now that its turn has ended.
@@ -86,6 +87,29 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
       fail(result.error ?? 'The agent did not take the message')
     },
     (error: unknown) => fail(error instanceof Error ? error.message : String(error))
+  )
+}
+
+/**
+ * Send a message the owner typed straight to an idle loop (the composer shows
+ * it already, and the loop as active). A send the backend refused (the agent
+ * is not running, the message is too large) ends in that chat as an error
+ * row, and the loop's optimistic `active` goes back to idle, the same in
+ * both backends. A send the backend accepted is the turn's own business.
+ */
+export function sendOwnerMessage(filePath: string | null, loop: string, text: string, content: ContentBlock[]): void {
+  const pending = window.adfApi?.invokeAgent(text, filePath ?? undefined, content, loop)
+  if (!pending) return
+  const refused = (error: string): void => {
+    console.warn(`[chat] Message to ${filePath ?? 'the open agent'} (${loop}) was not sent: ${error}`)
+    if (filePath && !sameAgentPath(useDocumentStore.getState().filePath, filePath)) return
+    const agentStore = useAgentStore.getState()
+    agentStore.addLogEntry({ id: nanoid(), type: 'error', content: `Not sent: ${error}`, timestamp: Date.now() }, loop)
+    if (selectLoopSlice(agentStore, loop).state === 'active') agentStore.setState('idle', loop)
+  }
+  void Promise.resolve(pending).then(
+    (result) => { if (result && result.success === false && !result.accepted) refused(result.error ?? 'The agent did not take the message') },
+    (error: unknown) => refused(error instanceof Error ? error.message : String(error))
   )
 }
 

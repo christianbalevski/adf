@@ -7,7 +7,7 @@ import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppStat
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { startForegroundAgent } from '../../utils/start-agent'
-import { queueOwnerMessage, sendQueuedMessages } from '../../utils/queued-delivery'
+import { queueOwnerMessage, sendOwnerMessage, sendQueuedMessages } from '../../utils/queued-delivery'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -1601,7 +1601,7 @@ function LoopStream({ loop }: { loop: string }) {
       setState('active', loop)
     }
 
-    window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
+    sendOwnerMessage(targetFilePath, loop, message, content)
   }
 
   // A message typed into the home composer arrives here once the agent it

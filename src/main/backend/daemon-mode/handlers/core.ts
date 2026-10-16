@@ -350,14 +350,10 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
 
   [IPC.AGENT_INVOKE]: async (ctx, _event, args: { userMessage?: string; filePath?: string; content?: Array<{ type: string }>; loop?: string }) => {
     const target = args?.filePath ?? ctx.session.filePath
-    // The renderer shows the message and a spinner before it calls, and reads
-    // no answer: a chat that does not run ends in the chat itself (an error
-    // row and idle, as embedded's executor ends a failed turn).
+    // A refused chat is answered, as embedded answers a dispatch it refuses:
+    // the renderer shows it (an error row, or "Not sent" in the queue).
     let agentId: string | null = null
-    const failed = (error: string) => {
-      if (target) ctx.bridge.reportChatFailure({ agentId, filePath: target }, args?.loop, error)
-      return { success: false, error }
-    }
+    const failed = (error: string) => ({ success: false, error })
     if (!target) return { success: false, error: 'Agent not running' }
     let client: Awaited<ReturnType<DaemonModeContext['ready']>>
     try {
@@ -381,7 +377,12 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
       // turnId): `accepted` tells the renderer's queue it went, so it is
       // never put back and sent a second time. Only a refused send requeues.
       // Only a daemon that is gone ends the chat with an error (its turn cannot end).
-      if (outcome === 'exited') return { ...failed('The ADF daemon exited while the message waited for its turn; the chat shows what arrived.'), accepted: true }
+      if (outcome === 'exited') {
+        // The turn can never end: the chat gets what embedded's executor sends on a failed turn (an error row, then idle).
+        const error = 'The ADF daemon exited while the message waited for its turn; the chat shows what arrived.'
+        ctx.bridge.reportChatFailure({ agentId, filePath: target }, args?.loop, error)
+        return { success: false, accepted: true, error }
+      }
       if (outcome === 'disconnected') {
         // The daemon may still run the turn: no error; its state is read on reconnect (EventBridge.recheckTurns).
         ctx.bridge.recheckOnReconnect({ agentId, filePath: target }, args?.loop)
