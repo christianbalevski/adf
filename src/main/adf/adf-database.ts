@@ -3820,10 +3820,22 @@ export class AdfDatabase {
     return config
   }
 
+  /**
+   * setConfig calls through this connection: a cheap "did the config change"
+   * check for callers that cache it (RuntimeService's running-agent config).
+   * Writes through another connection to the same file are not counted.
+   */
+  private configWrites = 0
+
+  configWriteCount(): number {
+    return this.configWrites
+  }
+
   setConfig(config: AgentConfig): void {
     const now = new Date().toISOString()
     config.metadata.updated_at = now
     this.stmts.setConfig!.run(JSON.stringify(config), now)
+    this.configWrites++
 
     // Keep denormalized meta keys in sync
     this.setMeta('adf_name', config.name)

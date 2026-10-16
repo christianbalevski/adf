@@ -1116,6 +1116,11 @@ export class AdfWorkspace {
     return this.db.getConfig()
   }
 
+  /** Config writes through this file's connection so far (AdfDatabase.configWriteCount); no SQLite read. */
+  configWriteCount(): number {
+    return this.db.configWriteCount()
+  }
+
   setAgentConfig(config: AgentConfig): void {
     let previous: AgentConfig | null = null
     try { previous = this.db.getConfig() } catch { previous = null }

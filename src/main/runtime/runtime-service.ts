@@ -765,6 +765,8 @@ interface ManagedRuntimeAgent {
   display: BackgroundMappingState
   /** Reason the agent is degraded (e.g. locked credential envelopes), if any. */
   degraded?: string
+  /** workspace.configWriteCount() when `config` was last checked against the file (syncManagedConfig). */
+  configWritesSeen?: number
 }
 
 /**
@@ -4084,14 +4086,25 @@ export class RuntimeService extends EventEmitter {
 
   /**
    * A running agent's config as its file holds it. A tool that writes the
-   * file itself (mcp_install, mcp_uninstall) does not pass through
-   * onConfigChanged, so the cached copy can be behind the file: handed out
-   * with the file's revision, a client saved it back over the change (an
-   * installed MCP server missing from Studio, then gone from the file).
+   * file itself (mcp_install, mcp_uninstall, npm_install, npm_uninstall) does
+   * not pass through onConfigChanged, so the cached copy can be behind the
+   * file: handed out with the file's revision, a client saved it back over
+   * the change (an installed MCP server missing from Studio, then gone from
+   * the file). Those tools apply their own runtime effects (connect,
+   * disconnect, tool resync); only the cached copy follows here.
+   *
+   * Every `target.config` read of a running agent lands here, so the file is
+   * read only after a config write through its connection: an unchanged
+   * config costs one counter compare, no SQLite read.
    */
   private syncManagedConfig(managed: ManagedRuntimeAgent): AgentConfig {
-    const onDisk = managed.agent.workspace.getAgentConfig() as AgentConfig
+    const workspace = managed.agent.workspace
+    const writes = workspace.configWriteCount()
+    if (managed.configWritesSeen === writes) return managed.config
+    const onDisk = workspace.getAgentConfig() as AgentConfig
     if (JSON.stringify(onDisk) !== JSON.stringify(managed.config)) managed.config = onDisk
+    // Read after the file: a write the read itself made (getConfig's merges) is seen too.
+    managed.configWritesSeen = workspace.configWriteCount()
     return managed.config
   }
 

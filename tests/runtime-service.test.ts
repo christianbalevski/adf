@@ -143,6 +143,38 @@ describe('RuntimeService', () => {
     await runtime.unloadAgent(ref.id)
   })
 
+  it('a running agent\'s config read with no config write in between does no SQLite read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-config-cache-'))
+    const { filePath, agentId } = createTempAgent(dir, 'agent-1')
+    const runtime = new RuntimeService({
+      settings: { get: (key: string) => (key === 'reviewedAgents' ? [agentId] : undefined) },
+      providerFactory: () => new MockLLMProvider(),
+    })
+    const ref = await runtime.loadAgent(filePath)
+    type Workspace = { getAgentConfig(): { description?: string }; setAgentConfig(c: unknown): void; db: { getConfig(): unknown } }
+    const internals = runtime as unknown as {
+      resolveAgent(id: string): { agent: { workspace: Workspace } }
+      runningTarget(managed: unknown): { config: { description?: string } }
+    }
+    const managed = internals.resolveAgent(ref.id)
+    const workspace = managed.agent.workspace
+    const target = internals.runningTarget(managed)
+    void target.config // the first check reads the file once
+    const reads = vi.spyOn(workspace.db, 'getConfig')
+
+    for (let i = 0; i < 5; i++) void target.config
+    expect(reads).not.toHaveBeenCalled()
+
+    // A tool's own write (mcp_install, npm_install): the next read follows it, once.
+    workspace.setAgentConfig({ ...workspace.getAgentConfig(), description: 'written by a tool' })
+    reads.mockClear()
+    expect(target.config.description).toBe('written by a tool')
+    expect(target.config.description).toBe('written by a tool')
+    expect(reads).toHaveBeenCalledTimes(1)
+    reads.mockRestore()
+    await runtime.unloadAgent(ref.id)
+  })
+
   it('enforces reviewedAgents when loading an existing .adf file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-service-'))
     const filePath = join(dir, 'review-gated.adf')
