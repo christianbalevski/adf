@@ -242,6 +242,31 @@ describe('TriggerEvaluator', () => {
       vi.advanceTimersByTime(100)
       expect(events.length).toBe(1)
     })
+
+    it('fires a debounced file_change for a deleted file', () => {
+      // A delete/rename passes previousContent, so a snapshot is kept; when the
+      // debounce fires, readFile() returns null for the gone file. Diffing
+      // against that null threw inside the timer and the trigger was lost.
+      const config = makeConfig({
+        on_file_change: makeTriggerConfig([
+          makeTarget('system', { debounce_ms: 500, filter: { watch: '*' } })
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setWorkspace({
+        readFile: () => null,
+        getFileMeta: () => null,
+      } as unknown as Parameters<TriggerEvaluator['setWorkspace']>[0])
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+
+      evaluator.onFileChange('notes.md', 'deleted', undefined, 'old line\n')
+      vi.advanceTimersByTime(500)
+
+      expect(events.length).toBe(1)
+      const dispatch = events[0] as AdfEventDispatch
+      expect(dispatch.event.data).toMatchObject({ path: 'notes.md', operation: 'deleted' })
+    })
   })
 
   // ===========================================================================

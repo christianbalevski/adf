@@ -58,6 +58,7 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { toDisplayState } from './display-state'
+import { inboxSnapshot } from './inbox-snapshot'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -1880,34 +1881,7 @@ export class BackgroundAgentManager extends EventEmitter {
       onAutostartChild: async (childPath) => this.startAgent(childPath),
       onAdapterInbound: (adapterType) => {
         this.emit('adapter_inbound', { filePath, type: adapterType })
-        const allMessages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
-        this.emit('inbox_updated', {
-          filePath,
-          inbox: {
-            version: 1,
-            messages: allMessages.map(m => ({
-              id: m.id,
-              from: m.sender,
-              sender: m.sender,
-              reply_to: m.reply_to,
-              source: m.source,
-              content: m.payload,
-              payload: m.payload,
-              type: (m.intent ?? 'broadcast') as const,
-              direction: 'incoming' as const,
-              status: m.status,
-              timestamp: m.received_at,
-              received_at: m.received_at,
-              sent_at: m.sent_at,
-              trace_id: m.trace_id,
-              parent_id: m.parent_id,
-              replyTo: m.parent_id,
-              intent: m.intent,
-              attachments: m.attachments,
-              source_meta: m.source_meta
-            }))
-          }
-        })
+        this.emit('inbox_updated', { filePath, inbox: inboxSnapshot(workspace) })
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return

@@ -10,6 +10,7 @@ import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspace
 import { encrypt } from '../crypto/identity-crypto'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { reviewIdentityFor, type LocalReviewIdentity } from '../services/review-identity'
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
 import { providerSelectionChanged } from '../providers/provider-selection'
@@ -149,6 +150,12 @@ export interface RuntimeServiceOptions {
   agentRuntimeBuilder?: AgentRuntimeBuilder
   /** Defaults to true for opened .adf files. Ephemeral createAgent calls bypass review. */
   enforceReviewGate?: boolean
+  /**
+   * This install's identity, for the review summary's owner scenario. The
+   * daemon passes its owner identity service; without one, the owner and
+   * runtime DIDs come from settings and the owner key counts as unavailable.
+   */
+  reviewIdentity?: LocalReviewIdentity
 }
 
 export interface RuntimeLoadAgentOptions {
@@ -495,6 +502,7 @@ export class RuntimeService extends EventEmitter {
   private readonly toolPrompts: Record<string, string>
   private readonly compactionPrompt?: string
   private readonly agentRuntimeBuilder?: AgentRuntimeBuilder
+  private readonly reviewIdentity?: LocalReviewIdentity
   private readonly enforceReviewGate: boolean
   private readonly agents = new Map<string, ManagedRuntimeAgent>()
   private readonly filePathToAgentId = new Map<string, string>()
@@ -514,6 +522,7 @@ export class RuntimeService extends EventEmitter {
     this.toolPrompts = opts.toolPrompts ?? {}
     this.compactionPrompt = opts.compactionPrompt
     this.agentRuntimeBuilder = opts.agentRuntimeBuilder
+    this.reviewIdentity = opts.reviewIdentity
     this.enforceReviewGate = opts.enforceReviewGate ?? true
   }
 
@@ -969,17 +978,22 @@ export class RuntimeService extends EventEmitter {
     return report
   }
 
+  private localReviewIdentity(): LocalReviewIdentity {
+    if (this.reviewIdentity) return this.reviewIdentity
+    const did = (key: string) => (this.settings?.get(key) as string | undefined) ?? ''
+    return { getOwnerDid: () => did('ownerDid'), getRuntimeDid: () => did('runtimeDid'), getOwnerEncPrivateKey: () => null }
+  }
+
   getReviewInfo(filePath: string): RuntimeReviewInfo {
     const canonicalPath = this.canonicalFilePath(filePath)
     const workspace = AdfWorkspace.open(canonicalPath)
     try {
       const config = workspace.getAgentConfig() as AgentConfig
-      const ownerDid = (this.settings?.get('ownerDid') as string | undefined) ?? null
       return {
         agentId: config.id,
         filePath: canonicalPath,
         reviewed: isConfigReviewed(this.settings?.get('reviewedAgents'), config),
-        summary: buildConfigSummary(config, ownerDid),
+        summary: buildConfigSummary(config, reviewIdentityFor(workspace, this.localReviewIdentity())),
       }
     } finally {
       workspace.dispose()
@@ -996,12 +1010,11 @@ export class RuntimeService extends EventEmitter {
     try {
       const config = workspace.getAgentConfig() as AgentConfig
       this.settings.set('reviewedAgents', markConfigReviewed(this.settings.get('reviewedAgents'), config))
-      const ownerDid = (this.settings?.get('ownerDid') as string | undefined) ?? null
       return {
         agentId: config.id,
         filePath: canonicalPath,
         reviewed: true,
-        summary: buildConfigSummary(config, ownerDid),
+        summary: buildConfigSummary(config, reviewIdentityFor(workspace, this.localReviewIdentity())),
       }
     } finally {
       workspace.dispose()

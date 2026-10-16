@@ -475,8 +475,10 @@ export class TriggerEvaluator extends EventEmitter {
             this.fileChangeSnapshots.delete(filePath)
 
             // Get current file content for diff
+            // null once the file is gone (deleted/renamed): nothing to diff
+            // against, so emit the event as it came in.
             const currentContent = this.workspace?.readFile(filePath)
-            if (snapshot !== undefined && currentContent !== undefined) {
+            if (snapshot !== undefined && currentContent != null) {
               const diff = computeUnifiedDiff(filePath, snapshot, currentContent)
               // Create updated event with recomputed diff
               const meta = this.workspace?.getFileMeta(filePath)

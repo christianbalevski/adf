@@ -232,7 +232,9 @@ import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
-import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { buildConfigSummary, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { reviewIdentityFor } from '../services/review-identity'
+import { inboxSnapshot } from '../runtime/inbox-snapshot'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
@@ -2676,26 +2678,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     opts: { relocatable: boolean }
   ): Promise<AgentConfigSummary> => {
     const config = workspace.getAgentConfig()
-    const svc = settings.getOwnerIdentity()
-    const agentDid = workspace.getDid()
-    // Owner shown in review: verified attestation first (proof), meta
-    // fallback (fact) — never the agent's own DID.
-    const ownerAtt = readAdfAttestations(workspace)
-      .filter((a) => a.role === 'owner')
-      .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
-    const credentialSlots = workspace.readEnvelopeSlots('credentials') ?? []
-    const identity = deriveReviewIdentity({
-      agentDid,
-      fileOwnerDid: ownerAtt?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
-      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
-      localOwnerDid: svc.getOwnerDid(),
-      localRuntimeDid: svc.getRuntimeDid(),
-      identityEnvelope: workspace.getEnvelopeState('identity'),
-      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
-      sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
-      filePasswordProtected: workspace.isPasswordProtected(),
-      ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null
-    })
+    const identity = reviewIdentityFor(workspace, settings.getOwnerIdentity())
     // Provider usability: can this install actually run the agent's model?
     // Resolve the configured provider id against local settings, falling
     // back to a local provider of the same type as the embedded entry.
@@ -4707,20 +4690,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       // Render inbound state here; the canonical assembler is the sole owner
       // of adapter-inbound trigger delivery.
       adapterMgr.on('inbound', () => {
-        const unread = capturedWorkspace.getInbox('unread')
-        const read = capturedWorkspace.getInbox('read')
-        const archived = capturedWorkspace.getInbox('archived')
-        const allMessages = [...unread, ...read, ...archived]
-
-        // Emit inbox_updated to renderer — transform to the same shape as DOC_GET_INBOX
         const win = getMainWindow()
         if (win) {
-          win.webContents.send(IPC.INBOX_UPDATED, {
-            inbox: {
-              version: 1,
-              messages: allMessages
-            }
-          })
+          win.webContents.send(IPC.INBOX_UPDATED, { inbox: inboxSnapshot(capturedWorkspace) })
         }
 
       })
@@ -6975,7 +6947,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       try {
         const uvPath = await uvManager.ensureUv()
         probeCommand = uvPath
-        probeArgs = ['tool', 'run', ...args.args]
+        probeArgs = ['tool', 'run', ...probeArgs]
       } catch (e) {
         console.warn('[MCP:probe] Failed to resolve uv binary for uvx command:', e)
       }

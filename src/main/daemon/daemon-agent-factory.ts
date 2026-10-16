@@ -10,8 +10,8 @@ import { homedir, tmpdir } from 'os'
 import { basename, isAbsolute, join, resolve } from 'path'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AgentTemplatesService, templateFilePath, templatesDir } from '../adf/agent-templates'
-import { autoLockFields, buildConfigSummary, deriveReviewIdentity, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
-import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
+import { autoLockFields, buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { reviewIdentityFor } from '../services/review-identity'
 import { canonicalizePath, isSameOrSubPath } from '../utils/tracked-paths'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import type { AgentConfigSummary, AgentTemplateListResult, ProviderConfig } from '../../shared/types/ipc.types'
@@ -190,24 +190,7 @@ export class DaemonAgentFactory {
   /** Studio's buildReviewSummaryFor (relocatable: false), provider probe left out. */
   private reviewSummary(workspace: AdfWorkspace): AgentConfigSummary {
     const config = workspace.getAgentConfig()
-    const svc = this.deps.identity.service
-    const agentDid = workspace.getDid()
-    const ownerAtt = readAdfAttestations(workspace)
-      .filter((a) => a.role === 'owner')
-      .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
-    const credentialSlots = workspace.readEnvelopeSlots('credentials') ?? []
-    const identity = deriveReviewIdentity({
-      agentDid,
-      fileOwnerDid: ownerAtt?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
-      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
-      localOwnerDid: svc.getOwnerDid(),
-      localRuntimeDid: svc.getRuntimeDid(),
-      identityEnvelope: workspace.getEnvelopeState('identity'),
-      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
-      sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
-      filePasswordProtected: workspace.isPasswordProtected(),
-      ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null,
-    })
+    const identity = reviewIdentityFor(workspace, this.deps.identity.service)
     const appProviders = (this.deps.settings.get('providers') as ProviderConfig[] | undefined) ?? []
     const embedded = config.providers?.find((p) => p.id === config.model.provider)
     const localProvider =
