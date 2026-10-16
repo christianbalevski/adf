@@ -151,6 +151,24 @@ describe('AdfDatabase.open of a file too old to upgrade (W5-H)', () => {
     }
   })
 
+  it('stamps an unversioned clone with the latest version at its first open; the second open makes no backup', () => {
+    const dir = newDir()
+    const filePath = join(dir, 'agent-1.adf')
+    AdfDatabase.create(filePath, { name: 'agent-1' }).close()
+    const raw = new Database(filePath)
+    raw.prepare('DELETE FROM adf_meta').run()
+    raw.close()
+    const log = vi.spyOn(console, 'log')
+
+    AdfDatabase.open(filePath).close()
+    expect(schemaVersion(filePath)).toBe(String(ADF_LATEST_SCHEMA_VERSION))
+    const backups = () => log.mock.calls.filter(([line]) => String(line).includes('before migration')).length
+    expect(backups()).toBe(1)
+    AdfDatabase.open(filePath).close()
+    expect(backups()).toBe(1)
+    expect(readdirSync(dir).filter((n) => n.includes('.bak'))).toEqual([])
+  })
+
   it('does not refuse v3, the oldest version the ladder upgrades', () => {
     const dir = newDir()
     const filePath = join(dir, 'agent-1.adf')

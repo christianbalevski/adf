@@ -1296,6 +1296,10 @@ export class AdfDatabase {
       // db.transaction() blocks nest as savepoints. Nothing below writes a
       // pragma, vacuums or checkpoints.
       db.exec('BEGIN IMMEDIATE')
+      // No version but a clone's layout (the authoritative read let it
+      // through): a clone made before clone-fixup restamped the version. The
+      // version-gated steps never run for it; it is stamped at the end.
+      const unversionedClone = sv === 0
 
       // Migrate adf_loop: add model, tokens, created_at columns if missing
       const cols = db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>
@@ -2324,6 +2328,13 @@ export class AdfDatabase {
       // transaction (SQLITE_FULL, IOERR, BUSY) inside a best-effort step
       // would have left the rest running in autocommit: fail instead.
       if (!db.inTransaction) throw new Error(`The migration of ${basename(filePath)} was rolled back by SQLite.`)
+      if (unversionedClone) {
+        // Stamped latest, so the next open takes the fast path instead of a
+        // backup copy and this migration again.
+        db.prepare("INSERT INTO adf_meta (key, value, protection) VALUES ('adf_schema_version', ?, 'readonly') ON CONFLICT(key) DO UPDATE SET value = excluded.value, protection = 'readonly'")
+          .run(String(ADF_LATEST_SCHEMA_VERSION))
+        console.log(`[AdfDatabase] Stamped schema v${ADF_LATEST_SCHEMA_VERSION} on an unversioned clone: ${filePath}`)
+      }
       db.exec('COMMIT')
       migrated = true
     } catch (error) {
