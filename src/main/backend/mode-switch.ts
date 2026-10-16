@@ -20,6 +20,7 @@ import {
   type HandoverDeps,
   type HandoverReport,
   type HandoverTarget,
+  type SessionChoice,
   type SessionConflict,
   type StudioSecretCodec,
 } from './handover'
@@ -166,11 +167,19 @@ async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' 
  * Boot: the handover into the mode this launch runs (handover.ts). Runs
  * before any backend handler exists and before the daemon is started or
  * attached. A session-only override moves client keys only. Never throws.
+ * `chooseSession` answers an accounts conflict first (first-launch.ts: a
+ * saved answer, or 'defer'); null falls through to the accounts dialog.
  */
-export async function runBootHandover(mode: StudioBackendMode, userDataDir: string, opts: { sessionOnly?: boolean } = {}): Promise<HandoverReport | null> {
+export async function runBootHandover(
+  mode: StudioBackendMode,
+  userDataDir: string,
+  opts: { sessionOnly?: boolean; chooseSession?: (conflict: SessionConflict) => Promise<SessionChoice | null> } = {},
+): Promise<HandoverReport | null> {
   try {
     const keychain = await handoverNeedsKeychain(mode as HandoverTarget, userDataDir, opts)
-    return await runHandover(mode as HandoverTarget, handoverDeps(userDataDir, {}, { keychain }), opts)
+    const choose = opts.chooseSession
+    const extra = choose ? { chooseSession: async (c: SessionConflict) => (await choose(c)) ?? chooseSessionDialog(c) } : {}
+    return await runHandover(mode as HandoverTarget, handoverDeps(userDataDir, extra, { keychain }), { sessionOnly: opts.sessionOnly })
   } catch (err) {
     console.error('[Handover] The handover at boot failed; every source is kept and the next start retries:', err)
     return null

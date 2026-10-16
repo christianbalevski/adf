@@ -334,6 +334,28 @@ describe('accounts conflict and ownership', () => {
     expect(daemonTokens(sub).read()?.refresh_token).toBe(daemonOwn.refresh_token)
   })
 
+  it('a deferred answer (W5-I) moves nothing and sets nothing aside; the next start with an answer moves it', async () => {
+    const sub = SUBS[0]
+    const studioLogin = auth.issue('acct-studio')
+    const daemonLogin = auth.issue('acct-daemon')
+    studioTokens(sub).write(studioLogin)
+    daemonTokens(sub).write(daemonLogin)
+    const first = await runHandover('local', deps({ chooseSession: async () => 'defer' }))
+    const item = first.items.find((i) => i.id === 'chatgpt')
+    expect(item).toMatchObject({ outcome: 'kept', pending: true, conflict: { provider: 'chatgpt', studio: { account: 'acct-studio' }, daemon: { account: 'acct-daemon' } } })
+    expect(item?.detail).toMatch(/both sessions are kept, each on its side, until you choose one/)
+    expect(first.failed).toBe(true)
+    // Each side still holds its own login, both still valid; nothing was set aside.
+    expect(studioTokens(sub).read().refresh_token).toBe(studioLogin.refresh_token)
+    expect(daemonTokens(sub).read()?.refresh_token).toBe(daemonLogin.refresh_token)
+    expect(replacedFiles(sub)).toEqual([])
+    const second = await runHandover('local', deps({ chooseSession: async () => 'studio' }))
+    expect(second.items.find((i) => i.id === 'chatgpt')).toMatchObject({ outcome: 'moved' })
+    expect(studioTokens(sub).exists()).toBe(false)
+    expect(daemonTokens(sub).read()?.refresh_token).toBe(studioLogin.refresh_token)
+    expect(replacedFiles(sub)).toHaveLength(1)
+  })
+
   it('probe H: the CLI daemon signed in to the same account on its own; both logins survive the round trip', async () => {
     const sub = SUBS[0]
     const studioLogin = auth.issue(sub.subject, 'studio')
