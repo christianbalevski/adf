@@ -190,6 +190,27 @@ describe('instantiateTemplateFile', () => {
     expect(config.metadata?.created_at).toBe(config.metadata?.updated_at)
   })
 
+  it('gives each instance its own handle, from its file name, never the template\'s', async () => {
+    const dir = workdir()
+    const template = join(dir, 'local.adf')
+    // A template duplicated from Standard as "Standard Copy" carries that name's handle.
+    const db = AdfDatabase.create(template, { name: 'local', handle: 'standard-copy' })
+    db.close()
+
+    for (const name of ['earnest-thyme', 'deft-willow']) {
+      await instantiateTemplateFile({ templateFile: template, destPath: join(dir, `${name}.adf`), name, appProviders: providers, defaultProvider: providers[0] })
+      const inst = open(join(dir, `${name}.adf`))
+      try {
+        const config = JSON.parse((inst.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string }).config_json)
+        const meta = inst.prepare("SELECT value FROM adf_meta WHERE key = 'adf_handle'").get() as { value: string }
+        expect(config.handle).toBe(name)
+        expect(meta.value).toBe(name)
+      } finally {
+        inst.close()
+      }
+    }
+  })
+
   it('lets the chip outrank the template, and falls back when the template provider is gone', async () => {
     const dir = workdir()
     const template = join(dir, 'tmpl.adf')
