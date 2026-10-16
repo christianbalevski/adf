@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import Module from 'node:module'
 
 /**
@@ -57,7 +57,7 @@ export interface ParityEnv {
 }
 
 type Fence = {
-  install(o: { logFile: string; root: string; ports: number[] }): unknown
+  install(o: { logFile: string; root: string; ports: number[]; ownWriteRoots?: string[] }): unknown
   uninstall(): void
   allowPort(port: number): void
   createIsolatedDirectory(label: string): string
@@ -357,7 +357,11 @@ export async function createParityEnv(label: string, options: { realState?: { fi
   const tripwire = keyringTripwire
   const ports = [meshPort]
   const outsideDirectories: string[] = []
-  fence.install({ logFile: violationsLog, root, ports })
+  // PARITY_DAEMON_LOG_DIR (CI: <runner.temp>/parity-daemon-logs): the daemon
+  // backend copies each run's daemon log there at shutdown, from this
+  // process. That one directory is writable here only; children never get it.
+  const daemonLogDir = process.env.PARITY_DAEMON_LOG_DIR ? resolve(process.env.PARITY_DAEMON_LOG_DIR) : null
+  fence.install({ logFile: violationsLog, root, ports, ownWriteRoots: daemonLogDir ? [daemonLogDir] : [] })
   // SettingsService adds a process 'exit' flush per instance; each run boots
   // a fresh module graph, so listeners of finished runs are removed at dispose.
   const exitListenersBefore = new Set(process.listeners('exit'))

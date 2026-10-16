@@ -200,13 +200,15 @@ describe('parity causal filesystem fence', () => {
     const state = outsideState()
     const preload = join(state.root, 'preload.cjs')
     writeFileSync(preload, `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost') } catch (e) { console.log(e.message) }`)
+    // NODE_OPTIONS unescapes backslashes inside quotes: forward slashes (valid on every OS).
+    const preloadOption = `--require "${preload.replace(/\\/g, '/')}"`
     const savedOptions = process.env.NODE_OPTIONS
-    process.env.NODE_OPTIONS = `--require "${preload}"`
+    process.env.NODE_OPTIONS = preloadOption
     const env = await createParityEnv('preload-write', { realState: state.realState })
     try {
       const { execFileSync } = await import('node:child_process')
       expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
-      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: `--require "${preload}"` } })).toMatch(/refused filesystem/)
+      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: preloadOption } })).toMatch(/refused filesystem/)
       const { Worker } = await import('node:worker_threads')
       const worker = new Worker(`require('node:worker_threads').parentPort.postMessage('ready')`, { eval: true, env: {}, execArgv: ['--require', preload] })
       try { expect(await new Promise(resolve => worker.once('message', resolve))).toBe('ready') } finally { await worker.terminate() }
@@ -217,6 +219,37 @@ describe('parity causal filesystem fence', () => {
       env.dispose()
       if (savedOptions === undefined) delete process.env.NODE_OPTIONS
       else process.env.NODE_OPTIONS = savedOptions
+      rmSync(state.root, { recursive: true, force: true })
+    }
+  })
+
+  it('lets the harness process alone write the PARITY_DAEMON_LOG_DIR copy', async () => {
+    const state = outsideState()
+    const logDir = join(state.root, 'parity-daemon-logs')
+    const saved = process.env.PARITY_DAEMON_LOG_DIR
+    process.env.PARITY_DAEMON_LOG_DIR = logDir
+    const env = await createParityEnv('daemon-log-dir', { realState: state.realState })
+    try {
+      // daemon-backend.ts shutdown(): mkdir, then copy the run's daemon log.
+      const source = join(env.root, 'adf-daemon.log')
+      writeFileSync(source, 'log')
+      mkdirSync(logDir, { recursive: true })
+      const { copyFileSync } = req('node:fs') as typeof import('node:fs')
+      copyFileSync(source, join(logDir, 'adf-daemon-1.log'))
+      expect(readFileSync(join(logDir, 'adf-daemon-1.log'), 'utf8')).toBe('log')
+      expect(env.violations()).toEqual([])
+      // Only that directory: its parent stays refused.
+      expect(() => writeFileSync(join(state.root, 'beside.log'), 'lost')).toThrow(/refused filesystem/)
+      // And only this process: a fenced child may not write there.
+      const { execFileSync } = await import('node:child_process')
+      const script = `try { require('node:fs').writeFileSync(${JSON.stringify(join(logDir, 'child.log'))}, 'lost') } catch (e) { console.log(e.message) }`
+      expect(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
+      expect(existsSync(join(logDir, 'child.log'))).toBe(false)
+      expect(env.violations()).toHaveLength(2)
+    } finally {
+      env.dispose()
+      if (saved === undefined) delete process.env.PARITY_DAEMON_LOG_DIR
+      else process.env.PARITY_DAEMON_LOG_DIR = saved
       rmSync(state.root, { recursive: true, force: true })
     }
   })

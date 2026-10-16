@@ -24,7 +24,9 @@
  *
  * Two ways to use it:
  * - In process: `require('./fence.cjs').install({ logFile, ports })`, then
- *   `uninstall()`. The parity harness does this for every run.
+ *   `uninstall()`. The parity harness does this for every run. Writes are
+ *   allowed inside `writeRoots` (default: `root`), which children inherit,
+ *   and `ownWriteRoots`, which they do not.
  * - In a child process: `electron.exe -r <abs path>/fence.cjs …` with
  *   PARITY_FENCE_LOG=<root>/violations.log and PARITY_FENCE_PORTS=1234,5678.
  *   It installs itself on load when PARITY_FENCE_LOG is set.
@@ -111,7 +113,7 @@ function checkWrite(operation, target) {
   const audit = canonical(state.logFile)
   const removesAuditParent = /^(rm|rmdir|rename|chmod|chown)(Sync)?$/.test(operation) && inside(resolved, audit)
   if (resolved === audit || removesAuditParent) throw record('filesystem', `${operation}: fence audit log is read-only`)
-  if (!state.writeRoots.some(root => inside(root, resolved))) throw record('filesystem', `${operation}: ${resolved}`)
+  if (![...state.writeRoots, ...state.ownWriteRoots].some(root => inside(root, resolved))) throw record('filesystem', `${operation}: ${resolved}`)
   try {
     const entry = rawFs.statSync(resolved)
     if (entry.isFile() && entry.nlink > 1) throw record('filesystem', `${operation}: multiply linked file ${resolved}`)
@@ -498,6 +500,9 @@ function install(options) {
     logFile: options.logFile,
     root: options.root,
     writeRoots: (options.writeRoots || (options.root ? [options.root] : [])).map(canonical),
+    // Writable by this process only: never handed to children or workers
+    // (PARITY_FENCE_WRITE_ROOTS carries writeRoots alone).
+    ownWriteRoots: (options.ownWriteRoots || []).map(canonical),
     fds: new Map(),
     children: new Set(),
     ports: new Set((options.ports || []).map(Number)),
