@@ -4235,7 +4235,7 @@ Example 200 (`application/octet-stream`):
 
 **Upload an internal file's bytes**
 
-The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type. W3-F, as PUT /agents/{id}/files/content: a base revision (`If-Match` or `baseRevision`) that is not current, or a create (`If-None-Match: *` or `mustNotExist=true`) of a file that exists, answers 409 `stale_revision` and writes nothing; neither is taken with `unique=true`. The `file_updated` the write raises is not sent to the session named by X-ADF-Client-Session.
+After receiving the body, the daemon revalidates the document and holds its lease through the write. A file moved while streaming returns 409 `file_moving`; a closed document returns 404; a lease acquired by another runtime returns 409 `agent_leased`. The body is the content (`application/octet-stream`, up to 64 MiB; ADF_DAEMON_RAW_BODY_LIMIT_MB). `mimeType` defaults by extension. `unique=true` keeps an existing file of that name and numbers the new one (the saved path is returned). 413 `too_large`, 415 for another content type. W3-F, as PUT /agents/{id}/files/content: a base revision (`If-Match` or `baseRevision`) that is not current, or a create (`If-None-Match: *` or `mustNotExist=true`) of a file that exists, answers 409 `stale_revision` and writes nothing; neither is taken with `unique=true`. The `file_updated` the write raises is not sent to the session named by X-ADF-Client-Session.
 
 Operation `putAgentFileRaw` · bearer token
 
@@ -16771,7 +16771,7 @@ Example 200 (`application/json`):
 
 **Open a client session**
 
-Opens a session; its stream (GET /client/sessions/{id}/events) holds every frame from now on, so frames between this call and the first connect are not lost. A session expires 60 s after its stream disconnects (or after this call, if it never connects); expiry releases its documents. `exitDaemonWhenClosed: true` (ADF Studio when "Keep the daemon running" is off): when this session expires and no other session is open, a daemon Studio started (GET /version `startedBy: studio`) shuts down and logs why; a daemon the CLI or a service started never does. Ending the session with DELETE does not stop the daemon. A write to /agents/{id}/* that sends the header `X-ADF-Client-Session: <sessionId>` is not echoed back to that session (`config_changed`, `file_updated`, `document_updated` raised by the write itself); every other session gets them, and work the request starts (a turn, a timer) reaches that session too.
+Opens a session; its stream (GET /client/sessions/{id}/events) holds every frame from now on, so frames between this call and the first connect are not lost. A session expires 60 s after its stream disconnects (or after this call, if it never connects); expiry releases its documents. `exitDaemonWhenClosed: true` (ADF Studio when "Keep the daemon running" is off): when this session expires and no other session is open, a daemon Studio started (GET /version `startedBy: studio`) shuts down and logs why; a daemon the CLI or a service started never does. Granting `exitDaemonWhenClosed: true` requires a local caller (loopback, no proxy headers; local proof behind a proxy), returning 403 `loopback_only` otherwise. Ordinary remote sessions are allowed. Ending the session with DELETE does not stop the daemon. A write to /agents/{id}/* that sends the header `X-ADF-Client-Session: <sessionId>` is not echoed back to that session (`config_changed`, `file_updated`, `document_updated` raised by the write itself); every other session gets them, and work the request starts (a turn, a timer) reaches that session too.
 
 Operation `createClientSession` · bearer token
 
@@ -17144,7 +17144,7 @@ Example 200 (`application/json`):
 
 **Change a session's orphan behaviour**
 
-The client's quit behaviour changed (ADF Studio's keepDaemonRunning): with `exitDaemonWhenClosed: true` the session's expiry stops a Studio-started daemon when no other session is open (the orphan rule, §8.3); with false it does not.
+The client's quit behaviour changed (ADF Studio's keepDaemonRunning): with `exitDaemonWhenClosed: true` the session's expiry stops a Studio-started daemon when no other session is open (the orphan rule, §8.3); with false it does not. Changing this setting requires a local caller (loopback, no proxy headers; local proof behind a proxy), returning 403 `loopback_only` otherwise.
 
 Operation `setClientSessionExitWhenClosed` · bearer token
 
@@ -17173,6 +17173,7 @@ Operation `setClientSessionExitWhenClosed` · bearer token
 | 200 | object | Changed |
 | 400 | [ErrorResponse](#schema-errorresponse) | exitDaemonWhenClosed is not a boolean |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | No such client session |
 | 405 | [ErrorResponse](#schema-errorresponse) | This daemon has no client sessions |
 

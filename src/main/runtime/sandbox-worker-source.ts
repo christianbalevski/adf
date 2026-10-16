@@ -5,13 +5,14 @@
  *
  * Isolation layers, innermost first:
  *   1. vm realm: every sandbox global is built in-realm by the prelude
- *      (sandbox-prelude.ts); codegen from strings is off; no dynamic import.
+ *      (sandbox-prelude.ts); eval / new Function compile in this realm, with
+ *      the reach of code the agent writes directly; no dynamic import.
  *   2. Membrane: host (worker-realm) values — Buffer, URL, TextEncoder, builtin
  *      modules, stdlib and user npm packages — are only ever seen through
  *      proxies whose shadow targets live in the vm realm. Host intrinsics map
- *      to their vm twins (host Function -> vm Function, which cannot compile
- *      strings), so '<anything>.constructor.constructor' never yields a host
- *      Function. vm values going the other way are deep-copied (plain data) or
+ *      to their vm twins (host Function -> vm Function, which compiles only
+ *      into the vm realm), so '<anything>.constructor.constructor' never
+ *      yields a host Function. vm values going the other way are deep-copied (plain data) or
  *      wrapped, so host code never receives a raw vm function it could hand
  *      host objects to.
  *   3. Worker-realm hardening: the Function-family '.constructor' links are
@@ -841,7 +842,7 @@ vmApi = installPrelude(B, {
     intrV2H.set(vmValue, hostValue);
   }
   vmObjectProto = vmList.find(function (e) { return e[0] === 'Object.prototype'; })[1];
-  // Host stand-ins map to the vm realm's (codegen-disabled) constructors.
+  // Host stand-ins map to the vm realm's constructors (they compile into the vm realm only).
   for (const pair of STAND_INS) {
     const vmCtor = intrH2V.get(pair[0]);
     if (vmCtor !== undefined) intrH2V.set(pair[1], vmCtor);

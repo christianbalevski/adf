@@ -1,12 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join, parse } from 'node:path'
 import { createRequire } from 'node:module'
 import Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
-import { createParityEnv, type ActiveParityEnv } from './harness/env'
+import { createParityEnv, parityDaemonLogDir, type ActiveParityEnv } from './harness/env'
 
 const req = createRequire(import.meta.url)
 // Load and initialize the native binding before installing a fence. Cached
@@ -200,13 +200,15 @@ describe('parity causal filesystem fence', () => {
     const state = outsideState()
     const preload = join(state.root, 'preload.cjs')
     writeFileSync(preload, `try { require('node:fs').writeFileSync(${JSON.stringify(state.settings)}, 'lost') } catch (e) { console.log(e.message) }`)
+    // NODE_OPTIONS unescapes backslashes inside quotes: forward slashes (valid on every OS).
+    const preloadOption = `--require "${preload.replace(/\\/g, '/')}"`
     const savedOptions = process.env.NODE_OPTIONS
-    process.env.NODE_OPTIONS = `--require "${preload}"`
+    process.env.NODE_OPTIONS = preloadOption
     const env = await createParityEnv('preload-write', { realState: state.realState })
     try {
       const { execFileSync } = await import('node:child_process')
       expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
-      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', windowsHide: true, env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: `--require "${preload}"` } })).toMatch(/refused filesystem/)
+      expect(execFileSync(process.execPath, ['-e', 'console.log("ready")'], { encoding: 'utf8', windowsHide: true, env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot ?? '', NODE_OPTIONS: preloadOption } })).toMatch(/refused filesystem/)
       const { Worker } = await import('node:worker_threads')
       const worker = new Worker(`require('node:worker_threads').parentPort.postMessage('ready')`, { eval: true, env: {}, execArgv: ['--require', preload] })
       try { expect(await new Promise(resolve => worker.once('message', resolve))).toBe('ready') } finally { await worker.terminate() }
@@ -221,12 +223,134 @@ describe('parity causal filesystem fence', () => {
     }
   })
 
+  it('lets the harness process alone write the PARITY_DAEMON_LOG_DIR copy', async () => {
+    const state = outsideState()
+    const logDir = join(state.root, 'parity-daemon-logs')
+    const saved = process.env.PARITY_DAEMON_LOG_DIR
+    process.env.PARITY_DAEMON_LOG_DIR = logDir
+    const env = await createParityEnv('daemon-log-dir', { realState: state.realState })
+    try {
+      // daemon-backend.ts shutdown(): mkdir, then copy the run's daemon log.
+      const source = join(env.root, 'adf-daemon.log')
+      writeFileSync(source, 'log')
+      mkdirSync(logDir, { recursive: true })
+      const { copyFileSync } = req('node:fs') as typeof import('node:fs')
+      copyFileSync(source, join(logDir, 'adf-daemon-1.log'))
+      expect(readFileSync(join(logDir, 'adf-daemon-1.log'), 'utf8')).toBe('log')
+      expect(env.violations()).toEqual([])
+      // Only that directory: its parent stays refused.
+      expect(() => writeFileSync(join(state.root, 'beside.log'), 'lost')).toThrow(/refused filesystem/)
+      // And only this process: a fenced child may not write there.
+      const { execFileSync } = await import('node:child_process')
+      const script = `try { require('node:fs').writeFileSync(${JSON.stringify(join(logDir, 'child.log'))}, 'lost') } catch (e) { console.log(e.message) }`
+      expect(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8', windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })).toMatch(/refused filesystem/)
+      expect(existsSync(join(logDir, 'child.log'))).toBe(false)
+      expect(env.violations()).toHaveLength(2)
+    } finally {
+      env.dispose()
+      if (saved === undefined) delete process.env.PARITY_DAEMON_LOG_DIR
+      else process.env.PARITY_DAEMON_LOG_DIR = saved
+      rmSync(state.root, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts PARITY_DAEMON_LOG_DIR only as an absolute directory inside the OS temp dir or RUNNER_TEMP', () => {
+    const home = homedir()
+    const repo = join(__dirname, '..', '..')
+    const runnerTemp = mkdtempSync(join(tmpdir(), 'adf-runner-temp-'))
+    const check = (dir: string, extra: Record<string, string> = {}) => parityDaemonLogDir({ ...process.env, PARITY_DAEMON_LOG_DIR: dir, ...extra })
+    try {
+      expect(parityDaemonLogDir({ ...process.env, PARITY_DAEMON_LOG_DIR: '' })).toBeNull()
+      expect(check(join(tmpdir(), 'parity-daemon-logs'))).toMatch(/parity-daemon-logs$/)
+      expect(check(join(runnerTemp, 'parity-daemon-logs'), { RUNNER_TEMP: runnerTemp })).toMatch(/parity-daemon-logs$/)
+      expect(() => check('parity-daemon-logs')).toThrow(/absolute/)
+      expect(() => check(parse(tmpdir()).root)).toThrow(/filesystem root/)
+      expect(() => check(home)).toThrow(/home directory/)
+      expect(() => check(dirname(home))).toThrow(/home directory/)
+      expect(() => check(repo)).toThrow(/repository/)
+      expect(() => check(join(repo, 'logs'))).toThrow(/repository/)
+      expect(() => check(join(home, 'parity-daemon-logs'))).toThrow(/OS temp dir or RUNNER_TEMP/)
+      expect(() => check(tmpdir())).toThrow(/OS temp dir or RUNNER_TEMP/) // the temp dir itself, not inside it
+    } finally { rmSync(runnerTemp, { recursive: true, force: true }) }
+  })
+
   it('rejects shell/non-Node helpers which would otherwise write outside the Node fence', async () => {
     await guarded('shell-write', async (env, state) => {
       const { exec, spawn } = await import('node:child_process')
       expect(() => exec(`echo unsafe > ${state.settings}`)).toThrow(/unfenced executable/)
       expect(() => spawn('sh', ['-c', 'true'])).toThrow(/unfenced executable/)
       expect(() => env.assertRealStateUntouched()).toThrow(/fence violation/)
+    })
+  })
+})
+
+describe.runIf(process.platform === 'win32')('parity spawn fence: Windows production helpers', () => {
+  const DOCUMENTS_KEY = ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Personal']
+
+  it('lets the daemon mint its local proof (icacls on a file inside the run root)', async () => {
+    await guarded('icacls-proof', async (env) => {
+      const { mintLocalProof, readLocalProof } = await import('../../src/main/daemon/local-access')
+      const settingsDir = join(env.root, 'proof-settings')
+      const minted = mintLocalProof(settingsDir, 41234)
+      expect(readLocalProof(settingsDir, 41234)).toBe(minted.proof)
+      expect(env.violations()).toEqual([])
+    })
+  })
+
+  it('lets the Documents-folder lookup run reg with exactly its argv', async () => {
+    await guarded('reg-documents', async (env) => {
+      const { execFileSync } = await import('node:child_process')
+      // The value may be missing on a runner; only the fence's verdict matters.
+      try { execFileSync('reg', DOCUMENTS_KEY, { windowsHide: true, stdio: 'ignore' }) } catch (err) { expect(String(err)).not.toMatch(/parity fence/) }
+      expect(env.violations()).toEqual([])
+    })
+  })
+
+  it('allows them only when they resolve to the System32 binaries', async () => {
+    await guarded('windows-helpers-resolution', async (env) => {
+      const { execFileSync } = await import('node:child_process')
+      const system32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+      // By absolute path: allowed.
+      try { execFileSync(join(system32, 'reg.exe'), DOCUMENTS_KEY, { windowsHide: true, stdio: 'ignore' }) } catch (err) { expect(String(err)).not.toMatch(/parity fence/) }
+      expect(env.violations()).toEqual([])
+      // A planted reg.exe in the spawn's cwd, or in a PATH entry before System32: refused.
+      const planted = join(env.root, 'planted')
+      mkdirSync(planted)
+      writeFileSync(join(planted, 'reg.exe'), '')
+      expect(() => execFileSync('reg', DOCUMENTS_KEY, { cwd: planted, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      expect(() => execFileSync('reg.exe', DOCUMENTS_KEY, { cwd: planted, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      const pathFirst = { ...process.env, PATH: `${planted};${process.env.PATH ?? ''}` }
+      delete (pathFirst as Record<string, string | undefined>).Path
+      expect(() => execFileSync('reg', DOCUMENTS_KEY, { env: pathFirst, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      // Another absolute path: refused.
+      expect(() => execFileSync(join(planted, 'reg.exe'), DOCUMENTS_KEY, { windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      expect(env.violations()).toHaveLength(4)
+    })
+  })
+
+  it('refuses every other icacls and reg shape', async () => {
+    await guarded('windows-helpers-refused', async (env, state) => {
+      const { execFile, execFileSync } = await import('node:child_process')
+      const { userInfo } = await import('node:os')
+      const user = process.env.USERDOMAIN && process.env.USERNAME ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : userInfo().username
+      const inRoot = join(env.root, 'secret')
+      writeFileSync(inRoot, '')
+      const refused: Array<[string, string[]]> = [
+        ['icacls', [state.settings, '/inheritance:r', '/grant:r', `${user}:F`]], // outside every write root
+        ['icacls', [inRoot, '/inheritance:r', '/grant:r', 'Everyone:F']],
+        ['icacls', [inRoot, '/reset']],
+        ['icacls', [inRoot, '/inheritance:r', '/grant:r', `${user}:F`, '/T']],
+        ['reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']],
+        ['reg', ['add', ...DOCUMENTS_KEY.slice(1), '/d', 'x']],
+        ['reg', [...DOCUMENTS_KEY, '/s']],
+      ]
+      for (const [file, args] of refused) {
+        expect(() => execFileSync(file, args, { windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+        expect(() => execFile(file, args, { windowsHide: true }, () => {})).toThrow(/unfenced executable/)
+      }
+      // Never through a shell.
+      expect(() => execFileSync('reg', DOCUMENTS_KEY, { shell: true, windowsHide: true, stdio: 'ignore' })).toThrow(/unfenced executable/)
+      expect(env.violations()).toHaveLength(refused.length * 2 + 1)
     })
   })
 })

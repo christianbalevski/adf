@@ -292,6 +292,20 @@ This enables remote management patterns: an authorized lambda can lock down file
 
 **How the bypass is wired (implementation detail):** When `adf-call-handler` dispatches a tool call from authorized code, it injects an internal `_authorized: true` flag onto the tool's input. The tool registry treats this as a cross-cutting param (alongside `_full`) — stripped before schema validation, re-attached on the tool input. Tools that support the bypass (`fs_write`, `fs_delete`, etc.) check for this flag and skip their protection checks. The agent executor unconditionally strips `_authorized` from LLM tool calls, so the LLM cannot forge it; only `adf-call-handler` can set it, and only when `this.isAuthorized` is `true`.
 
+### Evaluating File Contents
+
+`eval()` and `new Function()` run under the caller's authorization ([Code Execution](code-execution.md#security-model)). Authorized code that evaluates the contents of a file gives that file its own authorization:
+
+```javascript
+// In an authorized lambda: UNSAFE
+const lib = await adf.fs_read({ path: 'lib/helpers.js' })
+eval(lib.content) // runs as authorized, whoever wrote lib/helpers.js
+```
+
+The agent can write `lib/helpers.js`. A write deauthorizes the written file, but not the authorized lambda that evaluates it, so the agent's code runs authorized: it can call restricted tools and methods and `task_resolve` without a HIL prompt.
+
+Authorized code MUST NOT evaluate a file's contents unless `fs_read` returns `authorized: true` for that file. That file SHOULD have `protection: 'read_only'`. Prefer `import` for packages, and `adf.sys_lambda` to run another file: the target then runs under its own authorization ([Call Chain Rules](#call-chain-rules)).
+
 ### What Authorized Code Does NOT Prevent
 
 | Scenario | Why It's Acceptable |

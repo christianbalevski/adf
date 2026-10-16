@@ -162,7 +162,12 @@ function configText(config: unknown): string {
 
 /** Current revision of the agent config. Pass `writer` only for the observation right after a write. */
 export function configRevision(workspace: RevisionedWorkspace, writer?: ResourceWriter): ResourceRevision {
-  return observeRevision(workspace, 'config', configText(workspace.getAgentConfig()), writer)
+  return configRevisionOf(workspace, workspace.getAgentConfig(), writer)
+}
+
+/** configRevision for a config the caller has just read from `workspace`: the revision of exactly that content. */
+export function configRevisionOf(workspace: RevisionedWorkspace, config: unknown, writer?: ResourceWriter): ResourceRevision {
+  return observeRevision(workspace, 'config', configText(config), writer)
 }
 
 /** Current revision of the document (the file at the document path). */

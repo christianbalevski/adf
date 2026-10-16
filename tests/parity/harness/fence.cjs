@@ -24,7 +24,9 @@
  *
  * Two ways to use it:
  * - In process: `require('./fence.cjs').install({ logFile, ports })`, then
- *   `uninstall()`. The parity harness does this for every run.
+ *   `uninstall()`. The parity harness does this for every run. Writes are
+ *   allowed inside `writeRoots` (default: `root`), which children inherit,
+ *   and `ownWriteRoots`, which they do not.
  * - In a child process: `electron.exe -r <abs path>/fence.cjs …` with
  *   PARITY_FENCE_LOG=<root>/violations.log and PARITY_FENCE_PORTS=1234,5678.
  *   It installs itself on load when PARITY_FENCE_LOG is set.
@@ -111,7 +113,7 @@ function checkWrite(operation, target) {
   const audit = canonical(state.logFile)
   const removesAuditParent = /^(rm|rmdir|rename|chmod|chown)(Sync)?$/.test(operation) && inside(resolved, audit)
   if (resolved === audit || removesAuditParent) throw record('filesystem', `${operation}: fence audit log is read-only`)
-  if (!state.writeRoots.some(root => inside(root, resolved))) throw record('filesystem', `${operation}: ${resolved}`)
+  if (![...state.writeRoots, ...state.ownWriteRoots].some(root => inside(root, resolved))) throw record('filesystem', `${operation}: ${resolved}`)
   try {
     const entry = rawFs.statSync(resolved)
     if (entry.isFile() && entry.nlink > 1) throw record('filesystem', `${operation}: multiply linked file ${resolved}`)
@@ -310,6 +312,64 @@ function spawnStrings(name, args) {
 
 const SPAWNERS = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']
 
+/**
+ * True when `binary` runs `%SystemRoot%\System32\<name>.exe`: that absolute
+ * path, or a bare `name` / `name.exe` that libuv resolves to it. libuv looks
+ * in the spawn's cwd first, then each PATH entry, trying `.com` then `.exe`
+ * for a name without an extension; the first file found is run. A bare name
+ * whose first hit is anywhere else (a planted icacls.exe in the cwd or an
+ * earlier PATH entry) is not the system tool.
+ */
+function systemTool(binary, name, options) {
+  const system32 = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', `${name}.exe`).toLowerCase()
+  const value = String(binary)
+  if (path.win32.isAbsolute(value)) return path.win32.normalize(value).toLowerCase() === system32
+  const lower = value.toLowerCase()
+  if (lower !== name && lower !== `${name}.exe`) return false
+  const env = options.env && typeof options.env === 'object' ? options.env : process.env
+  const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH')
+  const dirs = [options.cwd ? String(options.cwd) : process.cwd(), ...String(pathKey ? env[pathKey] : '').split(';').filter(Boolean)]
+  const candidates = lower === name ? [`${value}.com`, `${value}.exe`] : [value]
+  for (const dir of dirs) {
+    for (const candidate of candidates) {
+      const full = path.win32.resolve(dir.replace(/^"(.*)"$/, '$1'), candidate)
+      let file = false
+      try { file = rawFs.statSync(full).isFile() } catch { /* not here */ }
+      if (file) return canonical(full).toLowerCase() === canonical(system32).toLowerCase()
+    }
+  }
+  return false
+}
+
+/** daemon/file-ops.ts findDocumentsDir: the Documents shell folder. */
+const DOCUMENTS_KEY = ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Personal']
+
+function currentWindowsUser() {
+  return process.env.USERDOMAIN && process.env.USERNAME
+    ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
+    : require('node:os').userInfo().username
+}
+
+/**
+ * Windows subprocesses of production code the fence lets through, by exact
+ * argv shape (win32 only, never through a shell):
+ * - icacls restricting a secret file inside a write root to the current
+ *   user (utils/secret-file.ts restrictToCurrentUserWindows: the daemon's
+ *   local proof, token, encryption key, edit-recovery copies);
+ * - reg reading the Documents shell folder (daemon/file-ops.ts
+ *   findDocumentsDir), a read of one value of one key.
+ */
+function allowedWindowsTool(binary, values, options) {
+  if (process.platform !== 'win32' || typeof binary !== 'string') return false
+  const argv = values.map(String)
+  if (systemTool(binary, 'icacls', options)) {
+    return argv.length === 4 && argv[1] === '/inheritance:r' && argv[2] === '/grant:r' && argv[3] === `${currentWindowsUser()}:F`
+      && path.isAbsolute(argv[0]) && state.writeRoots.some(root => inside(root, canonical(argv[0])))
+  }
+  if (systemTool(binary, 'reg', options)) return argv.length === DOCUMENTS_KEY.length && argv.every((value, i) => value === DOCUMENTS_KEY[i])
+  return false
+}
+
 /** `--require "<this file>"`, forward slashes: NODE_OPTIONS unescapes backslashes inside quotes. */
 const REQUIRE_SELF = `--require "${__filename.split('\\').join('/')}"`
 
@@ -363,7 +423,8 @@ function fencedSpawner(name, original) {
     const ownTaskkill = process.platform === 'win32' && /^taskkill(?:\.exe)?$/i.test(String(binary))
       && values.length === 4 && values.some(value => String(value).toUpperCase() === '/T')
       && values.some(value => String(value).toUpperCase() === '/F') && pidAt >= 0 && state.children.has(Number(values[pidAt + 1]))
-    if (name === 'exec' || name === 'execSync' || options.shell || (!isOwnNode && !ownTaskkill)) {
+    const productionTool = (name === 'execFile' || name === 'execFileSync' || name === 'spawn' || name === 'spawnSync') && allowedWindowsTool(binary, values, options)
+    if (name === 'exec' || name === 'execSync' || options.shell || (!isOwnNode && !ownTaskkill && !productionTool)) {
       throw record('spawn', `${name}: unfenced executable ${binary}`)
     }
   }
@@ -498,6 +559,9 @@ function install(options) {
     logFile: options.logFile,
     root: options.root,
     writeRoots: (options.writeRoots || (options.root ? [options.root] : [])).map(canonical),
+    // Writable by this process only: never handed to children or workers
+    // (PARITY_FENCE_WRITE_ROOTS carries writeRoots alone).
+    ownWriteRoots: (options.ownWriteRoots || []).map(canonical),
     fds: new Map(),
     children: new Set(),
     ports: new Set((options.ports || []).map(Number)),

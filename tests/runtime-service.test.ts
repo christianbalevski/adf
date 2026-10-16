@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import Database from 'better-sqlite3'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -140,6 +141,74 @@ describe('RuntimeService', () => {
     // A client editing what it read saves over the install, not over the server.
     await runtime.setAgentConfig(ref.id, { ...after.config, description: 'edited' }, { baseRevision: after.revision })
     expect(workspace.getAgentConfig().mcp?.servers?.map((s) => s.name)).toContain('playwright')
+    await runtime.unloadAgent(ref.id)
+  })
+
+  it('a running agent\'s config read with no config write in between does no SQLite read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-config-cache-'))
+    const { filePath, agentId } = createTempAgent(dir, 'agent-1')
+    const runtime = new RuntimeService({
+      settings: { get: (key: string) => (key === 'reviewedAgents' ? [agentId] : undefined) },
+      providerFactory: () => new MockLLMProvider(),
+    })
+    const ref = await runtime.loadAgent(filePath)
+    type Workspace = { getAgentConfig(): { description?: string }; setAgentConfig(c: unknown): void; db: { getConfig(): unknown } }
+    const internals = runtime as unknown as {
+      resolveAgent(id: string): { agent: { workspace: Workspace } }
+      runningTarget(managed: unknown): { config: { description?: string } }
+    }
+    const managed = internals.resolveAgent(ref.id)
+    const workspace = managed.agent.workspace
+    const target = internals.runningTarget(managed)
+    void target.config // the first check reads the file once
+    const reads = vi.spyOn(workspace.db, 'getConfig')
+
+    for (let i = 0; i < 5; i++) void target.config
+    expect(reads).not.toHaveBeenCalled()
+
+    // A tool's own write (mcp_install, npm_install): the next read follows it, once.
+    workspace.setAgentConfig({ ...workspace.getAgentConfig(), description: 'written by a tool' })
+    reads.mockClear()
+    expect(target.config.description).toBe('written by a tool')
+    expect(target.config.description).toBe('written by a tool')
+    expect(reads).toHaveBeenCalledTimes(1)
+    reads.mockRestore()
+    await runtime.unloadAgent(ref.id)
+  })
+
+  it('a running agent\'s config read follows a write from another connection, with that content\'s revision', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-config-other-'))
+    const { filePath, agentId } = createTempAgent(dir, 'agent-1')
+    const runtime = new RuntimeService({
+      settings: { get: (key: string) => (key === 'reviewedAgents' ? [agentId] : undefined) },
+      providerFactory: () => new MockLLMProvider(),
+    })
+    const ref = await runtime.loadAgent(filePath)
+    const internals = runtime as unknown as {
+      resolveAgent(id: string): unknown
+      runningTarget(managed: unknown): { config: { description?: string } }
+    }
+    const target = internals.runningTarget(internals.resolveAgent(ref.id))
+    const before = runtime.getAgentConfig(ref.id)
+    void target.config
+
+    // Another process (the CLI, embedded Studio) writes the file through its own connection.
+    const other = new Database(filePath)
+    try {
+      const row = other.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string }
+      const config = { ...JSON.parse(row.config_json), description: 'written elsewhere' }
+      other.prepare('INSERT OR REPLACE INTO adf_config (id, config_json, updated_at) VALUES (1, ?, ?)').run(JSON.stringify(config), new Date().toISOString())
+    } finally { other.close() }
+
+    expect(target.config.description).toBe('written elsewhere')
+    const after = runtime.getAgentConfig(ref.id)
+    expect(after.config.description).toBe('written elsewhere')
+    expect(after.revision).not.toBe(before.revision)
+    // The revision is that of the content handed out: a save over it keeps the change.
+    await runtime.setAgentConfig(ref.id, { ...after.config, name: after.config.name }, { baseRevision: after.revision })
+    expect(runtime.getAgentConfig(ref.id).config.description).toBe('written elsewhere')
+    // A stale base is refused.
+    await expect(runtime.setAgentConfig(ref.id, before.config, { baseRevision: before.revision })).rejects.toThrow()
     await runtime.unloadAgent(ref.id)
   })
 

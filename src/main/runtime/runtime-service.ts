@@ -82,7 +82,7 @@ import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/s
 import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
 import { DocumentHost, type OpenDocument } from './document-host'
 import {
-  configRevision, currentResourceWriter, runAsApiWrite, documentRevision, fileRevision, fileRevisionKey, observeRevision,
+  configRevision, configRevisionOf, currentResourceWriter, runAsApiWrite, documentRevision, fileRevision, fileRevisionKey, observeRevision,
   existsAlready, staleRevision, staleRevisionMessage, type ResourceRevision,
 } from './resource-revisions'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -765,6 +765,8 @@ interface ManagedRuntimeAgent {
   display: BackgroundMappingState
   /** Reason the agent is degraded (e.g. locked credential envelopes), if any. */
   degraded?: string
+  /** The file's config stamp when `config` was last checked against it (syncManagedConfig). */
+  configSeen?: { writes: number; dataVersion: number }
 }
 
 /**
@@ -2405,8 +2407,13 @@ export class RuntimeService extends EventEmitter {
 
   getAgentConfig(agentId: string): { agentId: string; config: AgentConfig; revision: number } {
     const target = this.requireTarget(agentId)
+    if (target.managed) {
+      // One read: the revision is that of the content handed out, so a save
+      // with it as baseRevision never lands over a change it did not see.
+      const config = this.syncManagedConfig(target.managed, { reread: true })
+      return { agentId: target.id, config, revision: configRevisionOf(target.workspace, config).revision }
+    }
     const revision = configRevision(target.workspace).revision
-    if (target.managed) return { agentId: target.id, config: this.syncManagedConfig(target.managed), revision }
     // An open document's config is the file's (another handle may have written it).
     const doc = target.doc!
     doc.config = doc.workspace.getAgentConfig() as AgentConfig
@@ -4084,14 +4091,31 @@ export class RuntimeService extends EventEmitter {
 
   /**
    * A running agent's config as its file holds it. A tool that writes the
-   * file itself (mcp_install, mcp_uninstall) does not pass through
-   * onConfigChanged, so the cached copy can be behind the file: handed out
-   * with the file's revision, a client saved it back over the change (an
-   * installed MCP server missing from Studio, then gone from the file).
+   * file itself (mcp_install, mcp_uninstall, npm_install, npm_uninstall) does
+   * not pass through onConfigChanged, nor does another process writing the
+   * file (the CLI, embedded Studio), so the cached copy can be behind the
+   * file: handed out with the file's revision, a client saved it back over
+   * the change (an installed MCP server missing from Studio, then gone from
+   * the file). Those tools apply their own runtime effects (connect,
+   * disconnect, tool resync); only the cached copy follows here.
+   *
+   * Every `target.config` read of a running agent lands here, so the file is
+   * read only when its stamp moved: a config write through this connection
+   * (configWriteCount) or a commit by another one (`PRAGMA data_version`).
+   * An unchanged file costs two counter reads, no table read. `reread`
+   * reads it regardless (getAgentConfig, which hands out a revision too).
    */
-  private syncManagedConfig(managed: ManagedRuntimeAgent): AgentConfig {
-    const onDisk = managed.agent.workspace.getAgentConfig() as AgentConfig
+  private syncManagedConfig(managed: ManagedRuntimeAgent, opts: { reread?: boolean } = {}): AgentConfig {
+    const workspace = managed.agent.workspace
+    const dataVersion = workspace.dataVersion()
+    const seen = managed.configSeen
+    if (!opts.reread && seen && seen.writes === workspace.configWriteCount() && seen.dataVersion === dataVersion) return managed.config
+    const onDisk = workspace.getAgentConfig() as AgentConfig
     if (JSON.stringify(onDisk) !== JSON.stringify(managed.config)) managed.config = onDisk
+    // Counted after the read: a write the read itself made (getConfig's
+    // merges) is in `onDisk`. data_version is the one from before the read,
+    // so another connection's commit during it is read next time.
+    managed.configSeen = { writes: workspace.configWriteCount(), dataVersion }
     return managed.config
   }
 
