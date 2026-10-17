@@ -45,6 +45,8 @@ import { DaemonAppOAuthStore, daemonAppOAuthAccount, MCP_OAUTH_SETTINGS_KEY } fr
 import type { McpOAuthRecord } from '../services/mcp-oauth.types'
 import { OWNER_MNEMONIC_ACCOUNT, type SecretBackend } from '../services/owner-secret-store'
 import { settingsScope } from '../services/provider-key-store'
+import { DAEMON_TOKEN_FILENAME } from '../daemon/daemon-token'
+import { LOCAL_PROOF_FILENAME } from '../daemon/local-access'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import {
   serializeStudioRuntimeEntry,
@@ -315,6 +317,14 @@ export interface HandoverMarker {
   moved: SignIns
   /** The daemon's own sign-ins before the first switch: they never move to Studio. */
   daemonOwn: SignIns
+  /**
+   * The daemon's MCP store could not be read when `daemonOwn` was recorded
+   * (no keychain opened, or locked) while a daemon had already run on these
+   * settings: its own MCP sign-ins are unknown, so only what Studio moved
+   * (`moved.mcpServers`) moves back. Without such a daemon the store cannot
+   * exist, and its own sign-ins are known to be none.
+   */
+  daemonOwnMcpUnknown?: boolean
   /** Set when the marker was missing and Studio's runtime entry was found: what was moved is unknown. */
   reconstructed?: boolean
 }
@@ -325,6 +335,32 @@ export type MarkerState =
   | { state: 'ok'; marker: HandoverMarker }
 
 const emptySignIns = (): SignIns => ({ sessions: {}, mcpServers: [] })
+
+/** Whether the daemon's own MCP sign-ins are unknown (`daemonOwnMcpUnknown`). */
+function daemonOwnMcpUnknown(marker: HandoverMarker | null): boolean {
+  return marker?.daemonOwnMcpUnknown === true
+}
+
+/**
+ * A daemon has run on these settings: it writes `daemon-token` (unless
+ * ADF_DAEMON_TOKEN is set) and `daemon-local-proof[-port]` beside the
+ * settings file at every start. Without either, its MCP store cannot exist.
+ */
+async function daemonRanOnSettings(settingsPath: string): Promise<boolean> {
+  try {
+    return (await fsp.readdir(dirname(settingsPath))).some((name) => name === DAEMON_TOKEN_FILENAME || name.startsWith(LOCAL_PROOF_FILENAME))
+  } catch {
+    return false
+  }
+}
+
+/** The daemon's MCP sign-ins that move back to Studio: what Studio moved, and, when the daemon's own are known, every other one. */
+function mcpUrlsToStudio(urls: string[], marker: HandoverMarker | null): string[] {
+  const own = new Set(marker?.daemonOwn.mcpServers ?? [])
+  const movedBefore = new Set(marker?.moved.mcpServers ?? [])
+  const unknown = daemonOwnMcpUnknown(marker)
+  return urls.filter((url) => movedBefore.has(url) || (!unknown && !own.has(url)))
+}
 
 export function handoverMarkerPath(userDataDir: string): string {
   return join(userDataDir, HANDOVER_MARKER_FILE)
@@ -361,7 +397,7 @@ export async function readHandoverMarker(userDataDir: string): Promise<MarkerSta
   const moved = parseSignIns(data.moved)
   const daemonOwn = parseSignIns(data.daemonOwn)
   if (data.v !== 2 || !moved || !daemonOwn || typeof data.keychainUsed !== 'boolean') return { state: 'corrupt', detail: `${path} is not a handover record this Studio reads` }
-  return { state: 'ok', marker: { v: 2, holder: data.holder, updatedAt: String(data.updatedAt ?? ''), keychainUsed: data.keychainUsed, moved, daemonOwn, ...(data.reconstructed === true ? { reconstructed: true } : {}) } }
+  return { state: 'ok', marker: { v: 2, holder: data.holder, updatedAt: String(data.updatedAt ?? ''), keychainUsed: data.keychainUsed, moved, daemonOwn, ...(data.daemonOwnMcpUnknown === true ? { daemonOwnMcpUnknown: true } : {}), ...(data.reconstructed === true ? { reconstructed: true } : {}) } }
 }
 
 async function writeMarker(userDataDir: string, marker: HandoverMarker): Promise<void> {
@@ -664,11 +700,12 @@ async function moveMcpOAuth(toDaemon: boolean, deps: HandoverDeps, marker: Hando
   if (!store.available()) return result('kept', 'the daemon\'s secret store is locked; MCP sign-ins stay with the daemon and Studio retries at the next start', true)
   const daemonBlob = store.exportBlob()
   // What Studio moved, and what was signed in while it ran in local mode; never the daemon's own earlier sign-ins.
-  const own = new Set(marker?.daemonOwn.mcpServers ?? [])
-  const movedBefore = new Set(marker?.moved.mcpServers ?? [])
-  const urls = Object.keys(daemonBlob).filter((url) => movedBefore.has(url) || !own.has(url))
+  // When those are unknown (recorded without the daemon's store), only what Studio moved.
+  const urls = mcpUrlsToStudio(Object.keys(daemonBlob), marker)
   const ownKept = Object.keys(daemonBlob).length - urls.length
-  const ownNote = ownKept > 0 ? `; ${ownKept} sign-in(s) the daemon had before the switch stay with it` : ''
+  const ownNote = ownKept === 0 ? ''
+    : daemonOwnMcpUnknown(marker) ? `; ${ownKept} sign-in(s) Studio did not move stay with the daemon (the switch to local could not read the daemon's store, so Studio cannot tell its own sign-ins from the daemon's; sign in again in Studio where needed)`
+    : `; ${ownKept} sign-in(s) the daemon had before the switch stay with it`
   if (urls.length === 0) return result('unchanged', `no app-level MCP sign-ins of Studio's in the daemon${ownNote}`)
   if (!deps.studioSecrets.available()) return result('kept', 'OS secure storage is not available to Studio, and MCP tokens are never stored unencrypted; they stay with the daemon', true)
   // basic_text: moved back as embedded Studio stores them (mcp-oauth-store), with a note; tracker §6 has the store-wide fix.
@@ -824,16 +861,22 @@ export async function handoverNeedsKeychain(target: HandoverTarget, userDataDir:
   return !!settings && ['ownerMnemonic', 'runtimePrivateKey', MCP_OAUTH_SETTINGS_KEY].some((key) => settings[key] !== undefined)
 }
 
-/** The daemon's sign-ins now, read before the first switch moves anything (they stay the daemon's). */
-async function daemonSignIns(deps: HandoverDeps): Promise<SignIns> {
+/** The daemon's sign-ins now, read before the first switch moves anything (they stay the daemon's); MCP ones unknown without its store. */
+async function daemonSignIns(deps: HandoverDeps): Promise<Pick<HandoverMarker, 'daemonOwn' | 'daemonOwnMcpUnknown'>> {
   const own = emptySignIns()
   for (const sub of SUBSCRIPTIONS) {
     const { tokens } = await readDaemonTokens(deps, sub)
     if (tokens?.account_id) own.sessions[sub.id] = tokens.account_id
   }
   const store = daemonOAuthStore(deps)
-  if (store?.available()) own.mcpServers = store.listServerUrls()
-  return own
+  if (store?.available()) {
+    own.mcpServers = store.listServerUrls()
+    return { daemonOwn: own }
+  }
+  // Not readable here: unknown only when a daemon may have written it (a fresh install has no daemon store).
+  if (!await daemonRanOnSettings(deps.settingsPath)) return { daemonOwn: own }
+  deps.log?.(`[Handover] The daemon's MCP sign-ins cannot be read now (${store ? 'its secret store is locked' : deps.daemonSecretsUnavailable ?? 'no keychain'}) and a daemon has run on these settings: on the way back only the MCP sign-ins Studio moves now go back to Studio`)
+  return { daemonOwn: own, daemonOwnMcpUnknown: true }
 }
 
 /**
@@ -896,9 +939,7 @@ export async function planHandover(target: HandoverTarget, deps: HandoverDeps): 
   } else {
     const store = daemonOAuthStore(deps)
     if (store?.available()) {
-      const own = new Set(marker?.daemonOwn.mcpServers ?? [])
-      const moved = new Set(marker?.moved.mcpServers ?? [])
-      const n = store.listServerUrls().filter((url) => moved.has(url) || !own.has(url)).length
+      const n = mcpUrlsToStudio(store.listServerUrls(), marker).length
       if (n > 0) items.push({ id: 'mcp-oauth', label: 'MCP sign-ins', detail: `${n} server sign-in(s) move back into Studio` })
     }
     if (hasStudioRuntimeEntry(deps)) items.push({ id: 'runtime-identity', label: 'Runtime identity', detail: 'the keychain copy of Studio\'s runtime key is deleted' })
@@ -998,9 +1039,10 @@ type Runner = <T extends { item: HandoverItemResult }>(id: HandoverItemId, label
 
 async function toLocal(deps: HandoverDeps, existing: HandoverMarker | null, run: Runner): Promise<void> {
   // Recorded first, with the daemon's own sign-ins as they are before anything moves: a crash from here on resumes in either direction.
+  // A record kept from a launch without a keychain keeps its daemonOwn unknown (the flag survives keychainUsed turning true).
   let marker: HandoverMarker = existing?.holder === 'daemon'
-    ? { ...existing, keychainUsed: existing.keychainUsed || !!deps.daemonSecrets }
-    : { v: 2, holder: 'daemon', updatedAt: '', keychainUsed: !!deps.daemonSecrets, moved: emptySignIns(), daemonOwn: await daemonSignIns(deps) }
+    ? { ...existing, keychainUsed: existing.keychainUsed || !!deps.daemonSecrets, ...(daemonOwnMcpUnknown(existing) ? { daemonOwnMcpUnknown: true } : {}) }
+    : { v: 2, holder: 'daemon', updatedAt: '', keychainUsed: !!deps.daemonSecrets, moved: emptySignIns(), ...await daemonSignIns(deps) }
   await writeMarker(deps.userDataDir, marker)
   await run('owner-phrase', 'Owner phrase', () => mirrorOwnerPhrase(deps).then((item) => ({ item })))
   await run('runtime-identity', 'Runtime identity', async () => {

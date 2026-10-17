@@ -31,7 +31,7 @@ import {
   type DaemonPaths,
 } from '../cli/daemon-control'
 import { daemonTokenPath } from '../daemon/daemon-token'
-import { LOCAL_PROOF_HEADER, readLocalProof } from '../daemon/local-access'
+import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../daemon/local-access'
 import {
   CLIENT_API_VERSION,
   DAEMON_STARTED_BY_ENV,
@@ -281,9 +281,11 @@ export class DaemonProcessController {
   private async request(path: string, init: RequestInit = {}, timeoutMs = 3000): Promise<Response> {
     await this.verifyListener()
     const token = await this.token()
+    // Local-only routes (shutdown, client sessions, reload-credentials) need the local proof behind a proxy; no other route gets it.
+    const proof = isLocalOnlyRoute(path) ? readLocalProof(this.paths.dataDir, this.port) : null
     return this.fetchImpl(`${this.url}${path}`, {
       ...init,
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(init.headers as Record<string, string> | undefined) },
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(proof ? { [LOCAL_PROOF_HEADER]: proof } : {}), ...(init.headers as Record<string, string> | undefined) },
       signal: AbortSignal.timeout(timeoutMs),
     })
   }
@@ -538,8 +540,7 @@ export class DaemonProcessController {
       const found = await this.detect()
       if (found.state !== 'running') return 'no ADF daemon runs on these settings'
       if (decideAttach(found.info, { settingsPath: this.config.settingsPath }).kind === 'settings-mismatch') return `the ADF daemon on ${this.url} uses other settings`
-      const proof = readLocalProof(this.paths.dataDir, this.port)
-      const res = await this.request('/client/reload-credentials', { method: 'POST', headers: proof ? { [LOCAL_PROOF_HEADER]: proof } : {} }, 10_000)
+      const res = await this.request('/client/reload-credentials', { method: 'POST' }, 10_000)
       if (!res.ok) return `the ADF daemon pid ${found.info.pid} answered HTTP ${res.status}`
       const body = await res.json() as { runtime?: { state?: string } | null }
       return `the ADF daemon pid ${found.info.pid} reloaded its credential stores (runtime identity ${body.runtime?.state ?? 'n/a'})`

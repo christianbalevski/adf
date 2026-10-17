@@ -6,7 +6,8 @@ import { app, BrowserWindow, nativeTheme } from 'electron'
  * when that part has to wait on the user: a boot dialog gets it as a visible
  * parent (a sheet on macOS, which cannot open behind other apps and does not
  * block the main thread), and a slow keychain read says what it waits on.
- * The main window closes it once that window is shown.
+ * The main window closes it once that window is shown, or once the dialog
+ * open on it is answered.
  */
 
 let bootWindow: BrowserWindow | null = null
@@ -53,8 +54,73 @@ export function showBootWindow(status: string): BrowserWindow {
   return bootWindow
 }
 
-/** Close the boot window, if one is open (the main window is shown). */
+/** Dialogs open on the boot window; it is not closed under them. */
+let dialogsOpen = 0
+let closeWhenAnswered = false
+/** One per open dialog: aborting it dismisses the dialog as Cancel. */
+const dialogAborts = new Set<AbortController>()
+
+/** A boot dialog was dismissed because the user closed Studio (dismissBootDialogs): no answer, and nothing may act on one. */
+export class BootDialogDismissedError extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'BootDialogDismissedError'
+  }
+}
+
+export interface BootDialogHold {
+  release(): void
+  /** Pass to the dialog: aborted when the user closes Studio while it is open. */
+  signal: AbortSignal
+}
+
+/**
+ * A dialog is open on the boot window: it stays open until `release` runs.
+ * A boot dialog can run alongside main window creation (the daemon version
+ * mismatch); closing its parent would end a macOS sheet with no button,
+ * read as the cancel answer.
+ */
+export function holdBootWindow(): BootDialogHold {
+  dialogsOpen++
+  const abort = new AbortController()
+  dialogAborts.add(abort)
+  let released = false
+  return {
+    signal: abort.signal,
+    release: () => {
+      if (released) return
+      released = true
+      dialogAborts.delete(abort)
+      dialogsOpen--
+      if (dialogsOpen === 0 && closeWhenAnswered) {
+        closeWhenAnswered = false
+        console.log('[App] The boot dialog was answered; closing the boot window')
+        closeBootWindow()
+      }
+    },
+  }
+}
+
+/**
+ * The user closed Studio's main window while a boot dialog is open: every
+ * such dialog is dismissed as Cancel (its caller gets
+ * BootDialogDismissedError) and the boot window closes once they settle,
+ * so the last window goes and Studio quits as before.
+ */
+export function dismissBootDialogs(reason: string): void {
+  if (dialogAborts.size === 0) return
+  console.log(`[App] ${reason}: dismissing ${dialogAborts.size} open boot dialog(s) as Cancel; the boot window closes`)
+  closeWhenAnswered = true
+  for (const abort of [...dialogAborts]) abort.abort(new BootDialogDismissedError(reason))
+}
+
+/** Close the boot window, if one is open (the main window is shown); after its dialog is answered when one is open. */
 export function closeBootWindow(): void {
+  if (dialogsOpen > 0) {
+    if (!closeWhenAnswered && bootWindow && !bootWindow.isDestroyed()) console.log('[App] The main window is shown; the boot window stays open until its dialog is answered')
+    closeWhenAnswered = true
+    return
+  }
   const win = bootWindow
   bootWindow = null
   if (win && !win.isDestroyed()) win.close()

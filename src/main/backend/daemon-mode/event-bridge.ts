@@ -805,10 +805,19 @@ export class EventBridge {
 
     await step('running agents', async () => {
       const summaries = await client.request<AgentSummary[]>('GET', '/agents')
+      // A status read that fails other than 404 (a timeout, a 5xx) says
+      // nothing about the agent: it is kept as it is, as recheckTurns does.
+      const unknown = new Set<string>()
       const statuses = (await Promise.all(summaries.map((s) =>
-        client.request<AgentStatus>('GET', `/agents/${encodeURIComponent(s.id)}/status`).catch(() => null))))
+        client.request<AgentStatus>('GET', `/agents/${encodeURIComponent(s.id)}/status`).catch((err) => {
+          if ((err as { status?: unknown }).status !== 404) {
+            unknown.add(s.id)
+            this.log.warn(`[Backend] Could not read the state of ${s.filePath ?? s.id} during the resync; it is kept as it was: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          return null
+        }))))
         .filter((s): s is AgentStatus => !!s && !!s.filePath)
-      const live = new Set(statuses.map((s) => s.id))
+      const live = new Set([...statuses.map((s) => s.id), ...unknown])
       const ts = this.now()
       // Agents that died during the gap: the renderer still lists them.
       for (const [id, agent] of [...this.agents]) {
@@ -824,7 +833,7 @@ export class EventBridge {
       for (const w of [...this.waiters]) {
         if (!w.lenient) continue
         const status = statuses.find((s) => s.id === w.agentId)
-        if (!status) w.resolve('stopped')
+        if (!status) { if (!unknown.has(w.agentId)) w.resolve('stopped') }
         else if (w.loop === 'main' && toDisplayState(String(status.runtimeState)) !== 'active') w.resolve('gap')
       }
       for (const s of statuses) {

@@ -579,6 +579,30 @@ describe('event bridge: focus and lifecycle', () => {
     expect(bridge.runningAgents()).toEqual([])
   })
 
+  it('resync keeps an agent whose status read failed with a 5xx; only a 404 stops it (review 4300792029)', async () => {
+    const { session, bridge, batched, pushes, daemon } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    started(bridge, AGENT_1, FILE_1)
+    started(bridge, AGENT_2, FILE_2)
+    batched.length = 0
+    pushes.length = 0
+    daemon.routes.set('GET /agents', () => [{ id: AGENT_1, filePath: FILE_1, name: 'agent-1', autostart: false }, { id: AGENT_2, filePath: FILE_2, name: 'agent-2', autostart: false }])
+    daemon.routes.set(`GET /agents/${AGENT_1}/status`, () => ({ status: 503, body: { error: 'busy', message: 'The daemon is busy' } }))
+    daemon.routes.set(`GET /agents/${AGENT_2}/status`, () => ({ status: 500, body: { error: 'internal', message: 'boom' } }))
+    daemon.routes.set('GET /tracked-dirs', () => ({ maxDepth: 5, directories: [] }))
+    daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
+    const wait = bridge.waitForTurn(AGENT_2, 'turn-x')
+    let outcome: string | undefined
+    void wait.then((o) => { outcome = o })
+    await bridge.handleGap({ reason: 'epoch_changed' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(batched.filter((e) => e.type === 'agent_stopped')).toEqual([])
+    expect(pushes.filter((p) => p.channel === IPC.AGENT_EVENT && (p.args[0] as { payload?: { state?: string } })?.payload?.state === 'stopped')).toEqual([])
+    expect(bridge.runningAgents().map((a) => a.agentId).sort()).toEqual([AGENT_1, AGENT_2].sort())
+    expect(outcome).toBeUndefined()
+    bridge.failTurns('stopped')
+  })
+
   it('resync does not replace a chat that is still streaming', async () => {
     const { session, bridge, pushes, daemon } = setup()
     daemon.routes.set('GET /agents', () => [{ id: AGENT_1, filePath: FILE_1, name: 'agent-1', autostart: false }])

@@ -250,6 +250,30 @@ describe('Settings → Backend store', () => {
     expect(restarted).toEqual(['local'])
   })
 
+  it.each(['env', 'session'] as const)('Cancel Switch in a launch the %s source made embedded writes back the mode the file had (review 4300792088)', async (source) => {
+    let waiting: 'remote' | null = null
+    const path = tempConfigPath()
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'local' }))
+    const rec = recordingLog()
+    const boot = source === 'env'
+      ? resolveBootBackend(path, { ADF_STUDIO_BACKEND: 'embedded' }, rec.log)
+      : { ...resolveBootBackend(path, {}, rec.log), mode: 'embedded' as const, source: 'session' as const, sessionReason: 'daemon version mismatch' }
+    expect(boot).toMatchObject({ mode: 'embedded', source, config: { mode: 'local' } })
+    const s = createBackendSettingsStore({
+      boot, codec: fakeCodec(), log: rec.log,
+      confirmModeSwitch: async () => true,
+      applyModeSwitch: (target) => { waiting = target as 'remote'; return 'Studio restarts once the turns in flight finish (agent-1).' },
+      pendingSwitch: () => (waiting ? { target: waiting, waitingFor: ['agent-1'], gaveUp: false } : null),
+      cancelSwitch: () => { const t = waiting; waiting = null; return t },
+    })
+    expect(await s.set({ remoteUrl: 'https://daemon.example.com', remoteToken: TOKEN })).toMatchObject({ ok: true })
+    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: true })
+    expect(JSON.parse(readFileSync(path, 'utf-8')).mode).toBe('remote')
+    expect(await s.set({ switchAction: 'cancel' })).toMatchObject({ ok: true })
+    expect(JSON.parse(readFileSync(path, 'utf-8')).mode).toBe('local')
+    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'local', source: 'file' })
+  })
+
   it('choosing the running mode while a switch waits cancels that switch, as the latest choice (W5-F)', async () => {
     let waiting: 'local' | null = null
     const path = embeddedConfigPath()

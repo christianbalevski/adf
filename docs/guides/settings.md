@@ -463,10 +463,6 @@ ADF Studio monitors directories for `.adf` files. When a new file appears in a t
 - **Start all** — Start all agents in a directory
 - **Stop all** — Stop all agents in a directory
 
-## Backend
-
-**Settings → Backend** chooses where agents run: **This computer** (a background service on this computer, the ADF daemon; the default), **Remote computer** (the ADF daemon on another computer, by URL and token) or **Inside Studio (legacy)**. A change restarts Studio. The page also shows the daemon Studio uses (state, pid, who started it; URL and version under **Details**), the setting **Keep the daemon running when Studio quits**, and the remote computer's URL and token with **Test connection**. See [Studio backend](studio-backend.md).
-
 ## Application Settings
 
 ### File Associations
@@ -516,7 +512,7 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Backend
 
-**Settings → Backend** chooses where agents run:
+**Settings → Backend → Run agents in** chooses where agents run. A change shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend](studio-backend.md).
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
@@ -524,15 +520,21 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 | Remote computer | `remote` | The ADF daemon on another computer, reached by URL and token. See [Remote daemon](../cli/remote-daemon.md). |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
 
-Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer and saves that choice.
+Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
+
+The page also shows the daemon Studio uses (state, pid, who started it; URL and version under **Details**).
 
 - **Keep the daemon running when Studio quits** (`keepDaemonRunning`, default off) applies to This computer. Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it.
-- **Daemon URL** (Remote computer) must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` URL needs the confirmation that the token is sent unencrypted.
+- **Daemon URL** (Remote computer) must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` URL needs the confirmation that the token is sent unencrypted. **Test connection** checks the URL and token.
 - **Token** is encrypted with the OS keychain (stored as `safe:…`), sent only to the URL's origin, and not shown again after you save it. Changing the URL to another origin removes the saved token.
 
-### Run agents inside Studio whatever the file says
+### Go back to running agents inside Studio
 
-If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Settings → Backend shows that the variable is set.
+Choose **Settings → Backend → Inside Studio (legacy)**. This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+
+### Run agents inside Studio for one launch
+
+If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Backend shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Backend as above.
 
 ```powershell
 # Windows (PowerShell)
@@ -544,7 +546,7 @@ $env:ADF_STUDIO_BACKEND = 'embedded'; & "$env:LOCALAPPDATA\Programs\ADF Studio\A
 ADF_STUDIO_BACKEND=embedded "/Applications/ADF Studio.app/Contents/MacOS/ADF Studio"
 ```
 
-On Linux, set the variable in the terminal you start Studio from. The variable also accepts `local` and `remote`. Deleting `studio-backend.json` returns Studio to the default, This computer.
+On Linux, set the variable in the terminal you start Studio from. The variable also accepts `local` and `remote`.
 
 ## Keyboard Shortcuts
 

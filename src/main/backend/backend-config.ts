@@ -523,6 +523,12 @@ export function createBackendSettingsStore(deps: {
   let queue: Promise<unknown> = Promise.resolve()
   /** Fields the boot read ignored: the first write leaves them out of the file, and that save says so. */
   let droppedUnwritten = [...(deps.boot.dropped ?? [])]
+  /**
+   * The file's mode before the first switch this run saved: Cancel Switch
+   * writes it back. Not the running mode, which ADF_STUDIO_BACKEND or a
+   * one-session restart may have chosen without the file.
+   */
+  let modeBeforeSwitch: StudioBackendMode | null = null
 
   const view = (): BackendSettingsView => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null, deps.pendingSwitch?.() ?? null)
 
@@ -544,9 +550,10 @@ export function createBackendSettingsStore(deps: {
       if (switchAction !== 'cancel') return fail('invalid_patch', 'Unknown switch action.') as BackendSettingsSaveResult
       const target = deps.cancelSwitch?.() ?? null
       if (!target) return { ok: true, view: view(), notices: ['No switch is waiting.'] }
-      // The waiting switch had saved its mode: the running mode is saved again.
-      log.log(`[Backend] Switch to ${target} cancelled; saving ${deps.boot.mode} as the mode again`)
-      patch = { ...rest, mode: deps.boot.mode }
+      // The waiting switch had saved its mode: the mode the file had before it is saved again.
+      const restore = modeBeforeSwitch ?? deps.boot.config.mode
+      log.log(`[Backend] Switch to ${target} cancelled; saving ${restore} as the mode again${restore !== deps.boot.mode ? ` (this launch runs ${deps.boot.mode}: ${deps.boot.source === 'env' ? 'ADF_STUDIO_BACKEND' : 'for this session only'})` : ''}`)
+      patch = { ...rest, mode: restore }
     }
     const previous = current
     const result = applyBackendPatch(current, patch, { codec: deps.codec })
@@ -569,6 +576,8 @@ export function createBackendSettingsStore(deps: {
         log.warn(`[Backend] Could not write ${deps.boot.configPath}: ${(err as Error)?.message ?? 'unknown error'}`)
         return { ok: false, code: 'write_failed', error: `Could not save ${deps.boot.configPath}.` }
       }
+      if (switching) modeBeforeSwitch ??= previous.mode
+      else if (switchAction === 'cancel' || result.config.mode !== previous.mode) modeBeforeSwitch = null
       current = result.config
       droppedUnwritten = []
       log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
