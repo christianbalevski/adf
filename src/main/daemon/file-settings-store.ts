@@ -156,6 +156,8 @@ export class FileSettingsStore implements ProviderSettingsStore {
   }
 
   delete(key: string): void {
+    // Removing every provider removes their stored keys too (sealProviderKeys).
+    if (key === 'providers') this.sealProviderKeys([])
     delete this.data[key]
     this.save([key])
   }
@@ -189,47 +191,57 @@ export class FileSettingsStore implements ProviderSettingsStore {
   /**
    * A write never puts a secret-store provider's key in the file: a key that
    * arrives (echoed back from a read, or a new one) goes to the vault and the
-   * entry keeps an empty apiKey. A secret-store entry written without a key
-   * whose `type` or `baseUrl` changed loses its vault key (logged): withVaultKey
-   * fills the key by id, and it must never reach an endpoint it was not
-   * entered for (W5-D1). While the vault is locked that key can be neither
-   * read nor removed, so such a change is refused (ProviderKeyVaultLockedError)
-   * and nothing is written.
+   * entry keeps an empty apiKey. withVaultKey fills the key by id, so the
+   * stored key must never reach an endpoint it was not entered for (W5-D1):
+   * it is removed (logged) when its entry's `type` or `baseUrl` changes without
+   * a new key, when the entry stops keeping its key in the secret store, and
+   * when the entry is removed. While the vault is locked a key can be neither
+   * read, saved nor removed, so any of those changes, and a new key for a
+   * secret-store entry, is refused (ProviderKeyVaultLockedError) and nothing
+   * is written. An entry with no stored key can still be set up.
    */
   private sealProviderKeys(value: unknown): unknown {
     if (!Array.isArray(value)) return value
     const before = new Map(((this.data.providers as ProviderConfig[] | undefined) ?? []).filter(p => p && typeof p === 'object').map(p => [p.id, p]))
-    const endpointChanged = (provider: ProviderConfig): boolean => {
-      if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || provider.apiKey || !this.providerKeys) return false
-      const old = before.get(provider.id)
-      return !!old && ((old.baseUrl ?? '') !== (provider.baseUrl ?? '') || (old.type ?? '') !== (provider.type ?? ''))
+    const after = new Map((value as unknown[]).filter((p): p is ProviderConfig => !!p && typeof p === 'object').map(p => [p.id, p]))
+    const sealed = (p: ProviderConfig | undefined): boolean => p?.apiKeyStorage === SECRET_STORE_KEY_STORAGE
+    // Why an earlier secret-store entry's stored key may no longer serve it (null: it still does).
+    const unbound = (old: ProviderConfig): string | null => {
+      const next = after.get(old.id)
+      if (!next) return 'was removed'
+      if (!sealed(next)) return 'no longer keeps its key in the secret store'
+      if (!next.apiKey && ((old.baseUrl ?? '') !== (next.baseUrl ?? '') || (old.type ?? '') !== (next.type ?? ''))) return 'changed its address or type without a new key'
+      return null
     }
-    if (this.providerKeys && !this.providerKeys.available()) {
-      const changed = value.find(entry => !!entry && typeof entry === 'object' && endpointChanged(entry as ProviderConfig)) as ProviderConfig | undefined
-      if (changed) {
-        console.warn(`[FileSettingsStore] Provider "${changed.id}" changed its address or type while the secret store is locked: refused (its stored key could not be removed).`)
-        throw new ProviderKeyVaultLockedError(`The daemon secret store is locked, so the address or type of provider "${changed.name || changed.id}" cannot change: its stored API key could not be removed first. Unlock the owner identity, then save again.`)
+    const keys = this.providerKeys
+    if (keys && !keys.available()) {
+      for (const old of before.values()) {
+        const next = after.get(old.id)
+        if (sealed(old) && (!next || !sealed(next) || (old.baseUrl ?? '') !== (next.baseUrl ?? '') || (old.type ?? '') !== (next.type ?? ''))) this.refuseLocked(next ?? old)
+      }
+      for (const next of after.values()) if (sealed(next) && next.apiKey) this.refuseLocked(next)
+    } else if (keys) {
+      for (const old of before.values()) {
+        const why = sealed(old) ? unbound(old) : null
+        if (why && keys.get(old.id) !== null) {
+          keys.delete(old.id)
+          console.warn(`[FileSettingsStore] Provider "${old.id}" ${why}: its stored key was removed, so it is never sent to another endpoint. Enter the key again.`)
+        }
       }
     }
     return value.map(entry => {
       if (!entry || typeof entry !== 'object') return entry
       const provider = entry as ProviderConfig
-      const keys = this.providerKeys
-      if (keys && endpointChanged(provider)) {
-        if (keys.get(provider.id) !== null) {
-          keys.delete(provider.id)
-          console.warn(`[FileSettingsStore] Provider "${provider.id}" changed its address or type without a new key: its stored key was removed, so it is never sent to the new endpoint. Enter the key again.`)
-        }
-      }
-      if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || !provider.apiKey) return entry
-      const vault = this.providerKeys
-      if (vault?.available()) {
-        if (vault.get(provider.id) !== provider.apiKey) vault.set(provider.id, provider.apiKey)
-      } else {
-        console.error(`[FileSettingsStore] Provider "${provider.id}" keeps its key in the secret store, which is locked: the key was not saved.`)
-      }
+      if (!sealed(provider) || !provider.apiKey) return entry
+      if (!keys) console.error(`[FileSettingsStore] Provider "${provider.id}" keeps its key in the secret store, which this daemon does not have: the key was not saved.`)
+      else if (keys.get(provider.id) !== provider.apiKey) keys.set(provider.id, provider.apiKey)
       return { ...provider, apiKey: '' }
     })
+  }
+
+  private refuseLocked(provider: ProviderConfig): never {
+    console.warn(`[FileSettingsStore] Provider "${provider.id}": a change to its address, type, key storage or API key was refused while the secret store is locked.`)
+    throw new ProviderKeyVaultLockedError(`The daemon secret store is locked, so provider "${provider.name || provider.id}" cannot change its address, type, key storage or API key now: its stored key can be neither saved nor removed. Unlock the owner identity, then save again.`)
   }
 
   /**

@@ -155,13 +155,49 @@ describe('POST /runtime/providers', () => {
         expect(() => settings.update({ providers: [{ ...echoed[0], ...change }] })).toThrow(/locked/)
       }
       expect(settings.get('theme')).not.toBe('dark') // a refused PATCH writes no key
-      // Other edits still save while locked.
+      // A key sent with the change (junk or real), a re-entered key, a storage switch and a removal are refused too: never dropped silently.
+      for (const providers of [
+        [{ ...echoed[0], baseUrl: 'https://attacker.example/v1', apiKey: 'junk' }],
+        [{ ...echoed[0], apiKey: 'sk-re-entered-key-0001' }],
+        [{ ...echoed[0], apiKeyStorage: undefined, apiKey: '' }],
+        [],
+      ]) {
+        const res = await server.inject({ method: 'PATCH', url: '/settings', payload: { providers } })
+        expect(res.statusCode).toBe(409)
+        expect(res.json()).toMatchObject({ code: 'secret_store_locked' })
+      }
+      // Other edits still save while locked, and a new provider without a key can be set up.
       expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }] } })).statusCode).toBe(200)
+      const local = { id: 'custom:local', type: 'openai-compatible', name: 'Local', baseUrl: 'http://localhost:11434/v1', apiKey: '', apiKeyStorage: 'secret-store' }
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }, local] } })).statusCode).toBe(200)
     } finally {
       warn.mockRestore()
     }
     unlocked = true
     expect(settings.getProvider(made.id)).toMatchObject({ name: 'renamed', baseUrl: 'https://llm.example.com/v1', type: 'openai-compatible', apiKey: KEY })
+  })
+
+  it('a stored key never follows its entry out of the secret store and back to a new address (W5-D1)', async () => {
+    const { server, settings, vault } = setup()
+    const made = (await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'openai-compatible', name: 'agent-1 LLM', preset: 'custom', baseUrl: 'https://llm.example.com/v1', apiKey: KEY } })).json().provider
+    const echoed = (await server.inject({ method: 'GET', url: '/settings/providers' })).json().value as Array<Record<string, unknown>>
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Out of the secret store with a new address, then back.
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], apiKeyStorage: undefined, apiKey: '', baseUrl: 'https://attacker.example/v1' }] } })).statusCode).toBe(200)
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], apiKey: '', baseUrl: 'https://attacker.example/v1' }] } })).statusCode).toBe(200)
+      expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://attacker.example/v1', apiKey: '' })
+      expect(vault.values.has(made.id)).toBe(false)
+
+      // Removed, then added again under the same id.
+      settings.update({ providers: [{ ...echoed[0], apiKey: KEY }] })
+      expect(vault.values.get(made.id)).toBe(KEY)
+      settings.update({ providers: [] })
+      settings.update({ providers: [{ ...echoed[0], apiKey: '', baseUrl: 'https://attacker.example/v1' }] })
+      expect(settings.getProvider(made.id)?.apiKey).toBe('')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('refuses while the secret store is locked, subscriptions, and missing keys or URLs', async () => {
