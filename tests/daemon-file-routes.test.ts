@@ -479,6 +479,25 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
     expect((await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: dest } })).json().code).toBe('name_taken')
   })
 
+  it('save-as with overwrite refuses a destination open here as a document (409 document_open), leaving it as it was', async () => {
+    const root = tempDir('adf-files-')
+    const a = seedAgent(root, 'agent-1')
+    const b = seedAgent(root, 'agent-2')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    await runtime.openDocument(b.filePath, { holder: '00000000-0000-4000-8000-000000000001' })
+    try {
+      const res = await server.inject({ method: 'POST', url: '/files/save-as', payload: { path: a.filePath, destPath: b.filePath, overwrite: true } })
+      expect(res.statusCode).toBe(409)
+      expect(res.json().code).toBe('document_open')
+      expect(runtime.getAgentConfig(b.id).config.name).toBe('agent-2')
+      runtime.closeDocument(b.filePath, 'released')
+      const ws = AdfWorkspace.open(b.filePath)
+      try { expect(ws.getAgentConfig().id).toBe(b.id) } finally { ws.close() }
+    } finally {
+      runtime.closeDocument(b.filePath, 'released')
+    }
+  })
+
   it('imports an uploaded .adf into a tracked folder only, unreviewed, with name rules', async () => {
     const root = tempDir('adf-files-')
     const source = seedAgent(tempDir('adf-src-'), 'agent-1')

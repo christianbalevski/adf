@@ -28,11 +28,11 @@ export function ProviderSetupDialog() {
   const agentProvider = useAgentStore((s) => s.config?.model?.provider)
 
   const list = useOwnedProviderList()
-  const { providers, setProviders, defaultProviderId, setDefaultProviderId, load, flushSave } = list
+  const { providers, setProviders, defaultProviderId, setDefaultProviderId, load, flushSave, saveFailure } = list
   const [error, setError] = useState<string | null>(null)
   const addedIdRef = useRef<string | null>(null)
 
-  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave })
+  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure })
   const { openPicker, closeModal, pick, remove } = m
 
   // Fresh sheet for every request: read the current list, then open the picker.

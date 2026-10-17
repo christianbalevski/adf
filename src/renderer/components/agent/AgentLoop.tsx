@@ -6,8 +6,8 @@ import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../st
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
-import { startForegroundAgent } from '../../utils/start-agent'
-import { queueOwnerMessage, sendOwnerMessage, sendQueuedMessages } from '../../utils/queued-delivery'
+import { sendQueuedMessages } from '../../utils/queued-delivery'
+import { ATTACHMENT_ONLY_TEXT, sendComposerMessage } from '../../utils/composer-send'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -49,7 +49,6 @@ import type { ContentBlock } from '../../../shared/types/provider.types'
 const MAX_INPUT_ROWS = 10
 // Model-facing text for attachment-only messages; also shown in the UI so the
 // optimistic entry matches what the loop table persists and restores.
-const ATTACHMENT_ONLY_TEXT = 'Please review the attached media.'
 const DEFAULT_MEDIA_LIMITS = {
   image: 5 * 1024 * 1024,
   audio: 10 * 1024 * 1024,
@@ -1555,53 +1554,14 @@ function LoopStream({ loop }: { loop: string }) {
   )
 
   /**
-   * The one send path. Everything the human sends goes through here, including
-   * the message a `/<skill>` command composes — a skill command has to be
-   * indistinguishable from the same words typed by hand, because that is the
-   * whole of its authority.
-   *
-   * Callers clear the composer first; this owns the queue/start/invoke ladder.
+   * The one send path (composer-send.ts): everything the human sends goes
+   * through it, including the message a `/<skill>` command composes. The
+   * target agent and the loop's states are captured at submit time, so
+   * navigation can't redirect the message. Callers clear the composer first.
    */
   const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]) => {
-    // Capture the target agent at submit time so navigation can't redirect the message
-    const targetFilePath = filePath
     pinToBottom()
-
-    // Autonomous + active: queue message instead of sending directly
-    // Callers already cleared the composer; the queue is keyed by agent and
-    // loop so a message typed into an inner loop's tab is sent to that loop,
-    // and it is still there (and still sent) after the owner switches agents.
-    // Older queued messages go first: this one never jumps ahead of them.
-    if (queueOwnerMessage(targetFilePath, loop, state, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews })) {
-      return
-    }
-
-    // Show the user message immediately
-    addLogEntry({
-      id: nanoid(),
-      type: 'user',
-      content: message || ATTACHMENT_ONLY_TEXT,
-      timestamp: Date.now(),
-      metadata: previews.length > 0 ? { imagePreviewUrls: previews } : undefined
-    }, loop)
-
-    // If the AGENT (not just this loop) is off, start it first then invoke.
-    // Side loops run inside the same process as main, so the gate is agent-level.
-    if (agentState === 'off') {
-      // Review gate, provider-at-need, store mirroring: one shared path.
-      // A start that did not happen (review pending, provider sheet
-      // cancelled, real error) leaves the message in the log unsent.
-      const outcome = await startForegroundAgent({ hasUserMessage: true, announce: false })
-      if (!outcome.success) return
-    }
-
-    // Update activity state if still viewing, then always send the invoke
-    const stillViewing = useDocumentStore.getState().filePath === targetFilePath
-    if (stillViewing) {
-      setState('active', loop)
-    }
-
-    sendOwnerMessage(targetFilePath, loop, message, content, previews)
+    await sendComposerMessage({ filePath, loop, loopState: state, agentState }, message, content, previews)
   }
 
   // A message typed into the home composer arrives here once the agent it

@@ -10,6 +10,12 @@ export interface StartForegroundOptions {
   skipReviewGate?: boolean
   /** Log "Agent started" on success. Off for chat-initiated starts, where the message itself is the event. */
   announce?: boolean
+  /**
+   * The agent to start, taken when the user acted (default: the open agent
+   * when this is called). Never read again later: the user can switch agents
+   * while the review check or the provider sheet is up.
+   */
+  filePath?: string | null
 }
 
 export interface StartForegroundOutcome {
@@ -31,6 +37,7 @@ export interface StartForegroundOutcome {
  */
 export async function startForegroundAgent(options: StartForegroundOptions = {}): Promise<StartForegroundOutcome> {
   const { hasUserMessage, skipReviewGate, announce = true } = options
+  const filePath = options.filePath !== undefined ? options.filePath : useDocumentStore.getState().filePath
   const appStore = useAppStore.getState()
   const agentStore = useAgentStore.getState()
 
@@ -46,7 +53,6 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     }
   }
 
-  const filePath = useDocumentStore.getState().filePath
   if (filePath) appStore.addStartingFilePath(filePath)
   try {
     let result = await window.adfApi?.startAgent(filePath ?? undefined, hasUserMessage)
@@ -114,12 +120,15 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     return { success: false, error }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    agentStore.addLogEntry({
-      id: `error-${Date.now()}`,
-      type: 'error',
-      content: error,
-      timestamp: Date.now()
-    })
+    // The open agent's log, as above: not another agent's the user switched to.
+    if (useDocumentStore.getState().filePath === filePath) {
+      agentStore.addLogEntry({
+        id: `error-${Date.now()}`,
+        type: 'error',
+        content: error,
+        timestamp: Date.now()
+      })
+    }
     return { success: false, error }
   } finally {
     if (filePath) useAppStore.getState().removeStartingFilePath(filePath)

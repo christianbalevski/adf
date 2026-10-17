@@ -1128,6 +1128,8 @@ export class AgentFileOps {
     if (exists && !overwrite) throw new FileOpError(`${basename(dest)} already exists`, 409, 'name_taken')
     if (exists) {
       if (this.loadedAt(dest)) throw new FileOpError(`${basename(dest)} is a running agent`, 409, 'agent_running')
+      // An open document's connection would go on writing the replaced file.
+      if (this.openDocumentAt(dest)) throw new FileOpError(`${basename(dest)} is open; close it before replacing it`, 409, 'document_open')
       await this.assertNotLeasedElsewhere(dest)
     }
     const partial = `${dest}.${randomUUID().slice(0, 8)}.partial`

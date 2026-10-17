@@ -647,6 +647,10 @@ export class AgentExecutor extends EventEmitter {
 
   // HIL (human-in-the-loop) tool approval — task-native
   private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
+  // Pending approvals raised beside the turn (requestApproval restoreState) or
+  // with no agent turn running: they block no dispatch, a chat does not deny
+  // them, and the agent reads awaiting_approval (not idle) while one is open.
+  private besideTurnHilTasks = new Set<string>()
 
   // Protection denials rejected by the authorizer this turn — a retried call
   // returns the denial directly instead of re-prompting. Cleared each turn.
@@ -925,7 +929,11 @@ export class AgentExecutor extends EventEmitter {
   endTurnAndSetState(targetState: 'idle' | 'hibernate'): void {
     const midTurn = this.state === 'thinking' || this.state === 'tool_use' ||
       this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended'
-    if (!midTurn) {
+    // awaiting_approval with no agent turn running is an approval raised
+    // beside the turn: there is no turn to end, so the transition applies now
+    // and the approval stays open.
+    const besideTurnWait = this.state === 'awaiting_approval' && this.activeAgentTurnCount === 0 && this.onlyBesideTurnHilPending()
+    if (!midTurn || besideTurnWait) {
       this.applyDeferredStateTransition(targetState)
       return
     }
@@ -1077,14 +1085,41 @@ export class AgentExecutor extends EventEmitter {
    * `tool_approval_resolved`, so the hub must be cleared here explicitly or it
    * keeps rows nobody can ever answer.
    */
-  private drainPendingHilTasks(): void {
-    const entries = [...this.pendingHilTasks.entries()]
-    // Clear first: a resolve callback that re-enters resolveHilTask must no-op.
-    this.pendingHilTasks.clear()
+  private drainPendingHilTasks(opts?: { keepBesideTurn?: boolean }): void {
+    const entries = [...this.pendingHilTasks.entries()].filter(([taskId]) => !opts?.keepBesideTurn || !this.besideTurnHilTasks.has(taskId))
+    // Remove first: a resolve callback that re-enters resolveHilTask must no-op.
+    for (const [taskId] of entries) this.pendingHilTasks.delete(taskId)
     for (const [taskId, pending] of entries) {
       approvalHub.unregister(this.notificationKeyFor(taskId))
       pending.resolve({ approved: false })
     }
+  }
+
+  /**
+   * A beside-turn approval settled: the state it set (awaiting_approval) goes
+   * back to the one before it, unless an agent turn now owns the state or
+   * something else changed it meanwhile. setState keeps awaiting_approval
+   * while another such approval is open.
+   */
+  private restoreAfterBesideTurnApproval(priorState: AgentState): void {
+    if (this.activeAgentTurnCount > 0 || this.state !== 'awaiting_approval') return
+    this.setState(priorState === 'awaiting_approval' ? 'idle' : priorState)
+  }
+
+  /**
+   * No turn holds the state: idle, or awaiting_approval for approvals raised
+   * beside the turn only (the dispatch gate lets work run beside those, so a
+   * queued trigger drains as it would from idle).
+   */
+  private betweenTurns(): boolean {
+    return this.state === 'idle' || (this.state === 'awaiting_approval' && this.onlyBesideTurnHilPending())
+  }
+
+  /** Every pending approval was raised beside the turn (and at least one is pending). */
+  private onlyBesideTurnHilPending(): boolean {
+    if (this.pendingHilTasks.size === 0) return false
+    for (const taskId of this.pendingHilTasks.keys()) if (!this.besideTurnHilTasks.has(taskId)) return false
+    return true
   }
 
   /** The hub is keyed per agent+loop+request — `ask_1` is not globally unique. */
@@ -1345,9 +1380,12 @@ export class AgentExecutor extends EventEmitter {
     name: string,
     input: unknown,
     meta?: ApprovalMeta,
-    opts?: { umbilicalReason?: string; setAwaitingState?: boolean }
+    opts?: { umbilicalReason?: string; setAwaitingState?: boolean; besideTurn?: boolean }
   ): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }> {
     const taskId = `task_${nanoid(12)}`
+    // Raised beside the turn, or with no agent turn running (a system-scope
+    // lambda's protection override): no chat of a later turn denies it.
+    if (opts?.besideTurn || this.activeAgentTurnCount === 0) this.besideTurnHilTasks.add(taskId)
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
       ? `hil:${this.config.name}:${this.config.id}`
@@ -1388,7 +1426,10 @@ export class AgentExecutor extends EventEmitter {
 
     return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }>((resolve) => {
       this.trackPendingHilTask(taskId, {
-        resolve: (r) => resolve({ ...r, taskId }),
+        resolve: (r) => {
+          this.besideTurnHilTasks.delete(taskId)
+          resolve({ ...r, taskId })
+        },
         name, input, meta: approvalMeta
       })
     })
@@ -1411,6 +1452,8 @@ export class AgentExecutor extends EventEmitter {
     opts?: { timeoutMs?: number | null }
   ): Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
     const meta = this.buildApprovalMeta(name, protection)
+    const priorState = this.state
+    const outsideTurn = this.activeAgentTurnCount === 0
     const promise = this.requestHilApproval(name, input, meta)
 
     // requestHilApproval registers the pending entry synchronously — find ours
@@ -1438,7 +1481,11 @@ export class AgentExecutor extends EventEmitter {
     } else {
       workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
     }
-    if (this.getState() !== 'stopped') this.setState('tool_use')
+    if (this.getState() !== 'stopped') {
+      // Outside an agent turn there is no tool_use to go back to.
+      if (!outsideTurn) this.setState('tool_use')
+      else this.restoreAfterBesideTurnApproval(priorState)
+    }
     return { approved, modifiedArgs, feedback }
   }
 
@@ -1468,13 +1515,15 @@ export class AgentExecutor extends EventEmitter {
     opts?: { canAlwaysApprove?: boolean; restoreState?: boolean }
   ): Promise<boolean> {
     const priorState = this.state
-    const besideTurn = opts?.restoreState === true
-    const ownsState = !besideTurn || !this.isTurnActive()
+    const restoreState = opts?.restoreState === true
+    const ownsState = !restoreState || !this.isTurnActive()
+    // No agent turn to go back to tool_use in: treated as beside the turn.
+    const besideTurn = restoreState || this.activeAgentTurnCount === 0
     const meta: ApprovalMeta | undefined = opts?.canAlwaysApprove === false
       ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
       : undefined
     const { approved, taskId, feedback, settled } = await this.requestHilApproval(
-      name, input, meta, { umbilicalReason: 'shell_gate', setAwaitingState: ownsState }
+      name, input, meta, { umbilicalReason: 'shell_gate', setAwaitingState: ownsState, besideTurn }
     )
     const workspace = this.session.getWorkspace()
     if (settled) {
@@ -1489,7 +1538,7 @@ export class AgentExecutor extends EventEmitter {
     // to tool_use here would contradict the stopped-agent guarantee.
     if (this.getState() !== 'stopped') {
       if (!besideTurn) this.setState('tool_use')
-      else if (ownsState && !this.isTurnActive() && this.state === 'awaiting_approval') this.setState(priorState)
+      else if (ownsState) this.restoreAfterBesideTurnApproval(priorState)
     }
     return approved
   }
@@ -1763,7 +1812,7 @@ export class AgentExecutor extends EventEmitter {
       this.activeTurnCount--
       if (dispatch.scope !== 'system') {
         this.activeAgentTurnCount--
-      } else if (this.activeAgentTurnCount === 0 && this.state === 'idle') {
+      } else if (this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         // A system-scope turn returns before the agent-turn finally block that
         // normally drains the queue. Anything an agent dispatch queued behind
         // this lambda (same-tick sibling target) would otherwise wait for an
@@ -1908,7 +1957,7 @@ export class AgentExecutor extends EventEmitter {
       const replayed = this.getState() !== 'stopped' && this.replayQueuedChats()
       this.activeTurnCount--
       this.activeAgentTurnCount--
-      if (!replayed && this.activeAgentTurnCount === 0 && this.state === 'idle') {
+      if (!replayed && this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         this.drainPendingTriggers()
       }
       if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
@@ -2126,7 +2175,10 @@ export class AgentExecutor extends EventEmitter {
     // scope turns are not counted (see activeAgentTurnCount): a lambda target
     // listed before the agent target must not queue the agent's own wake.
     const anotherTurnActive = !opts?.nested && this.activeAgentTurnCount > 1
-    if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
+    // An approval raised beside the turn (no turn running) waits on the owner
+    // without holding the agent: the dispatch runs and the approval stays open.
+    const awaitingTurnApproval = this.state === 'awaiting_approval' && (anotherTurnActive || !this.onlyBesideTurnHilPending())
+    if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || awaitingTurnApproval || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages queue in arrival order. While the agent is working
       // (thinking, running tools) nothing is cut off: the queue is delivered at
       // the next safe step — between tool results, or as the next turn when the
@@ -2142,7 +2194,7 @@ export class AgentExecutor extends EventEmitter {
         this.abortController?.abort()
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        this.drainPendingHilTasks()
+        this.drainPendingHilTasks({ keepBesideTurn: true })
         this.drainPendingAsks()
         if (this.pendingSuspend) {
           this.pendingSuspend.resolve(false)
@@ -4964,6 +5016,9 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private setState(state: AgentState): void {
+    // An approval raised beside the turn is still open: the agent waits on the
+    // owner, not idle (the fleet keeps its approval badge).
+    if (state === 'idle' && this.besideTurnHilTasks.size > 0) state = 'awaiting_approval'
     // Leaving `error` ends the episode: the next brick records its own reason
     // and gets its own single suppression notice.
     if (state !== 'error') {

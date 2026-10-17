@@ -25,8 +25,8 @@ export interface ProviderKeyVault {
 
 export class ProviderKeyVaultLockedError extends Error {
   readonly code = 'secret_store_locked'
-  constructor() {
-    super('The daemon secret store is locked: set up or unlock the owner identity first (it holds provider keys on machines without an OS keychain).')
+  constructor(message = 'The daemon secret store is locked: set up or unlock the owner identity first (it holds provider keys on machines without an OS keychain).') {
+    super(message)
     this.name = 'ProviderKeyVaultLockedError'
   }
 }

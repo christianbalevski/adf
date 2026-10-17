@@ -5,14 +5,14 @@ import { App } from '../../src/main/tui/app/App'
 import { ThemeContext, createTheme } from '../../src/main/tui/app/theme'
 import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
-import { applyEventToItems, historyToItems, mergeHistory } from '../../src/main/tui/state/transcript'
+import { applyEventToItems, historyToItems, mergeHistory, unresolvedTasks } from '../../src/main/tui/state/transcript'
 import { transcriptKey, type ToolItem, type TranscriptItem } from '../../src/main/tui/state/types'
 import type { UmbilicalEvent } from '../../src/main/tui/api/types'
 import { TranscriptItemView } from '../../src/main/tui/views/chat/Transcript'
 import { isExpandable, itemHeight, itemText, lastReply, toolArgs, toolView } from '../../src/main/tui/views/chat/model'
 import { AGENT_1_ID, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
 import { renderTui, type RenderedTui } from './fixtures/render'
-import { TASK_REF, pushRow, pushToolCall, seedToolHistory, toolItem } from './fixtures/transcript-fixtures'
+import { TASK_REF, addBackgroundTask, pushRow, pushToolCall, seedToolHistory, toolItem } from './fixtures/transcript-fixtures'
 
 let mock: MockDaemon | null = null
 let store: TuiStore | null = null
@@ -51,16 +51,17 @@ function ev(event_type: string, payload: Record<string, unknown>, seq = 1): Umbi
 
 describe('tool calls in history', () => {
   it('renders _reason, async, say, status lines and ask like Studio', async () => {
-    const { tui } = await mount(m => seedToolHistory(m, AGENT_1_ID), 'Ship the release today?')
+    const { tui } = await mount(m => { seedToolHistory(m, AGENT_1_ID); addBackgroundTask(m, AGENT_1_ID, { status: 'running' }) }, 'Ship the release today?')
     const frame = tui.lastFrame()
     // _reason leads the row, the tool name follows; the flags are not in the args.
     expect(frame).toMatch(/✓ Reconcile delivery state {2}msg_read/)
     expect(frame).toContain('→ 3 messages')
     // No reason: name + compact args.
     expect(frame).toMatch(/✓ fs_list \{"prefix":"notes\/"\}/)
-    // Async: badge, task reference as the result for now.
-    expect(frame).toMatch(/✓ Fetch the docs in the background {2}sys_fetch \[async\]/)
-    expect(frame).toContain('→ {"task_id":"task_bg1"')
+    // Async: badge; running while its task runs, the task reference not shown as a result.
+    expect(frame).toMatch(/Fetch the docs in the background {2}sys_fetch \[async\]/)
+    expect(frame).not.toMatch(/✓ Fetch the docs/)
+    expect(frame).not.toContain('→ {"task_id":"task_bg1"')
     expect(frame).not.toContain('_reason')
     expect(frame).not.toContain('_async')
     // say: a plain assistant message, no tool row.
@@ -91,7 +92,7 @@ describe('tool calls in history', () => {
 
 describe('async tool results', () => {
   it('attaches a late tool.completed to the call and keeps it across a history refetch', async () => {
-    const { tui, mock } = await mount(m => seedToolHistory(m, AGENT_1_ID), 'Ship the release today?')
+    const { tui, mock } = await mount(m => { seedToolHistory(m, AGENT_1_ID); addBackgroundTask(m, AGENT_1_ID, { status: 'running' }) }, 'Ship the release today?')
     mock.emit({ event_type: 'tool.completed', agent_id: AGENT_1_ID, payload: { id: 'tu_async', name: 'sys_fetch', input: { url: 'https://example.com/docs', _reason: 'Fetch the docs in the background' }, result: { content: 'fetched 12 KB of docs', isError: false }, isError: false } })
     await tui.waitFor('→ fetched 12 KB of docs')
     expect(tools().filter(t => t.toolUseId === 'tu_async')).toHaveLength(1)
@@ -105,8 +106,8 @@ describe('async tool results', () => {
     expect(tui.lastFrame()).toContain('→ fetched 12 KB of docs')
   })
 
-  it('live: a running async call settles on the refetch and takes the result that arrives after it', async () => {
-    const { tui, mock } = await mount()
+  it('live: a running async call stays running across the refetch and takes the result that arrives after it', async () => {
+    const { tui, mock } = await mount(m => addBackgroundTask(m, AGENT_1_ID, { status: 'running' }))
     // Live input carries no _async (the runtime strips it from tool.* payloads).
     mock.emit({ event_type: 'tool.started', agent_id: AGENT_1_ID, payload: { id: 'tu_live', name: 'sys_fetch', input: { url: 'https://example.com/a', _reason: 'Warm the cache' } } })
     await tui.waitFor('Warm the cache  sys_fetch')
@@ -117,12 +118,35 @@ describe('async tool results', () => {
     await tui.waitFor(f => f.includes('Started the fetch.') && f.includes('sys_fetch [async]'))
     let calls = tools().filter(t => t.toolUseId === 'tu_live')
     expect(calls).toHaveLength(1)
-    expect(calls[0].status).toBe('ok')
+    expect(calls[0]).toMatchObject({ status: 'running', async: true, taskRef: TASK_REF })
+    expect(calls[0].result).toBeUndefined()
+    // Its task row says running too: still running once the lookup is back.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(tools().find(t => t.toolUseId === 'tu_live')!.status).toBe('running')
+    expect(tui.lastFrame()).not.toContain('→ {"task_id"')
     mock.emit({ event_type: 'tool.failed', agent_id: AGENT_1_ID, payload: { id: 'tu_live', name: 'sys_fetch', input: {}, result: { content: 'HTTP 503', isError: true }, isError: true } })
     await tui.waitFor('→ HTTP 503')
     calls = tools().filter(t => t.toolUseId === 'tu_live')
     expect(calls).toHaveLength(1)
     expect(calls[0].status).toBe('error')
+  })
+
+  it('a load settles a call whose task ended while the app was not listening, from its task row', async () => {
+    const { tui } = await mount(m => { seedToolHistory(m, AGENT_1_ID); addBackgroundTask(m, AGENT_1_ID, { status: 'completed', result: 'fetched 12 KB of docs' }) }, 'Ship the release today?')
+    await tui.waitFor('→ fetched 12 KB of docs')
+    expect(tools().find(t => t.toolUseId === 'tu_async')).toMatchObject({ status: 'ok', result: 'fetched 12 KB of docs', taskRef: TASK_REF })
+  })
+
+  it('a failed task settles its call as an error', async () => {
+    const { tui } = await mount(m => { seedToolHistory(m, AGENT_1_ID); addBackgroundTask(m, AGENT_1_ID, { status: 'failed', error: 'HTTP 503' }) }, 'Ship the release today?')
+    await tui.waitFor('→ HTTP 503')
+    expect(tools().find(t => t.toolUseId === 'tu_async')!.status).toBe('error')
+  })
+
+  it('a task the daemon does not know: the task reference is shown as before', async () => {
+    const { tui } = await mount(m => seedToolHistory(m, AGENT_1_ID), 'Ship the release today?')
+    await tui.waitFor('→ {"task_id":"task_bg1"')
+    expect(tools().find(t => t.toolUseId === 'tu_async')).toMatchObject({ status: 'ok', result: TASK_REF })
   })
 })
 
@@ -190,7 +214,15 @@ describe('transcript model (pure)', () => {
       { seq: 2, role: 'user', content_json: [{ type: 'tool_result', tool_use_id: 'a', content: TASK_REF }], created_at: 2 },
     ] as never)
     const call = items.find((i): i is ToolItem => i.kind === 'tool')!
-    expect(call).toMatchObject({ async: true, taskRef: TASK_REF, status: 'ok', result: TASK_REF })
+    expect(call).toMatchObject({ async: true, taskRef: TASK_REF, status: 'running' })
+    expect(call.result).toBeUndefined()
+    expect(unresolvedTasks(items)).toEqual([{ toolUseId: 'a', taskId: 'task_bg1' }])
+    // A reload while it runs keeps it running.
+    const reloaded = mergeHistory(items, historyToItems([
+      { seq: 1, role: 'assistant', content_json: [{ type: 'tool_use', id: 'a', name: 'sys_fetch', input: { url: 'u', _async: true } }], created_at: 1 },
+      { seq: 2, role: 'user', content_json: [{ type: 'tool_result', tool_use_id: 'a', content: TASK_REF }], created_at: 2 },
+    ] as never))
+    expect(reloaded.find((i): i is ToolItem => i.kind === 'tool')).toMatchObject({ status: 'running', async: true })
     // A later live result attaches by tool_use id and survives the next merge.
     const live = applyEventToItems(items, ev('tool.completed', { id: 'a', name: 'sys_fetch', result: { content: 'done', isError: false } }))
     const merged = mergeHistory(live, historyToItems([
@@ -226,6 +258,7 @@ const HEIGHT_CASES: Array<[string, ToolItem]> = [
   ['reason row', toolItem({ name: 'msg_read', input: { _reason: 'Reconcile delivery state', status: 'unread' }, result: 'line one\nline two' })],
   ['plain row, running', toolItem({ name: 'fs_list', input: { prefix: 'notes/' }, status: 'running' })],
   ['async row', toolItem({ name: 'sys_fetch', input: { url: 'u', _async: true, _reason: 'bg' }, async: true, taskRef: TASK_REF, result: 'fetched' })],
+  ['async row, running', toolItem({ name: 'sys_fetch', input: { url: 'u', _async: true, _reason: 'bg' }, async: true, taskRef: TASK_REF, status: 'running' })],
   ['say', toolItem({ name: 'say', input: { message: `Paragraph one ${'x'.repeat(90)}\n\n- bullet a\n- bullet b` } })],
   ['say failed', toolItem({ name: 'say', input: { message: 'short' }, status: 'error', result: 'no channel' })],
   ['ask answered', toolItem({ name: 'ask', input: { question: `Q${'y'.repeat(130)}` }, result: 'Human answered: yes' })],

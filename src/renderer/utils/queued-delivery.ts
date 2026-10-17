@@ -174,6 +174,15 @@ export function sendOwnerMessage(filePath: string | null, loop: string, text: st
  * the loop is mid-turn, and also while older queued messages still wait (a
  * send that failed, a loop held on an approval), so it can never jump ahead of
  * them. On an idle loop the whole queue then goes now, oldest first.
+ *
+ * A stopped agent can still have a queue (one kept when it was closed while
+ * running, or a send that failed). The new message then joins it and the
+ * agent is started with `start`, the composer's own start-before-send (review
+ * gate, provider sheet, errors shown in the chat); once it runs the queue
+ * goes, oldest first. A start that did not happen leaves the queue as it is,
+ * the reason shown by `start`, as the composer's direct path leaves its
+ * message unsent.
+ *
  * False: nothing is queued, the caller sends it directly.
  */
 export function queueOwnerMessage(
@@ -181,7 +190,8 @@ export function queueOwnerMessage(
   loop: string,
   loopState: string,
   agentState: string,
-  message: Omit<QueuedMessage, 'id'>
+  message: Omit<QueuedMessage, 'id'>,
+  start?: () => Promise<boolean>
 ): boolean {
   if (!filePath) return false
   const waiting = selectQueue(useMessageQueueStore.getState(), filePath, loop).length > 0
@@ -190,7 +200,21 @@ export function queueOwnerMessage(
   // get their retries back and go first, at this loop's next turn end.
   useMessageQueueStore.getState().releaseHold(filePath, loop)
   useMessageQueueStore.getState().enqueue(filePath, loop, message)
-  if (loopState === 'idle' && agentState !== 'off') deliverQueuedMessages(filePath, loop)
+  if (agentState === 'off') {
+    const count = selectQueue(useMessageQueueStore.getState(), filePath, loop).length
+    if (!start) {
+      console.warn(`[queue] ${filePath} is off: its ${count} queued messages (${loop}) wait until it is started`)
+      return true
+    }
+    console.info(`[queue] ${filePath} is off: starting it to send its ${count} queued messages (${loop})`)
+    void start().then(
+      // Taken once: a turn end the start reported may have sent it already.
+      (started) => { if (started) deliverQueuedMessages(filePath, loop) },
+      (error: unknown) => console.warn(`[queue] Starting ${filePath} for its queue failed: ${error instanceof Error ? error.message : String(error)}`)
+    )
+    return true
+  }
+  if (loopState === 'idle') deliverQueuedMessages(filePath, loop)
   return true
 }
 

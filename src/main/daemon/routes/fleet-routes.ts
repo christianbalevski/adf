@@ -21,7 +21,7 @@
 
 import { existsSync } from 'fs'
 import type { FastifyInstance } from 'fastify'
-import { AdfWorkspace } from '../../adf/adf-workspace'
+import { appendOwnerMessageUnderLease } from '../../runtime/owner-message-append'
 import { RuntimeGate } from '../../runtime/runtime-gate'
 import type { RuntimeService } from '../../runtime/runtime-service'
 import { mergeAdapterStates } from '../../services/adapter-status'
@@ -151,7 +151,8 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
   // rails as typing in the chat panel (a real user turn, no inbox row). A
   // message to an agent that is not running starts it (review gate on); when
   // the start is refused (unreviewed, password-locked) the message is written
-  // into its loop so it is the next thing the agent sees.
+  // into its loop so it is the next thing the agent sees. An agent another
+  // runtime runs is not written to: it fails with the holder's sentence.
   server.post<{ Body: { filePaths?: unknown; content?: unknown } }>('/fleet/message', async (request): Promise<FleetMessageResult> => {
     const delivered: string[] = []
     const failed: { filePath: string; error: string }[] = []
@@ -198,11 +199,13 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
           delivered.push(filePath)
           continue
         }
-        const workspace = AdfWorkspace.open(filePath)
-        try {
-          workspace.appendToLoop('user', [{ type: 'text', text: content }])
-        } finally {
-          workspace.close()
+        // Written under the agent's lease (the review gate refuses before the
+        // lease check): another runtime that runs it is its one writer, and
+        // the message fails with the holder's sentence.
+        const appended = await appendOwnerMessageUnderLease(runtime.agentLeaseRegistry, filePath, content)
+        if (!appended.ok) {
+          failed.push({ filePath, error: appended.error })
+          continue
         }
         delivered.push(filePath)
       } catch (error) {

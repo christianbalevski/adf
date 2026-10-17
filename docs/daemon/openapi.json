@@ -549,7 +549,7 @@
             }
           },
           "409": {
-            "description": "Owner identity not ready (`identity_not_ready`) or the name is taken in that directory (`name_taken`)",
+            "description": "Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), or a confirmed replace names a file another runtime runs (`agent_leased`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -566,6 +566,12 @@
                     "value": {
                       "error": "An agent named \"agent-1\" already exists in /home/me/agents.",
                       "code": "name_taken"
+                    }
+                  },
+                  "agent_leased": {
+                    "value": {
+                      "error": "agent-1 is already running in another ADF Studio (pid 4242). Stop the agent there or quit that Studio, then start it here.",
+                      "code": "agent_leased"
                     }
                   }
                 }
@@ -10345,7 +10351,7 @@
           "Settings"
         ],
         "summary": "Merge settings values",
-        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.",
+        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint. While the daemon secret store is locked, a change to a secret-store entry's address, type or key storage, its removal, and a new API key for it are refused with 409 `secret_store_locked` (its stored key can be neither saved nor removed until the store is unlocked).",
         "operationId": "patchSettings",
         "requestBody": {
           "required": true,
@@ -10382,6 +10388,9 @@
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -10429,7 +10438,7 @@
           "Settings"
         ],
         "summary": "Write one setting",
-        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.",
+        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint. While the daemon secret store is locked, a change to a secret-store entry's address, type or key storage, its removal, and a new API key for it are refused with 409 `secret_store_locked` (its stored key can be neither saved nor removed until the store is unlocked).",
         "operationId": "putSetting",
         "parameters": [
           {
@@ -10468,6 +10477,9 @@
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -12843,7 +12855,7 @@
           "Agent files"
         ],
         "summary": "Write a snapshot of an agent file to another path",
-        "description": "Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent.",
+        "description": "Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent, `document_open` when it is open here as a document.",
         "operationId": "saveAgentFileAs",
         "requestBody": {
           "required": true,
@@ -17351,7 +17363,8 @@
               "template_invalid",
               "password_required",
               "wrong_password",
-              "load_failed"
+              "load_failed",
+              "agent_leased"
             ]
           },
           "identity": {
