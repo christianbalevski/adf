@@ -486,6 +486,7 @@ describe('parity harness: runner', () => {
         async shutdown() { send('toy:bye', { n: 2 }) },
         leaks: () => [],
         computeCalls: () => [],
+        usageOnDisk: async () => {},
       }
     },
   })

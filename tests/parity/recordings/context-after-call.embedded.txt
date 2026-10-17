@@ -1473,6 +1473,7 @@ f user-data/adf-settings.json
 d user-data/crashes/
 d user-data/logs/
 d user-data/templates/
+f user-data/token-usage.json
 
 ## state: user-data/adf-settings.json
 adf-settings.json:
@@ -1790,6 +1791,16 @@ adf-settings.json:
   uiFontSystemDefaultApplied: true
   uiScale: 1
   updateChecksEnabled: false
+
+## state: user-data/token-usage.json
+token-usage.json:
+  <run-date>:
+    parity-llm:
+      parity-model:
+        cache_read: 0
+        input: 13797
+        output: 12
+        reasoning: 0
 
 ## state: leases/hosts/<pid:this-process>.json
 hosts/<pid:this-process>.json:

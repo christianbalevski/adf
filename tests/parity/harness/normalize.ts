@@ -1,4 +1,5 @@
 import type { ComparableRecording } from './recording'
+import { localDateKey } from '../../../src/shared/utils/date-key'
 
 /**
  * THE normalizer. Every rule that makes two recordings comparable lives in
@@ -81,6 +82,8 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   const fixtureIds = new Set(ctx.fixtureIds.map((id) => id.toLowerCase()))
   /** A stamp of `precision` ms covers [ms, ms + precision); it is in the window if that overlaps it. */
   const inWindow = (ms: number, precision = 1) => ms + precision - 1 >= ctx.window.from && ms <= ctx.window.to
+  /** R22: the local calendar dates the run window spans. */
+  const runDates = new Set([localDateKey(new Date(ctx.window.from)), localDateKey(new Date(ctx.window.to))])
 
   // Rule R1 — run root. Every path the run touches is under one temp dir
   // whose name is random. Each spelling code may produce gets its OWN token
@@ -377,10 +380,16 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     // minted at random (nanoid) for the shipped templates seeded during the
     // run. Numbered as `<agent-id#n>`; fixture ids stay as they are.
     const reviewedKeys = path.endsWith('.reviewedAgents')
+    // Rule R22 — the day keys of `user-data/token-usage.json`: the local
+    // calendar date the usage was recorded on (localDateKey). A key that is
+    // a local date of the run window becomes `<run-date>`; any other date
+    // stays raw. Scoped to that file's top level; the counts are compared.
+    const usageDays = path === 'state.userDataJson.token-usage.json'
     const entries = Object.keys(obj).sort().map((k) => ({
       k,
       outKey: reviewedKeys && !fixtureIds.has(k.toLowerCase())
         ? numbered('agent-id', k)
+        : usageDays && runDates.has(k) ? '<run-date>'
         : path === 'state.leases' ? replaceRegistryPid(replaceString(k, floor, [])) : replaceString(k, floor, []),
     })).sort((a, b) => cmp(a.outKey, b.outKey) || cmp(a.k, b.k))
     const out: Record<string, unknown> = {}

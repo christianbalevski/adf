@@ -4,6 +4,7 @@ import type { ParityEnv } from './env'
 import type { FakeElectron } from './electron-fake'
 import { createComputeLog, createFakePodmanServiceClass, type ComputeLog } from './fake-compute'
 import type { NormalizationContext } from './normalize'
+import { waitForUsageOnDisk } from './usage-flush'
 
 /**
  * A backend is whatever registers Studio main's IPC handlers into the fake
@@ -35,6 +36,12 @@ export interface BootedBackend {
   leaks(): string[]
   /** Calls the backend made into the fake compute service (safety evidence; not compared). */
   computeCalls(): readonly string[]
+  /**
+   * Resolves once every token usage the backend recorded is in
+   * token-usage.json (its debounced flush ran; usage-flush.ts). The state
+   * dump waits for it.
+   */
+  usageOnDisk(): Promise<void>
   /** Extra values for the normalizer, e.g. `{ ports: [{ value: '51234', name: 'DAEMON_PORT' }] }`. */
   normalization?(): Partial<Pick<NormalizationContext, 'ports' | 'named' | 'pids'>>
 }
@@ -138,6 +145,7 @@ export async function releaseRunResources(resources: RunResources, _env: ParityE
 
 type IpcModule = typeof import('../../../src/main/ipc/index')
 type LeaseModule = typeof import('../../../src/main/runtime/agent-lease')
+type TokenUsageModule = typeof import('../../../src/main/services/token-usage.service')
 
 /** Embedded Studio, with extra host hooks for registerAllIpcHandlers (main/index.ts passes them at boot). */
 export function embeddedBackendWith(extraHooks: { skipBootAutostart?: string } = {}): ParityBackend {
@@ -150,6 +158,8 @@ export function embeddedBackendWith(extraHooks: { skipBootAutostart?: string } =
     const ipc = (await import(/* @vite-ignore */ srcPath('main/ipc/index.ts'))) as IpcModule
     // This run's instance of the process lease registry (same module graph as ipc).
     const leases = (await import(/* @vite-ignore */ srcPath('main/runtime/agent-lease.ts'))) as LeaseModule
+    // This run's token usage ledger (same module graph as ipc).
+    const usage = (await import(/* @vite-ignore */ srcPath('main/services/token-usage.service.ts'))) as TokenUsageModule
     ipc.registerAllIpcHandlers({
       showMainWindow: () => {
         electron.openWindow()
@@ -179,6 +189,7 @@ export function embeddedBackendWith(extraHooks: { skipBootAutostart?: string } =
       },
       leaks: () => leaks,
       computeCalls: () => resources.compute.calls,
+      usageOnDisk: () => waitForUsageOnDisk(env, () => usage.getTokenUsageService().getUsageData(), 'embedded'),
     }
   },
   }

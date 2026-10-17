@@ -12,6 +12,7 @@ import { decryptCredential, encryptCredential } from '../../../src/main/utils/cr
 import { createRunResources, installEnvironmentStubs, releaseRunResources, srcPath, type BootedBackend, type ParityBackend } from './backend'
 import type { FakeElectron } from './electron-fake'
 import { FENCE_PATH, removeTreeWithoutLinks, type ParityEnv } from './env'
+import { waitForUsageOnDisk } from './usage-flush'
 
 /**
  * Daemon-mode backend (README "Daemon backend (W2-C)"): the built daemon
@@ -487,6 +488,12 @@ export function daemonBackend(options: DaemonBackendOptions = {}): DaemonParityB
         leaks: () => leaks,
         // The daemon's compute calls are inside the child (ADF_COMPUTE=fake); none reach this process.
         computeCalls: () => resources.compute.calls,
+        // The daemon records the usage (its TokenUsageService): its live view is GET /runtime/usage.
+        usageOnDisk: () => waitForUsageOnDisk(env, async () => {
+          const res = await fetch(`${url}/runtime/usage`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
+          if (!res.ok) throw new Error(`parity harness: GET /runtime/usage answered ${res.status}`)
+          return ((await res.json()) as { usage: unknown }).usage
+        }, 'daemon'),
         normalization: () => ({
           ports: [{ value: String(port), name: 'DAEMON_PORT' }, ...(proxy ? [{ value: String(proxy.port), name: 'REMOTE_PROXY_PORT' }] : [])],
           pids: known().map((value, i) => ({ value, name: i === 0 ? 'pid:daemon' : `pid:daemon#${i + 1}` })),

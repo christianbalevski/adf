@@ -231,6 +231,8 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
     // either mode. Shutdown differs by mode (daemon-mode agents can outlive
     // Studio), so the state after shutdown is kept raw and not compared.
     const fixtureFiles = Object.values(agents).map((a) => a.filePath)
+    // Token usage is flushed on a 5 s debounce: the dump waits for that flush.
+    await booted.usageOnDisk()
     const state = dumpPersistedState(env, fixtureFiles)
 
     // Teardown with the window open, as on quit: its pushes are part of the recording.
