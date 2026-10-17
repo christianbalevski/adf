@@ -25,12 +25,25 @@ export class PollCoalescer {
 
   constructor(private readonly freshMs = FRESH_MS, private readonly now: () => number = Date.now) {}
 
+  /** Entries kept: reads in flight and answers still fresh. */
+  get size(): number {
+    return this.entries.size
+  }
+
   get<T>(key: string, load: () => Promise<T>): Promise<T> {
     const hit = this.entries.get(key)
-    if (hit && (hit.settledAt === null || this.now() - hit.settledAt < this.freshMs)) return hit.promise as Promise<T>
+    if (hit && this.reusable(hit)) return hit.promise as Promise<T>
+    // Keys can carry a cursor (mesh.ts: the log's sinceSeq), so a key may
+    // never be asked again: answers past their freshness are dropped here.
+    for (const [k, e] of this.entries) if (!this.reusable(e)) this.entries.delete(k)
     const entry: Entry = { promise: Promise.resolve(), settledAt: null }
     entry.promise = load().then(
-      (value) => { entry.settledAt = this.now(); return value },
+      (value) => {
+        entry.settledAt = this.now()
+        // Never reused (FRESH_MS 0): not kept.
+        if (this.freshMs <= 0 && this.entries.get(key) === entry) this.entries.delete(key)
+        return value
+      },
       (err) => {
         // A failed read is never served again.
         if (this.entries.get(key) === entry) this.entries.delete(key)
@@ -39,6 +52,10 @@ export class PollCoalescer {
     )
     this.entries.set(key, entry)
     return entry.promise as Promise<T>
+  }
+
+  private reusable(entry: Entry): boolean {
+    return entry.settledAt === null || this.now() - entry.settledAt < this.freshMs
   }
 
   invalidate(): void {

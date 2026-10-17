@@ -75,6 +75,19 @@ describe('PollCoalescer', () => {
     expect(await polls.get('k', async () => { loads++; return loads })).toBe(3)
   })
 
+  it('keeps no settled answer it will never serve: cursor keys do not grow the map (review 4300792034)', async () => {
+    const polls = new PollCoalescer()
+    for (let seq = 0; seq < 50; seq++) await polls.get(`map:${seq}`, async () => ({ seq }))
+    expect(polls.size).toBe(0)
+    let now = 0
+    const fresh = new PollCoalescer(1000, () => now)
+    for (let seq = 0; seq < 5; seq++) await fresh.get(`map:${seq}`, async () => seq)
+    expect(fresh.size).toBe(5)
+    now = 1000
+    await fresh.get('map:5', async () => 5)
+    expect(fresh.size).toBe(1)
+  })
+
   it('never serves a failed read again', async () => {
     const polls = new PollCoalescer(1000, () => 0)
     await expect(polls.get('k', async () => { throw new Error('down') })).rejects.toThrow('down')
