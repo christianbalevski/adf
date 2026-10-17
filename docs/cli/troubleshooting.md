@@ -76,11 +76,11 @@ name you used: add it to the daemon's `ADF_DAEMON_ALLOWED_HOSTS`. See
 ## Studio at the same time
 
 ADF Studio runs agents in one of three backends
-([Studio backend](../guides/studio-backend.md)). In **Local daemon** mode
+([Studio backend](../guides/studio-backend.md)). In **This computer** mode
 Studio uses the same daemon as `adf`: both are clients and run side by side.
-In **Embedded** mode Studio runs agents itself, from the same settings and
-files, so `adf` does not start a daemon while an Embedded Studio runs on the
-same settings:
+In **Inside Studio (legacy)** mode Studio runs agents itself, from the same
+settings and files, so `adf` does not start a daemon while such a Studio runs
+on the same settings:
 
 ```text
 ADF Studio (pid 4242) is running agents from the same settings file (C:\Users\me\AppData\Roaming\ADF Studio\adf-settings.json).
@@ -90,7 +90,7 @@ Quit ADF Studio, then run adf again. Or keep using Studio.
 
 Choose one:
 
-- Switch Studio to **Local daemon** (Settings → Backend). Studio and `adf`
+- Switch Studio to **This computer** (Settings → Backend). Studio and `adf`
   then share one daemon.
 - Quit Studio and run `adf` again.
 - Give the daemon separate data
@@ -180,7 +180,7 @@ folder could not be read, so the container was kept to be safe.
 ## macOS keeps asking for Keychain access
 
 The daemon (a `node` process, or Studio's own binary when Studio starts it in
-Local daemon mode) reads the owner identity and, in Local daemon mode, Studio's
+This computer mode) reads the owner identity and, in This computer mode, Studio's
 runtime key from the Keychain. macOS asks the first time; choose **Always
 Allow**. That grants access to the binary that runs the daemon, and to any
 script it runs. If it asks at
@@ -211,8 +211,8 @@ access clipboard".
 ## Sign-in problems
 
 - `adf auth` (or `/auth`) shows who is signed in. The daemon's sign-in is
-  separate from an Embedded Studio's: sign in here even if Studio is signed
-  in. Switching Studio to Local daemon moves Studio's ChatGPT, Grok and MCP
+  separate from that of a Studio in Inside Studio mode: sign in here even if
+  Studio is signed in. Switching Studio to This computer moves Studio's ChatGPT, Grok and MCP
   sign-ins to the daemon ([what moves](../guides/studio-backend.md#what-moves-during-a-switch)).
 - **The browser does not open:** the URL is printed (in the app, `c` copies
   it); open it by hand.

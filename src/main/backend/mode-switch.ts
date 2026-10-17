@@ -39,10 +39,18 @@ import {
  * window opens after the restart.
  */
 
+/** The modes as Settings → Backend names them (owner decision 2026-10-17); internal ids stay embedded/local/remote. */
 const MODE_LABELS: Record<StudioBackendMode, string> = {
-  embedded: 'Embedded',
-  local: 'Local daemon',
-  remote: 'Remote daemon',
+  embedded: 'Inside Studio (legacy)',
+  local: 'This computer',
+  remote: 'Remote computer',
+}
+
+/** Where agents run in each mode, for sentences ("Agents now run on this computer."). */
+const MODE_PLACES: Record<StudioBackendMode, string> = {
+  embedded: 'inside Studio',
+  local: 'on this computer',
+  remote: 'on the remote computer',
 }
 
 /** argv flag of a restart into embedded for one session (§8.2 "Use embedded mode for this session"). */
@@ -202,7 +210,7 @@ export function showHandoverSummary(report: HandoverReport | null, mode: StudioB
   const options = {
     type: (report.failed ? 'warning' : 'info') as 'warning' | 'info',
     title: `Backend: ${MODE_LABELS[mode]}`,
-    message: report.failed ? `Studio runs ${MODE_LABELS[mode]}, but part of the handover is not done.` : `Studio now runs ${MODE_LABELS[mode]}.`,
+    message: report.failed ? `Agents now run ${MODE_PLACES[mode]}, but part of the handover is not done.` : `Agents now run ${MODE_PLACES[mode]}.`,
     detail: `${lines.join('\n')}${report.failed ? '\n\nWhat is not done was left where it was; Studio retries at the next start. Details are in the main log.' : ''}`,
     buttons: ['OK'],
     noLink: true,
@@ -276,9 +284,9 @@ export function createModeSwitcher(ctx: SwitchContext) {
     lines.push(target === 'embedded'
       ? 'Studio restarts and runs agents itself.'
       : target === 'local'
-        ? 'Studio restarts and runs agents in an ADF daemon on this computer, with the same settings and agent files.'
+        ? 'Studio restarts and runs agents in a background service on this computer (the ADF daemon), with the same settings and agent files.'
         : `Studio restarts and uses the ADF daemon at ${remoteUrl ?? 'the remote URL'}.`)
-    if (pending) lines.push(`This replaces the waiting switch to ${MODE_LABELS[pending.target]}.`)
+    if (pending) lines.push(`This replaces the waiting switch to "${MODE_LABELS[pending.target]}".`)
     if (plan.length > 0) {
       // "Back to Studio" only for credentials that come back (from this computer's daemon stores), not for client keys alone.
       lines.push('', target === 'embedded' && plan.some((item) => item.id !== 'client-settings') ? 'Moves back to Studio at the restart:' : 'Moves at the restart:')
@@ -323,7 +331,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
     const options = {
       type: 'question' as const,
       title: `Switch to ${MODE_LABELS[target]}`,
-      message: `Switch the backend from ${MODE_LABELS[ctx.activeMode]} to ${MODE_LABELS[target]}?`,
+      message: `Run agents ${MODE_PLACES[target]} instead of ${MODE_PLACES[ctx.activeMode]}?`,
       detail: lines.join('\n'),
       buttons,
       defaultId: buttons.length - 1,
@@ -345,7 +353,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       return restartingMessage(restarting)
     }
     // A switch still waiting for its turns is replaced: the latest choice wins, and its poll must not restart Studio too.
-    const replaced = pending ? `Replaces the waiting switch to ${MODE_LABELS[pending.target]}. ` : ''
+    const replaced = pending ? `Replaces the waiting switch to "${MODE_LABELS[pending.target]}". ` : ''
     if (pending) {
       console.log(`[Backend] Switch to ${pending.target} replaced by a switch to ${target}`)
       pending.cancel()
@@ -379,7 +387,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
         clearInterval(poll)
         pending.gaveUp = true
         console.warn(`[Backend] Switch to ${target}: ${still.join(', ')} still busy after ${WAIT_FOR_TURNS_MAX_MS / 60_000} min; not restarting until the user finishes or cancels the switch`)
-        notify(`The switch to ${MODE_LABELS[target]} is waiting: ${still.join(', ')} still has a turn in flight. Settings → Backend: Finish Switch Now (stops the turns) or Cancel Switch.`)
+        notify(`The switch to "${MODE_LABELS[target]}" is waiting: ${still.join(', ')} still has a turn in flight. Settings → Backend: Finish Switch Now (stops the turns) or Cancel Switch.`)
       }
     }, 1000)
     const finish = (): void => {
@@ -424,7 +432,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
 
 /** Settings → Backend's refusal of a switch, a cancel or a mode save once the restart has started. */
 export function restartingMessage(target: StudioBackendMode): string {
-  return `Studio is restarting into ${MODE_LABELS[target]}. Nothing changed.`
+  return `Studio is already restarting for the switch to "${MODE_LABELS[target]}". Nothing changed.`
 }
 
 function notify(body: string): void {
@@ -459,7 +467,7 @@ export async function resumeSwitchedAgents(
   if (!stale && record!.to !== mode) {
     const names = agentNames(record!.agents)
     console.log(`[Backend] Not resuming the agents of the switch to ${record!.to}: this launch runs ${mode}${names.length ? ` (not started: ${names.join(', ')})` : ''}; ${file} is kept for a launch in ${record!.to}`)
-    if (names.length > 0) notify(`Not started after the switch: ${names.join(', ')}. The switch was to ${MODE_LABELS[record!.to] ?? record!.to}, but Studio runs ${MODE_LABELS[mode]}.`)
+    if (names.length > 0) notify(`Not started after the switch: ${names.join(', ')}. The switch was to "${MODE_LABELS[record!.to] ?? record!.to}", but this launch runs agents ${MODE_PLACES[mode]}.`)
     return
   }
   await fsp.unlink(file).catch(() => {})
@@ -519,12 +527,12 @@ export async function askVersionMismatch(
   if (others.length > 0) warnings.push(`Connected to it now: ${others.map((c) => `${c.client} ${c.version}`).join(', ')}. A restart disconnects them.`)
   if (clients === null) warnings.push('Studio cannot tell which other clients use it (an older daemon).')
   const risky = warnings.length > 0
-  const buttons = [risky ? 'Restart It Anyway' : 'Restart the Daemon with Studio\'s Version', 'Use Embedded Mode for This Session']
+  const buttons = [risky ? 'Restart It Anyway' : 'Restart the Daemon with Studio\'s Version', 'Run Inside Studio for This Session']
   const options = {
     type: 'warning' as const,
     title: 'ADF daemon version',
     message: `The running ADF daemon is version ${running.version}; this Studio is ${app.getVersion()}.`,
-    detail: `${decision.message}\n\nRestart stops that daemon (pid ${running.pid}) and its agents, then starts this Studio's daemon and its autostart agents.${risky ? `\n\n${warnings.join('\n')}` : ''}\n\nEmbedded mode for this session leaves that daemon, its agents and its sign-ins as they are.`,
+    detail: `${decision.message}\n\nRestart stops that daemon (pid ${running.pid}) and its agents, then starts this Studio's daemon and its autostart agents.${risky ? `\n\n${warnings.join('\n')}` : ''}\n\nRunning inside Studio for this session leaves that daemon, its agents and its sign-ins as they are.`,
     buttons,
     defaultId: risky ? 1 : 0,
     cancelId: 1,

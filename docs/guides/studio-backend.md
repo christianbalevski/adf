@@ -1,6 +1,6 @@
 ---
 type: guide
-description: Where ADF Studio runs agents (Local daemon, the default; Remote daemon; Embedded, legacy), upgrading from 0.7.x, switching between them, what moves, quitting, Studio and the terminal app together, version mismatch, recovery, and every message these features show
+description: Where ADF Studio runs agents (This computer, the default; Remote computer; Inside Studio, legacy), upgrading from 0.7.x, switching between them, what moves, quitting, Studio and the terminal app together, version mismatch, recovery, and every message these features show
 see_also:
   - ../cli/remote-daemon.md — setting up a daemon on another machine (SSH tunnel, LAN, TLS proxy, tailscale serve)
   - ../daemon/operations.md — running the daemon itself: start, stop, data directory, ports, token
@@ -10,32 +10,37 @@ see_also:
 # Studio backend
 
 ADF Studio runs agents in one of three backends. You choose it in
-**Settings → Backend**; Studio reads the choice at launch, so a change applies
-after a restart.
+**Settings → Backend → Run agents in**; Studio reads the choice at launch, so
+a change applies after a restart.
 
 | Backend | Agents run in | Typical use |
 |---|---|---|
-| **Local daemon** | An ADF daemon on this computer, with the same settings file and agent files as Studio | The default. Studio and the terminal app (`adf`) show the same agents at the same time; with **Keep the daemon running** on, agents keep running without Studio |
-| **Remote daemon** | An ADF daemon on another computer, reached by URL and token | Agents on a server; Studio on a laptop |
-| **Embedded (legacy, removed in the next release)** | Studio's own process | A fallback for this release only, if the daemon does not work for you. Agents stop when Studio quits |
+| **This computer** | A background service on this computer, with the same settings file and agent files as Studio | The default. Studio and the terminal app (`adf`) show the same agents at the same time; with **Keep the daemon running** on, agents keep running when Studio is closed |
+| **Remote computer** | A background service on another computer, reached by URL and token | Agents on a server; Studio on a laptop |
+| **Inside Studio (legacy)** | Studio's own process | A fallback for this release only, if the background service does not work for you; the next release removes it. Agents stop when you quit Studio |
+
+The background service is the ADF daemon (`adf daemon`). The rest of this
+guide calls it the daemon.
 
 Without a `studio-backend.json` in Studio's user data folder, Studio runs
-Local daemon and writes that choice into the file at its first launch, so a
-later release reads an explicit choice. A file that says `"mode": "embedded"`
-keeps Embedded. The file holds the mode, `keepDaemonRunning`, the remote URL
+This computer and writes that choice into the file at its first launch, so a
+later release reads an explicit choice. The file names the modes `local`
+(This computer), `remote` (Remote computer) and `embedded` (Inside Studio); a
+file that says `"mode": "embedded"` keeps Inside Studio. The file holds the
+mode, `keepDaemonRunning`, the remote URL
 and the remote token, encrypted with Electron's safeStorage (DPAPI on
 Windows, the Keychain on macOS, the Secret Service on Linux).
 
-Embedded and Local daemon look and behave the same. Remote daemon differs
-where the machine boundary forces it; [Remote daemon in
-Studio](#remote-daemon-in-studio) lists each difference.
+Inside Studio and This computer look and behave the same. Remote computer
+differs where the machine boundary forces it; [Remote
+computer](#remote-computer) lists each difference.
 
 ## Upgrading from 0.7.x
 
-Studio 0.7.x ran agents itself (Embedded). From this release on, every install
-runs Local daemon, including an install that ran 0.7.x. The first launch after
-the upgrade does what a switch from Embedded to Local daemon in Settings →
-Backend does (see [What moves](#what-moves-during-a-switch)):
+Studio 0.7.x ran agents itself (Inside Studio). From this release on, every
+install runs This computer, including an install that ran 0.7.x. The first
+launch after the upgrade does what a switch from Inside Studio to This
+computer in Settings → Backend does (see [What moves](#what-moves-during-a-switch)):
 
 1. Studio moves your client settings, ChatGPT and Grok sessions, app-level MCP
    sign-ins and the runtime identity into the daemon's stores, before it
@@ -45,10 +50,11 @@ Backend does (see [What moves](#what-moves-during-a-switch)):
 3. It starts the daemon, which starts the agents set to start automatically,
    from the same tracked folders as Studio did.
 4. Once the window is open and Studio has connected to the daemon, one
-   dialog says "Studio now runs agents in the ADF daemon." and lists what moved
+   dialog says "Agents now run in a background service on this computer (the
+   ADF daemon)." and lists what moved
    ("Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session,
    MCP sign-ins."). **Open the Guide** opens this section. If Studio could not
-   connect, the dialog says "… but could not connect to it." and that no agent
+   connect, the dialog says "… but Studio could not connect to it." and that no agent
    runs yet. The dialog appears once: if Studio quits or restarts before it
    was shown, the next launch shows it, together with what that launch moved
    and what is still not done. Settings → Backend keeps a **Default changed** row
@@ -72,17 +78,17 @@ Two cases stop the first launch from moving anything:
 
 | Dialog | Meaning | What to do |
 |---|---|---|
-| "An older ADF daemon (adf *X.Y*, started by the npm CLI) is running and uses the same settings." (or "An ADF daemon that Studio cannot identify is running on port *N* …") | An `adf` installed from npm before this release runs a daemon on Studio's settings. Studio runs Embedded for this launch only: nothing moves, the default is not saved, and Studio does not start your agents set to start automatically, since that daemon may run them | Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio. To run one agent in Studio before that, stop it in the daemon (`adf stop <name>`), then open it in Studio and press Start |
-| "Studio cannot use its backend settings file." with **Use Local Daemon (Recommended)** and **Use Embedded** | `studio-backend.json` could not be parsed (Studio moved it aside as `studio-backend.json.corrupt-*`) or names an unknown mode | Choose one. Studio saves it, then moves your sign-ins to that side |
+| "An older ADF daemon (adf *X.Y*, started by the npm CLI) is running and uses the same settings." (or "An ADF daemon that Studio cannot identify is running on port *N* …") | An `adf` installed from npm before this release runs a daemon on Studio's settings. Agents run inside Studio for this launch only: nothing moves, the default is not saved, and Studio does not start your agents set to start automatically, since that daemon may run them | Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio. To run one agent in Studio before that, stop it in the daemon (`adf stop <name>`), then open it in Studio and press Start |
+| "Studio cannot use its backend settings file." with **Run on This Computer (Recommended)** and **Run Inside Studio (Legacy)** | `studio-backend.json` could not be parsed (Studio moved it aside as `studio-backend.json.corrupt-*`) or names an unknown mode | Choose one. Studio saves it, then moves your sign-ins to that side |
 | "Studio cannot use or replace its backend settings file." with **… for This Launch** | The file cannot be read (for example `EACCES`); the dialog names the path and the error | Fix its permissions or delete it, then restart Studio. Until then the choice applies to one launch, and no sign-in moves |
 
 To keep running agents in Studio for this release, choose **Settings →
-Backend → Embedded (legacy, removed in the next release)**. That is the real
+Backend → Inside Studio (legacy)**. That is the real
 switch: the switch dialog lists what moves back, and Studio restarts and moves
 your sign-ins back into Studio. Do not use `ADF_STUDIO_BACKEND=embedded` for
-this; it starts Studio embedded for one launch without moving anything back.
+this; it runs agents inside Studio for one launch without moving anything back.
 
-To go back to 0.7.x, first switch to Embedded as above, check that the summary
+To go back to 0.7.x, first switch to Inside Studio as above, check that the summary
 after the restart lists no pending item, quit Studio, stop the daemon
 (`adf daemon stop`) and install 0.7.x. Installing 0.7.x without that switch
 leaves the ChatGPT, Grok and MCP sign-ins with the daemon, and the theme,
@@ -105,7 +111,7 @@ For the week of daily use on a pre-release build of this branch
      holds no `<pid>.json` of a process that is not this build's Studio or
      daemon. Each file names its `kind`, `pid`, `version` and `settingsPath`.
      A runtime of another build there runs agents from the same files.
-2. **After the first switch to Local daemon**, confirm the daemon took over
+2. **After the first switch to This computer**, confirm the daemon took over
    Studio's identity and can prove it is local:
    - `adf identity` shows the runtime as `studio (adopted)`. Anything else
      means agents made by Studio stay locked in the daemon.
@@ -114,7 +120,7 @@ For the week of daily use on a pre-release build of this branch
      Identity panel Reveal) refuse until the daemon restarts.
 3. **No owner switch from the terminal during the week.** Do not run
    `adf identity import` with a phrase of another owner (the import that asks
-   you to type "switch"), unless you restart Studio in Local daemon mode right
+   you to type "switch"), unless you restart Studio in This computer mode right
    after it. Studio re-signs its runtime entry for the new owner only at a
    local-mode boot; until then, agents Studio made do not open in the daemon.
    An owner import in Studio itself does this at once.
@@ -123,35 +129,36 @@ For the week of daily use on a pre-release build of this branch
    macOS) too, so a check for the process name passes while only the daemon
    runs. Check for the window, or for Studio's pid, instead.
 5. **The way back**, in this order:
-   1. Settings → Backend → Embedded, then restart Studio as asked.
+   1. Settings → Backend → Inside Studio (legacy), then restart Studio as asked.
    2. After the restart, check the handover summary: no item may be pending.
       A pending item means a credential is still with the daemon. Fix what it
       names and restart again before going on.
    3. Stop the daemon: `adf daemon stop`.
    4. Reinstall the release (v0.7.8).
 
-   Do not use `ADF_STUDIO_BACKEND=embedded` as the way back. It starts Studio
-   embedded without running the handover, so credentials moved to the daemon
+   Do not use `ADF_STUDIO_BACKEND=embedded` as the way back. It runs agents
+   inside Studio without running the handover, so credentials moved to the daemon
    stay there.
 
 ## Switch the backend
 
 1. Open **Settings → Backend** and choose the mode under **Run agents in**.
-2. Studio shows the switch dialog, "Switch the backend from *A* to *B*?". It
+2. Studio shows the switch dialog, "Run agents *on B* instead of *on A*?"
+   (for example "Run agents on this computer instead of inside Studio?"). It
    lists what moves at the restart (see [What moves](#what-moves-during-a-switch)),
    which agents run now and what happens to them, and, on macOS for Local
    daemon, the keychain question you will see once.
 3. Choose **Switch and Restart**. Studio restarts in the new backend.
 4. After the restart, if something moved or is not done, a summary dialog
-   says "Studio now runs *B*." (or "Studio runs *B*, but part of the handover
-   is not done.") and lists each item with its outcome.
+   says "Agents now run *on B*." (or "Agents now run *on B*, but part of the
+   handover is not done.") and lists each item with its outcome.
 
 **Cancel** in the switch dialog keeps the current backend: "Switch
 cancelled. Nothing changed."
 
 If `ADF_STUDIO_BACKEND` is set in Studio's environment, it overrides the
-saved mode; the dialog says so and Settings → Backend shows "This launch runs
-*mode* because ADF_STUDIO_BACKEND is set."
+saved mode; the dialog says so and Settings → Backend shows "Agents run
+*on mode* because ADF_STUDIO_BACKEND is set."
 
 ### Messages on the Backend page
 
@@ -160,10 +167,10 @@ saved mode; the dialog says so and Settings → Backend shows "This launch runs
 | "Saved. Applies at the next launch." / "Saved." | The choice is stored in `studio-backend.json` |
 | "Studio restarts now." | A confirmed switch |
 | "Studio already runs this mode; no restart is needed." | You chose the mode this launch already runs (after a session-only launch) |
-| "This launch runs *A*. Restart Studio to use *B*." with **Restart now** | The saved mode differs from the one this launch runs (for example after "Use Embedded Mode for This Session") |
+| "Agents run *on A*. Restart Studio to run them *on B*." with **Restart now** | The saved mode differs from the one this launch runs (for example after "Run Inside Studio for This Session") |
 | "Could not save *path*." / "Could not save the backend settings." / "Could not read the backend settings." | `studio-backend.json` could not be written or read; check the user data folder |
 | "studio-backend.json: …" / "studio-backend.json: ignored …" | The file has a problem or fields this Studio does not use; Studio says what it ignored |
-| "The remote daemon cannot be used: …" | The saved remote settings break the transport rule (an unconfirmed plain-http URL); see [Remote daemon in Studio](#remote-daemon-in-studio) |
+| "The remote daemon cannot be used: …" | The saved remote settings break the transport rule (an unconfirmed plain-http URL); see [Remote computer](#remote-computer) |
 
 ### Running agents and turns in flight
 
@@ -176,10 +183,10 @@ switch: agent-1, agent-2." and, if any failed, "Not started: agent-3
 
 When the restart would interrupt an agent's turn, the dialog says "A turn is
 in flight in: *agents*." and offers the buttons below. That is the case in
-Embedded mode, and in Local daemon mode with a daemon Studio started and
+Inside Studio mode, and in This computer mode with a daemon Studio started and
 **Keep the daemon running** off. A local daemon that keeps running (started
 with `adf daemon start`, or the setting on) keeps its turns going, so the
-dialog does not ask. Neither does a switch away from Remote daemon.
+dialog does not ask. Neither does a switch away from Remote computer.
 
 | Button | What happens |
 |---|---|
@@ -195,23 +202,24 @@ Finish Switch Now (stops the turns) or Cancel Switch."
 While a switch waits, the latest choice wins: choosing another backend
 replaces the waiting switch (after its own switch dialog), and choosing the
 backend Studio runs now cancels it, as **Cancel Switch** does. The switch
-dialog says "This replaces the waiting switch to *B*." Once the restart has
-started, a mode change or a switch button is refused with "Studio is
-restarting into *B*. Nothing changed." If a launch then runs another backend
+dialog says "This replaces the waiting switch to "*B*"." Once the restart has
+started, a mode change or a switch button is refused with "Studio is already
+restarting for the switch to "*B*". Nothing changed." If a launch then runs another backend
 than the switch's (for example with `ADF_STUDIO_BACKEND` set), one
 notification names the agents not started: "Not started after the switch: …".
 
-Switching from Local daemon back to Embedded while the daemon keeps running
+Switching from This computer back to Inside Studio while the daemon keeps running
 (it was started with `adf daemon start`, or **Keep the daemon running** is
 on): its agents stay in the daemon. The dialog says "The ADF daemon on this
 computer keeps running (…), and so do its agents (…) there. Studio does not
 start an agent the daemon runs; stop it there first (adf daemon stop) to run
 it in Studio."
 
-Agents are not carried across machines. Switching to Remote daemon: "Running
+Agents are not carried across machines. Switching to Remote computer: "Running
 agents stop: … stop here and are not started on the remote daemon, which runs
-its own agents." (or, from a Local daemon that keeps running, "… They are not
-started on the remote daemon."). Switching away from Remote daemon: "The
+its own agents." (or, from This computer with a daemon that keeps running,
+"… They are not started on the remote daemon."). Switching away from Remote
+computer: "The
 remote daemon keeps running its agents (…). Studio does not start them …", and
 Studio does not wait for their turns.
 
@@ -223,7 +231,7 @@ attaches to the daemon. Each move writes the destination, reads it back, then
 deletes the source, so a crash in the middle leaves two copies, never none;
 the next start finishes the move.
 
-| State | Embedded → Local daemon | Local daemon → Embedded |
+| State | Inside Studio → This computer | This computer → Inside Studio |
 |---|---|---|
 | Running agents | Stopped by Studio at the restart, started by the daemon after it | Started by Studio after the restart, unless the daemon keeps running them |
 | Client settings (theme, fonts, recent files, fleet map layout, notifications, menu bar, update and spellcheck choices) | Moved from `adf-settings.json` into `studio-client-settings.json` | Moved back |
@@ -234,20 +242,20 @@ the next start finishes the move.
 | Open agent and tabs | Reopened after the restart | Reopened after the restart |
 
 Agent files, tracked folders, providers and every other setting stay where
-they are: in Local daemon mode the daemon uses Studio's settings file and
+they are: in This computer mode the daemon uses Studio's settings file and
 agent files. The switch dialog lists what moves in its direction:
 
-- To Remote daemon: client settings only.
-- From Remote daemon to Embedded: nothing moves back; Studio already holds
-  its sign-ins and keys.
-- From Remote daemon to Local daemon: what moves from Studio into the local
+- To Remote computer: client settings only.
+- From Remote computer to Inside Studio: nothing moves back; Studio already
+  holds its sign-ins and keys.
+- From Remote computer to This computer: what moves from Studio into the local
   daemon (the sessions, MCP sign-ins and runtime identity in the table above).
 
 It also says what stays: "Stays on this computer: ChatGPT, Grok
 and MCP sign-ins, provider keys, the owner phrase and the runtime identity.
-The remote daemon uses its own; nothing is sent to it." (to Remote daemon), or
+The remote daemon uses its own; nothing is sent to it." (to Remote computer), or
 "Nothing comes from the remote daemon: its agents, sign-ins and keys stay on
-it." (from Remote daemon). See [§5.5](../design/daemon-backend.md#55-remote-mode).
+it." (from Remote computer). See [§5.5](../design/daemon-backend.md#55-remote-mode).
 
 Rationale: sessions move instead of being copied because ChatGPT and MCP
 refresh tokens rotate. A copy left behind stops working the first time the other side
@@ -293,18 +301,18 @@ the next start. Common reasons:
 | "`studio-handover.json` is missing, so Studio cannot tell its sign-ins from the daemon's own …" | Sign in again in Studio where needed |
 | MCP sign-ins "stay in Studio (…)" / Runtime identity "not shared: …" | This computer has no keychain the daemon can read (Linux without a Secret Service). The daemon runs as its own runtime; files it stamps show as "recognized" in Studio's review |
 
-A launch in a session-only backend (`ADF_STUDIO_BACKEND`, or "Use Embedded
-Mode for This Session") moves client settings only; sign-ins and the runtime
+A launch in a session-only backend (`ADF_STUDIO_BACKEND`, or "Run Inside
+Studio for This Session") moves client settings only; sign-ins and the runtime
 identity stay where the saved backend keeps them.
 
 ## Quit Studio
 
 **Settings → Backend → Keep the daemon running when Studio quits**
-(`keepDaemonRunning`, Local daemon only, default off):
+(`keepDaemonRunning`, This computer only, default off):
 
 | Setting | When you quit Studio | After a Studio crash |
 |---|---|---|
-| Off | Studio stops a daemon it started, as quitting stops agents in Embedded | The daemon stops 60 seconds later |
+| Off | Studio stops a daemon it started, as quitting stops agents in Inside Studio mode | The daemon stops 60 seconds later |
 | On | The daemon keeps running your agents; manage it with the ADF CLI (`adf daemon stop`) | The daemon keeps running |
 
 A change applies from then on, also to the crash case ("Saved. Applies from
@@ -326,11 +334,11 @@ disconnects, then stops. The clients that stay connected are told so:
 
 A Studio that connects again in the meantime clears the pending stop.
 
-Remote daemon: quitting Studio never stops the remote daemon.
+Remote computer: quitting Studio never stops the remote daemon.
 
 ## Studio and the terminal app together
 
-In Local daemon and Remote daemon mode, Studio, the terminal app (`adf`) and
+In This computer and Remote computer mode, Studio, the terminal app (`adf`) and
 other `adf` commands are clients of the same daemon. Each sees the same
 agents:
 
@@ -339,10 +347,10 @@ agents:
 - Starting, stopping, state changes, config edits, timers and file edits in
   one show in the others within a second.
 - An approval or question resolved in one clears in all of them.
-- Two Studios on different machines, both in Remote daemon mode on one daemon, see the same state.
+- Two Studios on different machines, both in Remote computer mode on one daemon, see the same state.
 
-In Embedded mode the terminal app cannot connect: `adf` refuses to start a
-daemon while an Embedded Studio runs on the same settings ("ADF Studio (pid N)
+In Inside Studio mode the terminal app cannot connect: `adf` refuses to start a
+daemon while a Studio that runs agents inside itself uses the same settings ("ADF Studio (pid N)
 is running agents from the same settings file (…)"). See
 [Troubleshooting › Studio at the same time](../cli/troubleshooting.md#studio-at-the-same-time).
 
@@ -402,12 +410,12 @@ Three places show the daemon Studio uses:
   version. Studio reads who started
   the daemon again whenever it reconnects, so a daemon restarted with
   `adf daemon restart` reads "started by the ADF CLI".
-- **Help menu**: **Open Daemon Log** (Local daemon; if the OS cannot open the
+- **Help menu**: **Open Daemon Log** (This computer; if the OS cannot open the
   file, a dialog says "Could not open the daemon log." with the path and the
   reason). While the connection is
   down, a status line ("ADF daemon: connecting…", "ADF daemon: not connected
   (*url*), retrying", "ADF daemon: not connected") and **Reconnect to the ADF
-  Daemon**; after a failed launch also **Use Embedded for This Session**.
+  Daemon**; after a failed launch also **Run Inside Studio for This Session**.
 - **`adf daemon status`** in a terminal: also `started by …`, and `proof
   unavailable: …` when the daemon runs without its local proof (below).
 
@@ -423,7 +431,7 @@ permissions, then restart the daemon."
 | Task-bar progress and the line "Starting the ADF daemon…" | Studio is starting the daemon | Wait; Studio connects when it answers |
 | The line "Waiting for the ADF daemon (pid N)…" and one notification "Waiting for the ADF daemon (pid N)… Studio connects when it answers." | Another daemon is starting or stopping on these settings | Wait |
 | Dialog "Studio lost its connection to the ADF daemon." (**Reconnect Now**, **Open Daemon Log**, **Dismiss**) | The connection dropped for more than 3 seconds. Studio keeps reconnecting. The dialog is not shown again within 60 seconds | Check `adf daemon status`. If the daemon stopped, start it (`adf daemon start`) or restart Studio, which starts one. Studio reconnects by itself and notifies "Reconnected to the ADF daemon." |
-| Dialog "Studio could not connect to an ADF daemon." with **Reconnect**, **Use Embedded for This Session** and **Open Daemon Log** | No daemon for this launch (see the table below) | Fix the cause (Settings → Backend works without a daemon), then **Reconnect**: it restarts Studio and tries the daemon again. **Use Embedded for This Session** restarts Studio running agents itself for this launch only; the saved mode stays. The Help menu offers both later (**Reconnect to the ADF Daemon**, **Use Embedded for This Session**) |
+| Dialog "Studio could not connect to an ADF daemon." with **Reconnect**, **Run Inside Studio for This Session** and **Open Daemon Log** | No daemon for this launch (see the table below) | Fix the cause (Settings → Backend works without a daemon), then **Reconnect**: it restarts Studio and tries the daemon again. **Run Inside Studio for This Session** restarts Studio running agents itself for this launch only; the saved mode stays. The Help menu offers both later (**Reconnect to the ADF Daemon**, **Run Inside Studio for This Session**) |
 | An action fails with "Cannot reach daemon at *url*: …" | The call was made while disconnected. Nothing was done | Retry after the reconnect |
 | A chat waiting for its answer ends after 15 seconds without the daemon | Studio stops waiting; the daemon may still run the turn | Reopen the agent after the reconnect |
 | Dialog "Emergency stop did not reach the ADF daemon. … Agents may still be running." (after **Kill**) | The stop request failed | Run `adf daemon stop` in a terminal, or stop the agents once Studio reconnects |
@@ -431,7 +439,7 @@ permissions, then restart the daemon."
 | Notification "Studio could not reopen *agent* on the ADF daemon after reconnecting (…). Open it again." | The open agent could not be held again after a reconnect | Open it again |
 | Notification "*agent* is locked again after the ADF daemon restarted. Open it again to enter its password." | The daemon restarted and forgot the file password | Open the agent and enter its password |
 
-Studio never falls back to Embedded on its own. The reasons in "Studio could
+Studio never falls back to Inside Studio on its own. The reasons in "Studio could
 not connect to an ADF daemon." include:
 
 | Reason | Fix |
@@ -454,11 +462,11 @@ before it touches it: "The running ADF daemon is version *X*; this Studio is
 | Button | What happens |
 |---|---|
 | **Restart the Daemon with Studio's Version** | Stops that daemon and its agents, starts this Studio's daemon, which starts the agents set to autostart |
-| **Use Embedded Mode for This Session** | Studio restarts in Embedded for this launch only. The daemon, its agents and its sign-ins stay as they are; Studio does not start an agent the daemon runs, and nothing moves between them. The next launch uses the saved backend again |
+| **Run Inside Studio for This Session** | Studio restarts and runs agents inside itself for this launch only. The daemon, its agents and its sign-ins stay as they are; Studio does not start an agent the daemon runs, and nothing moves between them. The next launch uses the saved backend again |
 
 When the daemon was started by the ADF CLI or a service, or other clients are
 connected to it, the dialog names them and the restart button reads
-**Restart It Anyway**; Embedded is then the default. A replacement daemon
+**Restart It Anyway**; **Run Inside Studio for This Session** is then the default. A replacement daemon
 keeps the original's "started by", so Studio's quit does not stop a daemon
 the CLI started.
 
@@ -466,30 +474,30 @@ A daemon of another release with the same client API version attaches
 without a question. Settings → Backend shows its version under the ADF
 daemon row's **Details**.
 
-## Run Embedded when the daemon does not work
+## Run agents inside Studio when the daemon does not work
 
-Embedded is the legacy backend. It stays for this release only, as a fallback;
+Inside Studio is the legacy backend. It stays for this release only, as a fallback;
 the next release removes it. There are two ways to run agents in Studio again:
 
-- **Settings → Backend → Embedded (legacy, removed in the next release)**.
+- **Settings → Backend → Inside Studio (legacy)**.
   Studio restarts, and sign-ins and the runtime identity move back (if a
   daemon still runs on these settings, they stay with it until you stop it).
   This is the persistent way back.
 - **One session**: start Studio with `ADF_STUDIO_BACKEND=embedded`. Only
   client settings move; sign-ins and the runtime identity stay as the saved
   backend keeps them. Settings →
-  Backend shows "This launch runs Embedded because ADF_STUDIO_BACKEND is
-  set." The version-mismatch dialog's **Use Embedded Mode for This Session**
+  Backend shows "Agents run inside Studio because ADF_STUDIO_BACKEND is
+  set." The version-mismatch dialog's **Run Inside Studio for This Session**
   does the same for one launch.
 
-In a session-only Embedded launch, an agent the daemon still runs cannot
+In a session-only Inside Studio launch, an agent the daemon still runs cannot
 start in Studio (see [Agents in two runtimes](#agents-in-two-runtimes)), and
 ChatGPT, Grok and MCP sign-ins that live in the daemon are not available.
 
-## Remote daemon in Studio
+## Remote computer
 
 Set the daemon up on the server first: [Remote daemon](../cli/remote-daemon.md).
-Then, in **Settings → Backend → Remote daemon**:
+Then, in **Settings → Backend → Remote computer**:
 
 1. **Daemon URL**: `https://…` (a TLS proxy or `tailscale serve`),
    `http://127.0.0.1:<port>` (an SSH tunnel), or `http://100.x.y.z:7385` (a
@@ -506,7 +514,7 @@ Then, in **Settings → Backend → Remote daemon**:
    powerful as your seed phrase](../cli/remote-daemon.md#the-token-is-as-powerful-as-your-seed-phrase).
 3. **Test connection**: "Connected to the ADF daemon at *url* (version *V*,
    started by *X*)." or the reason it failed.
-4. **Switch to This Daemon** (or choose **Remote daemon** under **Run agents
+4. **Switch to This Daemon** (or choose **Remote computer** under **Run agents
    in**). The switch dialog says "Studio restarts and uses the ADF daemon at
    *url*.", what stays on this computer and what happens to running agents
    ([Running agents](#running-agents-and-turns-in-flight)); confirming
@@ -577,7 +585,7 @@ daemon. …". ChatGPT sign-in relays its callback the same way in every mode.
 
 ### What stays on the server
 
-| Action | In Remote daemon mode |
+| Action | In Remote computer mode |
 |---|---|
 | Reveal in folder, Reveal template | A dialog: "This file is on *host*." (or "The templates folder is on *host*.") with the path and **Copy path** |
 | Back up seed phrase, Import identity, Restore identity | Disabled, with the commands to run on the server (`adf identity new`, `adf identity restore`, `adf identity import`). Studio does not send a seed phrase to another machine; this holds through an SSH tunnel too |
@@ -594,7 +602,7 @@ Providers, MCP servers, channels, compute and the mesh act on the server:
 ## Agents in two runtimes
 
 On one computer, one agent file runs in one runtime at a time. Each runtime
-(Embedded Studio, a daemon) takes a lease on the agent file when it starts
+(Studio in Inside Studio mode, a daemon) takes a lease on the agent file when it starts
 the agent. Starting an agent another runtime runs is refused with code
 `agent_leased` and a sentence naming the holder:
 
@@ -605,7 +613,7 @@ the agent. Starting an agent another runtime runs is refused with code
   agent there or quit that Studio, then start it here."
 
 Autostart skips such agents (`leased_elsewhere` in the daemon's autostart
-report). A Studio in Local or Remote daemon mode runs no agents and holds no
+report). A Studio in This computer or Remote computer mode runs no agents and holds no
 leases, so `adf daemon start` does not refuse it. Lease files, stale leases
 and the full list of sentences: [Troubleshooting › Agent is already
 running](../cli/troubleshooting.md#agent-is-already-running-agent_leased).
@@ -626,19 +634,19 @@ Every message the backend features show, and where it is explained. Text in
 
 | Message (start) | Section |
 |---|---|
-| "Switch the backend from *A* to *B*?" | [Switch the backend](#switch-the-backend) |
+| "Run agents *on B* instead of *on A*?" | [Switch the backend](#switch-the-backend) |
 | "A turn is in flight in: …" / Wait for Them to Finish / Stop Them Now | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "The switch to *B* is waiting: …" / Finish Switch Now / Cancel Switch | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
-| "This replaces the waiting switch to *B*." / "Studio is restarting into *B*. Nothing changed." / "Not started after the switch: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
+| "This replaces the waiting switch to "*B*"." / "Studio is already restarting for the switch to "*B*". Nothing changed." / "Not started after the switch: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "Running again after the switch: …" / "Not started: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "The ADF daemon keeps running (…), and so do its agents (…) there." | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | [Switch the backend](#switch-the-backend), [Troubleshooting](../cli/troubleshooting.md#macos-keeps-asking-for-keychain-access) |
 | "ADF_STUDIO_BACKEND is set in this environment and overrides this choice …" | [Switch the backend](#switch-the-backend) |
-| "Studio now runs *B*." / "… part of the handover is not done." | [What moves](#what-moves-during-a-switch), [When a move is not done](#when-a-move-is-not-done) |
-| "Studio now runs agents in the ADF daemon." / Open the Guide | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "Agents now run *on B*." / "… part of the handover is not done." | [What moves](#what-moves-during-a-switch), [When a move is not done](#when-a-move-is-not-done) |
+| "Agents now run in a background service on this computer (the ADF daemon)." / Open the Guide | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Default changed" (Settings → Backend) | [Upgrading from 0.7.x](#upgrading-from-07x) |
-| "Embedded (legacy, removed in the next release)" | [Run Embedded when the daemon does not work](#run-embedded-when-the-daemon-does-not-work) |
-| "Studio now runs agents in the ADF daemon, but could not connect to it." | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "Inside Studio (legacy)" | [Run agents inside Studio when the daemon does not work](#run-agents-inside-studio-when-the-daemon-does-not-work) |
+| "Agents now run in a background service on this computer (the ADF daemon), but Studio could not connect to it." | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "An older ADF daemon (adf …) is running and uses the same settings." / "An ADF daemon that Studio cannot identify …" | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Studio cannot use its backend settings file." / "… or replace its backend settings file." | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Studio and the ADF daemon are signed in to … with different accounts." | [Two accounts](#two-accounts-the-conflict-dialog) |
@@ -667,11 +675,11 @@ Every message the backend features show, and where it is explained. Text in
 | "Studio restarts once the turns in flight finish (…)." / "Switching to *B*" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "*Action* is not available in daemon mode yet: W2-B (…)" | [Agents in two runtimes](#agents-in-two-runtimes) |
 | "… Its log says: "Failed to start: port 7385 on 127.0.0.1 is already in use"." | [When the daemon is not reachable](#when-the-daemon-is-not-reachable) |
-| "Use Embedded for This Session" (failure dialog, Help menu) | [When the daemon is not reachable](#when-the-daemon-is-not-reachable) |
+| "Run Inside Studio for This Session" (failure dialog, Help menu) | [When the daemon is not reachable](#when-the-daemon-is-not-reachable) |
 | "The running ADF daemon is version *X*; this Studio is *Y*." / Restart It Anyway | [Version mismatch](#version-mismatch) |
-| "This launch runs … because ADF_STUDIO_BACKEND is set." / "… for this session only" | [Run Embedded when the daemon does not work](#run-embedded-when-the-daemon-does-not-work) |
-| "Connected to the ADF daemon at …" (Test connection) and the remote sentences | [Remote daemon in Studio](#remote-daemon-in-studio) |
-| "I trust this network; the token is sent unencrypted." | [Remote daemon in Studio](#remote-daemon-in-studio) |
+| "Agents run … because ADF_STUDIO_BACKEND is set." / "… for this session only" | [Run agents inside Studio when the daemon does not work](#run-agents-inside-studio-when-the-daemon-does-not-work) |
+| "Connected to the ADF daemon at …" (Test connection) and the remote sentences | [Remote computer](#remote-computer) |
+| "I trust this network; the token is sent unencrypted." | [Remote computer](#remote-computer) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
 | "*file* uses schema v2, which this version cannot upgrade …" / "… skipped: need upgrade or review" | [Troubleshooting](../cli/troubleshooting.md#an-agent-file-uses-schema-v2) |
 | "*name*.adf is on this computer, not on *host*." / Upload a copy… | [Files on the server](#files-on-the-server) |

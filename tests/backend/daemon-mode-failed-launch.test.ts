@@ -54,16 +54,16 @@ function boot(connect: () => Promise<never> | Promise<unknown>, mode: 'local' | 
 }
 
 describe('after a failed launch', () => {
-  it('Help offers Reconnect and Use Embedded for This Session; each restarts Studio its way', async () => {
+  it('Help offers Reconnect and Run Inside Studio for This Session; each restarts Studio its way', async () => {
     electronStub.calls.length = 0
     electronStub.dialogResponse = 99 // dismiss the failure dialog
     const { handle, relaunches } = boot(async () => { throw new Error('The ADF daemon exited during startup (code 1). Its log says: "Failed to start: port 7385 on 127.0.0.1 is already in use".') })
     expect(await handle.ready).toBe(false)
     expect(handle.connection.state.state).toBe('failed')
-    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Use Embedded for This Session'])
+    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Run Inside Studio for This Session'])
     helpItem('Reconnect to the ADF Daemon')!.click!()
     await vi.waitFor(() => expect(relaunches).toHaveLength(1))
-    helpItem('Use Embedded for This Session')!.click!()
+    helpItem('Run Inside Studio for This Session')!.click!()
     await vi.waitFor(() => expect(relaunches).toHaveLength(2))
     // No client session had opened: no confirmation; the window is asked to keep its unsaved text first.
     expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox').map((c) => (c.args[0] as { title?: string }).title)).toEqual(['ADF daemon not available'])
@@ -74,13 +74,13 @@ describe('after a failed launch', () => {
     ])
     // The failure dialog offers the same two, with the daemon's reason.
     const dialog = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { buttons: string[]; detail: string }
-    expect(dialog.buttons).toEqual(['Reconnect', 'Use Embedded for This Session', 'Open Daemon Log', 'OK'])
+    expect(dialog.buttons).toEqual(['Reconnect', 'Run Inside Studio for This Session', 'Open Daemon Log', 'OK'])
     expect(dialog.detail).toContain('port 7385 on 127.0.0.1 is already in use')
   })
 
   it('the failure dialog\'s buttons do what they say', async () => {
     electronStub.calls.length = 0
-    electronStub.dialogResponse = 1 // "Use Embedded for This Session"
+    electronStub.dialogResponse = 1 // "Run Inside Studio for This Session"
     const { handle, relaunches } = boot(async () => { throw new Error('No ADF daemon answers.') })
     expect(await handle.ready).toBe(false)
     await vi.waitFor(() => expect(relaunches).toEqual(['embedded: no ADF daemon could be reached at launch']))

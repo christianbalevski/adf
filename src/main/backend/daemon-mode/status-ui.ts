@@ -239,20 +239,20 @@ Daemon log: ${logFile}` : ''}`,
     const logFile = this.connection.logFile
     const embedded = this.actions.useEmbeddedForSession
     const settings = this.actions.openBackendSettings
-    const buttons = ['Reconnect', ...(embedded ? ['Use Embedded for This Session'] : []), ...(settings ? ['Open Settings → Backend'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
+    const buttons = ['Reconnect', ...(embedded ? ['Run Inside Studio for This Session'] : []), ...(settings ? ['Open Settings → Backend'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
     try {
       const { response } = await dialog.showMessageBox({
         type: 'error',
         title: 'ADF daemon not available',
         message: 'Studio could not connect to an ADF daemon.',
-        detail: `${message}\n\nReconnect restarts Studio and tries again.${embedded ? ' Use Embedded for This Session runs agents in Studio for this launch only.' : ''}\n\n${this.actions.recoveryHint}`,
+        detail: `${message}\n\nReconnect restarts Studio and tries again.${embedded ? ' Run Inside Studio for This Session runs agents inside Studio for this launch only.' : ''}\n\n${this.actions.recoveryHint}`,
         buttons,
         defaultId: buttons.length - 1,
         cancelId: buttons.length - 1,
         noLink: true,
       })
       if (buttons[response] === 'Reconnect') this.actions.reconnect()
-      else if (buttons[response] === 'Use Embedded for This Session') embedded?.()
+      else if (buttons[response] === 'Run Inside Studio for This Session') embedded?.()
       else if (buttons[response] === 'Open Settings → Backend') settings?.()
       else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
     } catch (err) {

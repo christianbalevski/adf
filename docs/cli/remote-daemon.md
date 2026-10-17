@@ -183,11 +183,11 @@ http needs the confirmation; use `serve` instead.
 
 ## ADF Studio
 
-Settings → Backend → Remote daemon takes the same URL and token. Test
+Settings → Backend → Remote computer takes the same URL and token. Test
 connection checks the address, the token and the client API version;
 Switch to This Daemon shows what moves (client settings only) and restarts
 Studio connected to it. Details and every message:
-[Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).
+[Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).
 
 - Open agent…, New agent, Track folder and folder fields pick paths on
   the server (a picker over `GET /fs/browse`). A remote client lists folder
@@ -238,4 +238,4 @@ and signed in on the server, not your laptop.
 - ADF Studio in remote mode picks paths on the server, offers files of your
   laptop as uploads, and keeps owner identity, stored credential values and
   the agent browser viewer on the server. See
-  [Studio backend › Remote daemon in Studio](../guides/studio-backend.md#remote-daemon-in-studio).
+  [Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).

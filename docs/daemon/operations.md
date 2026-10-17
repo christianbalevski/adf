@@ -10,8 +10,8 @@ Studio compatibility, and troubleshooting. Building a client instead? See the
 - **Personal machine:** install `@agentdocumentformat/cli` and run `adf`. It
   starts the daemon in the background when needed, and the daemon keeps your
   agents running after you close the terminal app. Studio and the daemon share
-  settings and owner identity. Studio in Local daemon mode uses this daemon
-  as its backend; an Embedded Studio and the daemon never run the same agent
+  settings and owner identity. Studio in This computer mode uses this daemon
+  as its backend; a Studio in Inside Studio mode and the daemon never run the same agent
   at once (see [Studio compatibility](#studio-compatibility)).
 - **Server or always-on host:** run `adf daemon` (foreground) under a service
   manager, with a dedicated settings file (`ADF_DAEMON_SETTINGS`), dedicated
@@ -37,9 +37,9 @@ WebSocket connections, the mesh server, sandboxes and child processes. The
 whole shutdown is capped at 20 seconds. On Windows, `adf daemon stop` is the
 only graceful way to stop a detached daemon.
 
-`adf daemon start` refuses while an Embedded ADF Studio runs on the same
-settings (see below); `--force` skips that. A Studio in Local daemon or
-Remote daemon mode is a client, not a conflict. A daemon that is starting under an existing pid
+`adf daemon start` refuses while an ADF Studio in Inside Studio mode runs on
+the same settings (see below); `--force` skips that. A Studio in This computer
+or Remote computer mode is a client, not a conflict. A daemon that is starting under an existing pid
 file is waited for rather than started twice, and the daemon itself refuses to
 start when its pid file names a live process.
 
@@ -91,7 +91,7 @@ over the mesh, on loopback, and rebinds to all interfaces when an agent with
 server stop|start` (or `POST /network/server/stop|start`) turns it off or on
 and persists the choice as `meshServerEnabled`. An Embedded Studio uses the
 same port: running both on one machine makes one fail to bind. Studio in
-Local daemon mode binds no mesh port; the daemon serves it.
+This computer mode binds no mesh port; the daemon serves it.
 
 ## Access token
 
@@ -241,8 +241,8 @@ port 7295. `adf network` shows the state.
 ## Studio compatibility
 
 Studio runs agents in one of three backends ([Studio backend](../guides/studio-backend.md)):
-Embedded (in Studio's own process), Local daemon (this daemon) or Remote
-daemon. In Local daemon mode Studio starts this daemon or attaches to it and
+This computer (this daemon), Remote computer (a daemon on another machine)
+or Inside Studio (legacy; Studio's own process). In This computer mode Studio starts this daemon or attaches to it and
 runs no agents itself; Studio, the terminal app and `adf` commands are all
 clients of one daemon. Whether quitting Studio stops the daemon is the
 setting **Keep the daemon running when Studio quits**; a daemon started with

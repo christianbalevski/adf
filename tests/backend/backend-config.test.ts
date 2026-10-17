@@ -99,7 +99,7 @@ describe('resolveBootBackend', () => {
     const { lines, log } = recordingLog()
     expect(resolveBootBackend(path, {}, log)).toMatchObject({ mode: 'local', source: 'file' })
     expect(readdirSync(join(path, '..')).some((n) => n.startsWith(`${BACKEND_CONFIG_FILE}.corrupt-`))).toBe(true)
-    expect(lines.some((l) => l.includes('could not be parsed') && l.includes('using the default, Local daemon'))).toBe(true)
+    expect(lines.some((l) => l.includes('could not be parsed') && l.includes('using the default, This computer'))).toBe(true)
   })
 
   it('falls back to the default on an unknown mode', () => {
@@ -107,7 +107,7 @@ describe('resolveBootBackend', () => {
     writeFileSync(path, JSON.stringify({ mode: 'hybrid' }))
     const { lines, log } = recordingLog()
     expect(resolveBootBackend(path, {}, log).mode).toBe('local')
-    expect(lines.some((l) => l.includes('unknown mode') && l.includes('using the default, Local daemon'))).toBe(true)
+    expect(lines.some((l) => l.includes('unknown mode') && l.includes('using the default, This computer'))).toBe(true)
   })
 
   it('honours an explicit mode: embedded in the file', () => {

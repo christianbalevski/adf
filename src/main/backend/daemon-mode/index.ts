@@ -80,7 +80,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.BACKEND_RESTART_STUDIO,
 ]
 
-export const RECOVERY_HINT = `To run agents in Studio instead, choose Embedded in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
+export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
 
 /**
  * The one notification while Studio waits for an unreachable remote daemon,
@@ -94,7 +94,7 @@ export function remoteWaitingNotice(progress: string): string {
 }
 
 /** Remote mode: Settings → Backend works without a daemon, so the URL, the token or the mode can be fixed there. */
-export const REMOTE_RECOVERY_HINT = `Settings → Backend works without the daemon: fix the remote daemon's URL or token there and use Test connection, or choose Embedded. ${RECOVERY_HINT}`
+export const REMOTE_RECOVERY_HINT = `Settings → Backend works without the daemon: fix the remote daemon's URL or token there and use Test connection, or choose Inside Studio (legacy). ${RECOVERY_HINT}`
 
 /** COMPUTE_BROWSER_SESSION in remote mode (§9.3): the viewer is on the server's loopback, never opened here. */
 export const REMOTE_BROWSER_SESSION_SENTENCE = 'opened a browser in its container on the daemon host. Its viewer is on that host\'s loopback, so Studio cannot show it here; use a tunnel to the container\'s noVNC port, or Studio on that host.'
@@ -503,9 +503,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
    */
   const useEmbeddedForSession = deps.mode === 'local' ? (): void => {
     const state = connection.state
-    void confirmRestart('Use Embedded for This Session', state.state === 'failed' ? state.message : 'not connected').then((ok) => {
+    void confirmRestart('Run Inside Studio for This Session', state.state === 'failed' ? state.message : 'not connected').then((ok) => {
       if (!ok) return
-      log.log('[Backend] Use Embedded for This Session requested after a failed connection to the ADF daemon')
+      log.log('[Backend] Run Inside Studio for This Session requested after a failed connection to the ADF daemon')
       restartKeepingEdits('embedded-session', clientSession ? 'the ADF daemon connection failed during the session' : 'no ADF daemon could be reached at launch')
     })
   } : undefined

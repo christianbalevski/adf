@@ -94,10 +94,10 @@ export function fileProblemOptions(boot: BootBackend): MessageBoxOptions {
     message: blocked ? 'Studio cannot use or replace its backend settings file.' : 'Studio cannot use its backend settings file.',
     detail: blocked
       ? `${boot.configPath}: ${boot.fileProblem}.\n\n${boot.writeBlocked}\n\nYour choice applies to this launch only, and no sign-in moves.`
-      : `${boot.configPath}: ${boot.fileProblem}.\n\nStudio saves your choice, then moves your sign-ins to that side. Embedded is legacy and removed in the next release.`,
+      : `${boot.configPath}: ${boot.fileProblem}.\n\nStudio saves your choice, then moves your sign-ins to that side. Inside Studio is legacy and removed in the next release.`,
     buttons: blocked
-      ? ['Use Local Daemon for This Launch', 'Use Embedded for This Launch']
-      : ['Use Local Daemon (Recommended)', 'Use Embedded'],
+      ? ['Run on This Computer for This Launch', 'Run Inside Studio for This Launch']
+      : ['Run on This Computer (Recommended)', 'Run Inside Studio (Legacy)'],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
@@ -160,7 +160,7 @@ export async function guardBoot(boot: BootBackend, userDataDir: string, deps: Bo
         type: 'warning',
         title: 'ADF daemon',
         message: problem,
-        detail: 'Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio.\n\nUntil then this launch runs Embedded and nothing moved. Studio did not autostart your agents: that daemon may be running them. To run one here, stop it there (`adf stop <name>`), then press Start in Studio.',
+        detail: 'Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio.\n\nUntil then agents run inside Studio for this launch, and nothing moved. Studio did not autostart your agents: that daemon may be running them. To run one here, stop it there (`adf stop <name>`), then press Start in Studio.',
       },
     }
   } catch (err) {
@@ -318,12 +318,12 @@ export function firstLaunchNoticeOptions(notice: FirstLaunchNotice, connected: b
   if (notice.keychainWritten && platform === 'darwin') {
     parts.push('macOS asks once whether the ADF daemon may read Studio\'s runtime key from the keychain. Choose "Always Allow".')
   }
-  parts.push('Embedded stays in Settings → Backend for this release only, as a fallback.')
+  parts.push('"Inside Studio (legacy)" stays in Settings → Backend for this release only, as a fallback.')
   parts.push('Settings → Backend has the details.')
   return {
     type: record.notDone.length > 0 || !connected ? 'warning' : 'info',
-    title: 'Backend: Local daemon',
-    message: connected ? 'Studio now runs agents in the ADF daemon.' : 'Studio now runs agents in the ADF daemon, but could not connect to it.',
+    title: 'Backend: This computer',
+    message: connected ? 'Agents now run in a background service on this computer (the ADF daemon).' : 'Agents now run in a background service on this computer (the ADF daemon), but Studio could not connect to it.',
     detail: parts.join('\n\n'),
     buttons: ['OK', 'Open the Guide'],
     defaultId: 0,

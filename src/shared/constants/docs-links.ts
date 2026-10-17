@@ -95,8 +95,8 @@ export const DOCS = {
   backendUpgrade: guideUrl('studio-backend', 'upgrading-from-07x'),
   backendStatus: guideUrl('studio-backend', 'daemon-status'),
   backendQuit: guideUrl('studio-backend', 'quit-studio'),
-  backendEmbedded: guideUrl('studio-backend', 'run-embedded-when-the-daemon-does-not-work'),
-  backendRemote: guideUrl('studio-backend', 'remote-daemon-in-studio')
+  backendEmbedded: guideUrl('studio-backend', 'run-agents-inside-studio-when-the-daemon-does-not-work'),
+  backendRemote: guideUrl('studio-backend', 'remote-computer')
 } as const
 
 export type DocsKey = keyof typeof DOCS

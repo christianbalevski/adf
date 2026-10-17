@@ -89,7 +89,7 @@ describe('version mismatch dialog (§8.2 step 3)', () => {
     const choice = await askVersionMismatch(mismatch, running({ startedBy: 'cli' }), [{ client: 'tui', version: '0.8.0' }], () => null)
     expect(choice).toBe('embedded')
     const shown = h.dialogs[0]
-    expect(shown.buttons).toEqual(['Restart It Anyway', 'Use Embedded Mode for This Session'])
+    expect(shown.buttons).toEqual(['Restart It Anyway', 'Run Inside Studio for This Session'])
     expect(shown.defaultId).toBe(1)
     expect(shown.detail).toMatch(/started by the ADF CLI/)
     expect(shown.detail).toMatch(/Connected to it now: tui 0\.8\.0/)
@@ -285,8 +285,8 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     s.apply('local')
     h.responses.push(0)
     await s.confirm('remote')
-    expect(h.dialogs[1].detail).toMatch(/This replaces the waiting switch to Local daemon\./)
-    expect(s.apply('remote')).toBe('Replaces the waiting switch to Local daemon. Studio restarts once the turns in flight finish (agent-1).')
+    expect(h.dialogs[1].detail).toMatch(/This replaces the waiting switch to "This computer"\./)
+    expect(s.apply('remote')).toBe('Replaces the waiting switch to "This computer". Studio restarts once the turns in flight finish (agent-1).')
     expect(s.pendingSwitch()).toEqual({ target: 'remote', waitingFor: ['agent-1'], gaveUp: false })
     busy = false
     await vi.waitFor(() => expect(relaunched).toEqual(['remote']), { timeout: 3000 })
@@ -301,7 +301,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     await resumeSwitchedAgents('embedded', dir, start)
     expect(start).not.toHaveBeenCalled()
     expect(existsSync(join(dir, SWITCH_RESUME_FILE))).toBe(true)
-    expect(h.notifications).toEqual(['Not started after the switch: agent-1, agent-2. The switch was to Local daemon, but Studio runs Embedded.'])
+    expect(h.notifications).toEqual(['Not started after the switch: agent-1, agent-2. The switch was to "This computer", but this launch runs agents inside Studio.'])
   })
 
   it('once the restart has started, a later switch or Cancel Switch is refused and changes nothing (W5-F)', async () => {
@@ -314,7 +314,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(s.restartingInto()).toBe('local')
     expect(s.cancel()).toBeNull()
     expect(s.apply('remote')).toBe(restartingMessage('local'))
-    expect(restartingMessage('local')).toBe('Studio is restarting into Local daemon. Nothing changed.')
+    expect(restartingMessage('local')).toBe('Studio is already restarting for the switch to "This computer". Nothing changed.')
     await vi.waitFor(() => expect(relaunched).toEqual(['local']))
     await new Promise((r) => setTimeout(r, 1200))
     expect(relaunched).toEqual(['local'])

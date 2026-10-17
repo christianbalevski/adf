@@ -93,7 +93,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'ADF Studio',
     items: [
-      { id: 'backend', label: 'Backend', description: 'Where agents run: in Studio or in an ADF daemon', keywords: 'daemon embedded local remote server url token', docs: guideUrl('settings', 'backend') },
+      { id: 'backend', label: 'Backend', description: 'Where agents run: this computer, a remote computer or inside Studio', keywords: 'daemon embedded local remote server url token', docs: guideUrl('settings', 'backend') },
       { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format', docs: DOCS.index },
     ],
   },

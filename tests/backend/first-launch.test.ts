@@ -230,7 +230,7 @@ describe('upgrade from 0.7.x', () => {
     expect(h.dialogs).toHaveLength(1)
     const [dialog1] = h.dialogs
     expect(dialog1.parent).toBe(WINDOW)
-    expect(dialog1.message).toBe('Studio now runs agents in the ADF daemon.')
+    expect(dialog1.message).toBe('Agents now run in a background service on this computer (the ADF daemon).')
     expect(dialog1.detail).toMatch(/^Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session, MCP sign-ins\./)
     expect(dialog1.detail).toMatch(/Agents set to start automatically now start in the daemon/)
     expect(dialog1.detail).toMatch(/Settings → Backend has the details\.$/)
@@ -260,13 +260,13 @@ describe('upgrade from 0.7.x', () => {
     expect(second.report?.changed).toBe(false)
     expect(second.notice?.record.moved).toEqual(first.notice?.record.moved)
     await show(second)
-    expect(h.dialogs.map((d) => d.message)).toEqual(['Studio now runs agents in the ADF daemon.'])
+    expect(h.dialogs.map((d) => d.message)).toEqual(['Agents now run in a background service on this computer (the ADF daemon).'])
     expect(existsSync(join(dir, DEFAULT_SWITCH_FILE))).toBe(true)
     h.dialogs.length = 0
     expect((await boot()).notice).toBeNull()
   })
 
-  it('Studio quitting or restarting (e.g. "Use Embedded Mode for This Session"): no notice, and it stays pending', async () => {
+  it('Studio quitting or restarting (e.g. "Run Inside Studio for This Session"): no notice, and it stays pending', async () => {
     write07xUserData({ identity: false })
     const first = await boot()
     await showBootNotices({ report: first.report, mode: 'local', notice: first.notice, guard: null, window: WINDOW, ready: Promise.resolve(false), userDataDir: dir, log: quiet, quitting: () => true })
@@ -291,7 +291,7 @@ describe('upgrade from 0.7.x', () => {
     expect(readJson(join(dir, PENDING_NOTICE_FILE))).toMatchObject({ record: { moved: ['Client settings', 'ChatGPT session', 'MCP sign-ins'], notDone: [] } })
     // One dialog for both: the notice stands in for this launch's summary.
     await show(second)
-    expect(h.dialogs.map((d) => d.message)).toEqual(['Studio now runs agents in the ADF daemon.'])
+    expect(h.dialogs.map((d) => d.message)).toEqual(['Agents now run in a background service on this computer (the ADF daemon).'])
     expect(h.dialogs[0].detail).toMatch(/^Moved: Client settings, ChatGPT session, MCP sign-ins\./)
     expect(h.dialogs[0].detail).not.toMatch(/Not done yet/)
   })
@@ -301,7 +301,7 @@ describe('upgrade from 0.7.x', () => {
     const first = await boot()
     await show(first, Promise.resolve(false))
     expect(h.dialogs).toHaveLength(1)
-    expect(h.dialogs[0].message).toBe('Studio now runs agents in the ADF daemon, but could not connect to it.')
+    expect(h.dialogs[0].message).toBe('Agents now run in a background service on this computer (the ADF daemon), but Studio could not connect to it.')
     expect(h.dialogs[0].detail).toMatch(/Studio could not connect to the ADF daemon, so no agent runs yet/)
     expect(h.dialogs[0].detail).not.toMatch(/now start in the daemon/)
     expect(h.dialogs[0].type).toBe('warning')
@@ -349,7 +349,7 @@ describe('an unusable studio-backend.json', () => {
     expect(b.asked).toHaveLength(1)
     expect(b.asked[0].detail).toContain(backendConfigPath(dir))
     expect(b.asked[0].detail).toMatch(/could not be parsed and was moved to .*corrupt/)
-    expect(b.asked[0].buttons).toEqual(['Use Local Daemon (Recommended)', 'Use Embedded'])
+    expect(b.asked[0].buttons).toEqual(['Run on This Computer (Recommended)', 'Run Inside Studio (Legacy)'])
     expect(b.backend).toMatchObject({ mode: 'embedded', source: 'file', fileProblem: null })
     expect(readJson(backendConfigPath(dir))).toMatchObject({ mode: 'embedded' })
     // Embedded: Studio's sign-in stays with Studio.
@@ -375,7 +375,7 @@ describe('an unusable studio-backend.json', () => {
     expect(b.asked[0].detail).toContain(backendConfigPath(dir))
     expect(b.asked[0].detail).toMatch(/could not be read \(EISDIR\)/)
     expect(b.asked[0].detail).toMatch(/Fix its permissions or delete it, then restart Studio/)
-    expect(b.asked[0].buttons).toEqual(['Use Local Daemon for This Launch', 'Use Embedded for This Launch'])
+    expect(b.asked[0].buttons).toEqual(['Run on This Computer for This Launch', 'Run Inside Studio for This Launch'])
     expect(b.backend).toMatchObject({ mode: 'local', source: 'session', sessionReason: expect.stringContaining(backendConfigPath(dir)) })
     // Session-only: client keys follow, credentials stay.
     expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)

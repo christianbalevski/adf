@@ -260,7 +260,7 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
     { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
     ...(problem ? [{ label: problem, enabled: false }] : []),
     ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : []),
-    ...(failed && useEmbedded ? [{ label: 'Use Embedded for This Session', click: () => useEmbedded() }] : []),
+    ...(failed && useEmbedded ? [{ label: 'Run Inside Studio for This Session', click: () => useEmbedded() }] : []),
     ...(failed && openBackend ? [{ label: 'Open Settings → Backend', click: () => openBackend() }] : [])
   ]
 }

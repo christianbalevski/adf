@@ -130,7 +130,7 @@ export class DaemonConnection {
         if (err instanceof Error && err.name === 'SwitchToEmbeddedError') {
           // The user chose embedded for this session (§8.2): Studio is restarting, no failure dialog.
           this.log.log(`[Backend] ${message}`)
-          this.set({ state: 'connecting', progress: 'Restarting Studio in embedded mode…' })
+          this.set({ state: 'connecting', progress: 'Restarting Studio to run agents inside Studio…' })
           throw new BackendNotConnectedError(message)
         }
         this.log.error(`[Backend] No ADF daemon for this session: ${message}`)

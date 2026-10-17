@@ -14,7 +14,7 @@ import type { BackendDaemonStatus } from '../../../src/shared/types/backend.type
 describe('defaultSwitchLine', () => {
   it('names the date and the version in one line; what moved and what was not done are separate', () => {
     const record = { at: 'not a date', version: '0.8.0', moved: ['Client settings', 'ChatGPT session'], notDone: ['MCP sign-ins: the daemon\'s secret store is locked.'] }
-    expect(defaultSwitchLine(record)).toBe('On not a date, Studio 0.8.0 switched this install to Local daemon.')
+    expect(defaultSwitchLine(record)).toBe('On not a date, Studio 0.8.0 moved agents from inside Studio to this computer.')
     expect(defaultSwitchDetails(record)).toEqual({
       moved: 'Moved: Client settings, ChatGPT session.',
       notDone: 'Not done then, retried at each start: MCP sign-ins: the daemon\'s secret store is locked.',
@@ -23,7 +23,7 @@ describe('defaultSwitchLine', () => {
 
   it('says "nothing" when nothing moved, and has no not-done line when all was done', () => {
     const record = { at: '2026-10-16T10:00:00.000Z', version: '', moved: [], notDone: [] }
-    expect(defaultSwitchLine(record)).toMatch(/^On .*, Studio switched this install to Local daemon\.$/)
+    expect(defaultSwitchLine(record)).toMatch(/^On .*, Studio moved agents from inside Studio to this computer\.$/)
     expect(defaultSwitchDetails(record)).toEqual({ moved: 'Moved: nothing.', notDone: null })
   })
 })

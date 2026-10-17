@@ -19,23 +19,29 @@ import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, Re
 
 type MessageGroup = 'backend' | 'remote'
 
+/**
+ * The modes as users see them (owner decision 2026-10-17); internal ids stay
+ * embedded/local/remote. Inside Studio is the legacy backend, kept for this
+ * release only (owner decision 2026-10-16).
+ */
 const MODE_LABELS: Record<StudioBackendMode, string> = {
-  embedded: 'Embedded',
-  local: 'Local daemon',
-  remote: 'Remote daemon',
+  embedded: 'Inside Studio (legacy)',
+  local: 'This computer',
+  remote: 'Remote computer',
 }
 
-/** The control's options: Embedded is the legacy backend, kept for this release only (owner decision 2026-10-16). */
-const OPTION_LABELS: Record<StudioBackendMode, string> = {
-  ...MODE_LABELS,
-  embedded: 'Embedded (legacy, removed in the next release)',
+/** Where agents run in each mode, for sentences ("Agents run on this computer."). */
+const MODE_PLACES: Record<StudioBackendMode, string> = {
+  embedded: 'inside Studio',
+  local: 'on this computer',
+  remote: 'on the remote computer',
 }
 
 /** One short sentence per mode; the guide has the rest (Learn more, Docs). */
 const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
-  embedded: 'Agents run inside Studio and stop when Studio quits.',
-  local: 'Agents run in an ADF daemon on this computer.',
-  remote: 'Agents run in an ADF daemon on another computer.',
+  embedded: 'Agents run inside Studio and stop when you quit.',
+  local: 'Agents run in a background service on this computer and can keep running when Studio is closed.',
+  remote: 'Agents run on another computer. Studio connects to it.',
 }
 
 /** A "Learn more" link to the guide after a row's one-sentence description. */
@@ -59,7 +65,7 @@ function Details({ lines }: { lines: string[] }) {
 /** The launch that moved this install off Embedded to the new default (W5-I), in one line; what moved is under Details. */
 export function defaultSwitchLine(record: NonNullable<BackendSettingsView['defaultSwitch']>): string {
   const when = Number.isNaN(Date.parse(record.at)) ? record.at : new Date(record.at).toLocaleString()
-  return `On ${when}, Studio${record.version ? ` ${record.version}` : ''} switched this install to Local daemon.`
+  return `On ${when}, Studio${record.version ? ` ${record.version}` : ''} moved agents from inside Studio to this computer.`
 }
 
 /** "Default changed": what moved (under Details) and what was not done then (inline: a problem is never hidden). */
@@ -71,12 +77,13 @@ export function defaultSwitchDetails(record: NonNullable<BackendSettingsView['de
 }
 
 function activeLine(view: BackendSettingsView): string {
-  const mode = MODE_LABELS[view.active.mode]
-  if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
-  if (view.active.source === 'session' && view.active.sessionReason) return `This launch runs ${mode} for this session only: ${view.active.sessionReason}`
-  if (view.active.source === 'session') return `This launch runs ${mode} for this session only; the next launch uses ${MODE_LABELS[view.configured.mode]}.`
-  if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
-  return `This launch runs ${mode}.`
+  const place = MODE_PLACES[view.active.mode]
+  const next = MODE_PLACES[view.configured.mode]
+  if (view.active.source === 'env') return `Agents run ${place} because ADF_STUDIO_BACKEND is set.`
+  if (view.active.source === 'session' && view.active.sessionReason) return `Agents run ${place} for this session only: ${view.active.sessionReason}`
+  if (view.active.source === 'session') return `Agents run ${place} for this session only; from the next launch, ${next}.`
+  if (view.active.mode !== view.configured.mode) return `Agents run ${place} until Studio restarts; then ${next}.`
+  return `Agents run ${place}.`
 }
 
 const CONNECTION_LABELS: Record<BackendDaemonStatus['connection'], string> = {
@@ -258,7 +265,7 @@ export function BackendSettings() {
       )}
       {pendingRestart && (
         <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-          <span>This launch runs {MODE_LABELS[view.active.mode]}. Restart Studio to use {MODE_LABELS[view.configured.mode]}.</span>
+          <span>Agents run {MODE_PLACES[view.active.mode]}. Restart Studio to run them {MODE_PLACES[view.configured.mode]}.</span>
           <Button variant="primary" size="compact" onClick={restart}>Restart now</Button>
         </div>
       )}
@@ -279,7 +286,7 @@ export function BackendSettings() {
             value={view.configured.mode}
             options={(['embedded', 'local', 'remote'] as const).map((mode) => ({
               value: mode,
-              label: OPTION_LABELS[mode],
+              label: MODE_LABELS[mode],
               disabled: saving,
             }))}
             onChange={(mode) => { if (mode !== view.configured.mode) void save('backend', { mode }, 'Saved.') }}
@@ -357,8 +364,8 @@ export function BackendSettings() {
       </SettingsGroup>
 
       <SettingsGroup
-        title="Remote daemon"
-        description="Used in Remote daemon mode."
+        title="Remote computer"
+        description="Used when agents run on a remote computer."
         docs={DOCS.backendRemote}
       >
         <SettingsRow
@@ -373,7 +380,7 @@ export function BackendSettings() {
             placeholder="https://adf.example.com"
             spellCheck={false}
             autoComplete="off"
-            aria-label="Remote daemon URL"
+            aria-label="Remote computer URL"
           />
           {urlCheck?.kind === 'insecure-http' && (
             <label className="mt-2 flex items-center gap-2 cursor-pointer text-[12px] text-[var(--adf-ui-text-muted)]">
@@ -407,7 +414,7 @@ export function BackendSettings() {
               disabled={!view.encryptionAvailable}
               spellCheck={false}
               autoComplete="off"
-              aria-label="Remote daemon token"
+              aria-label="Remote computer token"
             />
             {view.configured.remoteTokenSaved && (
               <Button variant="danger" disabled={saving} onClick={() => void save('remote', { clearRemoteToken: true }, 'Token removed.')}>

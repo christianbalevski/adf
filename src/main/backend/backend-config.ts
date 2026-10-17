@@ -50,7 +50,7 @@ const MODES: readonly StudioBackendMode[] = ['embedded', 'local', 'remote']
  * be read or names an unknown mode falls back to.
  */
 export const DEFAULT_BACKEND_MODE: StudioBackendMode = 'local'
-const DEFAULT_LABEL = 'the default, Local daemon'
+const DEFAULT_LABEL = 'the default, This computer'
 
 export interface StudioBackendConfig {
   v: 1
