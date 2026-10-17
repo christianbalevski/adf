@@ -302,6 +302,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
       const files = await adfFilesIn(ctx, client, args.dirPath)
       const settled = await mapSettled(files, DIRECTORY_START_CONCURRENCY, async (filePath) => {
         if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return
+        // Loaded already: running, or the open file held as a document (also when reached through a link).
         if (await ctx.runningAgentAt(filePath)) return
         try {
           await startInBackground(client, filePath, false)
@@ -326,7 +327,8 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
       for (const filePath of await adfFilesIn(ctx, client, args.dirPath)) {
         if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) continue
         const agentId = await ctx.runningAgentAt(filePath)
-        if (!agentId) continue
+        // The open file's agent, also when the folder was named through a link or another spelling than the open path.
+        if (!agentId || agentId === ctx.session.agentId) continue
         try {
           await client.request('POST', `/agents/${enc(agentId)}/stop`, { timeoutMs: 60_000 })
         } catch (err) {
