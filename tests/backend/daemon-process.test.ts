@@ -46,7 +46,7 @@ function info(over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo {
  * (which writes it right after it listens), that pid is in the pid file,
  * unless `pidFile: false` (a listener that is not the daemon the file names).
  */
-function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versionStatus?: number; pidFile?: boolean; healthPid?: unknown }) {
+function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versionStatus?: number; pidFile?: boolean; healthPid?: unknown; behindProxyProof?: string }) {
   const calls: Array<{ method: string; path: string; auth: string | null; proof?: string | null }> = []
   const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -60,6 +60,10 @@ function fakeDaemon(state: { up: boolean; info: DaemonVersionInfo | null; versio
       return json(200, { ok: true, ...(pid !== undefined ? { pid } : {}) })
     }
     if (headers.Authorization !== `Bearer ${TOKEN}`) return json(401, { error: 'unauthorized', code: 'unauthorized' })
+    // ADF_DAEMON_BEHIND_PROXY: local-only routes need the local proof (requireLocalCaller).
+    if (state.behindProxyProof && ['/daemon/shutdown', '/client/sessions', '/client/reload-credentials'].includes(url.pathname) && headers['x-adf-local-proof'] !== state.behindProxyProof) {
+      return json(403, { error: 'Stopping the daemon only from this machine: no local proof', code: 'loopback_only' })
+    }
     if (url.pathname === '/version') {
       if (state.versionStatus) return json(state.versionStatus, { error: 'x' })
       return json(200, state.info)
@@ -382,6 +386,22 @@ describe('DaemonProcessController', () => {
     expect(spawner.spawns[0].options.env?.ADF_DAEMON_STARTED_BY).toBe('cli')
     expect(await ctl.listClientSessions()).toEqual([{ client: 'tui', version: '0.7.8', exitDaemonWhenClosed: false }])
     expect(logs.some(l => l.includes('as the user chose'))).toBe(true)
+  })
+
+  it('restart, stop and the client list send the local proof, which a daemon behind a proxy requires (review 4300792063)', async () => {
+    const proof = 'p'.repeat(43)
+    writeFileSync(join(dir, `daemon-local-proof-${PORT}`), `${proof}
+`)
+    const state = { up: true, info: info({ clientApiVersion: 99, startedBy: 'cli', pid: 900 }) as DaemonVersionInfo, behindProxyProof: proof }
+    const { fetchImpl } = fakeDaemon(state)
+    const spawner = fakeSpawner(() => { state.info = info({ pid: 4242, startedBy: 'studio' }); setTimeout(() => { state.up = true }, 0) }, 4242)
+    const { ctl } = controller(fetchImpl, { spawn: spawner.spawn, alive: (pid) => pid === 900 ? state.up : pid === 4242 ? state.up : false })
+    const refused = await ctl.ensure()
+    if (refused.kind !== 'refused') throw new Error(refused.kind)
+    expect(await ctl.listClientSessions()).toEqual([{ client: 'tui', version: '0.7.8', exitDaemonWhenClosed: false }])
+    const restarted = await ctl.restart(refused.info)
+    if (restarted.kind !== 'spawned') throw new Error(restarted.kind)
+    expect((await ctl.stop(restarted.handle)).stopped).toBe(true)
   })
 
   it('sends no token or proof to a listener the pid file does not name, and says why (W5-D1)', async () => {
