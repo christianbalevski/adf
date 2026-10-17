@@ -1571,8 +1571,10 @@ function LoopStream({ loop }: { loop: string }) {
     // Callers already cleared the composer; the queue is keyed by agent and
     // loop so a message typed into an inner loop's tab is sent to that loop,
     // and it is still there (and still sent) after the owner switches agents.
-    // Older queued messages go first: this one never jumps ahead of them.
-    if (queueOwnerMessage(targetFilePath, loop, state, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews })) {
+    // Older queued messages go first: this one never jumps ahead of them. A
+    // stopped agent with a queue is started the same way as below, then sent it.
+    const startForQueue = async () => (await startForegroundAgent({ hasUserMessage: true, announce: false })).success
+    if (queueOwnerMessage(targetFilePath, loop, state, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews }, startForQueue)) {
       return
     }
 
