@@ -114,6 +114,20 @@ export function dismissBootDialogs(reason: string): void {
   for (const abort of [...dialogAborts]) abort.abort(new BootDialogDismissedError(reason))
 }
 
+/**
+ * The main window closed. Windows and Linux: Studio quits
+ * (window-all-closed), so open boot dialogs are dismissed and nothing acts
+ * on them. macOS: Studio keeps running without a window, so they stay open
+ * on the boot window until the user answers.
+ */
+export function noteMainWindowClosed(platform: NodeJS.Platform = process.platform): void {
+  if (platform === 'darwin') {
+    if (dialogAborts.size > 0) console.log('[App] The main window was closed; Studio keeps running (macOS) and the open boot dialog waits for an answer')
+    return
+  }
+  dismissBootDialogs('The main window was closed')
+}
+
 /** Close the boot window, if one is open (the main window is shown); after its dialog is answered when one is open. */
 export function closeBootWindow(): void {
   if (dialogsOpen > 0) {

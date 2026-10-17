@@ -23,6 +23,8 @@ const h = vi.hoisted(() => ({
 vi.mock('electron', () => ({
   app: {
     getVersion: () => '0.9.0',
+    // showBootWindow brings Studio to the front on macOS.
+    focus: () => {},
     isPackaged: false,
     relaunch: (opts: unknown) => { h.relaunches.push(opts) },
     quit: () => { h.quits++ },
@@ -71,7 +73,7 @@ const {
   SWITCH_RESUME_FILE,
 } = await import('../../src/main/backend/mode-switch')
 const { resolveBootBackend } = await import('../../src/main/backend/backend-config')
-const { dismissBootDialogs } = await import('../../src/main/utils/boot-window')
+const { dismissBootDialogs, noteMainWindowClosed } = await import('../../src/main/utils/boot-window')
 import type { DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
 
 let dir: string
@@ -117,14 +119,29 @@ describe('version mismatch dialog (§8.2 step 3)', () => {
     expect(h.quits).toBe(1)
   })
 
-  it('closing Studio while the question is open dismisses it: no answer, no restart of either kind (review follow-up to c57a8981)', async () => {
+  it.each(['win32', 'linux'] as const)('closing Studio while the question is open dismisses it: no answer, no restart of either kind (review follow-up to c57a8981; %s)', async (platform) => {
     h.holdNextDialog = true
     const choice = askVersionMismatch(mismatch, running(), [], () => null)
     while (h.dialogs.length === 0) await new Promise((r) => setTimeout(r, 0))
-    dismissBootDialogs('The main window was closed')
+    noteMainWindowClosed(platform)
     expect(await choice).toBe('dismissed')
     expect(h.relaunches).toEqual([])
     expect(h.quits).toBe(0)
+  })
+
+  it('macOS: closing the main window leaves the question open; it answers nothing by itself', async () => {
+    h.holdNextDialog = true
+    let settled: string | null = null
+    const choice = askVersionMismatch(mismatch, running(), [], () => null).then((c) => { settled = c; return c })
+    while (h.dialogs.length === 0) await new Promise((r) => setTimeout(r, 0))
+    noteMainWindowClosed('darwin')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled).toBeNull()
+    expect(h.relaunches).toEqual([])
+    // Quitting Studio (Cmd+Q) dismisses it.
+    dismissBootDialogs('Studio is quitting')
+    expect(await choice).toBe('dismissed')
+    expect(h.relaunches).toEqual([])
   })
 
   it('a daemon Studio started with nobody else connected: a plain restart', async () => {

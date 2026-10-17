@@ -12,7 +12,7 @@ import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
 import { showOrCreateMainWindow } from './utils/main-window'
-import { closeBootWindow, dismissBootDialogs } from './utils/boot-window'
+import { closeBootWindow, dismissBootDialogs, noteMainWindowClosed } from './utils/boot-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
@@ -419,9 +419,9 @@ function createWindow(): BrowserWindow {
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
     if (mainWindow === createdWindow) mainWindow = null
-    // Closing the main window quits (window-all-closed): a boot dialog still
-    // open on the boot window must not keep Studio alive, nor be answered later.
-    if (process.platform !== 'darwin') dismissBootDialogs('The main window was closed')
+    // Windows/Linux: closing it quits (window-all-closed), so a boot dialog
+    // still open must not keep Studio alive, nor be answered later. macOS: it stays.
+    noteMainWindowClosed()
   })
 
   // Webview guests may only load the local agent-browser (noVNC) pages, with
@@ -748,5 +748,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (shutdownCleanup) return
   console.log('[App] before-quit — starting shutdown cleanup')
+  // A boot dialog still open (macOS keeps one after its window closed) is no answer: nothing restarts from it.
+  dismissBootDialogs('Studio is quitting')
   void runShutdownCleanup().finally(() => app.exit(0))
 })
