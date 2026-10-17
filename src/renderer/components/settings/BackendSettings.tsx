@@ -12,6 +12,8 @@
 
 import { useEffect, useState } from 'react'
 import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextInput } from '../ui'
+import { DocsLink } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import { checkRemoteDaemonUrl, remoteUrlOrigin, type RemoteUrlClass } from '../../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
 
@@ -29,27 +31,50 @@ const OPTION_LABELS: Record<StudioBackendMode, string> = {
   embedded: 'Embedded (legacy, removed in the next release)',
 }
 
-const EMBEDDED_LEGACY = 'Embedded runs agents inside Studio as before; it stays for this release as a fallback if the daemon does not work for you, and the next release removes it.'
-
+/** One short sentence per mode; the guide has the rest (Learn more, Docs). */
 const MODE_DESCRIPTIONS: Record<StudioBackendMode, string> = {
   embedded: 'Agents run inside Studio and stop when Studio quits.',
-  local: 'Agents run in an ADF daemon on this computer, with the same settings and files as Studio. Studio starts the daemon or attaches to a running one.',
-  remote: 'Agents run in an ADF daemon on another computer, reached by URL and token.',
+  local: 'Agents run in an ADF daemon on this computer.',
+  remote: 'Agents run in an ADF daemon on another computer.',
 }
 
-/** The launch that moved this install off Embedded to the new default (W5-I), in one line. */
+/** A "Learn more" link to the guide after a row's one-sentence description. */
+function LearnMore({ href }: { href: string }) {
+  return <DocsLink href={href} label="Learn more" className="ml-1.5 !text-[11px]" />
+}
+
+/** Technical detail kept off a status line: a native disclosure, closed by default. */
+function Details({ lines }: { lines: string[] }) {
+  if (lines.length === 0) return null
+  return (
+    <details className="mt-1 text-[11px] text-[var(--adf-ui-text-subtle)]">
+      <summary className="cursor-pointer select-none">Details</summary>
+      <ul className="mt-1 space-y-0.5 break-all">
+        {lines.map((line) => <li key={line}>{line}</li>)}
+      </ul>
+    </details>
+  )
+}
+
+/** The launch that moved this install off Embedded to the new default (W5-I), in one line; what moved is under Details. */
 export function defaultSwitchLine(record: NonNullable<BackendSettingsView['defaultSwitch']>): string {
   const when = Number.isNaN(Date.parse(record.at)) ? record.at : new Date(record.at).toLocaleString()
-  const moved = record.moved.length > 0 ? record.moved.join(', ') : 'nothing'
-  const notDone = record.notDone.length > 0 ? ` Not done then, retried at each start: ${record.notDone.join(' ')}` : ''
-  return `On ${when}, Studio${record.version ? ` ${record.version}` : ''} switched this install from Embedded to Local daemon, the new default. Moved: ${moved}.${notDone}`
+  return `On ${when}, Studio${record.version ? ` ${record.version}` : ''} switched this install to Local daemon.`
+}
+
+/** "Default changed": what moved (under Details) and what was not done then (inline: a problem is never hidden). */
+export function defaultSwitchDetails(record: NonNullable<BackendSettingsView['defaultSwitch']>): { moved: string; notDone: string | null } {
+  return {
+    moved: `Moved: ${record.moved.length > 0 ? record.moved.join(', ') : 'nothing'}.`,
+    notDone: record.notDone.length > 0 ? `Not done then, retried at each start: ${record.notDone.join(' ')}` : null,
+  }
 }
 
 function activeLine(view: BackendSettingsView): string {
   const mode = MODE_LABELS[view.active.mode]
   if (view.active.source === 'env') return `This launch runs ${mode} because ADF_STUDIO_BACKEND is set.`
   if (view.active.source === 'session' && view.active.sessionReason) return `This launch runs ${mode} for this session only: ${view.active.sessionReason}`
-  if (view.active.source === 'session') return `This launch runs ${mode} for this session only (the ADF daemon's version did not match, or it could not be reached). The next launch uses ${MODE_LABELS[view.configured.mode]}.`
+  if (view.active.source === 'session') return `This launch runs ${mode} for this session only; the next launch uses ${MODE_LABELS[view.configured.mode]}.`
   if (view.active.mode !== view.configured.mode) return `This launch runs ${mode}. The next launch uses ${MODE_LABELS[view.configured.mode]}.`
   return `This launch runs ${mode}.`
 }
@@ -61,18 +86,28 @@ const CONNECTION_LABELS: Record<BackendDaemonStatus['connection'], string> = {
   failed: 'Not connected',
 }
 
-/** MODE-02: the daemon this launch uses (local: pid, version, who started it). */
-function daemonLine(daemon: BackendDaemonStatus): string {
+/**
+ * MODE-02: the daemon this launch uses, terse: connection, pid, who started
+ * it. A key the owner does not trust stays on the line (it needs an action);
+ * the URL, version and a trusted key are under Details (daemonDetails), and
+ * a keychain problem is the row's error.
+ */
+export function daemonLine(daemon: BackendDaemonStatus): string {
   const parts = [daemon.progress ?? CONNECTION_LABELS[daemon.connection]]
-  if (daemon.url) parts.push(daemon.url)
   if (daemon.pid) parts.push(`pid ${daemon.pid}`)
-  if (daemon.version) parts.push(`version ${daemon.version}`)
   if (daemon.startedBy) parts.push(daemon.how === 'spawned' ? 'started by this Studio' : `started by ${daemon.startedBy === 'studio' ? 'Studio' : daemon.startedBy === 'cli' ? 'the ADF CLI' : 'a service'}`)
   // K12 (no OS keychain): the owner's trust in the daemon's key, set with adf identity trust-daemon.
-  if (daemon.trust?.state === 'trusted') parts.push('daemon key trusted by the owner')
-  else if (daemon.trust?.state === 'not-trusted') parts.push('daemon key not trusted (adf identity trust-daemon)')
-  if (daemon.keychainProblem) parts.push('keychain unavailable')
+  if (daemon.trust?.state === 'not-trusted') parts.push('daemon key not trusted (adf identity trust-daemon)')
   return parts.join(' · ')
+}
+
+/** The daemon row's Details: URL, version, a trusted key. */
+export function daemonDetails(daemon: BackendDaemonStatus): string[] {
+  const lines: string[] = []
+  if (daemon.url) lines.push(`URL: ${daemon.url}`)
+  if (daemon.version) lines.push(`Version: ${daemon.version}`)
+  if (daemon.trust?.state === 'trusted') lines.push('Daemon key: trusted by the owner')
+  return lines
 }
 
 /**
@@ -229,12 +264,16 @@ export function BackendSettings() {
       )}
       <SettingsGroup
         title="Mode"
-        description="Studio reads this at launch, so a change applies after a restart."
+        description="A change shows what moves, then restarts Studio."
+        docs={DOCS.backendSwitch}
       >
         <SettingsRow
           label="Run agents in"
-          description={`${MODE_DESCRIPTIONS[view.configured.mode]} ${EMBEDDED_LEGACY}`}
-          help={`${activeLine(view)} Choosing another mode shows what moves, then restarts Studio.`}
+          description={<>
+            {MODE_DESCRIPTIONS[view.configured.mode]}
+            {view.configured.mode === 'embedded' && <LearnMore href={DOCS.backendEmbedded} />}
+          </>}
+          help={activeLine(view)}
         >
           <SegmentedControl
             value={view.configured.mode}
@@ -251,9 +290,12 @@ export function BackendSettings() {
           <SettingsRow
             separator
             label={`Switching to ${MODE_LABELS[view.pendingSwitch.target]}`}
-            description={view.pendingSwitch.gaveUp
-              ? `Still waiting for ${view.pendingSwitch.waitingFor.join(', ') || 'a turn'} after 30 minutes. Finish the switch now (the turns are stopped), or cancel it and stay in ${MODE_LABELS[view.active.mode]}.`
-              : `Studio restarts once the turns in flight finish (${view.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
+            description={<>
+              {view.pendingSwitch.gaveUp
+                ? `Still waiting after 30 minutes for ${view.pendingSwitch.waitingFor.join(', ') || 'a turn'}; Finish Switch Now stops the turns.`
+                : `Studio restarts once the turns in flight finish (${view.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
+              <LearnMore href={DOCS.backendTurns} />
+            </>}
           >
             <div className="flex items-center gap-2">
               <Button variant="primary" disabled={saving} onClick={() => void save('backend', { switchAction: 'finish-now' }, '')}>Finish Switch Now</Button>
@@ -265,18 +307,25 @@ export function BackendSettings() {
           <SettingsRow
             separator
             label="Default changed"
-            description={defaultSwitchLine(view.defaultSwitch)}
+            description={<>{defaultSwitchLine(view.defaultSwitch)}<LearnMore href={DOCS.backendUpgrade} /></>}
+            help={<>
+              {defaultSwitchDetails(view.defaultSwitch).notDone}
+              <Details lines={[defaultSwitchDetails(view.defaultSwitch).moved]} />
+            </>}
           />
         )}
         {view.daemon && (
           <SettingsRow
             separator
             label="ADF daemon"
-            description={daemonLine(view.daemon)}
-            help={view.daemon.message ?? undefined}
+            description={<>{daemonLine(view.daemon)}<LearnMore href={DOCS.backendStatus} /></>}
+            help={view.daemon.message || daemonDetails(view.daemon).length > 0 ? <>
+              {view.daemon.message}
+              <Details lines={daemonDetails(view.daemon)} />
+            </> : undefined}
             error={[
               view.daemon.localProof && !view.daemon.localProof.available
-                ? `The daemon runs without its local proof (${view.daemon.localProof.problem ?? 'unknown reason'}), so revealing stored values and importing an identity are refused. Restart the daemon after fixing the file's permissions.`
+                ? `The daemon runs without its local proof (${view.daemon.localProof.problem ?? 'unknown reason'}), so reveal and identity import are refused. Fix the file's permissions, then restart the daemon.`
                 : null,
               view.daemon.keychainProblem,
             ].filter(Boolean).join(' ') || undefined}
@@ -285,7 +334,7 @@ export function BackendSettings() {
         {(view.configured.mode === 'local' || view.active.mode === 'local') && <SettingsRow
           separator
           label="Keep the daemon running when Studio quits"
-          description="Off: quitting Studio stops a daemon that Studio started, as quitting stops agents in embedded mode; with another client (the terminal app) connected it stops when that one disconnects; after a crash it stops 60 seconds later. A daemon started with adf daemon start is never stopped by Studio. On: the daemon keeps running your agents, and the ADF CLI manages it (adf daemon stop)."
+          description={<>When on, stop the daemon with adf daemon stop.<LearnMore href={DOCS.backendQuit} /></>}
         >
           <label className="flex items-center gap-2 cursor-pointer">
             <input
@@ -309,12 +358,13 @@ export function BackendSettings() {
 
       <SettingsGroup
         title="Remote daemon"
-        description="Used when the backend is Remote daemon. The token is stored encrypted with the OS keychain and is never shown again after you save it."
+        description="Used in Remote daemon mode."
+        docs={DOCS.backendRemote}
       >
         <SettingsRow
           stacked
           label="Daemon URL"
-          help="https://, or http:// to localhost (an SSH tunnel) or a Tailscale address (100.64.0.0/10)."
+          help="https://, or http:// to localhost or a Tailscale address."
           error={urlCheck?.kind === 'invalid' ? urlCheck.reason : !urlChanged && view.remoteUrlProblem ? view.remoteUrlProblem : undefined}
         >
           <TextInput
@@ -344,7 +394,7 @@ export function BackendSettings() {
           description={!view.configured.remoteTokenSaved
             ? 'Run adf daemon token on the server and paste the result.'
             : originChanged && !tokenDraft.trim()
-              ? 'A token is saved for the old address. Saving the new address removes it.'
+              ? 'Saving the new address removes the saved token.'
               : 'A token is saved. Enter a new one to replace it.'}
           error={view.encryptionAvailable ? undefined : (view.encryptionUnavailableReason ?? 'OS keychain encryption is not available, so a token cannot be saved.')}
         >
@@ -389,10 +439,10 @@ export function BackendSettings() {
           separator
           label="Use this daemon"
           description={remoteActive
-            ? 'Studio is using this remote daemon. Choose another mode above to switch back.'
+            ? 'Studio uses this daemon now.'
             : remoteConfigured
               ? 'Saved as the backend; this launch does not run it.'
-              : 'Shows what moves (client settings only; sign-ins and keys stay on this computer) and what happens to running agents, then restarts Studio connected to this daemon.'}
+              : 'Shows what moves, then restarts Studio connected to this daemon.'}
         >
           {!remoteConfigured && (
             <Button

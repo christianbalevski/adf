@@ -52,7 +52,7 @@ Backend does (see [What moves](#what-moves-during-a-switch)):
    runs yet. The dialog appears once: if Studio quits or restarts before it
    was shown, the next launch shows it, together with what that launch moved
    and what is still not done. Settings → Backend keeps a **Default changed** row
-   with the date, the version and what moved.
+   with the date and the version; its **Details** lists what moved.
 
 The dialog also says, when it applies:
 
@@ -396,9 +396,10 @@ fall back to `/events` and say so once in its activity log: "Live events over
 Three places show the daemon Studio uses:
 
 - **Settings → Backend → ADF daemon**: the connection state ("Connected",
-  "Connecting", "Not connected, retrying", "Not connected"), the URL, pid,
-  version and who started it ("started by this Studio", "started by Studio",
-  "started by the ADF CLI", "started by a service"). Studio reads who started
+  "Connecting", "Not connected, retrying", "Not connected"), pid and who
+  started it ("started by this Studio", "started by Studio", "started by the
+  ADF CLI", "started by a service"); **Details** shows the URL and the
+  version. Studio reads who started
   the daemon again whenever it reconnects, so a daemon restarted with
   `adf daemon restart` reads "started by the ADF CLI".
 - **Help menu**: **Open Daemon Log** (Local daemon; if the OS cannot open the
@@ -412,8 +413,8 @@ Three places show the daemon Studio uses:
 
 If the daemon could not protect its local proof file (`daemon-local-proof`,
 Windows `icacls` failure), Settings → Backend says "The daemon runs without
-its local proof (…), so revealing stored values and importing an identity are
-refused. Restart the daemon after fixing the file's permissions."
+its local proof (…), so reveal and identity import are refused. Fix the file's
+permissions, then restart the daemon."
 
 ## When the daemon is not reachable
 
@@ -462,7 +463,8 @@ keeps the original's "started by", so Studio's quit does not stop a daemon
 the CLI started.
 
 A daemon of another release with the same client API version attaches
-without a question. Settings → Backend shows its version.
+without a question. Settings → Backend shows its version under the ADF
+daemon row's **Details**.
 
 ## Run Embedded when the daemon does not work
 
