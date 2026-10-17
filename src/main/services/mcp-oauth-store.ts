@@ -374,14 +374,38 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
     return record && typeof record === 'object' && !Array.isArray(record) ? record as McpOAuthRecord : undefined
   }
 
+  /**
+   * The index's servers: [] when there is none, null when one exists but
+   * cannot be read (a read error, a missing chunk, a checksum mismatch).
+   */
+  private readIndex(): string[] | null {
+    let head: ChunkHead | null
+    try {
+      head = readHead(this.backend, this.account)
+    } catch {
+      return null
+    }
+    if (!head || !isGeneration(head)) return []
+    const index = this.readJson(this.account) as { v?: unknown; servers?: unknown } | null
+    return index?.v === 1 && Array.isArray(index.servers) ? index.servers.filter((s): s is string => typeof s === 'string') : null
+  }
+
+  /**
+   * An unreadable index is never rewritten: it may name other servers' records,
+   * and a rewrite from nothing would leave them stored but unlisted (export,
+   * handover and legacy adoption find records through the index).
+   */
   private writeRecord(serverUrl: string, record: McpOAuthRecord | undefined): void {
-    const servers = this.listServerUrls()
+    const servers = this.readIndex()
+    if (servers === null) {
+      console.warn(`[MCP][oauth] DaemonAppOAuthStore: the sign-in index ${this.account} cannot be read; the record is ${record ? 'saved' : 'removed'} but the index is left as it is`)
+    }
     if (record) {
       chunkedSecretWrite(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl), JSON.stringify(record))
-      if (!servers.includes(serverUrl)) this.writeIndex([...servers, serverUrl])
+      if (servers && !servers.includes(serverUrl)) this.writeIndex([...servers, serverUrl])
     } else {
       chunkedSecretDelete(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl))
-      if (servers.includes(serverUrl)) this.writeIndex(servers.filter((s) => s !== serverUrl))
+      if (servers?.includes(serverUrl)) this.writeIndex(servers.filter((s) => s !== serverUrl))
     }
   }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AppSettingsOAuthStore,
   AgentKeystoreOAuthStore,
+  DaemonAppOAuthStore,
   captureOAuthToAgent,
   oauthKeystorePurpose,
   resolveOAuthStoreForConnect,
@@ -282,5 +283,63 @@ describe('resolveOAuthStoreForConnect', () => {
 
   it('returns undefined when neither is available', () => {
     expect(resolveOAuthStoreForConnect({})).toBeUndefined()
+  })
+})
+
+describe('DaemonAppOAuthStore index', () => {
+  const ACCOUNT = 'mcp-oauth-credentials:test'
+  function memBackend() {
+    const map = new Map<string, string>()
+    let failOnce: string | null = null
+    return {
+      map,
+      failNextRead(account: string) { failOnce = account },
+      isUnlocked: () => true,
+      get: (account: string) => {
+        if (failOnce === account) {
+          failOnce = null
+          throw new Error('keychain read failed')
+        }
+        return map.get(account) ?? null
+      },
+      set: (account: string, value: string) => { map.set(account, value) },
+      delete: (account: string) => { map.delete(account) },
+    }
+  }
+
+  it('an unreadable index is never rewritten by a new sign-in (missing chunk, then a read error)', async () => {
+    const backend = memBackend()
+    const store = new DaemonAppOAuthStore(backend, ACCOUNT)
+    await store.save(URL_A, record())
+    expect(store.listServerUrls()).toEqual([URL_A])
+    const indexHead = backend.map.get(ACCOUNT)!
+    const chunk = [...backend.map.keys()].find((k) => k.startsWith(`${ACCOUNT}#`))!
+    const chunkValue = backend.map.get(chunk)!
+    backend.map.delete(chunk) // the head stays, its chunk is gone: unreadable, not absent
+
+    await store.save(URL_B, record())
+    expect(backend.map.get(ACCOUNT)).toBe(indexHead)
+    backend.map.set(chunk, chunkValue)
+    expect(store.listServerUrls()).toEqual([URL_A])
+    expect(await store.get(URL_B)).toBeDefined() // the record itself was saved
+
+    // A removal leaves an unreadable index as it is too.
+    backend.map.delete(chunk)
+    await store.invalidate(URL_A)
+    backend.map.set(chunk, chunkValue)
+    expect(store.listServerUrls()).toEqual([URL_A])
+
+    // A transient read error of the index chunk.
+    const URL_C = 'https://mcp.example.com/sse'
+    backend.failNextRead(chunk)
+    await store.save(URL_C, record())
+    expect(store.listServerUrls()).toEqual([URL_A])
+  })
+
+  it('no index yet: the first sign-in creates it', async () => {
+    const store = new DaemonAppOAuthStore(memBackend(), ACCOUNT)
+    await store.save(URL_A, record())
+    await store.save(URL_B, record())
+    expect(store.listServerUrls()).toEqual([URL_A, URL_B])
   })
 })
