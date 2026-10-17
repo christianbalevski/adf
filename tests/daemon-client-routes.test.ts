@@ -502,11 +502,31 @@ describe('slow and dropped readers', () => {
     slow.resume()
     await waitFor(() => sessions.stats(slowId).deliveredCursor === total * 2, 15_000, 'slow reader drained')
     await waitFor(() => slow.blocks.some(b => b.id === String(total * 2)), 15_000, 'slow reader last frame')
+    // One gap per overflow, not one per run: under load the socket can take
+    // more (a `drain`) after the ring first wrapped, so some frames go out and
+    // the ring wraps again. Each gap precedes the next frame, starts at the
+    // last cursor written, and the counts add up to the frames dropped.
     const gaps = slow.blocks.filter(b => b.event === 'stream.gap')
-    expect(gaps).toHaveLength(1)
-    expect(gaps[0].data).toMatchObject({ reason: 'evicted', dropped: expect.any(Number) })
-    const frames = slow.blocks.filter(b => b.id !== undefined)
-    expect(frames.length + (gaps[0].data.dropped as number)).toBe(total * 2)
+    expect(gaps.length).toBeGreaterThanOrEqual(1)
+    let expected = 1
+    let lastWasGap = false
+    for (const block of slow.blocks) {
+      if (block.event === 'stream.gap') {
+        expect(lastWasGap).toBe(false)
+        expect(block.data).toMatchObject({ reason: 'evicted', requestedCursor: expected - 1, dropped: expect.any(Number) })
+        expect(block.data.dropped as number).toBeGreaterThan(0)
+        expected += block.data.dropped as number
+        lastWasGap = true
+      } else if (block.id !== undefined) {
+        expect(Number(block.id)).toBe(expected)
+        expected++
+        lastWasGap = false
+      }
+    }
+    expect(expected - 1).toBe(total * 2)
+    const dropped = gaps.reduce((sum, g) => sum + (g.data.dropped as number), 0)
+    expect(sessions.stats(slowId).dropped).toBe(dropped)
+    expect(slow.blocks.filter(b => b.id !== undefined).length + dropped).toBe(total * 2)
   })
 
   it('a session that drops mid-turn and reconnects with since= gets exactly the missed frames', async () => {
