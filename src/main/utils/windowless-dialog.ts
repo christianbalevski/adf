@@ -1,6 +1,6 @@
 import { dialog, type BrowserWindow, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
 import { flushMainLogSync } from './main-log-file'
-import { holdBootWindow, showBootWindow } from './boot-window'
+import { BootDialogDismissedError, holdBootWindow, showBootWindow, type BootDialogHold } from './boot-window'
 
 export interface WindowlessDialogDeps {
   /** A visible window to attach the dialog to (the boot window). */
@@ -8,8 +8,8 @@ export interface WindowlessDialogDeps {
   show: (parent: BrowserWindow | null, options: MessageBoxOptions) => Promise<MessageBoxReturnValue>
   flushLog: () => void
   log: (line: string) => void
-  /** Keep the parent open while the dialog is (closeBootWindow waits); returns the release. */
-  hold?: () => () => void
+  /** Keep the parent open while the dialog is (closeBootWindow waits); the signal dismisses the dialog. */
+  hold?: () => Pick<BootDialogHold, 'release'> & Partial<Pick<BootDialogHold, 'signal'>>
 }
 
 const defaultDeps: WindowlessDialogDeps = {
@@ -27,7 +27,8 @@ const defaultDeps: WindowlessDialogDeps = {
  * with no window and, the log buffer never flushing, nothing in main.log.
  * This names what is waiting in the log, flushes it, and attaches the dialog
  * to the boot window, shown in front: a sheet, visible and non-blocking. The
- * boot window is kept open until the dialog is answered.
+ * boot window is kept open until the dialog is answered. Closing Studio's
+ * main window dismisses it (BootDialogDismissedError).
  */
 export async function showWindowlessMessageBox(waitingOn: string, options: MessageBoxOptions, deps: WindowlessDialogDeps = defaultDeps): Promise<MessageBoxReturnValue> {
   deps.log(`[App] Waiting for an answer in a dialog (before the main window): ${waitingOn}`)
@@ -35,10 +36,13 @@ export async function showWindowlessMessageBox(waitingOn: string, options: Messa
   let parent: BrowserWindow | null = null
   try { parent = deps.parent('Waiting for your answer in the dialog.') } catch { /* no window: the dialog still opens on its own */ }
   // The main window can become ready while this is open: its parent stays until it is answered.
-  const release = parent ? deps.hold?.() : undefined
+  const held = parent ? deps.hold?.() : undefined
   try {
-    return await deps.show(parent, options)
+    const answer = await deps.show(parent, held?.signal ? { ...options, signal: held.signal } : options)
+    // Dismissed because the user closed Studio: not an answer.
+    if (held?.signal?.aborted) throw held.signal.reason instanceof Error ? held.signal.reason : new BootDialogDismissedError('Studio was closed')
+    return answer
   } finally {
-    release?.()
+    held?.release()
   }
 }

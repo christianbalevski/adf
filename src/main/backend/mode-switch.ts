@@ -5,7 +5,7 @@ import type { StudioBackendMode } from '../../shared/types/backend.types'
 import { decryptCredential, encryptCredential } from '../utils/credential-cipher'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { showWindowlessMessageBox } from '../utils/windowless-dialog'
-import { showBootWindow } from '../utils/boot-window'
+import { BootDialogDismissedError, showBootWindow } from '../utils/boot-window'
 import { flushMainLogSync } from '../utils/main-log-file'
 import { DaemonProcessController, decideAttach, type AttachDecision } from './daemon-process'
 import type { DaemonVersionInfo } from '../daemon/routes/meta-routes'
@@ -541,7 +541,15 @@ export async function askVersionMismatch(
   // The main window stays hidden until ready-to-show: a sheet on it would not be seen.
   const shown = window()
   const win = shown && !shown.isDestroyed() && shown.isVisible() ? shown : null
-  const { response } = await (win ? dialog.showMessageBox(win, options) : showWindowlessMessageBox(`daemon version ${running.version} (pid ${running.pid}) differs from Studio ${app.getVersion()}: restart it or use embedded mode`, options))
+  let response: number
+  try {
+    ({ response } = await (win ? dialog.showMessageBox(win, options) : showWindowlessMessageBox(`daemon version ${running.version} (pid ${running.pid}) differs from Studio ${app.getVersion()}: restart it or use embedded mode`, options)))
+  } catch (err) {
+    // The user closed Studio while the question was open: no answer, so no restart of either kind.
+    if (!(err instanceof BootDialogDismissedError)) throw err
+    console.log(`[Backend] The daemon version question was dismissed (${err.message}); Studio does not restart`)
+    return 'dismissed'
+  }
   if (response === 0) return 'restart'
   relaunchEmbeddedForSession('daemon version mismatch')
   return 'embedded'

@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   relaunches: [] as unknown[],
   quits: 0,
   notifications: [] as string[],
+  /** The next dialog stays open until its signal aborts (the user closes Studio). */
+  holdNextDialog: false,
 }))
 
 vi.mock('electron', () => ({
@@ -27,11 +29,27 @@ vi.mock('electron', () => ({
   },
   dialog: {
     showMessageBox: async (...args: unknown[]) => {
-      const opts = (args.length > 1 ? args[1] : args[0]) as { message: string; detail: string; buttons: string[]; defaultId?: number }
+      const opts = (args.length > 1 ? args[1] : args[0]) as { message: string; detail: string; buttons: string[]; defaultId?: number; cancelId?: number; signal?: AbortSignal }
       h.dialogs.push(opts)
+      if (h.holdNextDialog && opts.signal) {
+        h.holdNextDialog = false
+        const signal = opts.signal
+        // As Electron: an aborted signal ends the box with the cancel answer.
+        return new Promise((r) => signal.addEventListener('abort', () => r({ response: opts.cancelId ?? 0 })))
+      }
       return { response: h.responses.shift() ?? 0 }
     },
   },
+  // The boot window the windowless dialog opens on.
+  BrowserWindow: class {
+    on() { return this }
+    loadURL() { return Promise.resolve() }
+    show() {}
+    focus() {}
+    isDestroyed() { return false }
+    close() {}
+  },
+  nativeTheme: { shouldUseDarkColors: false },
   Notification: class {
     static isSupported() { return true }
     constructor(readonly options: { body: string }) { h.notifications.push(options.body) }
@@ -53,6 +71,7 @@ const {
   SWITCH_RESUME_FILE,
 } = await import('../../src/main/backend/mode-switch')
 const { resolveBootBackend } = await import('../../src/main/backend/backend-config')
+const { dismissBootDialogs } = await import('../../src/main/utils/boot-window')
 import type { DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
 
 let dir: string
@@ -96,6 +115,16 @@ describe('version mismatch dialog (§8.2 step 3)', () => {
     expect(shown.detail).toMatch(/sign-ins as they are/)
     expect(h.relaunches).toEqual([{ args: expect.arrayContaining([SESSION_BACKEND_ARG]) }])
     expect(h.quits).toBe(1)
+  })
+
+  it('closing Studio while the question is open dismisses it: no answer, no restart of either kind (review follow-up to c57a8981)', async () => {
+    h.holdNextDialog = true
+    const choice = askVersionMismatch(mismatch, running(), [], () => null)
+    while (h.dialogs.length === 0) await new Promise((r) => setTimeout(r, 0))
+    dismissBootDialogs('The main window was closed')
+    expect(await choice).toBe('dismissed')
+    expect(h.relaunches).toEqual([])
+    expect(h.quits).toBe(0)
   })
 
   it('a daemon Studio started with nobody else connected: a plain restart', async () => {

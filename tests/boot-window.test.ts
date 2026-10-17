@@ -21,7 +21,7 @@ type FakeWindow = InstanceType<typeof FakeWindow>
 vi.mock('electron', () => ({ app: { focus: () => {} }, dialog: {}, BrowserWindow: FakeWindow, nativeTheme: { shouldUseDarkColors: false } }))
 
 import type { BrowserWindow, MessageBoxReturnValue } from 'electron'
-import { closeBootWindow, holdBootWindow, showBootWindow } from '../src/main/utils/boot-window'
+import { BootDialogDismissedError, closeBootWindow, dismissBootDialogs, holdBootWindow, showBootWindow } from '../src/main/utils/boot-window'
 import { showWindowlessMessageBox } from '../src/main/utils/windowless-dialog'
 
 describe('boot window (characterization)', () => {
@@ -61,6 +61,36 @@ describe('boot window under a dialog (review 4300792043)', () => {
     expect(win.closed).toBe(false)
     answer({ response: 0, checkboxChecked: false })
     expect((await pending).response).toBe(0)
+    expect(win.closed).toBe(true)
+  })
+})
+
+describe('closing Studio while a boot dialog is open (review follow-up to c57a8981)', () => {
+  it('dismisses the dialog as Cancel, rejects with BootDialogDismissedError and closes the boot window', async () => {
+    let parent: BrowserWindow | null = null
+    let shownSignal: AbortSignal | undefined
+    const pending = showWindowlessMessageBox('daemon version differs', { message: 'ADF daemon version', buttons: ['Restart', 'Inside Studio'], cancelId: 1 }, {
+      log: () => {},
+      flushLog: () => {},
+      parent: (status) => showBootWindow(status),
+      hold: () => holdBootWindow(),
+      // As Electron: an aborted signal ends the box with the cancel answer.
+      show: (p, options) => { parent = p; shownSignal = options.signal; return new Promise((r) => options.signal?.addEventListener('abort', () => r({ response: options.cancelId ?? 0, checkboxChecked: false }))) },
+    })
+    while (!shownSignal) await new Promise((r) => setTimeout(r, 0))
+    const win = parent as unknown as FakeWindow
+    closeBootWindow()
+    expect(win.closed).toBe(false)
+    dismissBootDialogs('The main window was closed')
+    await expect(pending).rejects.toBeInstanceOf(BootDialogDismissedError)
+    expect(win.closed).toBe(true)
+  })
+
+  it('does nothing without an open dialog', () => {
+    const win = showBootWindow('Reading the keychain.') as unknown as FakeWindow
+    dismissBootDialogs('The main window was closed')
+    expect(win.closed).toBe(false)
+    closeBootWindow()
     expect(win.closed).toBe(true)
   })
 })

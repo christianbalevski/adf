@@ -5,8 +5,8 @@ import { DaemonProcessController, type AttachDecision, type DaemonProcessDeps } 
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
 import type { DaemonConnector } from './connection'
 
-/** §8.2 step 3: the user's answer to a daemon of another client API version. */
-export type VersionMismatchChoice = 'restart' | 'embedded'
+/** §8.2 step 3: the user's answer to a daemon of another client API version; `dismissed`: Studio was closed before an answer. */
+export type VersionMismatchChoice = 'restart' | 'embedded' | 'dismissed'
 
 /** Thrown when the user chose embedded mode for this session; Studio restarts into it. */
 export class SwitchToEmbeddedError extends Error {
@@ -78,6 +78,7 @@ export function localDaemonConnector(opts: {
     let result = await controller.ensure(progress)
     if (result.kind === 'refused' && result.decision.kind === 'version-mismatch' && opts.onVersionMismatch) {
       const choice = await opts.onVersionMismatch(result.decision, result.info, await controller.listClientSessions())
+      if (choice === 'dismissed') throw new Error(`${result.decision.message} Studio was closed before the question was answered; nothing was restarted.`)
       ;(opts.log ?? console.log)(`[Backend] ${result.decision.message} The user chose: ${choice === 'restart' ? "restart the daemon with Studio's version" : 'embedded mode for this session'}`)
       if (choice === 'embedded') throw new SwitchToEmbeddedError(`${result.decision.message} Studio restarts in embedded mode for this session.`)
       result = await controller.restart(result.info, progress)
