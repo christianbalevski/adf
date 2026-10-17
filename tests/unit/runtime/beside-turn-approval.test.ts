@@ -78,4 +78,23 @@ describe('a chat while an approval waits with no turn running', () => {
       await dispose()
     }
   })
+
+  it('an approval raised beside the turn: the chat runs as a turn and the approval stays open', async () => {
+    const { executor, provider, dispose } = await build()
+    try {
+      const approval = executor.requestApproval('mcp_oauth_authorize', { server: 'fs' }, { canAlwaysApprove: false, restoreState: true })
+      expect(executor.getState()).toBe('awaiting_approval')
+      await executor.executeTurn(chat('hello'))
+      expect(provider.requests).toHaveLength(1)
+      expect(executor.getState()).toBe('idle')
+      // Still open: the owner's answer decides it.
+      const pending = executor.getPendingApprovals()
+      expect(pending.map((p) => p.name)).toEqual(['mcp_oauth_authorize'])
+      executor.resolveApproval(pending[0].requestId, true)
+      expect(await approval).toBe(true)
+      expect(executor.getState()).toBe('idle')
+    } finally {
+      await dispose()
+    }
+  })
 })

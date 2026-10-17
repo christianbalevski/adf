@@ -647,6 +647,9 @@ export class AgentExecutor extends EventEmitter {
 
   // HIL (human-in-the-loop) tool approval — task-native
   private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
+  // Pending approvals raised beside the turn (requestApproval restoreState):
+  // they block no dispatch, and a chat does not deny them.
+  private besideTurnHilTasks = new Set<string>()
 
   // Protection denials rejected by the authorizer this turn — a retried call
   // returns the denial directly instead of re-prompting. Cleared each turn.
@@ -1077,14 +1080,21 @@ export class AgentExecutor extends EventEmitter {
    * `tool_approval_resolved`, so the hub must be cleared here explicitly or it
    * keeps rows nobody can ever answer.
    */
-  private drainPendingHilTasks(): void {
-    const entries = [...this.pendingHilTasks.entries()]
-    // Clear first: a resolve callback that re-enters resolveHilTask must no-op.
-    this.pendingHilTasks.clear()
+  private drainPendingHilTasks(opts?: { keepBesideTurn?: boolean }): void {
+    const entries = [...this.pendingHilTasks.entries()].filter(([taskId]) => !opts?.keepBesideTurn || !this.besideTurnHilTasks.has(taskId))
+    // Remove first: a resolve callback that re-enters resolveHilTask must no-op.
+    for (const [taskId] of entries) this.pendingHilTasks.delete(taskId)
     for (const [taskId, pending] of entries) {
       approvalHub.unregister(this.notificationKeyFor(taskId))
       pending.resolve({ approved: false })
     }
+  }
+
+  /** Every pending approval was raised beside the turn (and at least one is pending). */
+  private onlyBesideTurnHilPending(): boolean {
+    if (this.pendingHilTasks.size === 0) return false
+    for (const taskId of this.pendingHilTasks.keys()) if (!this.besideTurnHilTasks.has(taskId)) return false
+    return true
   }
 
   /** The hub is keyed per agent+loop+request — `ask_1` is not globally unique. */
@@ -1345,9 +1355,10 @@ export class AgentExecutor extends EventEmitter {
     name: string,
     input: unknown,
     meta?: ApprovalMeta,
-    opts?: { umbilicalReason?: string; setAwaitingState?: boolean }
+    opts?: { umbilicalReason?: string; setAwaitingState?: boolean; besideTurn?: boolean }
   ): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }> {
     const taskId = `task_${nanoid(12)}`
+    if (opts?.besideTurn) this.besideTurnHilTasks.add(taskId)
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
       ? `hil:${this.config.name}:${this.config.id}`
@@ -1388,7 +1399,10 @@ export class AgentExecutor extends EventEmitter {
 
     return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }>((resolve) => {
       this.trackPendingHilTask(taskId, {
-        resolve: (r) => resolve({ ...r, taskId }),
+        resolve: (r) => {
+          this.besideTurnHilTasks.delete(taskId)
+          resolve({ ...r, taskId })
+        },
         name, input, meta: approvalMeta
       })
     })
@@ -1474,7 +1488,7 @@ export class AgentExecutor extends EventEmitter {
       ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
       : undefined
     const { approved, taskId, feedback, settled } = await this.requestHilApproval(
-      name, input, meta, { umbilicalReason: 'shell_gate', setAwaitingState: ownsState }
+      name, input, meta, { umbilicalReason: 'shell_gate', setAwaitingState: ownsState, besideTurn }
     )
     const workspace = this.session.getWorkspace()
     if (settled) {
@@ -2126,7 +2140,10 @@ export class AgentExecutor extends EventEmitter {
     // scope turns are not counted (see activeAgentTurnCount): a lambda target
     // listed before the agent target must not queue the agent's own wake.
     const anotherTurnActive = !opts?.nested && this.activeAgentTurnCount > 1
-    if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
+    // An approval raised beside the turn (no turn running) waits on the owner
+    // without holding the agent: the dispatch runs and the approval stays open.
+    const awaitingTurnApproval = this.state === 'awaiting_approval' && (anotherTurnActive || !this.onlyBesideTurnHilPending())
+    if (anotherTurnActive || this.state === 'thinking' || this.state === 'tool_use' || awaitingTurnApproval || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages queue in arrival order. While the agent is working
       // (thinking, running tools) nothing is cut off: the queue is delivered at
       // the next safe step — between tool results, or as the next turn when the
@@ -2142,7 +2159,7 @@ export class AgentExecutor extends EventEmitter {
         this.abortController?.abort()
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        this.drainPendingHilTasks()
+        this.drainPendingHilTasks({ keepBesideTurn: true })
         this.drainPendingAsks()
         if (this.pendingSuspend) {
           this.pendingSuspend.resolve(false)
