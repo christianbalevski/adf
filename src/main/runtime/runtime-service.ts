@@ -932,11 +932,27 @@ export class RuntimeService extends EventEmitter {
     let built: RuntimeAgent | null = null
     let registered = false
     try {
+      // Before any step writes the file: a second file with a loaded agent's
+      // id would otherwise start its MCP servers and adapters only to be
+      // refused. The lease was taken before the file was read: it names the
+      // agent now, as Studio's start does, and a copy of an agent another
+      // runtime runs (same id, another file) is refused (W5-D3).
+      const fileConfig = workspace.getAgentConfig() as AgentConfig
+      progress.agentId = fileConfig.id
+      this.assertNoDuplicateId(fileConfig.id, canonicalPath)
+      if (lease?.ok) {
+        const idLease = await this.agentLeases?.noteAgentId(canonicalPath, fileConfig.id)
+        if (idLease && !idLease.ok) throw new RuntimeLoopError(idLease.message, 409, AGENT_LEASED_CODE, { holder: idLease.record.holder })
+      }
       // Opened read-only while another runtime ran it: this start holds the
-      // lease now, so the open steps it skipped run first.
+      // lease now, so the open steps it skipped run first (the name they
+      // adopt from the file is the one this start reports).
+      let previousName: string | null = null
       if (doc?.readOnly) {
         console.log(`[RuntimeService] ${canonicalPath} is no longer run by another runtime: the document is writable`)
-        doc.config = this.runDocumentOpenSteps(workspace, canonicalPath).config
+        const opened = this.runDocumentOpenSteps(workspace, canonicalPath)
+        doc.config = opened.config
+        previousName = opened.nameChangedFrom
         delete doc.readOnly
       }
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
@@ -954,18 +970,7 @@ export class RuntimeService extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       let config = workspace.getAgentConfig() as AgentConfig
-      progress.agentId = config.id
-      // Before anything is built: a second file with a loaded agent's id
-      // would otherwise start its MCP servers and adapters only to be refused.
-      this.assertNoDuplicateId(config.id, canonicalPath)
-      // The lease was taken before the file was read: it names the agent now,
-      // as Studio's start does, and a copy of an agent another runtime runs
-      // (same id, another file) is refused (W5-D3).
-      if (lease?.ok) {
-        const idLease = await this.agentLeases?.noteAgentId(canonicalPath, config.id)
-        if (idLease && !idLease.ok) throw new RuntimeLoopError(idLease.message, 409, AGENT_LEASED_CODE, { holder: idLease.record.holder })
-      }
-      const previousName = this.adoptFileName(workspace, config, canonicalPath)
+      previousName = this.adoptFileName(workspace, config, canonicalPath) ?? previousName
       const keyCell: DerivedKeyCell = doc ? doc.keyCell : { current: opts.derivedKey ?? null }
       if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)

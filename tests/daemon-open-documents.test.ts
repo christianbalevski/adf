@@ -696,7 +696,7 @@ describe('open documents: review fixes', () => {
 
   it('a read-only document started here once the other runtime let the file go is no longer read-only', async () => {
     const dir = tempDir()
-    const { filePath, agentId } = seedAgent(dir, 'agent-1')
+    const { filePath, agentId } = seedAgent(dir, 'agent-1', { name: 'not-the-file-name' } as Partial<AgentConfig>)
     const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
     expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
     let otherClosed = false
@@ -705,8 +705,25 @@ describe('open documents: review fixes', () => {
     expect((await runtime.openDocument(filePath, { holder: S1 })).readOnly).toMatch(/running/i)
     await other.close()
     otherClosed = true
-    await runtime.loadAgent(filePath)
+    // The id check comes before any open step writes the file.
+    const order: string[] = []
+    const leases = processAgentLeases()
+    const noteAgentId = leases.noteAgentId.bind(leases)
+    vi.spyOn(leases, 'noteAgentId').mockImplementation(async (...args) => { order.push('noteAgentId'); return noteAgentId(...args) })
+    const internals = runtime as unknown as { runDocumentOpenSteps: (...args: unknown[]) => unknown }
+    const openSteps = internals.runDocumentOpenSteps.bind(runtime)
+    vi.spyOn(internals, 'runDocumentOpenSteps').mockImplementation((...args) => { order.push('openSteps'); return openSteps(...args) })
+    const started: Array<Record<string, unknown>> = []
+    runtime.on('agent-lifecycle', (e: { type: string; payload: Record<string, unknown> }) => { if (e.type === 'agent_started') started.push(e.payload) })
+    try {
+      await runtime.loadAgent(filePath)
+    } finally {
+      vi.restoreAllMocks()
+    }
+    expect(order).toEqual(['noteAgentId', 'openSteps'])
     expect(runtime.getOpenDocument(agentId)?.readOnly).toBeUndefined()
+    // The name the open steps adopted from the file is reported, once.
+    expect(started).toEqual([expect.objectContaining({ nameChangedFrom: 'not-the-file-name' })])
   })
 
   it('accept answers the fields it locked', async () => {
