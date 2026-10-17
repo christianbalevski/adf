@@ -20,7 +20,7 @@ import type { RuntimeOpenDocumentInfo } from '../runtime/runtime-service'
 import type { RuntimeService } from '../runtime/runtime-service'
 import { identityDrafts } from '../services/identity-drafts'
 import type { DaemonIdentity, DaemonIdentityStatus } from './daemon-identity'
-import { documentsDir, resolveAgentsFolderSync } from './file-ops'
+import { documentsDir, leaseHolderElsewhere, resolveAgentsFolderSync } from './file-ops'
 import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 
 export interface CreateAgentInput {
@@ -89,6 +89,7 @@ export type AgentCreateErrorCode =
   | 'wrong_password'
   | 'load_failed'
   | 'agent_file_busy'
+  | 'agent_leased'
 
 export class AgentCreateError extends Error {
   constructor(
@@ -336,6 +337,10 @@ export class DaemonAgentFactory {
       const key = canonicalizePath(filePath)
       const inUse = this.deps.runtime.listAgents().some((a) => a.filePath && canonicalizePath(a.filePath) === key) || !!this.deps.runtime.getOpenDocument?.(filePath)
       if (inUse) throw new AgentCreateError('name_taken', `${name}.adf is open or running; close it before replacing it.`, 409)
+      // Another runtime running it holds its lease: replacing would take its
+      // -wal and put a new file under it, as move and delete refuse to.
+      const holder = await leaseHolderElsewhere(this.deps.runtime.agentLeaseRegistry, filePath)
+      if (holder) throw new AgentCreateError('agent_leased', holder, 409)
       console.log(`[ADF Daemon] Replacing ${filePath} with a new agent (the user confirmed the replace)`)
     }
 

@@ -13,6 +13,7 @@ import { createDaemonHttpApi, type DaemonHttpApiOptions } from '../src/main/daem
 import { createDaemonVitalsDeps } from '../src/main/daemon/vitals-routes'
 import { MockLLMProvider, createHeadlessAgent } from '../src/main/runtime/headless'
 import { RuntimeGate } from '../src/main/runtime/runtime-gate'
+import { AgentLeaseRegistry, processAgentLeases } from '../src/main/runtime/agent-lease'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { AgentVitalsService } from '../src/main/services/agent-vitals'
 import { getFleetBurnService } from '../src/main/services/fleet-burn.service'
@@ -22,7 +23,7 @@ import { CodeSandboxService } from '../src/main/runtime/code-sandbox'
 import { MeshServer } from '../src/main/services/mesh-server'
 import { UvManager } from '../src/main/services/uv-manager'
 import { daemonGapRouteDeps } from '../src/main/daemon/routes/gap-deps'
-import type { MeshAgentStatus } from '../src/shared/types/ipc.types'
+import type { FleetMessageResult, MeshAgentStatus } from '../src/shared/types/ipc.types'
 
 const cleanups: Array<() => Promise<unknown> | unknown> = []
 afterEach(async () => {
@@ -157,6 +158,33 @@ describe('POST /fleet/message', () => {
 
     const empty = await server.inject({ method: 'POST', url: '/fleet/message', payload: { filePaths: [running.filePath], content: '  ' } })
     expect(empty.json()).toEqual({ delivered: [], failed: [{ filePath: running.filePath, error: 'empty message' }] })
+  })
+
+  it('fails, writing nothing, for an agent another runtime runs (reviewed or not)', async () => {
+    const { dir, runtime, server } = setup()
+    const reviewed = seedAgent(dir, 1)
+    const unreviewed = seedAgent(dir, 2)
+    runtime.acceptReview(reviewed.filePath)
+    const loopLength = (filePath: string) => {
+      const ws = AdfWorkspace.open(filePath)
+      try { return ws.getLoop().length } finally { ws.close() }
+    }
+    const before = [loopLength(reviewed.filePath), loopLength(unreviewed.filePath)]
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    cleanups.push(() => other.close())
+    expect((await other.acquire(reviewed.filePath, { agentId: reviewed.agentId })).ok).toBe(true)
+    expect((await other.acquire(unreviewed.filePath, { agentId: unreviewed.agentId })).ok).toBe(true)
+    const trigger = vi.spyOn(runtime, 'trigger').mockResolvedValue(undefined)
+
+    const res = await server.inject({ method: 'POST', url: '/fleet/message', payload: { filePaths: [reviewed.filePath, unreviewed.filePath], content: 'hello' } })
+    const body = res.json() as FleetMessageResult
+    expect(body.delivered).toEqual([])
+    expect(body.failed.map((f) => f.filePath)).toEqual([reviewed.filePath, unreviewed.filePath])
+    expect(body.failed[0].error).toMatch(/agent-1 is already running in another ADF Studio/)
+    expect(body.failed[1].error).toMatch(/agent-2 is already running in another ADF Studio/)
+    expect(trigger).not.toHaveBeenCalled()
+    expect(runtime.listAgents()).toEqual([])
+    expect([loopLength(reviewed.filePath), loopLength(unreviewed.filePath)]).toEqual(before)
   })
 
   it('reopens the emergency-stop gate for a summons', async () => {

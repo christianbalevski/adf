@@ -673,6 +673,59 @@ describe('open documents: review fixes', () => {
     expect(runtime.getAgentConfig(agentId).config.name).toBe('not-the-file-name') // the name was not adopted from the file
   })
 
+  it('a read-only document becomes writable once the other runtime lets the file go: the next open runs the skipped steps', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1', { name: 'not-the-file-name' } as Partial<AgentConfig>)
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
+    let otherClosed = false
+    cleanups.push(() => { if (!otherClosed) return other.close() })
+    const { runtime } = setup()
+    expect((await runtime.openDocument(filePath, { holder: S1 })).readOnly).toMatch(/running/i)
+    // Still held: the second open stays read-only.
+    expect((await runtime.openDocument(filePath, { holder: S2 })).readOnly).toMatch(/running/i)
+
+    await other.close()
+    otherClosed = true
+    const info = await runtime.openDocument(filePath, { holder: S3 })
+    expect(info.readOnly).toBeUndefined()
+    expect(info.nameChangedFrom).toBe('not-the-file-name')
+    expect(runtime.getAgentConfig(agentId).config.name).toBe('agent-1')
+    expect(runtime.getOpenDocument(agentId)?.readOnly).toBeUndefined()
+  })
+
+  it('a read-only document started here once the other runtime let the file go is no longer read-only', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1', { name: 'not-the-file-name' } as Partial<AgentConfig>)
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
+    let otherClosed = false
+    cleanups.push(() => { if (!otherClosed) return other.close() })
+    const { runtime } = setup()
+    expect((await runtime.openDocument(filePath, { holder: S1 })).readOnly).toMatch(/running/i)
+    await other.close()
+    otherClosed = true
+    // The id check comes before any open step writes the file.
+    const order: string[] = []
+    const leases = processAgentLeases()
+    const noteAgentId = leases.noteAgentId.bind(leases)
+    vi.spyOn(leases, 'noteAgentId').mockImplementation(async (...args) => { order.push('noteAgentId'); return noteAgentId(...args) })
+    const internals = runtime as unknown as { runDocumentOpenSteps: (...args: unknown[]) => unknown }
+    const openSteps = internals.runDocumentOpenSteps.bind(runtime)
+    vi.spyOn(internals, 'runDocumentOpenSteps').mockImplementation((...args) => { order.push('openSteps'); return openSteps(...args) })
+    const started: Array<Record<string, unknown>> = []
+    runtime.on('agent-lifecycle', (e: { type: string; payload: Record<string, unknown> }) => { if (e.type === 'agent_started') started.push(e.payload) })
+    try {
+      await runtime.loadAgent(filePath)
+    } finally {
+      vi.restoreAllMocks()
+    }
+    expect(order).toEqual(['noteAgentId', 'openSteps'])
+    expect(runtime.getOpenDocument(agentId)?.readOnly).toBeUndefined()
+    // The name the open steps adopted from the file is reported, once.
+    expect(started).toEqual([expect.objectContaining({ nameChangedFrom: 'not-the-file-name' })])
+  })
+
   it('accept answers the fields it locked', async () => {
     const dir = tempDir()
     const { filePath } = seedAgent(dir, 'agent-1')

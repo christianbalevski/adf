@@ -851,9 +851,12 @@ export class AgentRuntimeBuilder {
       const assembled = getAssembled()
       // Through the assembled choke point (as the late resync below), so side
       // loops re-derive their MCP declarations too. notifyHost:false — a tool
-      // sync is not an edit and must not re-enter the reconcile.
-      if (assembled) assembled.applyConfigChange(freshConfig, { notifyHost: false })
-      else adfCallHandler?.updateConfig(freshConfig)
+      // sync is not an edit and must not re-enter the reconcile. The file's
+      // config, not the caller's copy: a config write made during the connect
+      // is already on the running agent and must not be reverted.
+      const applied = workspace.getAgentConfig()
+      if (assembled) assembled.applyConfigChange(applied, { notifyHost: false })
+      else adfCallHandler?.updateConfig(applied)
       return { toolsDiscovered: tools.length, location, hostDenied }
     }
 

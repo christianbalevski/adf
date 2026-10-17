@@ -932,6 +932,29 @@ export class RuntimeService extends EventEmitter {
     let built: RuntimeAgent | null = null
     let registered = false
     try {
+      // Before any step writes the file: a second file with a loaded agent's
+      // id would otherwise start its MCP servers and adapters only to be
+      // refused. The lease was taken before the file was read: it names the
+      // agent now, as Studio's start does, and a copy of an agent another
+      // runtime runs (same id, another file) is refused (W5-D3).
+      const fileConfig = workspace.getAgentConfig() as AgentConfig
+      progress.agentId = fileConfig.id
+      this.assertNoDuplicateId(fileConfig.id, canonicalPath)
+      if (lease?.ok) {
+        const idLease = await this.agentLeases?.noteAgentId(canonicalPath, fileConfig.id)
+        if (idLease && !idLease.ok) throw new RuntimeLoopError(idLease.message, 409, AGENT_LEASED_CODE, { holder: idLease.record.holder })
+      }
+      // Opened read-only while another runtime ran it: this start holds the
+      // lease now, so the open steps it skipped run first (the name they
+      // adopt from the file is the one this start reports).
+      let previousName: string | null = null
+      if (doc?.readOnly) {
+        console.log(`[RuntimeService] ${canonicalPath} is no longer run by another runtime: the document is writable`)
+        const opened = this.runDocumentOpenSteps(workspace, canonicalPath)
+        doc.config = opened.config
+        previousName = opened.nameChangedFrom
+        delete doc.readOnly
+      }
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
       // B1 interim hardening: in the daemon the identity hooks may never have
@@ -947,18 +970,7 @@ export class RuntimeService extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       let config = workspace.getAgentConfig() as AgentConfig
-      progress.agentId = config.id
-      // Before anything is built: a second file with a loaded agent's id
-      // would otherwise start its MCP servers and adapters only to be refused.
-      this.assertNoDuplicateId(config.id, canonicalPath)
-      // The lease was taken before the file was read: it names the agent now,
-      // as Studio's start does, and a copy of an agent another runtime runs
-      // (same id, another file) is refused (W5-D3).
-      if (lease?.ok) {
-        const idLease = await this.agentLeases?.noteAgentId(canonicalPath, config.id)
-        if (idLease && !idLease.ok) throw new RuntimeLoopError(idLease.message, 409, AGENT_LEASED_CODE, { holder: idLease.record.holder })
-      }
-      const previousName = this.adoptFileName(workspace, config, canonicalPath)
+      previousName = this.adoptFileName(workspace, config, canonicalPath) ?? previousName
       const keyCell: DerivedKeyCell = doc ? doc.keyCell : { current: opts.derivedKey ?? null }
       if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
@@ -1771,6 +1783,12 @@ export class RuntimeService extends EventEmitter {
     let nameChangedFrom: string | null = null
     let doc = this.documents.get(canonicalPath)
     if (doc) this.assertNotMoving(doc)
+    if (doc?.readOnly) {
+      nameChangedFrom = await this.recheckReadOnly(doc)
+      // The await may have seen it closed or moving.
+      doc = this.documents.get(canonicalPath)
+      if (doc) this.assertNotMoving(doc)
+    }
     if (!doc) {
       const pending = this.inFlightOpens.get(canonicalPath)
       if (pending) {
@@ -1831,19 +1849,7 @@ export class RuntimeService extends EventEmitter {
         fresh = workspace.getAgentConfig() as AgentConfig
         this.assertNoDuplicateId(fresh.id, canonicalPath)
       } else {
-        unlockWorkspaceEnvelopes(workspace)
-        const config = workspace.getAgentConfig() as AgentConfig
-        this.assertNoDuplicateId(config.id, canonicalPath)
-        const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
-        try {
-          this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
-        } catch (err) {
-          console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
-        }
-        fresh = workspace.getAgentConfig() as AgentConfig
-        nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
-        this.surfaceFileProviders(fresh)
-        this.sweepOrphanedWal(dirname(canonicalPath))
+        ({ config: fresh, nameChangedFrom } = this.runDocumentOpenSteps(workspace, canonicalPath))
       }
       const doc: OpenDocument = {
         agentId: fresh.id,
@@ -1862,6 +1868,44 @@ export class RuntimeService extends EventEmitter {
       try { workspace.dispose() } catch { /* best effort */ }
       throw err
     }
+  }
+
+  /** The open steps that write the file (skipped while another runtime runs it). */
+  private runDocumentOpenSteps(workspace: AdfWorkspace, canonicalPath: string): { config: AgentConfig; nameChangedFrom: string | null } {
+    unlockWorkspaceEnvelopes(workspace)
+    const config = workspace.getAgentConfig() as AgentConfig
+    this.assertNoDuplicateId(config.id, canonicalPath)
+    const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
+    try {
+      this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
+    } catch (err) {
+      console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
+    }
+    const fresh = workspace.getAgentConfig() as AgentConfig
+    const nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
+    this.surfaceFileProviders(fresh)
+    this.sweepOrphanedWal(dirname(canonicalPath))
+    return { config: fresh, nameChangedFrom }
+  }
+
+  /**
+   * A document opened read-only asks the lease again on each open: once the
+   * other runtime has let the file go, the skipped open steps run and the
+   * document is writable. Returns the name it adopted from the file, if any.
+   */
+  private async recheckReadOnly(doc: OpenDocument): Promise<string | null> {
+    if (this.managedAt(doc.filePath)) return null
+    const leasedBy = (await this.documentOpenHooks.leasedElsewhere?.(doc.filePath)) ?? null
+    if (!doc.readOnly || this.documents.get(doc.filePath) !== doc || this.movingDocs.has(doc)) return null
+    if (leasedBy) {
+      doc.readOnly = leasedBy
+      return null
+    }
+    console.log(`[RuntimeService] ${doc.filePath} is no longer run by another runtime: the document is writable`)
+    const { config, nameChangedFrom } = this.runDocumentOpenSteps(doc.workspace, doc.filePath)
+    doc.config = config
+    delete doc.readOnly
+    return nameChangedFrom
   }
 
   /**

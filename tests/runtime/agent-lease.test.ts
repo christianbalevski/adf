@@ -634,8 +634,10 @@ describe('agent lease semantics', () => {
     const sleeper = spawnSleeper()
     const canonical = await canonicalLeasePath(filePath)
     const runtimeId = '0123456789abcdef'
-    // Absent, so a probe would read "dead" and take the lease over.
-    const endpoint = IS_WIN ? `\\\\127.0.0.1\\pipe\\adf-runtime-${runtimeId}` : join(work, `${runtimeId}.sock`)
+    // Absent where a missing endpoint proves its process gone (any pipe on
+    // Windows; elsewhere a socket in <leases>/hosts, under a name that is not
+    // this holder's), so a probe would read "dead" and take the lease over.
+    const endpoint = IS_WIN ? `\\\\127.0.0.1\\pipe\\adf-runtime-${runtimeId}` : join(leases, 'hosts', `${runtimeId}-other.sock`)
     writeFileSync(join(leases, `${leaseKeyForCanonicalPath(canonical)}.json`), JSON.stringify({
       v: 1, path: canonical, agentId: null, acquiredAt: 1,
       holder: { kind: 'daemon', pid: sleeper.pid, runtimeId, hostname: 'x', settingsPath: 's', startedAt: 1, version: null, endpoint },

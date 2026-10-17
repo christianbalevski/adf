@@ -8,8 +8,12 @@
  *   STALE_RECHECK_MS. Its claims are released BEFORE it reads the others, so
  *   a cut during the re-check strands nothing it could protect.
  * - Daemon mode: Studio stops nothing itself; the daemon runs its own
- *   bounded shutdown (20 s) after Studio exited, which fits the re-check and
- *   the container stops.
+ *   bounded shutdown (FATAL_SHUTDOWN_BUDGET_MS, 20 s, in daemon/index.ts)
+ *   after Studio exited. The budget does not always cover every step before
+ *   the stops (server close, agent unloads) plus the re-check and `podman
+ *   stop`. When it is cut, the failure is the safe one, as for Studio: no
+ *   other runtime's container is stopped, and its own stay running,
+ *   unclaimed, for the next shutdown.
  *
  * No process is spawned: the fake podman answers every call.
  */
@@ -25,7 +29,7 @@ const { mkdtempSync, readdirSync, readFileSync, existsSync } = await import('nod
 const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 const { PodmanService, isolatedContainerName } = await import('../../../src/main/services/podman.service')
-const { ComputeUserRegistry, STALE_RECHECK_MS } = await import('../../../src/main/services/compute-users')
+const { ComputeUserRegistry } = await import('../../../src/main/services/compute-users')
 const { withDeadline } = await import('../../../src/main/utils/concurrency')
 const { FakePodman, installFakePodman } = await import('./fake-podman')
 
@@ -44,16 +48,17 @@ function claimsOnDisk(dir: string): Record<string, string[]> {
   ]))
 }
 
-function machine(opts: { recheckMs: number; staleOnce: number }) {
+function machine(opts: { recheckMs: number; staleOnce: number; stalePid?: number }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-quit-budget-'))
   const podman = new FakePodman()
-  // The daemon's marker reads stale once (a heartbeat missed across a suspend), then fresh.
+  // One runtime's marker (the daemon's by default) reads stale once (a heartbeat missed across a suspend), then fresh.
+  const stalePid = opts.stalePid ?? DAEMON
   let staleReads = opts.staleOnce
   const runtime = (pid: number, kind: 'studio-embedded' | 'daemon') => {
     const users = new ComputeUserRegistry({
       dir, pid, kind, host: 'test-host', exitHook: false, recheckMs: opts.recheckMs,
       liveness: async ({ pid: other }) => {
-        if (other === DAEMON && staleReads > 0) { staleReads--; return { alive: false, recheck: true, reason: 'no heartbeat for 130s' } }
+        if (other === stalePid && staleReads > 0) { staleReads--; return { alive: false, recheck: true, reason: 'no heartbeat for 130s' } }
         return { alive: true, reason: 'pid running, heartbeat fresh' }
       },
     })
@@ -104,7 +109,20 @@ describe('quit budget vs the stale-marker re-check', () => {
     expect(podman.running()).toEqual([])
   })
 
-  it('the daemon\'s bounded shutdown (20 s) leaves room for the re-check and the container stops (podman stop -t 5)', () => {
-    expect(STALE_RECHECK_MS + 5_000).toBeLessThan(20_000)
+  it('a daemon shutdown cut off during the re-check stops nothing, and has already given up its claims', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { dir, podman, studio, daemon } = machine({ recheckMs: 400, staleOnce: 1, stalePid: STUDIO })
+    await studio.ensureIsolatedRunning('agent-1', ID_1)
+    await daemon.ensureIsolatedRunning('agent-2', ID_2)
+
+    // The daemon's budget expires while stopAll waits on the re-check of Studio's marker.
+    const stopping = daemon.stopAll()
+    const { timedOut } = await withDeadline(stopping, 100, () => {})
+    expect(timedOut).toBe(true)
+    expect(podman.stopped()).toEqual([])
+    expect(claimsOnDisk(dir)[String(DAEMON)]).toEqual([])
+    expect(claimsOnDisk(dir)[String(STUDIO)]).toEqual([BOX_1])
+    await stopping
+    expect(podman.running()).toEqual([BOX_1])
   })
 })

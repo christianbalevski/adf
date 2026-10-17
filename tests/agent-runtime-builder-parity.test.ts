@@ -153,6 +153,47 @@ describe('AgentRuntimeBuilder parity: start window (design §6.1 row 24)', () =>
   })
 })
 
+describe('AgentRuntimeBuilder parity: a connect after the start', () => {
+  it('an owner restart applies the discovered tools to the running agent (characterization)', async () => {
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockResolvedValue([PING_TOOL])
+    const base = makeAgentFile('agent-1', { mcp: { servers: [stdioServer('srv')] } })
+    const { workspace } = base
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath: base.filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    try {
+      connect.mockResolvedValue([PING_TOOL, { name: 'pong', description: 'pong', input_schema: { type: 'object', properties: {} } }])
+      await mcpConnectorFor(agent.mcpManager)!('srv')
+      expect(agent.executor.getConfig().tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
+      expect(workspace.getAgentConfig().tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
+  it('a config saved while the restart connects stays on the running agent (review 4300792081)', async () => {
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockResolvedValue([PING_TOOL])
+    const base = makeAgentFile('agent-1', { mcp: { servers: [stdioServer('srv')] } })
+    const { workspace } = base
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath: base.filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    try {
+      let release!: (tools: McpToolInfo[]) => void
+      connect.mockImplementation(() => new Promise((resolve) => { release = resolve as never }))
+      const restart = mcpConnectorFor(agent.mcpManager)!('srv')
+      await waitFor(() => typeof release === 'function')
+      // A client's save during the connect (RuntimeService.setAgentConfig: file, then the agent).
+      const saved = { ...workspace.getAgentConfig(), description: 'saved during the restart' }
+      workspace.setAgentConfig(saved)
+      agent.applyConfigChange(saved)
+      release([PING_TOOL, { name: 'pong', description: 'pong', input_schema: { type: 'object', properties: {} } }])
+      await restart
+      expect(agent.executor.getConfig().description).toBe('saved during the restart')
+      expect(agent.executor.getConfig().tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
+      expect(workspace.getAgentConfig().description).toBe('saved during the restart')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
 describe('AgentRuntimeBuilder parity: start window, tool toggles (review fix)', () => {
   it('a tool toggle saved while the server connects survives the startup tool sync', async () => {
     let release!: (tools: McpToolInfo[]) => void
@@ -463,9 +504,11 @@ describe('AgentRuntimeBuilder parity: interactive MCP OAuth', () => {
 
       // The next LLM turn raises the sign-in and runs without waiting for it.
       await agent.dispatch(chat('hi'))
-      await waitFor(() => provider.getCallCount() > 0 && agent.executor.getState() === 'idle')
+      await waitFor(() => provider.getCallCount() > 0 && !agent.executor.isTurnActive())
       await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_SIGNIN_APPROVAL))
       expect(agent.mcpManager?.getServerState('remote')?.status).toBe('needs_sign_in')
+      // The turn is over; the agent shows it waits on the owner while the request is open.
+      expect(agent.executor.getState()).toBe('awaiting_approval')
       agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
       await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_AUTHORIZE_APPROVAL))
       completeCallback()

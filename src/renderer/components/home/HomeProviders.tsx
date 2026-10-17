@@ -37,8 +37,8 @@ export function HomeProvidersProvider({ children }: { children: React.ReactNode 
   const setHomeProviderId = useAppStore((s) => s.setHomeProviderId)
   const setHomeModelId = useAppStore((s) => s.setHomeModelId)
   const list = useOwnedProviderList()
-  const { providers, setProviders, defaultProviderId, setDefaultProviderId, loaded, load, flushSave } = list
-  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave })
+  const { providers, setProviders, defaultProviderId, setDefaultProviderId, loaded, load, flushSave, saveFailure } = list
+  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure })
   const { openPicker, closeModal, status, modalOpen } = m
 
   // Settings may change the list while home is open; refresh on focus, but
