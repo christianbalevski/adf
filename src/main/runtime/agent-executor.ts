@@ -1106,6 +1106,15 @@ export class AgentExecutor extends EventEmitter {
     this.setState(priorState === 'awaiting_approval' ? 'idle' : priorState)
   }
 
+  /**
+   * No turn holds the state: idle, or awaiting_approval for approvals raised
+   * beside the turn only (the dispatch gate lets work run beside those, so a
+   * queued trigger drains as it would from idle).
+   */
+  private betweenTurns(): boolean {
+    return this.state === 'idle' || (this.state === 'awaiting_approval' && this.onlyBesideTurnHilPending())
+  }
+
   /** Every pending approval was raised beside the turn (and at least one is pending). */
   private onlyBesideTurnHilPending(): boolean {
     if (this.pendingHilTasks.size === 0) return false
@@ -1803,7 +1812,7 @@ export class AgentExecutor extends EventEmitter {
       this.activeTurnCount--
       if (dispatch.scope !== 'system') {
         this.activeAgentTurnCount--
-      } else if (this.activeAgentTurnCount === 0 && this.state === 'idle') {
+      } else if (this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         // A system-scope turn returns before the agent-turn finally block that
         // normally drains the queue. Anything an agent dispatch queued behind
         // this lambda (same-tick sibling target) would otherwise wait for an
@@ -1948,7 +1957,7 @@ export class AgentExecutor extends EventEmitter {
       const replayed = this.getState() !== 'stopped' && this.replayQueuedChats()
       this.activeTurnCount--
       this.activeAgentTurnCount--
-      if (!replayed && this.activeAgentTurnCount === 0 && this.state === 'idle') {
+      if (!replayed && this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         this.drainPendingTriggers()
       }
       if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()

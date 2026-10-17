@@ -37,8 +37,16 @@ class CountingProvider implements LLMProvider {
   readonly name = 'scripted'
   readonly modelId = 'scripted-v1'
   readonly requests: CreateMessageOptions[] = []
+  /** While set, a call waits for release() (a slow summarizer). */
+  hold = false
+  private waiting: Array<() => void> = []
+  release(): void {
+    this.hold = false
+    for (const resume of this.waiting.splice(0)) resume()
+  }
   async createMessage(opts: CreateMessageOptions): Promise<LLMResponse> {
     this.requests.push(opts)
+    if (this.hold) await new Promise<void>((resolve) => { this.waiting.push(resolve) })
     return { id: `r${this.requests.length}`, content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 1 } }
   }
   async validateConfig(): Promise<{ valid: boolean }> {
@@ -132,4 +140,37 @@ describe('a chat while an approval waits with no turn running', () => {
       await dispose()
     }
   })
+
+  it('a trigger queued behind a manual compaction drains when it ends, with a beside-turn approval open', async () => {
+    const { executor, provider, workspace, dispose } = await build()
+    try {
+      await executor.executeTurn(chat('hello'))
+      const approval = executor.requestApproval('mcp_oauth_authorize', { server: 'fs' }, { canAlwaysApprove: false, restoreState: true })
+      expect(executor.getState()).toBe('awaiting_approval')
+      const before = provider.requests.length
+      provider.hold = true
+      const compaction = executor.compactNow('test')
+      // The compaction holds the turn slot: this trigger is queued behind it.
+      workspace.addToInbox({ from: 'telegram:1', content: 'ping', source: 'telegram', received_at: Date.now(), status: 'unread' })
+      await executor.executeTurn(createDispatch(createEvent({
+        type: 'inbox', source: 'adapter:telegram',
+        data: { message: { id: 'm1', from: 'telegram:1', content: 'ping', source: 'telegram', received_at: Date.now(), status: 'unread' as const } },
+      }), { scope: 'agent' }))
+      provider.release()
+      await compaction
+      const deadline = Date.now() + 3000
+      while (executor.isTurnActive() || provider.requests.length <= before + 1) {
+        if (Date.now() > deadline) break
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      // The summarizer call, then the queued trigger's turn.
+      expect(provider.requests.length).toBeGreaterThanOrEqual(before + 2)
+      expect(JSON.stringify(workspace.getLoop())).toContain('[Inbox notification]')
+      executor.resolveApproval(executor.getPendingApprovals()[0].requestId, true)
+      await approval
+    } finally {
+      await dispose()
+    }
+  })
 })
+
