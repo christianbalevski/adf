@@ -79,9 +79,13 @@ export function StatusBar() {
 
   const handleEmergencyStop = async () => {
     try {
-      await window.adfApi.emergencyStop()
+      const result = await window.adfApi.emergencyStop()
+      // A partial stop (daemon mode) may leave agents running: their own state events say which.
+      if (result && result.success === false) return
     } catch (err) {
+      // The stop did not happen (daemon mode: not reached); main shows why. Keep what the window shows.
       console.error('[StatusBar] Emergency stop failed:', err)
+      return
     }
     useAgentStore.getState().setState('off')
     useMeshStore.getState().reset()

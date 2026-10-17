@@ -266,9 +266,6 @@ const statusHandler: CommandHandler = {
       `Model:     ${config.model?.provider ?? ''}/${config.model?.model_id ?? ''}`,
       `Autonomy:  ${config.autonomous ? 'enabled' : 'disabled'}`,
     ]
-    if (config.limits?.token_budget) {
-      lines.push(`Budget:    ${config.limits.token_budget} tokens`)
-    }
     return ok(lines.join('\n'))
   }
 }

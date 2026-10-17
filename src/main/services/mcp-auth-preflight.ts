@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from 'child_process'
+import { inheritableEnv } from '../utils/child-env'
 import type { ChildProcess } from 'child_process'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
@@ -238,7 +239,7 @@ export async function runMcpAuthPreflight(
     preflightArgs = [...preflightArgs, ...opts.authArgs]
   }
 
-  const preflightEnv = { ...process.env, ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+  const preflightEnv = { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
   log(`[MCP] Auth preflight: ${preflightCmd} ${preflightArgs.join(' ')}`)
 
   // No blanket shell:true — on Windows that routes through cmd.exe with
@@ -332,7 +333,7 @@ export async function runMcpAuthPreflight(
     spawnArgs = ['exec', '-i', '--env-file', envFilePath, c.containerName, c.command, ...c.args, ...(opts.authArgs ?? [])]
     // The podman client itself runs host-side and needs the host env (PATH,
     // machine connection); none of it is forwarded into the container.
-    spawnEnv = process.env
+    spawnEnv = inheritableEnv()
     verbatim = false
     log(`[MCP] Auth preflight (container ${c.containerName}): ${c.command} ${[...c.args, ...(opts.authArgs ?? [])].join(' ')}`)
   }
@@ -393,10 +394,10 @@ export async function runMcpAuthPreflight(
   // Track the child finishing on its own. Gates URL opening below, and lets
   // interactive mode skip a dead-end "click Continue" dialog for an auth
   // command that already failed (or already succeeded) before the user acts.
-  let earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null = null
+  const processState: { earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null } = { earlyExit: null }
   // podman reads --env-file at exec launch, so reaping it on child close is
   // safe; this is the always-fires path (a killed child closes too).
-  preflight.on('close', (code, signal) => { cleanupEnvFile(); if (!earlyExit) earlyExit = { code, signal } })
+  preflight.on('close', (code, signal) => { cleanupEnvFile(); if (!processState.earlyExit) processState.earlyExit = { code, signal } })
 
   // Watch stdout/stderr for the auth URL. No content heuristics — the runtime
   // is deterministic: the FIRST URL the process prints is its auth URL. But it
@@ -412,7 +413,7 @@ export async function runMcpAuthPreflight(
   let graceElapsed = false
   const stderrTail: string[] = []
   const maybeOpenAuthUrl = () => {
-    if (authUrlOpened || !scrapedUrl || !graceElapsed || earlyExit) return
+    if (authUrlOpened || !scrapedUrl || !graceElapsed || processState.earlyExit) return
     {
       authUrlOpened = true
       const url = scrapedUrl
@@ -487,26 +488,26 @@ export async function runMcpAuthPreflight(
     // elapses, and this branch would show a dead-end dialog for an auth
     // command that had already exited. ('close' fires after the stdio pipes
     // flush, so stderrTail is complete, and the 'close' listener registered
-    // above has already set earlyExit by the time this one runs.)
+    // above has already set processState.earlyExit by the time this one runs.)
     await new Promise<void>((r) => {
       const timer = setTimeout(() => { preflight.off('close', onClose); r() }, graceMs)
       function onClose(): void { clearTimeout(timer); r() }
-      if (earlyExit) { clearTimeout(timer); r(); return }
+      if (processState.earlyExit) { clearTimeout(timer); r(); return }
       preflight.once('close', onClose)
     })
 
     // Auth command already finished: skip the pointless dialog. Exit 0 means
     // it stored its tokens (or was already authorized); nonzero means the
     // flow failed — surface the stderr instead of success-with-no-auth.
-    if (earlyExit) {
+    if (processState.earlyExit) {
       closeTunnel()
       killTree(preflight)
       cleanupEnvFile()
-      if (earlyExit.code === 0) {
+      if (processState.earlyExit.code === 0) {
         log(`[MCP] Auth preflight for "${serverName}" completed on its own — proceeding to connect`)
         return
       }
-      failFromExit(earlyExit)
+      failFromExit(processState.earlyExit)
     }
 
     try {
@@ -515,7 +516,7 @@ export async function runMcpAuthPreflight(
       // The dialog cannot be retracted once shown; if the auth command died
       // with an error while it was up, fail after the click rather than
       // pretending authorization happened.
-      if (earlyExit && earlyExit.code !== 0) failFromExit(earlyExit)
+      if (processState.earlyExit && processState.earlyExit.code !== 0) failFromExit(processState.earlyExit)
     } finally {
       closeTunnel()
       // Kill the preflight process tree (grandchildren included — a plain

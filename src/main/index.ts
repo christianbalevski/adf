@@ -1,17 +1,43 @@
-import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, powerMonitor, protocol, session, shell } from 'electron'
 import { join } from 'path'
-import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace, readAppSetting, writeAppSetting } from './ipc'
+// The embedded IPC layer (./ipc) is imported only in embedded mode, at boot:
+// loading it constructs embedded services (a PodmanService, the uvx manifest
+// repair) that must never exist in a daemon-mode Studio.
+type EmbeddedIpc = typeof import('./ipc')
 import { registerOrbitalCacheHandlers } from './ipc/orbital-cache'
+import { registerEditRecoveryHandlers } from './backend/edit-recovery'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
 import { showOrCreateMainWindow } from './utils/main-window'
+import { closeBootWindow, dismissBootDialogs, noteMainWindowClosed } from './utils/boot-window'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
 import { shutdownSandboxHosts } from './runtime/sandbox-host'
+import { getUserDataPath } from './utils/user-data-path'
+import { backendConfigPath, resolveBootBackend, type BackendSettingsStore } from './backend/backend-config'
+import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/backend-settings-ipc'
+import { grantLocalOpen } from './backend/local-open-grants'
+import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
+import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
+import {
+  askVersionMismatch,
+  createModeSwitcher,
+  notifyDaemonOfHandover,
+  relaunchStudio,
+  restartingMessage,
+  resumeSwitchedAgents,
+  runBootHandover,
+  sessionBackendEnv,
+  SWITCH_DAEMON_EXIT_WAIT_MS,
+  syncRuntimeEntryAfterImport,
+} from './backend/mode-switch'
+import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
+import { processAgentLeases } from './runtime/agent-lease'
+import type { StudioBackendMode } from '../shared/types/backend.types'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -92,6 +118,13 @@ if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
+// Set at boot when studio-backend.json selects a daemon backend (design D9).
+// Every branch on it below keeps the embedded path exactly as it was.
+let daemonMode: DaemonModeHandle | null = null
+// Set at boot in embedded mode only.
+let embeddedIpc: EmbeddedIpc | null = null
+// Set when Settings → Backend confirmed a switch: the quit that follows is a restart into it.
+let switchingTo: StudioBackendMode | null = null
 // Set at the end of the whenReady continuation, once IPC handlers and the
 // adf-file protocol exist. app.isReady() flips earlier, on the 'ready' event.
 let startupComplete = false
@@ -125,7 +158,13 @@ function runShutdownCleanup(): Promise<void> {
       // On the fast path, shrink the inner phase-2 teardown too so the
       // synchronous workspace-close/WAL-sweep phase still gets to run.
       const cleanupOpts = budget < SHUTDOWN_BUDGET_MS ? { teardownBudgetMs: 1_500 } : undefined
-      const { timedOut } = await withDeadline(cleanupAllProcesses(cleanupOpts), budget, () => {
+      // Daemon mode runs no agents here: quitting ends the client session and,
+      // per keepDaemonRunning, stops the daemon Studio started (§8.3). A switch
+      // to embedded waits for that daemon, so embedded Studio can start its agents.
+      const cleanup = daemonMode
+        ? daemonMode.shutdown(switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? { waitForDaemonExitMs: SWITCH_DAEMON_EXIT_WAIT_MS } : undefined)
+        : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
+      const { timedOut } = await withDeadline(cleanup, daemonMode && switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? SWITCH_DAEMON_EXIT_WAIT_MS + 3_000 : budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
@@ -169,7 +208,7 @@ function handleSessionEnd(): void {
   shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
   shutdownCleanup = (async () => {
     try {
-      await withDeadline(fastSessionEndCleanup(2_000), FAST_SHUTDOWN_BUDGET_MS, () => {
+      await withDeadline(daemonMode ? daemonMode.shutdown() : embeddedIpc ? embeddedIpc.fastSessionEndCleanup(2_000) : Promise.resolve(), FAST_SHUTDOWN_BUDGET_MS, () => {
         console.error('[App] Session-end cleanup exceeded budget — exiting')
       })
     } catch (error) {
@@ -177,6 +216,18 @@ function handleSessionEnd(): void {
     }
   })()
   void shutdownCleanup.finally(() => app.exit(0))
+}
+
+/**
+ * Electron's own dialog for a main script that throws while it loads
+ * ("A JavaScript error occurred in the main process"), then exit: embedded
+ * Studio cannot run without its IPC layer.
+ */
+function failedMainLoad(err: unknown): void {
+  const detail = err instanceof Error ? err.stack ?? err.message : String(err)
+  console.error('[App] The embedded IPC layer failed to load:', detail)
+  dialog.showErrorBox('A JavaScript error occurred in the main process', `Uncaught Exception:\n${detail}`)
+  app.exit(1)
 }
 
 process.on('unhandledRejection', (reason) => {
@@ -237,7 +288,8 @@ if (!instanceId) {
   } else {
     app.on('second-instance', (_event, argv) => {
       const secondAdfArg = argv.find((arg) => arg.endsWith('.adf') && !arg.startsWith('-'))
-      if (secondAdfArg) requestOpenFile(secondAdfArg)
+      // The OS handed this path: remote mode may read and upload it (local-open-grants.ts).
+      if (secondAdfArg) { grantLocalOpen(secondAdfArg); requestOpenFile(secondAdfArg) }
       else showMainWindow()
     })
   }
@@ -287,6 +339,7 @@ function requestOpenFile(filePath: string): void {
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!filePath.endsWith('.adf')) return
+  grantLocalOpen(filePath)
   requestOpenFile(filePath)
 })
 
@@ -304,7 +357,10 @@ ipcMain.handle(IPC.OPEN_FILE_GET_PENDING, () => {
 const adfArg = process.argv.find(
   (arg) => arg.endsWith('.adf') && !arg.startsWith('-')
 )
-if (adfArg) fileToOpen = adfArg
+if (adfArg) {
+  grantLocalOpen(adfArg)
+  fileToOpen = adfArg
+}
 
 function getOverlayColors(): { color: string; symbolColor: string } {
   return nativeTheme.shouldUseDarkColors
@@ -343,6 +399,8 @@ function createWindow(): BrowserWindow {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
+    // The boot window (a dialog or keychain wait before this window existed) is done.
+    closeBootWindow()
   })
 
   // Windows logoff/shutdown fires 'session-end' on each BrowserWindow (there
@@ -361,6 +419,9 @@ function createWindow(): BrowserWindow {
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
     if (mainWindow === createdWindow) mainWindow = null
+    // Windows/Linux: closing it quits (window-all-closed), so a boot dialog
+    // still open must not keep Studio alive, nor be answered later. macOS: it stays.
+    noteMainWindowClosed()
   })
 
   // Webview guests may only load the local agent-browser (noVNC) pages, with
@@ -487,7 +548,7 @@ app.on('web-contents-created', (_event, contents) => {
   })
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Dev/diagnostic only: logs one line per multi-hundred-ms main-thread freeze.
   // Creates nothing in a packaged build unless ADF_STALL_MONITOR=1.
   const stallMonitor = startStallMonitor({ packaged: app.isPackaged })
@@ -496,16 +557,109 @@ app.whenReady().then(() => {
     app.once('before-quit', () => stopStallMonitor())
   }
 
-  registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile })
+  // Backend selection (design D9): decided once, before any handler exists.
+  // No studio-backend.json and no ADF_STUDIO_BACKEND means Local daemon (W5-I, first-launch.ts).
+  // SESSION_BACKEND_ARG: the user chose embedded for one launch (§8.2 version mismatch).
+  const sessionBackend = sessionBackendEnv(process.argv, process.env)
+  const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), sessionBackend.env)
+  if (sessionBackend.session) backend.source = 'session'
+  // W5-I: an unusable studio-backend.json is asked about first; an older daemon on the port makes a first launch Embedded for one session.
+  const bootGuard = await guardBoot(backend, getUserDataPath())
+  // A mode this launch overrides for one session (ADF_STUDIO_BACKEND, or the
+  // version-mismatch choice) moves client keys only: credentials stay where
+  // the configured mode keeps them (§8.2).
+  const sessionOnly = backend.source === 'env' || backend.source === 'session'
+  // Mode-switch handover (§11): move what belongs to this mode's side before
+  // any backend handler, store or daemon exists. Idempotent; a no-op when
+  // everything is already where it belongs.
+  const handover = bootGuard.skipHandover ? null : await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly })
+  // First launch without studio-backend.json: save the default, and on an install that ran Embedded prepare the one notice.
+  const firstLaunch = await settleDefaultBackend(backend, getUserDataPath(), handover, { version: app.getVersion() })
+  let backendStore: BackendSettingsStore | null = null
+  if (backend.mode === 'embedded') {
+    try {
+      embeddedIpc = await import('./ipc')
+    } catch (err) {
+      // A static import that threw here would have failed the main script:
+      // Electron's error dialog, then no app. Same for the lazy one.
+      failedMainLoad(err)
+      return
+    }
+    embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile, ...(bootGuard.skipAutostart ? { skipBootAutostart: bootGuard.skipAutostart } : {}) })
+    // A daemon that keeps running on these settings re-reads the stores the handover emptied.
+    if (handover?.changed && !sessionOnly) void notifyDaemonOfHandover(getUserDataPath())
+    // The agents that ran before a switch run again here (§11.1), once the
+    // mesh is up, as autostart waits for it (a null wsConnectionManager otherwise).
+    const embedded = embeddedIpc
+    void resumeSwitchedAgents('embedded', getUserDataPath(), async (filePath) =>
+      embedded.hostActions?.startBackgroundAgent?.(filePath) ?? { success: false, error: "the embedded backend is not ready" }, { ready: embedded.hostActions?.ready })
+  } else {
+    const userDataDir = getUserDataPath()
+    daemonMode = registerDaemonModeHandlers({
+      mode: backend.mode,
+      userDataDir,
+      connect: backend.mode === 'local'
+        ? localDaemonConnector({
+          userDataDir,
+          execPath: process.execPath,
+          daemonEntry: join(__dirname, 'daemon.js'),
+          onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
+        })
+        : remoteDaemonConnector(backend.config, safeStorageCodec),
+      hooks: { showMainWindow, openFile: requestOpenFile },
+      // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
+      powerMonitor,
+      // Read at quit: a change in Settings → Backend applies to the next quit.
+      keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
+      reloadCredentials: handover?.changed === true && !sessionOnly,
+      ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
+    })
+    const handle = daemonMode
+    void handle.ready.then(async (ok) => { if (ok) await resumeSwitchedAgents(backend.mode, userDataDir, (filePath) => handle.startBackgroundAgent(filePath)) })
+  }
+  // Client keys (updater, spellcheck) come from studio-client-settings.json in daemon mode (§4.1).
+  const readClientSetting = (key: string): unknown => daemonMode ? daemonMode.clientSettings.get(key) : embeddedIpc?.readAppSetting(key)
+  const writeClientSetting = (key: string, value: unknown): void => {
+    if (daemonMode) daemonMode.clientSettings.set(key, value)
+    else embeddedIpc?.writeAppSetting(key, value)
+  }
+  const switcher = createModeSwitcher({
+    activeMode: backend.mode,
+    userDataDir: getUserDataPath(),
+    agentActivity: () => daemonMode
+      ? daemonMode.agentActivity()
+      : embeddedIpc?.hostActions?.agentActivity?.() ?? processAgentLeases().heldPaths().map((filePath) => ({ filePath, busy: false })),
+    keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
+    daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
+    window: () => mainWindow,
+    remoteUrl: () => backendStore?.config().remote.url ?? backend.config.remote.url,
+    relaunch: (target) => {
+      switchingTo = target
+      relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)
+    },
+  })
+  backendStore = registerBackendSettingsHandlers(backend, {
+    daemonStatus: () => daemonMode?.status() ?? null,
+    confirmModeSwitch: switcher.confirm,
+    applyModeSwitch: switcher.apply,
+    pendingSwitch: switcher.pendingSwitch,
+    finishSwitchNow: switcher.finishNow,
+    cancelSwitch: switcher.cancel,
+    restarting: () => { const target = switcher.restartingInto(); return target ? restartingMessage(target) : null },
+    onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
+  })
   registerOrbitalCacheHandlers(app.getPath('userData'))
+  registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
   ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
     mainWindow?.setFullScreen(!!fullscreen)
   })
 
   // Serve files from the current workspace's adf_files table via adf-file:// URLs
-  protocol.handle('adf-file', (request) => {
-    const workspace = getCurrentWorkspace()
+  // (daemon mode: from the daemon's raw file route, daemon-mode/adf-file.ts).
+  if (daemonMode) protocol.handle('adf-file', daemonMode.adfFile)
+  else protocol.handle('adf-file', (request) => {
+    const workspace = embeddedIpc?.getCurrentWorkspace()
     if (!workspace) {
       return new Response('No workspace open', { status: 404 })
     }
@@ -531,7 +685,7 @@ app.whenReady().then(() => {
     const rawType = entry.mime_type ?? 'application/octet-stream'
     const contentType = SAFE_MIME_PREFIXES.some(p => rawType.startsWith(p)) ? rawType : 'application/octet-stream'
 
-    return new Response(entry.content, {
+    return new Response(new Uint8Array(entry.content), {
       headers: {
         'Content-Type': contentType,
         'X-Content-Type-Options': 'nosniff'
@@ -540,15 +694,18 @@ app.whenReady().then(() => {
   })
 
   initSpellcheckDictionaries({
-    isAllowed: () => readAppSetting('spellcheckDownloadsEnabled') === true,
-    allow: () => writeAppSetting('spellcheckDownloadsEnabled', true)
+    isAllowed: () => readClientSetting('spellcheckDownloadsEnabled') === true,
+    allow: () => writeClientSetting('spellcheckDownloadsEnabled', true)
   })
 
   createWindow()
+  // Over the main window once it is ready: the boot guard's dialog, the first-launch notice (once the daemon connected) or the handover summary.
+  const bootWindow = mainWindow
+  if (bootWindow) bootWindow.once('ready-to-show', () => void showBootNotices({ report: handover, mode: backend.mode, notice: firstLaunch, guard: bootGuard.notice, window: bootWindow, ready: daemonMode?.ready, userDataDir: getUserDataPath() }))
 
   initAppUpdater({
     // Read per check, not cached: turning it off in Settings stops the next one.
-    isCheckEnabled: () => readAppSetting('updateChecksEnabled') !== false,
+    isCheckEnabled: () => readClientSetting('updateChecksEnabled') !== false,
     send: (state) => {
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
         mainWindow.webContents.send(IPC.APP_UPDATE_STATE, state)
@@ -591,5 +748,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (shutdownCleanup) return
   console.log('[App] before-quit — starting shutdown cleanup')
+  // A boot dialog still open (macOS keeps one after its window closed) is no answer: nothing restarts from it.
+  dismissBootDialogs('Studio is quitting')
   void runShutdownCleanup().finally(() => app.exit(0))
 })

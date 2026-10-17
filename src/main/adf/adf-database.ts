@@ -11,9 +11,10 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, promises as fsp } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, fsyncSync, statSync, promises as fsp } from 'fs'
+import { createHash } from 'crypto'
 import { brotliDecompressSync } from 'zlib'
-import { join, resolve, sep } from 'path'
+import { basename, dirname, join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
   AdfProviderConfig,
@@ -38,6 +39,7 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import {
   DEFAULT_TOOLS as defaultTools,
+  AUDIT_DEFAULTS,
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT,
   DEFAULT_MIND_LOG_CONTENT,
@@ -107,6 +109,35 @@ export interface AdfOpenOptions {
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
 export const ADF_LATEST_SCHEMA_VERSION = 32
+
+/**
+ * The oldest schema version open() upgrades: its migration ladder starts at
+ * the v3 → v4 step. An older file is refused before anything is written to it.
+ */
+export const ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION = 3
+
+/**
+ * open() refused a file older than ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION, or
+ * one with no schema version that does not have the layout of a clone
+ * (schemaVersion 0). No backup, no migration step, no marker delete.
+ * `unchanged`: refused before any connection could fold a -wal into the
+ * file (the usual case), so the sentence can say the file was not changed.
+ */
+export class AdfSchemaTooOldError extends Error {
+  readonly code = 'schema_too_old'
+  constructor(readonly filePath: string, readonly schemaVersion: number, opts: { unchanged?: boolean } = {}) {
+    const name = basename(filePath)
+    super(
+      (schemaVersion > 0
+        ? `${name} uses schema v${schemaVersion}, which this version cannot upgrade`
+        : `${name} has no schema version and an older layout, which this version cannot upgrade`) +
+      ` (it upgrades v${ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION} and later; no released version upgrades older files).` +
+      `${opts.unchanged === false ? '' : ' The file was not changed.'}` +
+      ' See "An agent file uses schema v2" in the ADF troubleshooting guide.'
+    )
+    this.name = 'AdfSchemaTooOldError'
+  }
+}
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -575,8 +606,14 @@ export class AdfDatabase {
     this.db = db
     this.filePath = filePath
     AdfDatabase.incrementOpen(filePath)
-    this.applyPragmas()
-    this.prepareStatements()
+    try {
+      this.applyPragmas()
+      this.prepareStatements()
+    } catch (err) {
+      // No instance for the caller to close(): give the count back here.
+      AdfDatabase.decrementOpen(filePath)
+      throw err
+    }
   }
 
   // ===========================================================================
@@ -588,6 +625,41 @@ export class AdfDatabase {
     const code = (err as { code?: unknown } | null)?.code
     return typeof code === 'string' &&
       (code.startsWith('SQLITE_BUSY') || code === 'SQLITE_LOCKED')
+  }
+
+  /**
+   * The file's schema version: `adf_schema_version`, else the older
+   * `schema_version`, else 0. Null when there is no adf_meta table. Reads only.
+   */
+  private static readSchemaVersion(db: Database.Database): number | null {
+    const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='adf_meta'").get()
+    if (!table) return null
+    const r = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+    const parse = (v: string) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0 }
+    if (r) return parse(r.value)
+    const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
+    return r2 ? parse(r2.value) : 0
+  }
+
+  /**
+   * The schema version open() refuses for this file, or null when it may be
+   * opened (and migrated). 1 <= v < 3 is refused. No version at all (0, or
+   * unparsable) is refused unless the file has a clone's layout: a clone
+   * whose adf_meta was deselected (before clone-fixup restamped the version)
+   * has `adf_audit`, `adf_loop.loop` and no `adf_archive`. Null too without
+   * an adf_meta table (the v0.2 check reports that). Reads only.
+   */
+  private static refusedSchemaVersion(db: Database.Database): number | null {
+    const sv = AdfDatabase.readSchemaVersion(db)
+    if (sv === null) return null
+    if (sv > 0 && sv < ADF_OLDEST_MIGRATABLE_SCHEMA_VERSION) return sv
+    if (sv > 0) return null
+    const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name))
+    const loopCols = tables.has('adf_loop')
+      ? new Set((db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>).map((c) => c.name))
+      : new Set<string>()
+    const cloneShape = tables.has('adf_audit') && !tables.has('adf_archive') && loopCols.has('loop')
+    return cloneShape ? null : 0
   }
 
   /** Retryable lock-contention error — distinct from the corruption path. */
@@ -671,13 +743,144 @@ export class AdfDatabase {
 
   /** Synchronous backup — only for `open()`, which cannot await mid-migration.
    *  A file copy is safe HERE and only here: open() runs before any writer of
-   *  this connection exists, so nothing can checkpoint underneath it. */
-  static backupBeforeDestructiveSync(db: Database.Database, filePath: string): string {
+   *  this connection exists, so nothing can checkpoint underneath it.
+   *  `complete`: the checkpoint folded the whole WAL first, so the copy holds
+   *  every committed write (a failed open may restore from it).
+   *  `reused`: a `.bak` already on disk has the same size and SHA-256 as the
+   *  checkpointed file (a migration that failed before and rolled back), so
+   *  it is kept as is instead of being moved aside and copied again. The
+   *  copy is fsynced. */
+  static backupBeforeDestructiveSync(db: Database.Database, filePath: string): { backupPath: string; complete: boolean; reused: boolean } {
     const backupPath = filePath + '.bak'
+    let complete = false
+    try {
+      const [ck] = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>
+      complete = ck?.busy === 0
+    } catch { /* BUSY fallback — copy anyway */ }
+    if (AdfDatabase.sameFileContent(filePath, backupPath)) return { backupPath, complete, reused: true }
     try { renameSync(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
-    try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* BUSY fallback — copy anyway */ }
     copyFileSync(filePath, backupPath)
-    return backupPath
+    AdfDatabase.fsyncFileSync(backupPath)
+    return { backupPath, complete, reused: false }
+  }
+
+  /** Both files exist with the same size and SHA-256. */
+  private static sameFileContent(a: string, b: string): boolean {
+    try {
+      if (statSync(a).size !== statSync(b).size) return false
+      const hash = (p: string) => createHash('sha256').update(readFileSync(p)).digest('hex')
+      return hash(a) === hash(b)
+    } catch {
+      return false
+    }
+  }
+
+  private static fsyncFileSync(path: string): void {
+    const fd = openSync(path, 'r+')
+    try { fsyncSync(fd) } finally { closeSync(fd) }
+  }
+
+  /** POSIX: make a rename in `dir` durable. Windows cannot open a directory for fsync. */
+  private static fsyncDirSync(dir: string): void {
+    if (process.platform === 'win32') return
+    try {
+      const fd = openSync(dir, 'r')
+      try { fsyncSync(fd) } finally { closeSync(fd) }
+    } catch { /* best-effort */ }
+  }
+
+  /**
+   * After a failure that followed a committed migration (the constructor):
+   * put the file back as its pre-migration backup. The `.bak` is kept (it is
+   * removed only after a fully successful open). Null when restored, else
+   * why not (the caller says so in its error).
+   *
+   * Only when no other connection can hold the file: none in this process,
+   * no -wal left beside it (SQLite removes it at the last close), and an
+   * exclusive lock taken with busy_timeout 0. The copy is fsynced before the
+   * rename. On POSIX the rename happens while that lock is held, so nothing
+   * can open the old file in between (a connection that opened it earlier
+   * would have held a lock). On Windows the lock's own handle would block the
+   * rename, so the probe closes first: the rename itself then fails while any
+   * other program has the file open.
+   *
+   * Known POSIX residual (tracker §6, W5-H): the probe closes after the
+   * rename, and SQLite's close unlinks `<file>-wal` by path. A program that
+   * opens the restored file and writes in that window can lose its WAL.
+   * Closing first would drop the lock, and better-sqlite3 cannot keep the
+   * WAL on close (no SQLITE_FCNTL_PERSIST_WAL), so the window is not closed.
+   */
+  private static restoreBackupSync(filePath: string): string | null {
+    const backupPath = filePath + '.bak'
+    if (!existsSync(backupPath)) return 'there is no backup'
+    const busy = 'another connection has the file open'
+    if (AdfDatabase.openCounts.has(AdfDatabase.canonicalKey(filePath))) return busy
+    if (existsSync(`${filePath}-wal`)) return busy
+    const restorePath = `${filePath}.restore`
+    let probe: Database.Database | null = null
+    try {
+      copyFileSync(backupPath, restorePath)
+      AdfDatabase.fsyncFileSync(restorePath)
+      try {
+        probe = new Database(filePath, { fileMustExist: true })
+        probe.pragma('busy_timeout = 0')
+        probe.pragma('locking_mode = EXCLUSIVE')
+        probe.exec('BEGIN IMMEDIATE; COMMIT')
+      } catch {
+        try { probe?.close() } catch { /* ignore */ }
+        probe = null
+        try { unlinkSync(restorePath) } catch { /* ignore */ }
+        return busy
+      }
+      if (process.platform === 'win32') {
+        probe.close()
+        probe = null
+      }
+      try { unlinkSync(`${filePath}-shm`) } catch { /* none, or held */ }
+      renameSync(restorePath, filePath)
+      AdfDatabase.fsyncDirSync(dirname(filePath))
+      return null
+    } catch (err) {
+      try { unlinkSync(restorePath) } catch { /* ignore */ }
+      const code = (err as { code?: unknown } | null)?.code
+      return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' ? busy : `the restore failed (${err instanceof Error ? err.message : String(err)})`
+    } finally {
+      // POSIX: after the rename. Its (empty) WAL belonged to the old file.
+      try { probe?.close() } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * A failed open(): roll back is the caller's; here the connection is
+   * closed, the file is put back from the backup when `restore` (the failure
+   * followed a committed migration), and the sidecars this open created are
+   * reaped. Returns the sentence to add to the error when the file could not
+   * be restored, else null.
+   */
+  private static abandonOpen(
+    db: Database.Database,
+    filePath: string,
+    opts: { backup: { complete: boolean } | null; restore: boolean; walExistedBeforeOpen: boolean },
+  ): string | null {
+    try { db.close() } catch { /* may already be closed */ }
+    let note: string | null = null
+    if (opts.backup && !opts.restore) {
+      console.error(`[AdfDatabase] Open failed; the migration was rolled back, the file is unchanged. Backup kept at: ${filePath}.bak`)
+    } else if (opts.restore) {
+      const why = !opts.backup ? 'there is no backup'
+        : !opts.backup.complete ? 'the backup may lack writes another connection had not checkpointed'
+        : AdfDatabase.restoreBackupSync(filePath)
+      if (why === null) {
+        console.error(`[AdfDatabase] Open failed after migrating; restored ${filePath} from its backup, kept at ${filePath}.bak`)
+      } else {
+        note = `${basename(filePath)} was migrated and could not be put back from its backup because ${why}; the backup is kept at ${filePath}.bak`
+        console.error(`[AdfDatabase] ${note}`)
+      }
+    }
+    if (!opts.walExistedBeforeOpen) {
+      try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+    }
+    return note
   }
 
   /** Remove a transient .bak file after a successful destructive operation. */
@@ -729,6 +932,30 @@ export class AdfDatabase {
    *   'reaped'      — WAL folded into the main file, sidecars removed
    *   'error'       — open/checkpoint/unlink failed; sidecars left in place
    */
+  /**
+   * True when no other connection holds `filePath`'s write lock: a probe
+   * connection takes it with BEGIN IMMEDIATE (waiting at most
+   * `busyTimeoutMs`) and gives it back at once. False on SQLITE_BUSY. Lets a
+   * background job (the boot envelope sweep) pass over a file another
+   * connection is writing instead of blocking in AdfWorkspace.open, whose
+   * maintenance writes wait the full busy_timeout. Other errors throw.
+   */
+  static writeLockFree(filePath: string, busyTimeoutMs: number): boolean {
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { fileMustExist: true })
+      db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`)
+      db.exec('BEGIN IMMEDIATE; ROLLBACK')
+      return true
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code
+      if (typeof code === 'string' && code.startsWith('SQLITE_BUSY')) return false
+      throw err
+    } finally {
+      try { db?.close() } catch { /* ignore */ }
+    }
+  }
+
   static reapSidecars(filePath: string): 'reaped' | 'busy' | 'no-sidecars' | 'error' {
     const walPath = `${filePath}-wal`
     const shmPath = `${filePath}-shm`
@@ -828,8 +1055,55 @@ export class AdfDatabase {
     // Capture sidecar state BEFORE the open below replays any WAL.
     const walExistedBeforeOpen = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
 
+    // Too old to upgrade: refused before anything below writes to the file
+    // (the clean-close marker delete, the backup, the migration, the
+    // constructor's pragmas). With a -wal beside the file the check reads
+    // through a read-only connection first, which never checkpoints, so a
+    // refused file's WAL is not folded into it. A busy read fails as locked;
+    // any other error goes on to the integrity check (and its repair), and
+    // the authoritative read below refuses the same files: nothing too old
+    // is ever migrated.
+    if (walExistedBeforeOpen) {
+      let ro: Database.Database | null = null
+      let refused: number | null = null
+      try {
+        ro = new Database(filePath, { readonly: true, fileMustExist: true })
+        refused = AdfDatabase.refusedSchemaVersion(ro)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) throw AdfDatabase.lockedError(filePath)
+      } finally {
+        try { ro?.close() } catch { /* ignore */ }
+      }
+      if (refused !== null) throw new AdfSchemaTooOldError(filePath, refused)
+    }
+
     let db = new Database(filePath)
     let needsMigration = false
+    /** The pre-migration backup, once taken: removed only after a fully successful open. */
+    let backup: { complete: boolean } | null = null
+    /** The migration committed: a later failure puts the file back from `backup`. */
+    let migrated = false
+    /** tryRepair swapped the file: a refusal can no longer say it was not changed. */
+    let repaired = false
+
+    if (!walExistedBeforeOpen) {
+      let refused: number | null = null
+      try {
+        refused = AdfDatabase.refusedSchemaVersion(db)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) {
+          db.close()
+          throw AdfDatabase.lockedError(filePath)
+        }
+      }
+      if (refused !== null) {
+        // No WAL existed, so closing folds nothing; reap the empty sidecars
+        // this read created.
+        db.close()
+        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+        throw new AdfSchemaTooOldError(filePath, refused)
+      }
+    }
 
     // Integrity-check gating invariant:
     //   close() writes the CLEAN_CLOSE_META_KEY marker as its final write before
@@ -880,6 +1154,7 @@ export class AdfDatabase {
 
         if (AdfDatabase.tryRepair(filePath)) {
           db = new Database(filePath)
+          repaired = true
           // Verify repair succeeded
           const recheck = db.pragma('integrity_check') as Array<{ integrity_check: string }>
           if (recheck[0]?.integrity_check !== 'ok') {
@@ -914,6 +1189,7 @@ export class AdfDatabase {
 
       if (AdfDatabase.tryRepair(filePath)) {
         db = new Database(filePath)
+        repaired = true
       } else {
         throw new Error(
           `ADF file is corrupt and could not be repaired. ` +
@@ -936,6 +1212,24 @@ export class AdfDatabase {
         )
       }
 
+      // The authoritative schema read, before the first write below. It
+      // refuses what the pre-check refuses (the pre-check may have failed to
+      // read, or tryRepair replaced the file since). A read that fails here
+      // fails the open: never migrate a file whose version is unknown.
+      let refused: number | null
+      try {
+        refused = AdfDatabase.refusedSchemaVersion(db)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) throw AdfDatabase.lockedError(filePath)
+        throw new Error(
+          `Cannot read the schema version of ${basename(filePath)}: ${err instanceof Error ? err.message : String(err)}. The file was not migrated.`,
+          { cause: err },
+        )
+      }
+      if (refused !== null) {
+        throw new AdfSchemaTooOldError(filePath, refused, { unchanged: !walExistedBeforeOpen && !repaired })
+      }
+
       // File is healthy — clear the clean-close marker so a crash from here on
       // is detected as an unclean shutdown by the next open. close() re-writes
       // the marker as its final write.
@@ -954,12 +1248,7 @@ export class AdfDatabase {
       // source of truth for the schema version and is threaded through the
       // migration ladder below (each step bumps it) instead of re-reading
       // adf_meta before every step.
-      let sv = (() => {
-        const r = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-        if (r) return parseInt(r.value, 10)
-        const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-        return r2 ? parseInt(r2.value, 10) : 0
-      })()
+      let sv = AdfDatabase.readSchemaVersion(db) ?? 0
       needsMigration = sv < ADF_LATEST_SCHEMA_VERSION
 
       if (!needsMigration) {
@@ -999,12 +1288,26 @@ export class AdfDatabase {
 
       if (needsMigration) {
         try {
-          AdfDatabase.backupBeforeDestructiveSync(db, filePath)
-          console.log(`[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
+          const made = AdfDatabase.backupBeforeDestructiveSync(db, filePath)
+          backup = made
+          console.log(made.reused
+            ? `[AdfDatabase] Backup before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}) already on disk, unchanged: ${filePath}.bak`
+            : `[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
         }
       }
+
+      // The whole migration (the steps that run for every version and the
+      // versioned ladder) is one write transaction: a failure rolls all of it
+      // back, and the file stays as the backup has it. The ladder's own
+      // db.transaction() blocks nest as savepoints. Nothing below writes a
+      // pragma, vacuums or checkpoints.
+      db.exec('BEGIN IMMEDIATE')
+      // No version but a clone's layout (the authoritative read let it
+      // through): a clone made before clone-fixup restamped the version. The
+      // version-gated steps never run for it; it is stamped at the end.
+      const unversionedClone = sv === 0
 
       // Migrate adf_loop: add model, tokens, created_at columns if missing
       const cols = db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>
@@ -2029,19 +2332,41 @@ export class AdfDatabase {
         }
       } catch { /* trigger migration is best-effort */ }
 
-      // Migrations succeeded — remove transient backup
-      if (needsMigration) {
-        AdfDatabase.removeBackupSync(filePath)
+      // A statement error SQLite answers with a rollback of the whole
+      // transaction (SQLITE_FULL, IOERR, BUSY) inside a best-effort step
+      // would have left the rest running in autocommit: fail instead.
+      if (!db.inTransaction) throw new Error(`The migration of ${basename(filePath)} was rolled back by SQLite.`)
+      if (unversionedClone) {
+        // Stamped latest, so the next open takes the fast path instead of a
+        // backup copy and this migration again.
+        db.prepare("INSERT INTO adf_meta (key, value, protection) VALUES ('adf_schema_version', ?, 'readonly') ON CONFLICT(key) DO UPDATE SET value = excluded.value, protection = 'readonly'")
+          .run(String(ADF_LATEST_SCHEMA_VERSION))
+        console.log(`[AdfDatabase] Stamped schema v${ADF_LATEST_SCHEMA_VERSION} on an unversioned clone: ${filePath}`)
       }
+      db.exec('COMMIT')
+      migrated = true
     } catch (error) {
-      if (needsMigration) {
-        console.error(`[AdfDatabase] Migration failed. Backup preserved at: ${filePath}.bak`)
+      if (db.inTransaction) {
+        try { db.exec('ROLLBACK') } catch { /* closing rolls back too */ }
       }
-      db.close()
+      AdfDatabase.abandonOpen(db, filePath, { backup, restore: false, walExistedBeforeOpen })
       throw error
     }
 
-    return new AdfDatabase(db, filePath)
+    // The constructor's statements can still fail (a shape no step fixed),
+    // after the migration committed: the file is put back from the backup
+    // when that can be done safely, and the backup is removed only once the
+    // whole open succeeded.
+    let opened: AdfDatabase
+    try {
+      opened = new AdfDatabase(db, filePath)
+    } catch (error) {
+      const note = AdfDatabase.abandonOpen(db, filePath, { backup, restore: migrated, walExistedBeforeOpen })
+      if (note) throw new Error(`${error instanceof Error ? error.message : String(error)}. ${note}`, { cause: error })
+      throw error
+    }
+    if (backup) AdfDatabase.removeBackupSync(filePath)
+    return opened
   }
 
   /**
@@ -2183,7 +2508,7 @@ export class AdfDatabase {
         // Add any tools not in defaults (e.g. custom tool declarations)
         for (const t of options.tools) {
           if (!tools.some(dt => dt.name === t.name)) {
-            tools.push(t)
+            tools.push({ visible: true, ...t })
           }
         }
       }
@@ -2218,7 +2543,7 @@ export class AdfDatabase {
         context: {
           ...base.context,
           ...options.context,
-          audit: { ...base.context.audit, ...options.context?.audit },
+          audit: { ...AUDIT_DEFAULTS, ...base.context.audit, ...options.context?.audit },
           dynamic_instructions: { ...base.context.dynamic_instructions, ...options.context?.dynamic_instructions }
         },
         tools,
@@ -2336,11 +2661,12 @@ export class AdfDatabase {
    * crash leftovers owned by the sweeps — left untouched here. Errors from
    * `fn` (and the open) propagate to the caller's existing catch.
    */
-  private static peekReadonly<T>(filePath: string, fn: (db: Database.Database) => T): T {
+  private static peekReadonly<T>(filePath: string, fn: (db: Database.Database) => T, busyTimeoutMs?: number): T {
     const hadSidecars = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
     let db: Database.Database | null = null
     try {
       db = new Database(filePath, { readonly: true })
+      if (busyTimeoutMs !== undefined) db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`)
       return fn(db)
     } finally {
       try { db?.close() } catch { /* ignore */ }
@@ -2382,7 +2708,7 @@ export class AdfDatabase {
               'Snapshot timed out: the agent is being written to continuously — stop it and try again'
             )
           }
-          return undefined // keep the default transfer rate
+          return 100 // better-sqlite3 defaults to 100 pages per step
         }
       })
     } finally {
@@ -2556,6 +2882,28 @@ export class AdfDatabase {
     } catch {
       return null
     }
+  }
+
+  /**
+   * What the boot envelope sweep decides on before opening a file, read
+   * read-only: its schema version (null without an adf_meta table, 0 with no
+   * version) and its agent id (null without a config). Errors propagate;
+   * `busyTimeoutMs` bounds the wait for a lock (the sweep's 25 ms).
+   */
+  static peekSweepStatus(filePath: string, busyTimeoutMs?: number): { schemaVersion: number | null; agentId: string | null } {
+    return AdfDatabase.peekReadonly(filePath, (db) => {
+      const schemaVersion = AdfDatabase.readSchemaVersion(db)
+      const hasConfig = !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='adf_config'").get()
+      const row = hasConfig
+        ? db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+        : undefined
+      let agentId: string | null = null
+      try {
+        const id = row ? (JSON.parse(row.config_json) as { id?: unknown }).id : undefined
+        if (typeof id === 'string' && id) agentId = id
+      } catch { /* unparsable config: no id */ }
+      return { schemaVersion, agentId }
+    }, busyTimeoutMs)
   }
 
   static peekBootStatusDetailed(filePath: string): AdfBootStatusResult {
@@ -2789,8 +3137,8 @@ export class AdfDatabase {
     try {
       return AdfDatabase.peekReadonly(filePath, (db) => {
         const rows = db.prepare(
-          "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
-        ).all(prefix) as { purpose: string }[]
+          "SELECT purpose FROM adf_identity WHERE substr(purpose, 1, length(?)) = ?"
+        ).all(prefix, prefix) as { purpose: string }[]
         return rows.map((r) => r.purpose)
       })
     } catch {
@@ -3041,7 +3389,7 @@ export class AdfDatabase {
       'DELETE FROM adf_identity WHERE purpose = ?'
     )
     this.stmts.listIdentityByPrefix = this.db.prepare(
-      "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
+      "SELECT purpose FROM adf_identity WHERE substr(purpose, 1, length(?)) = ?"
     )
     this.stmts.getIdentityFull = this.db.prepare(
       'SELECT purpose, value, encryption_algo, salt, kdf_params, code_access FROM adf_identity WHERE purpose = ?'
@@ -3234,15 +3582,20 @@ export class AdfDatabase {
     return result.changes > 0
   }
 
+  /**
+   * Prefix matches are exact and case-sensitive (substr, not LIKE): with LIKE,
+   * `_` and `%` in a server or adapter name were wildcards and ASCII case was
+   * ignored, so detaching one server deleted another's credentials.
+   */
   deleteIdentityByPrefix(prefix: string): number {
-    const stmt = this.db.prepare("DELETE FROM adf_identity WHERE purpose LIKE ? || '%'")
-    const result = stmt.run(prefix)
+    const stmt = this.db.prepare("DELETE FROM adf_identity WHERE substr(purpose, 1, length(?)) = ?")
+    const result = stmt.run(prefix, prefix)
     return result.changes
   }
 
   listIdentityPurposes(prefix?: string): string[] {
     if (prefix) {
-      const rows = this.stmts.listIdentityByPrefix!.all(prefix) as { purpose: string }[]
+      const rows = this.stmts.listIdentityByPrefix!.all(prefix, prefix) as { purpose: string }[]
       return rows.map((r) => r.purpose)
     }
     const rows = this.stmts.listAllIdentityPurposes!.all() as { purpose: string }[]
@@ -3471,10 +3824,33 @@ export class AdfDatabase {
     return config
   }
 
+  /**
+   * setConfig calls through this connection: with dataVersion(), a cheap "did
+   * the config change" check for callers that cache it (RuntimeService's
+   * running-agent config).
+   */
+  private configWrites = 0
+  private dataVersionStmt: Database.Statement | null = null
+
+  configWriteCount(): number {
+    return this.configWrites
+  }
+
+  /**
+   * SQLite's `PRAGMA data_version`: changes when another connection (another
+   * process, or another handle in this one) commits to the file; this
+   * connection's own writes leave it unchanged (configWriteCount counts those).
+   */
+  dataVersion(): number {
+    this.dataVersionStmt ??= this.db.prepare('PRAGMA data_version').pluck()
+    return this.dataVersionStmt.get() as number
+  }
+
   setConfig(config: AgentConfig): void {
     const now = new Date().toISOString()
     config.metadata.updated_at = now
     this.stmts.setConfig!.run(JSON.stringify(config), now)
+    this.configWrites++
 
     // Keep denormalized meta keys in sync
     this.setMeta('adf_name', config.name)
@@ -3761,6 +4137,25 @@ export class AdfDatabase {
 
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)()
+  }
+
+  /**
+   * `fn` in a BEGIN IMMEDIATE transaction: the file's write lock is taken
+   * before `fn` reads, so a check-then-write in it is atomic against every
+   * other connection (another process provisioning the same file). Inside a
+   * transaction already, a savepoint. `busyTimeoutMs`: how long BEGIN waits
+   * for another connection's write lock before SQLITE_BUSY (the connection's
+   * own busy_timeout, 5 s, otherwise).
+   */
+  immediateTransaction<T>(fn: () => T, busyTimeoutMs?: number): T {
+    if (busyTimeoutMs === undefined || this.db.inTransaction) return this.db.transaction(fn).immediate()
+    const before = this.db.pragma('busy_timeout', { simple: true }) as number
+    this.db.pragma(`busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))}`)
+    try {
+      return this.db.transaction(fn).immediate()
+    } finally {
+      this.db.pragma(`busy_timeout = ${before}`)
+    }
   }
 
   // ===========================================================================

@@ -4,7 +4,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { SecurityConfig } from '../../../shared/types/adf-v02.types'
-import { checkConnectTarget } from '../../utils/ssrf-guard'
+import { checkConnectTarget, type FetchGuardOptions } from '../../utils/ssrf-guard'
 
 const InputSchema = z.object({
   id: z.string().optional().describe('ID of a configured connection to start'),
@@ -26,6 +26,12 @@ export type WsConnectFn = (opts: {
   auto_reconnect?: boolean
   reconnect_delay_ms?: number
   keepalive_interval_ms?: number
+  /**
+   * The egress policy the ad-hoc `url` passed: the socket connects only to
+   * addresses it allows (WsConnectionManager.connectOutbound), so a DNS
+   * answer that changes after the check is refused (W4-B follow-up).
+   */
+  guard?: FetchGuardOptions
 }) => Promise<{ connection_id?: string; error?: string }>
 
 export class WsConnectTool implements Tool {
@@ -55,16 +61,18 @@ export class WsConnectTool implements Tool {
     // with `security.allow_local_fetch` as the override, and the daemon control
     // API stays blocked regardless. `id`-only connections resolve a pre-vetted
     // stored config and are not re-checked here.
+    let guard: FetchGuardOptions | undefined
     if (parsed.url) {
       const allowLocal = this.getSecurityConfig?.()?.allow_local_fetch === true
       const daemonPort = Number(process.env.ADF_DAEMON_PORT) || 7385
-      const blocked = await checkConnectTarget(parsed.url, { allowLocal, daemonPort })
+      guard = { allowLocal, daemonPort }
+      const blocked = await checkConnectTarget(parsed.url, guard)
       if (blocked) {
         return { content: blocked, isError: true }
       }
     }
 
-    const result = await this.connectFn(parsed)
+    const result = await this.connectFn(guard ? { ...parsed, guard } : parsed)
     if (result.error) {
       return { content: result.error, isError: true }
     }

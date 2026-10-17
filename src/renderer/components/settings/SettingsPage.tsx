@@ -9,22 +9,25 @@ import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAg
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
+import { saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from '../providers/provider-save'
 import { AboutTab } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
-import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
+import { BackendSettings } from './BackendSettings'
+import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
-import { DOCS } from '../../../shared/constants/docs-links'
+import { DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
-import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
+import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
+import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE, REMOTE_OWNER_RESTORE_SENTENCE } from '../../../shared/constants/remote-owner-identity'
 
 /**
  * Hover copy for the "Update available" advisory shown on managed containers
@@ -44,8 +47,11 @@ const MESH_STATUS_EVENTS = new Set<MeshEvent['type']>([
   'lan_peer_expired',
 ])
 
+/** Sections plus Settings → Backend, which no dashboard tile deep-links to. */
+type SettingsTab = SettingsSection | 'backend'
+
 type SettingsNavItem = {
-  id: SettingsSection
+  id: SettingsTab
   label: string
   description: string
   keywords: string
@@ -88,6 +94,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'ADF Studio',
     items: [
+      { id: 'backend', label: 'Backend', description: 'Where agents run: this computer, a remote computer or inside Studio', keywords: 'daemon embedded local remote server url token', docs: guideUrl('settings', 'backend') },
       { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format', docs: DOCS.index },
     ],
   },
@@ -95,8 +102,8 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
 
 const SETTINGS_NAV_ITEMS = SETTINGS_NAV_GROUPS.flatMap((group) => group.items)
 
-function SettingsNavIcon({ section }: { section: SettingsSection }) {
-  const paths: Record<SettingsSection, React.ReactNode> = {
+function SettingsNavIcon({ section }: { section: SettingsTab }) {
+  const paths: Record<SettingsTab, React.ReactNode> = {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
     identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
     agents: <><path d="M4 17V7l4 3 4-3v10" /><path d="M15 8h5M15 12h5M15 16h5" /></>,
@@ -108,6 +115,7 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
     channels: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
     networking: <><circle cx="12" cy="12" r="2" /><path d="M5.6 8.5a7.5 7.5 0 0 1 12.8 0M2.6 5.5a11.5 11.5 0 0 1 18.8 0M8.6 15.5a4 4 0 0 1 6.8 0" /></>,
     compute: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+    backend: <><rect x="4" y="4" width="16" height="6" rx="1.5" /><rect x="4" y="14" width="16" height="6" rx="1.5" /><path d="M8 7h.01M8 17h.01" /></>,
     about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
   }
 
@@ -266,6 +274,10 @@ function IdentityTab() {
   const [copied, setCopied] = useState<string | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
   const [mnemonic, setMnemonic] = useState<string | null>(null)
+  /** Why no phrase is shown (a remote daemon never sends it). */
+  const [mnemonicReason, setMnemonicReason] = useState<string | null>(null)
+  /** Studio runs on a remote ADF daemon: owner actions happen on its machine. */
+  const [remoteBackend, setRemoteBackend] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   // 'restore': only the owner on record is accepted (restoreRequired); 'import' switches owners.
   const [importMode, setImportMode] = useState<'import' | 'restore'>('import')
@@ -278,6 +290,7 @@ function IdentityTab() {
   const [shareOwner, setShareOwner] = useState(false)
 
   const refresh = useCallback(() => {
+    window.adfApi?.getBackendSettings?.().then((b) => setRemoteBackend(b.active.mode === 'remote')).catch(() => {})
     window.adfApi?.getOwnerIdentityStatus().then(setStatus)
     window.adfApi?.getMeshServerStatus().then(setMeshServer)
     window.adfApi?.getSettings?.().then((s: unknown) => {
@@ -300,6 +313,7 @@ function IdentityTab() {
   const openBackup = async () => {
     const r = await window.adfApi?.revealOwnerMnemonic()
     setMnemonic(r?.mnemonic ?? null)
+    setMnemonicReason(r?.reason ?? null)
     setBackupOpen(true)
   }
 
@@ -347,9 +361,10 @@ function IdentityTab() {
             terminal, but Studio cannot read its seed phrase. Enter the same 12 words to use it here. Studio will not
             create a new owner or restamp your agents.
           </p>
-          <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
+          <Button variant="primary" disabled={remoteBackend} onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
             Restore identity
           </Button>
+          {remoteBackend && <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">{REMOTE_OWNER_RESTORE_SENTENCE}</p>}
         </SettingsGroup>
         </div>
       )}
@@ -417,17 +432,24 @@ function IdentityTab() {
         <div className="flex gap-2 mt-3">
           <Button
             onClick={openBackup}
-            disabled={!status?.hasMnemonic}
+            disabled={!status?.hasMnemonic || remoteBackend}
             variant="primary"
           >
             Back up seed phrase
           </Button>
           <Button
             onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}
+            disabled={remoteBackend}
           >
             Import identity
           </Button>
         </div>
+        {remoteBackend && (
+          <div className="mt-2 space-y-1 text-xs text-neutral-500 dark:text-neutral-400">
+            <p>{REMOTE_OWNER_BACKUP_SENTENCE}</p>
+            <p>{REMOTE_OWNER_IDENTITY_SENTENCE}</p>
+          </div>
+        )}
       </SettingsGroup>
 
       {/* Runtime identity */}
@@ -519,7 +541,7 @@ function IdentityTab() {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-red-500 mb-4">No seed phrase available.</p>
+          <p className="text-sm text-red-500 mb-4">{mnemonicReason ?? 'No seed phrase available.'}</p>
         )}
         <div className="flex items-center justify-between gap-2">
           <Button
@@ -1327,7 +1349,7 @@ export function SettingsPage() {
   const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  const [activeTab, setActiveTab] = useState<SettingsSection>('general')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const [settingsSearch, setSettingsSearch] = useState('')
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
@@ -1346,7 +1368,7 @@ export function SettingsPage() {
   const computeHostApprovedSourcesRef = useRef<Record<string, string>>({})
   useEffect(() => { computeHostApprovedRef.current = computeHostApproved }, [computeHostApproved])
   useEffect(() => { computeHostApprovedSourcesRef.current = computeHostApprovedSources }, [computeHostApprovedSources])
-  const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
+  const [computeEnvStatus, setComputeEnvStatus] = useState<ComputeEnvView>({ status: 'stopped', activeAgents: [] })
   const [computeContainerPackages, setComputeContainerPackages] = useState('python3, python3-pip, git, curl')
   const [computeMachineCpus, setComputeMachineCpus] = useState(2)
   const [computeMachineMemoryMb, setComputeMachineMemoryMb] = useState(2048)
@@ -1401,8 +1423,11 @@ export function SettingsPage() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>()
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingSave = useRef<(() => Promise<unknown> | void) | null>(null)
+  /** The providers part the store last accepted; a refused save marks the rows that differ from it. */
+  const savedProviders = useRef<ProviderListSnapshot>({ providers: [], defaultProviderId: undefined })
+  const [providerSaveFailure, setProviderSaveFailure] = useState<ProviderSaveFailure | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
   const normalizedSearch = settingsSearch.trim().toLowerCase()
@@ -1488,6 +1513,7 @@ export function SettingsPage() {
     window.adfApi?.getSettings().then((settings) => {
       const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
       setProviders(loadedProviders)
+      savedProviders.current = { providers: loadedProviders, defaultProviderId: (settings.defaultProviderId as string | undefined) || undefined }
       // Hydration fixup: if providers exist but no default is set (existing users
       // before this feature shipped), pick the first one. The auto-save effect
       // will persist this back to disk on the next debounce tick.
@@ -1581,7 +1607,8 @@ export function SettingsPage() {
   // read it back.
   const doSave = () => {
     if (!hasLoaded.current) return
-    const written = window.adfApi?.setSettings({
+    const attempted: ProviderListSnapshot = { providers, defaultProviderId }
+    const written = () => window.adfApi?.setSettings({
       providers,
       defaultProviderId,
       mcpServers,
@@ -1601,8 +1628,14 @@ export function SettingsPage() {
         containerImage: computeContainerImage,
       },
     })
+    // A refused save (the daemon's secret store locked, say) never reads as
+    // saved: the rows it concerns say why, and the edits stay for the next try.
+    const saving = saveProviderList(written, savedProviders.current, attempted).then((result) => {
+      if (result.saved) savedProviders.current = attempted
+      setProviderSaveFailure(result.failure)
+    })
     invalidateConfigCaches()
-    return written
+    return saving
   }
   pendingSave.current = doSave
 
@@ -2219,6 +2252,9 @@ export function SettingsPage() {
           {/* About tab */}
           {activeTab === 'about' && <AboutTab />}
 
+          {/* Backend tab */}
+          {activeTab === 'backend' && <BackendSettings />}
+
           {/* Packages tab */}
           {activeTab === 'packages' && <PackagesTab
             sandboxPackages={sandboxPackages}
@@ -2237,6 +2273,7 @@ export function SettingsPage() {
               defaultProviderId={defaultProviderId}
               setDefaultProviderId={setDefaultProviderId}
               flushSave={flushSave}
+              saveFailure={providerSaveFailure}
               onOpenTemplate={() => setActiveTab('template')}
             />
           )}
@@ -2556,36 +2593,9 @@ export function SettingsPage() {
   )
 }
 
-interface InstallMethod {
-  command: string
-  label: string
-  autoRunnable: boolean
-  /** A page to open (e.g. an installer download) instead of a command to copy. */
-  url?: string
-}
-
-interface Prerequisite {
-  id: 'wsl'
-  name: string
-  installed: boolean
-  installCommand?: string
-  requiresReboot?: boolean
-  description?: string
-  docsUrl?: string
-}
-
-interface PodmanAvailability {
-  available: boolean
-  binPath?: string
-  version?: string
-  machineRequired: boolean
-  machineRunning?: boolean
-  machineExists?: boolean
-  error?: string
-  platform: string
-  installMethods: InstallMethod[]
-  prerequisites: Prerequisite[]
-}
+/** COMPUTE_STATUS as Settings → Compute reads it. `leftRunning`: containers the
+ *  last stop left running because another runtime uses them (W1-G). */
+type ComputeEnvView = { status: string; activeAgents: string[]; leftRunning?: Array<{ name: string; holders: string[]; reason: string }> }
 
 /** Compute settings tab — extracted for useEffect on mount. */
 function ComputeTab({
@@ -2598,8 +2608,8 @@ function ComputeTab({
   containerImage, setContainerImage,
   executionTargets, setExecutionTargets,
 }: {
-  computeEnvStatus: { status: string; activeAgents: string[] }
-  setComputeEnvStatus: (s: { status: string; activeAgents: string[] }) => void
+  computeEnvStatus: ComputeEnvView
+  setComputeEnvStatus: (s: ComputeEnvView) => void
   computeHostAccessEnabled: boolean
   setComputeHostAccessEnabled: (v: boolean) => void
   computeHostApproved: string[]
@@ -2640,7 +2650,7 @@ function ComputeTab({
   }, [setExecutionTargets])
 
   const refreshAll = useCallback(() => {
-    window.adfApi?.computeStatus?.().then((s: { status: string; activeAgents: string[] }) => {
+    window.adfApi?.computeStatus?.().then((s: ComputeEnvView) => {
       if (s) setComputeEnvStatus(s)
     })
     window.adfApi?.computeSetup?.({ step: 'check' }).then((r: { success: boolean; availability?: PodmanAvailability }) => {
@@ -2742,6 +2752,9 @@ function ComputeTab({
           <div>
             <h4 className="text-xs font-semibold text-[var(--adf-ui-text)]">Containers</h4>
             <p className="text-[10px] text-[var(--adf-ui-text-muted)]">{containers.filter((container) => container.running).length} running · {containers.length} total</p>
+            {(computeEnvStatus.leftRunning ?? []).map((kept) => (
+              <p key={kept.name} className="text-[10px] text-[var(--adf-ui-text-muted)]">{kept.name} was left running: {kept.reason}.</p>
+            ))}
           </div>
           <div className="flex items-center gap-2">
             <SegmentedControl
@@ -2792,7 +2805,10 @@ function ComputeTab({
                     </Tooltip>
                   )}
                 </span>
-                <span className="truncate text-[11px] text-[var(--adf-ui-text-muted)]">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
+                <span className="min-w-0 text-[11px] text-[var(--adf-ui-text-muted)]">
+                  <span className="block truncate">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
+                  {c.users && c.users.length > 0 && <span className="block truncate text-[10px]">Also used by {c.users.join(', ')}</span>}
+                </span>
                 <div className="relative flex justify-end gap-1">
                   <Tooltip tip={failed ? 'Setup failed: rebuild to retry' : c.managed ? (c.running ? 'Stop' : 'Start') : 'Legacy container: rebuild to migrate before managing'}>
                     <IconButton
@@ -2801,7 +2817,8 @@ function ComputeTab({
                       onClick={async () => {
                         setBusyContainer(c.name); setSetupError(null)
                         try {
-                          if (c.running && isShared && computeEnvStatus.activeAgents.length > 0 && !window.confirm(`Stop ${c.name}? ${computeEnvStatus.activeAgents.length} active agent(s) may be interrupted.`)) return
+                          const stopQuestion = containerStopConfirmation(c, isShared, computeEnvStatus.activeAgents)
+                          if (stopQuestion && !window.confirm(stopQuestion)) return
                           const result = c.running ? await window.adfApi.computeStopContainer({ name: c.name }) : await window.adfApi.computeStartContainer({ name: c.name })
                           if (!result.success) setSetupError(result.error ?? `${c.running ? 'Stop' : 'Start'} failed`)
                         } finally { setBusyContainer(null); refreshAll() }

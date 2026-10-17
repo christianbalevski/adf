@@ -11,7 +11,12 @@ loop's context, like Studio's context breakdown:
 - the total against the auto-compact threshold, and where that threshold
   comes from (the loop, the agent, the model, or the default);
 - the categories, biggest first: system prompt, injected files, built-in
-  tools, each MCP server, dynamic instructions, conversation.
+  tools, each MCP server, dynamic instructions, conversation and, after a
+  call, "Since last call" (the reply plus anything added after it).
+
+After a call, the figures are calibrated to that call's reported prompt
+size; the footer says so. A figure marked `≈` is an estimate (scaled to the
+call, or not tied to one); the reply's size is the reported one.
 
 | Key | Action |
 |---|---|

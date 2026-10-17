@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,6 +24,7 @@ import { DaemonIdentity } from '../src/main/daemon/daemon-identity'
 import { DaemonAgentFactory } from '../src/main/daemon/daemon-agent-factory'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
+import { AgentLeaseRegistry, processAgentLeases } from '../src/main/runtime/agent-lease'
 import { MockLLMProvider } from '../src/main/runtime/headless'
 import { setWorkspaceIdentityHooks } from '../src/main/runtime/identity-provisioner'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
@@ -85,14 +86,7 @@ function makeDaemon(opts: { backend?: ConstructorParameters<typeof DaemonIdentit
   const encKey = ensureDaemonEncKey(h.userDataDir)
   const identity = new DaemonIdentity({ settings, settingsPath, encKey, backend: opts.backend ?? fakeKeychain().backend })
   // Same wiring as src/main/daemon/index.ts.
-  setWorkspaceIdentityHooks({
-    ensureIdentity: (ws) => {
-      if (identity.isReady()) identity.service.ensureWorkspaceIdentity(ws)
-      else identity.service.unlockWorkspaceEnvelopes(ws)
-    },
-    unlockEnvelopes: (ws) => identity.service.unlockWorkspaceEnvelopes(ws),
-    canProvision: () => identity.isReady(),
-  })
+  setWorkspaceIdentityHooks(identity.workspaceHooks())
   const runtime = new RuntimeService({ settings, providerFactory: () => new MockLLMProvider() })
   runtimes.push(runtime)
   const agentFactory = new DaemonAgentFactory({ settings, identity, runtime })
@@ -228,13 +222,15 @@ describe('daemon owner identity API', () => {
 })
 
 describe('daemon agent creation', () => {
-  it('409 until the identity is ready, then 201 with a Studio-grade sealed identity; 409 name taken; 422 template missing', async () => {
+  it('without the identity: made without keys, with a warning (Studio parity); then 201 with a Studio-grade sealed identity; 409 name taken; 422 template missing', async () => {
     const { server, identity } = makeDaemon()
 
-    const early = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
-    expect(early.statusCode).toBe(409)
-    expect(early.json()).toMatchObject({ code: 'identity_not_ready', identity: { status: 'none' } })
-    expect((await server.inject({ method: 'GET', url: '/templates' })).statusCode).toBe(409)
+    // Before the owner identity exists the agent is made without identity keys, as Studio makes it, and the answer says so.
+    const early = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-0', directory: agentsDir, load: false } })
+    expect(early.statusCode).toBe(201)
+    expect(early.json()).toMatchObject({ name: 'agent-0', loaded: false, warnings: [expect.stringContaining("The owner identity is not set up yet, so agent-0's identity is not sealed to an owner.")] })
+    // Templates work before the owner identity exists, as in embedded (W5-D2 e7a4479d).
+    expect((await server.inject({ method: 'GET', url: '/templates' })).statusCode).toBe(200)
 
     const { mnemonic } = (await server.inject({ method: 'POST', url: '/identity/create', payload: {} })).json()
     const status = identity.status()
@@ -267,11 +263,61 @@ describe('daemon agent creation', () => {
     const taken = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
     expect(taken.statusCode).toBe(409)
     expect(taken.json().code).toBe('name_taken')
+    // The user confirmed replacing it (Studio's save dialog): written over, as Studio does.
+    const replaced = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-0', directory: agentsDir, load: false, replace: true } })
+    expect(replaced.statusCode).toBe(201)
+    expect(replaced.json().did).toMatch(/^did:key:/)
 
     const missing = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-2', directory: agentsDir, template: 'no-such-template' } })
     expect(missing.statusCode).toBe(422)
     expect(missing.json().code).toBe('template_missing')
     expect(existsSync(join(agentsDir, 'agent-2.adf'))).toBe(false)
+  }, 60_000)
+
+  it('a confirmed replace whose identity provisioning fails: the replacement is kept with a warning, nothing is lost, no work file left', async () => {
+    const { server, identity } = makeDaemon()
+    await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+    const first = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false } })
+    expect(first.statusCode).toBe(201)
+    const original = first.json() as { filePath: string; did: string }
+    const spy = vi.spyOn(identity.service, 'ensureWorkspaceIdentity').mockImplementation(() => { throw new Error('keychain unavailable') })
+    try {
+      // Not replacing: a failed identity is refused and leaves no file.
+      const fresh = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-2', directory: agentsDir, load: false } })
+      expect(fresh.statusCode).toBe(500)
+      expect(existsSync(join(agentsDir, 'agent-2.adf'))).toBe(false)
+
+      const replaced = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false, replace: true } })
+      expect(replaced.statusCode).toBe(201)
+      expect(replaced.json()).toMatchObject({ filePath: original.filePath, did: null, warnings: [expect.stringContaining('keychain unavailable')] })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(existsSync(original.filePath)).toBe(true)
+    const ws = AdfWorkspace.open(original.filePath)
+    try { expect(ws.getDid()).not.toBe(original.did) } finally { ws.close() }
+    expect(readdirSync(agentsDir).filter(f => f.includes('.replacing'))).toEqual([])
+  }, 60_000)
+
+  it('a confirmed replace of a file another runtime runs: 409 agent_leased, the original and its -wal untouched', async () => {
+    const { server } = makeDaemon()
+    await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+    const first = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false } })
+    expect(first.statusCode).toBe(201)
+    const original = first.json() as { filePath: string; did: string }
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(agentsDir, 'other-settings.json') })
+    try {
+      expect((await other.acquire(original.filePath)).ok).toBe(true)
+      const replaced = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false, replace: true } })
+      expect(replaced.statusCode).toBe(409)
+      expect(replaced.json().code).toBe('agent_leased')
+      expect(replaced.json().error).toMatch(/agent-1 is already running in another ADF Studio/)
+    } finally {
+      await other.close()
+    }
+    const ws = AdfWorkspace.open(original.filePath)
+    try { expect(ws.getDid()).toBe(original.did) } finally { ws.close() }
+    expect(readdirSync(agentsDir).filter(f => f.includes('.replacing'))).toEqual([])
   }, 60_000)
 
   it('422 load_failed when the new file cannot load (e.g. no provider): the file stays and the message says so', async () => {

@@ -11,6 +11,10 @@ import { useMessageQueueStore } from '../stores/message-queue.store'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
+import { confirmDiscardConflicts } from '../utils/edit-conflict'
+
+/** W3-F: what an agent switch answers when the user kept unsaved text under a "changed elsewhere" notice. */
+const KEPT_UNSAVED = { success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
 
 /**
  * Files opened in the editor when an agent has no saved tab set: its document,
@@ -22,7 +26,7 @@ export const DEFAULT_OPEN_TABS = ['README.md', 'mind.md', 'soul.md'] as const
 
 // window.adfApi is untyped in the web project, so the batch is too.
 type FileBatch = Awaited<ReturnType<typeof window.adfApi.getBatch>>
-type TabFile = { content: string; binary?: boolean; mimeType?: string }
+type TabFile = { content: string; binary?: boolean; mimeType?: string; revision?: number }
 
 /** Everything an agent switch shows, read before any store changes. */
 export interface FileContents {
@@ -57,12 +61,119 @@ export async function fetchFileContents(agentFilePath: string | null): Promise<F
 }
 
 /**
+ * Apply AGENT_START's answer for an agent that was already running (the
+ * re-attach): its executor state, pending approvals and asks. A failed
+ * re-attach is said in the status line: the agent still runs in main.
+ */
+function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.startAgent>>, filePath: string | null): void {
+  if (startResult.success) {
+    // Use the actual executor state (may be mid-turn: thinking/tool_use)
+    const reattachedState = toDisplayState(startResult.agentState ?? 'idle')
+    useAgentStore.getState().setState(reattachedState)
+    // Inner loops keep running across a switch: show their real
+    // states, not the reset default (idle).
+    const loopStates: Record<string, string> = { [MAIN_LOOP]: reattachedState }
+    for (const [loop, state] of Object.entries(startResult.loopStates ?? {})) {
+      const displayState = toDisplayState(state)
+      loopStates[loop] = displayState
+      useAgentStore.getState().setState(displayState, loop)
+    }
+    // A turn that ended during the switch reported its idle to neither
+    // the background list nor this view: send what was queued for
+    // every loop that is idle now.
+    if (filePath) deliverSettledQueues(filePath, loopStates, reattachedState)
+
+    // Restore pending HIL approvals so the user can still approve/reject
+    const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals
+    if (pending && pending.length > 0) {
+      const store = useAgentStore.getState()
+      for (const approval of pending) {
+        const meta: Partial<ApprovalMeta> = {
+          reason: approval.reason,
+          protection: approval.protection,
+          canAlwaysApprove: approval.canAlwaysApprove,
+          alwaysApproveBlockedReason: approval.alwaysApproveBlockedReason
+        }
+        // Find the matching tool_call log entry by tool name (search from end)
+        const log = store.log
+        let matched = false
+        for (let i = log.length - 1; i >= 0; i--) {
+          const entry = log[i]
+          if (entry.type === 'tool_call' && entry.metadata?.name === approval.name) {
+            store.addPendingApproval(entry.id, approval.requestId, meta)
+            matched = true
+            break
+          }
+        }
+        // If no matching log entry found (e.g. log was truncated), synthesize one
+        if (!matched) {
+          const entryId = nanoid()
+          store.addLogEntry({
+            id: entryId,
+            type: 'tool_call',
+            content: `Calling ${approval.name}`,
+            timestamp: Date.now(),
+            metadata: { name: approval.name, input: approval.input }
+          })
+          store.addPendingApproval(entryId, approval.requestId, meta)
+        }
+      }
+    }
+
+    // Restore pending ask requests so the reply box reappears after navigation
+    const pendingAsks = (startResult as { pendingAsks?: Array<{ requestId: string; question: string }> }).pendingAsks
+    if (pendingAsks && pendingAsks.length > 0) {
+      const store = useAgentStore.getState()
+      for (const ask of pendingAsks) {
+        // Find the matching ask tool_call log entry (search from end)
+        const log = store.log
+        let matched = false
+        for (let i = log.length - 1; i >= 0; i--) {
+          const entry = log[i]
+          if (entry.type === 'tool_call' && entry.metadata?.name === 'ask') {
+            store.addPendingAsk(entry.id, ask.requestId, ask.question)
+            matched = true
+            break
+          }
+        }
+        // If no matching log entry found, synthesize one
+        if (!matched) {
+          const entryId = nanoid()
+          store.addLogEntry({
+            id: entryId,
+            type: 'tool_call',
+            content: `Calling ask`,
+            timestamp: Date.now(),
+            metadata: { name: 'ask', input: { question: ask.question } }
+          })
+          store.addPendingAsk(entryId, ask.requestId, ask.question)
+        }
+      }
+    }
+  } else {
+    // The executor is still running in main with no host attached.
+    // Never fail silently: the default reset state reads as "off".
+    console.error('[useAdfFile] Foreground re-attach of running agent failed:', startResult.error)
+    useAgentStore.getState().setStatusText(`Agent is running but could not attach: ${startResult.error ?? 'unknown error'}`)
+  }
+}
+
+/**
  * Files an openFile is switching to right now. main extracts a running
  * background agent for the foreground attach and reports it `agent_stopped`
  * while the renderer is still fetching it; the background event handler
  * keeps such a file's starting mark instead of dropping it.
  */
 export const openingFilePaths = new Set<string>()
+
+/**
+ * Daemon mode: a file whose agent runs, opened behind the password prompt
+ * (FILE_OPEN answered needsPassword with agentWasRunning; the daemon keeps
+ * it running on its stub provider). The unlock rebuilds the real provider in
+ * place, and completeFileOpen re-attaches it instead of showing it stopped.
+ * Embedded never answers both: it stops such an agent before the prompt.
+ */
+const reattachAfterUnlock = new Set<string>()
 
 /**
  * Hook for managing ADF file operations.
@@ -88,7 +199,9 @@ export function useAdfFile() {
   const applyFileContents = useCallback((contents: FileContents) => {
     const { batch, tabFiles } = contents
     const t1 = performance.now()
-    setDocumentContent(batch.document)
+    // W3-F: the revisions the README tab and the config panel save over.
+    setDocumentContent(batch.document, { revision: batch.documentRevision, writer: null })
+    useAgentStore.getState().setConfigRevision(batch.configRevision)
     setConfig(batch.agentConfig)
     setStatusText(batch.statusText ?? '')
     setDirty(false)
@@ -138,12 +251,12 @@ export function useAdfFile() {
     // by fetchFileContents. False for files that no longer exist.
     const openWorkspaceFile = (path: string): boolean => {
       if (path === 'README.md') {
-        tabStore.openTab('README.md', batch.document, false)
+        tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
         return true
       }
       const file = tabFiles.get(path)
       if (!file) return false
-      tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType)
+      tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType, file.revision)
       return true
     }
 
@@ -164,7 +277,7 @@ export function useAdfFile() {
     } else if (!restoredAny && saved && saved.paths.length > 0) {
       // Every saved file is gone. Fall back to the document rather than
       // leaving a blank editor.
-      tabStore.openTab('README.md', batch.document, false)
+      tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
     } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
       tabStore.setActiveTab(saved.active)
     }
@@ -212,12 +325,25 @@ export function useAdfFile() {
     }
   }, [applyFileContents])
 
-  const completeFileOpen = useCallback(async () => {
+  /**
+   * `reattach: false`: the gate was passed without the agent's key (Wipe All
+   * Keys); a daemon agent still on its stub provider is not re-attached.
+   */
+  const completeFileOpen = useCallback(async (opts: { reattach?: boolean } = {}) => {
     setShowSettings(false)
     resetAgent()
     // Review state belongs to the previous file until main re-checks below.
     useAppStore.getState().resetAgentReview()
     await loadFileContents()
+
+    const filePath = useDocumentStore.getState().filePath
+    if (filePath && reattachAfterUnlock.delete(filePath) && opts.reattach !== false) {
+      // A running agent skips the review check, as openFile's re-attach does.
+      useAppStore.getState().addStartingFilePath(filePath)
+      const startResult = await window.adfApi.startAgent().finally(() => useAppStore.getState().removeStartingFilePath(filePath))
+      applyReattach(startResult, filePath)
+      return
+    }
 
     // Check if review is needed (replaces MCP server check)
     try {
@@ -233,6 +359,8 @@ export function useAdfFile() {
 
   const openFile = useCallback(async (filePath?: string) => {
     const tTotal = performance.now()
+    // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
+    if (!confirmDiscardConflicts()) return
 
     // Loop history is persisted via the adf_loop table by AgentSession.
     // No need to send the UI log back — DOC_SET_CHAT is a no-op in v0.2.
@@ -264,6 +392,7 @@ export function useAdfFile() {
       endAgentSwitch()
     }
 
+    reattachAfterUnlock.clear()
     try {
       let t1 = performance.now()
       const result = await window.adfApi.openFile(filePath)
@@ -290,6 +419,7 @@ export function useAdfFile() {
         // Check if password is needed
         if (result.needsPassword) {
           parkOnGate()
+          if (result.agentWasRunning) reattachAfterUnlock.add(result.filePath)
           useAppStore.getState().setPasswordDialogOpen(true, result.filePath)
           return result
         }
@@ -357,96 +487,7 @@ export function useAdfFile() {
             for (const fp of marked) useAppStore.getState().removeStartingFilePath(fp)
           })
           console.log(`[PERF:renderer] openFile.startAgent IPC: ${(performance.now() - t1).toFixed(1)}ms`)
-          if (startResult.success) {
-            // Use the actual executor state (may be mid-turn: thinking/tool_use)
-            const reattachedState = toDisplayState(startResult.agentState ?? 'idle')
-            useAgentStore.getState().setState(reattachedState)
-            // Inner loops keep running across a switch: show their real
-            // states, not the reset default (idle).
-            const loopStates: Record<string, string> = { [MAIN_LOOP]: reattachedState }
-            for (const [loop, state] of Object.entries(startResult.loopStates ?? {})) {
-              const displayState = toDisplayState(state)
-              loopStates[loop] = displayState
-              useAgentStore.getState().setState(displayState, loop)
-            }
-            // A turn that ended during the switch reported its idle to neither
-            // the background list nor this view: send what was queued for
-            // every loop that is idle now.
-            deliverSettledQueues(result.filePath, loopStates, reattachedState)
-
-            // Restore pending HIL approvals so the user can still approve/reject
-            const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals
-            if (pending && pending.length > 0) {
-              const store = useAgentStore.getState()
-              for (const approval of pending) {
-                const meta: Partial<ApprovalMeta> = {
-                  reason: approval.reason,
-                  protection: approval.protection,
-                  canAlwaysApprove: approval.canAlwaysApprove,
-                  alwaysApproveBlockedReason: approval.alwaysApproveBlockedReason
-                }
-                // Find the matching tool_call log entry by tool name (search from end)
-                const log = store.log
-                let matched = false
-                for (let i = log.length - 1; i >= 0; i--) {
-                  const entry = log[i]
-                  if (entry.type === 'tool_call' && entry.metadata?.name === approval.name) {
-                    store.addPendingApproval(entry.id, approval.requestId, meta)
-                    matched = true
-                    break
-                  }
-                }
-                // If no matching log entry found (e.g. log was truncated), synthesize one
-                if (!matched) {
-                  const entryId = nanoid()
-                  store.addLogEntry({
-                    id: entryId,
-                    type: 'tool_call',
-                    content: `Calling ${approval.name}`,
-                    timestamp: Date.now(),
-                    metadata: { name: approval.name, input: approval.input }
-                  })
-                  store.addPendingApproval(entryId, approval.requestId, meta)
-                }
-              }
-            }
-
-            // Restore pending ask requests so the reply box reappears after navigation
-            const pendingAsks = (startResult as { pendingAsks?: Array<{ requestId: string; question: string }> }).pendingAsks
-            if (pendingAsks && pendingAsks.length > 0) {
-              const store = useAgentStore.getState()
-              for (const ask of pendingAsks) {
-                // Find the matching ask tool_call log entry (search from end)
-                const log = store.log
-                let matched = false
-                for (let i = log.length - 1; i >= 0; i--) {
-                  const entry = log[i]
-                  if (entry.type === 'tool_call' && entry.metadata?.name === 'ask') {
-                    store.addPendingAsk(entry.id, ask.requestId, ask.question)
-                    matched = true
-                    break
-                  }
-                }
-                // If no matching log entry found, synthesize one
-                if (!matched) {
-                  const entryId = nanoid()
-                  store.addLogEntry({
-                    id: entryId,
-                    type: 'tool_call',
-                    content: `Calling ask`,
-                    timestamp: Date.now(),
-                    metadata: { name: 'ask', input: { question: ask.question } }
-                  })
-                  store.addPendingAsk(entryId, ask.requestId, ask.question)
-                }
-              }
-            }
-          } else {
-            // The executor is still running in main with no host attached.
-            // Never fail silently: the default reset state reads as "off".
-            console.error('[useAdfFile] Foreground re-attach of running agent failed:', startResult.error)
-            setStatusText(`Agent is running but could not attach: ${startResult.error ?? 'unknown error'}`)
-          }
+          applyReattach(startResult, result.filePath)
         }
 
         console.log(`[PERF:renderer] openFile total: ${(performance.now() - tTotal).toFixed(1)}ms`)
@@ -491,6 +532,7 @@ export function useAdfFile() {
    * becomes the open one, so the loop panel finds it on mount and sends it.
    */
   const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; identityDraftId?: string; files?: File[] }) => {
+    if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
     beginAgentSwitch()
     try {
       const { files, ...createOptions } = options ?? {}
@@ -513,6 +555,7 @@ export function useAdfFile() {
   }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground])
 
   const createFile = useCallback(async (name: string) => {
+    if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
     try {
@@ -550,6 +593,9 @@ export function useAdfFile() {
   }, [setDirty])
 
   const closeFile = useCallback(async () => {
+    if (!confirmDiscardConflicts()) return
+    // The password prompt was cancelled (or the file closed): nothing to re-attach after an unlock.
+    reattachAfterUnlock.clear()
     // Closing a running agent moves it to the background, where its queue is
     // still delivered; a stopped one has no turn left to end, so its queue
     // goes with it.

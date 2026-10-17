@@ -27,6 +27,7 @@ import { constants, copyFileSync, existsSync, renameSync, unlinkSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { nanoid } from 'nanoid'
 import { AdfWorkspace } from './adf-workspace'
+import { ADF_LATEST_SCHEMA_VERSION } from './adf-database'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { KeySlotRecord } from '../crypto/envelope-crypto'
 import {
@@ -339,6 +340,13 @@ export function cloneAdfFile(sourcePath: string, selectedTables: string[], deps:
     const source = snapshotCloneSource(workspace)
     const selectedSet = new Set(selectedTables)
     clearUnselectedTables(workspace, selectedSet)
+    // adf_meta deselected: the copy was opened (so migrated to this build's
+    // latest schema) before the clear, so it is at that version. Without the
+    // row every later open took it for an unversioned file: a backup and the
+    // whole migration on each open.
+    if (workspace.getMeta('adf_schema_version') === null) {
+      workspace.setMeta('adf_schema_version', String(ADF_LATEST_SCHEMA_VERSION), 'readonly')
+    }
 
     // Rename + new config.id (same generator as AdfDatabase.create) in every
     // branch: the review gate keys on id alone, so a kept-identity clone

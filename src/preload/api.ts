@@ -8,10 +8,12 @@ import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalle
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
-import type { BrowserSessionEvent, BrowserSessionInfo, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
+import type { ResourceConflict, ResourceWriter } from '../shared/types/resource-revision.types'
+import type { BrowserSessionEvent, BrowserSessionInfo, ComputeSetupResult, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
+import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -59,10 +61,19 @@ export interface AdfApi {
   revealInFolder: (filePath: string) => Promise<void>
 
   // Document content
-  getDocument: () => Promise<{ content: string }>
-  setDocument: (content: string) => Promise<{ success: boolean }>
+  /** `revision` (W3-F): what a save of this content passes as `baseRevision`. */
+  getDocument: () => Promise<{ content: string; revision?: number }>
+  /**
+   * W3-F: with `baseRevision`, the save is refused when the document changed
+   * since that revision (`success: false` with `conflict`: who changed it and
+   * its text now); without, it replaces whatever is there.
+   */
+  setDocument: (content: string, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   getAgentConfig: () => Promise<AgentConfig | null>
-  setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
+  /** W3-F: the config and the revision a save over it passes as `baseRevision` (null config: no file open). */
+  getAgentConfigWithRevision: () => Promise<{ config: AgentConfig | null; revision?: number }>
+  /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.config` is the config now. */
+  setAgentConfig: (config: unknown, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   /**
    * The runtime changed the open agent's config on its own — `sys_update_config`,
    * `loop_manage` (inner loops added/removed), or any other write that goes
@@ -70,7 +81,7 @@ export interface AdfApi {
    * window's own `setAgentConfig` save, so subscribers can apply the payload
    * directly. `filePath` identifies the agent the config belongs to.
    */
-  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => () => void
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) => void) => () => void
   /** `loop` selects which loop's stream to read; omitted/'main' = the host loop. */
   getChat: (loop?: string) => Promise<{ chatHistory: ChatHistory | null }>
   getChatOlder: (beforeSeq: number, limit?: number, loop?: string) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
@@ -82,6 +93,9 @@ export interface AdfApi {
   getBatch: () => Promise<{
     document: string
     agentConfig: AgentConfig | null
+    /** W3-F: the revisions the config panel and the document tab save over. */
+    configRevision?: number
+    documentRevision?: number
     chat: ChatHistory | null
     statusText?: string
     /** Newest assistant row's billing breakdown (breakdown modal). */
@@ -106,7 +120,14 @@ export interface AdfApi {
   startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; loopStates?: Record<string, string>; code?: 'provider_missing' | 'provider_unconfigured' }>
   stopAgent: () => Promise<{ success: boolean }>
   /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
-  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>
+  /**
+   * `accepted` (daemon mode): the daemon took the message, but its turn's end
+   * never reached Studio (connection lost, daemon exited, wait timed out). The
+   * message is delivered; `error` says what is unknown. Never resend it.
+   * `code: 'daemon_exited'`: the daemon's process exited before the turn
+   * ended, so the turn never finished.
+   */
+  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean; code?: 'daemon_exited' }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
@@ -184,7 +205,7 @@ export interface AdfApi {
   computeStartContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
   computeDestroyContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
   computeRebuildContainer: (args: { name: string }) => Promise<{ success: boolean; recreated?: boolean; error?: string }>
-  computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => Promise<Record<string, unknown>>
+  computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => Promise<ComputeSetupResult>
   computeContainerDetail: (args: { name: string }) => Promise<Record<string, unknown>>
   computeExecLog: (args: { name?: string }) => Promise<{ entries: unknown[] }>
   computeTestExecutionTarget: (target: LocalContainerExecutionTarget) => Promise<ExecutionTargetProbeResult>
@@ -383,8 +404,11 @@ export interface AdfApi {
     mimeType?: string
     size?: number
     tooLarge?: boolean
+    /** W3-F: a text file's revision, what writeInternalFile passes as `baseRevision`. */
+    revision?: number
   }>
-  writeInternalFile: (path: string, content: string) => Promise<{ success: boolean }>
+  /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.content` is the file's text now. */
+  writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
   downloadInternalFile: (path: string) => Promise<{ success: boolean; error?: string }>
 
   // Meta
@@ -499,6 +523,7 @@ export interface AdfApi {
       command?: string
       args?: string[]
       url?: string
+      oauth?: boolean
       envKeys?: string[]
       headers?: { key: string; value: string }[]
       headerEnv?: { key: string; value: string }[]
@@ -585,7 +610,8 @@ export interface AdfApi {
   changePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>
   listIdentityEntries: () => Promise<{ entries: Array<{ purpose: string; encrypted: boolean; code_access: boolean }> }>
   setIdentityCodeAccess: (purpose: string, codeAccess: boolean) => Promise<{ success: boolean }>
-  revealIdentity: (purpose: string) => Promise<{ value: string | null }>
+  /** `reason`: why no value is shown (key material is never revealed; a remote daemon sends no values). */
+  revealIdentity: (purpose: string) => Promise<{ value: string | null; reason?: string }>
   wipeAllIdentity: () => Promise<{ success: boolean }>
   getDid: () => Promise<{ did: string | null }>
   generateIdentityKeys: () => Promise<{ success: boolean; did?: string; error?: string }>
@@ -606,7 +632,7 @@ export interface AdfApi {
     runtimeDelegation: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string } | null
     runtimeDelegationValid: boolean
   }>
-  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null }>
+  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null; reason?: string }>
   confirmOwnerBackup: () => Promise<{ success: boolean }>
   /** `expectedOwnerDid`: restore only that owner (a different phrase is refused, not switched to). */
   importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) => Promise<{ success: boolean; ownerDid?: string; restamped?: number; attested?: number; failures?: string[]; error?: string }>
@@ -693,6 +719,37 @@ export interface AdfApi {
 
   // Emergency stop
   emergencyStop: () => Promise<{ success: boolean; error?: string }>
+
+  // Settings → Backend (studio-backend.json; applies at next launch)
+  /** The view never contains the remote token, only whether one is saved. */
+  getBackendSettings: () => Promise<BackendSettingsView>
+  setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
+  /** Remote daemon: the handshake only (reachable, token accepted, client API version). Never returns the token. */
+  checkRemoteBackend: (request: RemoteCheckRequest) => Promise<RemoteCheckResult>
+  /**
+   * Quit and start Studio again, so a saved backend applies (design D9).
+   * `kind`: the restart main asked for after the daemon connection failed
+   * (the window first kept its unsaved editor text as recovery copies).
+   */
+  restartStudio: (kind?: 'reconnect' | 'embedded-session') => Promise<void>
+
+  // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
+  onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void
+  /** Answer a pick; `null` cancels. */
+  respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => Promise<boolean>
+  /** One folder on the daemon's machine (GET /fs/browse); no path lists the browse roots. */
+  browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => Promise<RemoteBrowseResult>
+  /** New folder in a listed daemon folder (POST /fs/folders). */
+  createRemoteFolder: (args: { parent: string; name: string }) => Promise<RemoteMkdirResult>
+
+  // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
+  /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => Promise<{ success: boolean }>
+  /** Copies left by a quit or crash with the notice up. */
+  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number }> }>
+  /** Dismiss: move them under recovered/archive/<time>/. */
+  recoveryArchive: () => Promise<{ moved: number }>
+  recoveryReveal: () => Promise<{ success: boolean }>
 
   // Platform ('darwin' | 'win32' | 'linux' | ...)
   platform: NodeJS.Platform

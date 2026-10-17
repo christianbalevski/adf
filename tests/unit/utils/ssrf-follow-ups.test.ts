@@ -1,0 +1,114 @@
+// SSRF guard follow-ups from W1-D (tracker §6, owned by W4-B). Written
+// first as a characterization of the guard as it was (E3); each fix commit
+// flips the rows it changes.
+import { createServer, type Server } from 'node:http'
+import { networkInterfaces } from 'node:os'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+/** Scripted DNS answers per host name (in order); other names resolve for real. */
+const dnsScript = vi.hoisted(() => new Map<string, string[]>())
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const real = await importOriginal<typeof import('node:dns/promises')>()
+  const lookup = (async (host: string, opts?: unknown) => {
+    const answers = dnsScript.get(host)
+    if (!answers || answers.length === 0) return real.lookup(host, opts as never)
+    const address = answers.length > 1 ? answers.shift()! : answers[0]
+    const family = address.includes(':') ? 6 : 4
+    return (opts as { all?: boolean } | undefined)?.all ? [{ address, family }] : { address, family }
+  }) as typeof real.lookup
+  return { ...real, lookup, default: { ...real, lookup } }
+})
+import { checkConnectTarget, checkFetchTarget, isCloudMetadataIp, isOwnInterfaceIp } from '../../../src/main/utils/ssrf-guard'
+import { guardedFetch, isFetchFailure } from '../../../src/main/utils/guarded-fetch'
+
+const servers: Server[] = []
+afterEach(async () => { await Promise.all(servers.splice(0).map((s) => new Promise<void>((done) => s.close(() => done())))) })
+
+describe('NAT64 64:ff9b::/96 and 6to4 2002::/16 carry an IPv4 address', () => {
+  it('after: classified as the embedded IPv4 address, in every spelling', async () => {
+    // 64:ff9b::a9fe:a9fe is 169.254.169.254; 2002:a9fe:a9fe:: embeds it too.
+    for (const ip of ['64:ff9b::a9fe:a9fe', '64:ff9b::169.254.169.254', '64:ff9b:0:0:0:0:a9fe:a9fe', '2002:a9fe:a9fe::1', '[64:ff9b::a9fe:a9fe]']) {
+      expect(isCloudMetadataIp(ip), ip).toBe(true)
+    }
+    const open = { allowLocal: true, allowLinkLocal: true }
+    expect(await checkFetchTarget('http://[64:ff9b::a9fe:a9fe]/latest/', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[2002:a9fe:a9fe::1]/latest/', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[64:ff9b::c0a8:105]/')).toMatch(/private-network/) // 192.168.1.5
+    expect(await checkFetchTarget('http://[64:ff9b::7f00:1]:7385/', { daemonPort: 7385 })).toMatch(/daemon/)
+    // A public address behind NAT64 or 6to4 stays allowed.
+    expect(await checkFetchTarget('http://[64:ff9b::5db8:d822]/')).toBeNull() // 93.184.216.34
+    expect(await checkFetchTarget('http://[2002:5db8:d822::1]/')).toBeNull()
+    // Other IPv6 is untouched.
+    expect(await checkFetchTarget('http://[2001:db8::1]/')).toBeNull()
+    // Local-use NAT64 (RFC 8215) and Teredo: tests/unit/utils/egress-pinning.test.ts.
+  })
+})
+
+describe('cloud metadata endpoints beyond AWS/GCP 169.254.169.254', () => {
+  it('after: EKS pod identity, Alibaba, Azure WireServer and OCI are always blocked, whatever the options', async () => {
+    const open = { allowLocal: true, allowLinkLocal: true }
+    for (const ip of ['169.254.170.23', 'fd00:ec2::23', '100.100.100.200', '168.63.129.16', '192.0.0.192', '::ffff:168.63.129.16']) expect(isCloudMetadataIp(ip), ip).toBe(true)
+    expect(await checkFetchTarget('http://169.254.170.23/v1/credentials', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://[fd00:ec2::23]/v1/credentials', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://100.100.100.200/latest/meta-data', open)).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://168.63.129.16/machine')).toMatch(/cloud-metadata/)
+    expect(await checkFetchTarget('http://192.0.0.192/opc/v2/instance', open)).toMatch(/cloud-metadata/)
+    // Neighbours are not metadata: tailnet peers live in 100.64.0.0/10, Azure's other public range is public.
+    expect(isCloudMetadataIp('100.100.100.201')).toBe(false)
+    expect(isCloudMetadataIp('168.63.129.17')).toBe(false)
+  })
+})
+
+describe('a host name that does not resolve', () => {
+  it('after: refused with the resolver\'s reason (the connection\'s own lookup could get another answer)', async () => {
+    expect(await checkFetchTarget('http://no-such-host.invalid/')).toMatch(/^Blocked: the address of "no-such-host\.invalid" could not be looked up \(E[A-Z_]+\)/)
+    expect(await checkConnectTarget('wss://no-such-host.invalid/socket')).toMatch(/could not be looked up/)
+  })
+})
+
+/** A non-loopback IPv4 address of this machine, if it has one. */
+const OWN_ADDRESS = Object.values(networkInterfaces()).flat().find((a) => a && a.family === 'IPv4' && !a.internal)?.address ?? null
+
+describe('the daemon control port on an address of this host that is not loopback', () => {
+  it.skipIf(!OWN_ADDRESS)('after: refused on every address of this machine, even with allowLocal', async () => {
+    expect(await checkFetchTarget(`http://${OWN_ADDRESS}:7385/runtime`, { allowLocal: true, daemonPort: 7385 })).toMatch(/daemon control API/)
+    expect(await checkConnectTarget(`ws://${OWN_ADDRESS}:7385/`, { allowLocal: true, daemonPort: 7385 })).toMatch(/daemon control API/)
+    // Another port of this machine is a LAN service like any other.
+    expect(await checkFetchTarget(`http://${OWN_ADDRESS}:7386/`, { allowLocal: true, daemonPort: 7385 })).toBeNull()
+  })
+
+  it('an address of another machine on the LAN keeps the allowLocal rule', async () => {
+    expect(isOwnInterfaceIp('127.0.0.1')).toBe(true)
+    expect(isOwnInterfaceIp('203.0.113.250')).toBe(false)
+    expect(await checkFetchTarget('http://203.0.113.250:7385/', { allowLocal: true, daemonPort: 7385 })).toBeNull()
+  })
+})
+
+describe('DNS rebinding between the guard\'s lookup and the connection', () => {
+  async function server(): Promise<{ port: number; hits: string[] }> {
+    const hits: string[] = []
+    const s = createServer((req, res) => { hits.push(req.url ?? ''); res.end('reached') })
+    servers.push(s)
+    await new Promise<void>((done) => s.listen(0, '127.0.0.1', () => done()))
+    return { port: (s.address() as { port: number }).port, hits }
+  }
+  afterEach(() => { delete process.env.ADF_DAEMON_PORT; dnsScript.clear() })
+
+  it('after: the connection resolves through the guard: a name only the checked lookup knows is reached', async () => {
+    const { port, hits } = await server()
+    dnsScript.set('pinned.adf-test.invalid', ['127.0.0.1'])
+    const result = await guardedFetch(`http://pinned.adf-test.invalid:${port}/x`, { maxBytes: 1024, timeoutMs: 5000, allowHttp: true })
+    expect(isFetchFailure(result) ? result.error : result.bytes.toString()).toBe('reached')
+    expect(hits).toEqual(['/x'])
+  })
+
+  it('after: an answer that changes to a refused address before the connection is refused, and never reached', async () => {
+    const { port, hits } = await server()
+    process.env.ADF_DAEMON_PORT = String(port)
+    // The guard's lookup sees a public address; the connection's sees loopback on the daemon port.
+    dnsScript.set('rebind.adf-test.invalid', ['93.184.216.34', '127.0.0.1'])
+    const result = await guardedFetch(`http://rebind.adf-test.invalid:${port}/runtime`, { maxBytes: 1024, timeoutMs: 5000, allowHttp: true })
+    expect(isFetchFailure(result) && result.error).toMatch(/daemon control API/)
+    expect(hits).toEqual([])
+  })
+})

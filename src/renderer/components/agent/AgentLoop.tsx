@@ -2,12 +2,12 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useMessageQueueStore, selectQueue } from '../../stores/message-queue.store'
+import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
-import { startForegroundAgent } from '../../utils/start-agent'
-import { queueOwnerMessage, sendQueuedMessages } from '../../utils/queued-delivery'
+import { sendQueuedMessages } from '../../utils/queued-delivery'
+import { ATTACHMENT_ONLY_TEXT, sendComposerMessage } from '../../utils/composer-send'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -49,7 +49,6 @@ import type { ContentBlock } from '../../../shared/types/provider.types'
 const MAX_INPUT_ROWS = 10
 // Model-facing text for attachment-only messages; also shown in the UI so the
 // optimistic entry matches what the loop table persists and restores.
-const ATTACHMENT_ONLY_TEXT = 'Please review the attached media.'
 const DEFAULT_MEDIA_LIMITS = {
   image: 5 * 1024 * 1024,
   audio: 10 * 1024 * 1024,
@@ -566,7 +565,7 @@ const LogEntryRow = memo(({
   // Terminal state for synthesized (outOfBand) approval entries — they never
   // get a paired tool_result (the gated call runs inside the shell/code that
   // raised the approval), so the human's decision is the entry's outcome.
-  const overrideOutcome = entry.metadata?.overrideOutcome as 'approved' | 'denied' | undefined
+  const overrideOutcome = entry.metadata?.overrideOutcome as 'approved' | 'denied' | 'completed' | undefined
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -725,11 +724,11 @@ const LogEntryRow = memo(({
             {!pendingApprovalRequestId && overrideOutcome && (
               <div className="px-1.5 pb-1">
                 <span className={`text-[10px] font-medium ${
-                  overrideOutcome === 'approved'
+                  overrideOutcome === 'approved' || overrideOutcome === 'completed'
                     ? 'text-[var(--status-stable)]'
                     : 'text-[var(--status-deprecated)]'
                 }`}>
-                  {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : 'Denied'}
+                  {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : overrideOutcome === 'completed' ? 'Completed' : 'Denied'}
                 </span>
               </div>
             )}
@@ -882,7 +881,7 @@ const LogEntryRow = memo(({
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
               <span className="text-[11px] font-semibold text-[var(--ink-muted)]">
-                Loop compacted{entry.metadata?.audited ? <> &middot; Prior context audited</> : null}
+                Loop compacted{entry.metadata?.audited === true ? <> &middot; Prior context audited</> : null}
               </span>
             </div>
             {entry.timestamp > 0 && (
@@ -894,7 +893,7 @@ const LogEntryRow = memo(({
           <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
         </div>
       )}
-      {entry.type === 'system' && entry.metadata?.isAsk && (
+      {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && (
         <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
           <div className="p-2.5">
             <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
@@ -1555,53 +1554,14 @@ function LoopStream({ loop }: { loop: string }) {
   )
 
   /**
-   * The one send path. Everything the human sends goes through here, including
-   * the message a `/<skill>` command composes — a skill command has to be
-   * indistinguishable from the same words typed by hand, because that is the
-   * whole of its authority.
-   *
-   * Callers clear the composer first; this owns the queue/start/invoke ladder.
+   * The one send path (composer-send.ts): everything the human sends goes
+   * through it, including the message a `/<skill>` command composes. The
+   * target agent and the loop's states are captured at submit time, so
+   * navigation can't redirect the message. Callers clear the composer first.
    */
   const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]) => {
-    // Capture the target agent at submit time so navigation can't redirect the message
-    const targetFilePath = filePath
     pinToBottom()
-
-    // Autonomous + active: queue message instead of sending directly
-    // Callers already cleared the composer; the queue is keyed by agent and
-    // loop so a message typed into an inner loop's tab is sent to that loop,
-    // and it is still there (and still sent) after the owner switches agents.
-    // Older queued messages go first: this one never jumps ahead of them.
-    if (queueOwnerMessage(targetFilePath, loop, state, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews })) {
-      return
-    }
-
-    // Show the user message immediately
-    addLogEntry({
-      id: nanoid(),
-      type: 'user',
-      content: message || ATTACHMENT_ONLY_TEXT,
-      timestamp: Date.now(),
-      metadata: previews.length > 0 ? { imagePreviewUrls: previews } : undefined
-    }, loop)
-
-    // If the AGENT (not just this loop) is off, start it first then invoke.
-    // Side loops run inside the same process as main, so the gate is agent-level.
-    if (agentState === 'off') {
-      // Review gate, provider-at-need, store mirroring: one shared path.
-      // A start that did not happen (review pending, provider sheet
-      // cancelled, real error) leaves the message in the log unsent.
-      const outcome = await startForegroundAgent({ hasUserMessage: true, announce: false })
-      if (!outcome.success) return
-    }
-
-    // Update activity state if still viewing, then always send the invoke
-    const stillViewing = useDocumentStore.getState().filePath === targetFilePath
-    if (stillViewing) {
-      setState('active', loop)
-    }
-
-    window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
+    await sendComposerMessage({ filePath, loop, loopState: state, agentState }, message, content, previews)
   }
 
   // A message typed into the home composer arrives here once the agent it
@@ -2225,7 +2185,9 @@ function LoopStream({ loop }: { loop: string }) {
                       {msg.error && (
                         <span
                           className="shrink-0 text-[10px] text-[var(--status-deprecated)]"
-                          title={`Not sent: ${msg.error}. It stays queued and goes with the next send.`}
+                          title={(msg.failures ?? 0) >= MAX_AUTOMATIC_SENDS
+                            ? `Not sent: ${msg.error}. Sending failed ${msg.failures} times, so it is no longer retried when the turn ends: use Send now, or send another message and this one goes first.`
+                            : `Not sent: ${msg.error}. It stays queued and goes with the next send.`}
                         >
                           Not sent
                         </span>
@@ -2415,7 +2377,7 @@ function LoopStream({ loop }: { loop: string }) {
             } : null}
             awaitingApproval={!!modalApprovalRequestId}
             approvalTitle={modalApproval?.protection?.description}
-            overrideOutcome={call?.metadata?.overrideOutcome as 'approved' | 'denied' | undefined}
+            overrideOutcome={call?.metadata?.overrideOutcome as 'approved' | 'denied' | 'completed' | undefined}
             durationMs={callDurationMs}
             startedAt={call?.timestamp}
             toolId={call?.metadata?.tool_id as string | undefined}

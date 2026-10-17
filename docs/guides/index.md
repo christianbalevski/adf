@@ -16,6 +16,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **creating-agents.md** — create an agent and configure its settings
 - **agent-templates.md** — the `.adf` files new agents are made from: the three Studio ships, what an instance carries, editing templates and taking one from someone else
 - **settings.md** — global app settings shared across all agents
+- **studio-backend.md** — where Studio runs agents (This computer, Remote computer, Inside Studio): switching, what moves, quitting, Studio and the terminal app together, version mismatch, recovery, and every message these show
 - **agent-states.md** — the agent lifecycle states and how to control them
 - **fleet-map.md** — the RTS-style map for commanding your whole fleet: territories, selection, hotkeys, moving agents, approvals
 - **agent-overview.md** — how the Overview card scores Experience, Reach, Access and Autonomy; agent metrics; the Contents meter

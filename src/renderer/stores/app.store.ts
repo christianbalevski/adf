@@ -130,7 +130,7 @@ function saveChatWidth(width: ChatWidth): void {
   } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
 }
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
-export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'about'
+export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'backend' | 'about'
 
 export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured'
 
@@ -296,7 +296,7 @@ export interface AppState {
   openShareDialog: (filePath?: string) => void
   setPendingFirstMessage: (pending: { filePath: string; text: string; files?: File[] } | null) => void
   /** Claim the pending message for this file; null if it belongs to another file or was taken. */
-  takePendingFirstMessage: (filePath: string) => { filePath: string; text: string } | null
+  takePendingFirstMessage: (filePath: string) => { filePath: string; text: string; files?: File[] } | null
   setHomeProviderId: (id: string | null) => void
   setHomeFolder: (folder: string | null) => void
   setHomeDraft: (text: string) => void
@@ -344,7 +344,6 @@ export const selectChatColumnCapped = (s: AppState): boolean =>
 export const selectActiveDockPanel = (s: AppState): RightPanel => {
   const inCenter = selectChatInCenter(s)
   if (inCenter && s.rightPanel === 'loop') return 'overview'
-  if (!inCenter && s.chatPlacement === 'center') return 'loop'
   return s.rightPanel
 }
 
@@ -486,7 +485,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       next.delete(filePath)
       return { stoppingFilePaths: next }
     }),
-  setShowMeshGraph: (show) => set({ showMeshGraph: show }),
+  setShowMeshGraph: (show) =>
+    set((s) => ({
+      showMeshGraph: show,
+      // A center-mode chat yields to the dock while the map holds the stage:
+      // the dock lands on its Loops tab once, as the map opens, and the tabs
+      // then switch as usual (as a selector override they could not).
+      ...(show && !s.showMeshGraph && s.chatPlacement === 'center' ? { rightPanel: 'loop' as const } : {}),
+    })),
   expandRightPanelToTab: (panel, subTab) =>
     set((s) => {
       // "Take me to the chat" has to land wherever the chat actually IS right

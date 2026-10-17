@@ -212,7 +212,7 @@ const cpHandler: CommandHandler = {
     const src = vfsPath(ctx.args[0])
     const dst = vfsPath(ctx.args[1])
     const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, src)
-    if (readErr) return err(`cp: ${readErr}`)
+    if (readErr !== null) return err(`cp: ${readErr}`)
     const write = await ctx.toolRegistry.executeTool('fs_write', { mode: 'write', path: dst, content }, ctx.workspace)
     if (write.isError) return err(`cp: ${write.content}`)
     return ok('')
@@ -559,7 +559,7 @@ const headHandler: CommandHandler = {
       let content = ctx.stdin
       if (ctx.args.length > 0) {
         const [fileContent, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]))
-        if (error) return err(`head: ${error}`)
+        if (error !== null) return err(`head: ${error}`)
         content = fileContent
       }
       if (!content) return ok('')
@@ -579,7 +579,7 @@ const headHandler: CommandHandler = {
     let text = ctx.stdin
     if (ctx.args.length > 0) {
       const [content, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]), { end_line: n })
-      if (error) return err(`head: ${error}`)
+      if (error !== null) return err(`head: ${error}`)
       return ok(content)
     }
 
@@ -619,7 +619,7 @@ const tailHandler: CommandHandler = {
       let content = ctx.stdin
       if (ctx.args.length > 0) {
         const [fileContent, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]))
-        if (error) return err(`tail: ${error}`)
+        if (error !== null) return err(`tail: ${error}`)
         content = fileContent
       }
       if (!content) return ok('')
@@ -646,7 +646,7 @@ const tailHandler: CommandHandler = {
     let text = ctx.stdin
     if (ctx.args.length > 0) {
       const [content, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]))
-      if (error) return err(`tail: ${error}`)
+      if (error !== null) return err(`tail: ${error}`)
       text = content
     }
 

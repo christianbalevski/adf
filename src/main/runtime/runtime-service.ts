@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { mcpConnectorFor } from './mcp-connectors'
-import { existsSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'node:fs'
+import { readdir, realpath } from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
@@ -9,10 +10,17 @@ import { templateFilePath } from '../adf/agent-templates'
 import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
-import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { lockedCredentialWrite, replaceLockedCredential, type LockedCredential } from '../services/locked-credential'
+import { buildConfigSummary, deriveReviewIdentity, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
 import { providerSelectionChanged } from '../providers/provider-selection'
+import {
+  agentProviderKeySource,
+  providerNeedsApiKey,
+  resolveAgentProviderConfig,
+  type ProviderSettingsStore,
+} from '../providers/provider-factory'
 import type {
   AgentConfig,
   AgentState as AdfAgentState,
@@ -35,8 +43,9 @@ import type {
   TimerSchedule,
   TriggerConfig,
 } from '../../shared/types/adf-v02.types'
+import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { AdapterInstanceConfig, AdapterState } from '../../shared/types/channel-adapter.types'
-import type { AgentConfigSummary, AgentExecutionEvent, ProviderConfig } from '../../shared/types/ipc.types'
+import type { AgentConfigSummary, AgentExecutionEvent, AgentState as DisplayAgentState, ProviderConfig } from '../../shared/types/ipc.types'
 import type { AgentState } from './agent-executor'
 import {
   type AdfBatchDispatch,
@@ -51,8 +60,12 @@ import {
   type CreateHeadlessAgentOptions,
   type HeadlessAgent,
 } from './headless'
-import { CREDENTIALS_UNLOCK_HINT, detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
-import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
+import { CREDENTIALS_UNLOCK_HINT, detectLockedEnvelopes, type AgentRuntimePrompts, type AgentRuntimeBuilder } from './agent-runtime-builder'
+import { emitAgentDerivedKeyChanged } from './agent-runtime-signals'
+import { applyBackgroundEvent, type BackgroundMappingState } from './background-event-mapping'
+import { deriveHandle } from '../utils/handle'
+import { toDisplayState } from './display-state'
+import type { AgentHostBindings, AgentStopMode, AssembledAgentBase, HostAttachment } from './assemble-agent'
 import { LoopPoolError, stripLoopNameMarker } from './loop-pool'
 import { LOOP_AUTOSTART_MESSAGE, type LoopDeleteResult, type LoopInfo, type LoopSendResult } from '../adf/loop-pool.types'
 import { LoopConfigSchema } from '../adf/adf-schema'
@@ -60,12 +73,20 @@ import { MAIN_LOOP, listAvailableLoopTools, validateLoopToolList } from '../adf/
 import { DEFAULT_NEW_LOOP_TOOLS } from '../../shared/types/adf-v02.types'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
-import { withSource } from './execution-context'
+import { currentAgentId, currentTurnId, withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
-import { issueOwnerAttestation } from '../services/attestation.service'
+import { issueOwnerAttestation, readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
 import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/sys-get-config.tool'
+import { AGENT_LEASED_CODE, processAgentLeases, type AgentLeaseRegistry } from './agent-lease'
+import { DocumentHost, type OpenDocument } from './document-host'
+import {
+  configRevision, configRevisionOf, currentResourceWriter, runAsApiWrite, documentRevision, fileRevision, fileRevisionKey, observeRevision,
+  existsAlready, staleRevision, staleRevisionMessage, type ResourceRevision,
+} from './resource-revisions'
+import type { ContentBlock } from '../../shared/types/provider.types'
+import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -119,6 +140,7 @@ export interface RuntimeSettingsStore {
   getOwnerIdentity?(): {
     getOwnerDid(): string
     getRuntimeDid(): string
+    getOwnerEncPrivateKey?(): Buffer | null
     getOwnerSigningKey(): Buffer | null
     getRuntimeSigningKey(): Buffer | null
   }
@@ -143,17 +165,236 @@ export type RuntimeProviderFactory = (
 export interface RuntimeServiceOptions {
   settings?: RuntimeSettingsStore
   providerFactory?: RuntimeProviderFactory
+  /**
+   * Fallback prompts. Each start reads `globalSystemPrompt`, `toolPrompts`
+   * and `compactionPrompt` from `settings` (as Studio does at AGENT_START);
+   * these apply only while the store has no value for the key.
+   */
   basePrompt?: string
   toolPrompts?: Record<string, string>
   compactionPrompt?: string
   agentRuntimeBuilder?: AgentRuntimeBuilder
   /** Defaults to true for opened .adf files. Ephemeral createAgent calls bypass review. */
   enforceReviewGate?: boolean
+  /** Cross-process agent lease (agent-lease.ts). Defaults to the process registry; null disables it. */
+  agentLeases?: AgentLeaseRegistry | null
+  /** Open documents: the holder TTL used while no session check is set (default DOCUMENT_HOLD_TTL_MS). */
+  documentHoldTtlMs?: number
 }
 
 export interface RuntimeLoadAgentOptions {
   provider?: LLMProvider
   enforceReviewGate?: boolean
+  /**
+   * Legacy-password derived key the caller already holds (a file unlocked
+   * before its start). Every consumer reads it from the first connect, as in
+   * Studio; without it the agent starts locked until
+   * unlockAgentIdentityPassword.
+   */
+  derivedKey?: Buffer | null
+}
+
+/** 409 code of a load refused because another loaded file has the same `config.id`. */
+export const DUPLICATE_AGENT_ID_CODE = 'duplicate_agent_id'
+
+/** 409 code of a runtime action (turn, approval, loop change) on an open document that is not running. */
+export const AGENT_NOT_RUNNING_CODE = 'agent_not_running'
+
+/** Who holds an open document: a client session (W2-B passes its session id). */
+export interface RuntimeDocumentHoldOptions {
+  holder: string
+}
+
+/**
+ * An open document (design D4) as clients see it: Studio's FILE_OPEN answer.
+ * `running` is embedded's `agentWasRunning`.
+ */
+export interface RuntimeOpenDocumentInfo {
+  agentId: string
+  filePath: string
+  name: string
+  running: boolean
+  /** Password-protected (legacy whole-file password) and not unlocked: the client prompts. */
+  needsPassword: boolean
+  holders: number
+  /** This open renamed the agent after its file (Studio's FILE_OPEN does the same). */
+  nameChangedFrom?: string
+  /** Another runtime runs the file: it opened read-only (no open step wrote it) and writes are refused. The sentence names the holder. */
+  readOnly?: string
+}
+
+/** 'document-opened' / 'document-closed': an open document came or went. */
+export interface RuntimeDocumentEvent {
+  agentId: string
+  filePath: string
+  /** closed: why (released, deleted, shutdown). Holder ids are never in events. */
+  reason?: 'released' | 'deleted' | 'shutdown'
+}
+
+/**
+ * Host identity steps on open (Studio's FILE_OPEN): the lazy legacy-DID
+ * restamp, then ensureWorkspaceIdentity with keys minted only for a reviewed
+ * file. The daemon passes its owner identity here (http-api.ts); without it a
+ * document only gets the envelope unlock every load does.
+ */
+export interface RuntimeDocumentOpenHooks {
+  onOpen?(workspace: AdfWorkspace, ctx: { filePath: string; reviewed: boolean }): void
+  /**
+   * The sentence naming another live runtime that holds the file's agent
+   * lease, or null. Such a file opens read-only: no open step writes it.
+   */
+  leasedElsewhere?(filePath: string): Promise<string | null>
+}
+
+/** Holders are client session ids (W2-B mints them with randomUUID). */
+export const DOCUMENT_HOLDER_FORMAT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Without a session check, a holder that has not held anything for this long is released (D5's 60 s session expiry). */
+export const DOCUMENT_HOLD_TTL_MS = 60_000
+
+/** A running agent or an open document, by id, handle or name (the /agents/:id resource routes). */
+export interface RuntimeAgentTargetRef extends RuntimeAgentRef {
+  running: boolean
+}
+
+/** The workspace a resource route acts on, for daemon routes outside RuntimeService. */
+export interface RuntimeAgentWorkspace {
+  agentId: string
+  filePath: string | null
+  workspace: AdfWorkspace
+  /** Legacy-password derived key while unlocked; null otherwise. Never leaves the process. */
+  derivedKey: Buffer | null
+  running: boolean
+}
+
+/** Status of a running agent or an open document (`running: false`, runtimeState `stopped`). */
+export interface RuntimeTargetStatus extends RuntimeAgentStatus {
+  running: boolean
+  /** A running agent's session id (Studio's AGENT_START answers it, the reuse path included). */
+  sessionId?: string
+  /**
+   * A running agent's side loops and their display states (LoopPool.sideLoopStates):
+   * what embedded's re-attach answers, and what a client that starts
+   * watching mid-stream needs before each loop's next `state_changed`.
+   */
+  loopStates?: Record<string, DisplayAgentState>
+}
+
+/** Studio's DOC_GET_HEADER: what the header shows, read in one call. */
+export interface RuntimeAgentHeader {
+  agentId: string
+  document: string
+  agentConfig: AgentConfig
+  statusText: string
+}
+
+/** Studio's DOC_GET_BATCH: the header plus the last 200 display entries of main and the token figures. */
+export interface RuntimeAgentBatch extends RuntimeAgentHeader {
+  /** W3-F: the revisions of `agentConfig` and `document`, the base of the client's next save (a file switch reads them; the header, read every turn end, does not hash). */
+  configRevision: number
+  documentRevision: number
+  lastTokens: LoopTokenUsage | undefined
+  contextBaseline: unknown
+  chat: { version: number; uiLog: unknown[]; llmMessages: unknown[]; earlierCount: number; total: number }
+}
+
+/** Studio's DOC_GET_CHAT_OLDER: a keyset page of display entries before a seq. */
+export interface RuntimeAgentChatPage {
+  agentId: string
+  loop: string
+  uiLog: unknown[]
+  earlierCount: number
+}
+
+/**
+ * Host lifecycle events, emitted as `'agent-lifecycle'` beside the raw
+ * executor events (`'agent-event'`). Names and payloads are the background
+ * agent manager's (BackgroundAgentEvent), so a client maps both hosts the
+ * same way (design D5 `host` frames).
+ *
+ * - `agent_starting` → `agent_started` | `agent_start_failed`: one load.
+ *   Concurrent loads of one file share one build and one pair of events.
+ *   `agent_started` carries `nameChangedFrom` when the load renamed the
+ *   agent after its file.
+ * - `agent_stopping` → `agent_stopped`: one unload; `agent_stopped` carries
+ *   `error` when the teardown failed (the agent is unloaded regardless).
+ * - `agent_state_changed`: main's display state; `agent_loops_changed`: the
+ *   number of inner loops mid-turn (background-event-mapping.ts).
+ * - `trigger_error`: a trigger- or timer-dispatched turn failed. It follows an
+ *   `error` agent event and `agent_state_changed` `error` (Studio's two hosts).
+ * - `startup_failed`: the startup turn (startAgent) failed.
+ */
+export type RuntimeLifecycleEventType =
+  | 'agent_starting'
+  | 'agent_started'
+  | 'agent_start_failed'
+  | 'agent_stopping'
+  | 'agent_stopped'
+  | 'agent_loops_changed'
+  | 'agent_state_changed'
+  | 'trigger_error'
+  | 'startup_failed'
+
+export interface RuntimeLifecycleEvent {
+  /** Null only on `agent_starting` / `agent_start_failed` before the file's id was read. */
+  agentId: string | null
+  filePath: string | null
+  type: RuntimeLifecycleEventType
+  /** Always carries `filePath`; see RuntimeLifecycleEventType for the rest. */
+  payload: Record<string, unknown>
+  timestamp: number
+}
+
+/** The agent file moved while loaded (rekeyAgentPath). */
+export interface RuntimeAgentPathChangedEvent {
+  agentId: string
+  oldFilePath: string
+  filePath: string
+}
+
+/** An agent file was renamed to follow its agent's name (syncAgentFileToName). */
+export interface RuntimeAgentFileRenamedEvent {
+  agentId: string | null
+  oldFilePath: string
+  filePath: string
+}
+
+/** syncAgentFileToName outcome; Studio's FILE_RENAME / DOC_SET_AGENT_CONFIG shape. */
+export interface RuntimeFileRenameResult {
+  /** The new path, when the file was renamed now. */
+  filePath?: string
+  /** True when the agent is loaded: the rename happens when it unloads. */
+  deferred?: boolean
+  /** Why nothing was renamed, when something was asked for. */
+  error?: string
+}
+
+/** preflightProvider outcome: Studio's AGENT_START provider gate. */
+export type RuntimeProviderPreflight =
+  | {
+      ok: true
+      /**
+       * The agent's own provider key is stored but locked here (password or
+       * envelope): not checked, and never reported as a missing key. The
+       * sentence says how to unlock it.
+       */
+      credentialsLocked?: string
+    }
+  | {
+      ok: false
+      /** provider_missing: no such provider here; provider_unconfigured: it needs a key it does not have. */
+      code?: 'provider_missing' | 'provider_unconfigured'
+      error: string
+    }
+
+/** A loaded agent's assembled handle, for daemon routes that need more than RuntimeService exposes. */
+export interface RuntimeLoadedAgent {
+  agentId: string
+  filePath: string | null
+  agent: RuntimeAgent
+  workspace: AdfWorkspace
+  /** Legacy-password derived key while the file is unlocked; null otherwise. Never leaves the process. */
+  derivedKey: Buffer | null
 }
 
 export interface RuntimeCreateAgentOptions extends CreateHeadlessAgentOptions {
@@ -211,7 +452,7 @@ export interface RuntimeAgentLoopPage {
 /** A caller-visible loop API failure; `statusCode` is the HTTP status to answer with. */
 export class RuntimeLoopError extends Error {
   /** `details`: extra fields for the HTTP error body (e.g. `candidates`). */
-  constructor(message: string, readonly statusCode: 400 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
+  constructor(message: string, readonly statusCode: 400 | 403 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
     super(message)
     this.name = 'RuntimeLoopError'
   }
@@ -241,6 +482,23 @@ export interface RuntimeCredentialWriteOptions {
 
 /** 409 code of a credential write refused because its envelope is locked here. */
 export const CREDENTIALS_LOCKED_CODE = 'credentials_locked'
+
+/**
+ * 409 `credentials_locked` for an owner write to a locked credentials
+ * envelope (services/locked-credential.ts). The body carries `purpose`,
+ * `sealed` (a value is stored sealed: a replace discards it unread) and
+ * `envelopeState`, so a client chooses without reading the message.
+ */
+export function credentialsLockedError(locked: LockedCredential): RuntimeLoopError {
+  return new RuntimeLoopError(
+    locked.sealed
+      ? `This agent's saved "${locked.purpose}" is sealed and its credentials envelope is ${locked.envelopeState} on this daemon, so it can't be read or overwritten. ${CREDENTIALS_UNLOCK_HINT} Or replace it (replace: true): the old value is discarded.`
+      : `The credentials envelope of this agent is ${locked.envelopeState} on this daemon — refusing to store "${locked.purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT} Or store it anyway (replace: true): it is sealed once the envelope unlocks.`,
+    409,
+    CREDENTIALS_LOCKED_CODE,
+    { purpose: locked.purpose, sealed: locked.sealed, envelopeState: locked.envelopeState },
+  )
+}
 
 /** One cognition loop as the owner sees it: live status plus its declaration. */
 export interface RuntimeAgentLoopInfo extends LoopInfo {
@@ -304,6 +562,8 @@ const LOOP_CLEARABLE_FIELDS = new Set<string>(['model', 'compact_threshold'])
 
 export interface RuntimeAgentFileContent {
   agentId: string
+  /** W3-F: the file's revision, the base of the client's next write. */
+  revision: number
   path: string
   mime_type: string | null
   size: number
@@ -409,6 +669,25 @@ export interface RuntimeAgentEvent {
   agentId: string
   filePath: string | null
   event: AgentExecutionEvent
+  /**
+   * `trigger_message` of a chat whose sending client already shows it (POST
+   * /agents/:id/chat `echoed` with X-ADF-Client-Session): that session id.
+   * Every other client still gets the event.
+   */
+  echoOrigin?: string
+  /**
+   * Turn bookkeeping (design D5): the turn the event belongs to, the
+   * `turnId` of the chat that started it (POST /agents/:id/chat) or else
+   * the executor's own id; the umbilical envelope's `turn_id` for the same
+   * event. Absent for events outside a turn.
+   */
+  turnId?: string
+  /**
+   * On `error` and on a `turn_complete` that was not interrupted: the chats
+   * this turn answered besides its own (interrupted turns it replayed,
+   * queued chats delivered into it); the umbilical `absorbed_turn_ids`.
+   */
+  absorbedTurnIds?: string[]
 }
 
 export interface RuntimeAgentLoadedEvent {
@@ -428,6 +707,8 @@ export interface RuntimeReviewInfo {
   filePath: string
   reviewed: boolean
   summary: AgentConfigSummary
+  /** POST /agents/review/accept: the fields the accept locked against the agent's own edits. */
+  lockedFields?: string[]
 }
 
 export interface RuntimeAutostartOptions {
@@ -446,12 +727,15 @@ export type RuntimeAutostartSkipReason =
   | 'not_autostart'
   | 'password_protected'
   | 'unreviewed'
+  | 'leased_elsewhere'
 
 export interface RuntimeAutostartSkipped {
   filePath: string
   name: string
   reason: RuntimeAutostartSkipReason
   agentId?: string
+  /** leased_elsewhere: which process runs it and what to do. */
+  message?: string
 }
 
 export interface RuntimeAutostartFailed {
@@ -467,7 +751,12 @@ export interface RuntimeAutostartReport {
   failed: RuntimeAutostartFailed[]
 }
 
-type RuntimeAgent = HeadlessAgent | AssembledAgentBase<AgentProfileName>
+export type RuntimeAgent = HeadlessAgent | AssembledAgentBase<AgentProfileName>
+
+/** One agent's legacy-password derived key, shared by its record and its build's closures. */
+interface DerivedKeyCell {
+  current: Buffer | null
+}
 
 interface ManagedRuntimeAgent {
   id: string
@@ -475,9 +764,30 @@ interface ManagedRuntimeAgent {
   config: AgentConfig
   agent: RuntimeAgent
   hostAttachment: HostAttachment
+  /** Reads and writes `keyCell.current`. */
   derivedKey: Buffer | null
+  keyCell: DerivedKeyCell
+  /** Display-state fold for agent_state_changed / agent_loops_changed. */
+  display: BackgroundMappingState
   /** Reason the agent is degraded (e.g. locked credential envelopes), if any. */
   degraded?: string
+  /** The file's config stamp when `config` was last checked against it (syncManagedConfig). */
+  configSeen?: { writes: number; dataVersion: number }
+}
+
+/**
+ * What a resource method acts on (design D4): a running agent, or an open
+ * document that is not running. Both carry the one workspace and key cell
+ * of the file; `managed` is set while a runtime runs on it.
+ */
+interface AgentTarget {
+  id: string
+  filePath: string | null
+  workspace: AdfWorkspace
+  keyCell: DerivedKeyCell
+  managed: ManagedRuntimeAgent | null
+  doc: OpenDocument | null
+  readonly config: AgentConfig
 }
 
 export class RuntimeReviewRequiredError extends Error {
@@ -487,6 +797,9 @@ export class RuntimeReviewRequiredError extends Error {
     this.name = 'RuntimeReviewRequiredError'
   }
 }
+
+/** Echo origins kept for chats whose turn has not started yet. */
+const ECHO_ORIGINS_KEPT = 256
 
 export class RuntimeService extends EventEmitter {
   private readonly settings?: RuntimeSettingsStore
@@ -505,6 +818,25 @@ export class RuntimeService extends EventEmitter {
    * two full agent instances for one file.
    */
   private readonly inFlightLoads = new Map<string, Promise<RuntimeAgentRef>>()
+  private readonly agentLeases: AgentLeaseRegistry | null
+  /** Agents whose self-off teardown is running (re-entrancy guard, as Studio's handleAgentOff). */
+  private readonly offInProgress = new Set<string>()
+  /** Renames waiting for the agent at that (canonical) path to unload: path → new name. */
+  private readonly pendingRenames = new Map<string, string>()
+  /** Unloads in progress, so concurrent stops of one agent share one teardown. */
+  private readonly unloads = new Map<string, Promise<void>>()
+  /** Open documents (D4): files open for editing, with or without a runtime on them. */
+  private readonly documents = new DocumentHost()
+  /** Opens in progress, by canonical path, so concurrent opens of one file share one workspace. */
+  private readonly inFlightOpens = new Map<string, Promise<OpenDocument>>()
+  private documentOpenHooks: RuntimeDocumentOpenHooks = {}
+  private holderCheck: ((holder: string) => boolean) | null = null
+  /** Documents whose workspace is closed for a move (withDocumentMoved): every use answers 409 file_moving. */
+  private readonly movingDocs = new Set<OpenDocument>()
+  /** holder → when it last held a document (the TTL of holders without a session check). */
+  private readonly holderSeen = new Map<string, number>()
+  private holderSweep: ReturnType<typeof setInterval> | null = null
+  private readonly documentHoldTtlMs: number
 
   constructor(opts: RuntimeServiceOptions = {}) {
     super()
@@ -515,6 +847,9 @@ export class RuntimeService extends EventEmitter {
     this.compactionPrompt = opts.compactionPrompt
     this.agentRuntimeBuilder = opts.agentRuntimeBuilder
     this.enforceReviewGate = opts.enforceReviewGate ?? true
+    this.agentLeases = opts.agentLeases === undefined ? processAgentLeases() : opts.agentLeases
+    this.documentHoldTtlMs = opts.documentHoldTtlMs ?? DOCUMENT_HOLD_TTL_MS
+    this.agentLeases?.addHostedPathsProbe(() => [...this.filePathToAgentId.keys(), ...this.inFlightLoads.keys()])
   }
 
   async loadAgent(filePath: string, opts: RuntimeLoadAgentOptions = {}): Promise<RuntimeAgentRef> {
@@ -527,12 +862,35 @@ export class RuntimeService extends EventEmitter {
     const pending = this.inFlightLoads.get(canonicalPath)
     if (pending) return pending
 
-    const load = this.doLoadAgent(canonicalPath, opts)
+    // The body starts a microtask later, after the slot is claimed: an
+    // 'agent-lifecycle' listener that loads the same file from inside
+    // agent_starting joins this load instead of starting a second one.
+    const load = Promise.resolve().then(() => this.doLoadAgent(canonicalPath, opts))
     this.inFlightLoads.set(canonicalPath, load)
     try {
       return await load
     } finally {
       this.inFlightLoads.delete(canonicalPath)
+      // Releases the lease when the load failed (the agent is not registered).
+      await this.agentLeases?.reconcile()
+    }
+  }
+
+  /**
+   * Resolves true once a load of `filePath` in flight has finished (or
+   * failed), at once when none is; false when it is still loading after
+   * `timeoutMs`. A path-addressed write waits for it, so it lands on the
+   * loaded agent instead of under its build (design §6.1 row 24).
+   */
+  async waitForLoad(filePath: string, timeoutMs = 30_000): Promise<boolean> {
+    const pending = this.inFlightLoads.get(this.canonicalFilePath(filePath))
+    if (!pending) return true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs) })
+    try {
+      return await Promise.race([pending.then(() => true, () => true), timedOut])
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -540,8 +898,63 @@ export class RuntimeService extends EventEmitter {
     const shouldEnforceReview = opts.enforceReviewGate ?? this.enforceReviewGate
     this.assertReviewGate(canonicalPath, shouldEnforceReview)
 
-    const workspace = AdfWorkspace.open(canonicalPath)
+    // Background-agent-manager parity: announced before the lease, so every
+    // load the review gate admitted ends in agent_started or agent_start_failed.
+    this.emitLifecycle(null, canonicalPath, 'agent_starting', {})
+    const progress: { agentId: string | null } = { agentId: null }
     try {
+      return await this.openAndRegister(canonicalPath, opts, progress)
+    } catch (err) {
+      this.emitLifecycle(progress.agentId, canonicalPath, 'agent_start_failed', {
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof RuntimeLoopError && err.code ? { code: err.code } : {}),
+      })
+      throw err
+    }
+  }
+
+  private async openAndRegister(canonicalPath: string, opts: RuntimeLoadAgentOptions, progress: { agentId: string | null }): Promise<RuntimeAgentRef> {
+    const moving = this.documents.get(canonicalPath)
+    if (moving) this.assertNotMoving(moving)
+    // AdfWorkspace.open creates a missing database: a load never makes a file.
+    else if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
+    const lease = await this.agentLeases?.acquire(canonicalPath, { agentId: this.documents.get(canonicalPath)?.agentId ?? null })
+    if (lease && !lease.ok) {
+      throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
+    }
+
+    // A start on an open document assembles on its workspace and key cell
+    // (D4): one handle on the file, and the key unlocked before the start
+    // reaches every consumer from the first connect, as Studio's captured key.
+    const doc = this.documents.get(canonicalPath) ?? null
+    const workspace = doc ? doc.workspace : AdfWorkspace.open(canonicalPath)
+    const writesBefore = doc?.configWrites ?? 0
+    let built: RuntimeAgent | null = null
+    let registered = false
+    try {
+      // Before any step writes the file: a second file with a loaded agent's
+      // id would otherwise start its MCP servers and adapters only to be
+      // refused. The lease was taken before the file was read: it names the
+      // agent now, as Studio's start does, and a copy of an agent another
+      // runtime runs (same id, another file) is refused (W5-D3).
+      const fileConfig = workspace.getAgentConfig() as AgentConfig
+      progress.agentId = fileConfig.id
+      this.assertNoDuplicateId(fileConfig.id, canonicalPath)
+      if (lease?.ok) {
+        const idLease = await this.agentLeases?.noteAgentId(canonicalPath, fileConfig.id)
+        if (idLease && !idLease.ok) throw new RuntimeLoopError(idLease.message, 409, AGENT_LEASED_CODE, { holder: idLease.record.holder })
+      }
+      // Opened read-only while another runtime ran it: this start holds the
+      // lease now, so the open steps it skipped run first (the name they
+      // adopt from the file is the one this start reports).
+      let previousName: string | null = null
+      if (doc?.readOnly) {
+        console.log(`[RuntimeService] ${canonicalPath} is no longer run by another runtime: the document is writable`)
+        const opened = this.runDocumentOpenSteps(workspace, canonicalPath)
+        doc.config = opened.config
+        previousName = opened.nameChangedFrom
+        delete doc.readOnly
+      }
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
       // B1 interim hardening: in the daemon the identity hooks may never have
@@ -556,10 +969,34 @@ export class RuntimeService extends EventEmitter {
         console.error(`[RuntimeService] ${degradedReason}`)
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
-      const config = workspace.getAgentConfig() as AgentConfig
-      const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace)
-      const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)
-      const ref = this.registerAgent(agent, canonicalPath, config)
+      let config = workspace.getAgentConfig() as AgentConfig
+      previousName = this.adoptFileName(workspace, config, canonicalPath) ?? previousName
+      const keyCell: DerivedKeyCell = doc ? doc.keyCell : { current: opts.derivedKey ?? null }
+      if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey
+      const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
+      built = await this.buildLoadedAgent(workspace, canonicalPath, config, provider, keyCell)
+      // The document keeps the workspace when the runtime stops.
+      if (this.documents.get(canonicalPath) === doc && doc) built.setWorkspaceOwnership(false)
+      // Studio's pickFresherConfig at install (config-freshness.ts): a config
+      // write through the document while the build awaited reached the file
+      // but no executor. The running agent adopts the file's config.
+      if (doc && doc.configWrites !== writesBefore) {
+        const fresh = workspace.getAgentConfig() as AgentConfig
+        console.log(`[RuntimeService] ${fresh.name}: adopting the config written while it was starting`)
+        built.applyConfigChange(fresh)
+        config = fresh
+      }
+      const ref = this.registerAgent(built, canonicalPath, config, undefined, keyCell)
+      built = null // registered: unloadAgent owns it from here
+      registered = true
+      if (lease?.ok && lease.unprotected) {
+        // The lease dir is unusable: the agent runs, and the user is told.
+        const event = { type: 'error' as const, payload: { error: lease.unprotected, code: 'LEASES_UNAVAILABLE' }, timestamp: Date.now() }
+        this.emit('agent-event', { agentId: ref.id, filePath: canonicalPath, event } satisfies RuntimeAgentEvent)
+        withSource('system:lifecycle', ref.id, () => {
+          emitUmbilicalEvent({ event_type: 'agent.error', agentId: ref.id, timestamp: event.timestamp, payload: { filePath: canonicalPath, event } })
+        })
+      }
       if (degradedReason) {
         const managed = this.resolveAgent(ref.id)
         if (managed) managed.degraded = degradedReason
@@ -585,39 +1022,187 @@ export class RuntimeService extends EventEmitter {
           })
         })
       }
+      // Same tick as the host attach in registerAgent, after the start's own
+      // error events (BAM order): no executor event can be forwarded before it.
+      // The startup turn is startAgent's, which callers run after this resolves.
+      this.emitLifecycle(ref.id, canonicalPath, 'agent_started', {
+        state: resolveStartInState(config),
+        handle: config.handle || deriveHandle(canonicalPath),
+        ...(previousName !== null ? { nameChangedFrom: previousName } : {}),
+      })
       return ref
     } catch (err) {
-      try { workspace.dispose() } catch { /* best effort */ }
+      if (built) await disposeRuntimeAgent(built, 'immediate') // owns the workspace unless a document holds it
+      else if (!doc) try { workspace.dispose() } catch { /* best effort */ }
       throw err
+    } finally {
+      if (doc) this.settleDocumentAfterStart(doc, registered)
     }
   }
 
-  createAgent(opts: RuntimeCreateAgentOptions): RuntimeAgentRef {
-    const agent = createHeadlessAgent({
-      ...opts,
-      basePrompt: opts.basePrompt ?? this.basePrompt,
-      toolPrompts: opts.toolPrompts ?? this.toolPrompts,
-      compactionPrompt: opts.compactionPrompt ?? this.compactionPrompt,
-    })
-    const config = agent.workspace.getAgentConfig() as AgentConfig
-    return this.registerAgent(agent, opts.filePath ? this.canonicalFilePath(opts.filePath) : null, config, opts.id)
+  /**
+   * After a start on an open document. A failed build may have closed the
+   * workspace (AgentRuntimeBuilder disposes it on failure): the document
+   * reopens its file. A document released while the start ran is closed now,
+   * or handed to the runtime that started.
+   */
+  private settleDocumentAfterStart(doc: OpenDocument, registered: boolean): void {
+    if (this.documents.get(doc.filePath) !== doc) return
+    const managedId = this.filePathToAgentId.get(doc.filePath)
+    const managed = managedId ? this.agents.get(managedId) : undefined
+    if (doc.holders.size === 0) {
+      this.documents.remove(doc)
+      if (registered && managed) {
+        managed.agent.setWorkspaceOwnership(true)
+      } else {
+        try { doc.workspace.dispose() } catch { /* best effort */ }
+      }
+      console.log(`[RuntimeService] Closed document ${doc.filePath} (released while it was starting)`)
+      this.emitSafely('document-closed', { agentId: doc.agentId, filePath: doc.filePath, reason: 'released' } satisfies RuntimeDocumentEvent)
+      return
+    }
+    if (!registered && !isWorkspaceOpen(doc.workspace)) {
+      console.warn(`[RuntimeService] ${doc.filePath}: the failed start closed the document's workspace; reopening it`)
+      doc.workspace = AdfWorkspace.open(doc.filePath)
+      unlockWorkspaceEnvelopes(doc.workspace)
+    }
+    try { doc.config = doc.workspace.getAgentConfig() as AgentConfig } catch { /* keep the last one */ }
   }
 
-  async unloadAgent(agentId: string, opts: { mode?: 'graceful' | 'immediate' } = {}): Promise<void> {
+  /**
+   * Refuse a second agent with a loaded agent's id: two files with one
+   * `config.id` (a copied file) cannot be told apart by id-addressed routes,
+   * the mesh or the review list.
+   */
+  private assertNoDuplicateId(agentId: string, filePath: string | null): void {
+    const loaded = this.agents.get(agentId)
+    if (loaded) {
+      if (loaded.filePath !== null && loaded.filePath === filePath) return // the same file, open as a document
+      const where = loaded.filePath ?? 'an in-memory agent'
+      throw new RuntimeLoopError(
+        `${filePath ?? 'This agent'} has the same agent id (${agentId}) as ${where}, which is already loaded. ` +
+          'Stop that agent first, or clone this file (POST /files/clone) and load the clone, which gets an id of its own.',
+        409,
+        DUPLICATE_AGENT_ID_CODE,
+        { agentId, filePath, loadedFilePath: loaded.filePath },
+      )
+    }
+    const open = filePath ? this.documents.withId(agentId, filePath) : undefined
+    if (open) {
+      throw new RuntimeLoopError(
+        `${filePath} has the same agent id (${agentId}) as ${open.filePath}, which is open. ` +
+          'Close that file first, or clone this file (POST /files/clone) and open the clone, which gets an id of its own.',
+        409,
+        DUPLICATE_AGENT_ID_CODE,
+        { agentId, filePath, loadedFilePath: open.filePath },
+      )
+    }
+  }
+
+  /**
+   * Studio parity (FILE_OPEN, background start): an agent is named after its
+   * file, exactly as Studio does it. A rename waiting for this file is the
+   * one exception (Studio's FILE_OPEN keeps the pending name). Returns the
+   * name it replaced, or null. Logged to the console and the agent's adf_logs.
+   */
+  private adoptFileName(workspace: AdfWorkspace, config: AgentConfig, filePath: string): string | null {
+    const name = this.pendingRenames.get(filePath) ?? basename(filePath, '.adf')
+    if (config.name === name) return null
+    const previous = config.name
+    const message = `Agent name "${previous}" changed to "${name}" to match its file name`
+    console.log(`[RuntimeService] ${filePath}: ${message}`)
+    config.name = name
+    workspace.setAgentConfig(config)
+    try { workspace.insertLog('info', 'runtime', 'name_from_file', null, message.slice(0, 500)) } catch { /* non-fatal */ }
+    return previous
+  }
+
+  /**
+   * No agent lease here: createHeadlessAgent creates a brand-new file (or an
+   * in-memory agent), so no other process can be running it yet; the harness
+   * is the only caller.
+   */
+  createAgent(opts: RuntimeCreateAgentOptions): RuntimeAgentRef {
+    const prompts = this.currentPrompts()
+    const agent = createHeadlessAgent({
+      ...opts,
+      basePrompt: opts.basePrompt ?? prompts.basePrompt,
+      toolPrompts: opts.toolPrompts ?? prompts.toolPrompts,
+      compactionPrompt: opts.compactionPrompt ?? prompts.compactionPrompt,
+    })
+    const config = agent.workspace.getAgentConfig() as AgentConfig
+    const filePath = opts.filePath ? this.canonicalFilePath(opts.filePath) : null
+    let ref: RuntimeAgentRef
+    try {
+      ref = this.registerAgent(agent, filePath, config, opts.id)
+    } catch (err) {
+      void disposeRuntimeAgent(agent, 'immediate')
+      throw err
+    }
+    this.emitLifecycle(ref.id, filePath, 'agent_started', {
+      state: resolveStartInState(config),
+      handle: config.handle || (filePath ? deriveHandle(filePath) : undefined),
+    })
+    return ref
+  }
+
+  /**
+   * Stop and unload one agent. Concurrent calls for one agent share one
+   * teardown (an owner stop racing the agent's own `off`).
+   */
+  async unloadAgent(agentId: string, opts: { mode?: AgentStopMode } = {}): Promise<void> {
     const managed = this.resolveAgent(agentId)
     if (!managed) return
+    const pending = this.unloads.get(managed.id)
+    if (pending) return pending
+    const unload = this.doUnloadAgent(managed, opts.mode ?? 'graceful')
+    this.unloads.set(managed.id, unload)
+    try {
+      await unload
+    } finally {
+      this.unloads.delete(managed.id)
+    }
+  }
+
+  private async doUnloadAgent(managed: ManagedRuntimeAgent, mode: AgentStopMode): Promise<void> {
+    this.emitLifecycle(managed.id, managed.filePath, 'agent_stopping', {})
     managed.hostAttachment.detach()
-    if (managed.agent.disposeAsync) await managed.agent.disposeAsync({ mode: opts.mode ?? 'graceful' })
-    else managed.agent.dispose()
+    let disposeError: unknown = null
+    try {
+      await disposeRuntimeAgent(managed.agent, mode, true)
+    } catch (err) {
+      // Unloaded anyway: an agent left registered after a failed dispose
+      // could never be stopped or loaded again. Some of its resources may
+      // still be running; the error says so.
+      disposeError = err
+      console.error(`[RuntimeService] Stopping ${managed.filePath ?? managed.id} failed; it is unloaded anyway:`, err)
+    }
     this.agents.delete(managed.id)
     if (managed.filePath) this.filePathToAgentId.delete(managed.filePath)
+    // Stop keeps a held document open on the same workspace (D4).
+    const doc = this.documents.get(managed.filePath)
+    if (doc) {
+      try { doc.config = doc.workspace.getAgentConfig() as AgentConfig } catch { /* keep the last one */ }
+      console.log(`[RuntimeService] ${managed.config.name} stopped; ${managed.filePath} stays open (${doc.holders.size} holder${doc.holders.size === 1 ? '' : 's'})`)
+    }
+    // The deferred rename runs before the lease is released, so no other
+    // process can open the file while it moves (synchronous: nothing between
+    // the map removal above and the rename can release the lease). Skipped
+    // when the dispose failed: the file may still be open.
+    const renamed = managed.filePath && !disposeError ? this.applyPendingRename(managed.id, managed.filePath) : null
+    await this.agentLeases?.reconcile()
     // Emit only after dispose settles: consumers (e.g. the daemon's sweep
     // skip-set) treat this event as "the workspace is closed" — emitting
     // before dispose let them touch a workspace that was still open.
-    this.emit('agent-unloaded', {
+    this.emitSafely('agent-unloaded', {
       agentId: managed.id,
       filePath: managed.filePath,
     } satisfies RuntimeAgentUnloadedEvent)
+    this.emitLifecycle(managed.id, managed.filePath, 'agent_stopped', disposeError
+      ? { error: disposeError instanceof Error ? disposeError.message : String(disposeError) }
+      : {})
+    if (renamed) this.emitSafely('agent-file-renamed', renamed)
+    if (disposeError) throw disposeError
   }
 
   /**
@@ -651,6 +1236,9 @@ export class RuntimeService extends EventEmitter {
         }
       }),
     )
+    await Promise.allSettled(Array.from(this.inFlightOpens.values()))
+    for (const doc of this.documents.list()) this.closeOpenDocument(doc, 'shutdown')
+    if (this.holderSweep) { clearInterval(this.holderSweep); this.holderSweep = null }
   }
 
   /**
@@ -667,6 +1255,13 @@ export class RuntimeService extends EventEmitter {
    */
   async refreshAgentCredentials(reason: string): Promise<RuntimeCredentialRefresh[]> {
     const results: RuntimeCredentialRefresh[] = []
+    // Open documents that are not running: their envelopes open now too, so
+    // the credential routes read them unlocked without a reopen.
+    for (const doc of this.documents.list()) {
+      if (this.managedAt(doc.filePath) || detectLockedEnvelopes(doc.workspace).length === 0) continue
+      unlockWorkspaceEnvelopes(doc.workspace)
+      if (detectLockedEnvelopes(doc.workspace).length === 0) console.log(`[RuntimeService] Credentials of the open document ${doc.filePath} unlocked (${reason})`)
+    }
     for (const managed of Array.from(this.agents.values())) {
       if (!managed.degraded || this.agents.get(managed.id) !== managed) continue
       const workspace = managed.agent.workspace
@@ -685,6 +1280,8 @@ export class RuntimeService extends EventEmitter {
       }
 
       managed.degraded = undefined
+      // A provider built while its sealed key was locked is the stub: build the real one.
+      if (lockedKeyProviders.has(managed.agent.executor.getProvider() as LLMProvider)) this.rebuildProviderAfterUnlock(managed)
       // Values the owner stored (or replaced) while locked were written
       // plain: seal them now that the envelope is open (Studio parity with
       // ensureWorkspaceIdentity's migration pass).
@@ -721,6 +1318,19 @@ export class RuntimeService extends EventEmitter {
       results.push({ agentId: managed.id, filePath: managed.filePath, unlocked: true, stillLocked: [], adaptersRestarted, mcpRestartNeeded })
     }
     return results
+  }
+
+  /**
+   * Credential reload hook (POST /client/reload-credentials): Studio moved
+   * credentials into this daemon's stores without a restart (mode-switch
+   * handover). Re-runs the envelope unlock of every degraded agent, and
+   * brings loops that failed on a subscription's auth out of `error` for
+   * each provider whose session is now here (`signedIn`).
+   */
+  async reloadCredentials(reason: string, signedIn: Array<{ providerType: string; label: string }> = []): Promise<{ credentials: RuntimeCredentialRefresh[]; recovered: RuntimeAuthRecovery[] }> {
+    const credentials = await this.refreshAgentCredentials(reason)
+    const recovered = signedIn.flatMap(({ providerType, label }) => this.recoverAuthErroredAgents(providerType, label))
+    return { credentials, recovered }
   }
 
   /** True when any loaded agent is degraded on sealed credentials. */
@@ -768,8 +1378,17 @@ export class RuntimeService extends EventEmitter {
     await this.requireAgent(agentId).agent.dispatchTo(loop, dispatch)
   }
 
-  /** `opts.turnId`: correlation id stamped as `turn_id` on the turn's events (AdfEventDispatch.turnId). */
-  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string } = {}): Promise<void> {
+  /**
+   * `opts.turnId`: correlation id stamped as `turn_id` on the turn's events
+   * (AdfEventDispatch.turnId). `opts.content`: the message's content blocks
+   * (text, images, audio, video; Studio's AGENT_INVOKE `content`), used
+   * instead of `text` when given. `opts.echoOrigin`: the client session that
+   * already shows the message (Studio's AGENT_INVOKE); the turn's
+   * `trigger_message` carries it as `echoOrigin`, so only that session skips
+   * it. Needs `opts.turnId`.
+   */
+  async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[]; echoOrigin?: string } = {}): Promise<void> {
+    const contentJson: ContentBlock[] = opts.content && opts.content.length > 0 ? opts.content : [{ type: 'text', text }]
     const dispatch = createDispatch(
       createEvent({
         type: 'chat',
@@ -778,25 +1397,81 @@ export class RuntimeService extends EventEmitter {
           message: {
             seq: Date.now(),
             role: 'user',
-            content_json: [{ type: 'text', text }],
+            content_json: contentJson,
             created_at: Date.now(),
           },
         },
       }),
       { scope: 'agent' },
     )
+    if (opts.turnId && opts.echoOrigin) this.noteEchoOrigin(opts.turnId, { session: opts.echoOrigin, agentId: this.requireAgent(agentId).id, loop: loop || MAIN_LOOP })
     await this.trigger(agentId, opts.turnId ? { ...dispatch, turnId: opts.turnId } : dispatch, loop)
   }
 
-  async startAgent(agentId: string): Promise<boolean> {
+  /** Chat dispatches whose sender already shows the message: turnId → the client session, and where it runs. Oldest dropped past ECHO_ORIGINS_KEPT. */
+  private readonly echoOrigins = new Map<string, { session: string; agentId: string; loop: string }>()
+
+  private noteEchoOrigin(turnId: string, origin: { session: string; agentId: string; loop: string }): void {
+    this.echoOrigins.set(turnId, origin)
+    while (this.echoOrigins.size > ECHO_ORIGINS_KEPT) this.echoOrigins.delete(this.echoOrigins.keys().next().value!)
+  }
+
+  /**
+   * The session that sent the chat a `trigger_message` announces — keyed by
+   * the turnId of the dispatch that event announces (a queued chat delivered
+   * into a running turn announces its own id, not the running turn's). When a
+   * turn ends, origins of the dispatches it settled (its own and the ones it
+   * absorbed) that were never announced — a skipped trigger on interrupt
+   * restart — are dropped so they cannot mask a later event; a stop or off
+   * drops the loop's rest (queued chats it discards).
+   */
+  private takeEchoOrigin(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): string | undefined {
+    if (this.echoOrigins.size === 0) return undefined
+    const loop = event.loop ?? MAIN_LOOP
+    if (event.type === 'state_changed') {
+      const state = (event.payload as { state?: unknown } | undefined)?.state
+      if (state !== 'stopped' && state !== 'off') return undefined
+      for (const [turnId, origin] of this.echoOrigins) if (origin.agentId === managed.id && origin.loop === loop) this.echoOrigins.delete(turnId)
+      return undefined
+    }
+    if (event.type !== 'trigger_message' && event.type !== 'turn_complete' && event.type !== 'error') return undefined
+    const executor = loop === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loop)?.executor
+    if (!executor) return undefined
+    if (event.type !== 'trigger_message') {
+      const running = executor.getRunningTurnId()
+      if (running) this.echoOrigins.delete(running)
+      for (const id of executor.getAbsorbedTurnIds()) this.echoOrigins.delete(id)
+      return undefined
+    }
+    const turnId = executor.getAnnouncingTurnId()
+    if (!turnId) return undefined
+    const origin = this.echoOrigins.get(turnId)
+    if (origin !== undefined) this.echoOrigins.delete(turnId)
+    return origin?.session
+  }
+
+  /**
+   * `opts.hasUserMessage`: a chat is queued behind this start (Studio's
+   * AGENT_START from the home composer), so the startup turn skips the
+   * active-state greeting, as Studio's foreground start does.
+   */
+  async startAgent(agentId: string, opts: { hasUserMessage?: boolean } = {}): Promise<boolean> {
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
+    // A start that raced a stop (the agent is stopping or already torn down)
+    // starts nothing: say so instead of answering success without a startup.
+    const lifecycle = managed.agent.getLifecycleState()
+    if (lifecycle !== 'running') {
+      throw new RuntimeLoopError(`Cannot start ${managed.id}: the agent is ${lifecycle}. Start it again.`, 409, 'agent_not_running')
+    }
     // Studio parity: dispatch the startup turn fire-and-forget instead of
     // blocking the caller on the agent's entire first LLM turn
     // (BackgroundAgentManager fires it via process.nextTick and does not await).
-    const startup = managed.agent.dispatchStartup()
+    const startup = managed.agent.dispatchStartup(opts.hasUserMessage ? { hasUserMessage: true } : undefined)
     startup.catch((err) => {
       console.error(`[RuntimeService] Startup turn error for ${managed.id}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+      if (this.agents.get(managed.id) !== managed) return
+      this.emitLifecycle(managed.id, managed.filePath, 'startup_failed', { error: err instanceof Error ? err.message : String(err) })
     })
     // dispatchStartup resolves false within microtasks when no startup turn is
     // needed; when a turn dispatches it resolves only after the whole turn
@@ -813,19 +1488,20 @@ export class RuntimeService extends EventEmitter {
     return raced.status === 'resolved' ? raced.dispatched : true
   }
 
-  async startOrLoadAgent(identifier: string): Promise<RuntimeAgentStartResult> {
+  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean } = {}): Promise<RuntimeAgentStartResult> {
     let managed = this.resolveAgent(identifier)
     let loaded = false
 
     if (!managed) {
-      const filePath = this.findAgentFile(identifier)
+      // An open document starts on its own workspace (D4).
+      const filePath = this.documents.resolve(identifier)?.filePath ?? this.findAgentFile(identifier)
       if (!filePath) throw new Error(`RuntimeService: unknown agent "${identifier}"`)
       const ref = await this.loadAgent(filePath)
       managed = this.requireAgent(ref.id)
       loaded = true
     }
 
-    const startupTriggered = await this.startAgent(managed.id)
+    const startupTriggered = await this.startAgent(managed.id, opts)
     return {
       ref: this.toRef(managed),
       loaded,
@@ -833,6 +1509,12 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
+  /** The running agent's session id (Studio's AGENT_START answers it); undefined when it does not run. */
+  getAgentSessionId(agentId: string): string | undefined {
+    return this.resolveAgent(agentId)?.agent.session.getSessionId()
+  }
+
+  /** Stop and unload; a held document stays open on the same workspace (D4). A document that is not running: no-op. */
   async stopAgent(agentId: string): Promise<void> {
     await this.unloadAgent(agentId)
   }
@@ -874,7 +1556,7 @@ export class RuntimeService extends EventEmitter {
     opts: RuntimeAutostartOptions = {},
   ): Promise<RuntimeAutostartReport> {
     RuntimeGate.resume()
-    const files = this.collectAdfFiles(trackedDirs, opts.maxDepth ?? 5)
+    const files = await this.scanAdfFilesAsync(trackedDirs, opts.maxDepth ?? 5)
     const report: RuntimeAutostartReport = {
       scanned: files.length,
       started: [],
@@ -939,6 +1621,10 @@ export class RuntimeService extends EventEmitter {
         if (err instanceof RuntimeReviewRequiredError) {
           return { kind: 'skipped', entry: { filePath, name, reason: 'unreviewed', agentId: err.agentId } }
         }
+        if (err instanceof RuntimeLoopError && err.code === AGENT_LEASED_CODE) {
+          console.warn(`[RuntimeService] Autostart skipped: ${err.message}`)
+          return { kind: 'skipped', entry: { filePath, name, reason: 'leased_elsewhere', agentId: boot.agentId, message: err.message } }
+        }
         return {
           kind: 'failed',
           entry: { filePath, name, error: err instanceof Error ? err.message : String(err) },
@@ -969,43 +1655,590 @@ export class RuntimeService extends EventEmitter {
     return report
   }
 
+  private buildReviewSummary(workspace: AdfWorkspace, config: AgentConfig): AgentConfigSummary {
+    const owner = this.settings?.getOwnerIdentity?.()
+    const settingsDid = (key: string): string => {
+      const value = this.settings?.get(key)
+      return typeof value === 'string' ? value : ''
+    }
+    const agentDid = workspace.getDid()
+    const ownerAttestation = readAdfAttestations(workspace)
+      .find((attestation) => attestation.role === 'owner' && verifyAttestation(attestation, agentDid ? { expectedSubject: agentDid } : undefined))
+    return buildConfigSummary(config, deriveReviewIdentity({
+      agentDid,
+      fileOwnerDid: ownerAttestation?.issuer ?? workspace.getMeta('adf_owner_did') ?? null,
+      fileRuntimeDid: workspace.getMeta('adf_runtime_did') ?? null,
+      localOwnerDid: owner?.getOwnerDid() ?? settingsDid('ownerDid'),
+      localRuntimeDid: owner?.getRuntimeDid() ?? settingsDid('runtimeDid'),
+      identityEnvelope: workspace.getEnvelopeState('identity'),
+      credentialsEnvelope: workspace.getEnvelopeState('credentials'),
+      sharePasswordSet: (workspace.readEnvelopeSlots('credentials') ?? []).some((slot) => slot.type === 'password'),
+      filePasswordProtected: workspace.isPasswordProtected(),
+      ownerKeyAvailable: owner?.getOwnerEncPrivateKey?.() != null,
+    }))
+  }
+
   getReviewInfo(filePath: string): RuntimeReviewInfo {
-    const canonicalPath = this.canonicalFilePath(filePath)
-    const workspace = AdfWorkspace.open(canonicalPath)
-    try {
+    return this.withAgentFile(filePath, (workspace, canonicalPath) => {
       const config = workspace.getAgentConfig() as AgentConfig
-      const ownerDid = (this.settings?.get('ownerDid') as string | undefined) ?? null
       return {
         agentId: config.id,
         filePath: canonicalPath,
         reviewed: isConfigReviewed(this.settings?.get('reviewedAgents'), config),
-        summary: buildConfigSummary(config, ownerDid),
+        summary: this.buildReviewSummary(workspace, config),
       }
-    } finally {
-      workspace.dispose()
-    }
+    })
   }
 
   acceptReview(filePath: string): RuntimeReviewInfo {
     if (!this.settings?.set) {
       throw new Error('RuntimeService: settings store is read-only; cannot accept agent review.')
     }
-
-    const canonicalPath = this.canonicalFilePath(filePath)
-    const workspace = AdfWorkspace.open(canonicalPath)
-    try {
+    return this.withAgentFile(filePath, (workspace, canonicalPath) => {
       const config = workspace.getAgentConfig() as AgentConfig
-      this.settings.set('reviewedAgents', markConfigReviewed(this.settings.get('reviewedAgents'), config))
-      const ownerDid = (this.settings?.get('ownerDid') as string | undefined) ?? null
+      this.settings!.set!('reviewedAgents', markConfigReviewed(this.settings!.get('reviewedAgents'), config))
       return {
         agentId: config.id,
         filePath: canonicalPath,
         reviewed: true,
-        summary: buildConfigSummary(config, ownerDid),
+        summary: this.buildReviewSummary(workspace, config),
       }
+    })
+  }
+
+  /**
+   * Run `fn` on the workspace of an agent file: the running agent's or the
+   * open document's when the file is open here (one handle per file), else a
+   * temporary one opened for the call (envelopes unlocked) and closed after.
+   * `keyCell` is the file's derived-key cell when it is open, null otherwise.
+   */
+  withAgentFile<T>(filePath: string, fn: (workspace: AdfWorkspace, canonicalPath: string, keyCell: DerivedKeyCell | null) => T): T {
+    const canonicalPath = this.canonicalFilePath(filePath)
+    const open = this.targetAtPath(canonicalPath)
+    if (open) return fn(open.workspace, canonicalPath, open.keyCell)
+    if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
+    const workspace = AdfWorkspace.open(canonicalPath)
+    try {
+      unlockWorkspaceEnvelopes(workspace)
+      return fn(workspace, canonicalPath, null)
     } finally {
       workspace.dispose()
     }
+  }
+
+  // --- Open documents (design D4) --------------------------------------------
+  //
+  // A document is an .adf opened without a runtime: every /agents/:id
+  // resource method works on it, none of its timers, triggers or adapters
+  // run, the mesh does not see it and autostart does not count it as loaded.
+  // Start assembles on its workspace; stop keeps it open while it is held.
+  //
+  // Lease (W0-C): an open document takes no agent lease. Opening is not
+  // running, exactly as embedded Studio's FILE_OPEN takes none, so a file
+  // open in one runtime never blocks another runtime from starting it. A
+  // start on the document takes the lease as every load does. What the lease
+  // protects (one runtime writing a file while another runs it) is kept by
+  // the HTTP layer: a write through an open document is refused (409
+  // agent_leased) while another live runtime holds the file's lease, as
+  // W1-E's writes to closed files are.
+
+  /** Studio's FILE_OPEN identity steps for each newly opened document (the daemon passes its owner identity). */
+  setDocumentOpenHooks(hooks: RuntimeDocumentOpenHooks): void {
+    this.documentOpenHooks = hooks
+  }
+
+  /**
+   * W2-B: whether a holder is still a live client session. The holder sweep
+   * then releases every holder it does not know; without it a holder expires
+   * DOCUMENT_HOLD_TTL_MS after its last hold.
+   */
+  setDocumentHolderCheck(isLive: ((holder: string) => boolean) | null): void {
+    this.holderCheck = isLive
+  }
+
+  /** The settings store the runtime reads (review routes fall back to it when the HTTP API has none). */
+  getSettingsStore(): RuntimeSettingsStore | undefined {
+    return this.settings
+  }
+
+  /** The lease registry the loads use (null when leases are off), for the HTTP layer's write check. */
+  get agentLeaseRegistry(): AgentLeaseRegistry | null {
+    return this.agentLeases
+  }
+
+  /**
+   * Open `filePath` as a document held by `opts.holder` (a client session),
+   * or add the holder to the document already open. A running agent's file
+   * becomes a document on the runtime's own workspace. Nothing is started,
+   * registered with the mesh or leased. A password-protected file reuses a
+   * key this holder unlocked before (Studio's derivedKeyCache); otherwise
+   * `needsPassword` tells the client to prompt.
+   */
+  async openDocument(filePath: string, opts: RuntimeDocumentHoldOptions): Promise<RuntimeOpenDocumentInfo> {
+    const holder = requireHolder(opts?.holder)
+    const canonicalPath = this.canonicalFilePath(filePath)
+    // A load in flight finishes first, so the document joins its workspace.
+    const loading = this.inFlightLoads.get(canonicalPath)
+    if (loading) await loading.catch(() => {})
+    let nameChangedFrom: string | null = null
+    let doc = this.documents.get(canonicalPath)
+    if (doc) this.assertNotMoving(doc)
+    if (doc?.readOnly) {
+      nameChangedFrom = await this.recheckReadOnly(doc)
+      // The await may have seen it closed or moving.
+      doc = this.documents.get(canonicalPath)
+      if (doc) this.assertNotMoving(doc)
+    }
+    if (!doc) {
+      const pending = this.inFlightOpens.get(canonicalPath)
+      if (pending) {
+        doc = await pending
+      } else {
+        const opening = Promise.resolve().then(() => this.createDocument(canonicalPath))
+        const shared = opening.then(r => r.doc)
+        shared.catch(() => { /* the opener reports it */ })
+        this.inFlightOpens.set(canonicalPath, shared)
+        try {
+          const created = await opening
+          doc = created.doc
+          nameChangedFrom = created.nameChangedFrom
+        } finally {
+          this.inFlightOpens.delete(canonicalPath)
+        }
+      }
+    }
+    const first = doc.holders.size === 0
+    doc.holders.add(holder)
+    this.holderSeen.set(holder, Date.now())
+    this.ensureHolderSweep()
+    if (doc.workspace.isPasswordProtected() && !doc.keyCell.current) this.restoreCachedKey(doc, holder)
+    console.log(`[RuntimeService] ${first ? 'Opened' : 'Holding'} document ${canonicalPath} for ${holder}`)
+    if (first) this.emitSafely('document-opened', { agentId: doc.agentId, filePath: doc.filePath } satisfies RuntimeDocumentEvent)
+    return { ...this.documentInfo(doc), ...(nameChangedFrom !== null ? { nameChangedFrom } : {}) }
+  }
+
+  private async createDocument(canonicalPath: string): Promise<{ doc: OpenDocument; nameChangedFrom: string | null }> {
+    const managedId = this.filePathToAgentId.get(canonicalPath)
+    const managed = managedId ? this.agents.get(managedId) : undefined
+    if (managed) {
+      // Running here: the document is the runtime's workspace; stop keeps it.
+      managed.agent.setWorkspaceOwnership(false)
+      const doc: OpenDocument = {
+        agentId: managed.id,
+        filePath: canonicalPath,
+        workspace: managed.agent.workspace,
+        keyCell: managed.keyCell,
+        config: managed.agent.workspace.getAgentConfig() as AgentConfig,
+        holders: new Set(),
+        openedAt: Date.now(),
+        configWrites: 0,
+      }
+      this.documents.add(doc)
+      return { doc, nameChangedFrom: null }
+    }
+    if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
+    const leasedBy = (await this.documentOpenHooks.leasedElsewhere?.(canonicalPath)) ?? null
+    const workspace = AdfWorkspace.open(canonicalPath)
+    try {
+      let fresh: AgentConfig
+      let nameChangedFrom: string | null = null
+      if (leasedBy) {
+        // Another runtime runs it: none of the open steps below runs (they
+        // write the file: envelope re-wraps, restamp, keys, the name).
+        console.log(`[RuntimeService] Opened ${canonicalPath} read-only: ${leasedBy}`)
+        fresh = workspace.getAgentConfig() as AgentConfig
+        this.assertNoDuplicateId(fresh.id, canonicalPath)
+      } else {
+        ({ config: fresh, nameChangedFrom } = this.runDocumentOpenSteps(workspace, canonicalPath))
+      }
+      const doc: OpenDocument = {
+        agentId: fresh.id,
+        filePath: canonicalPath,
+        workspace,
+        keyCell: { current: null },
+        config: fresh,
+        holders: new Set(),
+        openedAt: Date.now(),
+        configWrites: 0,
+        ...(leasedBy ? { readOnly: leasedBy } : {}),
+      }
+      this.documents.add(doc)
+      return { doc, nameChangedFrom }
+    } catch (err) {
+      try { workspace.dispose() } catch { /* best effort */ }
+      throw err
+    }
+  }
+
+  /** The open steps that write the file (skipped while another runtime runs it). */
+  private runDocumentOpenSteps(workspace: AdfWorkspace, canonicalPath: string): { config: AgentConfig; nameChangedFrom: string | null } {
+    unlockWorkspaceEnvelopes(workspace)
+    const config = workspace.getAgentConfig() as AgentConfig
+    this.assertNoDuplicateId(config.id, canonicalPath)
+    const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
+    try {
+      this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
+    } catch (err) {
+      console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
+    }
+    const fresh = workspace.getAgentConfig() as AgentConfig
+    const nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
+    this.surfaceFileProviders(fresh)
+    this.sweepOrphanedWal(dirname(canonicalPath))
+    return { config: fresh, nameChangedFrom }
+  }
+
+  /**
+   * A document opened read-only asks the lease again on each open: once the
+   * other runtime has let the file go, the skipped open steps run and the
+   * document is writable. Returns the name it adopted from the file, if any.
+   */
+  private async recheckReadOnly(doc: OpenDocument): Promise<string | null> {
+    if (this.managedAt(doc.filePath)) return null
+    const leasedBy = (await this.documentOpenHooks.leasedElsewhere?.(doc.filePath)) ?? null
+    if (!doc.readOnly || this.documents.get(doc.filePath) !== doc || this.movingDocs.has(doc)) return null
+    if (leasedBy) {
+      doc.readOnly = leasedBy
+      return null
+    }
+    console.log(`[RuntimeService] ${doc.filePath} is no longer run by another runtime: the document is writable`)
+    const { config, nameChangedFrom } = this.runDocumentOpenSteps(doc.workspace, doc.filePath)
+    doc.config = config
+    delete doc.readOnly
+    return nameChangedFrom
+  }
+
+  /**
+   * Studio's FILE_OPEN surfaces an agent's own providers in app settings
+   * (no key; `credentialStorage: 'agent'`) so the provider pickers list them.
+   */
+  private surfaceFileProviders(config: AgentConfig): void {
+    if (!config.providers?.length || !this.settings?.set) return
+    const appProviders = [...((this.settings.get('providers') as ProviderConfig[] | undefined) ?? [])]
+    const known = new Set(appProviders.map(p => p.id))
+    const added = config.providers.filter(p => !known.has(p.id))
+    if (added.length === 0) return
+    for (const entry of added) appProviders.push({ ...(entry as unknown as ProviderConfig), apiKey: '', credentialStorage: 'agent' } as ProviderConfig)
+    this.settings.set('providers', appProviders)
+    console.log(`[RuntimeService] Added ${config.name}'s own provider${added.length === 1 ? '' : 's'} to settings: ${added.map(p => p.id).join(', ')}`)
+  }
+
+  /** Studio's FILE_OPEN orphan sweep of the folder, deferred off the request (sidecars of open files are skipped). */
+  private sweepOrphanedWal(dir: string): void {
+    setTimeout(() => {
+      try { AdfDatabase.cleanupOrphanedWalFiles(dir, AdfDatabase.openFilePaths()) } catch { /* best effort */ }
+    }, 0).unref?.()
+  }
+
+  /** A key this holder unlocked the file with before, if it still opens the file. */
+  private restoreCachedKey(doc: OpenDocument, holder: string): void {
+    const cached = this.documents.cachedKey(holder, doc.filePath)
+    if (!cached) return
+    if (!doc.workspace.verifyDerivedKey(cached)) {
+      this.documents.forgetKey(doc.filePath)
+      console.log(`[RuntimeService] ${doc.filePath}: the remembered file-password key no longer opens it; the password is asked again`)
+      return
+    }
+    doc.keyCell.current = cached
+    console.log(`[RuntimeService] ${doc.filePath}: unlocked with the key ${holder} unlocked it with before`)
+    const managed = this.managedAt(doc.filePath)
+    if (managed) {
+      this.rebuildProviderAfterUnlock(managed)
+      this.propagateDerivedKey(managed)
+    }
+  }
+
+  /**
+   * Release `holder`'s hold on a document (by id, handle, name or path). The
+   * last release closes it, unless a runtime runs on it: the runtime then owns
+   * the workspace and the document is gone. The holder remembers an unlocked
+   * key for its next open.
+   */
+  async releaseDocument(identifier: string, holder: string): Promise<{ agentId: string; filePath: string; released: boolean; closed: boolean }> {
+    const doc = this.documentFor(identifier)
+    if (!doc) throw new RuntimeLoopError(`No open document "${identifier}"`, 404, 'not_found')
+    const released = doc.holders.delete(holder)
+    let closed = false
+    if (doc.holders.size === 0) closed = this.closeOpenDocument(doc, 'released')
+    if (released) console.log(`[RuntimeService] ${holder} released ${doc.filePath}${closed ? ' (closed)' : ''}`)
+    return { agentId: doc.agentId, filePath: doc.filePath, released, closed }
+  }
+
+  /**
+   * A client session ended (W2-B's expiry hook): every document it holds is
+   * released and the keys it unlocked are forgotten. Returns the agent ids
+   * of the documents it held.
+   */
+  async releaseDocumentHolder(holder: string): Promise<string[]> {
+    const held = this.documents.heldBy(holder)
+    for (const doc of held) {
+      doc.holders.delete(holder)
+      if (doc.holders.size === 0) this.closeOpenDocument(doc, 'released')
+    }
+    this.documents.dropHolder(holder)
+    this.holderSeen.delete(holder)
+    if (held.length > 0) console.log(`[RuntimeService] ${holder} ended; released ${held.map(d => d.filePath).join(', ')}`)
+    return held.map(d => d.agentId)
+  }
+
+  /**
+   * Release holders that are gone: with a session check (W2-B's
+   * setDocumentHolderCheck), every holder it does not know; without one, holders that
+   * held nothing for documentHoldTtlMs. A document pinned by a client that
+   * never releases it closes this way. Returns the released holders.
+   */
+  async sweepDocumentHolders(now = Date.now()): Promise<string[]> {
+    const holders = new Set(this.documents.list().flatMap(doc => [...doc.holders]))
+    const check = this.holderCheck
+    const gone = [...holders].filter(holder => check ? !check(holder) : now - (this.holderSeen.get(holder) ?? 0) >= this.documentHoldTtlMs)
+    for (const holder of gone) {
+      console.log(`[RuntimeService] Holder ${holder} is no longer a live session; releasing its documents`)
+      await this.releaseDocumentHolder(holder)
+    }
+    if (this.documents.list().length === 0 && this.holderSweep) {
+      clearInterval(this.holderSweep)
+      this.holderSweep = null
+    }
+    return gone
+  }
+
+  /**
+   * A request from `holder` (its X-ADF-Client-Session header) on this
+   * document: the holder is in use, so the sweep's idle clock restarts. A
+   * holder that does not hold the document is not refreshed.
+   */
+  touchDocumentHolder(holder: string, identifier: string): boolean {
+    const doc = this.documentFor(identifier)
+    if (!doc?.holders.has(holder)) return false
+    this.holderSeen.set(holder, Date.now())
+    return true
+  }
+
+  private ensureHolderSweep(): void {
+    if (this.holderSweep) return
+    this.holderSweep = setInterval(() => { void this.sweepDocumentHolders() }, Math.max(1000, Math.min(15_000, this.documentHoldTtlMs / 4)))
+    this.holderSweep.unref?.()
+  }
+
+  /**
+   * Close a document for every holder (its file is being deleted). A runtime
+   * on it keeps running on the workspace. False when the file is not open.
+   */
+  closeDocument(filePath: string, reason: 'deleted' | 'released' = 'deleted'): boolean {
+    const doc = this.documents.get(this.loadedDocumentPath(filePath))
+    if (!doc) return false
+    doc.holders.clear()
+    return this.closeOpenDocument(doc, reason)
+  }
+
+  /**
+   * A move of an open document's file that the caller performs (accept-
+   * relocate): the document's workspace is closed for it and reopened where
+   * the file went (`movedTo`, else the old path), keeping its holders and key.
+   * Without an open document `move` just runs. Refused while a runtime runs
+   * on the file: it cannot move under a live executor.
+   */
+  async withDocumentMoved<T>(filePath: string, move: () => Promise<{ value: T; movedTo: string | null }>): Promise<T> {
+    const doc = this.documents.get(this.loadedDocumentPath(filePath))
+    if (!doc) return (await move()).value
+    if (this.managedAt(doc.filePath) || this.inFlightLoads.has(doc.filePath)) {
+      throw new RuntimeLoopError(`${doc.config.name} is running; its file cannot move now.`, 409, 'agent_running')
+    }
+    // Until it reopens, every route, start or open of it answers 409 file_moving
+    // (its workspace is closed; the file is at neither path for a while).
+    this.movingDocs.add(doc)
+    try { doc.workspace.checkpoint() } catch { /* the close checkpoints too */ }
+    try { doc.workspace.close() } catch (err) { console.warn(`[RuntimeService] Closing ${doc.filePath} for its move failed:`, err) }
+    let movedTo: string | null = null
+    try {
+      const result = await move()
+      movedTo = result.movedTo
+      return result.value
+    } finally {
+      this.movingDocs.delete(doc)
+      const at = movedTo ? this.canonicalFilePath(movedTo) : doc.filePath
+      const stillOpen = this.documents.get(doc.filePath) === doc
+      if (stillOpen && at !== doc.filePath) this.documents.rekey(doc.filePath, at)
+      if (stillOpen) try {
+        if (!existsSync(at)) throw new Error(`no file at ${at}`) // never create one by reopening
+        doc.workspace = AdfWorkspace.open(at)
+        unlockWorkspaceEnvelopes(doc.workspace)
+        doc.config = doc.workspace.getAgentConfig() as AgentConfig
+        if (at !== filePath) console.log(`[RuntimeService] Document moved: ${filePath} → ${at}`)
+      } catch (err) {
+        console.error(`[RuntimeService] Reopening ${at} after its move failed; the document is closed:`, err)
+        this.documents.remove(doc)
+        this.emitSafely('document-closed', { agentId: doc.agentId, filePath: at, reason: 'released' } satisfies RuntimeDocumentEvent)
+      }
+    }
+  }
+
+  /** True when the document closed now; false when a start in flight closes it later, or a runtime took it. */
+  private closeOpenDocument(doc: OpenDocument, reason: RuntimeDocumentEvent['reason']): boolean {
+    if (this.inFlightLoads.has(doc.filePath)) return false // settleDocumentAfterStart closes or hands it over
+    this.documents.remove(doc)
+    const managed = this.managedAt(doc.filePath)
+    if (this.movingDocs.has(doc)) {
+      // Its workspace is closed for the move; withDocumentMoved does not reopen a removed document.
+      console.log(`[RuntimeService] ${doc.filePath} was released while it moved; it stays closed`)
+    } else if (managed) {
+      managed.agent.setWorkspaceOwnership(true)
+      console.log(`[RuntimeService] ${doc.filePath} is no longer open; ${managed.config.name} keeps running`)
+    } else {
+      try { doc.workspace.dispose() } catch (err) { console.warn(`[RuntimeService] Closing ${doc.filePath} failed:`, err) }
+      // A rename asked for while it ran and was applied at stop could not
+      // move an open file; it moves now.
+      const pendingName = this.pendingRenames.get(doc.filePath)
+      if (pendingName !== undefined) {
+        const renamed = this.applyPendingRename(doc.agentId, doc.filePath)
+        if (renamed) this.emitSafely('agent-file-renamed', renamed)
+      }
+    }
+    this.emitSafely('document-closed', { agentId: doc.agentId, filePath: doc.filePath, reason } satisfies RuntimeDocumentEvent)
+    return !managed
+  }
+
+  /** One open document, by id, handle, name or path. */
+  getOpenDocument(identifier: string): RuntimeOpenDocumentInfo | undefined {
+    const doc = this.documentFor(identifier)
+    return doc ? this.documentInfo(doc) : undefined
+  }
+
+  listOpenDocuments(): RuntimeOpenDocumentInfo[] {
+    return this.documents.list().map(doc => this.documentInfo(doc))
+  }
+
+  /** True while the file of this open document (id, handle, name or path) is being moved. */
+  isFileMoving(identifier: string): boolean {
+    const doc = this.documentFor(identifier)
+    return !!doc && this.movingDocs.has(doc)
+  }
+
+  private assertNotMoving(doc: OpenDocument): void {
+    if (!this.movingDocs.has(doc)) return
+    throw new RuntimeLoopError(`${doc.config.name}'s file is being moved; try again in a moment.`, 409, 'file_moving', { agentId: doc.agentId, filePath: doc.filePath })
+  }
+
+  /** The holders of a document (W2-B lists a session's documents from its own side). */
+  documentHolders(identifier: string): string[] {
+    return [...(this.documentFor(identifier)?.holders ?? [])]
+  }
+
+  private documentInfo(doc: OpenDocument): RuntimeOpenDocumentInfo {
+    return {
+      agentId: doc.agentId,
+      filePath: doc.filePath,
+      name: this.managedAt(doc.filePath)?.config.name ?? doc.config.name,
+      running: this.managedAt(doc.filePath) !== undefined,
+      needsPassword: !this.movingDocs.has(doc) && doc.workspace.isPasswordProtected() && !doc.keyCell.current,
+      holders: doc.holders.size,
+      ...(doc.readOnly ? { readOnly: doc.readOnly } : {}),
+    }
+  }
+
+  private documentFor(identifier: string): OpenDocument | undefined {
+    if (identifier.endsWith('.adf')) {
+      const byPath = this.documents.get(this.loadedDocumentPath(identifier))
+      if (byPath) return byPath
+    }
+    return this.documents.resolve(identifier)
+  }
+
+  /** The key under which `filePath` is open as a document, comparing spellings like loadedPathFor. */
+  private loadedDocumentPath(filePath: string): string {
+    const canonical = this.canonicalFilePath(filePath)
+    if (this.documents.get(canonical)) return canonical
+    const key = pathKey(canonical)
+    for (const doc of this.documents.list()) if (pathKey(doc.filePath) === key) return doc.filePath
+    return canonical
+  }
+
+  private managedAt(filePath: string): ManagedRuntimeAgent | undefined {
+    const id = this.filePathToAgentId.get(filePath)
+    return id ? this.agents.get(id) : undefined
+  }
+
+  /** A running agent or an open document (D4), by id, handle or name. */
+  getAgentOrDocument(identifier: string): RuntimeAgentTargetRef | undefined {
+    const target = this.resolveTarget(identifier)
+    return target ? { id: target.id, filePath: target.filePath, config: target.config, running: target.managed !== null } : undefined
+  }
+
+  /** The workspace the resource routes act on (running agent or open document); the key never leaves the process. */
+  getAgentWorkspace(identifier: string): RuntimeAgentWorkspace | undefined {
+    const target = this.resolveTarget(identifier)
+    return target ? this.toWorkspaceRef(target) : undefined
+  }
+
+  /** The same, for the file at `filePath` (canonical compare), when it is open here. */
+  getAgentWorkspaceByPath(filePath: string): RuntimeAgentWorkspace | undefined {
+    const target = this.targetAtPath(this.canonicalFilePath(filePath))
+    return target ? this.toWorkspaceRef(target) : undefined
+  }
+
+  private toWorkspaceRef(target: AgentTarget): RuntimeAgentWorkspace {
+    return { agentId: target.id, filePath: target.filePath, workspace: target.workspace, derivedKey: target.keyCell.current, running: target.managed !== null }
+  }
+
+  /** Status of a running agent, or of an open document (runtimeState `stopped`). */
+  getAgentOrDocumentStatus(identifier: string): RuntimeTargetStatus | undefined {
+    const target = this.resolveTarget(identifier)
+    if (!target) return undefined
+    if (target.managed) {
+      return { ...this.toStatus(target.managed), running: true, sessionId: target.managed.agent.session.getSessionId(), loopStates: target.managed.agent.loopPool.sideLoopStates() }
+    }
+    const config = target.config
+    return {
+      id: target.id,
+      filePath: target.filePath,
+      name: config.name,
+      handle: config.handle,
+      autostart: config.autostart ?? false,
+      runtimeState: 'stopped',
+      targetState: null,
+      loopCount: target.workspace.getLoopCount(),
+      running: false,
+    }
+  }
+
+  /** Studio's DOC_GET_HEADER. */
+  getAgentHeader(agentId: string): RuntimeAgentHeader {
+    const target = this.requireTarget(agentId)
+    return {
+      agentId: target.id,
+      document: target.workspace.readDocument(),
+      agentConfig: target.workspace.getAgentConfig() as AgentConfig,
+      statusText: target.workspace.getMeta('status') ?? '',
+    }
+  }
+
+  /** Studio's DOC_GET_BATCH: header, token figures and main's last 200 display entries in one read. */
+  getAgentBatch(agentId: string): RuntimeAgentBatch {
+    const target = this.requireTarget(agentId)
+    const workspace = target.workspace
+    // A running agent's buffered loop writes first, so the page has mid-turn entries.
+    try { target.managed?.agent.session.flushToLoop?.() } catch { /* best effort */ }
+    const total = workspace.getLoopCount()
+    const offset = Math.max(0, total - CHAT_DISPLAY_LIMIT)
+    const entries = offset > 0 ? workspace.getLoopPaginated(CHAT_DISPLAY_LIMIT, offset) : workspace.getLoop()
+    return {
+      ...this.getAgentHeader(target.id),
+      configRevision: configRevision(workspace).revision,
+      documentRevision: documentRevision(workspace).revision,
+      // lastTokens is the newest assistant row's billing breakdown; the gauge
+      // shows contextBaseline (after a compaction the two disagree, and the
+      // baseline wins), as Studio's DOC_GET_BATCH.
+      lastTokens: workspace.getLastAssistantTokens(),
+      contextBaseline: workspace.getContextBaseline() ?? null,
+      chat: { version: 1, uiLog: parseLoopToDisplay(entries), llmMessages: [], earlierCount: offset, total },
+    }
+  }
+
+  /** Studio's FILE_SAVE: fold the WAL into the .adf (SQLite persists every write anyway). */
+  checkpointAgent(agentId: string): { agentId: string; success: true } {
+    const target = this.requireTarget(agentId)
+    target.workspace.checkpoint()
+    return { agentId: target.id, success: true }
   }
 
   getAgent(agentId: string): RuntimeAgentRef | undefined {
@@ -1020,16 +2253,16 @@ export class RuntimeService extends EventEmitter {
   }
 
   getAgentLoop(agentId: string, opts: { limit?: number; offset?: number; loop?: string } = {}): RuntimeAgentLoopPage {
-    const managed = this.requireAgent(agentId)
-    const loop = this.requireLoopName(managed, opts.loop)
-    const workspace = managed.agent.workspace.forLoop(loop)
+    const target = this.requireTarget(agentId)
+    const loop = this.targetLoopName(target, opts.loop)
+    const workspace = target.workspace.forLoop(loop)
     const total = workspace.getLoopCount()
     const limit = clampInteger(opts.limit ?? 50, 1, 500)
     const offset = opts.offset === undefined
       ? Math.max(0, total - limit)
       : clampInteger(opts.offset, 0, Math.max(0, total))
     const entries = workspace.getLoopPaginated(limit, offset)
-    return { agentId: managed.id, loop, total, limit, offset, entries }
+    return { agentId: target.id, loop, total, limit, offset, entries }
   }
 
   // --- Cognition loops (docs/design/agent-loops-mvp.md) ----------------------
@@ -1040,7 +2273,9 @@ export class RuntimeService extends EventEmitter {
   // (and the same sentences) the agent does.
 
   listAgentLoops(agentId: string): { agentId: string; loops: RuntimeAgentLoopInfo[] } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
+    const managed = target.managed
+    if (!managed) return { agentId: target.id, loops: this.documentLoops(target) }
     return {
       agentId: managed.id,
       loops: managed.agent.loopPool.listLoops().map(info => this.toLoopInfo(managed, info)),
@@ -1048,9 +2283,39 @@ export class RuntimeService extends EventEmitter {
   }
 
   getAgentLoopInfo(agentId: string, name: string): RuntimeAgentLoopInfo {
-    const managed = this.requireAgent(agentId)
-    const loop = this.requireLoopName(managed, name)
-    return this.loopInfoByName(managed, loop)
+    const target = this.requireTarget(agentId)
+    if (!target.managed) {
+      const loop = this.targetLoopName(target, name)
+      return this.documentLoops(target).find(l => l.name === loop)!
+    }
+    const loop = this.requireLoopName(target.managed, name)
+    return this.loopInfoByName(target.managed, loop)
+  }
+
+  /** Main and the declared loops of an open document: nothing runs, so every loop is idle with no live tools. */
+  private documentLoops(target: AgentTarget): RuntimeAgentLoopInfo[] {
+    const config = target.config
+    const main: RuntimeAgentLoopInfo = {
+      name: MAIN_LOOP,
+      goal: summarizeMainGoal(config.instructions ?? ''),
+      status: 'idle',
+      enabled: true,
+      isMain: true,
+      config: null,
+      entryCount: target.workspace.forLoop(MAIN_LOOP).getLoopCount(),
+      effectiveTools: null,
+    }
+    const side = (config.loops ?? []).map<RuntimeAgentLoopInfo>(loop => ({
+      name: loop.name,
+      goal: loop.goal,
+      status: 'idle',
+      enabled: loop.enabled !== false,
+      isMain: false,
+      config: loop,
+      entryCount: target.workspace.forLoop(loop.name).getLoopCount(),
+      effectiveTools: null,
+    }))
+    return [main, ...side]
   }
 
   async createAgentLoop(agentId: string, input: RuntimeLoopCreateInput): Promise<RuntimeLoopCreateResult> {
@@ -1192,13 +2457,54 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  getAgentConfig(agentId: string): { agentId: string; config: AgentConfig } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, config: managed.config }
+  getAgentConfig(agentId: string): { agentId: string; config: AgentConfig; revision: number } {
+    const target = this.requireTarget(agentId)
+    if (target.managed) {
+      // One read: the revision is that of the content handed out, so a save
+      // with it as baseRevision never lands over a change it did not see.
+      const config = this.syncManagedConfig(target.managed, { reread: true })
+      return { agentId: target.id, config, revision: configRevisionOf(target.workspace, config).revision }
+    }
+    const revision = configRevision(target.workspace).revision
+    // An open document's config is the file's (another handle may have written it).
+    const doc = target.doc!
+    doc.config = doc.workspace.getAgentConfig() as AgentConfig
+    return { agentId: target.id, config: doc.config, revision }
   }
 
-  async setAgentConfig(agentId: string, config: AgentConfig): Promise<{ agentId: string; success: true; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
+  /**
+   * Save the agent's config. On a running agent: through its config-change
+   * choke point. On an open document: to the file only (nothing runs), and
+   * the file follows a name change now (Studio's DOC_SET_AGENT_CONFIG →
+   * syncAgentFileToName; `filePath` is the new path). A write that lands
+   * while a start on the document is building is adopted by that start.
+   *
+   * `baseRevision` (W3-F): save only over that revision of the config; any
+   * other current revision refuses the save with `409 stale_revision`.
+   * Without it the save replaces whatever is there (last write wins).
+   */
+  async setAgentConfig(agentId: string, config: AgentConfig, opts: { baseRevision?: number } = {}): Promise<{ agentId: string; success: true; config: AgentConfig; revision: number; filePath?: string; renameDeferred?: boolean; renameError?: string }> {
+    const target = this.requireTarget(agentId)
+    this.assertBaseRevision('config', configRevision(target.workspace), opts.baseRevision, null)
+    if (!target.managed) {
+      const doc = target.doc!
+      stripLoopNameMarker(config)
+      doc.workspace.setAgentConfig(config)
+      doc.config = config
+      doc.configWrites++
+      const revision = configRevision(doc.workspace, currentResourceWriter()).revision
+      const rename = this.syncAgentFileToName(doc.filePath, config.name)
+      return {
+        agentId: target.id,
+        success: true,
+        config,
+        revision,
+        ...(rename.filePath ? { filePath: rename.filePath } : {}),
+        ...(rename.deferred ? { renameDeferred: true } : {}),
+        ...(rename.error ? { renameError: rename.error } : {}),
+      }
+    }
+    const managed = target.managed
     const previousConfig = managed.config
     // Derived-config-only marker: strip before the save, so an imported .adf
     // cannot persist one that binds main's executor to a side loop's guards.
@@ -1211,17 +2517,26 @@ export class RuntimeService extends EventEmitter {
     // executor/evaluator/handler fan-out this replaces did none of those, so a
     // headless config save left side loops running on revoked grants and the
     // next loop_manage write reverted the save (review C2).
+    // Taken before the change fans out, so its config_changed frame names this write's writer.
+    const revision = configRevision(managed.agent.workspace, currentResourceWriter()).revision
     managed.agent.applyConfigChange(config)
 
     if (providerSelectionChanged(previousConfig, config) && this.providerFactory) {
-      const provider = await this.providerFactory(config, managed.filePath, {
-        workspace: managed.agent.workspace,
-        derivedKey: managed.derivedKey,
-      })
+      const provider = await this.agentProvider(config, managed.filePath, managed.agent.workspace, managed.derivedKey)
       managed.agent.executor.updateProvider(provider)
     }
 
-    return { agentId: managed.id, success: true, config }
+    return { agentId: managed.id, success: true, config, revision }
+  }
+
+  /**
+   * W3-F: refuse a write whose base revision is not the resource's current
+   * one (409 stale_revision, with the current revision, its writer, size and
+   * hash). No base: nothing to check.
+   */
+  private assertBaseRevision(resource: string, current: ResourceRevision, base: number | undefined, size: number | null): void {
+    const stale = staleRevision(resource, current, base, size)
+    if (stale) throw new RuntimeLoopError(staleRevisionMessage(stale), 409, 'stale_revision', { ...stale })
   }
 
   /**
@@ -1232,8 +2547,9 @@ export class RuntimeService extends EventEmitter {
    * change tools with PUT /config).
    */
   getAgentTools(agentId: string): { agentId: string; tools: ToolDiscoveryEntry[] } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, tools: buildToolDiscovery(managed.config, managed.agent.registry ?? null) }
+    const target = this.requireTarget(agentId)
+    // An open document has no registry: its declared tools only.
+    return { agentId: target.id, tools: buildToolDiscovery(target.config, target.managed?.agent.registry ?? null) }
   }
 
   /**
@@ -1263,43 +2579,48 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true, state }
   }
 
-  getAgentDocument(agentId: string): { agentId: string; content: string } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, content: managed.agent.workspace.readDocument() }
+  getAgentDocument(agentId: string): { agentId: string; content: string; revision: number } {
+    const target = this.requireTarget(agentId)
+    const content = target.workspace.readDocument()
+    return { agentId: target.id, content, revision: documentRevision(target.workspace).revision }
   }
 
-  setAgentDocument(agentId: string, content: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    const previousContent = managed.agent.workspace.readDocument()
-    managed.agent.workspace.writeDocument(content)
-    managed.agent.triggerEvaluator?.onDocumentEdit(content, previousContent)
-    return { agentId: managed.id, success: true }
+  setAgentDocument(agentId: string, content: string, opts: { baseRevision?: number } = {}): { agentId: string; success: true; revision: number } {
+    const target = this.requireTarget(agentId)
+    const previousContent = target.workspace.readDocument()
+    this.assertBaseRevision('document', documentRevision(target.workspace), opts.baseRevision, Buffer.byteLength(previousContent, 'utf-8'))
+    target.workspace.writeDocument(content)
+    const revision = documentRevision(target.workspace, currentResourceWriter()).revision
+    // Only a running agent has triggers to fire (an open document runs none).
+    target.managed?.agent.triggerEvaluator?.onDocumentEdit(content, previousContent)
+    return { agentId: target.id, success: true, revision }
   }
 
-  getAgentMind(agentId: string): { agentId: string; content: string } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, content: managed.agent.workspace.readMind() }
+  getAgentMind(agentId: string): { agentId: string; content: string; revision: number } {
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, content: target.workspace.readMind(), revision: fileRevision(target.workspace, 'mind.md').revision }
   }
 
-  setAgentMind(agentId: string, content: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    managed.agent.workspace.writeMind(content)
-    return { agentId: managed.id, success: true }
+  setAgentMind(agentId: string, content: string, opts: { baseRevision?: number } = {}): { agentId: string; success: true; revision: number } {
+    const target = this.requireTarget(agentId)
+    this.assertBaseRevision('mind.md', fileRevision(target.workspace, 'mind.md'), opts.baseRevision, target.workspace.getFileMeta('mind.md')?.size ?? null)
+    target.workspace.writeMind(content)
+    return { agentId: target.id, success: true, revision: fileRevision(target.workspace, 'mind.md', currentResourceWriter()).revision }
   }
 
   getAgentChat(agentId: string, limit = 200, loop?: string): { agentId: string; loop: string; chatHistory: { version: number; uiLog: unknown[]; llmMessages: unknown[]; total: number; earlierCount: number } | null } {
-    const managed = this.requireAgent(agentId)
-    const loopName = this.requireLoopName(managed, loop)
-    const workspace = managed.agent.workspace.forLoop(loopName)
+    const target = this.requireTarget(agentId)
+    const loopName = this.targetLoopName(target, loop)
+    const workspace = target.workspace.forLoop(loopName)
     const total = workspace.getLoopCount()
-    if (total === 0) return { agentId: managed.id, loop: loopName, chatHistory: null }
+    if (total === 0) return { agentId: target.id, loop: loopName, chatHistory: null }
     const clampedLimit = clampInteger(limit, 1, 500)
     const offset = Math.max(0, total - clampedLimit)
     const loopEntries = offset > 0
       ? workspace.getLoopPaginated(clampedLimit, offset)
       : workspace.getLoop()
     return {
-      agentId: managed.id,
+      agentId: target.id,
       loop: loopName,
       chatHistory: {
         version: 1,
@@ -1313,8 +2634,31 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
+  /**
+   * Studio's DOC_GET_CHAT_OLDER: the display entries of one loop older than
+   * `beforeSeq` (keyset, stable while the agent appends, unlike offsets).
+   * `earlierCount` is how many rows of that loop come before the page.
+   */
+  getAgentChatBefore(agentId: string, beforeSeq: number, opts: { limit?: number; loop?: string } = {}): RuntimeAgentChatPage {
+    const target = this.requireTarget(agentId)
+    const loopName = this.targetLoopName(target, opts.loop)
+    const limit = clampInteger(opts.limit ?? CHAT_DISPLAY_LIMIT, 1, 500)
+    // Within this loop's stream: seq is global, so an unscoped page would interleave sibling loops.
+    const workspace = target.workspace.forLoop(loopName)
+    const entries = workspace.getLoopBefore(beforeSeq, limit)
+    const earlierCount = entries.length > 0 ? workspace.getLoopCountBefore(entries[0].seq) : 0
+    return { agentId: target.id, loop: loopName, uiLog: parseLoopToDisplay(entries), earlierCount }
+  }
+
   async clearAgentChat(agentId: string, loop?: string): Promise<{ agentId: string; loop: string; success: true }> {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
+    if (!target.managed) {
+      // Nothing runs: the rows go, there is no session to reset.
+      const loopName = this.targetLoopName(target, loop)
+      await target.workspace.forLoop(loopName).clearLoop()
+      return { agentId: target.id, loop: loopName, success: true }
+    }
+    const managed = target.managed
     const loopName = this.requireLoopName(managed, loop)
     if (loopName !== MAIN_LOOP) {
       // Same reset Studio's clear does for an inner-loop tab (IPC DOC_CLEAR_CHAT).
@@ -1345,18 +2689,20 @@ export class RuntimeService extends EventEmitter {
   }
 
   getAgentFiles(agentId: string): { agentId: string; files: ReturnType<AdfWorkspace['listFiles']> } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, files: managed.agent.workspace.listFiles() }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, files: target.workspace.listFiles() }
   }
 
   getAgentFile(agentId: string, path: string): RuntimeAgentFileContent | null {
-    const managed = this.requireAgent(agentId)
-    const meta = managed.agent.workspace.getFileMeta(path)
-    const content = managed.agent.workspace.readFileBuffer(path)
+    const target = this.requireTarget(agentId)
+    const meta = target.workspace.getFileMeta(path)
+    const content = target.workspace.readFileBuffer(path)
     if (!meta || !content) return null
     const textLike = isTextLike(meta.mime_type, path)
     return {
-      agentId: managed.id,
+      agentId: target.id,
+      // The bytes just read, hashed once (no second read).
+      revision: observeRevision(target.workspace, fileRevisionKey(path), content).revision,
       path: meta.path,
       mime_type: meta.mime_type,
       size: meta.size,
@@ -1371,123 +2717,129 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel }): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
+  writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel; baseRevision?: number; mustNotExist?: boolean }): { agentId: string; success: true; revision: number } {
+    const target = this.requireTarget(agentId)
+    const current = fileRevision(target.workspace, path)
+    const size = target.workspace.getFileMeta(path)?.size ?? null
+    // W3-F: a create refuses to replace a file someone else made meanwhile.
+    const exists = opts.mustNotExist ? existsAlready(path, current, size) : null
+    if (exists) throw new RuntimeLoopError(staleRevisionMessage(exists), 409, 'stale_revision', { ...exists })
+    this.assertBaseRevision(path, current, opts.baseRevision, size)
     if (opts.contentBase64 !== undefined) {
-      withSource('system:runtime-api', managed.id, () => {
-        managed.agent.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64!, 'base64'), opts.mimeType)
+      runAsApiWrite(target.id, () => {
+        target.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64!, 'base64'), opts.mimeType)
       })
     } else {
       const content = opts.content ?? ''
-      withSource('system:runtime-api', managed.id, () => {
-        managed.agent.workspace.writeFile(path, content, opts.protection)
+      runAsApiWrite(target.id, () => {
+        target.workspace.writeFile(path, content, opts.protection)
       })
     }
-    return { agentId: managed.id, success: true }
+    return { agentId: target.id, success: true, revision: fileRevision(target.workspace, path, currentResourceWriter()).revision }
   }
 
   deleteAgentFile(agentId: string, path: string): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
-      success: withSource('system:runtime-api', managed.id, () => managed.agent.workspace.deleteFile(path)),
+      agentId: target.id,
+      success: runAsApiWrite(target.id, () => target.workspace.deleteFile(path)),
     }
   }
 
   renameAgentFile(agentId: string, oldPath: string, newPath: string): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
-      success: withSource('system:runtime-api', managed.id, () => managed.agent.workspace.renameInternalFile(oldPath, newPath)),
+      agentId: target.id,
+      success: runAsApiWrite(target.id, () => target.workspace.renameInternalFile(oldPath, newPath)),
     }
   }
 
   renameAgentFolder(agentId: string, oldPrefix: string, newPrefix: string): { agentId: string; success: true; count: number } {
-    const managed = this.requireAgent(agentId)
-    const count = withSource('system:runtime-api', managed.id, () => managed.agent.workspace.renameFolder(oldPrefix, newPrefix))
-    return { agentId: managed.id, success: true, count }
+    const target = this.requireTarget(agentId)
+    const count = runAsApiWrite(target.id, () => target.workspace.renameFolder(oldPrefix, newPrefix))
+    return { agentId: target.id, success: true, count }
   }
 
   setAgentFileProtection(agentId: string, path: string, protection: FileProtectionLevel): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.setFileProtection(path, protection) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, success: target.workspace.setFileProtection(path, protection) }
   }
 
   setAgentFileAuthorized(agentId: string, path: string, authorized: boolean): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.setFileAuthorized(path, authorized) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, success: target.workspace.setFileAuthorized(path, authorized) }
   }
 
   getAgentInbox(agentId: string, status?: InboxStatus): { agentId: string; messages: InboxMessage[] } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, messages: managed.agent.workspace.getInbox(status) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, messages: target.workspace.getInbox(status) }
   }
 
   clearAgentInbox(agentId: string): { agentId: string; success: true; deleted: number } {
-    const managed = this.requireAgent(agentId)
-    const result = managed.agent.workspace.deleteInboxByFilter({})
-    return { agentId: managed.id, success: true, deleted: result.deleted }
+    const target = this.requireTarget(agentId)
+    const result = target.workspace.deleteInboxByFilter({})
+    return { agentId: target.id, success: true, deleted: result.deleted }
   }
 
   getAgentOutbox(agentId: string, status?: OutboxStatus): { agentId: string; messages: OutboxMessage[] } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, messages: managed.agent.workspace.getOutbox(status) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, messages: target.workspace.getOutbox(status) }
   }
 
   getAgentTimers(agentId: string): { agentId: string; timers: Timer[] } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, timers: managed.agent.workspace.getTimers() }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, timers: target.workspace.getTimers() }
   }
 
   async addAgentTimer(agentId: string, opts: RuntimeTimerMutationOptions): Promise<{ agentId: string; success: true; id: number }> {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     // Absent = main. An unknown loop would persist a timer that fires into a
     // stream that does not exist (same rule as Studio's timer add).
-    const loop = opts.loop ? this.requireLoopName(managed, opts.loop) : undefined
+    const loop = opts.loop ? this.targetLoopName(target, opts.loop) : undefined
     const timer = await buildTimerMutation(opts)
-    const id = managed.agent.workspace.addTimer(timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked, loop)
-    return { agentId: managed.id, success: true, id }
+    const id = target.workspace.addTimer(timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked, loop)
+    return { agentId: target.id, success: true, id }
   }
 
   async updateAgentTimer(agentId: string, opts: RuntimeTimerMutationOptions & { id: number }): Promise<{ agentId: string; success: boolean }> {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     // `loop` present = move the timer to that loop (main = the default, stored as none).
-    const loop = opts.loop !== undefined ? this.requireLoopName(managed, opts.loop) : undefined
+    const loop = opts.loop !== undefined ? this.targetLoopName(target, opts.loop) : undefined
     const timer = await buildTimerMutation(opts)
-    const success = managed.agent.workspace.updateTimer(opts.id, timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked)
-    if (success && loop !== undefined) managed.agent.workspace.setTimerLoop(opts.id, loop === MAIN_LOOP ? null : loop)
-    return { agentId: managed.id, success }
+    const success = target.workspace.updateTimer(opts.id, timer.schedule, timer.nextWakeAt, opts.payload, opts.scope ?? ['agent'], opts.lambda, opts.warm, opts.locked)
+    if (success && loop !== undefined) target.workspace.setTimerLoop(opts.id, loop === MAIN_LOOP ? null : loop)
+    return { agentId: target.id, success }
   }
 
   deleteAgentTimer(agentId: string, id: number): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.deleteTimer(id) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, success: target.workspace.deleteTimer(id) }
   }
 
   getAgentMeta(agentId: string): { agentId: string; entries: Array<{ key: string; value: string; protection: MetaProtectionLevel }> } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, entries: managed.agent.workspace.getAllMeta() }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, entries: target.workspace.getAllMeta() }
   }
 
   setAgentMeta(agentId: string, key: string, value: string, protection?: MetaProtectionLevel): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    managed.agent.workspace.setMeta(key, value, protection)
-    return { agentId: managed.id, success: true }
+    const target = this.requireTarget(agentId)
+    target.workspace.setMeta(key, value, protection)
+    return { agentId: target.id, success: true }
   }
 
   deleteAgentMeta(agentId: string, key: string): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.deleteMeta(key) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, success: target.workspace.deleteMeta(key) }
   }
 
   setAgentMetaProtection(agentId: string, key: string, protection: MetaProtectionLevel): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.setMetaProtection(key, protection) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, success: target.workspace.setMetaProtection(key, protection) }
   }
 
   getAgentUsage(agentId: string): RuntimeAgentUsage {
-    const managed = this.requireAgent(agentId)
-    const entries = managed.agent.workspace.getLoop()
+    const target = this.requireTarget(agentId)
+    const entries = target.workspace.getLoop()
     const totals = createUsageTotals()
     const byModel = new Map<string, RuntimeAgentUsageByModel>()
     let usageRows = 0
@@ -1507,7 +2859,7 @@ export class RuntimeService extends EventEmitter {
     }
 
     return {
-      agentId: managed.id,
+      agentId: target.id,
       source: 'adf_loop',
       note: 'Sums token usage persisted on loop rows, including compaction summary rows. It does not include model_invoke or other provider calls that did not create loop rows. input already includes cacheRead and cacheWrite; total = input + output.',
       loopRows: entries.length,
@@ -1518,17 +2870,17 @@ export class RuntimeService extends EventEmitter {
   }
 
   getAgentTasks(agentId: string, opts: RuntimeAgentTasksOptions = {}): { agentId: string; tasks: RuntimeTaskEntry[] } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     const tasks = opts.status
-      ? managed.agent.workspace.getTasksByStatus(opts.status)
-      : managed.agent.workspace.getAllTasks(clampInteger(opts.limit ?? 200, 1, 1000))
-    return { agentId: managed.id, tasks: tasks.map(task => this.withApprovalAffordance(managed, task)) }
+      ? target.workspace.getTasksByStatus(opts.status)
+      : target.workspace.getAllTasks(clampInteger(opts.limit ?? 200, 1, 1000))
+    return { agentId: target.id, tasks: tasks.map(task => this.withApprovalAffordance(target.managed, target.config, task)) }
   }
 
   getAgentTask(agentId: string, taskId: string): { agentId: string; task: RuntimeTaskEntry } | null {
-    const managed = this.requireAgent(agentId)
-    const task = managed.agent.workspace.getTask(taskId)
-    return task ? { agentId: managed.id, task: this.withApprovalAffordance(managed, task) } : null
+    const target = this.requireTarget(agentId)
+    const task = target.workspace.getTask(taskId)
+    return task ? { agentId: target.id, task: this.withApprovalAffordance(target.managed, target.config, task) } : null
   }
 
   /**
@@ -1544,11 +2896,12 @@ export class RuntimeService extends EventEmitter {
    *  (Studio's ApprovalControls) — derived from the executor holding the
    *  request, never persisted. A row no executor is waiting on (deferred
    *  on_tool_call task, pre-restart leftover) can only be resolved. */
-  private withApprovalAffordance(managed: ManagedRuntimeAgent, task: TaskEntry): RuntimeTaskEntry {
+  private withApprovalAffordance(managed: ManagedRuntimeAgent | null, config: AgentConfig, task: TaskEntry): RuntimeTaskEntry {
     if (task.status !== 'pending_approval') return task
-    const meta = this.approvalHolder(managed, task.id)?.executor.getPendingApprovalMeta(task.id)
+    // An open document runs no executor: nothing waits on the request.
+    const meta = managed ? this.approvalHolder(managed, task.id)?.executor.getPendingApprovalMeta(task.id) : undefined
     if (!meta) return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: NO_LIVE_APPROVAL_REASON }
-    const locked = managed.config.tools?.find(t => t.name === task.tool)?.locked === true
+    const locked = config.tools?.find(t => t.name === task.tool)?.locked === true
     if (meta.canAlwaysApprove === false || locked) {
       return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: meta.alwaysApproveBlockedReason ?? 'Tool declaration is locked' }
     }
@@ -1706,7 +3059,10 @@ export class RuntimeService extends EventEmitter {
   }
 
   getAgentAsks(agentId: string): { agentId: string; asks: RuntimeAgentAsk[] } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
+    // An open document asks nothing: no executor runs.
+    if (!target.managed) return { agentId: target.id, asks: [] }
+    const managed = target.managed
     const asks = this.askExecutors(managed).flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop })))
     return { agentId: managed.id, asks }
   }
@@ -1727,8 +3083,11 @@ export class RuntimeService extends EventEmitter {
    * executor (disabled, never woken, idle-swept) or it is half-initialized.
    */
   getAgentContextBreakdown(agentId: string, loop?: string): { agentId: string; loop: string; config: AgentConfig; breakdown: import('../../shared/types/ipc.types').ContextBreakdown | null } {
-    const managed = this.requireAgent(agentId)
-    const loopName = this.requireLoopName(managed, loop)
+    const target = this.requireTarget(agentId)
+    const loopName = this.targetLoopName(target, loop)
+    // An open document has no executor to measure: breakdown null (as a loop that is not running).
+    if (!target.managed) return { agentId: target.id, loop: loopName, config: target.workspace.getAgentConfig(), breakdown: null }
+    const managed = target.managed
     const executor = loopName === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loopName)?.executor
     return {
       agentId: managed.id,
@@ -1764,67 +3123,115 @@ export class RuntimeService extends EventEmitter {
     agentId: string
     identities: Array<{ purpose: string; encrypted: boolean; code_access: boolean }>
   } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, identities: managed.agent.workspace.listIdentityEntries() }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, identities: target.workspace.listIdentityEntries() }
   }
 
   getAgentIdentityPurposes(agentId: string, prefix?: string): { agentId: string; purposes: string[] } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, purposes: managed.agent.workspace.listIdentityPurposes(prefix) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, purposes: target.workspace.listIdentityPurposes(prefix) }
   }
 
   /** Metadata only: stored values (and all key material) never leave the process. */
   getAgentIdentity(agentId: string, purpose: string): { agentId: string } & RuntimeIdentityMeta {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, ...this.describeIdentity(managed, purpose) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, ...this.describeIdentity(target, purpose) }
   }
 
   setAgentIdentity(agentId: string, purpose: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; purpose: string; success: true; replaced?: boolean } {
-    const managed = this.requireAgent(agentId)
-    const replaced = this.setIdentityValue(managed, purpose, value, opts)
-    return { agentId: managed.id, purpose, success: true, ...(replaced ? { replaced } : {}) }
+    const target = this.requireTarget(agentId)
+    const replaced = this.setIdentityValue(target, purpose, value, opts)
+    return { agentId: target.id, purpose, success: true, ...(replaced ? { replaced } : {}) }
   }
 
   deleteAgentIdentity(agentId: string, purpose: string): { agentId: string; purpose: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, purpose, success: managed.agent.workspace.deleteIdentity(purpose) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, purpose, success: target.workspace.deleteIdentity(purpose) }
   }
 
   deleteAgentIdentityByPrefix(agentId: string, prefix: string): { agentId: string; prefix: string; deleted: number } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, prefix, deleted: managed.agent.workspace.deleteIdentityByPrefix(prefix) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, prefix, deleted: target.workspace.deleteIdentityByPrefix(prefix) }
   }
 
   setAgentIdentityCodeAccess(agentId: string, purpose: string, codeAccess: boolean): { agentId: string; purpose: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, purpose, success: managed.agent.workspace.setIdentityCodeAccess(purpose, codeAccess) }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, purpose, success: target.workspace.setIdentityCodeAccess(purpose, codeAccess) }
   }
 
   getAgentIdentityPassword(agentId: string): { agentId: string; needsPassword: boolean; unlocked: boolean } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
-      needsPassword: managed.agent.workspace.isPasswordProtected(),
-      unlocked: managed.derivedKey !== null,
+      agentId: target.id,
+      needsPassword: target.workspace.isPasswordProtected(),
+      unlocked: target.keyCell.current !== null,
     }
   }
 
-  unlockAgentIdentityPassword(agentId: string, password: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    managed.derivedKey = managed.agent.workspace.unlockWithPassword(password)
-    // The provider was built while the agent's own key was unreadable (and so
-    // resolved fail-closed); rebuild it now that the key opens.
-    this.rebuildProviderAfterUnlock(managed)
-    return { agentId: managed.id, success: true }
+  /**
+   * Unlock the legacy whole-file password. The key lives in the file's one
+   * key cell, so a document and the runtime started on it share it (Studio's
+   * foreground key survives stop and start while the file stays open), and
+   * every session holding the document remembers it for its next open.
+   */
+  unlockAgentIdentityPassword(agentId: string, password: string, opts: { holder?: string } = {}): { agentId: string; success: true } {
+    const target = this.requireTarget(agentId)
+    if (!target.workspace.isPasswordProtected()) {
+      throw new RuntimeLoopError(`${target.config.name} has no file password to unlock.`, 409, 'not_password_protected')
+    }
+    try {
+      target.keyCell.current = target.workspace.unlockWithPassword(password)
+    } catch (err) {
+      // Only a failed authentication of the decrypt is a wrong password; anything else is a real error.
+      if (isAuthFailure(err)) throw new RuntimeLoopError('Wrong password', 403, 'wrong_password')
+      throw err
+    }
+    console.log(`[RuntimeService] Keystore of ${target.config.name} unlocked with its file password`)
+    // Only the session that typed the password remembers the key for its next open (D4).
+    if (opts.holder && target.filePath) this.documents.rememberKey(opts.holder, target.filePath, target.keyCell.current)
+    const managed = target.managed
+    if (managed) {
+      // The provider was built while the agent's own key was unreadable (and so
+      // resolved fail-closed); rebuild it now that the key opens.
+      this.rebuildProviderAfterUnlock(managed)
+      this.propagateDerivedKey(managed)
+    }
+    return { agentId: target.id, success: true }
+  }
+
+  /**
+   * Hand the agent's current derived key (null after a lock) to every other
+   * consumer, as Studio holds it from the start: MCP env, credential files and
+   * OAuth store, channel adapters, AdfCallHandler identity and signing, and
+   * the mesh registration (AgentRuntimeBuilder.applyDerivedKey, which restarts
+   * the adapters and MCP servers that needed the key and logs each restart).
+   * The restarts run in the background; the route answers at once.
+   */
+  private propagateDerivedKey(managed: ManagedRuntimeAgent): void {
+    const key = managed.derivedKey
+    const workspace = managed.agent.workspace
+    const builder = this.agentRuntimeBuilder
+    // Not built by the builder (headless): the mesh registration is the only other consumer.
+    if (!builder) {
+      emitAgentDerivedKeyChanged(workspace, key)
+      return
+    }
+    void builder.applyDerivedKey(managed.agent, key).then(
+      (result) => { if (!result.applied) emitAgentDerivedKeyChanged(workspace, key) },
+      (err) => console.error(`[RuntimeService] Applying the derived key of ${managed.config.name} failed:`, err),
+    )
   }
 
   private rebuildProviderAfterUnlock(managed: ManagedRuntimeAgent): void {
     if (!this.providerFactory) return
-    void Promise.resolve(this.providerFactory(managed.config, managed.filePath, {
-      workspace: managed.agent.workspace,
-      derivedKey: managed.derivedKey,
-    })).then(
-      provider => managed.agent.executor.updateProvider(provider),
+    void this.agentProvider(managed.config, managed.filePath, managed.agent.workspace, managed.derivedKey).then(
+      (provider) => {
+        const replacesStub = lockedKeyProviders.has(managed.agent.executor.getProvider() as LLMProvider)
+        managed.agent.executor.updateProvider(provider)
+        if (replacesStub && !lockedKeyProviders.has(provider)) {
+          console.log(`[RuntimeService] ${managed.config.name}: provider key unlocked; the provider uses it from the next turn`)
+        }
+      },
       err => console.warn(`[RuntimeService] Provider rebuild after unlock failed for ${managed.id}:`, err),
     )
   }
@@ -1835,13 +3242,27 @@ export class RuntimeService extends EventEmitter {
   }
 
   removeAgentIdentityPassword(agentId: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    if (!managed.derivedKey) {
+    const target = this.requireTarget(agentId)
+    if (!target.keyCell.current) {
       throw new RuntimeLoopError('This agent’s identity keystore is locked with its file password. Unlock it first (POST /agents/{id}/identity/password/unlock).', 409, CREDENTIALS_LOCKED_CODE)
     }
-    managed.agent.workspace.removePassword(managed.derivedKey)
-    managed.derivedKey = null
-    return { agentId: managed.id, success: true }
+    target.workspace.removePassword(target.keyCell.current)
+    this.dropDerivedKey(target)
+    return { agentId: target.id, success: true }
+  }
+
+  /** The legacy password of an open file was removed elsewhere (review claim): its key is dropped everywhere. */
+  forgetFileDerivedKey(filePath: string): void {
+    const target = this.targetAtPath(this.canonicalFilePath(filePath))
+    if (target) this.dropDerivedKey(target)
+    else this.documents.forgetKey(this.canonicalFilePath(filePath))
+  }
+
+  /** The file's key is no longer needed or valid: cleared in its cell, forgotten by every holder, handed to the runtime's consumers. */
+  private dropDerivedKey(target: AgentTarget): void {
+    target.keyCell.current = null
+    if (target.filePath) this.documents.forgetKey(target.filePath)
+    if (target.managed) this.propagateDerivedKey(target.managed)
   }
 
   /** @deprecated Re-keying is continued use of the removed whole-file password mechanism. Remove the password instead. */
@@ -1850,37 +3271,37 @@ export class RuntimeService extends EventEmitter {
   }
 
   wipeAgentIdentity(agentId: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    managed.agent.workspace.wipeAllIdentity()
-    managed.derivedKey = null
-    return { agentId: managed.id, success: true }
+    const target = this.requireTarget(agentId)
+    target.workspace.wipeAllIdentity()
+    this.dropDerivedKey(target)
+    return { agentId: target.id, success: true }
   }
 
   getAgentDid(agentId: string): { agentId: string; did: string | null } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, did: managed.agent.workspace.getDid() }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, did: target.workspace.getDid() }
   }
 
   generateAgentIdentityKeys(agentId: string): { agentId: string; success: true; did: string } {
-    const managed = this.requireAgent(agentId)
-    const workspace = managed.agent.workspace
+    const target = this.requireTarget(agentId)
+    const workspace = target.workspace
     // A key-less file goes through the host's full provisioning (envelopes,
     // sealed key, owner/runtime stamps, attestations), never a plain key the
     // owner never certified. A host without the owner key refuses instead.
-    if (!managed.derivedKey && workspace.getIdentityRow('crypto:signing:private_key') === null) {
+    if (!target.keyCell.current && workspace.getIdentityRow('crypto:signing:private_key') === null) {
       if (!canProvisionWorkspaceIdentity()) {
         throw new Error('No owner identity on this host — create or restore it first (`adf identity`), then generate keys.')
       }
       ensureWorkspaceIdentity(workspace)
       const provisioned = workspace.getDid()
-      if (provisioned) return { agentId: managed.id, success: true, did: provisioned }
+      if (provisioned) return { agentId: target.id, success: true, did: provisioned }
     }
-    const result = workspace.generateIdentityKeys(managed.derivedKey)
+    const result = workspace.generateIdentityKeys(target.keyCell.current)
     // Fresh agent DID under this app's ownership → issue delegation attestations.
     const ownerIdentity = this.settings?.getOwnerIdentity?.()
     if (ownerIdentity) {
       try {
-        issueOwnerAttestation(managed.agent.workspace, {
+        issueOwnerAttestation(target.workspace, {
           ownerDid: ownerIdentity.getOwnerDid(),
           ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
           runtimeDid: ownerIdentity.getRuntimeDid(),
@@ -1890,13 +3311,13 @@ export class RuntimeService extends EventEmitter {
         console.warn('[RuntimeService] Attestation issuance failed:', err)
       }
     }
-    return { agentId: managed.id, success: true, did: result.did }
+    return { agentId: target.id, success: true, did: result.did }
   }
 
   setAgentProviderCredential(agentId: string, providerId: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; providerId: string; success: true; replaced?: boolean } {
-    const managed = this.requireAgent(agentId)
-    const replaced = this.setIdentityValue(managed, `provider:${providerId}:apiKey`, value, opts)
-    return { agentId: managed.id, providerId, success: true, ...(replaced ? { replaced } : {}) }
+    const target = this.requireTarget(agentId)
+    const replaced = this.setIdentityValue(target, `provider:${providerId}:apiKey`, value, opts)
+    return { agentId: target.id, providerId, success: true, ...(replaced ? { replaced } : {}) }
   }
 
   /** Metadata only (see RuntimeIdentityMeta), keyed by credential name (`apiKey`). */
@@ -1906,12 +3327,12 @@ export class RuntimeService extends EventEmitter {
     credentials: Record<string, RuntimeIdentityMeta>
     providerConfig?: Pick<AdfProviderConfig, 'defaultModel' | 'params' | 'requestDelayMs'>
   } {
-    const managed = this.requireAgent(agentId)
-    const providerConfig = managed.config.providers?.find(provider => provider.id === providerId)
+    const target = this.requireTarget(agentId)
+    const providerConfig = target.config.providers?.find(provider => provider.id === providerId)
     return {
-      agentId: managed.id,
+      agentId: target.id,
       providerId,
-      credentials: this.describeCredentials(managed, `provider:${providerId}:`),
+      credentials: this.describeCredentials(target, `provider:${providerId}:`),
       ...(providerConfig
         ? { providerConfig: {
             defaultModel: providerConfig.defaultModel,
@@ -1923,78 +3344,78 @@ export class RuntimeService extends EventEmitter {
   }
 
   async attachAgentProvider(agentId: string, provider: AdfProviderConfig): Promise<{ agentId: string; providerId: string; success: true; alreadyAttached: boolean; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
-    const providers = [...(managed.config.providers ?? [])]
+    const target = this.requireTarget(agentId)
+    const providers = [...(target.config.providers ?? [])]
     const existingIdx = providers.findIndex(existing => existing.id === provider.id)
     const alreadyAttached = existingIdx >= 0
     if (alreadyAttached) providers[existingIdx] = { ...providers[existingIdx], ...provider }
     else providers.push(provider)
-    const result = await this.setAgentConfig(managed.id, { ...managed.config, providers })
-    return { agentId: managed.id, providerId: provider.id, success: true, alreadyAttached, config: result.config }
+    const result = await this.setAgentConfig(target.id, { ...target.config, providers })
+    return { agentId: target.id, providerId: provider.id, success: true, alreadyAttached, config: result.config }
   }
 
   async detachAgentProvider(agentId: string, providerId: string): Promise<{ agentId: string; providerId: string; success: true; deletedCredentials: number; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
-    const providers = (managed.config.providers ?? []).filter(provider => provider.id !== providerId)
-    const nextConfig = { ...managed.config, providers }
+    const target = this.requireTarget(agentId)
+    const providers = (target.config.providers ?? []).filter(provider => provider.id !== providerId)
+    const nextConfig: AgentConfig = { ...target.config, providers }
     if (providers.length === 0) delete nextConfig.providers
-    const result = await this.setAgentConfig(managed.id, nextConfig)
-    const deletedCredentials = managed.agent.workspace.deleteIdentityByPrefix(`provider:${providerId}:`)
-    return { agentId: managed.id, providerId, success: true, deletedCredentials, config: result.config }
+    const result = await this.setAgentConfig(target.id, nextConfig)
+    const deletedCredentials = target.workspace.deleteIdentityByPrefix(`provider:${providerId}:`)
+    return { agentId: target.id, providerId, success: true, deletedCredentials, config: result.config }
   }
 
   setAgentMcpCredential(agentId: string, npmPackage: string, envKey: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; npmPackage: string; envKey: string; success: true; replaced?: boolean } {
-    const managed = this.requireAgent(agentId)
-    const replaced = this.setIdentityValue(managed, `mcp:${npmPackage}:${envKey}`, value, opts)
-    return { agentId: managed.id, npmPackage, envKey, success: true, ...(replaced ? { replaced } : {}) }
+    const target = this.requireTarget(agentId)
+    const replaced = this.setIdentityValue(target, `mcp:${npmPackage}:${envKey}`, value, opts)
+    return { agentId: target.id, npmPackage, envKey, success: true, ...(replaced ? { replaced } : {}) }
   }
 
   /** Metadata only (see RuntimeIdentityMeta), keyed by env key. */
   getAgentMcpCredentials(agentId: string, npmPackage: string): { agentId: string; npmPackage: string; credentials: Record<string, RuntimeIdentityMeta> } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
+      agentId: target.id,
       npmPackage,
-      credentials: this.describeCredentials(managed, `mcp:${npmPackage}:`),
+      credentials: this.describeCredentials(target, `mcp:${npmPackage}:`),
     }
   }
 
   async attachAgentMcpServer(agentId: string, server: McpServerConfig): Promise<{ agentId: string; serverName: string; success: true; alreadyAttached: boolean; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
-    const servers = [...(managed.config.mcp?.servers ?? [])]
+    const target = this.requireTarget(agentId)
+    const servers = [...(target.config.mcp?.servers ?? [])]
     const alreadyAttached = servers.some(existing => existing.name === server.name)
     if (!alreadyAttached) servers.push(server)
-    const result = await this.setAgentConfig(managed.id, {
-      ...managed.config,
-      mcp: { ...(managed.config.mcp ?? {}), servers },
+    const result = await this.setAgentConfig(target.id, {
+      ...target.config,
+      mcp: { ...(target.config.mcp ?? {}), servers },
     })
-    return { agentId: managed.id, serverName: server.name, success: true, alreadyAttached, config: result.config }
+    return { agentId: target.id, serverName: server.name, success: true, alreadyAttached, config: result.config }
   }
 
   async detachAgentMcpServer(agentId: string, serverName: string, credentialNamespace = serverName): Promise<{ agentId: string; serverName: string; success: true; deletedCredentials: number; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
-    const servers = (managed.config.mcp?.servers ?? []).filter(server => server.name !== serverName)
-    const result = await this.setAgentConfig(managed.id, {
-      ...managed.config,
-      mcp: { ...(managed.config.mcp ?? {}), servers },
+    const target = this.requireTarget(agentId)
+    const servers = (target.config.mcp?.servers ?? []).filter(server => server.name !== serverName)
+    const result = await this.setAgentConfig(target.id, {
+      ...target.config,
+      mcp: { ...(target.config.mcp ?? {}), servers },
     })
-    const deletedCredentials = managed.agent.workspace.deleteIdentityByPrefix(`mcp:${credentialNamespace}:`)
-    return { agentId: managed.id, serverName, success: true, deletedCredentials, config: result.config }
+    const deletedCredentials = target.workspace.deleteIdentityByPrefix(`mcp:${credentialNamespace}:`)
+    return { agentId: target.id, serverName, success: true, deletedCredentials, config: result.config }
   }
 
   setAgentAdapterCredential(agentId: string, adapterType: string, envKey: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; adapterType: string; envKey: string; success: true; replaced?: boolean } {
-    const managed = this.requireAgent(agentId)
-    const replaced = this.setIdentityValue(managed, `adapter:${adapterType}:${envKey}`, value, opts)
-    return { agentId: managed.id, adapterType, envKey, success: true, ...(replaced ? { replaced } : {}) }
+    const target = this.requireTarget(agentId)
+    const replaced = this.setIdentityValue(target, `adapter:${adapterType}:${envKey}`, value, opts)
+    return { agentId: target.id, adapterType, envKey, success: true, ...(replaced ? { replaced } : {}) }
   }
 
   /** Metadata only (see RuntimeIdentityMeta), keyed by env key. */
   getAgentAdapterCredentials(agentId: string, adapterType: string): { agentId: string; adapterType: string; credentials: Record<string, RuntimeIdentityMeta> } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
+      agentId: target.id,
       adapterType,
-      credentials: this.describeCredentials(managed, `adapter:${adapterType}:`),
+      credentials: this.describeCredentials(target, `adapter:${adapterType}:`),
     }
   }
 
@@ -2003,28 +3424,28 @@ export class RuntimeService extends EventEmitter {
    * listing calls the provider with it). Never returned over HTTP.
    */
   readAgentProviderApiKey(agentId: string, providerId: string): string | undefined {
-    const managed = this.requireAgent(agentId)
-    return managed.agent.workspace.getIdentityDecrypted(`provider:${providerId}:apiKey`, managed.derivedKey) ?? undefined
+    const target = this.requireTarget(agentId)
+    return target.workspace.getIdentityDecrypted(`provider:${providerId}:apiKey`, target.keyCell.current) ?? undefined
   }
 
   async attachAgentAdapter(agentId: string, adapterType: string, config: AdapterInstanceConfig): Promise<{ agentId: string; adapterType: string; success: true; alreadyAttached: boolean; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
-    const adapters = { ...(managed.config.adapters ?? {}) }
+    const target = this.requireTarget(agentId)
+    const adapters = { ...(target.config.adapters ?? {}) }
     const alreadyAttached = adapters[adapterType] !== undefined
     adapters[adapterType] = config
-    const result = await this.setAgentConfig(managed.id, { ...managed.config, adapters })
-    return { agentId: managed.id, adapterType, success: true, alreadyAttached, config: result.config }
+    const result = await this.setAgentConfig(target.id, { ...target.config, adapters })
+    return { agentId: target.id, adapterType, success: true, alreadyAttached, config: result.config }
   }
 
   async detachAgentAdapter(agentId: string, adapterType: string): Promise<{ agentId: string; adapterType: string; success: true; deletedCredentials: number; config: AgentConfig }> {
-    const managed = this.requireAgent(agentId)
-    const adapters = { ...(managed.config.adapters ?? {}) }
+    const target = this.requireTarget(agentId)
+    const adapters = { ...(target.config.adapters ?? {}) }
     delete adapters[adapterType]
-    const nextConfig = { ...managed.config, adapters }
+    const nextConfig: AgentConfig = { ...target.config, adapters }
     if (Object.keys(adapters).length === 0) delete nextConfig.adapters
-    const result = await this.setAgentConfig(managed.id, nextConfig)
-    const deletedCredentials = managed.agent.workspace.deleteIdentityByPrefix(`adapter:${adapterType}:`)
-    return { agentId: managed.id, adapterType, success: true, deletedCredentials, config: result.config }
+    const result = await this.setAgentConfig(target.id, nextConfig)
+    const deletedCredentials = target.workspace.deleteIdentityByPrefix(`adapter:${adapterType}:`)
+    return { agentId: target.id, adapterType, success: true, deletedCredentials, config: result.config }
   }
 
   /**
@@ -2044,37 +3465,37 @@ export class RuntimeService extends EventEmitter {
   }
 
   getAgentLogs(agentId: string, opts: RuntimeAgentLogsOptions = {}): AdfLogEntry[] {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     const limit = clampInteger(opts.limit ?? 50, 1, 500)
-    let logs = managed.agent.workspace.getLogs(limit) as AdfLogEntry[]
+    let logs = target.workspace.getLogs(limit) as AdfLogEntry[]
     if (opts.origin) logs = logs.filter(log => log.origin === opts.origin)
     if (opts.event) logs = logs.filter(log => log.event === opts.event)
     return logs
   }
 
   getAgentLogsAfterId(agentId: string, afterId: number): { agentId: string; logs: AdfLogEntry[] } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, logs: managed.agent.workspace.getLogsAfterId(afterId) as AdfLogEntry[] }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, logs: target.workspace.getLogsAfterId(afterId) as AdfLogEntry[] }
   }
 
   clearAgentLogs(agentId: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    managed.agent.workspace.clearLogs()
-    return { agentId: managed.id, success: true }
+    const target = this.requireTarget(agentId)
+    target.workspace.clearLogs()
+    return { agentId: target.id, success: true }
   }
 
   listAgentLocalTables(agentId: string): { agentId: string; tables: Array<{ name: string; row_count: number }> } {
-    const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, tables: managed.agent.workspace.listLocalTables() }
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, tables: target.workspace.listLocalTables() }
   }
 
   queryAgentLocalTable(agentId: string, table: string, opts: { limit?: number; offset?: number } = {}): { agentId: string; columns: string[]; rows: Record<string, unknown>[] } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     assertLocalTableName(table, true)
     const limit = clampInteger(opts.limit ?? 100, 1, 1000)
     const offset = clampInteger(opts.offset ?? 0, 0, Number.MAX_SAFE_INTEGER)
-    const rows = managed.agent.workspace.querySQL(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`, [limit, offset]) as Record<string, unknown>[]
-    return { agentId: managed.id, columns: rows.length > 0 ? Object.keys(rows[0]) : [], rows }
+    const rows = target.workspace.querySQL(`SELECT * FROM "${table}" LIMIT ? OFFSET ?`, [limit, offset]) as Record<string, unknown>[]
+    return { agentId: target.id, columns: rows.length > 0 ? Object.keys(rows[0]) : [], rows }
   }
 
   /**
@@ -2103,9 +3524,10 @@ export class RuntimeService extends EventEmitter {
     log_enabled: boolean
     oldest_seq?: number
   } {
-    const managed = this.requireAgent(agentId)
-    const buffer = getUmbilicalReplayBuffer(managed.id)
-    if (!buffer) return { agentId: managed.id, events: [], last_seq: null, log_enabled: false }
+    const target = this.requireTarget(agentId)
+    // An open document runs no umbilical: nothing to replay.
+    const buffer = target.managed ? getUmbilicalReplayBuffer(target.id) : undefined
+    if (!buffer) return { agentId: target.id, events: [], last_seq: null, log_enabled: false }
 
     const sinceSeq = clampInteger(opts.sinceSeq ?? 0, 0, Number.MAX_SAFE_INTEGER)
     const limit = clampInteger(opts.limit ?? 500, 1, 2000)
@@ -2119,7 +3541,7 @@ export class RuntimeService extends EventEmitter {
     }))
     const range = buffer.range()
     return {
-      agentId: managed.id,
+      agentId: target.id,
       events,
       last_seq: events.length > 0 ? events[events.length - 1].seq : sinceSeq || null,
       log_enabled: true,
@@ -2128,45 +3550,45 @@ export class RuntimeService extends EventEmitter {
   }
 
   dropAgentLocalTable(agentId: string, table: string): { agentId: string; success: boolean } {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     assertLocalTableName(table, false)
-    return { agentId: managed.id, success: managed.agent.workspace.dropLocalTable(table) }
+    return { agentId: target.id, success: target.workspace.dropLocalTable(table) }
   }
 
   getAgentAdaptersDiagnostics(agentId: string): RuntimeAgentAdaptersDiagnostics {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
-      configured: Object.entries(managed.config.adapters ?? {}).map(([type, config]) => ({
+      agentId: target.id,
+      configured: Object.entries(target.config.adapters ?? {}).map(([type, config]) => ({
         type,
         enabled: config.enabled,
         config: config as unknown as Record<string, unknown>,
       })),
-      states: managed.agent.adapterManager?.getStates() ?? [],
+      states: target.managed?.agent.adapterManager?.getStates() ?? [],
     }
   }
 
   getAgentMcpDiagnostics(agentId: string): RuntimeAgentMcpDiagnostics {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
-      configured: (managed.config.mcp?.servers ?? []).map(server => ({
+      agentId: target.id,
+      configured: (target.config.mcp?.servers ?? []).map(server => ({
         name: server.name,
         transport: server.transport,
         command: server.command,
         args: server.args,
         toolCount: server.available_tools?.length ?? 0,
       })),
-      states: managed.agent.mcpManager?.getServerStates() ?? [],
+      states: target.managed?.agent.mcpManager?.getServerStates() ?? [],
     }
   }
 
   getAgentTriggersDiagnostics(agentId: string): RuntimeAgentTriggersDiagnostics {
-    const managed = this.requireAgent(agentId)
+    const target = this.requireTarget(agentId)
     return {
-      agentId: managed.id,
-      displayState: managed.agent.triggerEvaluator?.getDisplayState() ?? null,
-      configured: Object.entries(managed.config.triggers ?? {}).map(([type, trigger]) => ({
+      agentId: target.id,
+      displayState: target.managed?.agent.triggerEvaluator?.getDisplayState() ?? null,
+      configured: Object.entries(target.config.triggers ?? {}).map(([type, trigger]) => ({
         type,
         enabled: trigger?.enabled ?? false,
         targetCount: trigger?.targets?.length ?? 0,
@@ -2200,45 +3622,347 @@ export class RuntimeService extends EventEmitter {
     return out
   }
 
+  /**
+   * A loaded agent's assembled handle and derived key, by id, handle or name,
+   * for daemon routes that act on parts RuntimeService does not wrap. The key
+   * is for in-process use only and never leaves the process.
+   */
+  getLoadedAgent(agentId: string): RuntimeLoadedAgent | undefined {
+    const managed = this.resolveAgent(agentId)
+    if (!managed) return undefined
+    return {
+      agentId: managed.id,
+      filePath: managed.filePath,
+      agent: managed.agent,
+      workspace: managed.agent.workspace,
+      derivedKey: managed.derivedKey,
+    }
+  }
+
+  /**
+   * Studio's AGENT_START provider gate, for a client-initiated start (autostart
+   * skips it, as Studio's background starts do): `provider_missing` when the
+   * agent names a provider this runtime does not have, `provider_unconfigured`
+   * when the provider's network check fails and its type needs a key it does
+   * not have. A failing check of a provider that has its key carries no code.
+   * `identifier` is a loaded agent's id, handle or name, or a file (path or
+   * tracked-directory match) that is not loaded yet.
+   */
+  async preflightProvider(identifier: string): Promise<RuntimeProviderPreflight> {
+    if (!this.providerFactory) return { ok: true } // the caller supplies the provider
+    const loadedPath = identifier.endsWith('.adf') ? this.loadedPathFor(identifier) : undefined
+    const managed = loadedPath ? this.agents.get(this.filePathToAgentId.get(loadedPath)!) : this.resolveAgent(identifier)
+    // An open document: its workspace and the key unlocked on it (the start uses both).
+    const doc = managed ? undefined : this.documentFor(identifier)
+    let workspace: AdfWorkspace
+    let filePath: string | null
+    let derivedKey: Buffer | null = null
+    if (managed) {
+      workspace = managed.agent.workspace
+      filePath = managed.filePath
+      derivedKey = managed.derivedKey
+    } else if (doc) {
+      this.assertReviewGate(doc.filePath, this.enforceReviewGate)
+      workspace = doc.workspace
+      filePath = doc.filePath
+      derivedKey = doc.keyCell.current
+    } else {
+      filePath = this.findAgentFile(identifier)
+      if (!filePath) throw new Error(`RuntimeService: unknown agent "${identifier}"`)
+      // The load's review gate first (403): an unreviewed file's provider
+      // entry must not make this daemon call the endpoint it names.
+      this.assertReviewGate(filePath, this.enforceReviewGate)
+      workspace = AdfWorkspace.open(filePath)
+    }
+    try {
+      // The agent's own provider key may be envelope-sealed (the load path's unlock).
+      if (!managed && !doc) unlockWorkspaceEnvelopes(workspace)
+      const config = workspace.getAgentConfig() as AgentConfig
+      const store = this.providerSettings()
+      // The agent has its own key but it cannot be opened here (password or
+      // envelope locked): not a missing key. The agent loads and unlocks
+      // later (unlockAgentIdentityPassword, owner identity); the start goes on.
+      const credentialsLocked = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+      if (credentialsLocked) return { ok: true, credentialsLocked }
+      let provider: LLMProvider
+      try {
+        provider = await this.providerFactory(config, filePath, { workspace, derivedKey })
+      } catch (err) {
+        return { ok: false, code: 'provider_missing', error: err instanceof Error ? err.message : String(err) }
+      }
+      const validation = await provider.validateConfig()
+      if (validation.valid) return { ok: true }
+      const local = resolveAgentProviderConfig(config, workspace, derivedKey, store) ?? store.getProvider(config.model.provider)
+      const needsKey = !!local && !local.apiKey && providerNeedsApiKey(local.type)
+      return {
+        ok: false,
+        error: validation.error || 'Provider not configured',
+        ...(needsKey ? { code: 'provider_unconfigured' as const } : {}),
+      }
+    } finally {
+      if (!managed && !doc) try { workspace.dispose() } catch { /* best effort */ }
+    }
+  }
+
+  /**
+   * The file of a loaded agent moved from `oldPath` to `newPath` (a rename
+   * done by the caller). The agent keeps running: the path indexes, a pending
+   * name-follows-file rename and the agent lease move to the new path, and
+   * 'agent-path-changed' is emitted (the mesh registration is keyed by path).
+   * Returns null when no loaded agent has `oldPath`.
+   */
+  async rekeyAgentPath(oldPath: string, newPath: string): Promise<RuntimeAgentRef | null> {
+    const oldKey = this.loadedPathFor(oldPath)
+    if (!oldKey) return null
+    const agentId = this.filePathToAgentId.get(oldKey)!
+    const managed = this.requireAgent(agentId)
+    const newCanonical = this.canonicalFilePath(newPath)
+    if (newCanonical === oldKey) return this.toRef(managed)
+    const holder = this.loadedPathFor(newCanonical)
+    if (holder && holder !== oldKey) {
+      throw new RuntimeLoopError(`${newCanonical} is already loaded as another agent.`, 409, 'path_in_use')
+    }
+    // Path maps first, then the lease (agent-lease.ts rekey reads them through the hosted-paths probe).
+    this.filePathToAgentId.delete(oldKey)
+    this.filePathToAgentId.set(newCanonical, agentId)
+    managed.filePath = newCanonical
+    // A document on this runtime follows (same workspace), with every holder's remembered key.
+    this.documents.rekey(oldKey, newCanonical)
+    const pendingName = this.pendingRenames.get(oldKey)
+    if (pendingName !== undefined) {
+      this.pendingRenames.delete(oldKey)
+      if (basename(newCanonical, '.adf') !== pendingName) this.pendingRenames.set(newCanonical, pendingName)
+    }
+    console.log(`[RuntimeService] ${managed.config.name} moved: ${oldKey} → ${newCanonical}`)
+    const lease = await this.agentLeases?.rekey(oldKey, newCanonical)
+    if (lease && !lease.ok) {
+      // It keeps running, but unprotected: say so where the user looks.
+      const event = { type: 'error' as const, payload: { error: lease.message, code: lease.code }, timestamp: Date.now() }
+      this.emit('agent-event', { agentId, filePath: newCanonical, event } satisfies RuntimeAgentEvent)
+    }
+    this.emit('agent-path-changed', { agentId, oldFilePath: oldKey, filePath: newCanonical } satisfies RuntimeAgentPathChangedEvent)
+    return this.toRef(managed)
+  }
+
+  /**
+   * Studio's syncAgentFileToName: the file follows the agent's name. A loaded
+   * agent's file is renamed when it unloads (SQLite cannot move under a live
+   * executor); a file that is not loaded is renamed now. Each rename emits
+   * 'agent-file-renamed'. Called for every running-config name change
+   * (host onConfigChanged); W1-E's rename route calls it too.
+   */
+  syncAgentFileToName(filePath: string, name: string): RuntimeFileRenameResult {
+    const canonicalPath = this.canonicalFilePath(filePath)
+    const trimmed = (name ?? '').trim()
+    if (!isValidAgentFileName(trimmed)) {
+      console.warn(`[RuntimeService] Agent name "${name}" is not a valid file name; keeping ${basename(canonicalPath)}`)
+      return { error: `"${name}" is not a valid file name.` }
+    }
+    if (basename(canonicalPath, '.adf') === trimmed) {
+      this.pendingRenames.delete(canonicalPath)
+      return {}
+    }
+    if (this.isPathLoaded(canonicalPath)) {
+      if (this.pendingRenames.get(canonicalPath) !== trimmed) {
+        console.log(`[RuntimeService] ${basename(canonicalPath)} will be renamed to "${trimmed}.adf" when the agent stops`)
+      }
+      this.pendingRenames.set(canonicalPath, trimmed)
+      return { deferred: true }
+    }
+    const result = this.renameAgentFileNow(canonicalPath, trimmed)
+    if (result.filePath) {
+      this.emitSafely('agent-file-renamed', { agentId: null, oldFilePath: canonicalPath, filePath: result.filePath } satisfies RuntimeAgentFileRenamedEvent)
+    }
+    return result
+  }
+
+  /** The new name a loaded agent's file takes when it unloads, if one is pending. */
+  getPendingRename(filePath: string): string | undefined {
+    return this.pendingRenames.get(this.canonicalFilePath(filePath))
+  }
+
+  /**
+   * Drop a pending rename without the name checks syncAgentFileToName runs
+   * (a file being deleted may have a name that is not a valid new name, e.g.
+   * `:` on POSIX). Returns the dropped name.
+   */
+  cancelPendingRename(filePath: string): string | undefined {
+    const key = this.canonicalFilePath(filePath)
+    const name = this.pendingRenames.get(key)
+    this.pendingRenames.delete(key)
+    return name
+  }
+
+  /** Renames the file of an agent that just unloaded, if a rename waits; the caller emits the event. */
+  private applyPendingRename(agentId: string, filePath: string): RuntimeAgentFileRenamedEvent | null {
+    const name = this.pendingRenames.get(filePath)
+    if (name === undefined || this.isPathLoaded(filePath)) return null
+    this.pendingRenames.delete(filePath)
+    const result = this.renameAgentFileNow(filePath, name)
+    if (result.error) {
+      console.warn(`[RuntimeService] Deferred rename of ${basename(filePath)} to "${name}.adf" failed: ${result.error}`)
+      return null
+    }
+    return result.filePath ? { agentId, oldFilePath: filePath, filePath: result.filePath } : null
+  }
+
+  /**
+   * Studio's performAdfRename for a file no runtime runs. An open document is
+   * closed for the move and reopened at the new path (envelopes unlocked
+   * again, key cell and holders kept), as Studio does with its open file.
+   */
+  private renameAgentFileNow(filePath: string, newName: string): RuntimeFileRenameResult {
+    const newPath = join(dirname(filePath), `${newName}.adf`)
+    // On a case-insensitive volume a case-only rename's target "exists": it is the source itself.
+    const caseOnly = newPath !== filePath && sameInode(filePath, newPath)
+    if (newPath !== filePath && !caseOnly && existsSync(newPath)) return { error: `A file named "${newName}.adf" already exists.` }
+    const doc = this.documents.get(filePath)
+    if (doc) {
+      try { doc.workspace.checkpoint() } catch { /* the close checkpoints too */ }
+      try { doc.workspace.close() } catch (err) { console.warn(`[RuntimeService] Closing ${basename(filePath)} for its rename failed:`, err) }
+    }
+    const result = this.moveAndRenameFile(filePath, newPath, newName, caseOnly)
+    if (doc) {
+      const at = result.filePath ?? filePath
+      if (result.filePath) this.documents.rekey(filePath, at)
+      try {
+        doc.workspace = AdfWorkspace.open(at)
+        unlockWorkspaceEnvelopes(doc.workspace)
+        doc.config = doc.workspace.getAgentConfig() as AgentConfig
+      } catch (err) {
+        // The file cannot be reopened: the document is gone, and the holders are told.
+        console.error(`[RuntimeService] Reopening ${at} after its rename failed; the document is closed:`, err)
+        this.documents.remove(doc)
+        this.emitSafely('document-closed', { agentId: doc.agentId, filePath: at, reason: 'released' } satisfies RuntimeDocumentEvent)
+      }
+    }
+    return result
+  }
+
+  private moveAndRenameFile(filePath: string, newPath: string, newName: string, caseOnly: boolean): RuntimeFileRenameResult {
+    try {
+      if (newPath !== filePath) {
+        // Merge WAL frames into the main file before moving it; sidecars that
+        // survive (another process holds the file) abort the rename, since a
+        // base file moved away from live sidecars loses their frames.
+        if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+          try {
+            const checkpoint = AdfWorkspace.open(filePath)
+            checkpoint.checkpoint()
+            checkpoint.close()
+          } catch (err) {
+            console.warn(`[RuntimeService] Pre-rename checkpoint of ${basename(filePath)} failed:`, err)
+          }
+        }
+        if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+          return { error: 'WAL sidecars could not be checkpointed — rename aborted to avoid losing unflushed data.' }
+        }
+        if (caseOnly) {
+          // Through a temporary name, so the new spelling sticks on every case-insensitive filesystem.
+          const temp = `${filePath}.${process.pid}-${Date.now()}.renaming`
+          renameSync(filePath, temp)
+          renameSync(temp, newPath)
+        } else {
+          renameSync(filePath, newPath)
+        }
+      }
+      const workspace = AdfWorkspace.open(newPath)
+      try {
+        const config = workspace.getAgentConfig()
+        config.name = newName
+        workspace.setAgentConfig(config)
+      } finally {
+        workspace.close()
+      }
+      this.pendingRenames.delete(filePath)
+      console.log(`[RuntimeService] Renamed ${filePath} → ${newPath}`)
+      return { filePath: newPath }
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /** The canonical key under which `filePath` is loaded (or loading), if it is. */
+  private loadedPathFor(filePath: string): string | undefined {
+    const canonical = this.canonicalFilePath(filePath)
+    if (this.filePathToAgentId.has(canonical)) return canonical
+    // A file already moved away no longer resolves to its realpath: compare spellings.
+    const key = pathKey(canonical)
+    for (const loaded of this.filePathToAgentId.keys()) if (pathKey(loaded) === key) return loaded
+    return undefined
+  }
+
+  private isPathLoaded(canonicalPath: string): boolean {
+    return this.filePathToAgentId.has(canonicalPath) || this.inFlightLoads.has(canonicalPath)
+  }
+
+  /** The settings store as the provider resolution reads it. */
+  private providerSettings(): ProviderSettingsStore {
+    const settings = this.settings as (RuntimeSettingsStore & Partial<ProviderSettingsStore>) | undefined
+    return {
+      getProvider: (id) => settings?.getProvider
+        ? settings.getProvider(id)
+        : ((settings?.get('providers') as ProviderConfig[] | undefined) ?? []).find(provider => provider.id === id),
+    }
+  }
+
   override on(event: 'agent-event', listener: (event: RuntimeAgentEvent) => void): this
+  override on(event: 'agent-lifecycle', listener: (event: RuntimeLifecycleEvent) => void): this
   override on(event: 'agent-loaded', listener: (event: RuntimeAgentLoadedEvent) => void): this
   override on(event: 'agent-unloaded', listener: (event: RuntimeAgentUnloadedEvent) => void): this
+  override on(event: 'agent-path-changed', listener: (event: RuntimeAgentPathChangedEvent) => void): this
+  override on(event: 'agent-file-renamed', listener: (event: RuntimeAgentFileRenamedEvent) => void): this
+  override on(event: 'document-opened' | 'document-closed', listener: (event: RuntimeDocumentEvent) => void): this
   override on(event: string | symbol, listener: (...args: any[]) => void): this {
     return super.on(event, listener)
   }
 
-  private registerAgent(agent: RuntimeAgent, filePath: string | null, config: AgentConfig, idOverride?: string): RuntimeAgentRef {
+  /**
+   * Throws (the caller disposes `agent`) during teardown and when another
+   * loaded agent has the same id (409 duplicate_agent_id).
+   */
+  private registerAgent(
+    agent: RuntimeAgent,
+    filePath: string | null,
+    config: AgentConfig,
+    idOverride?: string,
+    keyCell: DerivedKeyCell = { current: null },
+  ): RuntimeAgentRef {
     // Shutdown race: an agent whose build completes after teardown began must
     // not register (it would escape the teardown's agent snapshot and keep
-    // dispatching turns). Dispose it instead.
+    // dispatching turns).
     if (RuntimeGate.tearingDown) {
-      void agent.disposeAsync({ mode: 'immediate' }).catch(() => { /* best effort */ })
       throw new Error('RuntimeService: runtime teardown in progress — agent not registered.')
     }
     const id = idOverride ?? config.id
-    if (this.agents.has(id)) {
-      void agent.disposeAsync({ mode: 'immediate' })
-      return this.toRef(this.requireAgent(id))
-    }
+    // Two files with one id that loaded concurrently both passed the check
+    // before their builds; the second to finish is refused here.
+    this.assertNoDuplicateId(id, filePath)
 
-    const hostAttachment = agent.attachHost({
-      onEvent: (event) => {
-        this.emit('agent-event', { agentId: id, filePath, event } satisfies RuntimeAgentEvent)
-      },
-    })
     const managed: ManagedRuntimeAgent = {
       id,
       filePath,
       config,
       agent,
-      derivedKey: null,
-      hostAttachment,
+      keyCell,
+      get derivedKey() { return keyCell.current },
+      set derivedKey(key: Buffer | null) { keyCell.current = key },
+      display: {
+        state: toDisplayState(agent.executor.getState()),
+        loopStates: new Map(),
+        activeLoops: 0,
+        accumulatedText: '',
+      },
+      hostAttachment: { detach: () => {} },
     }
+    managed.hostAttachment = agent.attachHost(this.hostBindings(managed))
     this.wireCreateAdfCallbacks(managed)
     this.agents.set(id, managed)
     if (filePath) this.filePathToAgentId.set(filePath, id)
     const ref = this.toRef(managed)
-    this.emit('agent-loaded', {
+    // Per listener: a failing one (mesh registration) must not turn into a
+    // load failure that disposes a registered agent.
+    this.emitSafely('agent-loaded', {
       agentId: id,
       filePath,
       ref,
@@ -2247,10 +3971,230 @@ export class RuntimeService extends EventEmitter {
     return ref
   }
 
+  /**
+   * The host side of one agent (Studio's foreground/background host bindings):
+   * raw executor and trigger events out as 'agent-event', display state,
+   * trigger errors and lifecycle out as 'agent-lifecycle', the agent's own
+   * `off`, and config changes. Paths are read from `managed` at event time, so
+   * rekeyAgentPath needs no re-attach.
+   */
+  private hostBindings(managed: ManagedRuntimeAgent): AgentHostBindings {
+    return {
+      onEvent: (event) => {
+        // Read before the executor's own umbilical emit takes the absorbed ids (agent-executor.ts emitEvent).
+        const turn = this.turnStampOf(managed, event)
+        const echoOrigin = this.takeEchoOrigin(managed, event)
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event, ...turn, ...(echoOrigin ? { echoOrigin } : {}) } satisfies RuntimeAgentEvent)
+        if (event.type === 'state_changed') this.foldDisplayState(managed, event)
+      },
+      // `trigger_message` and the like: Studio sends them on AGENT_EVENT too.
+      onTriggerEvent: (event) => {
+        this.emit('agent-event', { agentId: managed.id, filePath: managed.filePath, event } satisfies RuntimeAgentEvent)
+      },
+      onTriggerError: (error, dispatch) => this.onTriggerError(managed, error, dispatch),
+      onStateOff: () => this.handleAgentOff(managed),
+      onConfigChanged: (updatedConfig) => {
+        // The agent's own writes (sys_update_config, loop_manage) land here too.
+        managed.config = updatedConfig
+        if (managed.filePath) this.syncAgentFileToName(managed.filePath, updatedConfig.name)
+      },
+    }
+  }
+
+  /**
+   * `turnId` and `absorbedTurnIds` of an executor event, by the umbilical's
+   * rules (emit-umbilical.ts, agent-executor.ts emitEvent): the turn of the
+   * async context when the context is this agent's; absorbed ids on `error`
+   * and on a `turn_complete` that was not interrupted (an interrupted turn's
+   * ids ride on to the replay).
+   */
+  private turnStampOf(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): Pick<RuntimeAgentEvent, 'turnId' | 'absorbedTurnIds'> {
+    const turnId = currentAgentId() === managed.id ? currentTurnId() : undefined
+    let absorbedTurnIds: string[] | undefined
+    const interrupted = (event.payload as { interrupted?: unknown } | undefined)?.interrupted === true
+    if (event.type === 'error' || (event.type === 'turn_complete' && !interrupted)) {
+      const loop = event.loop ?? MAIN_LOOP
+      const executor = loop === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(loop)?.executor
+      const ids = executor?.getAbsorbedTurnIds() ?? []
+      if (ids.length > 0) absorbedTurnIds = [...ids]
+    }
+    return { ...(turnId ? { turnId } : {}), ...(absorbedTurnIds ? { absorbedTurnIds } : {}) }
+  }
+
+  /** Main's display state and the inner-loop count, through the background mapping (BAM parity). */
+  private foldDisplayState(managed: ManagedRuntimeAgent, event: AgentExecutionEvent): void {
+    applyBackgroundEvent(managed.display, managed.filePath ?? managed.id, event, (mapped) => {
+      if (mapped.type !== 'agent_state_changed' && mapped.type !== 'agent_loops_changed') return
+      const { filePath: _filePath, ...payload } = mapped.payload as Record<string, unknown>
+      this.emitLifecycle(managed.id, managed.filePath, mapped.type, payload)
+    })
+  }
+
+  private onTriggerError(managed: ManagedRuntimeAgent, error: unknown, dispatch: AdfEventDispatch | AdfBatchDispatch): void {
+    if (this.agents.get(managed.id) !== managed || managed.agent.executor.getState() === 'stopped') return
+    const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[RuntimeService] Trigger error for ${managed.filePath ?? managed.id} (${eventType}): ${message}`)
+    // The daemon builder's own host binding writes adf_logs; other agents have none.
+    if (managed.agent.profile !== 'daemon') {
+      try { managed.agent.workspace.insertLog('error', 'runtime', 'trigger_error', eventType, message.slice(0, 200)) } catch { /* non-fatal */ }
+    }
+    // What Studio's hosts show: the foreground sends an `error` AGENT_EVENT,
+    // the background manager puts the agent's display state in `error`.
+    const errorEvent: AgentExecutionEvent = { type: 'error', payload: { error: message }, timestamp: Date.now() }
+    this.emitSafely('agent-event', { agentId: managed.id, filePath: managed.filePath, event: errorEvent } satisfies RuntimeAgentEvent)
+    if (managed.display.state !== 'error') {
+      managed.display.state = 'error'
+      this.emitLifecycle(managed.id, managed.filePath, 'agent_state_changed', { state: 'error' })
+    }
+    this.emitLifecycle(managed.id, managed.filePath, 'trigger_error', { error: message, eventType })
+  }
+
+  /**
+   * The agent set its own display state to `off` (a tool, a lambda, an
+   * approval, the owner's state change): stop and unload it, as Studio's
+   * handleAgentOff does. The mesh registration goes with the unload.
+   */
+  private handleAgentOff(managed: ManagedRuntimeAgent): void {
+    if (this.offInProgress.has(managed.id) || this.agents.get(managed.id) !== managed) return
+    this.offInProgress.add(managed.id)
+    console.log(`[RuntimeService] ${managed.config.name} switched itself off: stopping it`)
+    // A microtask later, so the `off` state_changed this fires inside still
+    // reaches onEvent (and clients) before the host detaches.
+    void Promise.resolve()
+      .then(() => this.unloadAgent(managed.id, { mode: 'owner-off' }))
+      .catch((err) => console.error(`[RuntimeService] Stopping ${managed.config.name} after off failed:`, err))
+      .finally(() => this.offInProgress.delete(managed.id))
+  }
+
+  private emitLifecycle(
+    agentId: string | null,
+    filePath: string | null,
+    type: RuntimeLifecycleEventType,
+    payload: Record<string, unknown>,
+  ): void {
+    const event: RuntimeLifecycleEvent = { agentId, filePath, type, payload: { filePath, ...payload }, timestamp: Date.now() }
+    this.emitSafely('agent-lifecycle', event)
+  }
+
+  /** Emit to each listener on its own: one that throws neither reaches the caller nor stops the rest. */
+  private emitSafely(name: string, event: unknown): void {
+    for (const listener of this.rawListeners(name)) {
+      try {
+        (listener as (event: unknown) => void)(event)
+      } catch (err) {
+        console.error(`[RuntimeService] A ${name} listener failed:`, err)
+      }
+    }
+  }
+
+
+  /** A running agent. An open document that is not running is a 409 agent_not_running (a runtime action on it). */
   private requireAgent(agentId: string): ManagedRuntimeAgent {
     const managed = this.resolveAgent(agentId)
-    if (!managed) throw new Error(`RuntimeService: unknown agent "${agentId}"`)
-    return managed
+    if (managed) return managed
+    const doc = this.documents.resolve(agentId)
+    if (doc) {
+      throw new RuntimeLoopError(
+        `${doc.config.name} is open but not running. Start it first (POST /agents/${doc.agentId}/start).`,
+        409,
+        AGENT_NOT_RUNNING_CODE,
+        { agentId: doc.agentId, filePath: doc.filePath },
+      )
+    }
+    throw new Error(`RuntimeService: unknown agent "${agentId}"`)
+  }
+
+  /** A running agent first, else an open document (D4), by id, handle or name. */
+  private resolveTarget(identifier: string): AgentTarget | undefined {
+    const managed = this.resolveAgent(identifier)
+    if (managed) return this.runningTarget(managed)
+    const doc = this.documents.resolve(identifier)
+    return doc ? this.documentTarget(doc) : undefined
+  }
+
+  private requireTarget(identifier: string): AgentTarget {
+    const target = this.resolveTarget(identifier)
+    if (!target) throw new Error(`RuntimeService: unknown agent "${identifier}"`)
+    return target
+  }
+
+  /** The running agent or open document of a canonical file path. */
+  private targetAtPath(canonicalPath: string): AgentTarget | undefined {
+    const loadedKey = this.loadedPathFor(canonicalPath)
+    const managed = loadedKey ? this.managedAt(loadedKey) : undefined
+    if (managed) return this.runningTarget(managed)
+    const doc = this.documents.get(this.loadedDocumentPath(canonicalPath))
+    return doc ? this.documentTarget(doc) : undefined
+  }
+
+  private runningTarget(managed: ManagedRuntimeAgent): AgentTarget {
+    const config = (): AgentConfig => this.syncManagedConfig(managed)
+    return {
+      id: managed.id,
+      filePath: managed.filePath,
+      workspace: managed.agent.workspace,
+      keyCell: managed.keyCell,
+      managed,
+      doc: this.documents.get(managed.filePath) ?? null,
+      get config() { return config() },
+    }
+  }
+
+  /**
+   * A running agent's config as its file holds it. A tool that writes the
+   * file itself (mcp_install, mcp_uninstall, npm_install, npm_uninstall) does
+   * not pass through onConfigChanged, nor does another process writing the
+   * file (the CLI, embedded Studio), so the cached copy can be behind the
+   * file: handed out with the file's revision, a client saved it back over
+   * the change (an installed MCP server missing from Studio, then gone from
+   * the file). Those tools apply their own runtime effects (connect,
+   * disconnect, tool resync); only the cached copy follows here.
+   *
+   * Every `target.config` read of a running agent lands here, so the file is
+   * read only when its stamp moved: a config write through this connection
+   * (configWriteCount) or a commit by another one (`PRAGMA data_version`).
+   * An unchanged file costs two counter reads, no table read. `reread`
+   * reads it regardless (getAgentConfig, which hands out a revision too).
+   */
+  private syncManagedConfig(managed: ManagedRuntimeAgent, opts: { reread?: boolean } = {}): AgentConfig {
+    const workspace = managed.agent.workspace
+    const dataVersion = workspace.dataVersion()
+    const seen = managed.configSeen
+    if (!opts.reread && seen && seen.writes === workspace.configWriteCount() && seen.dataVersion === dataVersion) return managed.config
+    const onDisk = workspace.getAgentConfig() as AgentConfig
+    if (JSON.stringify(onDisk) !== JSON.stringify(managed.config)) managed.config = onDisk
+    // Counted after the read: a write the read itself made (getConfig's
+    // merges) is in `onDisk`. data_version is the one from before the read,
+    // so another connection's commit during it is read next time.
+    managed.configSeen = { writes: workspace.configWriteCount(), dataVersion }
+    return managed.config
+  }
+
+  private documentTarget(doc: OpenDocument): AgentTarget {
+    this.assertNotMoving(doc)
+    return {
+      id: doc.agentId,
+      filePath: doc.filePath,
+      workspace: doc.workspace,
+      keyCell: doc.keyCell,
+      managed: null,
+      doc,
+      get config() { return doc.config },
+    }
+  }
+
+  /**
+   * A loop name on a running agent (its pool) or an open document (its
+   * declared loops): absent = main; unknown = 404.
+   */
+  private targetLoopName(target: AgentTarget, loop: string | undefined): string {
+    if (target.managed) return this.requireLoopName(target.managed, loop)
+    const name = loop || MAIN_LOOP
+    if (name !== MAIN_LOOP && !(target.config.loops ?? []).some(l => l.name === name)) {
+      throw new RuntimeLoopError(`No loop named "${name}" on this agent.`, 404)
+    }
+    return name
   }
 
   private wireCreateAdfCallbacks(managed: ManagedRuntimeAgent): void {
@@ -2307,9 +4251,9 @@ export class RuntimeService extends EventEmitter {
    * shell export write through AdfWorkspace.setIdentity, which keeps
    * refusing).
    */
-  private setIdentityValue(managed: ManagedRuntimeAgent, purpose: string, value: string, opts: RuntimeCredentialWriteOptions = {}): boolean {
-    const workspace = managed.agent.workspace
-    if (workspace.isPasswordProtected() && !managed.derivedKey) {
+  private setIdentityValue(target: AgentTarget, purpose: string, value: string, opts: RuntimeCredentialWriteOptions = {}): boolean {
+    const workspace = target.workspace
+    if (workspace.isPasswordProtected() && !target.keyCell.current) {
       // Legacy whole-file password: nothing can be written until it is unlocked.
       throw new RuntimeLoopError(
         'This agent’s identity keystore is locked with its file password. Unlock it first (POST /agents/{id}/identity/password/unlock), then save the credential.',
@@ -2317,8 +4261,8 @@ export class RuntimeService extends EventEmitter {
         CREDENTIALS_LOCKED_CODE,
       )
     }
-    if (managed.derivedKey) {
-      const { ciphertext, iv } = encrypt(Buffer.from(value, 'utf-8'), managed.derivedKey)
+    if (target.keyCell.current) {
+      const { ciphertext, iv } = encrypt(Buffer.from(value, 'utf-8'), target.keyCell.current)
       const kdfParamsJson = workspace.getDatabase().getIdentity('crypto:kdf:params')
       workspace.getDatabase().setIdentityRaw(
         purpose,
@@ -2335,54 +4279,34 @@ export class RuntimeService extends EventEmitter {
       workspace.setIdentity(purpose, value)
       return false
     }
-    const state = workspace.getEnvelopeState('credentials')
-    const envelopeLocked = state === 'locked' || state === 'foreign'
-    const row = workspace.getIdentityRow(purpose)
-    const rowEnvelope = row ? envelopeFromAlgo(row.encryption_algo) : null
-    const rowLocked = rowEnvelope !== null && workspace.getEnvelopeState(rowEnvelope) !== 'unlocked'
-    if (!envelopeLocked && !rowLocked) {
+    const locked = lockedCredentialWrite(workspace, purpose)
+    if (!locked) {
       workspace.setIdentity(purpose, value)
       return false
     }
-    if (!opts.replace) {
-      throw new RuntimeLoopError(
-        rowLocked
-          ? `This agent's saved "${purpose}" is sealed and its credentials envelope is ${state} on this daemon, so it can't be read or overwritten. ${CREDENTIALS_UNLOCK_HINT} Or replace it (replace: true): the old value is discarded.`
-          : `The credentials envelope of this agent is ${state} on this daemon — refusing to store "${purpose}" unsealed. ${CREDENTIALS_UNLOCK_HINT} Or store it anyway (replace: true): it is sealed once the envelope unlocks.`,
-        409,
-        CREDENTIALS_LOCKED_CODE,
-      )
-    }
-    const codeAccess = row?.code_access ?? false
-    if (rowLocked) workspace.deleteIdentity(purpose)
-    workspace.setIdentity(purpose, value, codeAccess)
-    const message = rowLocked
-      ? `Owner replaced locked sealed credential "${purpose}" (the old value was discarded unread); the new value is stored unsealed until the credentials envelope unlocks.`
-      : `Owner stored credential "${purpose}" while the credentials envelope is ${state}; it is stored unsealed until the envelope unlocks.`
-    console.warn(`[RuntimeService] ${managed.config.name}: ${message}`)
-    // Straight to adf_logs (not the agent's log-level filter): an owner override is always recorded.
-    try { workspace.getDatabase().insertLog('warn', 'runtime', 'credential_replaced', purpose, message) } catch { /* non-fatal */ }
-    return rowLocked
+    if (!opts.replace) throw credentialsLockedError(locked)
+    replaceLockedCredential(workspace, locked, value, (line) => console.warn(`[RuntimeService] ${target.config.name}: ${line}`))
+    return locked.sealed
   }
 
-  private describeIdentity(managed: ManagedRuntimeAgent, purpose: string): RuntimeIdentityMeta {
-    const workspace = managed.agent.workspace
+  private describeIdentity(target: AgentTarget, purpose: string): RuntimeIdentityMeta {
+    const workspace = target.workspace
     const row = workspace.getIdentityRow(purpose)
     if (!row) return { purpose, present: false, storage: null, sealed: false, locked: false, length: null, code_access: false }
     const envelope = envelopeFromAlgo(row.encryption_algo)
     const storage = envelope ? 'sealed' : row.encryption_algo === 'plain' ? 'plain' : 'password'
-    const locked = envelope ? workspace.getEnvelopeState(envelope) !== 'unlocked' : storage === 'password' && !managed.derivedKey
+    const locked = envelope ? workspace.getEnvelopeState(envelope) !== 'unlocked' : storage === 'password' && !target.keyCell.current
     let length: number | null = null
     if (!locked && !purpose.startsWith('crypto:')) {
-      try { length = workspace.getIdentityDecrypted(purpose, managed.derivedKey)?.length ?? null } catch { length = null }
+      try { length = workspace.getIdentityDecrypted(purpose, target.keyCell.current)?.length ?? null } catch { length = null }
     }
     return { purpose, present: true, storage, sealed: envelope !== null, locked, length, code_access: row.code_access }
   }
 
-  private describeCredentials(managed: ManagedRuntimeAgent, prefix: string): Record<string, RuntimeIdentityMeta> {
+  private describeCredentials(target: AgentTarget, prefix: string): Record<string, RuntimeIdentityMeta> {
     const credentials: Record<string, RuntimeIdentityMeta> = {}
-    for (const purpose of managed.agent.workspace.listIdentityPurposes(prefix)) {
-      credentials[purpose.slice(prefix.length)] = this.describeIdentity(managed, purpose)
+    for (const purpose of target.workspace.listIdentityPurposes(prefix)) {
+      credentials[purpose.slice(prefix.length)] = this.describeIdentity(target, purpose)
     }
     return credentials
   }
@@ -2429,14 +4353,48 @@ export class RuntimeService extends EventEmitter {
     filePath: string,
     override: LLMProvider | undefined,
     workspace: AdfWorkspace,
+    derivedKey: Buffer | null,
   ): Promise<LLMProvider> {
     if (override) return override
     if (!this.providerFactory) {
       throw new Error('RuntimeService: loadAgent requires a provider or providerFactory.')
     }
-    // No derived key at load: the legacy password lock is opened later via
-    // unlock; envelope-sealed keys are already open (unlockWorkspaceEnvelopes).
-    return this.providerFactory(config, filePath, { workspace, derivedKey: null })
+    // Envelope-sealed keys are already open (unlockWorkspaceEnvelopes); the
+    // legacy password key is the caller's, or arrives later through unlock.
+    return this.agentProvider(config, filePath, workspace, derivedKey)
+  }
+
+  /**
+   * The agent's provider. When the agent's own provider key is stored but
+   * locked here (file password, or a sealed envelope this daemon cannot open
+   * yet), a stub that fails every call with `credentials_locked` before any
+   * request: the real provider would send an empty key and the executor
+   * would blame Settings → Providers. An unlock rebuilds the real one
+   * (unlockAgentIdentityPassword, refreshAgentCredentials).
+   */
+  private async agentProvider(config: AgentConfig, filePath: string | null, workspace: AdfWorkspace, derivedKey: Buffer | null): Promise<LLMProvider> {
+    return this.lockedKeyStub(config, workspace, derivedKey) ?? this.providerFactory!(config, filePath, { workspace, derivedKey })
+  }
+
+  /** The credentials_locked stub when the agent's own provider key cannot be opened here, else null. */
+  private lockedKeyStub(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): LLMProvider | null {
+    const message = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+    if (!message) return null
+    const entry = config.providers!.find(p => p.id === config.model.provider)!
+    console.warn(`[RuntimeService] ${message}`)
+    return lockedKeyProvider(entry, config.model.model_id, message)
+  }
+
+  /** Why the agent's own provider key is locked here and how to unlock it; null when it is not. */
+  private lockedProviderKeyMessage(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): string | null {
+    const entry = config.providers?.find(p => p.id === config.model.provider)
+    if (!entry || agentProviderKeySource(entry, workspace, derivedKey, this.providerSettings()) !== 'locked') return null
+    const provider = `"${entry.name || entry.id}"`
+    return workspace.isPasswordProtected() && !derivedKey
+      ? `${config.name}'s API key for its provider ${provider} is locked with the agent's file password, so no request was sent. ` +
+        `Unlock it: POST /agents/${config.id}/identity/password/unlock with {"password": "…"}. The next turn uses the key.`
+      : `${config.name}'s API key for its provider ${provider} is sealed and its credentials envelope is locked on this daemon, so no request was sent. ` +
+        'Make the owner identity available (adf identity unlock, or adf identity restore); the agent re-checks and the next turn uses the key.'
   }
 
   private async buildLoadedAgent(
@@ -2444,7 +4402,9 @@ export class RuntimeService extends EventEmitter {
     filePath: string,
     config: AgentConfig,
     provider: LLMProvider,
+    keyCell: DerivedKeyCell,
   ): Promise<RuntimeAgent> {
+    const prompts = this.currentPrompts()
     if (this.agentRuntimeBuilder) {
       return await this.agentRuntimeBuilder.build({
         workspace,
@@ -2452,9 +4412,15 @@ export class RuntimeService extends EventEmitter {
         config,
         provider,
         restoreLoop: true,
+        derivedKey: keyCell.current,
+        prompts,
         createProviderForModel: (model) => {
           if (!this.providerFactory) return provider
-          const resolved = this.providerFactory({ ...config, model }, filePath, { workspace, derivedKey: null })
+          // The key at call time: an unlock after start reaches model_invoke too.
+          const modelConfig = { ...config, model }
+          const stub = this.lockedKeyStub(modelConfig, workspace, keyCell.current)
+          if (stub) return stub
+          const resolved = this.providerFactory(modelConfig, filePath, { workspace, derivedKey: keyCell.current })
           if (isPromiseLike(resolved)) {
             throw new Error('RuntimeService: model_invoke providerFactory must be synchronous.')
           }
@@ -2465,11 +4431,24 @@ export class RuntimeService extends EventEmitter {
 
     return createHeadlessAgentFromWorkspace(workspace, {
       provider,
-      basePrompt: this.basePrompt,
-      toolPrompts: this.toolPrompts,
-      compactionPrompt: this.compactionPrompt,
+      ...prompts,
       restoreLoop: true,
     })
+  }
+
+  /**
+   * The prompt settings for a start, read now (Studio reads them at every
+   * AGENT_START): the settings store's value, else the constructor's.
+   */
+  private currentPrompts(): AgentRuntimePrompts {
+    const base = this.settings?.get('globalSystemPrompt')
+    const tools = this.settings?.get('toolPrompts')
+    const compaction = this.settings?.get('compactionPrompt')
+    return {
+      basePrompt: typeof base === 'string' ? base : this.basePrompt,
+      toolPrompts: tools && typeof tools === 'object' && !Array.isArray(tools) ? tools as Record<string, string> : this.toolPrompts,
+      compactionPrompt: typeof compaction === 'string' ? compaction : this.compactionPrompt,
+    }
   }
 
   private assertReviewGate(filePath: string, enforce: boolean): void {
@@ -2495,6 +4474,38 @@ export class RuntimeService extends EventEmitter {
   /** The .adf files an autostart scan of `dirs` would consider (same walk, same depth rule). */
   scanAdfFiles(dirs: string[], maxDepth = 5): string[] {
     return this.collectAdfFiles(dirs, maxDepth)
+  }
+
+  /** HTTP and autostart scans yield during filesystem work; realpath batches stay bounded. */
+  async scanAdfFilesAsync(dirs: string[], maxDepth = 5): Promise<string[]> {
+    const seen = new Set<string>()
+    const results: string[] = []
+    const collect = async (dir: string, depth: number): Promise<void> => {
+      if (depth > maxDepth) return
+      let entries: import('node:fs').Dirent[]
+      try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+      for (let offset = 0; offset < entries.length; offset += 32) {
+        // Even a flat directory of irrelevant entries must yield to timers and requests.
+        await new Promise<void>(resolve => setImmediate(resolve))
+        const batch = entries.slice(offset, offset + 32)
+        const paths = await Promise.all(batch.map(async entry => {
+          if (!entry.isFile() || !entry.name.endsWith('.adf')) return null
+          const full = join(dir, entry.name)
+          try { return await realpath(full) } catch { return full }
+        }))
+        for (let index = 0; index < batch.length; index++) {
+          const path = paths[index]
+          const entry = batch[index]
+          if (path !== null) {
+            if (!seen.has(path)) { seen.add(path); results.push(path) }
+          } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+            await collect(join(dir, entry.name), depth + 1)
+          }
+        }
+      }
+    }
+    for (const dir of dirs) await collect(dir, 0)
+    return results
   }
 
   private collectAdfFiles(trackedDirs: string[], maxDepth: number): string[] {
@@ -2579,6 +4590,17 @@ export class RuntimeService extends EventEmitter {
   }
 }
 
+/** Both paths name the same file (device + inode); false when either is missing. */
+function sameInode(a: string, b: string): boolean {
+  try {
+    const x = statSync(a, { bigint: true })
+    const y = statSync(b, { bigint: true })
+    return x.dev === y.dev && x.ino === y.ino
+  } catch {
+    return false
+  }
+}
+
 function clampInteger(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
   return Math.min(max, Math.max(min, Math.floor(value)))
@@ -2598,12 +4620,88 @@ function addUsage(target: RuntimeUsageTotals, usage: LoopTokenUsage): void {
   target.total = target.input + target.output
 }
 
+/** Providers made by lockedKeyProvider (so an unlock knows it replaces one). */
+const lockedKeyProviders = new WeakSet<LLMProvider>()
+
+/**
+ * A provider whose every call fails with `credentials_locked` before any
+ * request. validateConfig answers valid: the executor's own preflight would
+ * turn a failure into "check the API key in Settings → Providers".
+ */
+function lockedKeyProvider(entry: AdfProviderConfig, modelId: string, message: string): LLMProvider {
+  const provider: LLMProvider = {
+    name: entry.name || entry.id,
+    providerId: entry.id,
+    providerType: entry.type as LLMProvider['providerType'],
+    modelId,
+    async createMessage() {
+      throw Object.assign(new Error(message), { code: CREDENTIALS_LOCKED_CODE })
+    },
+    async validateConfig() {
+      return { valid: true }
+    },
+  }
+  lockedKeyProviders.add(provider)
+  return provider
+}
+
+/** Dispose an agent; `rethrow` false logs instead (cleanup of an agent that never registered). */
+async function disposeRuntimeAgent(agent: RuntimeAgent, mode: AgentStopMode, rethrow = false): Promise<void> {
+  try {
+    await agent.disposeAsync({ mode })
+  } catch (err) {
+    if (rethrow) throw err
+    console.error('[RuntimeService] Disposing an unregistered agent failed:', err)
+  }
+}
+
+/**
+ * Studio's rule for an agent file name (shared/utils/agent-file-name.ts),
+ * plus no Windows device name, as the daemon's create and rename (W5-D2).
+ * The copy here missed the backslash.
+ */
+function isValidAgentFileName(name: string): boolean {
+  return agentFileNameProblem(name) === null
+}
+
+/** Path comparison key: case-insensitive where the file system usually is (as agent-lease.ts). */
+function pathKey(filePath: string): string {
+  return process.platform === 'linux' ? resolve(filePath) : resolve(filePath).toLowerCase()
+}
+
+/** Main's goal as a roster entry, as LoopPool.listLoops summarizes it: the first ~200 chars, flattened. */
+function summarizeMainGoal(instructions: string): string {
+  const flat = instructions.replace(/\s+/g, ' ').trim()
+  return flat.length <= 200 ? flat : `${flat.slice(0, 199).trimEnd()}…`
+}
+
+/** Display entries a chat or batch read returns (Studio's LOOP_DISPLAY_LIMIT). */
+const CHAT_DISPLAY_LIMIT = 200
+
+function requireHolder(holder: unknown): string {
+  if (typeof holder !== 'string' || !DOCUMENT_HOLDER_FORMAT.test(holder)) {
+    throw new RuntimeLoopError('holder must be a client session id (a UUID)', 400, 'bad_request')
+  }
+  return holder
+}
+
+/** AES-GCM refused the key: the password does not open the file. */
+function isAuthFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /unable to authenticate|unsupported state|bad decrypt/i.test(message)
+}
+
+/** False once the workspace's database connection is closed (a failed build disposes it). */
+function isWorkspaceOpen(workspace: AdfWorkspace): boolean {
+  return (workspace.getDatabase() as unknown as { closed?: boolean }).closed !== true
+}
+
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
   return !!value && typeof (value as { then?: unknown }).then === 'function'
 }
 
-function parseMaybeJson(value: string | undefined): unknown {
-  if (value === undefined) return undefined
+function parseMaybeJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value
   try { return JSON.parse(value) } catch { return value }
 }
 

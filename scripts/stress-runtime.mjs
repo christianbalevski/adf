@@ -53,6 +53,7 @@ function run(cmd, commandArgs, env) {
     cwd: process.cwd(),
     env,
     stdio: 'inherit',
+    windowsHide: true,
   })
   if (result.error) {
     console.error(result.error.message)

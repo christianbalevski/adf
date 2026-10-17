@@ -1,5 +1,6 @@
 import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks'
 import { performance } from 'node:perf_hooks'
+import type { AdfEventDispatch } from '../../../../shared/types/adf-event.types'
 
 export interface TurnSample {
   agentId: string
@@ -76,16 +77,14 @@ export class MetricsCollector {
     this.turns.push(sample)
   }
 
-  /** Instrument an executor's executeTurn to capture timing. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  wrapExecutor(agentId: string, executor: any): void {
-    const original = executor.executeTurn.bind(executor)
+  /** Instrument the harness dispatch boundary to capture completed turns. */
+  wrapDispatch(agentId: string, target: { dispatch: (dispatch: AdfEventDispatch) => Promise<void> }): void {
+    const original = target.dispatch.bind(target)
     const collector = this
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    executor.executeTurn = async function (...args: any[]) {
+    target.dispatch = async function (dispatch: AdfEventDispatch) {
       const startedAt = performance.now()
       try {
-        await original(...args)
+        await original(dispatch)
         collector.recordTurn({ agentId, startedAt, durationMs: performance.now() - startedAt })
       } catch (err) {
         collector.recordTurn({
@@ -94,6 +93,7 @@ export class MetricsCollector {
           durationMs: performance.now() - startedAt,
           error: err instanceof Error ? err.message : String(err),
         })
+        throw err
       }
     }
   }

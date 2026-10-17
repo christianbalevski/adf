@@ -35,7 +35,10 @@ jobs:
           npm rebuild better-sqlite3
 
       # `npm test` verifies that the native binding matches the active Node ABI.
+      # tests/parity runs in the daemon-parity job, under Electron-as-Node.
       - name: Test
+        env:
+          PARITY_EXCLUDE: '1'
         run: npm test
 
       # The skill packages ship node:test suites that need the agent sandbox's
@@ -120,6 +123,8 @@ jobs:
           npm rebuild better-sqlite3
 
       - name: Test
+        env:
+          PARITY_EXCLUDE: '1'
         run: npm test
 
       - name: Skill package tests (node:test)
@@ -156,3 +161,88 @@ jobs:
       - name: Electron smoke (packaged app)
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: npm run test:electron-smoke
+
+  # Parity harness with the daemon side required (tests/parity/README.md,
+  # tracker §6 W2-C/W5-B): Studio in daemon mode against the BUILT daemon
+  # bundle, out/main/daemon.js, run as a child of Electron with
+  # ELECTRON_RUN_AS_NODE=1, exactly as the packaged Studio runs it. The
+  # `verify` jobs run `npm test` before `npm run build`, so there the daemon
+  # side is skipped; PARITY_REQUIRE_DAEMON=1 makes a missing or stale bundle
+  # a failure here.
+  #
+  # Unlike `verify`, this job needs the Electron binary (the daemon child) and
+  # better-sqlite3 built for Electron's ABI: the embedded side runs in the
+  # vitest process, the daemon side in the Electron child, and both load the
+  # same better_sqlite3.node. So vitest itself runs under Electron-as-Node.
+  # Install without lifecycle scripts, then run only the two that matter:
+  # electron's download and the repo's postinstall (better-sqlite3 alone).
+  #
+  # windows-2022 matches the release runner (see release.yml for why it is
+  # pinned). macOS is best effort: the harness never touches the login
+  # keychain (ADF_KEYCHAIN=0, a test keychain file), so the macOS keychain
+  # prompts of risk K11 are not exercised here; they need a signed build.
+  daemon-parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-14' }}
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # @electron/get's download cache (about 100 MB per OS), keyed on the lockfile.
+      - name: Cache the Electron download
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/.cache/electron
+            ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies with the Electron binary
+        shell: bash
+        run: |
+          npm ci --ignore-scripts
+          node node_modules/electron/install.js
+          npx electron-rebuild -f -o better-sqlite3
+
+      - name: Electron runs as Node
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) ELECTRON=node_modules/electron/dist/electron.exe ;;
+            macOS) ELECTRON=node_modules/electron/dist/Electron.app/Contents/MacOS/Electron ;;
+            *) ELECTRON=node_modules/electron/dist/electron ;;
+          esac
+          echo "ELECTRON=$ELECTRON" >> "$GITHUB_ENV"
+          ELECTRON_RUN_AS_NODE=1 "$ELECTRON" -e "require('better-sqlite3')(':memory:').close(); console.log('electron', process.versions.electron, 'node', process.version, 'better-sqlite3 ok')"
+
+      # electron-vite build: out/main/index.js and the daemon, out/main/daemon.js.
+      - name: Build
+        run: npm run build
+
+      - name: Parity, daemon side required
+        shell: bash
+        env:
+          PARITY_REQUIRE_DAEMON: '1'
+          # Windows runners scan every file write in real time.
+          PARITY_SLICE_BOUND_MS: '600'
+          PARITY_DAEMON_LOG_DIR: ${{ runner.temp }}/parity-daemon-logs
+        run: ELECTRON_RUN_AS_NODE=1 "$ELECTRON" node_modules/vitest/vitest.mjs run tests/parity --reporter=verbose --testTimeout=240000 --hookTimeout=120000
+
+      - name: Daemon logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-daemon-logs-${{ matrix.os }}
+          path: ${{ runner.temp }}/parity-daemon-logs
+          if-no-files-found: ignore

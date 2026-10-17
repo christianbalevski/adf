@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { summarizeOverride, countOverrides } from '../../../src/renderer/components/providers/override-utils'
+import { summarizeOverride, countOverrides, credentialFormLoad } from '../../../src/renderer/components/providers/override-utils'
 import type { ProviderConfig, ProviderCredentialFileInfo } from '../../../src/shared/types/ipc.types'
 
 const app: ProviderConfig = {
@@ -38,5 +38,17 @@ describe('summarizeOverride', () => {
       file({ providerConfig: { defaultModel: 'claude-app' } }),
       file({ filePath: '/a/y.adf', hasCredentials: true, populatedKeys: ['apiKey'] }),
     ], app)).toBe(1)
+  })
+})
+
+describe("credentialFormLoad (the override form's key field)", () => {
+  it('keeps the error a remote daemon answers instead of dropping it', () => {
+    const remote = credentialFormLoad({ credentials: {}, error: "Stored credential values stay on the daemon's machine: a remote daemon never sends them to Studio." })
+    expect(remote).toEqual({ apiKey: '', providerConfig: null, error: expect.stringMatching(/never sends them to Studio/) })
+  })
+
+  it("a read value and the copy's fields, with no error", () => {
+    expect(credentialFormLoad({ credentials: { apiKey: 'sk-1' }, providerConfig: { defaultModel: 'm' } })).toEqual({ apiKey: 'sk-1', providerConfig: { defaultModel: 'm' }, error: null })
+    expect(credentialFormLoad(undefined)).toEqual({ apiKey: null, providerConfig: null, error: null })
   })
 })

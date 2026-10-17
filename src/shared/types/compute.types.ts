@@ -20,6 +20,43 @@ export interface LocalContainerExecutionTarget {
 /** Extensible without adding another agent-facing tool. */
 export type ExecutionTarget = LocalContainerExecutionTarget
 
+export interface ComputeInstallMethod {
+  command: string
+  label: string
+  autoRunnable: boolean
+  url?: string
+}
+
+export interface ComputePrerequisite {
+  id: 'wsl'
+  name: string
+  installed: boolean
+  installCommand?: string
+  requiresReboot?: boolean
+  description?: string
+  docsUrl?: string
+}
+
+/** Availability details returned by the Podman setup wizard. */
+export interface PodmanAvailability {
+  available: boolean
+  binPath?: string
+  version?: string
+  machineRequired: boolean
+  machineRunning?: boolean
+  machineExists?: boolean
+  error?: string
+  platform: string
+  installMethods: ComputeInstallMethod[]
+  prerequisites: ComputePrerequisite[]
+}
+
+export interface ComputeSetupResult {
+  success: boolean
+  error?: string
+  availability?: PodmanAvailability
+}
+
 export const BUILT_IN_COMPUTE_TARGETS = ['shared', 'isolated', 'host'] as const
 export type BuiltInComputeTarget = typeof BUILT_IN_COMPUTE_TARGETS[number]
 
@@ -63,6 +100,9 @@ export interface ContainerSummary {
    *  then 'failed' and no container exists behind the row). The message is
    *  the provisioning error; Rebuild retries, Remove clears the row. */
   error?: string
+  /** Other live runtimes on this machine that use this container ("daemon
+   *  pid 4242"), in both backends; absent when nobody else does. */
+  users?: string[]
 }
 
 /**

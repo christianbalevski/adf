@@ -13,11 +13,12 @@ import { gradientWallpaperPng } from './desktop-wallpaper'
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { cpus as hostCpus, tmpdir, totalmem } from 'os'
 import { join } from 'path'
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync, promises as fsp } from 'fs'
 import { EventEmitter } from 'events'
 import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
-import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent } from '../../shared/types/compute.types'
+import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
+import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,16 @@ export interface ComputeEnvInfo {
   containerName: string
   activeAgents: string[]
   error?: string
+  /** Containers this runtime's last stop left running because another
+   *  runtime uses them (status reads `stopped`, the container does not). */
+  leftRunning?: LeftRunningContainer[]
+}
+
+export interface LeftRunningContainer {
+  name: string
+  /** Other runtimes using it ("daemon pid 4242"); empty when unknown. */
+  holders: string[]
+  reason: string
 }
 
 /** Emitted when a browser process first appears inside an agent's isolated container. */
@@ -750,6 +761,65 @@ export function machineSize(
 
 const PODMAN_MISS_TTL_MS = 60_000
 
+let machineCwd: Promise<string | undefined> | null = null
+
+/**
+ * Working directory for a podman call. On Windows, `podman machine ssh` (the
+ * clock check) leaves a file literally named `NUL` in its working directory:
+ * the ssh client podman runs writes the VM's host key to its null
+ * known-hosts path as a real file. `machine` subcommands run from a private
+ * temp directory so the file lands there, not in Studio's or the daemon's
+ * cwd (a user's folder, the install dir). Undefined = inherit.
+ */
+export function podmanCwd(args: string[], platform: NodeJS.Platform = process.platform): Promise<string | undefined> {
+  if (platform !== 'win32' || args[0] !== 'machine') return Promise.resolve(undefined)
+  machineCwd ??= (async () => {
+    const dir = join(tmpdir(), 'adf-podman-machine')
+    try {
+      await fsp.mkdir(dir, { recursive: true })
+      return dir
+    } catch (err) {
+      machineCwd = null
+      console.warn(`[Compute] Could not create ${dir}; podman machine commands run in the current directory:`, err instanceof Error ? err.message : err)
+      return undefined
+    }
+  })()
+  return machineCwd
+}
+
+export interface ContainerShutdownPlan {
+  stop: string[]
+  keep: LeftRunningContainer[]
+}
+
+/**
+ * Which running containers a runtime's shutdown may stop. Anything another
+ * live runtime claims stays; so does anything not ours while a live
+ * runtime's claims are unreadable. The rest stops: our own containers, and
+ * unclaimed ones (a crashed runtime's orphans, pre-registry runtimes), which
+ * is what every shutdown did before the registry.
+ */
+export function planContainerShutdown(
+  running: string[],
+  own: ReadonlySet<string>,
+  others: OtherComputeUsers,
+): ContainerShutdownPlan {
+  const plan: ContainerShutdownPlan = { stop: [], keep: [] }
+  for (const name of running) {
+    const holders = others.claims.get(name)
+    if (holders?.length) plan.keep.push({ name, holders, reason: `used by ${holders.join(', ')}` })
+    else if (others.unreadable.length > 0 && !own.has(name)) {
+      plan.keep.push({ name, holders: [], reason: `owner unknown: unreadable container claims of ${others.unreadable.join(', ')}` })
+    } else plan.stop.push(name)
+  }
+  return plan
+}
+
+export interface PodmanServiceOptions {
+  /** Container user registry; defaults to the process-wide one (compute-users.ts). */
+  computeUsers?: ComputeUsers
+}
+
 export class PodmanService extends EventEmitter {
   private status: ComputeEnvStatus = 'stopped'
   private podmanBin: string | null = null
@@ -821,6 +891,23 @@ export class PodmanService extends EventEmitter {
   /** stderr signatures that mean the target container is gone/dead. */
   private static readonly DEAD_CONTAINER_RE = /is not running|no such container|container state improper/i
 
+  /** Which containers this runtime uses, visible to other runtimes on the
+   *  machine so their shutdown leaves them running. Created on first use. */
+  private _computeUsers: ComputeUsers | null
+
+  constructor(opts: PodmanServiceOptions = {}) {
+    super()
+    this._computeUsers = opts.computeUsers ?? null
+  }
+
+  /** What the last stop left running for other runtimes (getStatus().leftRunning). */
+  private _leftRunning: LeftRunningContainer[] = []
+
+  private get computeUsers(): ComputeUsers {
+    this._computeUsers ??= processComputeUsers()
+    return this._computeUsers
+  }
+
   // Typed event helpers
   override on<K extends keyof PodmanServiceEvents>(event: K, listener: PodmanServiceEvents[K]): this {
     return super.on(event, listener)
@@ -839,7 +926,36 @@ export class PodmanService extends EventEmitter {
       containerName: SHARED_CONTAINER,
       activeAgents: [...this.activeAgentIds],
       error: this.errorMessage,
+      ...(this._leftRunning.length > 0 ? { leftRunning: this._leftRunning } : {}),
     }
+  }
+
+  /**
+   * Other live runtimes using a container ("daemon pid 4242"), for a
+   * confirmation that is about to stop or remove it anyway (destroy, rebuild).
+   */
+  async containerUsers(name: string = SHARED_CONTAINER): Promise<string[]> {
+    return (await this.computeUsers.others()).claims.get(name) ?? []
+  }
+
+  /**
+   * Embedded Settings → Compute (IPC COMPUTE_LIST_CONTAINERS): listContainers()
+   * with `users`, the other live runtimes using each container, on the rows
+   * one claims, as the daemon-mode list has them (GET /compute/users). The
+   * Stop, Remove and Rebuild confirmations name them. A registry that cannot
+   * be read leaves the rows without `users` (logged).
+   */
+  async listContainersWithUsers(): Promise<ContainerSummary[]> {
+    const containers = await this.listContainers()
+    if (containers.length === 0) return containers
+    let claims: Map<string, string[]>
+    try {
+      claims = (await this.computeUsers.others()).claims
+    } catch (err) {
+      console.warn('[Compute] Could not read which other runtimes use the containers:', err instanceof Error ? err.message : err)
+      return containers
+    }
+    return containers.map((c) => (claims.get(c.name)?.length ? { ...c, users: claims.get(c.name)! } : c))
   }
 
   isRunning(): boolean {
@@ -922,7 +1038,11 @@ export class PodmanService extends EventEmitter {
       )
     }
 
+    this._leftRunning = []
     this.setStatus('starting')
+    // Claimed before the container exists, so another runtime's shutdown
+    // racing this start leaves it running.
+    await this.computeUsers.claim(SHARED_CONTAINER)
 
     try {
       await this.ensureMachine(bin)
@@ -1065,6 +1185,8 @@ export class PodmanService extends EventEmitter {
 
     const p = (async () => {
       const bin = await this.requirePodman()
+      this._leftRunning = []
+      await this.computeUsers.claim(name)
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
       await this.applyPeerFirewall(bin, name)
@@ -1151,6 +1273,7 @@ export class PodmanService extends EventEmitter {
     if (!bin) return
     try { await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS) } catch { /* ok */ }
     this.setPhase(name, 'stopped', undefined, agentId)
+    await this.computeUsers.release([name])
   }
 
   /** Destroy an isolated container completely. */
@@ -1287,6 +1410,12 @@ export class PodmanService extends EventEmitter {
    * Stop the shared container (preserves state — fast restart next time).
    */
   async stop(): Promise<void> {
+    await this.stopShared({ force: false })
+  }
+
+  /** Without `force`, the container stays running while another live runtime
+   *  uses it; this runtime stops using it either way. */
+  private async stopShared(opts: { force: boolean }): Promise<void> {
     if (this.stopTimer) {
       clearTimeout(this.stopTimer)
       this.stopTimer = null
@@ -1296,34 +1425,67 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return
 
-    try {
-      await this.exec0(bin, ['stop', '-t', '5', SHARED_CONTAINER], STOP_EXEC_TIMEOUT_MS)
-    } catch { /* may already be stopped */ }
+    // Release before reading the others: two runtimes stopping at once then
+    // cannot both see the other's claim and both leave it running.
+    const own = new Set(this.computeUsers.own())
+    await this.computeUsers.release([SHARED_CONTAINER])
+    const plan: ContainerShutdownPlan = opts.force
+      ? { stop: [SHARED_CONTAINER], keep: [] }
+      : planContainerShutdown([SHARED_CONTAINER], own, await this.computeUsers.others())
+    if (plan.keep.length > 0) {
+      console.log(`[Compute] Leaving ${SHARED_CONTAINER} running (${plan.keep[0].reason})`)
+    } else {
+      try {
+        await this.exec0(bin, ['stop', '-t', '5', SHARED_CONTAINER], STOP_EXEC_TIMEOUT_MS)
+      } catch { /* may already be stopped */ }
+    }
 
     this.activeAgentIds.clear()
+    this._leftRunning = plan.keep
     this.setStatus('stopped')
   }
 
   /**
-   * Stop ALL adf-* containers (shared + isolated). Called on app quit.
+   * Stop the running managed adf-* containers (shared + isolated) that no
+   * other live runtime on this machine uses (planContainerShutdown). Called on
+   * app quit and daemon shutdown. With a single runtime this is every running
+   * managed container, as before the container user registry.
    */
   async stopAll(): Promise<void> {
     const bin = await this.findPodman()
-    if (!bin) return
+    if (!bin) {
+      this._leftRunning = []
+      return
+    }
 
     const containers = await this.listContainers()
     const running = containers.filter((c) => c.running && c.managed)
-    if (running.length === 0) return
+    if (running.length === 0) {
+      this._leftRunning = []
+      await this.computeUsers.release([...this.computeUsers.own()])
+      return
+    }
 
-    console.log(`[Compute] Stopping ${running.length} container(s): ${running.map((c) => c.name).join(', ')}`)
+    // Release before reading the others (see stopShared): concurrent
+    // shutdowns must not each leave the shared container to the other.
+    const own = new Set(this.computeUsers.own())
+    await this.computeUsers.release([...own])
+    const plan = planContainerShutdown(running.map((c) => c.name), own, await this.computeUsers.others())
+    const kept = plan.keep.length > 0
+      ? `; leaving ${plan.keep.length} running: ${plan.keep.map((k) => `${k.name} (${k.reason})`).join(', ')}`
+      : ''
+    console.log(`[Compute] Stopping ${plan.stop.length} container(s)${plan.stop.length ? `: ${plan.stop.join(', ')}` : ''}${kept}`)
+    const stopping = running.filter((c) => plan.stop.includes(c.name))
     await Promise.all(
-      running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], STOP_EXEC_TIMEOUT_MS).catch(() => {}))
+      stopping.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], STOP_EXEC_TIMEOUT_MS).catch(() => {}))
     )
     for (const c of running) {
+      // A container left to another runtime is no longer this runtime's.
       this.forgetContainerRunState(c.name)
-      this.setPhase(c.name, 'stopped', undefined, c.agentId)
+      if (stopping.includes(c)) this.setPhase(c.name, 'stopped', undefined, c.agentId)
     }
     this.activeAgentIds.clear()
+    this._leftRunning = plan.keep
     this.setStatus('stopped')
   }
 
@@ -1333,7 +1495,10 @@ export class PodmanService extends EventEmitter {
     await this.assertManagedContainer(bin, name)
     this.forgetContainerRunState(name)
     const result = await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS)
-    if (result.code === 0) this.setPhase(name, 'stopped')
+    if (result.code === 0) {
+      this.setPhase(name, 'stopped')
+      await this.computeUsers.release([name])
+    }
     return result.code === 0
   }
 
@@ -1341,6 +1506,8 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
+    this._leftRunning = []
+    await this.computeUsers.claim(name)
     const result = await this.exec0(bin, ['start', name])
     // The netns (and its firewall) is fresh after a start — reload it. No-op
     // for containers created before the feature.
@@ -1369,11 +1536,13 @@ export class PodmanService extends EventEmitter {
       }
       throw err
     }
+    await this.warnRemovingUsedContainer(name)
     const result = await this.exec0(bin, ['rm', '-f', name])
     this.forgetContainerRunState(name)
     this._browserCompatibilityInstalled.delete(name)
     this._novncPorts.delete(name)
     this._provisionFailures.delete(name)
+    if (result.code === 0) await this.computeUsers.release([name])
     if (result.code === 0) this.setPhase(name, 'absent')
     return result.code === 0
   }
@@ -1402,6 +1571,13 @@ export class PodmanService extends EventEmitter {
     return { recreated: true }
   }
 
+  private async warnRemovingUsedContainer(name: string): Promise<void> {
+    const users = await this.containerUsers(name)
+    if (users.length > 0) {
+      console.warn(`[Compute] Removing ${name} although ${users.join(', ')} uses it (explicit reset); it is recreated on its next use`)
+    }
+  }
+
   /** Managed identity of a container from its labels, or from the
    *  failed-provision record when the container no longer exists. */
   private async managedIdentity(
@@ -1426,7 +1602,11 @@ export class PodmanService extends EventEmitter {
    * Next ensureRunning() will do a full first-time setup.
    */
   async destroy(): Promise<void> {
-    await this.stop()
+    // An explicit reset removes the container even when another runtime uses
+    // it; that runtime recreates it on its next use. containerUsers() lets
+    // the confirmation warn first.
+    await this.warnRemovingUsedContainer(SHARED_CONTAINER)
+    await this.stopShared({ force: true })
     const bin = await this.findPodman()
     if (!bin) return
 
@@ -1443,13 +1623,14 @@ export class PodmanService extends EventEmitter {
   async setup(
     step: 'install' | 'machine_init' | 'machine_start' | 'check',
     installCommand?: string
-  ): Promise<Record<string, unknown>> {
+  ): Promise<ComputeSetupResult> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
 
-    const run = (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> =>
-      new Promise((resolve) => {
-        execFile(cmd, cmdArgs, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+    const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
+      const cwd = await podmanCwd(cmdArgs)
+      return new Promise((resolve) => {
+        execFile(cmd, cmdArgs, { timeout, windowsHide: true, cwd }, (error, stdout, stderr) => {
           resolve({
             stdout: stdout?.trim() ?? '',
             stderr: stderr?.trim() ?? '',
@@ -1462,6 +1643,7 @@ export class PodmanService extends EventEmitter {
           })
         })
       })
+    }
 
     if (step === 'check') {
       return { success: true, availability: await checkPodmanAvailability() }
@@ -1840,7 +2022,7 @@ export class PodmanService extends EventEmitter {
         this.setPhase(containerName, 'provisioning', 'Installing packages (a minute or two)', agentId)
         // Detect package manager: apt-get for Debian-based, apk for Alpine
         const isAlpine = image.includes('alpine')
-        let pkgResult: { stdout: string; stderr: string; code: number }
+        let pkgResult: Awaited<ReturnType<PodmanService['exec0']>>
         if (isAlpine) {
           pkgResult = await this.exec0(bin, ['exec', containerName, 'apk', 'add', '--no-cache', ...pkgs], 300_000)
         } else {
@@ -2442,9 +2624,10 @@ export class PodmanService extends EventEmitter {
     return bin
   }
 
-  private exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
+  protected async exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
+    const cwd = await podmanCwd(args)
     return new Promise((resolve) => {
-      execFile(cmd, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+      execFile(cmd, args, { timeout, windowsHide: true, cwd }, (error, stdout, stderr) => {
         resolve({
           stdout: stdout?.trim() ?? '',
           stderr: stderr?.trim() ?? '',

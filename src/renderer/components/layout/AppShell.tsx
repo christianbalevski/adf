@@ -11,6 +11,7 @@ import { AgentReviewDialog } from '../common/AgentReviewDialog'
 import { ProviderSetupDialog } from '../common/ProviderSetupDialog'
 import { ShareAgentDialog } from '../common/ShareAgentDialog'
 import { AgentReviewBanner } from '../common/AgentReviewBanner'
+import { RecoveredEditsNotice } from '../common/RecoveredEditsNotice'
 import { IdentityRestoreBanner } from '../common/IdentityRestoreBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
@@ -18,6 +19,7 @@ import { ApprovalToasts } from './ApprovalsMenu'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
+import type { Inbox } from '../../../shared/types/adf.types'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useDragResize } from '../../hooks/useDragResize'
 import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
@@ -101,7 +103,7 @@ export function AppShell() {
   const setOutboxMessages = useInboxStore((s) => s.setOutboxMessages)
 
   // Helper to apply inbox data to stores (store derives the unread count)
-  const applyInboxData = useCallback((inboxData: { messages?: { status: string }[] } | null | undefined) => {
+  const applyInboxData = useCallback((inboxData: Inbox | null | undefined) => {
     if (inboxData) {
       setInboxData(inboxData)
     } else {
@@ -112,8 +114,8 @@ export function AppShell() {
   // Subscribe to push-based inbox updates from main process
   useEffect(() => {
     if (!filePath) return
-    const unsubscribe = window.adfApi?.onInboxUpdated?.((data: { inbox?: unknown }) => {
-      applyInboxData(data?.inbox as { messages?: { status: string }[] } | null)
+    const unsubscribe = window.adfApi?.onInboxUpdated?.((data) => {
+      applyInboxData(data.inbox)
     })
     return () => unsubscribe?.()
   }, [filePath, applyInboxData])
@@ -194,6 +196,8 @@ export function AppShell() {
           content area). */}
       {!showMeshGraph && !showSettings && <AgentReviewBanner />}
       {!showMeshGraph && !showSettings && <IdentityRestoreBanner />}
+      {/* W3-F: unsaved versions a quit left under a "changed elsewhere" notice. */}
+      {!showMeshGraph && <RecoveredEditsNotice />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Settings has its own navigation; the workspace tree stays out of

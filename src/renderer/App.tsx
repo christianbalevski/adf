@@ -4,6 +4,8 @@ import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/a
 import { useDocumentStore } from './stores/document.store'
 import { useMessageQueueStore } from './stores/message-queue.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
+import { saveActiveEditorTab } from './utils/editor-save'
+import { startEditRecovery, stashUnsavedEditors } from './utils/edit-recovery'
 import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
@@ -12,6 +14,7 @@ import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
+import { RemotePickerHost } from './components/common/RemotePickerDialog'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -87,20 +90,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save)
+  // W3-F: copies of unsaved text a "changed elsewhere" notice holds, so a quit keeps them.
+  useEffect(() => startEditRecovery(), [])
+
+  // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save).
+  // The tab is saved through the editor's own save path (W3-F): over its
+  // revision, never while its "changed elsewhere" notice is up (the notice
+  // gets focus instead).
   const saveActiveDocument = useCallback(() => {
-    const tabStore = useEditorTabsStore.getState()
-    const activeTab = tabStore.tabs.find((t) => t.path === tabStore.activeTabPath)
-    if (activeTab && activeTab.isDirty) {
-      const path = activeTab.path
-      const content = activeTab.content
-      if (path === 'README.md') {
-        window.adfApi?.setDocument(content)
-      } else {
-        window.adfApi?.writeInternalFile(path, content)
-      }
-      tabStore.markTabSaved(path)
-    }
+    saveActiveEditorTab()
     window.adfApi?.saveFile().then((result) => {
       if (result?.success) {
         useDocumentStore.getState().setDirty(false)
@@ -164,6 +162,16 @@ export default function App() {
           break
         case 'open-settings':
           setShowSettings(true)
+          break
+        // Daemon mode: a remote daemon could not be reached at launch (Help, or the failure dialog).
+        case 'open-settings-backend':
+          useAppStore.getState().openSettingsAt('backend')
+          break
+        // Daemon mode: main restarts Studio after the connection failed; keep unsaved editors first.
+        case 'stash-edits-and-reconnect':
+        case 'stash-edits-and-use-embedded':
+          await stashUnsavedEditors()
+          await window.adfApi?.restartStudio(action === 'stash-edits-and-reconnect' ? 'reconnect' : 'embedded-session')
           break
       }
     })
@@ -275,6 +283,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppShell />
+      <RemotePickerHost />
     </ErrorBoundary>
   )
 }

@@ -333,9 +333,17 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
       ? body.error
       : `HTTP ${response.status} ${response.statusText}`
     const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token) : null
-    throw new Error(hint ? `${message}\n${hint}` : message)
+    throw new DaemonRequestError(hint ? `${message}\n${hint}` : message, response.status, isRecord(body) && typeof body.code === 'string' ? body.code : null)
   }
   return body
+}
+
+/** A daemon error response: the message as before, plus its status and `code` for callers that branch on them. */
+class DaemonRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly apiCode: string | null) {
+    super(message)
+    this.name = 'DaemonRequestError'
+  }
 }
 
 /** Pull `--loop <name>` / `--loop=<name>` out of a command's arguments. */
@@ -818,7 +826,9 @@ async function identityCommand(io: CliIo, options: CliOptions, args: string[]): 
     return 0
   }
 
-  if (action === 'restore' || action === 'import') {
+  if (action === 'import') return await importIdentity(io, options, args.slice(1))
+
+  if (action === 'restore') {
     const current = await requestJson(io, options, '/identity')
     if (isRecord(current) && current.status === 'ready') {
       io.stdout(formatIdentity(current))
@@ -851,7 +861,121 @@ async function identityCommand(io: CliIo, options: CliOptions, args: string[]): 
     return 0
   }
 
-  throw new Error('Usage: adf identity [status | new | restore | unlock | lock]')
+  if (action === 'trust-daemon') return await trustDaemon(io, options, args.slice(1))
+
+  if (action === 'untrust-daemon') {
+    const answer = await postJson(io, options, '/identity/untrust-daemon')
+    if (options.json) {
+      io.stdout(`${JSON.stringify(answer, null, 2)}\n`)
+      return 0
+    }
+    const result = isRecord(answer) ? answer : {}
+    const trust = isRecord(result.trust) ? result.trust : {}
+    io.stdout(
+      `Revoked key ${String(result.retiredLabel ?? '')}: the daemon now uses a new key, and the old one no longer opens anything here.\n` +
+      `Slots removed from ${String(result.agentsUpdated ?? 0)} loaded agent(s); the tracked folders are swept in the background, and\n` +
+      'ADF Studio removes the slot from each agent it opens. A copy of an agent outside the tracked folders keeps the old slot\n' +
+      'until it is opened, and anyone holding a copy of the old key file can open that slot until then.\n' +
+      `${String(trust.message ?? '')}\n`,
+    )
+    return 0
+  }
+
+  throw new Error('Usage: adf identity [status | new | restore | import | unlock | lock | trust-daemon | untrust-daemon]')
+}
+
+/**
+ * `adf identity trust-daemon` (K12, no OS keychain): the owner lets ADF
+ * Studio wrap agent credentials to this daemon's key. Says what that means
+ * and asks for "trust" first, unless --yes.
+ */
+async function trustDaemon(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  for (const arg of args) {
+    if (arg !== '--yes') throw new Error(`Unknown option for adf identity trust-daemon: ${arg}`)
+  }
+  const current = await requestJson(io, options, '/identity')
+  const trust = isRecord(current) && isRecord(current.trust) ? current.trust : null
+  if (trust?.state === 'trusted') {
+    io.stdout(`${String(trust.message ?? '')}\n`)
+    return 0
+  }
+  if (!args.includes('--yes')) {
+    io.stdout(
+      'Trusting this daemon adds its key (the runtime-enc-key file next to the daemon settings) to\n' +
+      'trustedDaemonEncKeys. ADF Studio then wraps every agent\'s credentials to that key, so anyone who\n' +
+      'can read that file, or write the settings file, can unlock them without the owner passphrase.\n' +
+      'The grant is an entry in the settings file, not a signed statement.\n' +
+      'Revoke it with adf identity untrust-daemon.\n',
+    )
+    const answer = (await ask(io, 'Type "trust" to go ahead: ')).trim().toLowerCase()
+    if (answer !== 'trust') {
+      io.stdout('Nothing was changed.\n')
+      return 1
+    }
+  }
+  const answer = await postJson(io, options, '/identity/trust-daemon', { confirm: true })
+  if (options.json) {
+    io.stdout(`${JSON.stringify(answer, null, 2)}\n`)
+    return 0
+  }
+  const result = isRecord(answer) ? answer : {}
+  const granted = isRecord(result.trust) ? result.trust : {}
+  io.stdout(`${String(granted.message ?? '')}\nSlots added to ${String(result.agentsUpdated ?? 0)} loaded agent(s).\n`)
+  return 0
+}
+
+/**
+ * `adf identity import`: Studio's Import identity. The same owner's phrase
+ * acts as a restore; another owner's phrase replaces this machine's owner
+ * after the user types "switch" (the daemon names both DIDs first). The
+ * daemon refuses a switch while the previous owner's backup is unconfirmed;
+ * --i-have-a-backup states that the user holds that phrase.
+ */
+async function importIdentity(io: CliIo, options: CliOptions, args: string[] = []): Promise<number> {
+  for (const arg of args) {
+    if (arg !== '--i-have-a-backup') throw new Error(`Unknown option for adf identity import: ${arg}`)
+  }
+  const haveBackup = args.includes('--i-have-a-backup')
+  const current = await requestJson(io, options, '/identity')
+  if (isRecord(current) && typeof current.ownerDid === 'string' && current.ownerDid) {
+    io.stdout(`This machine's owner is ${current.ownerDid}. A phrase of another owner replaces it.\n`)
+  }
+  const mnemonic = (await ask(io, 'Seed phrase (12 words, input hidden): ', true)).trim()
+  if (!mnemonic) throw new Error('No seed phrase entered.')
+  const passphrase = await passphraseIfNeeded(io, current, isRecord(current) && current.status !== 'locked')
+  const body: Record<string, unknown> = { mnemonic, ...(passphrase ? { passphrase } : {}), ...(haveBackup ? { previousOwnerBackupConfirmed: true } : {}) }
+  let imported: JsonValue
+  try {
+    imported = await postJson(io, options, '/identity/import', body)
+  } catch (err) {
+    if (!(err instanceof DaemonRequestError) || err.apiCode !== 'switch_unconfirmed') throw err
+    io.stdout(`${err.message}\n`)
+    const answer = (await ask(io, 'Type "switch" to replace the owner: ')).trim().toLowerCase()
+    if (answer !== 'switch') {
+      io.stdout('Nothing was changed.\n')
+      return 1
+    }
+    imported = await postJson(io, options, '/identity/import', { ...body, switchOwner: true })
+  }
+  if (options.json) {
+    io.stdout(`${JSON.stringify(imported, null, 2)}\n`)
+    return 0
+  }
+  const result = isRecord(imported) ? imported : {}
+  const identity = isRecord(result.identity) ? result.identity : {}
+  const restamp = isRecord(result.restamp) ? result.restamp : {}
+  const failures = Array.isArray(restamp.failures) ? restamp.failures.map(String) : []
+  const skipped = Array.isArray(restamp.skipped) ? restamp.skipped.map(String) : []
+  const reloadFailures = Array.isArray(result.reloadFailures) ? result.reloadFailures.filter(isRecord) : []
+  io.stdout(
+    `${result.switched === true ? `Owner switched from ${String(result.previousOwnerDid ?? '')}.` : 'Owner identity imported.'}\n` +
+    formatIdentity(identity) +
+    `Restamped ${String(restamp.restamped ?? 0)} agent file(s), ${failures.length} failure(s).\n` +
+    failures.map(f => `  ${f}\n`).join('') +
+    (skipped.length ? `Not restamped now, another runtime runs them (restamped when next opened):\n${skipped.map(f => `  ${f}\n`).join('')}` : '') +
+    reloadFailures.map(f => `Could not reload ${String(f.name ?? '')} (${String(f.filePath ?? '')}): ${String(f.error ?? '')}\n`).join(''),
+  )
+  return failures.length > 0 || reloadFailures.length > 0 ? 1 : 0
 }
 
 async function newAgent(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -907,9 +1031,15 @@ function formatIdentity(value: JsonValue): string {
     ['status', String(value.status ?? '')],
     ['ownerDid', String(value.ownerDid ?? '')],
     ['runtimeDid', String(value.runtimeDid ?? '')],
+    ...(isRecord(value.runtime) ? [['runtime', `${String(value.runtime.source ?? '')} (${String(value.runtime.state ?? '')})`]] : []),
+    ...(isRecord(value.trust) && value.trust.state !== 'not-applicable' ? [['daemonKey', String(value.trust.state ?? '')]] : []),
     ['storage', String(value.storage ?? '')],
     ['backupConfirmed', String(value.backupConfirmed ?? false)],
-  ])}${typeof value.message === 'string' ? `${value.message}\n` : ''}`
+  ])}${typeof value.message === 'string' ? `${value.message}\n` : ''}` +
+    // Only the actionable case: a Studio runtime entry exists but was not used.
+    (isRecord(value.runtime) && value.runtime.state === 'rejected' && typeof value.runtime.message === 'string'
+      ? `${value.runtime.message}\n`
+      : '')
 }
 
 function formatTemplates(value: JsonValue): string {
@@ -1347,8 +1477,18 @@ Commands:
   identity restore               Restore the owner identity from its seed
                                   phrase (typed at a hidden prompt; the same
                                   phrase as ADF Studio = the same owner)
-  identity unlock|lock           Unlock/lock a passphrase-protected identity
+  identity import [--i-have-a-backup]
+                                  Import an owner phrase like Studio's Import
+                                  identity: another owner's phrase replaces
+                                  this machine's owner (asks first; needs the
+                                  old phrase backed up) and restamps local
+                                  agents
+  identity unlock|lock          Unlock/lock a passphrase-protected identity
                                   (machines without an OS keychain)
+  identity trust-daemon [--yes]  No OS keychain: let ADF Studio wrap agent
+                                  credentials to this daemon's key file, so
+                                  they unlock without the passphrase (asks)
+  identity untrust-daemon        Revoke that trust
   templates                      List agent templates
   new [name] [--template <id>] [--provider <id>] [--model <id>]
       [--dir <path>] [--start]   Create an agent from a template, sealed

@@ -87,6 +87,119 @@ describe('POST /runtime/providers', () => {
     expect(readFileSync(file, 'utf8')).not.toContain('sk-rotated-key-1234')
   })
 
+  it('an echoed __redacted__ key is restored only to the same type and baseUrl; a changed endpoint needs the key again (W5-D1)', async () => {
+    const { server, settings, vault } = setup()
+    const made = (await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'openai-compatible', name: 'agent-1 LLM', preset: 'custom', baseUrl: 'https://llm.example.com/v1', apiKey: KEY } })).json().provider
+    const echoed = (await server.inject({ method: 'GET', url: '/settings/providers' })).json().value as Array<Record<string, unknown>>
+    expect(echoed[0].apiKey).toBe('__redacted__')
+
+    for (const [label, change] of [['baseUrl', { baseUrl: 'https://attacker.example/v1' }], ['type', { type: 'anthropic' }]] as const) {
+      for (const write of [
+        () => server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change }] } }),
+        () => server.inject({ method: 'PUT', url: '/settings/providers', payload: { value: [{ ...echoed[0], ...change }] } }),
+      ]) {
+        const res = await write()
+        expect(res.statusCode, label).toBe(400)
+        expect(res.json(), label).toMatchObject({ code: 'api_key_required' })
+        expect(res.json().error, label).toContain('"agent-1 LLM"')
+        expect(res.body, label).not.toContain(KEY)
+        // Nothing written: the stored entry and key are as they were.
+        expect(settings.getProvider(made.id), label).toMatchObject({ baseUrl: 'https://llm.example.com/v1', type: 'openai-compatible', apiKey: KEY })
+      }
+    }
+
+    // A secret-store entry with an empty key is filled from the vault by id: the same rule (bypass found in review).
+    for (const change of [{ baseUrl: 'https://attacker.example/v1' }, { type: 'anthropic' }]) {
+      const res = await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change, apiKeyStorage: 'secret-store', apiKey: '' }] } })
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({ code: 'api_key_required' })
+      expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://llm.example.com/v1', apiKey: KEY })
+    }
+    // Any other writer of the store: the vault key is dropped (logged), never filled into the new endpoint.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    settings.update({ providers: [{ ...echoed[0], baseUrl: 'https://attacker.example/v1', apiKeyStorage: 'secret-store', apiKey: '' }] })
+    expect(settings.getProvider(made.id)?.apiKey).toBe('')
+    expect(vault.values.has(made.id)).toBe(false)
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('its stored key was removed'))).toBe(true)
+    warn.mockRestore()
+    settings.update({ providers: [{ ...echoed[0], apiKeyStorage: 'secret-store', apiKey: KEY }] })
+
+    // A new key with the new address is accepted; the same endpoint keeps the stored key.
+    expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }] } })).statusCode).toBe(200)
+    expect(settings.getProvider(made.id)?.apiKey).toBe(KEY)
+    expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], baseUrl: 'https://other.example.com/v1', apiKey: 'sk-new-endpoint-key-1' }] } })).statusCode).toBe(200)
+    expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://other.example.com/v1', apiKey: 'sk-new-endpoint-key-1' })
+    expect(vault.values.get(made.id)).toBe('sk-new-endpoint-key-1')
+  })
+
+  it('refuses an endpoint or type change while the secret store is locked: the stored key could not be removed (W5-D1)', async () => {
+    const store = new Map<string, string>()
+    let unlocked = true
+    const backend = { kind: 'file' as const, isUnlocked: () => unlocked, get: (a: string) => store.get(a) ?? null, set: (a: string, v: string) => { store.set(a, v) }, delete: (a: string) => { store.delete(a) } }
+    const { server, settings } = setup(new SecretBackendProviderKeyVault(backend, 'abc123') as unknown as MemoryProviderKeyVault)
+    const made = (await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'openai-compatible', name: 'agent-1 LLM', preset: 'custom', baseUrl: 'https://llm.example.com/v1', apiKey: KEY } })).json().provider
+    unlocked = false
+    const echoed = (await server.inject({ method: 'GET', url: '/settings/providers' })).json().value as Array<Record<string, unknown>>
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      for (const change of [{ baseUrl: 'https://attacker.example/v1' }, { type: 'anthropic' }]) {
+        for (const write of [
+          () => server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change }], theme: 'dark' } }),
+          () => server.inject({ method: 'PUT', url: '/settings/providers', payload: { value: [{ ...echoed[0], ...change }] } }),
+        ]) {
+          const res = await write()
+          expect(res.statusCode).toBe(409)
+          expect(res.json()).toMatchObject({ code: 'secret_store_locked' })
+          expect(res.json().error).toContain('"agent-1 LLM"')
+        }
+        expect(() => settings.update({ providers: [{ ...echoed[0], ...change }] })).toThrow(/locked/)
+      }
+      expect(settings.get('theme')).not.toBe('dark') // a refused PATCH writes no key
+      // A key sent with the change (junk or real), a re-entered key, a storage switch and a removal are refused too: never dropped silently.
+      for (const providers of [
+        [{ ...echoed[0], baseUrl: 'https://attacker.example/v1', apiKey: 'junk' }],
+        [{ ...echoed[0], apiKey: 'sk-re-entered-key-0001' }],
+        [{ ...echoed[0], apiKeyStorage: undefined, apiKey: '' }],
+        [],
+      ]) {
+        const res = await server.inject({ method: 'PATCH', url: '/settings', payload: { providers } })
+        expect(res.statusCode).toBe(409)
+        expect(res.json()).toMatchObject({ code: 'secret_store_locked' })
+      }
+      // Other edits still save while locked, and a new provider without a key can be set up.
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }] } })).statusCode).toBe(200)
+      const local = { id: 'custom:local', type: 'openai-compatible', name: 'Local', baseUrl: 'http://localhost:11434/v1', apiKey: '', apiKeyStorage: 'secret-store' }
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }, local] } })).statusCode).toBe(200)
+    } finally {
+      warn.mockRestore()
+    }
+    unlocked = true
+    expect(settings.getProvider(made.id)).toMatchObject({ name: 'renamed', baseUrl: 'https://llm.example.com/v1', type: 'openai-compatible', apiKey: KEY })
+  })
+
+  it('a stored key never follows its entry out of the secret store and back to a new address (W5-D1)', async () => {
+    const { server, settings, vault } = setup()
+    const made = (await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'openai-compatible', name: 'agent-1 LLM', preset: 'custom', baseUrl: 'https://llm.example.com/v1', apiKey: KEY } })).json().provider
+    const echoed = (await server.inject({ method: 'GET', url: '/settings/providers' })).json().value as Array<Record<string, unknown>>
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Out of the secret store with a new address, then back.
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], apiKeyStorage: undefined, apiKey: '', baseUrl: 'https://attacker.example/v1' }] } })).statusCode).toBe(200)
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], apiKey: '', baseUrl: 'https://attacker.example/v1' }] } })).statusCode).toBe(200)
+      expect(settings.getProvider(made.id)).toMatchObject({ baseUrl: 'https://attacker.example/v1', apiKey: '' })
+      expect(vault.values.has(made.id)).toBe(false)
+
+      // Removed, then added again under the same id.
+      settings.update({ providers: [{ ...echoed[0], apiKey: KEY }] })
+      expect(vault.values.get(made.id)).toBe(KEY)
+      settings.update({ providers: [] })
+      settings.update({ providers: [{ ...echoed[0], apiKey: '', baseUrl: 'https://attacker.example/v1' }] })
+      expect(settings.getProvider(made.id)?.apiKey).toBe('')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('refuses while the secret store is locked, subscriptions, and missing keys or URLs', async () => {
     const { server } = setup(new MemoryProviderKeyVault(false))
     const locked = await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'anthropic', apiKey: KEY } })

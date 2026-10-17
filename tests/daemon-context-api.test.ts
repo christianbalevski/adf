@@ -72,6 +72,9 @@ describe('GET /agents/:id/context', () => {
     const tools = body.categories.find((c: { id: string }) => c.id === 'tools')
     expect(tools.count).toBeGreaterThan(0)
     expect(tools.items.length).toBeLessThanOrEqual(12)
+    // No call yet: every figure is an estimate, and says so.
+    expect(body.breakdown.calibration).toBeUndefined()
+    expect(new Set(body.categories.map((c: { basis: string }) => c.basis))).toEqual(new Set(['estimate']))
   })
 
   it('grows with the conversation and honours items=', async () => {
@@ -109,6 +112,10 @@ describe('GET /agents/:id/context', () => {
     // Nothing after the reply: prompt + the reply's reported output, the gauge's figure.
     expect(after.breakdown.calibration).toMatchObject({ reply_tokens: 40, since_last_call_tokens: 40 })
     expect(after.totalTokens).toBe(provider.promptTokens + 40)
+    // The reply is counted from its reported output (measured); every other part is scaled (calibrated).
+    const recent = after.categories.find((c: { id: string }) => c.id === 'recent')
+    expect(recent).toMatchObject({ tokens: 40, basis: 'measured' })
+    for (const c of after.categories) if (c.id !== 'recent') expect(c.basis, c.id).toBe('calibrated')
 
     // New instructions: the system prompt measured now is not the one sent.
     const config = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/config` })).json().config as AgentConfig

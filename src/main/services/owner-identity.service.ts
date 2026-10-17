@@ -14,14 +14,16 @@
  */
 
 import { readdirSync } from 'fs'
-import { join } from 'path'
+import { readdir } from 'fs/promises'
+import { basename, join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../adf/adf-database'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
-import { generateX25519KeyPair, extractRawX25519PublicKey, type KeySlotRecord } from '../crypto/envelope-crypto'
+import { generateX25519KeyPair, extractRawX25519PublicKey, openKeySlot, type KeySlotRecord } from '../crypto/envelope-crypto'
 import { daemonEncKeyLabel } from '../daemon/daemon-enc-key'
-import { appendAdfAttestation, createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
+import { appendAdfAttestation, createAttestation, issueOwnerAttestation, readAdfAttestations, verifyAttestation } from './attestation.service'
 import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
 import type { SharedMnemonicStore } from './owner-secret-store'
@@ -64,15 +66,87 @@ export interface OwnerIdentityStatus {
  */
 export const OWNER_SEED_DERIVED_KEY = 'ownerDidSeedDerived'
 
+/**
+ * Secret settings key holding a previous owner's phrase after an owner switch
+ * made outside this install: `ownerMnemonicSuperseded:<that owner's DID>`,
+ * same `safe:` encoding as `ownerMnemonic`, one key per owner so a later
+ * switch never overwrites it. Kept so the phrase stays recoverable; never
+ * shown, never used to sign.
+ */
+export function ownerMnemonicSupersededKey(ownerDid: string): string {
+  return `ownerMnemonicSuperseded:${ownerDid}`
+}
+
 export interface RestampResult {
   restamped: number
   attested: number
   failures: string[]
+  /** Files `skip` left out (another runtime runs them); restamped when next opened. Present only when a `skip` was given. */
+  skipped?: string[]
+}
+
+/** How long minting an agent's identity waits for another connection's write lock (an interactive open). */
+export const PROVISION_BUSY_TIMEOUT_MS = 100
+/** The boot sweep's wait: a busy file is a named failure, retried at the next boot or open. */
+export const SWEEP_BUSY_TIMEOUT_MS = 25
+
+/**
+ * Minting an agent's identity found the file's write lock held by another
+ * connection past PROVISION_BUSY_TIMEOUT_MS. The message is for the user and
+ * names the file; nothing was written.
+ */
+export class AgentFileBusyError extends Error {
+  readonly code = 'agent_file_busy'
+  constructor(readonly filePath: string) {
+    super(`${basename(filePath)} is busy (another program is writing it); try again.`)
+    this.name = 'AgentFileBusyError'
+  }
+}
+
+/**
+ * `err` as the user-facing AgentFileBusyError for `filePath` when it is one,
+ * or SQLite's own SQLITE_BUSY (another connection held the write lock past
+ * busy_timeout); null for anything else.
+ */
+export function agentFileBusy(err: unknown, filePath: string): AgentFileBusyError | null {
+  if (err instanceof AgentFileBusyError) return err
+  const code = (err as { code?: unknown } | null)?.code
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY') ? new AgentFileBusyError(filePath) : null
+}
+
+/** What one boot envelope sweep did (sweepEnvelopeMigration). */
+export interface EnvelopeSweepResult {
+  /** Files that got signing keys (and a DID and attestations). */
+  provisioned: number
+  /** Plain secret rows sealed under their envelope. */
+  sealed: number
+  /** `<path>: <error>` per file (or folder) that failed; retried at the next boot or open. */
+  failures: string[]
+  /** Files left alone: open or running in this process, or run by another runtime. */
+  skipped: string[]
+  /**
+   * Files not opened because they need a schema migration (which runs only
+   * when the user opens the file) or are not reviewed. Decided read-only.
+   */
+  needUpgradeOrReview: string[]
+  /** No owner identity to provision with: nothing was opened. */
+  ownerNotReady?: true
+}
+
+/** The sweep's log line, the same in both modes; null when it did nothing. Failures are named with their paths. */
+export function describeEnvelopeSweep(sweep: EnvelopeSweepResult, ms: number): string | null {
+  if (sweep.ownerNotReady) return '[OwnerIdentity] Envelope sweep skipped: the owner identity is not ready, so no tracked agent was provisioned'
+  if (!sweep.provisioned && !sweep.sealed && !sweep.failures.length && !sweep.skipped.length && !sweep.needUpgradeOrReview.length) return null
+  return `[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s)` +
+    `${sweep.skipped.length ? `, ${sweep.skipped.length} open here or run by another runtime (provisioned when next opened)` : ''}` +
+    `${sweep.needUpgradeOrReview.length ? `, ${sweep.needUpgradeOrReview.length} skipped: need upgrade or review` : ''} in ${ms.toFixed(0)}ms` +
+    `${sweep.failures.length ? ` — failed (retried at the next boot or open): ${sweep.failures.join('; ')}` : ''}`
 }
 
 export class OwnerIdentityService {
   private sharedMnemonic: SharedMnemonicStore | null = null
   private readonly manageTrustedDaemonSlots: boolean
+  private readonly ownerDidOnDisk: (() => unknown) | null
 
   constructor(
     private settings: OwnerIdentitySettings,
@@ -83,9 +157,16 @@ export class OwnerIdentityService {
        * file would otherwise strip slots Studio added.
        */
       manageTrustedDaemonSlots?: boolean
+      /**
+       * `ownerDid` as the settings file on disk holds it now (Studio: another
+       * writer, the daemon's owner import, may have changed it since this
+       * process read it). Checked before the phrase is mirrored.
+       */
+      ownerDidOnDisk?: () => unknown
     } = {}
   ) {
     this.manageTrustedDaemonSlots = opts.manageTrustedDaemonSlots ?? true
+    this.ownerDidOnDisk = opts.ownerDidOnDisk ?? null
   }
 
   /**
@@ -99,9 +180,26 @@ export class OwnerIdentityService {
     this.sharedMnemonic = store
   }
 
-  /** Copy the phrase into the shared keychain entry when it differs. Never throws. */
+  /**
+   * Copy the phrase into the shared keychain entry when it differs. Never
+   * throws. A phrase that does not derive the owner DID on record is never
+   * mirrored: after an owner switch made outside this app (adf identity
+   * import) it would overwrite the new owner's phrase, the only copy on this
+   * machine. The owner on record is re-read from disk first: a switch made
+   * while this process runs is not in its copy of the settings yet.
+   */
   private mirrorToSharedStore(mnemonic: string): void {
     if (!this.sharedMnemonic) return
+    let onDisk: unknown
+    try { onDisk = this.ownerDidOnDisk?.() } catch { onDisk = undefined }
+    if (typeof onDisk === 'string' && onDisk !== '' && onDisk !== this.getOwnerDid()) {
+      console.warn(`[OwnerIdentity] Not mirroring this install's owner phrase into the OS keychain: the settings file now names the owner ${onDisk}, not ${this.getOwnerDid()} (switched outside this app, e.g. adf identity import). Restart ADF Studio to follow the switch.`)
+      return
+    }
+    if (!phraseDerives(mnemonic, this.getOwnerDid())) {
+      console.warn(`[OwnerIdentity] Not mirroring this install's owner phrase into the OS keychain: it does not belong to this machine's owner ${this.getOwnerDid()}`)
+      return
+    }
     try {
       if (this.sharedMnemonic.read() !== mnemonic) this.sharedMnemonic.write(mnemonic)
     } catch (err) {
@@ -115,7 +213,7 @@ export class OwnerIdentityService {
    * record is taken (or any valid phrase on a fresh install with no owner
    * DID yet). Returns the adopted phrase, or null.
    */
-  private importFromSharedStore(currentOwnerDid: string | undefined): string | null {
+  private importFromSharedStore(currentOwnerDid: string | undefined, opts: { replacingStale?: string } = {}): string | null {
     if (!this.sharedMnemonic) return null
     // Without safeStorage, setSecret would write the phrase to the settings
     // file in plaintext. Keep Studio's previous behavior instead.
@@ -132,13 +230,22 @@ export class OwnerIdentityService {
       console.warn(`[OwnerIdentity] The OS keychain holds the phrase for ${owner.did}, not this install's owner ${currentOwnerDid} — not importing it.`)
       return null
     }
+    const staleOwner = opts.replacingStale ? derivedDid(opts.replacingStale) : null
+    if (opts.replacingStale && staleOwner) {
+      // Never destroyed: the previous owner's phrase stays recoverable.
+      const key = ownerMnemonicSupersededKey(staleOwner)
+      this.settings.setSecret(key, opts.replacingStale)
+      console.log(`[OwnerIdentity] Kept this install's phrase of the previous owner ${staleOwner} as ${key}`)
+    }
     this.settings.setSecret('ownerMnemonic', phrase)
     if (!currentOwnerDid) {
       this.settings.set('ownerDid', owner.did)
       this.settings.set('ownerSeedBackupConfirmed', false)
     }
     this.markSeedDerived()
-    console.log(`[OwnerIdentity] Imported owner phrase for ${owner.did} from the OS keychain`)
+    console.log(opts.replacingStale
+      ? `[OwnerIdentity] The owner is now ${owner.did} (switched outside this app, e.g. adf identity import): replaced this install's phrase of the previous owner with the one in the OS keychain`
+      : `[OwnerIdentity] Imported owner phrase for ${owner.did} from the OS keychain`)
     return phrase
   }
 
@@ -160,7 +267,26 @@ export class OwnerIdentityService {
     const existingOwnerDid = this.settings.get('ownerDid') as string | undefined
     // Own copy first; else the phrase the CLI/daemon put in the OS keychain
     // (same owner DID only — see importFromSharedStore).
-    const mnemonic = this.settings.getSecret('ownerMnemonic') ?? this.importFromSharedStore(existingOwnerDid)
+    let mnemonic = this.settings.getSecret('ownerMnemonic')
+    // Own copy of ANOTHER owner. Taken over only for a recorded switch made
+    // outside this app (the daemon's import puts the previous owner into
+    // legacyOwnerDids and the new phrase into the keychain): an ownerDid that
+    // is merely wrong (hand edit, settings copied from elsewhere) must never
+    // cost this install its own phrase. ensureRuntimeKey below then re-signs
+    // this runtime's delegation under the new owner.
+    if (mnemonic && existingOwnerDid && !phraseDerives(mnemonic, existingOwnerDid)) {
+      const staleOwner = derivedDid(mnemonic)
+      const legacy = (this.settings.get('legacyOwnerDids') as string[] | undefined) ?? []
+      if (staleOwner && legacy.includes(staleOwner)) {
+        mnemonic = this.importFromSharedStore(existingOwnerDid, { replacingStale: mnemonic }) ?? mnemonic
+      } else {
+        console.warn(
+          `[OwnerIdentity] This install's phrase belongs to ${staleOwner ?? '(unreadable)'}, but the settings name the owner ${existingOwnerDid}, ` +
+          'and no owner switch from it is recorded (legacyOwnerDids). Keeping this install\'s phrase; check ownerDid in the settings file.'
+        )
+      }
+    }
+    mnemonic = mnemonic ?? this.importFromSharedStore(existingOwnerDid)
 
     if (mnemonic) {
       // Already migrated. Sanity-check determinism; never crash the app over it.
@@ -373,12 +499,18 @@ export class OwnerIdentityService {
     return (this.settings.get('runtimeDid') as string) ?? ''
   }
 
-  /** Derive the owner signing key from the mnemonic on demand. Never cached to disk. */
+  /**
+   * Derive the owner signing key from the mnemonic on demand. Never cached to
+   * disk. Null when the stored phrase belongs to another owner than the DID
+   * on record: its attestations would name one owner and be signed by
+   * another, and never verify.
+   */
   getOwnerSigningKey(): Buffer | null {
     const mnemonic = this.settings.getSecret('ownerMnemonic')
     if (!mnemonic) return null
     try {
-      return deriveOwnerIdentity(mnemonic).privateKeyPkcs8
+      const owner = deriveOwnerIdentity(mnemonic)
+      return owner.did === this.getOwnerDid() ? owner.privateKeyPkcs8 : null
     } catch {
       return null
     }
@@ -458,7 +590,7 @@ export class OwnerIdentityService {
    * The current owner DID joins the legacy list so local files converge to the
    * imported identity via restamp. Runtime delegation is re-signed.
    */
-  importMnemonic(mnemonic: string, opts: { expectedOwnerDid?: string } = {}): { ownerDid: string } & RestampResult {
+  importMnemonic(mnemonic: string, opts: { expectedOwnerDid?: string; skipRestamp?: (filePath: string) => boolean } = {}): { ownerDid: string } & RestampResult {
     const normalized = mnemonic.trim().toLowerCase().replace(/\s+/g, ' ')
     if (!validateMnemonic(normalized)) {
       throw new Error('Invalid mnemonic phrase')
@@ -505,8 +637,8 @@ export class OwnerIdentityService {
     // No runtime key yet (headless restore on a fresh machine): mint one.
     this.ensureRuntimeKey()
 
-    const result = this.restampLocalAdfs()
-    console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)`)
+    const result = this.restampLocalAdfs(opts.skipRestamp ? { skip: opts.skipRestamp } : {})
+    console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)${result.skipped?.length ? `, ${result.skipped.length} left for their next open (another runtime runs them)` : ''}`)
     return { ownerDid: owner.did, ...result }
   }
 
@@ -608,6 +740,35 @@ export class OwnerIdentityService {
   }
 
   /**
+   * K12 (design daemon-backend.md §5.3 "Fallback"): make sure the unlocked
+   * CREDENTIALS envelope has a working trusted-daemon slot for one daemon key
+   * (the daemon enrolling itself). A slot with the key's label that this key
+   * opens is left alone, so the common case writes nothing; a missing or junk
+   * one (label squat) is (re)wrapped. Never the identity envelope. Returns
+   * what happened; never throws.
+   */
+  enrollTrustedDaemonSlot(
+    workspace: AdfWorkspace,
+    key: { label: string; publicKeyRaw: Buffer; privateKeyPkcs8: Buffer },
+  ): 'added' | 'present' | 'locked' | 'failed' {
+    try {
+      if (workspace.getEnvelopeState('credentials') !== 'unlocked') return 'locked'
+      const slot = (workspace.readEnvelopeSlots('credentials') ?? []).find(
+        (s) => s.type !== 'password' && (s as KeySlotRecord).recipient_did === key.label,
+      ) as KeySlotRecord | undefined
+      if (slot && openKeySlot(slot, 'credentials', key.privateKeyPkcs8)) return 'present'
+      workspace.addEnvelopeKeySlot('credentials', 'runtime', key.label, key.publicKeyRaw)
+      const msg = `Trusted-daemon credentials slot added: ${key.label}`
+      console.log(`[OwnerIdentity] ${msg} (${workspace.getFilePath() ?? 'unknown file'})`)
+      try { workspace.insertLog('info', 'identity', 'daemon_slot', null, msg) } catch { /* non-fatal */ }
+      return 'added'
+    } catch (err) {
+      console.warn('[OwnerIdentity] Trusted-daemon slot enrollment failed:', err)
+      return 'failed'
+    }
+  }
+
+  /**
    * Idempotent identity provisioning/migration for one workspace:
    *  - no envelopes → provision them (D5/D6); existing envelopes → unlock (D10)
    *  - no signing keys → generate (sealed when the envelope unlocked), stamp
@@ -628,7 +789,12 @@ export class OwnerIdentityService {
    */
   ensureWorkspaceIdentity(
     workspace: AdfWorkspace,
-    opts: { mintKeys?: boolean; adoptKeys?: { privateKey: Buffer; publicKey: Buffer } } = {}
+    opts: {
+      mintKeys?: boolean
+      adoptKeys?: { privateKey: Buffer; publicKey: Buffer }
+      /** How long a mint waits for another connection's write lock (default PROVISION_BUSY_TIMEOUT_MS). */
+      busyTimeoutMs?: number
+    } = {}
   ): { keysGenerated: boolean; sealed: number } {
     if (workspace.isPasswordProtected()) {
       // Still run the unlock-only step: envelope unwrap is X25519 against
@@ -645,54 +811,76 @@ export class OwnerIdentityService {
       return { keysGenerated: false, sealed: 0 }
     }
 
-    const recipients = this.getEnvelopeRecipients()
-    if (recipients) {
-      if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
-      else this.unlockWorkspaceEnvelopes(workspace)
-      // Heal files claimed before the dead-envelope purge existed: identity
-      // is ours (unlocked) but the credentials envelope is dead-foreign —
-      // drop it and re-provision so new credentials seal again.
-      if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
-        workspace.provisionEnvelopes(recipients)
+    const provision = (): { keysGenerated: boolean; sealed: number } => {
+      const recipients = this.getEnvelopeRecipients()
+      if (recipients) {
+        if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
+        else this.unlockWorkspaceEnvelopes(workspace)
+        // Heal files claimed before the dead-envelope purge existed: identity
+        // is ours (unlocked) but the credentials envelope is dead-foreign —
+        // drop it and re-provision so new credentials seal again.
+        if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
+          workspace.provisionEnvelopes(recipients)
+        }
+        // Fresh-provision path caches the DEK without going through
+        // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
+        this.ensureTrustedDaemonSlots(workspace)
+      } else {
+        console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
       }
-      // Fresh-provision path caches the DEK without going through
-      // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
-      this.ensureTrustedDaemonSlots(workspace)
-    } else {
-      console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
+
+      let keysGenerated = false
+      const stampAndAttest = () => {
+        if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+        if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+        issueOwnerAttestation(workspace, {
+          ownerDid: this.getOwnerDid(),
+          ownerPrivateKey: this.getOwnerSigningKey(),
+          runtimeDid: this.getRuntimeDid(),
+          runtimePrivateKey: this.getRuntimeSigningKey()
+        })
+      }
+      const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
+      if (signingRow === null) {
+        workspace.generateIdentityKeys(null, opts.adoptKeys)
+        keysGenerated = true
+        stampAndAttest()
+      } else if (
+        signingRow.encryption_algo === 'plain' &&
+        workspace.getDid() &&
+        !workspace.getMeta('adf_owner_did') &&
+        this.getOwnerSigningKey()
+      ) {
+        // A plain key minted where no owner key was available (a headless
+        // child from an older daemon, generate-keys without an owner): it is
+        // sealed below like any plain row, and gets the owner stamps and
+        // attestations it never received. Only reached for own/reviewed files.
+        stampAndAttest()
+      }
+
+      const sealed = workspace.sealPlainRowsIntoEnvelopes()
+      return { keysGenerated, sealed }
     }
 
-    let keysGenerated = false
-    const stampAndAttest = () => {
-      if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
-      if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
-      issueOwnerAttestation(workspace, {
-        ownerDid: this.getOwnerDid(),
-        ownerPrivateKey: this.getOwnerSigningKey(),
-        runtimeDid: this.getRuntimeDid(),
-        runtimePrivateKey: this.getRuntimeSigningKey()
-      })
+    // Read-only pre-check, outside any write transaction: every open of an
+    // agent comes through here, and an already provisioned file must not take
+    // the file's write lock (or wait on another connection's). Only minting
+    // (no envelopes yet, no signing key) is a check-then-write two runtimes
+    // can race on; the rest is as before.
+    const mints = (!workspace.hasEnvelopes() && this.getEnvelopeRecipients() !== null) ||
+      workspace.getIdentityRow('crypto:signing:private_key') === null
+    if (!mints) return provision()
+    // Minting: one BEGIN IMMEDIATE transaction, the checks repeated inside it,
+    // so two runtimes provisioning the same file at once (the boot sweep and a
+    // lazy open elsewhere) cannot each mint envelopes or keys with the last
+    // writer winning; the second finds them and is a no-op. A file another
+    // connection is writing fails after a short wait (SQLITE_BUSY), never the
+    // 5 s busy_timeout: the caller reports it, and the next open retries.
+    try {
+      return workspace.immediateTransaction(provision, opts.busyTimeoutMs ?? PROVISION_BUSY_TIMEOUT_MS)
+    } catch (err) {
+      throw agentFileBusy(err, workspace.getFilePath()) ?? err
     }
-    const signingRow = workspace.getIdentityRow('crypto:signing:private_key')
-    if (signingRow === null) {
-      workspace.generateIdentityKeys(null, opts.adoptKeys)
-      keysGenerated = true
-      stampAndAttest()
-    } else if (
-      signingRow.encryption_algo === 'plain' &&
-      workspace.getDid() &&
-      !workspace.getMeta('adf_owner_did') &&
-      this.getOwnerSigningKey()
-    ) {
-      // A plain key minted where no owner key was available (a headless
-      // child from an older daemon, generate-keys without an owner): it is
-      // sealed below like any plain row, and gets the owner stamps and
-      // attestations it never received. Only reached for own/reviewed files.
-      stampAndAttest()
-    }
-
-    const sealed = workspace.sealPlainRowsIntoEnvelopes()
-    return { keysGenerated, sealed }
   }
 
   /**
@@ -763,18 +951,35 @@ export class OwnerIdentityService {
    *
    * Unreviewed files are left untouched: a file someone dropped into a
    * tracked directory must go through review + claim before we stamp
-   * ownership or seal anything into our envelopes.
+   * ownership or seal anything into our envelopes. Nor does the sweep
+   * migrate: a file below the latest schema version is migrated only when
+   * the user opens it. Both are decided read-only (peekSweepStatus) before
+   * the file is opened, and counted in one summary (`needUpgradeOrReview`).
+   *
+   * One sweep for both modes (embedded Studio and the daemon run it 2 s
+   * after boot). The folder walk is async and the sweep yields after every
+   * file, so a large tracked tree does not block the event loop. Files
+   * `skip` names (open or running in this process, which provisioned them
+   * on open; or run by another runtime, the one writer of the file) are not
+   * opened; they are provisioned when next opened.
+   * `provision` replaces ensureWorkspaceIdentity (the daemon's recipe adds
+   * its own unlock cascade and trusted slot around it).
    */
-  sweepEnvelopeMigration(): { provisioned: number; sealed: number; failures: string[] } {
-    const result = { provisioned: 0, sealed: 0, failures: [] as string[] }
-    if (!this.getEnvelopeRecipients()) return result
+  async sweepEnvelopeMigration(
+    opts: {
+      skip?: (filePath: string) => Promise<boolean>
+      provision?: (workspace: AdfWorkspace, opts: { busyTimeoutMs: number }) => { keysGenerated: boolean; sealed: number }
+    } = {},
+  ): Promise<EnvelopeSweepResult> {
+    const result: EnvelopeSweepResult = { provisioned: 0, sealed: 0, failures: [], skipped: [], needUpgradeOrReview: [] }
+    if (!this.getEnvelopeRecipients()) return { ...result, ownerNotReady: true }
 
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
     const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []
     const files: string[] = []
     for (const dir of tracked) {
       try {
-        collectAdfFiles(dir, maxDepth, 0, files)
+        await collectAdfFilesAsync(dir, maxDepth, 0, files)
       } catch (err) {
         result.failures.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -783,7 +988,36 @@ export class OwnerIdentityService {
     const reviewedIds = new Set(getReviewedIds(this.settings.get('reviewedAgents')))
 
     for (const filePath of files) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
       try {
+        if (await opts.skip?.(filePath)) {
+          result.skipped.push(filePath)
+          continue
+        }
+        // Read-only first: never migrate (an open would; W5-H: a file too old
+        // to upgrade was damaged at every boot), never open an unreviewed file.
+        let status: ReturnType<typeof AdfDatabase.peekSweepStatus>
+        try {
+          status = AdfDatabase.peekSweepStatus(filePath, SWEEP_BUSY_TIMEOUT_MS)
+        } catch (err) {
+          if (!agentFileBusy(err, filePath)) throw err
+          result.failures.push(`${filePath}: busy (another connection is writing it)`)
+          continue
+        }
+        if (
+          !(status.schemaVersion !== null && status.schemaVersion >= ADF_LATEST_SCHEMA_VERSION) ||
+          !status.agentId || !reviewedIds.has(status.agentId)
+        ) {
+          result.needUpgradeOrReview.push(filePath)
+          continue
+        }
+        // Another connection is writing it: opening would block in the open's
+        // own writes for up to 5 s. A named failure, retried at the next boot
+        // or open.
+        if (!AdfDatabase.writeLockFree(filePath, SWEEP_BUSY_TIMEOUT_MS)) {
+          result.failures.push(`${filePath}: busy (another connection is writing it)`)
+          continue
+        }
         const workspace = AdfWorkspace.open(filePath)
         try {
           if (workspace.isPasswordProtected()) continue
@@ -794,7 +1028,8 @@ export class OwnerIdentityService {
             !workspace.hasUnsealedSecrets()
           ) continue
           if (!reviewedIds.has(workspace.getAgentConfig().id)) continue
-          const { keysGenerated, sealed } = this.ensureWorkspaceIdentity(workspace)
+          const busy = { busyTimeoutMs: SWEEP_BUSY_TIMEOUT_MS }
+          const { keysGenerated, sealed } = opts.provision ? opts.provision(workspace, busy) : this.ensureWorkspaceIdentity(workspace, busy)
           if (keysGenerated) result.provisioned++
           result.sealed += sealed
         } finally {
@@ -816,9 +1051,12 @@ export class OwnerIdentityService {
    * is a legacy DID, and re-issue owner attestations for files with an agent
    * DID. Idempotent (membership test against legacy lists). Files that are
    * busy or unreadable are reported and retried on next launch / lazy open.
+   * Files `skip` names (the daemon: leased by another runtime, which is the
+   * one writer of the file) are not opened; they are restamped when next
+   * opened (restampAndAttest).
    */
-  restampLocalAdfs(): RestampResult {
-    const result: RestampResult = { restamped: 0, attested: 0, failures: [] }
+  restampLocalAdfs(opts: { skip?: (filePath: string) => boolean } = {}): RestampResult {
+    const result: RestampResult = { restamped: 0, attested: 0, failures: [], ...(opts.skip ? { skipped: [] } : {}) }
     const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
     const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []
 
@@ -832,6 +1070,10 @@ export class OwnerIdentityService {
     }
 
     for (const filePath of files) {
+      if (opts.skip?.(filePath)) {
+        result.skipped!.push(filePath)
+        continue
+      }
       try {
         const workspace = AdfWorkspace.open(filePath)
         try {
@@ -871,15 +1113,50 @@ export class OwnerIdentityService {
 
     let attested = false
     if (restamped && workspace.getDid()) {
+      // The operator attestation belongs to the runtime the file is stamped
+      // with. When that is another runtime on this machine (the daemon's, or
+      // Studio's for a daemon), keep its operator attestations rather than
+      // replacing them with one from a runtime the file was never stamped by.
+      // A file with no runtime stamp gets this runtime's operator attestation,
+      // as before this check existed.
+      const stampedRuntime = workspace.getMeta('adf_runtime_did')
+      const ownRuntime = !stampedRuntime || stampedRuntime === this.getRuntimeDid()
+      const keptOperators = ownRuntime ? [] : readAdfAttestations(workspace).filter((a) => a.role === 'operator')
       const issued = issueOwnerAttestation(workspace, {
         ownerDid: this.getOwnerDid(),
         ownerPrivateKey: this.getOwnerSigningKey(),
-        runtimeDid: this.getRuntimeDid(),
-        runtimePrivateKey: this.getRuntimeSigningKey()
+        ...(ownRuntime ? { runtimeDid: this.getRuntimeDid(), runtimePrivateKey: this.getRuntimeSigningKey() } : {})
       })
+      if (issued.length > 0) for (const att of keptOperators) appendAdfAttestation(workspace, att)
       attested = issued.length > 0
     }
     return { restamped, attested }
+  }
+}
+
+/** True when `mnemonic` derives `ownerDid`. False for an unreadable phrase or an empty DID. */
+function phraseDerives(mnemonic: string, ownerDid: string | undefined): boolean {
+  return !!ownerDid && derivedDid(mnemonic) === ownerDid
+}
+
+function derivedDid(mnemonic: string): string | null {
+  try {
+    return deriveOwnerIdentity(mnemonic).did
+  } catch {
+    return null
+  }
+}
+
+/** collectAdfFiles, reading directories asynchronously (the boot envelope sweep). */
+async function collectAdfFilesAsync(dir: string, maxDepth: number, depth: number, out: string[]): Promise<void> {
+  if (depth > maxDepth) return
+  const entries = await readdir(dir, { withFileTypes: true })
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.adf')) {
+      out.push(join(dir, e.name))
+    } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+      await collectAdfFilesAsync(join(dir, e.name), maxDepth, depth + 1, out)
+    }
   }
 }
 

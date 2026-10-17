@@ -87,7 +87,16 @@ export const DOCS = {
   settingsChannels: guideUrl('settings', 'channel-adapters'),
   settingsNetworking: guideUrl('settings', 'web-mesh-server'),
   settingsCompute: guideUrl('compute', 'environments'),
-  settingsGuard: guideUrl('settings', 'security-guard--locked-fields')
+  settingsGuard: guideUrl('settings', 'security-guard--locked-fields'),
+
+  // Settings → Backend (docs/guides/studio-backend.md)
+  backendSwitch: guideUrl('studio-backend', 'switch-the-backend'),
+  backendTurns: guideUrl('studio-backend', 'running-agents-and-turns-in-flight'),
+  backendUpgrade: guideUrl('studio-backend', 'upgrading-from-07x'),
+  backendStatus: guideUrl('studio-backend', 'daemon-status'),
+  backendQuit: guideUrl('studio-backend', 'quit-studio'),
+  backendEmbedded: guideUrl('studio-backend', 'run-agents-inside-studio-when-the-daemon-does-not-work'),
+  backendRemote: guideUrl('studio-backend', 'remote-computer')
 } as const
 
 export type DocsKey = keyof typeof DOCS

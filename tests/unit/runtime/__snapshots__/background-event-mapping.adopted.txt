@@ -1,0 +1,185 @@
+> #0 {"type":"state_changed","payload":{"state":"thinking"},"timestamp":1000}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #1 {"type":"state_changed","payload":{"state":"tool_use"},"timestamp":1001}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #2 {"type":"text_delta","payload":{"delta":"Hel"},"timestamp":1002}
+  state active activeLoops 0 loops [] text "Hel"
+> #3 {"type":"text_delta","payload":{"delta":"lo"},"timestamp":1003}
+  state active activeLoops 0 loops [] text "Hello"
+> #4 {"type":"text_delta_batch","payload":{"deltas":["a","b"]},"timestamp":1004}
+  state active activeLoops 0 loops [] text "Hello"
+> #5 {"type":"thinking_delta","payload":{"delta":"hmm"},"timestamp":1005}
+  state active activeLoops 0 loops [] text "Hello"
+> #6 {"type":"thinking_delta_batch","payload":{"deltas":["x"]},"timestamp":1006}
+  state active activeLoops 0 loops [] text "Hello"
+> #7 {"type":"tool_call_start","payload":{"name":"fs_read","input":{"path":"a.md"},"id":"toolu_1","seq":7},"timestamp":1007}
+  emit {"type":"tool_call_start","payload":{"filePath":"<AGENT>","name":"fs_read","input":{"path":"a.md"},"id":"toolu_1","seq":7},"timestamp":1007} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #8 {"type":"tool_call_result","payload":{"name":"fs_read","id":"toolu_1","result":{"content":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","isError":false},"targetPaths":["a.md"],"documentPath":"document.md"},"timestamp":1008}
+  emit {"type":"tool_call_result","payload":{"filePath":"<AGENT>","name":"fs_read","id":"toolu_1","result":{"content":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","isError":false},"targetPaths":["a.md"],"documentPath":"document.md"},"timestamp":1008} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #9 {"type":"tool_call_result","payload":{"name":"sys_code","id":"toolu_2","result":{"content":[{"type":"text","text":"boom"}],"isError":1}},"timestamp":1009}
+  emit {"type":"tool_call_result","payload":{"filePath":"<AGENT>","name":"sys_code","id":"toolu_2","result":{"content":[{"type":"text","text":"boom"}],"isError":1}},"timestamp":1009} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #10 {"type":"tool_call_result","payload":{"name":"noop","id":"toolu_3"},"timestamp":1010}
+  emit {"type":"tool_call_result","payload":{"filePath":"<AGENT>","name":"noop","id":"toolu_3"},"timestamp":1010} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #11 {"type":"tool_call_start","payload":{"name":"ask","input":{"question":"ok?"},"id":"toolu_4"},"timestamp":1011}
+  emit {"type":"tool_call_start","payload":{"filePath":"<AGENT>","name":"ask","input":{"question":"ok?"},"id":"toolu_4"},"timestamp":1011} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #12 {"type":"ask_request","payload":{"requestId":"req-ask-1","question":"ok?"},"timestamp":1012}
+  emit {"type":"ask_request","payload":{"filePath":"<AGENT>","requestId":"req-ask-1","question":"ok?"},"timestamp":1012} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #13 {"type":"state_changed","payload":{"state":"awaiting_ask"},"timestamp":1013}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"suspended"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #14 {"type":"ask_response","payload":{"requestId":"req-ask-1","answer":"yes"},"timestamp":1014}
+  state suspended activeLoops 0 loops [] text ""
+> #15 {"type":"tool_call_result","payload":{"name":"ask","id":"toolu_4","result":{"content":"Human answered: yes","isError":false}},"timestamp":1015}
+  emit {"type":"tool_call_result","payload":{"filePath":"<AGENT>","name":"ask","id":"toolu_4","result":{"content":"Human answered: yes","isError":false}},"timestamp":1015} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #16 {"type":"tool_approval_request","payload":{"requestId":"task-1","taskId":"task-1","name":"fs_write","input":{"path":"b.md"},"reason":"restricted","canAlwaysApprove":true},"timestamp":1016}
+  emit {"type":"tool_approval_request","payload":{"filePath":"<AGENT>","requestId":"task-1","taskId":"task-1","name":"fs_write","input":{"path":"b.md"},"reason":"restricted","canAlwaysApprove":true},"timestamp":1016} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #17 {"type":"state_changed","payload":{"state":"awaiting_approval"},"timestamp":1017}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"suspended"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #18 {"type":"state_changed","payload":{"state":"suspended"},"timestamp":1018}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"suspended"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #19 {"type":"tool_approval_resolved","payload":{"requestId":"task-1","approved":true},"timestamp":1019}
+  state suspended activeLoops 0 loops [] text ""
+> #20 {"type":"response_metadata","payload":{"model":"mock-model","usage":{"input":10,"output":2}},"timestamp":1020}
+  emit {"type":"response_metadata","payload":{"filePath":"<AGENT>","model":"mock-model","usage":{"input":10,"output":2}},"timestamp":1020} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #21 {"type":"response_metadata","payload":{"model":"mock-model","usage":{"input":5,"output":0},"estimated":true},"timestamp":1021}
+  emit {"type":"response_metadata","payload":{"filePath":"<AGENT>","model":"mock-model","usage":{"input":5,"output":0},"estimated":true},"timestamp":1021} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #22 {"type":"turn_complete","payload":{"content":[{"type":"text","text":"Hello"}],"seq":9},"timestamp":1022}
+  emit {"type":"turn_complete","payload":{"filePath":"<AGENT>","content":[{"type":"text","text":"Hello"}],"seq":9},"timestamp":1022} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
+  state suspended activeLoops 0 loops [] text ""
+> #23 {"type":"state_changed","payload":{"state":"idle"},"timestamp":1023}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"idle"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":0}
+  state idle activeLoops 0 loops [] text ""
+> #24 {"type":"state_changed","payload":{"state":"thinking"},"timestamp":1024}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #25 {"type":"error","payload":{"error":"Provider unavailable","details":"HTTP 503"},"timestamp":1025}
+  emit {"type":"error","payload":{"filePath":"<AGENT>","error":"Provider unavailable","details":"HTTP 503"},"timestamp":1025} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #26 {"type":"state_changed","payload":{"state":"error"},"timestamp":1026}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"error"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"error","activeLoops":0}
+  state error activeLoops 0 loops [] text ""
+> #27 {"type":"turn_complete","payload":{"content":[],"interrupted":true},"timestamp":1027}
+  emit {"type":"turn_complete","payload":{"filePath":"<AGENT>","content":[],"interrupted":true},"timestamp":1027} | status {"filePath":"<AGENT>","handle":"agent-1","state":"error","activeLoops":0}
+  state error activeLoops 0 loops [] text ""
+> #28 {"type":"autosaved","payload":{},"timestamp":1028}
+  state error activeLoops 0 loops [] text ""
+> #29 {"type":"document_updated","payload":{"content":"# doc"},"timestamp":1029}
+  state error activeLoops 0 loops [] text ""
+> #30 {"type":"chat_updated","payload":{"messages":[]},"timestamp":1030}
+  state error activeLoops 0 loops [] text ""
+> #31 {"type":"inter_agent_message","payload":{"from":"agent-2","content":"hi"},"timestamp":1031}
+  state error activeLoops 0 loops [] text ""
+> #32 {"type":"suspend_request","payload":{},"timestamp":1032}
+  state error activeLoops 0 loops [] text ""
+> #33 {"type":"trigger_message","payload":{"content":"tick"},"timestamp":1033}
+  state error activeLoops 0 loops [] text ""
+> #34 {"type":"file_updated","payload":{"path":"notes.md","content":"n","previousContent":""},"timestamp":1034}
+  state error activeLoops 0 loops [] text ""
+> #35 {"type":"context_injected","payload":{"category":"System","content":"notice"},"timestamp":1035}
+  state error activeLoops 0 loops [] text ""
+> #36 {"type":"loop_seq","payload":{"seq":9,"toolUseIds":["toolu_1"]},"timestamp":1036}
+  state error activeLoops 0 loops [] text ""
+> #37 {"type":"adf_file_created","payload":{"filePath":"/agents/agent-2.adf","extra":"dropped"},"timestamp":1037}
+  emit {"type":"adf_file_created","payload":{"agentFilePath":"<AGENT>","filePath":"/agents/agent-2.adf"},"timestamp":1037} | status {"filePath":"<AGENT>","handle":"agent-1","state":"error","activeLoops":0}
+  state error activeLoops 0 loops [] text ""
+> #38 {"type":"tool_call_start","payload":{"filePath":"/elsewhere/agent-3.adf","name":"x","id":"toolu_5"},"timestamp":1038}
+  emit {"type":"tool_call_start","payload":{"filePath":"/elsewhere/agent-3.adf","name":"x","id":"toolu_5"},"timestamp":1038} | status {"filePath":"<AGENT>","handle":"agent-1","state":"error","activeLoops":0}
+  state error activeLoops 0 loops [] text ""
+> #39 {"type":"error","payload":"<undefined>","timestamp":1039}
+  emit {"type":"error","payload":{"filePath":"<AGENT>"},"timestamp":1039} | status {"filePath":"<AGENT>","handle":"agent-1","state":"error","activeLoops":0}
+  state error activeLoops 0 loops [] text ""
+> #40 {"type":"turn_complete","payload":null,"timestamp":1040}
+  emit {"type":"turn_complete","payload":{"filePath":"<AGENT>"},"timestamp":1040} | status {"filePath":"<AGENT>","handle":"agent-1","state":"error","activeLoops":0}
+  state error activeLoops 0 loops [] text ""
+> #41 {"type":"state_changed","payload":{"state":"active"},"timestamp":1041,"loop":"main"}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [] text ""
+> #42 {"type":"state_changed","payload":{"state":"hibernate"},"timestamp":1042}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"hibernate"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"hibernate","activeLoops":0}
+  state hibernate activeLoops 0 loops [] text ""
+> #43 {"type":"state_changed","payload":{"state":"not-a-state"},"timestamp":1043}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  state off activeLoops 0 loops [] text ""
+> #44 {"type":"state_changed","payload":{"state":"idle"},"timestamp":1044}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"idle"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":0}
+  state idle activeLoops 0 loops [] text ""
+> #45 {"type":"state_changed","payload":{"state":"thinking"},"timestamp":1045,"loop":"loop-a"}
+  emit {"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-a","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":1}
+  emit {"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":1},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":1}
+  state idle activeLoops 1 loops [["loop-a","active"]] text ""
+> #46 {"type":"state_changed","payload":{"state":"tool_use"},"timestamp":1046,"loop":"loop-b"}
+  emit {"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-b","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":2}
+  emit {"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":2},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":2}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #47 {"type":"state_changed","payload":{"state":"tool_use"},"timestamp":1047,"loop":"loop-a"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #48 {"type":"text_delta","payload":{"delta":"side"},"timestamp":1048,"loop":"loop-a"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #49 {"type":"tool_call_start","payload":{"name":"fs_read","id":"toolu_s1"},"timestamp":1049,"loop":"loop-a"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #50 {"type":"tool_call_result","payload":{"name":"fs_read","id":"toolu_s1","result":{"content":"s","isError":false}},"timestamp":1050,"loop":"loop-a"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #51 {"type":"ask_request","payload":{"requestId":"req-side","question":"side?"},"timestamp":1051,"loop":"loop-b"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #52 {"type":"error","payload":{"error":"side failure"},"timestamp":1052,"loop":"loop-b"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #53 {"type":"turn_complete","payload":{"content":[]},"timestamp":1053,"loop":"loop-a"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #54 {"type":"adf_file_created","payload":{"filePath":"/agents/agent-2.adf"},"timestamp":1054,"loop":"loop-a"}
+  state idle activeLoops 2 loops [["loop-a","active"],["loop-b","active"]] text ""
+> #55 {"type":"state_changed","payload":{"state":"idle"},"timestamp":1055,"loop":"loop-a"}
+  emit {"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-a","state":"idle"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":1}
+  emit {"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":1},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":1}
+  state idle activeLoops 1 loops [["loop-a","idle"],["loop-b","active"]] text ""
+> #56 {"type":"state_changed","payload":{"state":"idle"},"timestamp":1056}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"idle"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":1}
+  state idle activeLoops 1 loops [["loop-a","idle"],["loop-b","active"]] text ""
+> #57 {"type":"state_changed","payload":{"state":"stopped"},"timestamp":1057}
+  emit {"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":0},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"idle","activeLoops":0}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  state off activeLoops 0 loops [] text ""
+> #58 {"type":"state_changed","payload":{"state":"off"},"timestamp":1058}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  state off activeLoops 0 loops [] text ""
+> #59 {"type":"state_changed","payload":{"state":"idle"},"timestamp":1059,"loop":"loop-c"}
+  emit {"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-c","state":"idle"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  state off activeLoops 0 loops [["loop-c","idle"]] text ""
+> #60 {"type":"state_changed","payload":{"state":"off"},"timestamp":1060}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  state off activeLoops 0 loops [] text ""
+> #61 {"type":"state_changed","payload":{"state":"thinking"},"timestamp":1061,"loop":"loop-d"}
+  emit {"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-d","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":1}
+  emit {"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":1},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":1}
+  state off activeLoops 1 loops [["loop-d","active"]] text ""
+> #62 {"type":"state_changed","payload":{"state":"off"},"timestamp":1062,"loop":"loop-d"}
+  emit {"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-d","state":"off"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  emit {"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":0},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"off","activeLoops":0}
+  state off activeLoops 0 loops [["loop-d","off"]] text ""
+> #63 {"type":"state_changed","payload":{"state":"thinking"},"timestamp":1063}
+  emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [["loop-d","off"]] text ""
+> #64 {"type":"text_delta","payload":{"delta":"again"},"timestamp":1064}
+  state active activeLoops 0 loops [["loop-d","off"]] text "again"
+> #65 {"type":"turn_complete","payload":{"content":[{"type":"text","text":"again"}]},"timestamp":1065}
+  emit {"type":"turn_complete","payload":{"filePath":"<AGENT>","content":[{"type":"text","text":"again"}]},"timestamp":1065} | status {"filePath":"<AGENT>","handle":"agent-1","state":"active","activeLoops":0}
+  state active activeLoops 0 loops [["loop-d","off"]] text ""
+--- renderer batches
+[{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000},{"type":"tool_call_start","payload":{"filePath":"<AGENT>","name":"fs_read","input":{"path":"a.md"},"id":"toolu_1","seq":7},"timestamp":1007},{"type":"tool_call_result","timestamp":1008,"payload":{"filePath":"<AGENT>","name":"fs_read","id":"toolu_1","result":{"isError":false},"resultSize":200}},{"type":"tool_call_result","timestamp":1009,"payload":{"filePath":"<AGENT>","name":"sys_code","id":"toolu_2","result":{"isError":true},"resultSize":0}},{"type":"tool_call_result","timestamp":1010,"payload":{"filePath":"<AGENT>","name":"noop","id":"toolu_3","result":{"isError":false},"resultSize":0}},{"type":"tool_call_start","payload":{"filePath":"<AGENT>","name":"ask","input":{"question":"ok?"},"id":"toolu_4"},"timestamp":1011},{"type":"ask_request","payload":{"filePath":"<AGENT>","requestId":"req-ask-1","question":"ok?"},"timestamp":1012}]
+[{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"suspended"},"timestamp":1700000000000},{"type":"tool_call_result","timestamp":1015,"payload":{"filePath":"<AGENT>","name":"ask","id":"toolu_4","result":{"isError":false},"resultSize":19}},{"type":"tool_approval_request","payload":{"filePath":"<AGENT>","requestId":"task-1","taskId":"task-1","name":"fs_write","input":{"path":"b.md"},"reason":"restricted","canAlwaysApprove":true},"timestamp":1016}]
+[{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"suspended"},"timestamp":1700000000000},{"type":"response_metadata","payload":{"filePath":"<AGENT>","model":"mock-model","usage":{"input":10,"output":2}},"timestamp":1020},{"type":"response_metadata","payload":{"filePath":"<AGENT>","model":"mock-model","usage":{"input":5,"output":0},"estimated":true},"timestamp":1021},{"type":"turn_complete","payload":{"filePath":"<AGENT>","content":[{"type":"text","text":"Hello"}],"seq":9},"timestamp":1022},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"idle"},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000},{"type":"error","payload":{"filePath":"<AGENT>","error":"Provider unavailable","details":"HTTP 503"},"timestamp":1025}]
+[{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"error"},"timestamp":1700000000000},{"type":"turn_complete","payload":{"filePath":"<AGENT>","content":[],"interrupted":true},"timestamp":1027},{"type":"adf_file_created","payload":{"agentFilePath":"<AGENT>","filePath":"/agents/agent-2.adf"},"timestamp":1037},{"type":"tool_call_start","payload":{"filePath":"/elsewhere/agent-3.adf","name":"x","id":"toolu_5"},"timestamp":1038},{"type":"error","payload":{"filePath":"<AGENT>"},"timestamp":1039}]
+[{"type":"turn_complete","payload":{"filePath":"<AGENT>"},"timestamp":1040},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"hibernate"},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"idle"},"timestamp":1700000000000},{"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-a","state":"active"},"timestamp":1700000000000},{"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":1},"timestamp":1700000000000},{"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-b","state":"active"},"timestamp":1700000000000},{"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":2},"timestamp":1700000000000},{"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-a","state":"idle"},"timestamp":1700000000000},{"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":1},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"idle"},"timestamp":1700000000000},{"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":0},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000},{"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-c","state":"idle"},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"off"},"timestamp":1700000000000},{"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-d","state":"active"},"timestamp":1700000000000},{"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":1},"timestamp":1700000000000},{"type":"agent_loop_state_changed","payload":{"filePath":"<AGENT>","loop":"loop-d","state":"off"},"timestamp":1700000000000},{"type":"agent_loops_changed","payload":{"filePath":"<AGENT>","activeLoops":0},"timestamp":1700000000000},{"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"active"},"timestamp":1700000000000},{"type":"turn_complete","payload":{"filePath":"<AGENT>","content":[{"type":"text","text":"again"}]},"timestamp":1065}]

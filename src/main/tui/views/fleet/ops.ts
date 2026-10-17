@@ -6,7 +6,7 @@ import { DaemonError, MAIN_LOOP, type AgentRef } from '../../api/types'
 import { transcriptKey, type AgentEntry, type ToastLevel } from '../../state/types'
 import type { TuiStore } from '../../state/store'
 import { findTracked, isTrackedKey } from '../../state/tracked'
-import { agentName, describeAgent } from './model'
+import { agentName, describeAgent, lockedNote } from './model'
 import { refreshFleetData } from './data'
 
 function labelOf(store: TuiStore, agentId: string): string {
@@ -181,14 +181,14 @@ async function reviewAndAccept(store: TuiStore, filePath: string): Promise<boole
   }
   const ok = await store.actions.confirm({
     title: 'Review required',
-    message: `${filePath} has not been reviewed on this daemon.${summary}\nAccept the review and load it?`,
+    message: `${filePath} has not been reviewed on this daemon.${summary}\nAccept the review and load it? Accepting also locks its security-sensitive settings against the agent's own edits, as Studio does.`,
     confirmLabel: 'Accept + load',
     danger: true,
   })
   if (!ok) { store.actions.toast('Not loaded (review declined)', 'warn'); return false }
   try {
-    await store.client.acceptReview(filePath)
-    store.actions.toast(`Review accepted for ${filePath}`, 'success')
+    const accepted = await store.client.acceptReview(filePath)
+    store.actions.toast(`Review accepted for ${filePath}${lockedNote(accepted.lockedFields)}`, 'success', 6000)
     return true
   } catch (err) {
     failure(store, null, 'Accept review', err)

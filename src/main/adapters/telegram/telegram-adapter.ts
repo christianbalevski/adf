@@ -1,5 +1,5 @@
 import { Bot, InputFile } from 'grammy'
-import type { CallbackQueryContext, Context } from 'grammy'
+import type { Filter, Context } from 'grammy'
 import { convertToOggOpus } from '../shared/audio-convert'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
@@ -1147,7 +1147,7 @@ export class TelegramAdapter implements ChannelAdapter {
     this.ctx.ingest(inbound)
   }
 
-  private async handleFormCallback(cbCtx: CallbackQueryContext<Context>): Promise<void> {
+  private async handleFormCallback(cbCtx: Filter<Context, 'callback_query:data'>): Promise<void> {
     if (!this.bot || !this.ctx) return
     const query = cbCtx.callbackQuery
 

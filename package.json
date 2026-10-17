@@ -21,7 +21,7 @@
     "release": "electron-vite build && electron-builder --publish always",
     "postversion": "git push --follow-tags",
     "lint": "eslint src/ tools/ --max-warnings 0",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node scripts/typecheck.mjs",
     "test": "node scripts/rebuild-for-node.mjs && vitest run",
     "test:lifecycle": "node scripts/rebuild-for-node.mjs && vitest run tests/lifecycle",
     "test:skills": "npm --prefix skills test",

@@ -236,7 +236,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 *Full reference: [Code Execution](guides/code-execution.md) · [The adf Proxy Object](guides/adf-object.md) · [Triggers](guides/triggers.md) · [Timers](guides/timers.md)*
 
 - **Seven execution contexts** — inline `sys_code`, `sys_lambda`, trigger lambda, timer lambda, API route, middleware, WebSocket lambda, each with distinct persistence and authorization.
-- **Sandbox** — Node worker threads with V8 VM contexts; `eval` and `new Function` disabled, WASM allowed, native `fetch` removed so all egress goes through the guarded `sys_fetch`, frozen prototypes, module allowlist, 60s default / 300s ceiling timeout.
+- **Sandbox** — Node worker threads with V8 VM contexts; `eval` and `new Function` compile inside the VM realm, WASM allowed, native `fetch` removed so all egress goes through the guarded `sys_fetch`, frozen prototypes, module allowlist, 60s default / 300s ceiling timeout.
 - **TypeScript in the sandbox** — types stripped on the fly with a content-hash cache.
 - **Uniform `adf` proxy** — every sandbox context calls tools through one async RPC object; `_async` runs any call as a background task, `_full` lifts output truncation for code only.
 - **Cold vs warm** — lambdas run in a fresh worker per call unless `warm: true`; all warm timer/trigger lambdas for an agent share one sandbox.

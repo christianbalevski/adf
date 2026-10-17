@@ -53,6 +53,17 @@ export interface EdgeHeatEntry {
 
 const MAX_ACTIVITIES = 5
 const ANIMATION_DURATION_MS = 1500
+
+export function findLastActivity(
+  activities: readonly NodeActivity[],
+  predicate: (activity: NodeActivity) => boolean
+): NodeActivity | undefined {
+  for (let i = activities.length - 1; i >= 0; i--) {
+    const activity = activities[i]
+    if (predicate(activity)) return activity
+  }
+  return undefined
+}
 const CLEANUP_INTERVAL_MS = 3000
 /** Rolling window for fleet-rate metrics (msgs/min, tools/min) */
 const PULSE_WINDOW_MS = 5 * 60_000
@@ -323,9 +334,14 @@ export function applyResolveActivity(
   const activities = s.nodeActivities[filePath]
   if (!activities) return null
   // Find the last unresolved tool_start matching this tool name
-  const idx = activities.findLastIndex(
-    (a) => a.type === 'tool_start' && a.toolName === toolName && a.isError === undefined
-  )
+  let idx = -1
+  for (let i = activities.length - 1; i >= 0; i--) {
+    const activity = activities[i]
+    if (activity.type === 'tool_start' && activity.toolName === toolName && activity.isError === undefined) {
+      idx = i
+      break
+    }
+  }
   if (idx === -1) return null
   const updated = [...activities]
   updated[idx] = { ...updated[idx], isError }

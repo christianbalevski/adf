@@ -24,7 +24,7 @@ The first-party skill catalog is a default entry in **Settings → Skills**, fet
 
 ## Identity
 
-The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#owner-and-runtime-identity-app-level) for the full model.
+The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#the-three-identities) for the full model.
 
 ### Owner Identity
 
@@ -97,7 +97,7 @@ Setup:
 4. Select a model from the dropdown (e.g., `gpt-6-sol`, `gpt-5.6-luna`)
 
 Notes:
-- Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
+- Authentication is app-wide within Studio — all agents using this provider share the same session. A Studio in Inside Studio mode and the daemon keep separate sessions; in This computer mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
@@ -117,7 +117,7 @@ Setup:
 5. Select a model from the dropdown (e.g., `grok-4.5`, `grok-4.3`)
 
 Notes:
-- Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
+- Authentication is app-wide within Studio — all agents using this provider share the same session. A Studio in Inside Studio mode and the daemon keep separate sessions; in This computer mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - xAI decides which accounts are eligible for OAuth API tokens — if sign-in succeeds but requests fail with 403, check your subscription tier on xAI's side (or use an `openai-compatible` provider with a `console.x.ai` API key instead)
@@ -162,7 +162,7 @@ Sessions are **per-surface**: Studio and the daemon each own a token file and ne
 
 `<provider>` is `chatgpt-subscription` or `grok-subscription`.
 
-**Signing in to Studio does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case.
+**Signing in to Studio in Inside Studio mode does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case. When you switch Studio to This computer, Studio moves its session file to `auth.daemon.json` (and back when you switch to Inside Studio), so one session follows the backend; see [Studio backend › What moves](studio-backend.md#what-moves-during-a-switch).
 
 **Why split them?** `safeStorage` is only callable from inside Electron, so anything it encrypts is opaque to a plain-Node daemon. Sharing one file would mean dropping Studio to an encryption scheme the daemon can also open — trading the OS keychain for a key file sitting beside the ciphertext. The split keeps Studio's keychain protection intact.
 
@@ -509,6 +509,44 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 - **Expandable rows** — Click a task to view its full arguments, result, or error details
 - **Auto-refresh** — Toggle auto-refresh to poll for task status changes
 - **Per-ADF** — Tasks reload automatically when navigating between ADF files
+
+## Backend
+
+**Settings → Backend → Run agents in** chooses where agents run. A change shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend](studio-backend.md).
+
+| Choice | `mode` | Agents run in |
+|--------|--------|---------------|
+| This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. |
+| Remote computer | `remote` | The ADF daemon on another computer, reached by URL and token. See [Remote daemon](../cli/remote-daemon.md). |
+| Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
+
+Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
+
+The page also shows the daemon Studio uses (state, pid, who started it; URL and version under **Details**).
+
+- **Keep the daemon running when Studio quits** (`keepDaemonRunning`, default off) applies to This computer. Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it.
+- **Daemon URL** (Remote computer) must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` URL needs the confirmation that the token is sent unencrypted. **Test connection** checks the URL and token.
+- **Token** is encrypted with the OS keychain (stored as `safe:…`), sent only to the URL's origin, and not shown again after you save it. Changing the URL to another origin removes the saved token.
+
+### Go back to running agents inside Studio
+
+Choose **Settings → Backend → Inside Studio (legacy)**. This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+
+### Run agents inside Studio for one launch
+
+If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Backend shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Backend as above.
+
+```powershell
+# Windows (PowerShell)
+$env:ADF_STUDIO_BACKEND = 'embedded'; & "$env:LOCALAPPDATA\Programs\ADF Studio\ADF Studio.exe"
+```
+
+```sh
+# macOS
+ADF_STUDIO_BACKEND=embedded "/Applications/ADF Studio.app/Contents/MacOS/ADF Studio"
+```
+
+On Linux, set the variable in the terminal you start Studio from. The variable also accepts `local` and `remote`.
 
 ## Keyboard Shortcuts
 

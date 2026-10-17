@@ -17,6 +17,7 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { McpOAuthStore, McpOAuthRecord } from './mcp-oauth.types'
 import { canonicalizeServerUrl } from './mcp-oauth.types'
+import { egressFetch, MCP_HTTP_EGRESS } from '../utils/guarded-fetch'
 
 /**
  * Interactive HTTP-OAuth for remote (`type: 'http'`) MCP servers — the
@@ -361,12 +362,16 @@ export function startOAuthCallbackServer(
  * tokens (+ DCR client info + discovery) into the store. The callback server
  * is always closed. Expected auth failures return `{ authorized: false, error }`
  * rather than throwing; token/code values never reach the log.
+ *
+ * `signal` lets the caller cancel a flow still waiting for its callback (the
+ * daemon's sign-in request was denied, or the agent stopped): the listener
+ * closes and the flow returns `{ authorized: false }` at once.
  */
 export async function runMcpHttpOAuthFlow(
   serverUrl: string,
   store: McpOAuthStore,
   io: McpHttpOAuthIO,
-  opts?: { clientId?: string; scopes?: string[]; timeoutMs?: number },
+  opts?: { clientId?: string; scopes?: string[]; timeoutMs?: number; signal?: AbortSignal },
 ): Promise<{ authorized: boolean; error?: string }> {
   const log = io.log ?? (() => {})
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_FLOW_TIMEOUT_MS
@@ -381,9 +386,11 @@ export async function runMcpHttpOAuthFlow(
   const deadline = setTimeout(() => controller.abort(), timeoutMs)
   deadline.unref?.()
   // fetchFn threaded into auth() so its discovery/DCR/token fetches share the
-  // deadline signal. Kept as a plain wrapper over global fetch.
+  // deadline signal. They go out as the MCP transport's do: each hop checked
+  // by the egress guard and connected to a checked address (MCP_HTTP_EGRESS).
+  const send = egressFetch(MCP_HTTP_EGRESS)
   const fetchFn = (input: string | URL, init?: RequestInit): Promise<Response> =>
-    fetch(input, { ...(init ?? {}), signal: controller.signal })
+    send(input, { ...(init ?? {}), signal: controller.signal })
 
   let provider: AdfOAuthClientProvider | undefined
   const server = await startOAuthCallbackServer(() => provider?.lastState, timeoutMs)
@@ -392,6 +399,12 @@ export async function runMcpHttpOAuthFlow(
     scopes: opts?.scopes,
     redirectUrl: server.url,
   })
+  const cancel = (): void => {
+    controller.abort()
+    server.close()
+  }
+  if (opts?.signal?.aborted) cancel()
+  else opts?.signal?.addEventListener('abort', cancel, { once: true })
 
   try {
     log(`[MCP][oauth] Starting authorization for ${urlWithoutQuery(serverUrl)}`)
@@ -412,12 +425,15 @@ export async function runMcpHttpOAuthFlow(
     }
     return { authorized: false, error: 'Authorization did not complete (unexpected redirect after code exchange)' }
   } catch (err) {
-    const message = controller.signal.aborted
-      ? `OAuth authorization timed out after ${Math.round(timeoutMs / 1000)}s`
-      : (err instanceof Error ? err.message : String(err))
+    const message = opts?.signal?.aborted
+      ? 'OAuth authorization was cancelled'
+      : controller.signal.aborted
+        ? `OAuth authorization timed out after ${Math.round(timeoutMs / 1000)}s`
+        : (err instanceof Error ? err.message : String(err))
     log(`[MCP][oauth] Authorization failed: ${message}`)
     return { authorized: false, error: message }
   } finally {
+    opts?.signal?.removeEventListener('abort', cancel)
     clearTimeout(deadline)
     server.close()
   }

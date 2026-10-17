@@ -2,7 +2,48 @@ import { app, BrowserWindow, Menu, shell } from 'electron'
 import { existsSync } from 'fs'
 import { basename } from 'path'
 import { IPC } from '../shared/constants/ipc-channels'
-import type { SettingsService } from './services/settings.service'
+import { grantLocalOpen } from './backend/local-open-grants'
+import { recentFilesKey as recentFilesKeyFor } from '../shared/constants/client-settings-keys'
+
+/** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode), `remoteRecentFiles` in remote mode. */
+export interface MenuSettings {
+  get(key: string): unknown
+  set(key: string, value: unknown): void
+}
+
+/**
+ * Daemon mode only (design §8.1): Help gains "Open daemon log", and while
+ * the backend is not connected a status line and "Reconnect". Embedded mode
+ * never sets it, so its menu is unchanged.
+ */
+export interface DaemonMenuOptions {
+  /** The daemon's log file; null when the daemon runs on another machine. */
+  logFile: () => string | null
+  /** A one-line connection status, or null while connected. */
+  problem: () => string | null
+  /** Whether "Reconnect to the ADF Daemon" makes sense now (the connection dropped, or the launch failed to connect). */
+  canReconnect: () => boolean
+  openLog: () => void
+  reconnect: () => void
+  /**
+   * After a failed launch (no daemon this session), while `launchFailed`
+   * says so: local mode offers "Use Embedded for This Session" (Studio
+   * restarts in embedded mode for one launch), remote mode "Open Settings →
+   * Backend" (fix the URL or token there).
+   */
+  useEmbeddedForSession?: () => void
+  openBackendSettings?: () => void
+  launchFailed?: () => boolean
+  /**
+   * Remote mode: recent files are paths on the daemon's machine. They are
+   * not added to the OS recent documents (the Windows shell may contact a
+   * UNC host), not checked for existence here, and never granted as files
+   * of this computer (local-open-grants.ts) (W4-B review). They are kept
+   * under their own client key, `remoteRecentFiles`, which a switch back to
+   * embedded leaves behind (W5-D3).
+   */
+  remoteRecents?: boolean
+}
 
 export type MenuAction =
   | 'new-file'
@@ -11,10 +52,12 @@ export type MenuAction =
   | 'save'
   | 'close-file'
   | 'open-settings'
+  | 'open-settings-backend'
 
 const MAX_RECENT_FILES = 10
 
-let settingsRef: SettingsService | null = null
+let settingsRef: MenuSettings | null = null
+let daemonMenu: DaemonMenuOptions | null = null
 
 function targetWindow(): BrowserWindow | undefined {
   return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -26,17 +69,25 @@ function sendMenuAction(action: MenuAction): void {
 
 // Recent entries reuse the same flow as double-clicking a .adf in Finder
 function sendOpenFile(filePath: string): void {
+  // The user's own recent list: remote mode may offer this computer's copy for upload (local-open-grants.ts).
+  if (!daemonMenu?.remoteRecents) grantLocalOpen(filePath)
   targetWindow()?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
 }
 
+/** The settings key of this mode's Open Recent list. */
+function recentFilesKey(): string {
+  return recentFilesKeyFor(!!daemonMenu?.remoteRecents)
+}
+
 function getRecentFiles(): string[] {
-  const raw = settingsRef?.get('recentFiles')
+  const raw = settingsRef?.get(recentFilesKey())
   return Array.isArray(raw) ? raw.filter((p): p is string => typeof p === 'string') : []
 }
 
 /** Call once at startup with the shared SettingsService, before any windows open. */
-export function initApplicationMenu(settings: SettingsService): void {
+export function initApplicationMenu(settings: MenuSettings, daemon: DaemonMenuOptions | null = null): void {
   settingsRef = settings
+  daemonMenu = daemon
   buildApplicationMenu()
 }
 
@@ -47,20 +98,21 @@ export function recordRecentFile(filePath: string): void {
     0,
     MAX_RECENT_FILES
   )
-  settingsRef.set('recentFiles', list)
-  app.addRecentDocument(filePath)
+  settingsRef.set(recentFilesKey(), list)
+  if (!daemonMenu?.remoteRecents) app.addRecentDocument(filePath)
   buildApplicationMenu()
 }
 
 function clearRecentFiles(): void {
-  settingsRef?.set('recentFiles', [])
+  settingsRef?.set(recentFilesKey(), [])
   app.clearRecentDocuments()
   buildApplicationMenu()
 }
 
 export function buildApplicationMenu(): void {
   const isMac = process.platform === 'darwin'
-  const recents = getRecentFiles().filter((p) => existsSync(p))
+  // No file-system call on a network path (UNC: Windows would send NTLM credentials to that host).
+  const recents = daemonMenu?.remoteRecents ? getRecentFiles() : getRecentFiles().filter((p) => !/^[\\/]{2}/.test(p) && existsSync(p))
 
   const openRecentSubmenu: Electron.MenuItemConstructorOptions[] = [
     ...recents.map((filePath) => ({
@@ -183,10 +235,32 @@ export function buildApplicationMenu(): void {
         {
           label: 'ADF Studio Documentation',
           click: () => shell.openExternal('https://github.com/christianbalevski/adf')
-        }
+        },
+        ...daemonHelpItems()
       ]
     }
   ]
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
+function daemonHelpItems(): Electron.MenuItemConstructorOptions[] {
+  return daemonMenu ? daemonHelpTemplate(daemonMenu) : []
+}
+
+/** The Help menu's daemon items for `options` (exported for tests). */
+export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuItemConstructorOptions[] {
+  const logFile = options.logFile()
+  const problem = options.problem()
+  const useEmbedded = options.useEmbeddedForSession
+  const openBackend = options.openBackendSettings
+  const failed = !!problem && options.launchFailed?.() === true
+  return [
+    { type: 'separator' },
+    { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
+    ...(problem ? [{ label: problem, enabled: false }] : []),
+    ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : []),
+    ...(failed && useEmbedded ? [{ label: 'Run Inside Studio for This Session', click: () => useEmbedded() }] : []),
+    ...(failed && openBackend ? [{ label: 'Open Settings → Backend', click: () => openBackend() }] : [])
+  ]
 }

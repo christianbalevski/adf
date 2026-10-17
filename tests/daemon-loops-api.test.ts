@@ -77,6 +77,9 @@ describe('daemon loop API', () => {
 
     const listed = await server.inject({ method: 'GET', url: base })
     expect(listed.json().loops.map((l: { name: string }) => l.name)).toEqual(['main', 'consolidator'])
+    // The status answers each live side loop's display state (Studio's re-attach reads it).
+    const status = await server.inject({ method: 'GET', url: `/agents/${ref.id}/status` })
+    expect(status.json().loopStates).toEqual({ consolidator: 'idle' })
 
     const config = await server.inject({ method: 'GET', url: `/agents/${ref.id}/config` })
     expect(config.json().config.loops).toEqual([expect.objectContaining({ name: 'consolidator' })])

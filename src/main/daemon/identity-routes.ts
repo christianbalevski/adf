@@ -12,6 +12,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { DaemonIdentityError, type DaemonIdentity } from './daemon-identity'
 import { AgentCreateError, type CreateAgentInput, type DaemonAgentFactory } from './daemon-agent-factory'
 import { isLoopbackAddress, localAccessRefusal, type LocalAccessOptions } from './local-access'
+import { DOCUMENT_HOLDER_FORMAT } from '../runtime/runtime-service'
 
 const OWNER_SECRETS = 'Owner identity secrets can be handled'
 
@@ -128,7 +129,7 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     if (!deps.agentFactory) return reply.code(503).send({ error: 'Agent creation is not configured on this daemon.' })
     try {
       const list = deps.agentFactory.listTemplates()
-      return { templates: list.templates, defaultId: list.defaultId, folder: list.folder, defaultDirectory: deps.agentFactory.defaultDirectory() }
+      return { templates: list.templates, defaultId: list.defaultId, folder: list.folder, defaultDirectory: deps.agentFactory.defaultDirectory(), ...(list.migrated ? { migrated: list.migrated } : {}) }
     } catch (err) {
       return sendError(reply, err)
     }
@@ -149,8 +150,33 @@ export function registerIdentityRoutes(server: FastifyInstance, deps: IdentityRo
     if (body?.start !== undefined && typeof body.start !== 'boolean') {
       return reply.code(400).send({ error: 'start must be a boolean', code: 'bad_request' })
     }
+    if (body?.load !== undefined && typeof body.load !== 'boolean') {
+      return reply.code(400).send({ error: 'load must be a boolean', code: 'bad_request' })
+    }
+    if (body?.replace !== undefined && typeof body.replace !== 'boolean') {
+      return reply.code(400).send({ error: 'replace must be a boolean', code: 'bad_request' })
+    }
+    // The holder is the requesting client session (X-ADF-Client-Session),
+    // never a body field: one client cannot pin a file to another's session.
+    if (body?.holder !== undefined) {
+      return reply.code(400).send({ error: 'holder is not a body field: send the client session as the X-ADF-Client-Session header', code: 'bad_request' })
+    }
+    if (body?.load === false && body.start === true) {
+      return reply.code(400).send({ error: 'start needs the agent loaded: drop load: false, or start it later', code: 'bad_request' })
+    }
+    const headerValue = request.headers['x-adf-client-session']
+    const session = Array.isArray(headerValue) ? headerValue[0] : headerValue
+    let holder: string | undefined
+    if (session !== undefined && body?.load === false) {
+      // A live session only (W2-B's registry, decorated on the server by routes/client-routes.ts).
+      const sessions = (request.server as unknown as { adfClientSessions?: { has(id: string): boolean } }).adfClientSessions
+      if (!DOCUMENT_HOLDER_FORMAT.test(session) || !sessions?.has(session)) {
+        return reply.code(404).send({ error: `No client session ${session} (it ended or expired, or the daemon restarted).`, code: 'session_not_found' })
+      }
+      holder = session
+    }
     try {
-      const created = await deps.agentFactory.create(body ?? {})
+      const created = await deps.agentFactory.create({ ...(body ?? {}), ...(holder ? { holder } : {}) })
       return reply.code(201).send(created)
     } catch (err) {
       return sendError(reply, err)

@@ -1,9 +1,10 @@
 import { dirname, join } from 'path'
 import { homedir } from 'os'
+import { inheritableEnv } from '../utils/child-env'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import type {
   McpServerConfig,
   McpToolInfo,
@@ -13,7 +14,9 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
+import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
+import { egressFetch, MCP_HTTP_EGRESS } from '../utils/guarded-fetch'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
 import { UnauthorizedError } from './mcp-http-oauth'
@@ -33,8 +36,33 @@ export type McpOAuthProviderFactory = (cfg: McpServerConfig) => AdfOAuthClientPr
 // from the working /client entry instead.
 const _require = createRequire(import.meta.url)
 const clientDir = dirname(_require.resolve('@modelcontextprotocol/sdk/client'))
-const { StdioClientTransport } = _require(join(clientDir, 'stdio.js')) as typeof import('@modelcontextprotocol/sdk/client/stdio')
-const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp')
+const { StdioClientTransport } = loadStdioTransportHidden(join(clientDir, 'stdio.js'))
+
+/**
+ * The SDK's StdioClientTransport sets `windowsHide` only when it detects
+ * Electron's main process (`'type' in process`). The daemon and the CLI run
+ * as Node (ELECTRON_RUN_AS_NODE), detached with no console, so on Windows
+ * every host stdio MCP server (npx/uvx shims, node) got its own visible
+ * console window. stdio.js is loaded against a cross-spawn that always sets
+ * `windowsHide`; every other cross-spawn user keeps the real module.
+ */
+function loadStdioTransportHidden(stdioPath: string): typeof import('@modelcontextprotocol/sdk/client/stdio.js') {
+  const crossSpawnPath = createRequire(stdioPath).resolve('cross-spawn')
+  type CrossSpawn = (command: string, args?: readonly string[], options?: object) => unknown
+  const real = _require(crossSpawnPath) as CrossSpawn
+  const hidden = Object.assign(
+    (command: string, args?: readonly string[], options?: object) => real(command, args, { ...options, windowsHide: true }),
+    real,
+  )
+  const cached = _require.cache[crossSpawnPath]!
+  cached.exports = hidden
+  try {
+    return _require(stdioPath)
+  } finally {
+    cached.exports = real
+  }
+}
+const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')
 
 /** Env vars that user-supplied MCP config must never override. */
 const BLOCKED_ENV_VARS = new Set([
@@ -45,6 +73,9 @@ const BLOCKED_ENV_VARS = new Set([
   'LD_LIBRARY_PATH',
   'DYLD_LIBRARY_PATH',
 ])
+
+/** The egress policy of an MCP HTTP server's requests (utils/guarded-fetch.ts). */
+export { MCP_HTTP_EGRESS }
 
 const MAX_LOG_ENTRIES = 500
 const MAX_RETRIES = 3
@@ -69,6 +100,8 @@ function connectTimeoutForAttempt(retryIndex: number): number {
 }
 const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
+/** How long a closing stdio server gets to exit on stdin EOF before its process tree is killed (the SDK waits as long). */
+const CLOSE_GRACE_MS = 2000
 
 /** Strip security-sensitive env vars that MCP server configs must not override. */
 function filterBlockedEnv(env: Record<string, string>): Record<string, string> {
@@ -97,6 +130,13 @@ export interface McpConnectOptions {
    *  linked in a result. Defaults to the host scratch dir; container
    *  transports must supply a reader that goes through podman. */
   linkedFileReader?: McpLinkedFileReader
+  /**
+   * Stops this connect: an attempt in flight closes the client and transport
+   * it opened (the server process with them) at once instead of when its
+   * connect settles, and no retry follows. The daemon's registration-test
+   * cancel passes it; Studio passes none.
+   */
+  signal?: AbortSignal
 }
 
 interface McpManagedServer {
@@ -193,6 +233,8 @@ export class McpClientManager extends EventEmitter {
       return null
     }
 
+    if (options?.signal?.aborted) return null
+
     // If already managed, disconnect first
     if (this.servers.has(serverConfig.name)) {
       await this.disconnect(serverConfig.name)
@@ -218,13 +260,13 @@ export class McpClientManager extends EventEmitter {
     this.addLog(managed, 'system', `Connecting to "${serverConfig.name}"${mode} — ${target}`)
 
     let tools = await this.attemptConnection(managed, 0, { scheduleRetryOnFailure: false })
-    if (!tools && this.servers.get(serverConfig.name) === managed && managed.autoRestart) {
+    if (!tools && this.servers.get(serverConfig.name) === managed && managed.autoRestart && !options?.signal?.aborted) {
       // One fast inline retry (2s backoff) before returning — a server that
       // needs a second attempt (transient bind/warm-up failure) still starts
       // with its tools instead of flapping error→connected in the background.
       this.addLog(managed, 'system', `Retrying inline in ${INITIAL_BACKOFF_MS / 1000}s...`)
       await new Promise<void>((r) => { setTimeout(r, INITIAL_BACKOFF_MS).unref?.() })
-      if (this.servers.get(serverConfig.name) === managed && managed.autoRestart) {
+      if (this.servers.get(serverConfig.name) === managed && managed.autoRestart && !options?.signal?.aborted) {
         tools = await this.attemptConnection(managed, 0)
       }
     }
@@ -255,7 +297,16 @@ export class McpClientManager extends EventEmitter {
     const timeoutMs = connectTimeoutForAttempt(retryIndex)
     let client: Client | null = null
     let transport: InstanceType<typeof StdioClientTransport> | InstanceType<typeof StreamableHTTPClientTransport> | Transport | null = null
-    const isStale = () => this.servers.get(managed.config.name) !== managed || !managed.autoRestart
+    // A cancelled connect (connectOptions.signal) counts as stale: nothing is
+    // assigned or retried, and what the attempt opened is closed at once.
+    const signal = managed.connectOptions?.signal
+    const isStale = () => this.servers.get(managed.config.name) !== managed || !managed.autoRestart || !!signal?.aborted
+    const onAbort = (): void => {
+      this.addLog(managed, 'system', 'Connect cancelled — closing the server it started')
+      void this.abandonAttempt(client, transport)
+    }
+    if (signal?.aborted) return null
+    signal?.addEventListener('abort', onAbort, { once: true })
 
     try {
       managed.status = 'connecting'
@@ -285,6 +336,11 @@ export class McpClientManager extends EventEmitter {
         transport = this.createHttpTransport(new URL(managed.config.url!), {
           ...(Object.keys(headers).length ? { requestInit: { headers } } : {}),
           ...(authProvider ? { authProvider } : {}),
+          // Every request (OAuth discovery included) connects only to an
+          // address the egress guard checked: LAN and link-local servers
+          // stay reachable, cloud metadata and the daemon control API do not,
+          // and a DNS answer that changes to one of them is refused (W4-B).
+          fetch: egressFetch(MCP_HTTP_EGRESS),
         })
       } else {
         // Default: spawn directly on host via StdioClientTransport
@@ -295,7 +351,8 @@ export class McpClientManager extends EventEmitter {
         transport = new StdioClientTransport({
           command,
           args,
-          env: { ...process.env, ...filterBlockedEnv(managed.config.env ?? {}) } as Record<string, string>,
+          // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
+          env: { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) } as Record<string, string>,
           stderr: 'pipe',
           cwd: this.scratchDir
         })
@@ -436,6 +493,8 @@ export class McpClientManager extends EventEmitter {
         }
       }
       return null
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
     }
   }
 
@@ -447,16 +506,35 @@ export class McpClientManager extends EventEmitter {
     client: Client | null,
     transport: McpManagedServer['transport']
   ): Promise<void> {
+    // E3: the attempt is abandoned, so on Windows its process tree goes
+    // first, while the shim is still alive. Read after client.close() the
+    // transport no longer has its process (closing the client closes it), and
+    // once close() has killed the cmd.exe shim of an npx/uvx server, a
+    // `taskkill /T` of the dead shim no longer reaches the real server.
+    const child = this.stdioTransportChild(transport)
+    const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
+    if (!exitedBeforeClose) await this.sweepPidTreeNow(this.stdioTransportPid(transport))
     if (client) {
       try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
     }
     if (transport) {
-      const child = this.stdioTransportChild(transport)
-      const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
-      const pid = this.stdioTransportPid(transport)
       try { await transport.close() } catch { /* ignore */ }
-      if (!exitedBeforeClose) this.sweepPidTree(pid)
     }
+  }
+
+  /** sweepPidTree, awaited (bounded): taskkill /T has run when it resolves. */
+  private sweepPidTreeNow(pid: number | null): Promise<void> {
+    if (pid == null || process.platform !== 'win32') return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3000)
+      timer.unref?.()
+      try {
+        execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => { clearTimeout(timer); resolve() })
+      } catch {
+        clearTimeout(timer)
+        resolve()
+      }
+    })
   }
 
   /**
@@ -745,6 +823,27 @@ export class McpClientManager extends EventEmitter {
   }
 
   /**
+   * Mark a server that could not connect for lack of an OAuth token as
+   * waiting for an interactive sign-in. `message` names the recovery path;
+   * the status is visible in getServerStates() and the status-changed event.
+   * A server not held yet is added in that state; a connected one is left alone.
+   */
+  markNeedsSignIn(config: McpServerConfig, message: string): void {
+    let managed = this.servers.get(config.name)
+    if (managed?.status === 'connected') return
+    if (!managed) {
+      managed = { config, client: null, transport: null, status: 'needs_sign_in', tools: [], logs: [], restartCount: 0, autoRestart: false }
+      this.servers.set(config.name, managed)
+    }
+    managed.status = 'needs_sign_in'
+    managed.error = message
+    managed.autoRestart = false
+    this.clearRetryTimer(managed)
+    this.addLog(managed, 'system', message)
+    this.emitStatusChange(managed)
+  }
+
+  /**
    * Version the server reported in the MCP initialize handshake
    * (serverInfo.version), or undefined if not connected / not reported.
    */
@@ -785,6 +884,20 @@ export class McpClientManager extends EventEmitter {
     const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
     const pid = this.stdioTransportPid(transport)
 
+    // E3: on Windows the SDK's close kills only the process it spawned, the
+    // cmd.exe shim of an npx/uvx server, and the sweep after close reaches
+    // only the dead shim, so a server that ignores stdin EOF was orphaned.
+    // Give it the graceful EOF exit first (the SDK's own 2 s), then kill the
+    // tree while the shim still links it, as abandonAttempt does.
+    let treeHandled = false
+    if (process.platform === 'win32' && child && !exitedBeforeClose && pid != null) {
+      treeHandled = true
+      if (!(await this.endStdinAndWait(child, CLOSE_GRACE_MS))) {
+        this.addLog(managed, 'system', `Server did not exit ${CLOSE_GRACE_MS / 1000}s after its input closed — stopping its process tree`)
+        await this.sweepPidTreeNow(pid)
+      }
+    }
+
     if (client) {
       try {
         client.onclose = () => { /* detached */ }
@@ -816,7 +929,20 @@ export class McpClientManager extends EventEmitter {
     // Runs even when client.close()/transport.close() threw or timed out —
     // but never when the child was already dead before we started closing
     // (pid-reuse hazard: the pid may now belong to an unrelated process).
-    if (!exitedBeforeClose) this.sweepPidTree(pid)
+    if (!exitedBeforeClose && !treeHandled) this.sweepPidTree(pid)
+  }
+
+  /** End the child's stdin and wait up to `graceMs` for it to exit; true when it did. */
+  private endStdinAndWait(child: import('child_process').ChildProcess, graceMs: number): Promise<boolean> {
+    const exited = () => child.exitCode !== null || child.signalCode !== null
+    if (exited()) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => {
+      const done = () => { clearTimeout(timer); child.off('exit', done); resolve(exited()) }
+      const timer = setTimeout(done, graceMs)
+      timer.unref?.()
+      child.once('exit', done)
+      try { child.stdin?.end() } catch { /* already closed */ }
+    })
   }
 
   /** Pid of the child spawned by our own StdioClientTransport, else null. */
