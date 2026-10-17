@@ -56,6 +56,8 @@ interface ProviderModalProps {
   provider: ProviderConfig | null
   isDefault: boolean
   status?: ProviderTestStatus
+  /** Why the last save of this provider was refused: its edits are not saved. */
+  saveError?: string
   onPick: (entry: ProviderCatalogEntry) => void
   onUpdate: (patch: Partial<ProviderConfig>) => void
   onRemove: () => void
@@ -170,8 +172,17 @@ function Field({ label, hint, children }: { label: string; hint?: React.ReactNod
   )
 }
 
+/** A refused save, on the provider's row and atop its form: the edits shown are not saved. */
+export function ProviderSaveError({ message }: { message: string }) {
+  return (
+    <p role="alert" className="rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] px-3 py-2 text-[12px] leading-5 text-[var(--adf-ui-danger)]">
+      Not saved: {message}
+    </p>
+  )
+}
+
 function ProviderForm({
-  provider, entry, isDefault, status, onUpdate, onRemove, onMakeDefault, onTest, onClose,
+  provider, entry, isDefault, status, saveError, onUpdate, onRemove, onMakeDefault, onTest, onClose,
   models, onFetchModels, chatgpt, grok, claude, onCarrierCountChange, onDone, requireDefaultModel,
 }: ProviderModalProps & { provider: ProviderConfig; entry?: ProviderCatalogEntry }) {
   const doneBlocked = !!requireDefaultModel && !(provider.defaultModel ?? '').trim()
@@ -188,6 +199,7 @@ function ProviderForm({
 
   return (
     <div className="space-y-4">
+      {saveError && <ProviderSaveError message={saveError} />}
       {/* Identity + status */}
       <div className="flex items-center gap-3">
         <BrandMark iconKey={entry?.iconKey} label={entry?.label ?? provider.name} size={36} />

@@ -9,6 +9,7 @@ import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAg
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
+import { saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from '../providers/provider-save'
 import { AboutTab } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
@@ -1424,6 +1425,9 @@ export function SettingsPage() {
   const hasLoaded = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingSave = useRef<(() => Promise<unknown> | void) | null>(null)
+  /** The providers part the store last accepted; a refused save marks the rows that differ from it. */
+  const savedProviders = useRef<ProviderListSnapshot>({ providers: [], defaultProviderId: undefined })
+  const [providerSaveFailure, setProviderSaveFailure] = useState<ProviderSaveFailure | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
   const normalizedSearch = settingsSearch.trim().toLowerCase()
@@ -1509,6 +1513,7 @@ export function SettingsPage() {
     window.adfApi?.getSettings().then((settings) => {
       const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
       setProviders(loadedProviders)
+      savedProviders.current = { providers: loadedProviders, defaultProviderId: (settings.defaultProviderId as string | undefined) || undefined }
       // Hydration fixup: if providers exist but no default is set (existing users
       // before this feature shipped), pick the first one. The auto-save effect
       // will persist this back to disk on the next debounce tick.
@@ -1602,7 +1607,8 @@ export function SettingsPage() {
   // read it back.
   const doSave = () => {
     if (!hasLoaded.current) return
-    const written = window.adfApi?.setSettings({
+    const attempted: ProviderListSnapshot = { providers, defaultProviderId }
+    const written = () => window.adfApi?.setSettings({
       providers,
       defaultProviderId,
       mcpServers,
@@ -1622,8 +1628,14 @@ export function SettingsPage() {
         containerImage: computeContainerImage,
       },
     })
+    // A refused save (the daemon's secret store locked, say) never reads as
+    // saved: the rows it concerns say why, and the edits stay for the next try.
+    const saving = saveProviderList(written, savedProviders.current, attempted).then((result) => {
+      if (result.saved) savedProviders.current = attempted
+      setProviderSaveFailure(result.failure)
+    })
     invalidateConfigCaches()
-    return written
+    return saving
   }
   pendingSave.current = doSave
 
@@ -2261,6 +2273,7 @@ export function SettingsPage() {
               defaultProviderId={defaultProviderId}
               setDefaultProviderId={setDefaultProviderId}
               flushSave={flushSave}
+              saveFailure={providerSaveFailure}
               onOpenTemplate={() => setActiveTab('template')}
             />
           )}
