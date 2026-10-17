@@ -92,14 +92,14 @@ jobs:
       - name: Build
         run: npm run build
 
-  # Runs the Node-level suite and the Electron build on darwin. The suite has
-  # no darwin-gated tests of the app's Electron runtime paths (window
-  # lifecycle, packaged-app PATH, Podman wizard), so this doesn't cover those;
-  # it covers the darwin branches unit tests do reach (case-insensitive FS in
-  # tracked-paths/adf-database, the darwin user-data path, host-exec 'macos',
-  # real-shell login PATH tests, POSIX-only tests) and proves electron-vite
-  # builds on macOS. Typecheck and lint are platform-independent, so they stay
-  # on the Linux job.
+  # Runs the Node-level suite and the Electron build on darwin: the darwin
+  # branches unit tests reach (case-insensitive FS in tracked-paths/
+  # adf-database, the darwin user-data path, host-exec 'macos', real-shell
+  # login PATH tests, POSIX-only tests). Then the Electron smoke launches the
+  # packaged app for the runtime paths no unit test reaches: window lifecycle
+  # after the last window closes, the packaged-app login-shell PATH, and quit.
+  # Not covered: the Podman setup wizard. Typecheck and lint are
+  # platform-independent, so they stay on the Linux job.
   #
   # Keep the install/test/lifecycle/build steps in sync with `verify` above
   # (a matrix can't share them: job-level `if:` can't reference matrix values).
@@ -141,8 +141,26 @@ jobs:
         run: npm run test:lifecycle -- --reporter=verbose
 
       - name: Build
+        id: build
         if: ${{ !cancelled() }}
         run: npm run build
+
+      # The Electron runtime paths the unit suite can't reach: launch the
+      # packaged app and drive its main process (cold start, login-shell PATH,
+      # window recreation after the last window closes, clean quit). See
+      # scripts/electron-smoke.mjs. Unsigned host-arch --dir build: no dmg,
+      # no notarization. Packaging rebuilds better-sqlite3 for Electron, so
+      # these stay last.
+      - name: Package the app (unsigned)
+        id: package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false
+
+      - name: Electron smoke (packaged app)
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: npm run test:electron-smoke
 
   # Parity harness with the daemon side required (tests/parity/README.md,
   # tracker §6 W2-C/W5-B): Studio in daemon mode against the BUILT daemon

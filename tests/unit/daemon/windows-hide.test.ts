@@ -27,6 +27,8 @@ const ALLOW = new Set([
   "src/main/services/firewall-service.ts:execFileAsync('pkexec'",     // linux only
   "scripts/generate-icons.mjs:execFileSync('actool'",                 // darwin only
   'scripts/install-mac-x64-deps.mjs:execFileSync("npm"',              // darwin x64 CI only
+  "scripts/electron-smoke.mjs:spawn(binary, [...args, '--inspect=0']", // darwin only; launches the packaged GUI app
+  'scripts/electron-smoke.mjs:spawn(binary, args',                     // darwin only; second launch of the packaged GUI app
   // The parity fence refuses these before any process starts.
   "tests/parity/harness.test.ts:esm.spawn('podman', ['ps'])",
   "tests/parity/harness.test.ts:cjs.execFile(String.raw`C:\\Program Files\\RedHat\\Podman\\podman.exe`",
