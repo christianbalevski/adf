@@ -504,9 +504,11 @@ describe('AgentRuntimeBuilder parity: interactive MCP OAuth', () => {
 
       // The next LLM turn raises the sign-in and runs without waiting for it.
       await agent.dispatch(chat('hi'))
-      await waitFor(() => provider.getCallCount() > 0 && agent.executor.getState() === 'idle')
+      await waitFor(() => provider.getCallCount() > 0 && !agent.executor.isTurnActive())
       await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_SIGNIN_APPROVAL))
       expect(agent.mcpManager?.getServerState('remote')?.status).toBe('needs_sign_in')
+      // The turn is over; the agent shows it waits on the owner while the request is open.
+      expect(agent.executor.getState()).toBe('awaiting_approval')
       agent.executor.resolveHilTask(agent.executor.getPendingApprovals()[0].requestId, true)
       await waitFor(() => agent.executor.getPendingApprovals().some(a => a.name === MCP_OAUTH_AUTHORIZE_APPROVAL))
       completeCallback()

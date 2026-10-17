@@ -13,11 +13,13 @@ import type { LLMResponse } from '../../../src/shared/types/provider.types'
 
 /**
  * A chat that arrives while the agent waits on an approval with no turn
- * running. An approval the executor itself waits on (requestHilApproval,
- * e.g. a protection override from sandboxed code) is ended by the chat:
- * denied, and the chat queued. An approval raised beside the turn
- * (requestApproval with restoreState, the daemon's deferred MCP sign-in)
- * blocks nothing: the chat runs as a turn and the approval stays open.
+ * running: an approval raised beside the turn (requestApproval with
+ * restoreState, the daemon's deferred MCP sign-in) or with no agent turn
+ * running (a protection override from a system-scope lambda) blocks
+ * nothing. The chat runs as a turn, the approval stays open, and the agent
+ * reads awaiting_approval while it is. (The first test characterized the
+ * old behaviour, 23eaefe0: the chat denied it and was queued; review
+ * 4300792038 follow-up changed it.)
  */
 
 function chat(text: string) {
@@ -66,14 +68,47 @@ async function build() {
 }
 
 describe('a chat while an approval waits with no turn running', () => {
-  it('an executor approval (characterization): the chat denies it and is queued, no turn runs', async () => {
+  it('an executor approval raised with no agent turn: the chat runs and the approval stays open', async () => {
     const { executor, provider, dispose } = await build()
     try {
-      const approval = executor.requestHilApproval('compute_exec', { code: '1' })
+      void executor.requestHilApproval('compute_exec', { code: '1' })
       expect(executor.getState()).toBe('awaiting_approval')
       await executor.executeTurn(chat('hello'))
+      expect(provider.requests).toHaveLength(1)
+      expect(executor.getPendingApprovals().map((p) => p.name)).toEqual(['compute_exec'])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('a protection override from outside a turn never wedges the agent: chats run before and after it is decided', async () => {
+    const { executor, provider, dispose } = await build()
+    try {
+      const approval = executor.requestProtectionApproval('fs_write', { path: 'x' }, { kind: 'file', path: 'x', description: 'd' } as never, { timeoutMs: null })
+      await executor.executeTurn(chat('hello'))
+      expect(provider.requests).toHaveLength(1)
+      executor.resolveApproval(executor.getPendingApprovals()[0].requestId, false)
       expect((await approval).approved).toBe(false)
-      expect(provider.requests).toHaveLength(0)
+      expect(executor.getState()).toBe('idle')
+      await executor.executeTurn(chat('second'))
+      expect(provider.requests).toHaveLength(2)
+      expect(executor.getState()).toBe('idle')
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('the owner\'s hibernate with only a beside-turn approval open is kept, and the approval stays open', async () => {
+    const { executor, dispose } = await build()
+    const states: string[] = []
+    executor.on('event', (e: { type: string; payload: { state?: string } }) => { if (e.type === 'state_changed') states.push(e.payload.state!) })
+    try {
+      const approval = executor.requestApproval('mcp_oauth_authorize', { server: 'fs' }, { canAlwaysApprove: false, restoreState: true })
+      executor.endTurnAndSetState('hibernate')
+      expect(states.at(-1)).toBe('hibernate')
+      executor.resolveApproval(executor.getPendingApprovals()[0].requestId, true)
+      expect(await approval).toBe(true)
+      expect(states.at(-1)).toBe('hibernate')
     } finally {
       await dispose()
     }
@@ -86,8 +121,8 @@ describe('a chat while an approval waits with no turn running', () => {
       expect(executor.getState()).toBe('awaiting_approval')
       await executor.executeTurn(chat('hello'))
       expect(provider.requests).toHaveLength(1)
-      expect(executor.getState()).toBe('idle')
-      // Still open: the owner's answer decides it.
+      // Still open, and still shown as waiting on the owner (the fleet's approval badge).
+      expect(executor.getState()).toBe('awaiting_approval')
       const pending = executor.getPendingApprovals()
       expect(pending.map((p) => p.name)).toEqual(['mcp_oauth_authorize'])
       executor.resolveApproval(pending[0].requestId, true)
