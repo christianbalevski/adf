@@ -1,6 +1,6 @@
 import { dialog, type BrowserWindow, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
 import { flushMainLogSync } from './main-log-file'
-import { showBootWindow } from './boot-window'
+import { holdBootWindow, showBootWindow } from './boot-window'
 
 export interface WindowlessDialogDeps {
   /** A visible window to attach the dialog to (the boot window). */
@@ -8,6 +8,8 @@ export interface WindowlessDialogDeps {
   show: (parent: BrowserWindow | null, options: MessageBoxOptions) => Promise<MessageBoxReturnValue>
   flushLog: () => void
   log: (line: string) => void
+  /** Keep the parent open while the dialog is (closeBootWindow waits); returns the release. */
+  hold?: () => () => void
 }
 
 const defaultDeps: WindowlessDialogDeps = {
@@ -15,6 +17,7 @@ const defaultDeps: WindowlessDialogDeps = {
   show: (parent, options) => (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)),
   flushLog: () => flushMainLogSync(),
   log: (line) => console.log(line),
+  hold: () => holdBootWindow(),
 }
 
 /**
@@ -23,12 +26,19 @@ const defaultDeps: WindowlessDialogDeps = {
  * blocked the main thread and could open behind other apps, leaving Studio
  * with no window and, the log buffer never flushing, nothing in main.log.
  * This names what is waiting in the log, flushes it, and attaches the dialog
- * to the boot window, shown in front: a sheet, visible and non-blocking.
+ * to the boot window, shown in front: a sheet, visible and non-blocking. The
+ * boot window is kept open until the dialog is answered.
  */
 export async function showWindowlessMessageBox(waitingOn: string, options: MessageBoxOptions, deps: WindowlessDialogDeps = defaultDeps): Promise<MessageBoxReturnValue> {
   deps.log(`[App] Waiting for an answer in a dialog (before the main window): ${waitingOn}`)
   deps.flushLog()
   let parent: BrowserWindow | null = null
   try { parent = deps.parent('Waiting for your answer in the dialog.') } catch { /* no window: the dialog still opens on its own */ }
-  return deps.show(parent, options)
+  // The main window can become ready while this is open: its parent stays until it is answered.
+  const release = parent ? deps.hold?.() : undefined
+  try {
+    return await deps.show(parent, options)
+  } finally {
+    release?.()
+  }
 }

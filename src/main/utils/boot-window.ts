@@ -6,7 +6,8 @@ import { app, BrowserWindow, nativeTheme } from 'electron'
  * when that part has to wait on the user: a boot dialog gets it as a visible
  * parent (a sheet on macOS, which cannot open behind other apps and does not
  * block the main thread), and a slow keychain read says what it waits on.
- * The main window closes it once that window is shown.
+ * The main window closes it once that window is shown, or once the dialog
+ * open on it is answered.
  */
 
 let bootWindow: BrowserWindow | null = null
@@ -53,8 +54,38 @@ export function showBootWindow(status: string): BrowserWindow {
   return bootWindow
 }
 
-/** Close the boot window, if one is open (the main window is shown). */
+/** Dialogs open on the boot window; it is not closed under them. */
+let dialogsOpen = 0
+let closeWhenAnswered = false
+
+/**
+ * A dialog is open on the boot window: it stays open until the returned
+ * release runs. A boot dialog can run alongside main window creation (the
+ * daemon version mismatch); closing its parent would end a macOS sheet with
+ * no button, read as the cancel answer.
+ */
+export function holdBootWindow(): () => void {
+  dialogsOpen++
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    dialogsOpen--
+    if (dialogsOpen === 0 && closeWhenAnswered) {
+      closeWhenAnswered = false
+      console.log('[App] The boot dialog was answered; closing the boot window')
+      closeBootWindow()
+    }
+  }
+}
+
+/** Close the boot window, if one is open (the main window is shown); after its dialog is answered when one is open. */
 export function closeBootWindow(): void {
+  if (dialogsOpen > 0) {
+    if (!closeWhenAnswered && bootWindow && !bootWindow.isDestroyed()) console.log('[App] The main window is shown; the boot window stays open until its dialog is answered')
+    closeWhenAnswered = true
+    return
+  }
   const win = bootWindow
   bootWindow = null
   if (win && !win.isDestroyed()) win.close()

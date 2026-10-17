@@ -20,7 +20,9 @@ type FakeWindow = InstanceType<typeof FakeWindow>
 
 vi.mock('electron', () => ({ app: { focus: () => {} }, dialog: {}, BrowserWindow: FakeWindow, nativeTheme: { shouldUseDarkColors: false } }))
 
-import { closeBootWindow, showBootWindow } from '../src/main/utils/boot-window'
+import type { BrowserWindow, MessageBoxReturnValue } from 'electron'
+import { closeBootWindow, holdBootWindow, showBootWindow } from '../src/main/utils/boot-window'
+import { showWindowlessMessageBox } from '../src/main/utils/windowless-dialog'
 
 describe('boot window (characterization)', () => {
   it('closeBootWindow closes the open boot window at once', () => {
@@ -38,5 +40,27 @@ describe('boot window (characterization)', () => {
     expect(windows.length).toBe(before + 1)
     closeBootWindow()
     expect(() => closeBootWindow()).not.toThrow()
+  })
+})
+
+describe('boot window under a dialog (review 4300792043)', () => {
+  it('the main window becoming ready does not close the boot window while its dialog is open; the answer does', async () => {
+    let answer!: (r: MessageBoxReturnValue) => void
+    let parent: BrowserWindow | null = null
+    const pending = showWindowlessMessageBox('daemon version differs', { message: 'ADF daemon version', buttons: ['Restart', 'Inside Studio'] }, {
+      log: () => {},
+      flushLog: () => {},
+      parent: (status) => showBootWindow(status),
+      hold: () => holdBootWindow(),
+      show: (p) => { parent = p; return new Promise((r) => { answer = r }) },
+    })
+    while (!answer) await new Promise((r) => setTimeout(r, 0))
+    const win = parent as unknown as FakeWindow
+    // ready-to-show on the main window
+    closeBootWindow()
+    expect(win.closed).toBe(false)
+    answer({ response: 0, checkboxChecked: false })
+    expect((await pending).response).toBe(0)
+    expect(win.closed).toBe(true)
   })
 })
