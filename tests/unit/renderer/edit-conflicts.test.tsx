@@ -145,6 +145,35 @@ describe('saving over a revision', () => {
     expect(tab('notes.md').conflict?.content).toBe('agent')
   })
 
+  it('a refusal keeps text typed while the save was on its way: the tab is not put back to what the save sent', async () => {
+    s().openTab('notes.md', 'a', false, undefined, 100)
+    s().updateTabContent('notes.md', 'abc')
+    let resolve!: (a: SaveAnswer) => void
+    const pending = saveTabContent('notes.md', 'abc', () => new Promise((r) => { resolve = r }))
+    // The user keeps typing during the round-trip.
+    s().updateTabContent('notes.md', 'abcdef')
+    resolve({ success: false, conflict: { resource: 'notes.md', revision: 101, writer: { kind: 'agent' }, content: 'agent' } })
+    expect((await pending).kind).toBe('conflict')
+    expect(tab('notes.md')).toMatchObject({ content: 'abcdef', savedContent: 'agent', isDirty: true })
+    expect(tab('notes.md').conflict?.content).toBe('agent')
+    // Keep mine saves the newer text.
+    s().resolveTabConflict('notes.md', 'keep')
+    expect(tab('notes.md').content).toBe('abcdef')
+  })
+
+  it('a refusal over a tab showing their text (clean) brings the refused text back', async () => {
+    s().openTab('notes.md', 'a', false, undefined, 100)
+    s().updateTabContent('notes.md', 'mine')
+    let resolve!: (a: SaveAnswer) => void
+    const pending = saveTabContent('notes.md', 'mine', () => new Promise((r) => { resolve = r }))
+    // Reopened from disk meanwhile (closed, opened again): clean, their text.
+    s().closeTab('notes.md')
+    s().openTab('notes.md', 'agent', false, undefined, 101)
+    resolve({ success: false, conflict: { resource: 'notes.md', revision: 101, writer: { kind: 'agent' }, content: 'agent' } })
+    await pending
+    expect(tab('notes.md')).toMatchObject({ content: 'mine', savedContent: 'agent', isDirty: true })
+  })
+
   it('without a revision (an older read) the save sends none: last write wins, as before', async () => {
     s().openTab('notes.md', 'a', false)
     const write = vi.fn(async (): Promise<SaveAnswer> => ({ success: true }))
