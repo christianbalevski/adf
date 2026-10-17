@@ -23,6 +23,13 @@ export function pushToolCall(mock: MockDaemon, agentId: string, loop: string, ca
 
 export const TASK_REF = JSON.stringify({ task_id: 'task_bg1', status: 'running', tool: 'sys_fetch' })
 
+/** The adf_tasks row of a backgrounded call (TASK_REF's by default). */
+export function addBackgroundTask(mock: MockDaemon, agentId: string, task: { id?: string; status: string; result?: string; error?: string }): void {
+  const agent = mock.agents.get(agentId)
+  if (!agent) throw new Error(`no agent ${agentId}`)
+  agent.tasks.push({ id: task.id ?? 'task_bg1', tool: 'sys_fetch', args: '{}', created_at: Date.now(), status: task.status, ...(task.result !== undefined ? { result: task.result, completed_at: Date.now() } : {}), ...(task.error !== undefined ? { error: task.error } : {}) })
+}
+
 /** One of every tool presentation, persisted in `loop` (default main). */
 export function seedToolHistory(mock: MockDaemon, agentId: string, loop = 'main', start = Date.now() - 10 * 60_000): void {
   let at = start

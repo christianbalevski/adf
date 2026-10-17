@@ -39,13 +39,14 @@ import {
   type TimerInput,
 } from '../api/types'
 import { initialState, tuiReducer, eventLoop, type TuiAction } from './reducer'
-import { localId } from './transcript'
+import { localId, unresolvedTasks } from './transcript'
 import { clientFrameEffects, TUI_CLIENT_NAME } from './client-stream'
 import {
   transcriptKey,
   type FocusZone,
   type Overlay,
   type ToastLevel,
+  type TranscriptKey,
   type TuiState,
   type UserItem,
   type WebState,
@@ -306,6 +307,20 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   const selectedLoopOf = (agentId: string) => state.selectedLoop[agentId] ?? MAIN_LOOP
   /** Reads started against a daemon we have since switched away from are dropped. */
   const stale = (c: DaemonClient) => !current.has(c)
+  /**
+   * After a history load: a backgrounded call shown running is settled from
+   * its task row once that task is done (its tool.completed may have come
+   * while this app was not listening). Still running: it stays so, and its
+   * tool.completed settles it. Unreachable: left for the next load.
+   */
+  const settleBackgroundTasks = (c: DaemonClient, agentId: string, key: TranscriptKey) => {
+    for (const { toolUseId, taskId } of unresolvedTasks(state.transcripts[key]?.items ?? [])) {
+      c.task(agentId, taskId).then(
+        result => { if (!stale(c)) dispatch({ type: 'tool/task', key, toolUseId, task: result.task }) },
+        err => { if (!stale(c) && err instanceof DaemonError && err.status === 404) dispatch({ type: 'tool/task', key, toolUseId, task: null }) },
+      )
+    }
+  }
   /** Requests name session `id` from now on (null: none). */
   const useSession = (id: string | null) => {
     client = id ? plain.withClientSession(id) : plain
@@ -627,7 +642,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       dispatch({ type: 'transcript/loading', key })
       try {
         const page = await c.loopHistory(agentId, { loop, limit: pageSize })
-        if (!stale(c)) dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'replace' })
+        if (stale(c)) return
+        dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'replace' })
+        settleBackgroundTasks(c, agentId, key)
       } catch (err) {
         if (!stale(c)) dispatch({ type: 'transcript/error', key, error: describe(err) })
       }
@@ -643,7 +660,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       dispatch({ type: 'transcript/loading', key })
       try {
         const page = await c.loopHistory(agentId, { loop, limit, offset })
-        if (!stale(c)) dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'prepend' })
+        if (stale(c)) return
+        dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'prepend' })
+        settleBackgroundTasks(c, agentId, key)
       } catch (err) {
         if (!stale(c)) dispatch({ type: 'transcript/error', key, error: describe(err) })
       }
