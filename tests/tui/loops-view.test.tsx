@@ -44,6 +44,12 @@ async function focusPrompt() {
   await new Promise(resolve => setTimeout(resolve, 60))
 }
 
+/** Close the dialog's result screen and wait until it is gone, so the next key reaches the list. */
+async function closeDialog(tui: RenderedTui) {
+  await tui.press(KEY.enter)
+  await tui.waitFor(() => store.getState().overlays.length === 0)
+}
+
 async function typeText(tui: RenderedTui, text: string) {
   for (const ch of text) await tui.press(ch)
 }
@@ -196,23 +202,26 @@ describe('loops manager', () => {
     await tui.press('y')
     await tui.waitFor('Timer #1 updated: every 30m')
     expect(agent1().timers[0].schedule).toMatchObject({ mode: 'interval', every_ms: 1_800_000 })
-    await tui.press(KEY.enter)
+    await closeDialog(tui)
 
     await tui.press('n')
     await tui.waitFor('New timer')
     await tui.press(KEY.right) // target loop: main → consolidator
+    await tui.waitFor(f => /Target loop\s+‹ consolidator ›/.test(f))
     await tui.press(KEY.ctrlS)
     await tui.waitFor('review')
     await tui.press('y')
     await tui.waitFor('Timer #2 created')
     expect(agent1().timers.find(t => t.id === 2)?.loop).toBe('consolidator')
-    await tui.press(KEY.enter)
+    await closeDialog(tui)
 
     await tui.press('f')
     frame = await tui.waitFor('Upcoming')
     expect(frame).toContain('AGENT')
     await tui.press('f')
-    await tui.waitFor('Timers of agent-1')
+    // Leaving fleet mode reloads this agent's timers; the title renders before
+    // the rows, and `d` with no row selected does nothing. Wait for the rows.
+    await tui.waitFor(f => f.includes('Timers of agent-1') && /#1\s+consolidator\s+every 30m/.test(f) && /#2\s+consolidator\s+every 1h/.test(f))
     await tui.press('d')
     await tui.waitFor('Delete timer #')
     await tui.press('y')
