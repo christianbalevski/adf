@@ -98,6 +98,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
+import { appendOwnerMessageUnderLease } from '../runtime/owner-message-append'
 import { agentFileBusy, describeEnvelopeSweep } from '../services/owner-identity.service'
 import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
@@ -6006,15 +6007,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
         // Start refused (unreviewed / password-locked / foreground file) —
         // write the chat into the loop so it's the next thing the agent sees
-        // when the user starts it properly. No inbox row.
+        // when the user starts it properly. No inbox row. Written under the
+        // agent's lease: a file another runtime runs is refused, with the
+        // holder's sentence.
         const isForeground = filePath === currentFilePath && !!currentWorkspace
-        const workspace = isForeground ? currentWorkspace! : AdfWorkspace.open(filePath)
-        try {
-          workspace.appendToLoop('user', [{ type: 'text', text: content }])
-          if (isForeground) pushForegroundLoop(filePath)
-        } finally {
-          if (!isForeground) workspace.close()
+        const appended = await appendOwnerMessageUnderLease(processAgentLeases(), filePath, content, isForeground ? { workspace: currentWorkspace! } : {})
+        if (!appended.ok) {
+          failed.push({ filePath, error: appended.error })
+          continue
         }
+        if (isForeground) pushForegroundLoop(filePath)
         delivered.push(filePath)
       } catch (error) {
         failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })

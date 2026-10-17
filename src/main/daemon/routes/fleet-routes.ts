@@ -21,8 +21,7 @@
 
 import { existsSync } from 'fs'
 import type { FastifyInstance } from 'fastify'
-import { AdfWorkspace } from '../../adf/adf-workspace'
-import { leaseHolderElsewhere } from '../../runtime/agent-lease'
+import { appendOwnerMessageUnderLease } from '../../runtime/owner-message-append'
 import { RuntimeGate } from '../../runtime/runtime-gate'
 import type { RuntimeService } from '../../runtime/runtime-service'
 import { mergeAdapterStates } from '../../services/adapter-status'
@@ -200,20 +199,13 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
           delivered.push(filePath)
           continue
         }
-        // Another runtime runs it: a row written beside that runtime gets no
-        // turn there (and could land mid-turn), so the message fails with the
-        // holder's sentence. The review gate refuses before the lease check,
-        // so this asks the lease directly.
-        const holder = await leaseHolderElsewhere(runtime.agentLeaseRegistry, filePath)
-        if (holder) {
-          failed.push({ filePath, error: holder })
+        // Written under the agent's lease (the review gate refuses before the
+        // lease check): another runtime that runs it is its one writer, and
+        // the message fails with the holder's sentence.
+        const appended = await appendOwnerMessageUnderLease(runtime.agentLeaseRegistry, filePath, content)
+        if (!appended.ok) {
+          failed.push({ filePath, error: appended.error })
           continue
-        }
-        const workspace = AdfWorkspace.open(filePath)
-        try {
-          workspace.appendToLoop('user', [{ type: 'text', text: content }])
-        } finally {
-          workspace.close()
         }
         delivered.push(filePath)
       } catch (error) {
