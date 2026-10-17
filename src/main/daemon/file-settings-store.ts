@@ -8,7 +8,7 @@ import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-
 import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
 import { applySettingsMigrations, mergeSettingsValue } from '../../shared/utils/settings-migrations'
 import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
-import { SECRET_STORE_KEY_STORAGE, type ProviderKeyVault } from './provider-key-vault'
+import { ProviderKeyVaultLockedError, SECRET_STORE_KEY_STORAGE, type ProviderKeyVault } from './provider-key-vault'
 import { CLIENT_SETTINGS_KEYS } from '../../shared/constants/client-settings-keys'
 
 export interface SettingsQuarantineInfo {
@@ -161,8 +161,10 @@ export class FileSettingsStore implements ProviderSettingsStore {
   }
 
   update(values: Record<string, unknown>): void {
+    // Sealed first: a refused providers value leaves every key unchanged.
+    const providers = 'providers' in values ? this.sealProviderKeys(values.providers) : undefined
     for (const [key, value] of Object.entries(values)) {
-      this.data[key] = mergeSettingsValue(this.data[key], key, key === 'providers' ? this.sealProviderKeys(value) : value)
+      this.data[key] = mergeSettingsValue(this.data[key], key, key === 'providers' ? providers : value)
     }
     this.save(Object.keys(values))
   }
@@ -190,18 +192,32 @@ export class FileSettingsStore implements ProviderSettingsStore {
    * entry keeps an empty apiKey. A secret-store entry written without a key
    * whose `type` or `baseUrl` changed loses its vault key (logged): withVaultKey
    * fills the key by id, and it must never reach an endpoint it was not
-   * entered for (W5-D1).
+   * entered for (W5-D1). While the vault is locked that key can be neither
+   * read nor removed, so such a change is refused (ProviderKeyVaultLockedError)
+   * and nothing is written.
    */
   private sealProviderKeys(value: unknown): unknown {
     if (!Array.isArray(value)) return value
     const before = new Map(((this.data.providers as ProviderConfig[] | undefined) ?? []).filter(p => p && typeof p === 'object').map(p => [p.id, p]))
+    const endpointChanged = (provider: ProviderConfig): boolean => {
+      if (provider.apiKeyStorage !== SECRET_STORE_KEY_STORAGE || provider.apiKey || !this.providerKeys) return false
+      const old = before.get(provider.id)
+      return !!old && ((old.baseUrl ?? '') !== (provider.baseUrl ?? '') || (old.type ?? '') !== (provider.type ?? ''))
+    }
+    if (this.providerKeys && !this.providerKeys.available()) {
+      const changed = value.find(entry => !!entry && typeof entry === 'object' && endpointChanged(entry as ProviderConfig)) as ProviderConfig | undefined
+      if (changed) {
+        console.warn(`[FileSettingsStore] Provider "${changed.id}" changed its address or type while the secret store is locked: refused (its stored key could not be removed).`)
+        throw new ProviderKeyVaultLockedError(`The daemon secret store is locked, so the address or type of provider "${changed.name || changed.id}" cannot change: its stored API key could not be removed first. Unlock the owner identity, then save again.`)
+      }
+    }
     return value.map(entry => {
       if (!entry || typeof entry !== 'object') return entry
       const provider = entry as ProviderConfig
-      if (provider.apiKeyStorage === SECRET_STORE_KEY_STORAGE && !provider.apiKey && this.providerKeys) {
-        const old = before.get(provider.id)
-        if (old && ((old.baseUrl ?? '') !== (provider.baseUrl ?? '') || (old.type ?? '') !== (provider.type ?? '')) && this.providerKeys.get(provider.id) !== null) {
-          this.providerKeys.delete(provider.id)
+      const keys = this.providerKeys
+      if (keys && endpointChanged(provider)) {
+        if (keys.get(provider.id) !== null) {
+          keys.delete(provider.id)
           console.warn(`[FileSettingsStore] Provider "${provider.id}" changed its address or type without a new key: its stored key was removed, so it is never sent to the new endpoint. Enter the key again.`)
         }
       }

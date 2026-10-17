@@ -10351,7 +10351,7 @@
           "Settings"
         ],
         "summary": "Merge settings values",
-        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.",
+        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint. While the daemon secret store is locked, such a change to a secret-store entry without a new key is refused with 409 `secret_store_locked` (its stored key cannot be removed until the store is unlocked).",
         "operationId": "patchSettings",
         "requestBody": {
           "required": true,
@@ -10388,6 +10388,9 @@
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"
@@ -10435,7 +10438,7 @@
           "Settings"
         ],
         "summary": "Write one setting",
-        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.",
+        "description": "Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint. While the daemon secret store is locked, such a change to a secret-store entry without a new key is refused with 409 `secret_store_locked` (its stored key cannot be removed until the store is unlocked).",
         "operationId": "putSetting",
         "parameters": [
           {
@@ -10474,6 +10477,9 @@
           },
           "405": {
             "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
           },
           "503": {
             "$ref": "#/components/responses/Unavailable"

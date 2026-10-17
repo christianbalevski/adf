@@ -56,7 +56,7 @@ import { convertOwnLegacyPassword } from '../services/envelope-actions'
 import { readFileProviderConfig } from './path-agent-ops'
 import { parseBaseRevision } from '../runtime/resource-revisions'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
-import { SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
+import { ProviderKeyVaultLockedError, SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -890,7 +890,13 @@ export function createDaemonHttpApi(
       if (restored.refused) return badRequest(reply, restored.refused, 'api_key_required')
       patch.providers = restored.value
     }
-    opts.settingsStore.update(patch)
+    try {
+      opts.settingsStore.update(patch)
+    } catch (err) {
+      // A provider endpoint change while the secret store is locked (W5-D1).
+      if (err instanceof ProviderKeyVaultLockedError) return conflict(reply, err.message, err.code)
+      throw err
+    }
     return {
       filePath: opts.settingsStore.filePath ?? null,
       settings: redactSettings(opts.settingsStore.getAll?.() ?? null),
@@ -924,7 +930,12 @@ export function createDaemonHttpApi(
       if (restored.refused) return badRequest(reply, restored.refused, 'api_key_required')
       incoming = restored.value
     }
-    opts.settingsStore.set(request.params.key, incoming)
+    try {
+      opts.settingsStore.set(request.params.key, incoming)
+    } catch (err) {
+      if (err instanceof ProviderKeyVaultLockedError) return conflict(reply, err.message, err.code)
+      throw err
+    }
     const stored = isSecretSettingsKey(request.params.key)
       ? null
       : opts.settingsStore.get(request.params.key) ?? null

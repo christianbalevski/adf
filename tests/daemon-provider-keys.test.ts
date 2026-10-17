@@ -132,6 +132,38 @@ describe('POST /runtime/providers', () => {
     expect(vault.values.get(made.id)).toBe('sk-new-endpoint-key-1')
   })
 
+  it('refuses an endpoint or type change while the secret store is locked: the stored key could not be removed (W5-D1)', async () => {
+    const store = new Map<string, string>()
+    let unlocked = true
+    const backend = { kind: 'file' as const, isUnlocked: () => unlocked, get: (a: string) => store.get(a) ?? null, set: (a: string, v: string) => { store.set(a, v) }, delete: (a: string) => { store.delete(a) } }
+    const { server, settings } = setup(new SecretBackendProviderKeyVault(backend, 'abc123') as unknown as MemoryProviderKeyVault)
+    const made = (await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'openai-compatible', name: 'agent-1 LLM', preset: 'custom', baseUrl: 'https://llm.example.com/v1', apiKey: KEY } })).json().provider
+    unlocked = false
+    const echoed = (await server.inject({ method: 'GET', url: '/settings/providers' })).json().value as Array<Record<string, unknown>>
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      for (const change of [{ baseUrl: 'https://attacker.example/v1' }, { type: 'anthropic' }]) {
+        for (const write of [
+          () => server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], ...change }], theme: 'dark' } }),
+          () => server.inject({ method: 'PUT', url: '/settings/providers', payload: { value: [{ ...echoed[0], ...change }] } }),
+        ]) {
+          const res = await write()
+          expect(res.statusCode).toBe(409)
+          expect(res.json()).toMatchObject({ code: 'secret_store_locked' })
+          expect(res.json().error).toContain('"agent-1 LLM"')
+        }
+        expect(() => settings.update({ providers: [{ ...echoed[0], ...change }] })).toThrow(/locked/)
+      }
+      expect(settings.get('theme')).not.toBe('dark') // a refused PATCH writes no key
+      // Other edits still save while locked.
+      expect((await server.inject({ method: 'PATCH', url: '/settings', payload: { providers: [{ ...echoed[0], name: 'renamed' }] } })).statusCode).toBe(200)
+    } finally {
+      warn.mockRestore()
+    }
+    unlocked = true
+    expect(settings.getProvider(made.id)).toMatchObject({ name: 'renamed', baseUrl: 'https://llm.example.com/v1', type: 'openai-compatible', apiKey: KEY })
+  })
+
   it('refuses while the secret store is locked, subscriptions, and missing keys or URLs', async () => {
     const { server } = setup(new MemoryProviderKeyVault(false))
     const locked = await server.inject({ method: 'POST', url: '/runtime/providers', payload: { type: 'anthropic', apiKey: KEY } })
