@@ -673,6 +673,42 @@ describe('open documents: review fixes', () => {
     expect(runtime.getAgentConfig(agentId).config.name).toBe('not-the-file-name') // the name was not adopted from the file
   })
 
+  it('a read-only document becomes writable once the other runtime lets the file go: the next open runs the skipped steps', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1', { name: 'not-the-file-name' } as Partial<AgentConfig>)
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
+    let otherClosed = false
+    cleanups.push(() => { if (!otherClosed) return other.close() })
+    const { runtime } = setup()
+    expect((await runtime.openDocument(filePath, { holder: S1 })).readOnly).toMatch(/running/i)
+    // Still held: the second open stays read-only.
+    expect((await runtime.openDocument(filePath, { holder: S2 })).readOnly).toMatch(/running/i)
+
+    await other.close()
+    otherClosed = true
+    const info = await runtime.openDocument(filePath, { holder: S3 })
+    expect(info.readOnly).toBeUndefined()
+    expect(info.nameChangedFrom).toBe('not-the-file-name')
+    expect(runtime.getAgentConfig(agentId).config.name).toBe('agent-1')
+    expect(runtime.getOpenDocument(agentId)?.readOnly).toBeUndefined()
+  })
+
+  it('a read-only document started here once the other runtime let the file go is no longer read-only', async () => {
+    const dir = tempDir()
+    const { filePath, agentId } = seedAgent(dir, 'agent-1')
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(dir, 'other-settings.json') })
+    expect((await other.acquire(filePath, { agentId })).ok).toBe(true)
+    let otherClosed = false
+    cleanups.push(() => { if (!otherClosed) return other.close() })
+    const { runtime } = setup()
+    expect((await runtime.openDocument(filePath, { holder: S1 })).readOnly).toMatch(/running/i)
+    await other.close()
+    otherClosed = true
+    await runtime.loadAgent(filePath)
+    expect(runtime.getOpenDocument(agentId)?.readOnly).toBeUndefined()
+  })
+
   it('accept answers the fields it locked', async () => {
     const dir = tempDir()
     const { filePath } = seedAgent(dir, 'agent-1')

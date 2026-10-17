@@ -932,6 +932,13 @@ export class RuntimeService extends EventEmitter {
     let built: RuntimeAgent | null = null
     let registered = false
     try {
+      // Opened read-only while another runtime ran it: this start holds the
+      // lease now, so the open steps it skipped run first.
+      if (doc?.readOnly) {
+        console.log(`[RuntimeService] ${canonicalPath} is no longer run by another runtime: the document is writable`)
+        doc.config = this.runDocumentOpenSteps(workspace, canonicalPath).config
+        delete doc.readOnly
+      }
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
       // B1 interim hardening: in the daemon the identity hooks may never have
@@ -1771,6 +1778,12 @@ export class RuntimeService extends EventEmitter {
     let nameChangedFrom: string | null = null
     let doc = this.documents.get(canonicalPath)
     if (doc) this.assertNotMoving(doc)
+    if (doc?.readOnly) {
+      nameChangedFrom = await this.recheckReadOnly(doc)
+      // The await may have seen it closed or moving.
+      doc = this.documents.get(canonicalPath)
+      if (doc) this.assertNotMoving(doc)
+    }
     if (!doc) {
       const pending = this.inFlightOpens.get(canonicalPath)
       if (pending) {
@@ -1831,19 +1844,7 @@ export class RuntimeService extends EventEmitter {
         fresh = workspace.getAgentConfig() as AgentConfig
         this.assertNoDuplicateId(fresh.id, canonicalPath)
       } else {
-        unlockWorkspaceEnvelopes(workspace)
-        const config = workspace.getAgentConfig() as AgentConfig
-        this.assertNoDuplicateId(config.id, canonicalPath)
-        const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
-        try {
-          this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
-        } catch (err) {
-          console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
-        }
-        fresh = workspace.getAgentConfig() as AgentConfig
-        nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
-        this.surfaceFileProviders(fresh)
-        this.sweepOrphanedWal(dirname(canonicalPath))
+        ({ config: fresh, nameChangedFrom } = this.runDocumentOpenSteps(workspace, canonicalPath))
       }
       const doc: OpenDocument = {
         agentId: fresh.id,
@@ -1862,6 +1863,44 @@ export class RuntimeService extends EventEmitter {
       try { workspace.dispose() } catch { /* best effort */ }
       throw err
     }
+  }
+
+  /** The open steps that write the file (skipped while another runtime runs it). */
+  private runDocumentOpenSteps(workspace: AdfWorkspace, canonicalPath: string): { config: AgentConfig; nameChangedFrom: string | null } {
+    unlockWorkspaceEnvelopes(workspace)
+    const config = workspace.getAgentConfig() as AgentConfig
+    this.assertNoDuplicateId(config.id, canonicalPath)
+    const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), config)
+    try {
+      this.documentOpenHooks.onOpen?.(workspace, { filePath: canonicalPath, reviewed })
+    } catch (err) {
+      console.warn(`[RuntimeService] Identity steps on open failed for ${canonicalPath}:`, err)
+    }
+    const fresh = workspace.getAgentConfig() as AgentConfig
+    const nameChangedFrom = this.adoptFileName(workspace, fresh, canonicalPath)
+    this.surfaceFileProviders(fresh)
+    this.sweepOrphanedWal(dirname(canonicalPath))
+    return { config: fresh, nameChangedFrom }
+  }
+
+  /**
+   * A document opened read-only asks the lease again on each open: once the
+   * other runtime has let the file go, the skipped open steps run and the
+   * document is writable. Returns the name it adopted from the file, if any.
+   */
+  private async recheckReadOnly(doc: OpenDocument): Promise<string | null> {
+    if (this.managedAt(doc.filePath)) return null
+    const leasedBy = (await this.documentOpenHooks.leasedElsewhere?.(doc.filePath)) ?? null
+    if (!doc.readOnly || this.documents.get(doc.filePath) !== doc || this.movingDocs.has(doc)) return null
+    if (leasedBy) {
+      doc.readOnly = leasedBy
+      return null
+    }
+    console.log(`[RuntimeService] ${doc.filePath} is no longer run by another runtime: the document is writable`)
+    const { config, nameChangedFrom } = this.runDocumentOpenSteps(doc.workspace, doc.filePath)
+    doc.config = config
+    delete doc.readOnly
+    return nameChangedFrom
   }
 
   /**
