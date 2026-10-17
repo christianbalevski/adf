@@ -168,6 +168,30 @@ describe('AgentRuntimeBuilder parity: a connect after the start', () => {
       await agent.disposeAsync()
     }
   })
+
+  it('a config saved while the restart connects stays on the running agent (review 4300792081)', async () => {
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockResolvedValue([PING_TOOL])
+    const base = makeAgentFile('agent-1', { mcp: { servers: [stdioServer('srv')] } })
+    const { workspace } = base
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath: base.filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    try {
+      let release!: (tools: McpToolInfo[]) => void
+      connect.mockImplementation(() => new Promise((resolve) => { release = resolve as never }))
+      const restart = mcpConnectorFor(agent.mcpManager)!('srv')
+      await waitFor(() => typeof release === 'function')
+      // A client's save during the connect (RuntimeService.setAgentConfig: file, then the agent).
+      const saved = { ...workspace.getAgentConfig(), description: 'saved during the restart' }
+      workspace.setAgentConfig(saved)
+      agent.applyConfigChange(saved)
+      release([PING_TOOL, { name: 'pong', description: 'pong', input_schema: { type: 'object', properties: {} } }])
+      await restart
+      expect(agent.executor.getConfig().description).toBe('saved during the restart')
+      expect(agent.executor.getConfig().tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
+      expect(workspace.getAgentConfig().description).toBe('saved during the restart')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
 })
 
 describe('AgentRuntimeBuilder parity: start window, tool toggles (review fix)', () => {
