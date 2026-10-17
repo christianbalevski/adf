@@ -23,7 +23,6 @@ import type {
   InboxStatus,
   LoopConfig,
   LoopEntry,
-  LoopTokenUsage,
   MetaProtectionLevel,
   McpServerConfig,
   McpServerState,
@@ -66,6 +65,7 @@ import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
 import { issueOwnerAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
 import { buildToolDiscovery, type ToolDiscoveryEntry } from '../tools/built-in/sys-get-config.tool'
+import { summarizeLoopUsage, type RuntimeAgentUsageByModel, type RuntimeUsageTotals } from './loop-usage'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -339,18 +339,7 @@ const NO_LIVE_APPROVAL_REASON = 'No live approval request is waiting on this tas
 /** Display states an agent can be moved to (adf-v02 `AGENT_STATES`). */
 export type AdfDisplayState = AdfAgentState
 
-export interface RuntimeUsageTotals {
-  input: number
-  output: number
-  cacheRead: number
-  cacheWrite: number
-  total: number
-}
-
-export interface RuntimeAgentUsageByModel extends RuntimeUsageTotals {
-  model: string
-  rows: number
-}
+export type { RuntimeUsageTotals, RuntimeAgentUsageByModel } from './loop-usage'
 
 export interface RuntimeAgentUsage {
   agentId: string
@@ -1487,33 +1476,11 @@ export class RuntimeService extends EventEmitter {
 
   getAgentUsage(agentId: string): RuntimeAgentUsage {
     const managed = this.requireAgent(agentId)
-    const entries = managed.agent.workspace.getLoop()
-    const totals = createUsageTotals()
-    const byModel = new Map<string, RuntimeAgentUsageByModel>()
-    let usageRows = 0
-
-    for (const entry of entries) {
-      if (!entry.tokens) continue
-      usageRows++
-      addUsage(totals, entry.tokens)
-      const model = entry.model ?? 'unknown'
-      let bucket = byModel.get(model)
-      if (!bucket) {
-        bucket = { model, rows: 0, ...createUsageTotals() }
-        byModel.set(model, bucket)
-      }
-      bucket.rows++
-      addUsage(bucket, entry.tokens)
-    }
-
     return {
       agentId: managed.id,
       source: 'adf_loop',
       note: 'Sums token usage persisted on loop rows, including compaction summary rows. It does not include model_invoke or other provider calls that did not create loop rows. input already includes cacheRead and cacheWrite; total = input + output.',
-      loopRows: entries.length,
-      usageRows,
-      totals,
-      byModel: Array.from(byModel.values()).sort((a, b) => b.total - a.total),
+      ...summarizeLoopUsage(managed.agent.workspace.getLoop()),
     }
   }
 
@@ -2582,20 +2549,6 @@ export class RuntimeService extends EventEmitter {
 function clampInteger(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
   return Math.min(max, Math.max(min, Math.floor(value)))
-}
-
-function createUsageTotals(): RuntimeUsageTotals {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
-}
-
-function addUsage(target: RuntimeUsageTotals, usage: LoopTokenUsage): void {
-  target.input += usage.input ?? 0
-  target.output += usage.output ?? 0
-  target.cacheRead += usage.cache_read ?? 0
-  target.cacheWrite += usage.cache_write ?? 0
-  // `input` is already cache-inclusive (AI SDK v6 reports inputTokens.total),
-  // so cache buckets are a breakdown of input, not an addition to it.
-  target.total = target.input + target.output
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
