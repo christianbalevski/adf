@@ -237,7 +237,7 @@ the next start finishes the move.
 | Client settings (theme, fonts, recent files, fleet map layout, notifications, menu bar, update and spellcheck choices) | Moved from `adf-settings.json` into `studio-client-settings.json` | Moved back |
 | Runtime identity | Studio's runtime key is written to the OS keychain (account `studio-runtime:<scope>`), so the daemon signs as the same runtime and your agents show as yours in review | The keychain copy is deleted |
 | ChatGPT and Grok sessions | `<provider>/auth.json` moves to `<provider>/auth.daemon.json` | Moved back |
-| App-level MCP sign-ins | Moved into the daemon's keychain entries | Moved back into Studio's settings |
+| App-level MCP sign-ins | Moved into the daemon's keychain entries. They stay in Studio when the keychain cannot be opened or is locked; agents keep their own sealed copies | Moved back into Studio's settings: the ones Studio moved and the ones signed in while on This computer. Sign-ins the daemon had before the first switch stay with it. When that first switch did not read the daemon's keychain entries (Studio had nothing to put there, or the keychain was unavailable or locked) and a daemon had already run on these settings, only the ones Studio moved come back; sign in again in Studio for the others. When the keychain cannot be opened or is locked at the switch back, none move |
 | Owner seed phrase | Mirrored into the keychain entry `ADF / owner-mnemonic` when it is not there | Nothing |
 | Open agent and tabs | Reopened after the restart | Reopened after the restart |
 

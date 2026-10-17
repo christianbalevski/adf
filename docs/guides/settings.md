@@ -520,7 +520,7 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 | Remote computer | `remote` | The ADF daemon on another computer, reached by URL and token. See [Remote daemon](../cli/remote-daemon.md). |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
 
-Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves the sign-ins it holds to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
+Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
 The page also shows the daemon Studio uses (state, pid, who started it; URL and version under **Details**).
 
@@ -530,7 +530,7 @@ The page also shows the daemon Studio uses (state, pid, who started it; URL and 
 
 ### Go back to running agents inside Studio
 
-Choose **Settings → Backend → Inside Studio (legacy)**. This is the persistent way back: Studio restarts and moves the sign-ins and the runtime identity back into Studio. See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+Choose **Settings → Backend → Inside Studio (legacy)**. This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 

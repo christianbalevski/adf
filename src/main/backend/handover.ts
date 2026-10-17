@@ -45,6 +45,8 @@ import { DaemonAppOAuthStore, daemonAppOAuthAccount, MCP_OAUTH_SETTINGS_KEY } fr
 import type { McpOAuthRecord } from '../services/mcp-oauth.types'
 import { OWNER_MNEMONIC_ACCOUNT, type SecretBackend } from '../services/owner-secret-store'
 import { settingsScope } from '../services/provider-key-store'
+import { DAEMON_TOKEN_FILENAME } from '../daemon/daemon-token'
+import { LOCAL_PROOF_FILENAME } from '../daemon/local-access'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import {
   serializeStudioRuntimeEntry,
@@ -317,8 +319,10 @@ export interface HandoverMarker {
   daemonOwn: SignIns
   /**
    * The daemon's MCP store could not be read when `daemonOwn` was recorded
-   * (no keychain, or locked): its own MCP sign-ins are unknown, so only
-   * what Studio moved (`moved.mcpServers`) moves back.
+   * (no keychain opened, or locked) while a daemon had already run on these
+   * settings: its own MCP sign-ins are unknown, so only what Studio moved
+   * (`moved.mcpServers`) moves back. Without such a daemon the store cannot
+   * exist, and its own sign-ins are known to be none.
    */
   daemonOwnMcpUnknown?: boolean
   /** Set when the marker was missing and Studio's runtime entry was found: what was moved is unknown. */
@@ -332,13 +336,22 @@ export type MarkerState =
 
 const emptySignIns = (): SignIns => ({ sessions: {}, mcpServers: [] })
 
-/**
- * Whether the daemon's own MCP sign-ins are unknown: recorded without its
- * store (`daemonOwnMcpUnknown`), or by a record written without a keychain
- * (`keychainUsed` false, before that field existed).
- */
+/** Whether the daemon's own MCP sign-ins are unknown (`daemonOwnMcpUnknown`). */
 function daemonOwnMcpUnknown(marker: HandoverMarker | null): boolean {
-  return !!marker && (marker.daemonOwnMcpUnknown === true || !marker.keychainUsed)
+  return marker?.daemonOwnMcpUnknown === true
+}
+
+/**
+ * A daemon has run on these settings: it writes `daemon-token` (unless
+ * ADF_DAEMON_TOKEN is set) and `daemon-local-proof[-port]` beside the
+ * settings file at every start. Without either, its MCP store cannot exist.
+ */
+async function daemonRanOnSettings(settingsPath: string): Promise<boolean> {
+  try {
+    return (await fsp.readdir(dirname(settingsPath))).some((name) => name === DAEMON_TOKEN_FILENAME || name.startsWith(LOCAL_PROOF_FILENAME))
+  } catch {
+    return false
+  }
 }
 
 /** The daemon's MCP sign-ins that move back to Studio: what Studio moved, and, when the daemon's own are known, every other one. */
@@ -856,9 +869,14 @@ async function daemonSignIns(deps: HandoverDeps): Promise<Pick<HandoverMarker, '
     if (tokens?.account_id) own.sessions[sub.id] = tokens.account_id
   }
   const store = daemonOAuthStore(deps)
-  if (!store?.available()) return { daemonOwn: own, daemonOwnMcpUnknown: true }
-  own.mcpServers = store.listServerUrls()
-  return { daemonOwn: own }
+  if (store?.available()) {
+    own.mcpServers = store.listServerUrls()
+    return { daemonOwn: own }
+  }
+  // Not readable here: unknown only when a daemon may have written it (a fresh install has no daemon store).
+  if (!await daemonRanOnSettings(deps.settingsPath)) return { daemonOwn: own }
+  deps.log?.(`[Handover] The daemon's MCP sign-ins cannot be read now (${store ? 'its secret store is locked' : deps.daemonSecretsUnavailable ?? 'no keychain'}) and a daemon has run on these settings: on the way back only the MCP sign-ins Studio moves now go back to Studio`)
+  return { daemonOwn: own, daemonOwnMcpUnknown: true }
 }
 
 /**
