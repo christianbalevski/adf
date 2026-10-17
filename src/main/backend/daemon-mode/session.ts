@@ -120,8 +120,9 @@ export class DaemonModeSession {
   }
 
   /**
-   * Make `filePath` the current file. The previous file's document is
-   * released unless it is kept for its derived key. The new file is held as
+   * Make `filePath` the current file. Once the new file is held, the
+   * previous file's document is released unless it is kept for its derived
+   * key; a failed open leaves the previous file current and held. The new file is held as
    * an open document of this client session (W2-A/W2-B): that resolves its
    * agent id whether it runs or not. A session that cannot hold documents
    * (tests' fakes) falls back to `resolveRunning`, the id of an agent already
@@ -133,7 +134,8 @@ export class DaemonModeSession {
   }
 
   private async openFileNow(filePath: string, resolveRunning: (filePath: string) => Promise<string | null>): Promise<SessionFile> {
-    await this.leaveCurrent()
+    // The new file is held before the previous one is released: an open
+    // that fails leaves the session on the previous file, still held.
     let agentId: string | null = null
     let held = false
     let opened: HeldDocument | undefined
@@ -150,6 +152,8 @@ export class DaemonModeSession {
       }
       agentId = await resolveRunning(filePath)
     }
+    // Opening the file already held keeps its hold (holds are per session, not counted).
+    if (!(held && agentId && this.file?.held && this.file.agentId === agentId)) await this.leaveCurrent()
     this.file = { filePath, agentId, held, ...(opened ? { opened } : {}) }
     await this.setFocus(agentId)
     return this.file

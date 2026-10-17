@@ -56,6 +56,31 @@ describe('DaemonModeSession ordering', () => {
     expect([...daemon.held]).toEqual(['id-1'])
   })
 
+  it('a FILE_OPEN that fails keeps the previous file current, held and focused (review 4300792020)', async () => {
+    const { client, daemon } = scriptedClient()
+    const session = new DaemonModeSession(client, quiet)
+    await session.openFile(FILE_A, async () => null)
+    client.setHold(async (filePath) => {
+      if (filePath === FILE_B) throw new Error('agent-2.adf is not a valid agent file')
+      return { agentId: ID[filePath] }
+    })
+    await expect(session.openFile(FILE_B, async () => null)).rejects.toThrow(/not a valid agent file/)
+    expect(session.filePath).toBe(FILE_A)
+    expect(session.current?.held).toBe(true)
+    expect(session.agentId).toBe('id-1')
+    expect([...daemon.held]).toEqual(['id-1'])
+    expect(daemon.focus).toBe('id-1')
+  })
+
+  it('opening the file already open keeps its hold', async () => {
+    const { client, daemon } = scriptedClient()
+    const session = new DaemonModeSession(client, quiet)
+    await session.openFile(FILE_A, async () => null)
+    await session.openFile(FILE_A, async () => null)
+    expect(session.current?.held).toBe(true)
+    expect([...daemon.held]).toEqual(['id-1'])
+  })
+
   it('focus PUTs whose answers come back out of order still leave the daemon on the latest focus', async () => {
     // A PUT for 'id-x' is slow and the next one fast: unchained, the slow one would land last.
     const { client, daemon } = scriptedClient({ focus: (id) => (id === 'id-x' ? 60 : 1) })
