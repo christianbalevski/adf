@@ -749,6 +749,25 @@ describe('the way back to embedded (review fixes)', () => {
     expect(await readCredentialHolder(dir)).toBe('studio')
   })
 
+  it.each([false, true])("a switch to local without the keychain keeps the daemon's own MCP sign-ins with it on the way back (review 4300792066; a later local launch with the keychain=%s)", async (laterWithKeychain) => {
+    // A CLI daemon has its own MCP sign-in; Studio has a ChatGPT session and no MCP sign-ins.
+    const cliUrl = 'https://cli-only.example.com/mcp'
+    await daemonMcp().save(cliUrl, { ...mcpRecord(auth.issue('cli-mcp')), serverUrl: cliUrl })
+    studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
+    await runHandover('local', deps({ daemonSecrets: null, daemonSecretsUnavailable: 'no OS keychain is usable on this machine' }))
+    expect(await readHandoverMarker(dir)).toMatchObject({ state: 'ok', marker: { keychainUsed: false, daemonOwnMcpUnknown: true } })
+    if (laterWithKeychain) {
+      await runHandover('local', deps())
+      expect(await readHandoverMarker(dir)).toMatchObject({ state: 'ok', marker: { keychainUsed: true, daemonOwnMcpUnknown: true } })
+    }
+    expect((await planHandover('embedded', deps())).find((p) => p.id === 'mcp-oauth')).toBeUndefined()
+    const report = await runHandover('embedded', deps())
+    expect(report.failed).toBe(false)
+    expect(daemonMcp().listServerUrls()).toEqual([cliUrl])
+    expect(studioMcp().read()[cliUrl]).toBeUndefined()
+    expect(studioTokens(SUBS[0]).read().account_id).toBe(SUBS[0].subject)
+  })
+
   it('the session the conflict dialog did not keep is saved, encrypted, for one restore', async () => {
     const sub = SUBS[0]
     const studioSide = auth.issue('acct-studio')
