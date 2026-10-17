@@ -536,7 +536,7 @@ Operation `createAgent` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | X-ADF-Client-Session names no live client session |
-| 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Owner identity not ready (`identity_not_ready`) or the name is taken in that directory (`name_taken`) |
+| 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), or a confirmed replace names a file another runtime runs (`agent_leased`) |
 | 422 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | The template was refused (`template_missing`, `template_unreviewed`, `template_invalid`) or the new file could not load (`load_failed`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -13503,7 +13503,7 @@ Example 200 (`application/json`):
 
 **Merge settings values**
 
-Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.
+Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint. While the daemon secret store is locked, a change to a secret-store entry's address, type or key storage, its removal, and a new API key for it are refused with 409 `secret_store_locked` (its stored key can be neither saved nor removed until the store is unlocked).
 
 Operation `patchSettings` · bearer token
 
@@ -13524,6 +13524,7 @@ Operation `patchSettings` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | A secret or identity settings key cannot be written over HTTP (`setting_not_writable`), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 405 | [ErrorResponse](#schema-errorresponse) | Not available on this daemon (the subsystem is read-only or lacks this operation) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
 Example 200 (`application/json`):
@@ -13575,7 +13576,7 @@ Example 200 (`application/json`):
 
 **Write one setting**
 
-Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint.
+Never writable here (403, no `code`): ownerMnemonic, runtimePrivateKey, runtimeEncPrivateKey, mcpOauthCredentials, trustedDaemonEncKeys, ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey, runtimeDelegation, legacyOwnerDids, legacyRuntimeDids, daemonRuntimeDid, daemonRuntimeDelegation, ownerDidSeedDerived. The owner identity changes only through /identity. A providers[].apiKey of `__redacted__` keeps the stored key only when the entry's `type` and `baseUrl` are unchanged; on an entry whose address or type changed it is refused with 400 `api_key_required` (enter the key again), so the stored key is never sent to a new endpoint. While the daemon secret store is locked, a change to a secret-store entry's address, type or key storage, its removal, and a new API key for it are refused with 409 `secret_store_locked` (its stored key can be neither saved nor removed until the store is unlocked).
 
 Operation `putSetting` · bearer token
 
@@ -13606,6 +13607,7 @@ Operation `putSetting` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | A secret or identity settings key cannot be written over HTTP (`setting_not_writable`), or the request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 405 | [ErrorResponse](#schema-errorresponse) | Not available on this daemon (the subsystem is read-only or lacks this operation) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
 
 Example 200 (`application/json`):
@@ -15110,7 +15112,7 @@ Example 200 (`application/json`):
 
 **Write a snapshot of an agent file to another path**
 
-Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent.
+Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent, `document_open` when it is open here as a document.
 
 Operation `saveAgentFileAs` · bearer token
 
@@ -17497,7 +17499,7 @@ Template and agent-creation errors. `identity` is the owner identity status when
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string | yes |  |
-| `code` | `"bad_request"` \| `"identity_not_ready"` \| `"name_taken"` \| `"template_missing"` \| `"template_unreviewed"` \| `"template_invalid"` \| `"password_required"` \| `"wrong_password"` \| `"load_failed"` | yes |  |
+| `code` | `"bad_request"` \| `"identity_not_ready"` \| `"name_taken"` \| `"template_missing"` \| `"template_unreviewed"` \| `"template_invalid"` \| `"password_required"` \| `"wrong_password"` \| `"load_failed"` \| `"agent_leased"` | yes |  |
 | `identity` | [IdentityStatus](#schema-identitystatus) |  |  |
 
 <a id="schema-agentdidresponse"></a>
