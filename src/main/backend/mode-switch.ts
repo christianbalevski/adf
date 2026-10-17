@@ -154,7 +154,7 @@ async function chooseSessionDialog(conflict: SessionConflict): Promise<'studio' 
     type: 'question',
     title: `${conflict.label}: two accounts`,
     message: `Studio and the ADF daemon are signed in to ${conflict.label.replace(/ session$/, '')} with different accounts.`,
-    detail: `Studio: ${conflict.studio.account}\nDaemon: ${conflict.daemon.account}\n\nOnly one session can move with the backend: its refresh token is renewed on use, so a copy left behind stops working. The other account is signed out here and saved, encrypted, in ${conflict.replacedDir} as auth.replaced.<time>.json (one file per account; the summary names it); to use it in the daemon instead, stop the daemon and rename that file to ${DAEMON_TOKEN_FILE}, replacing it. Each copy set aside is deleted after ${REPLACED_TOKEN_MAX_AGE_DAYS} days, or when you next sign in to its account.`,
+    detail: `Studio: ${conflict.studio.account}\nDaemon: ${conflict.daemon.account}\n\nOnly one session can move with the backend. The other account is signed out here and kept, encrypted, in ${conflict.replacedDir} for up to ${REPLACED_TOKEN_MAX_AGE_DAYS} days (the summary names the file). To use it in the daemon, stop the daemon and replace ${DAEMON_TOKEN_FILE} with that file.`,
     buttons,
     defaultId: 0,
     cancelId: 0,
@@ -303,7 +303,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       // Their approvals and questions stay open in the daemon, which Studio no longer shows after the switch.
       const waiting = activity.filter((a) => a.waiting).map((a) => a.filePath)
       if (waiting.length > 0) {
-        lines.push(`Waiting for an answer there: ${agentNames(waiting).join(', ')}. Answer with adf (adf tasks, adf approve, adf deny, adf asks, adf answer) or in the terminal app (adf).`)
+        lines.push(`Waiting for an answer there: ${agentNames(waiting).join(', ')}. Answer in the terminal app (adf).`)
       }
     } else if (target === 'remote') {
       lines.push(`Running agents stop: ${names} stop here and are not started on the remote daemon, which runs its own agents.`)
@@ -311,7 +311,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
       lines.push(`Running agents keep running: ${names} stop here and Studio starts them ${target === 'embedded' ? 'itself' : 'in the daemon'} after the restart.`)
     }
     if (busy.length > 0) {
-      lines.push('', `A turn is in flight in: ${agentNames(busy).join(', ')}. "Wait for Them to Finish" restarts once those turns are done; "Stop Them Now" interrupts them.`)
+      lines.push('', `A turn is in flight in: ${agentNames(busy).join(', ')}.`)
     }
     if (target === 'local' && process.platform === 'darwin') {
       lines.push('', 'macOS asks once whether the ADF daemon may read Studio\'s runtime key from the keychain. "Always Allow" grants that to the Electron binary that runs the daemon, and to any script it runs.')
@@ -515,7 +515,7 @@ export async function askVersionMismatch(
 ): Promise<VersionMismatchChoice> {
   const others = (clients ?? []).filter((c) => c.client !== 'studio' || c.version !== app.getVersion())
   const warnings: string[] = []
-  if (running.startedBy !== 'studio') warnings.push(`This daemon was started by ${running.startedBy === 'cli' ? 'the ADF CLI (adf daemon start)' : 'a service manager'}, not Studio. Restarting replaces it; the new one counts as started by ${running.startedBy} too, so Studio's quit never stops it.`)
+  if (running.startedBy !== 'studio') warnings.push(`This daemon was started by ${running.startedBy === 'cli' ? 'the ADF CLI (adf daemon start)' : 'a service manager'}, not Studio; its replacement keeps that, so quitting Studio does not stop it.`)
   if (others.length > 0) warnings.push(`Connected to it now: ${others.map((c) => `${c.client} ${c.version}`).join(', ')}. A restart disconnects them.`)
   if (clients === null) warnings.push('Studio cannot tell which other clients use it (an older daemon).')
   const risky = warnings.length > 0
@@ -524,7 +524,7 @@ export async function askVersionMismatch(
     type: 'warning' as const,
     title: 'ADF daemon version',
     message: `The running ADF daemon is version ${running.version}; this Studio is ${app.getVersion()}.`,
-    detail: `${decision.message}\n\nRestarting stops that daemon (pid ${running.pid}) and its agents, then starts this Studio's daemon, which starts the agents set to autostart.${risky ? `\n\n${warnings.join('\n')}` : ''}\n\nEmbedded mode for this session leaves that daemon, its agents and its sign-ins as they are; Studio does not start an agent it runs, and nothing moves between them.`,
+    detail: `${decision.message}\n\nRestart stops that daemon (pid ${running.pid}) and its agents, then starts this Studio's daemon and its autostart agents.${risky ? `\n\n${warnings.join('\n')}` : ''}\n\nEmbedded mode for this session leaves that daemon, its agents and its sign-ins as they are.`,
     buttons,
     defaultId: risky ? 1 : 0,
     cancelId: 1,

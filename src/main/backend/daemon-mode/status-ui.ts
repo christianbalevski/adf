@@ -218,7 +218,7 @@ export class ConnectionStatusUi {
         message: daemonExitSentence(exit),
         detail: `${exit.detail ? `${exit.detail}
 
-` : ''}${start ? 'Start the ADF Daemon starts it from Studio and starts the agents that were running again (Help → Reconnect to the ADF Daemon does the same later). ' : 'Studio reconnects when a daemon answers again. '}Until then, actions that need the backend fail.${logFile ? `
+` : ''}${start ? 'Start the ADF Daemon starts it again with the agents that were running. ' : 'Studio reconnects when a daemon answers again. '}Until then, actions that need the backend fail.${logFile ? `
 Daemon log: ${logFile}` : ''}`,
         buttons,
         defaultId: 0,
@@ -245,7 +245,7 @@ Daemon log: ${logFile}` : ''}`,
         type: 'error',
         title: 'ADF daemon not available',
         message: 'Studio could not connect to an ADF daemon.',
-        detail: `${message}\n\nReconnect restarts Studio and tries again (Help → Reconnect to the ADF Daemon does the same later).${embedded ? ' Use Embedded for This Session restarts Studio running agents itself for this launch only; the saved mode stays.' : ''}\n\n${this.actions.recoveryHint}`,
+        detail: `${message}\n\nReconnect restarts Studio and tries again.${embedded ? ' Use Embedded for This Session runs agents in Studio for this launch only.' : ''}\n\n${this.actions.recoveryHint}`,
         buttons,
         defaultId: buttons.length - 1,
         cancelId: buttons.length - 1,

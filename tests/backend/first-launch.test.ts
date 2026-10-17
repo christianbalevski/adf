@@ -399,8 +399,8 @@ describe('an older ADF daemon on the port at the first launch', () => {
     expect(h.dialogs).toHaveLength(1)
     expect(h.dialogs[0]).toMatchObject({ parent: WINDOW, message: expect.stringMatching(/^An ADF daemon that Studio cannot identify is running on port 7385/) })
     expect(h.dialogs[0].detail).toMatch(/^Stop it with `adf daemon stop`, update the CLI \(`npm i -g @agentdocumentformat\/cli@latest`\), then restart Studio\./)
-    expect(h.dialogs[0].detail).toMatch(/Studio did not start your agents set to start automatically/)
-    expect(h.dialogs[0].detail).toMatch(/stop it in that daemon \(`adf stop <name>`, or `adf daemon stop` for all\), then open it in Studio and press Start/)
+    expect(h.dialogs[0].detail).toMatch(/Studio did not autostart your agents: that daemon may be running them\./)
+    expect(h.dialogs[0].detail).toMatch(/stop it there \(`adf stop <name>`\), then press Start in Studio\./)
   })
 
   it('an older client API on the same settings: named with its version and starter', () => {

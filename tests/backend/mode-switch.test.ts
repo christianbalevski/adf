@@ -191,7 +191,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
   it('from Local with a daemon that stays (DMN-02): agents waiting on an approval are named, with where to answer them', async () => {
     h.responses.push(1)
     await switcher(() => [{ filePath: agent1, busy: true, waiting: true }, { filePath: agent2, busy: false }], 'local', { startedBy: 'cli' }).s.confirm('embedded')
-    expect(h.dialogs.at(-1)!.detail).toContain('Waiting for an answer there: agent-1. Answer with adf (adf tasks, adf approve, adf deny, adf asks, adf answer) or in the terminal app (adf).')
+    expect(h.dialogs.at(-1)!.detail).toContain('Waiting for an answer there: agent-1. Answer in the terminal app (adf).')
     h.responses.push(1)
     await switcher(() => [{ filePath: agent1, busy: false }], 'local', { startedBy: 'cli' }).s.confirm('embedded')
     expect(h.dialogs.at(-1)!.detail).not.toMatch(/Waiting for an answer/)

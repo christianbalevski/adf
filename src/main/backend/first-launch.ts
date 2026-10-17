@@ -93,8 +93,8 @@ export function fileProblemOptions(boot: BootBackend): MessageBoxOptions {
     title: 'Backend settings',
     message: blocked ? 'Studio cannot use or replace its backend settings file.' : 'Studio cannot use its backend settings file.',
     detail: blocked
-      ? `${boot.configPath}: ${boot.fileProblem}.\n\n${boot.writeBlocked}\n\nUntil then Studio asks at each launch. The backend you choose now applies to this launch only, and no sign-in moves.`
-      : `${boot.configPath}: ${boot.fileProblem}.\n\nChoose where Studio runs agents. Studio saves your choice and then moves your sign-ins to that side, as a switch in Settings → Backend does. Embedded is the legacy backend, removed in the next release.`,
+      ? `${boot.configPath}: ${boot.fileProblem}.\n\n${boot.writeBlocked}\n\nYour choice applies to this launch only, and no sign-in moves.`
+      : `${boot.configPath}: ${boot.fileProblem}.\n\nStudio saves your choice, then moves your sign-ins to that side. Embedded is legacy and removed in the next release.`,
     buttons: blocked
       ? ['Use Local Daemon for This Launch', 'Use Embedded for This Launch']
       : ['Use Local Daemon (Recommended)', 'Use Embedded'],
@@ -160,7 +160,7 @@ export async function guardBoot(boot: BootBackend, userDataDir: string, deps: Bo
         type: 'warning',
         title: 'ADF daemon',
         message: problem,
-        detail: 'Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio.\n\nUntil then Studio runs agents itself for this launch only (Embedded), and nothing moved. Studio did not start your agents set to start automatically, because that daemon may be running them and they would run twice. To run one here now: stop it in that daemon (`adf stop <name>`, or `adf daemon stop` for all), then open it in Studio and press Start.',
+        detail: 'Stop it with `adf daemon stop`, update the CLI (`npm i -g @agentdocumentformat/cli@latest`), then restart Studio.\n\nUntil then this launch runs Embedded and nothing moved. Studio did not autostart your agents: that daemon may be running them. To run one here, stop it there (`adf stop <name>`), then press Start in Studio.',
       },
     }
   } catch (err) {
@@ -309,16 +309,16 @@ export function firstLaunchNoticeOptions(notice: FirstLaunchNotice, connected: b
   parts.push(record.moved.length > 0 ? `Moved: ${record.moved.join(', ')}.` : 'Moved: nothing; Studio held no settings or sign-ins the daemon keeps.')
   if (notice.kept.length > 0) parts.push(`Stays in Studio: ${notice.kept.map((i) => `${i.label} (${i.detail.replace(/\.$/, '')})`).join('; ')}.`)
   if (notice.identityNotShared) {
-    parts.push('The daemon runs as its own runtime: files it stamps show as "recognized" in Studio\'s review, and agents made in Studio unlock in the daemon only with the owner phrase (adf identity restore) or after adf identity trust-daemon.')
+    parts.push('The daemon runs as its own runtime: agents made in Studio unlock there only after adf identity restore or adf identity trust-daemon.')
   }
   if (record.notDone.length > 0) parts.push(`Not done yet, retried at the next start:\n${record.notDone.map((line) => `• ${line}`).join('\n')}`)
   parts.push(connected
-    ? 'Agents set to start automatically now start in the daemon, as they started in Studio before.'
-    : 'Studio could not connect to the ADF daemon, so no agent runs yet. The connection dialog says why; Reconnect tries again, and the agents set to start automatically start once the daemon runs.')
+    ? 'Agents set to start automatically now start in the daemon.'
+    : 'Studio could not connect to the ADF daemon, so no agent runs yet. The connection dialog says why.')
   if (notice.keychainWritten && platform === 'darwin') {
-    parts.push('macOS asks once whether the ADF daemon may read Studio\'s runtime key from the keychain. "Always Allow" grants that to the Electron binary that runs the daemon.')
+    parts.push('macOS asks once whether the ADF daemon may read Studio\'s runtime key from the keychain. Choose "Always Allow".')
   }
-  parts.push('Embedded stays in Settings → Backend for this release only, as a fallback; switching to it moves your sign-ins back into Studio.')
+  parts.push('Embedded stays in Settings → Backend for this release only, as a fallback.')
   parts.push('Settings → Backend has the details.')
   return {
     type: record.notDone.length > 0 || !connected ? 'warning' : 'info',

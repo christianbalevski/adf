@@ -59,7 +59,7 @@ The dialog also says, when it applies:
 | Text | Meaning |
 |---|---|
 | "Not done yet, retried at the next start: …" | An item did not move; it stays where it was and Studio retries at each start. See [When a move is not done](#when-a-move-is-not-done) |
-| "Stays in Studio: Runtime identity (…)" and "The daemon runs as its own runtime: …" | This computer has no keychain the daemon can read (Linux without a Secret Service). Agents made in Studio unlock in the daemon only with the owner phrase (`adf identity restore`) or after `adf identity trust-daemon` |
+| "Stays in Studio: Runtime identity (…)" and "The daemon runs as its own runtime: …" | This computer has no keychain the daemon can read (Linux without a Secret Service). Agents made in Studio unlock in the daemon only with the owner phrase (`adf identity restore`) or after `adf identity trust-daemon`. Files the daemon stamps show as "recognized" in Studio's review |
 | "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | macOS shows that question when the daemon first reads the key. Choose **Always Allow** |
 
 A fresh install has nothing to move: no dialog appears.
