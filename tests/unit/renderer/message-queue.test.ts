@@ -13,6 +13,7 @@ import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../..
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
 import { queueOwnerMessage, sendOwnerMessage, sendProblem, sendFleetOrders, DAEMON_EXITED } from '../../../src/renderer/utils/queued-delivery'
 import { startForegroundAgent } from '../../../src/renderer/utils/start-agent'
+import { sendComposerMessage } from '../../../src/renderer/utils/composer-send'
 import { createOpenFileHarness, type OpenFileHarness } from './open-file-harness'
 
 /**
@@ -387,6 +388,45 @@ describe('a new message to a stopped agent that still has a queue', () => {
     await vi.waitFor(() => expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'No model configured' }))
     expect(main.invokeAgent).not.toHaveBeenCalled()
     expect(queued(AGENT_1).map((m) => m.text)).toEqual(['older', 'newer'])
+  })
+
+  describe("through the composer's send path (AgentLoop's sendUserMessage)", () => {
+    const submit = (text: string) => {
+      const store = useAgentStore.getState()
+      return sendComposerMessage({ filePath: AGENT_1, loop: 'main', loopState: selectLoopSlice(store, 'main').state, agentState: store.state }, text, [{ type: 'text', text }], [])
+    }
+
+    it('starts this agent and sends the lot, oldest first', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {})
+      const startAgent = vi.fn(adfApi().startAgent as (...args: unknown[]) => Promise<unknown>)
+      adfApi().startAgent = startAgent
+      await submit('newer')
+      await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
+      expect(startAgent).toHaveBeenCalledWith(AGENT_1, true)
+      expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, [{ type: 'text', text: 'older' }, { type: 'text', text: 'newer' }], 'main')
+      expect(queued(AGENT_1)).toEqual([])
+    })
+
+    it('the owner switching agents during the review check still starts and sends to this one', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {})
+      const startAgent = vi.fn(async () => ({ success: true, sessionId: 's-1', agentState: 'idle' }))
+      adfApi().startAgent = startAgent
+      adfApi().checkAgentReview = async () => {
+        useDocumentStore.getState().setFilePath(AGENT_2)
+        return { needsReview: false }
+      }
+      await submit('newer')
+      await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
+      expect(startAgent).toHaveBeenCalledWith(AGENT_1, true)
+      expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, expect.any(Array), 'main')
+    })
+
+    it('without a queue: starts it, then sends the message directly', async () => {
+      useMessageQueueStore.setState({ queues: {} })
+      await submit('hello')
+      expect(main.invokeAgent).toHaveBeenCalledWith('hello', AGENT_1, [{ type: 'text', text: 'hello' }], 'main')
+      expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'user', content: 'hello' })
+    })
   })
 })
 
