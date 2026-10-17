@@ -12855,7 +12855,7 @@
           "Agent files"
         ],
         "summary": "Write a snapshot of an agent file to another path",
-        "description": "Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent.",
+        "description": "Studio's Save a copy…: the identity-free share snapshot, built on a .partial and moved into place. 400 `export_not_supported` for mode export. 409 `same_file` for the source itself, `name_taken` when the destination exists without `overwrite` (also when it appears while the copy is written), `agent_running` / `agent_leased` when the destination is a running agent, `document_open` when it is open here as a document.",
         "operationId": "saveAgentFileAs",
         "requestBody": {
           "required": true,
