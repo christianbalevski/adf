@@ -161,6 +161,19 @@ describe('saving over a revision', () => {
     expect(tab('notes.md').content).toBe('abcdef')
   })
 
+  it('a refusal keeps the text when the user typed and deleted back to the saved text meanwhile', async () => {
+    s().openTab('notes.md', 'a', false, undefined, 100)
+    s().updateTabContent('notes.md', 'abc')
+    let resolve!: (a: SaveAnswer) => void
+    const pending = saveTabContent('notes.md', 'abc', () => new Promise((r) => { resolve = r }))
+    // Deleted back to what is saved: clean, and not what the save sent.
+    s().updateTabContent('notes.md', 'a')
+    expect(tab('notes.md').isDirty).toBe(false)
+    resolve({ success: false, conflict: { resource: 'notes.md', revision: 101, writer: { kind: 'agent' }, content: 'agent' } })
+    await pending
+    expect(tab('notes.md')).toMatchObject({ content: 'a', savedContent: 'agent', isDirty: true })
+  })
+
   it('a refusal over a tab showing their text (clean) brings the refused text back', async () => {
     s().openTab('notes.md', 'a', false, undefined, 100)
     s().updateTabContent('notes.md', 'mine')
