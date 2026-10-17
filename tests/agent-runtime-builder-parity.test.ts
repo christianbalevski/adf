@@ -153,6 +153,23 @@ describe('AgentRuntimeBuilder parity: start window (design §6.1 row 24)', () =>
   })
 })
 
+describe('AgentRuntimeBuilder parity: a connect after the start', () => {
+  it('an owner restart applies the discovered tools to the running agent (characterization)', async () => {
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockResolvedValue([PING_TOOL])
+    const base = makeAgentFile('agent-1', { mcp: { servers: [stdioServer('srv')] } })
+    const { workspace } = base
+    const agent = await new AgentRuntimeBuilder().build({ workspace, filePath: base.filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider() })
+    try {
+      connect.mockResolvedValue([PING_TOOL, { name: 'pong', description: 'pong', input_schema: { type: 'object', properties: {} } }])
+      await mcpConnectorFor(agent.mcpManager)!('srv')
+      expect(agent.executor.getConfig().tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
+      expect(workspace.getAgentConfig().tools.some((t) => t.name === 'mcp_srv_pong')).toBe(true)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
 describe('AgentRuntimeBuilder parity: start window, tool toggles (review fix)', () => {
   it('a tool toggle saved while the server connects survives the startup tool sync', async () => {
     let release!: (tools: McpToolInfo[]) => void
