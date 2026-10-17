@@ -334,7 +334,7 @@ export function BackendSettings() {
         {(view.configured.mode === 'local' || view.active.mode === 'local') && <SettingsRow
           separator
           label="Keep the daemon running when Studio quits"
-          description={<>When on, stop the daemon with adf daemon stop.<LearnMore href={DOCS.backendQuit} /></>}
+          description={<>Your agents keep running after you quit. Stop them with adf daemon stop.<LearnMore href={DOCS.backendQuit} /></>}
         >
           <label className="flex items-center gap-2 cursor-pointer">
             <input
