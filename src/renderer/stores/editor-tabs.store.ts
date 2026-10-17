@@ -268,8 +268,16 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
   setTabConflict: (path, conflict, mine) => {
     set((s) => ({
       // The refused text is still unsaved: the tab shows it (again, if their
-      // change replaced it meanwhile), dirty, over their text.
-      tabs: s.tabs.map((t) => (t.path === path ? { ...t, content: mine ?? t.content, conflict, isDirty: true, savedContent: conflict.content ?? t.savedContent } : t))
+      // change replaced it meanwhile, or the tab was reopened on their text),
+      // dirty, over their text. Any other text in the tab is the user's own,
+      // typed while the save was on its way (unsaved, or typed and deleted
+      // back to the saved text; an external change never replaces unsaved
+      // text), and newer than `mine`: it stays.
+      tabs: s.tabs.map((t) => {
+        if (t.path !== path) return t
+        const showsMineOrTheirs = !t.isDirty && (t.content === mine || t.content === conflict.content)
+        return { ...t, content: showsMineOrTheirs ? mine ?? t.content : t.content, conflict, isDirty: true, savedContent: conflict.content ?? t.savedContent }
+      })
     }))
   },
 
