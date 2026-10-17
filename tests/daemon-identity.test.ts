@@ -24,6 +24,7 @@ import { DaemonIdentity } from '../src/main/daemon/daemon-identity'
 import { DaemonAgentFactory } from '../src/main/daemon/daemon-agent-factory'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
+import { AgentLeaseRegistry, processAgentLeases } from '../src/main/runtime/agent-lease'
 import { MockLLMProvider } from '../src/main/runtime/headless'
 import { setWorkspaceIdentityHooks } from '../src/main/runtime/identity-provisioner'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
@@ -295,6 +296,27 @@ describe('daemon agent creation', () => {
     expect(existsSync(original.filePath)).toBe(true)
     const ws = AdfWorkspace.open(original.filePath)
     try { expect(ws.getDid()).not.toBe(original.did) } finally { ws.close() }
+    expect(readdirSync(agentsDir).filter(f => f.includes('.replacing'))).toEqual([])
+  }, 60_000)
+
+  it('a confirmed replace of a file another runtime runs: 409 agent_leased, the original and its -wal untouched', async () => {
+    const { server } = makeDaemon()
+    await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+    const first = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false } })
+    expect(first.statusCode).toBe(201)
+    const original = first.json() as { filePath: string; did: string }
+    const other = new AgentLeaseRegistry({ dir: processAgentLeases().dir, kind: 'studio-embedded', settingsPath: join(agentsDir, 'other-settings.json') })
+    try {
+      expect((await other.acquire(original.filePath)).ok).toBe(true)
+      const replaced = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false, replace: true } })
+      expect(replaced.statusCode).toBe(409)
+      expect(replaced.json().code).toBe('agent_leased')
+      expect(replaced.json().error).toMatch(/agent-1 is already running in another ADF Studio/)
+    } finally {
+      await other.close()
+    }
+    const ws = AdfWorkspace.open(original.filePath)
+    try { expect(ws.getDid()).toBe(original.did) } finally { ws.close() }
     expect(readdirSync(agentsDir).filter(f => f.includes('.replacing'))).toEqual([])
   }, 60_000)
 

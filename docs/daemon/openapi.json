@@ -549,7 +549,7 @@
             }
           },
           "409": {
-            "description": "Owner identity not ready (`identity_not_ready`) or the name is taken in that directory (`name_taken`)",
+            "description": "Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), or a confirmed replace names a file another runtime runs (`agent_leased`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -566,6 +566,12 @@
                     "value": {
                       "error": "An agent named \"agent-1\" already exists in /home/me/agents.",
                       "code": "name_taken"
+                    }
+                  },
+                  "agent_leased": {
+                    "value": {
+                      "error": "agent-1 is already running in another ADF Studio (pid 4242). Stop the agent there or quit that Studio, then start it here.",
+                      "code": "agent_leased"
                     }
                   }
                 }
@@ -17351,7 +17357,8 @@
               "template_invalid",
               "password_required",
               "wrong_password",
-              "load_failed"
+              "load_failed",
+              "agent_leased"
             ]
           },
           "identity": {
