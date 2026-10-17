@@ -45,6 +45,28 @@ describe('client-session frames for the terminal app', () => {
     expect(state.transcripts[key].items[0]).toMatchObject({ result: full, status: 'ok' })
   })
 
+  it('a backgrounded call stays running on its task reference; the real result arrives as tool.completed', () => {
+    const key = transcriptKey(AGENT, 'main')
+    const ref = JSON.stringify({ task_id: 'task_abc123', status: 'running', tool: 'sys_code' })
+    // Live items come from tool.started, whose input has `_async` stripped.
+    const started = reduce(
+      initialState('http://127.0.0.1:7385'),
+      { type: 'transcript/append', key, item: { id: 't1', at: 1, local: true, kind: 'tool', toolUseId: 'tu1', name: 'sys_code', input: { code: 'x' }, status: 'running' } },
+      { type: 'tool/result', key, toolUseId: 'tu1', result: ref, isError: false },
+    )
+    const item = started.transcripts[key].items[0]
+    expect(item).toMatchObject({ status: 'running', async: true, taskRef: ref })
+    expect(item).not.toHaveProperty('completedAt')
+    expect((item as { result?: string }).result).toBeUndefined()
+    // A fast call whose tool.completed came first keeps its real result.
+    const done = reduce(
+      initialState('http://127.0.0.1:7385'),
+      { type: 'transcript/append', key, item: { id: 't1', at: 1, local: true, kind: 'tool', toolUseId: 'tu1', name: 'sys_code', input: {}, status: 'ok', result: 'real', completedAt: 2 } },
+      { type: 'tool/result', key, toolUseId: 'tu1', result: ref, isError: false },
+    )
+    expect(done.transcripts[key].items[0]).toMatchObject({ status: 'ok', result: 'real', taskRef: ref })
+  })
+
   it('synthetic deltas stream into the transcript but stay out of the activity log and the event tail; daemon turn.delta still lands there', () => {
     const key = transcriptKey(AGENT, 'main')
     const base = reduce(initialState('http://127.0.0.1:7385'), { type: 'agents/loaded', agents: [{ id: AGENT, filePath: null, name: 'agent-1', handle: 'agent-1', autostart: false }] })

@@ -24,6 +24,7 @@ import {
   emptyTranscript,
   finalizeStreaming,
   historyToItems,
+  isTaskRef,
   localId,
   mergeHistory,
   prependHistory,
@@ -320,9 +321,16 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return patchTranscript(state, action.key, t => {
         const index = t.items.findIndex(item => item.kind === 'tool' && item.toolUseId === action.toolUseId)
         const item = t.items[index]
-        // A backgrounded call's first result is its task reference; the real one comes as tool.completed later.
-        if (!item || item.kind !== 'tool' || item.async || item.result === action.result) return t
+        if (!item || item.kind !== 'tool' || item.result === action.result) return t
         const items = t.items.slice()
+        // A backgrounded call's first result is its task reference (the live
+        // input has `_async` stripped, so the result is what tells): the row
+        // stays as it is, marked async as history marks it, and the real
+        // result comes as tool.completed later.
+        if (!action.isError && isTaskRef(action.result)) {
+          items[index] = { ...item, async: true, taskRef: action.result }
+          return { ...t, items }
+        }
         items[index] = { ...item, result: action.result, status: action.isError ? 'error' : 'ok', completedAt: item.completedAt ?? Date.now() }
         return { ...t, items }
       })
