@@ -275,6 +275,27 @@ describe('background agents and folders', () => {
 
 
 describe('remote paths belong to the daemon filesystem', () => {
+  // A daemon on the other OS family: Studio's own `join` would respell its paths.
+  const remoteDir = process.platform === 'win32' ? '/srv/agents' : 'C:\\agents'
+  const remoteFile = process.platform === 'win32' ? '/srv/agents/agent-5.adf' : 'C:\\agents\\agent-5.adf'
+
+  it("DIRECTORY_START_ALL / STOP_ALL use the daemon's own paths from the listing (review 4300792035)", async () => {
+    ctx.mode = 'remote'
+    ctx.session = new DaemonModeSession(fake, quiet, undefined, true)
+    daemon.routes.set('GET /fs/browse', () => ({ path: remoteDir, parent: null, roots: [], truncated: false, entries: [
+      { name: 'agent-5.adf', path: remoteFile, kind: 'adf' },
+    ] }))
+    let loaded = false
+    daemon.routes.set('GET /files/agent', ({ query }) => ({ filePath: query.path, agentId: loaded && query.path === remoteFile ? 'id-5' : null, loaded: loaded && query.path === remoteFile, tracked: true }))
+    daemon.routes.set('POST /agents/load', () => { loaded = true; return { id: 'id-5', filePath: remoteFile } })
+    daemon.routes.set('POST /agents/id-5/start', () => ({ success: true }))
+    daemon.routes.set('POST /agents/id-5/stop', () => ({ success: true }))
+    expect(await call(IPC.DIRECTORY_START_ALL, { dirPath: remoteDir })).toEqual({ success: true })
+    expect(daemon.requests.filter((r) => r.path === '/agents/load').map((r) => (r.body as { filePath: string }).filePath)).toEqual([remoteFile])
+    expect(await call(IPC.DIRECTORY_STOP_ALL, { dirPath: remoteDir })).toEqual({ success: true })
+    expect(daemon.requests.filter((r) => r.path === '/agents/id-5/stop')).toHaveLength(1)
+  })
+
   it('allows a lowercase Linux agent to start beside a distinct uppercase foreground agent', async () => {
     ctx.mode = 'remote'
     ctx.session = new DaemonModeSession(fake, quiet, undefined, true)

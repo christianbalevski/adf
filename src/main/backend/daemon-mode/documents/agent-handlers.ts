@@ -63,12 +63,16 @@ async function backgroundAgentAt(ctx: DaemonModeContext, filePath: string): Prom
   return ctx.runningAgentAt(filePath)
 }
 
-/** The `.adf` files directly in `dirPath` (not recursive), spelled as embedded's readdir + join spells them. */
-async function adfFilesIn(client: DaemonClient, dirPath: string): Promise<string[]> {
-  const listing = await client.request<{ entries: Array<{ name: string; kind: string }> }>('GET', '/fs/browse', { query: { path: dirPath, showHidden: 'true' } })
+/**
+ * The `.adf` files directly in `dirPath` (not recursive). Local: spelled as
+ * embedded's readdir + join spells them. Remote: the daemon's own paths
+ * (`entries[].path`), since its OS may join differently from Studio's.
+ */
+async function adfFilesIn(ctx: DaemonModeContext, client: DaemonClient, dirPath: string): Promise<string[]> {
+  const listing = await client.request<{ entries: Array<{ name: string; path?: string; kind: string }> }>('GET', '/fs/browse', { query: { path: dirPath, showHidden: 'true' } })
   return listing.entries
     .filter((e) => e.kind === 'adf' && e.name.endsWith('.adf'))
-    .map((e) => join(dirPath, e.name))
+    .map((e) => (ctx.mode === 'remote' && e.path ? e.path : join(dirPath, e.name)))
 }
 
 /** Bounded-parallel map with per-item results, as embedded's mapWithConcurrency. */
@@ -295,7 +299,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
   [IPC.DIRECTORY_START_ALL]: async (ctx, _event, args: { dirPath: string }) => {
     try {
       const client = await ctx.ready()
-      const files = await adfFilesIn(client, args.dirPath)
+      const files = await adfFilesIn(ctx, client, args.dirPath)
       const settled = await mapSettled(files, DIRECTORY_START_CONCURRENCY, async (filePath) => {
         if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return
         if (await ctx.runningAgentAt(filePath)) return
@@ -319,7 +323,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
   [IPC.DIRECTORY_STOP_ALL]: async (ctx, _event, args: { dirPath: string }) => {
     try {
       const client = await ctx.ready()
-      for (const filePath of await adfFilesIn(client, args.dirPath)) {
+      for (const filePath of await adfFilesIn(ctx, client, args.dirPath)) {
         if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) continue
         const agentId = await ctx.runningAgentAt(filePath)
         if (!agentId) continue
