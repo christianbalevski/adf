@@ -22,6 +22,7 @@
 import { existsSync } from 'fs'
 import type { FastifyInstance } from 'fastify'
 import { AdfWorkspace } from '../../adf/adf-workspace'
+import { leaseHolderElsewhere } from '../../runtime/agent-lease'
 import { RuntimeGate } from '../../runtime/runtime-gate'
 import type { RuntimeService } from '../../runtime/runtime-service'
 import { mergeAdapterStates } from '../../services/adapter-status'
@@ -151,7 +152,8 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
   // rails as typing in the chat panel (a real user turn, no inbox row). A
   // message to an agent that is not running starts it (review gate on); when
   // the start is refused (unreviewed, password-locked) the message is written
-  // into its loop so it is the next thing the agent sees.
+  // into its loop so it is the next thing the agent sees. An agent another
+  // runtime runs is not written to: it fails with the holder's sentence.
   server.post<{ Body: { filePaths?: unknown; content?: unknown } }>('/fleet/message', async (request): Promise<FleetMessageResult> => {
     const delivered: string[] = []
     const failed: { filePath: string; error: string }[] = []
@@ -196,6 +198,15 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
         if (startedId) {
           deliver(startedId, 'cold start')
           delivered.push(filePath)
+          continue
+        }
+        // Another runtime runs it: a row written beside that runtime gets no
+        // turn there (and could land mid-turn), so the message fails with the
+        // holder's sentence. The review gate refuses before the lease check,
+        // so this asks the lease directly.
+        const holder = await leaseHolderElsewhere(runtime.agentLeaseRegistry, filePath)
+        if (holder) {
+          failed.push({ filePath, error: holder })
           continue
         }
         const workspace = AdfWorkspace.open(filePath)
