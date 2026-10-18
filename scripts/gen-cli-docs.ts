@@ -111,6 +111,7 @@ const ENV_DOCS: Record<string, { scope: Scope; desc: string }> = {
   ADF_DAEMON_URL: { scope: 'CLI, terminal app', desc: 'Daemon URL (default `http://127.0.0.1:7385`); `--url` wins' },
   ADF_DAEMON_TOKEN: { scope: 'CLI, terminal app', desc: 'Daemon access token. Clients: sent as the bearer token (`--token` wins). Daemon: used instead of the `<data dir>/daemon-token` file; required with a non-loopback `--host`' },
   ADF_NO_AUTOSTART: { scope: 'CLI, terminal app', desc: '`1`: never start the daemon automatically (same as `--no-daemon`)' },
+  ADF_REMOTE: { scope: 'CLI, terminal app', desc: 'A remote saved by `adf pair` to talk to (same as `--remote <name>`); `local` = this computer\'s daemon' },
   ADF_DAEMON_PORT: { scope: 'daemon', desc: 'Port for `adf daemon` (default `7385`); `adf daemon <sub>` also uses it when no `--url` / `--port` is given' },
   ADF_DAEMON_HOST: { scope: 'daemon', desc: 'Bind address for `adf daemon` (default `127.0.0.1`). Non-loopback needs `ADF_DAEMON_TOKEN`' },
   ADF_DAEMON_SETTINGS: { scope: 'daemon', desc: 'Settings file path; its folder is the data dir (token, pid file, logs, identity file). Clients use it to find the local token file' },

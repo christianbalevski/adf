@@ -1,6 +1,6 @@
 # Allow other computers to connect
 
-Design for letting Studio's local daemon be reached from another computer, by copy-paste (address + token) or by LAN pairing (discovery + 6-digit code). Status: design, nothing built. Branch `feat/remote-access`.
+Design for letting Studio's local daemon be reached from another computer, by copy-paste (address + token) or by LAN pairing (discovery + 6-digit code). Status: daemon and CLI built on `feat/remote-access` (`src/main/daemon/remote-access/`, `routes/remote-access-routes.ts`, `src/main/cli/{remote-access-cli,pair,remotes,daemon-discovery}.ts`); Studio UI on `feat/remote-access-ui`.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 
