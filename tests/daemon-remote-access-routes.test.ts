@@ -602,3 +602,66 @@ describe('security review item 3: forwarded headers name nobody', () => {
     expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim.tailnetLogin).toBeNull()
   })
 })
+
+describe('security review item 5: URL spellings do not get past the device refusal', () => {
+  /** Every device-refused route (isDeviceRefusedRoute), with the method it is registered for. */
+  const ROUTES: Array<[string, string]> = [
+    ['GET', '/client/sessions'],
+    ['POST', '/daemon/shutdown'],
+    ['POST', '/client/reload-credentials'],
+    ...['create', 'restore', 'import', 'unlock', 'lock', 'confirm-backup', 'trust-daemon', 'untrust-daemon'].map((a): [string, string] => ['POST', `/identity/${a}`]),
+    ['POST', '/agents/agent-1/identity/reveal'],
+    ['POST', '/files/agent/identity/reveal'],
+    ['POST', '/settings/providers/keys/reveal'],
+    ['GET', '/remote-access'],
+    ['PUT', '/remote-access'],
+    ['POST', '/remote-access/devices'],
+    ['DELETE', '/remote-access/devices/abcdefghij'],
+    ['POST', '/remote-access/pairing'],
+    ['DELETE', '/remote-access/pairing'],
+    ['POST', '/remote-access/pairing/claims/c1'],
+    ['POST', '/remote-access/tailscale-serve'],
+  ]
+  const hex = (c: string) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`
+  /** Spellings Fastify may route to the same handler. */
+  function variants(path: string): string[] {
+    const last = path.length - 1
+    const dash = path.indexOf('-')
+    const second = path.indexOf('/', 1)
+    return [
+      path,
+      path.slice(0, last) + hex(path[last]),
+      path.slice(0, last) + hex(path[last]).toLowerCase(),
+      ...(dash > 0 ? [path.slice(0, dash) + '%2D' + path.slice(dash + 1)] : []),
+      path.slice(0, 1) + hex(path[1]) + path.slice(2),
+      ...(second > 0 ? [path.slice(0, second) + '%2F' + path.slice(second + 1)] : []),
+      `${path}/`,
+      `/${path}`,
+      `${path};x`,
+      `${path}?x=1`,
+    ]
+  }
+
+  it('every local-only route, every spelling: 403 device_token_refused or no route at all, from both listeners', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const auth = { authorization: `Bearer ${device.token}` }
+    const leaks: string[] = []
+    let refusedPlain = 0
+    for (const [method, path] of ROUTES) {
+      for (const url of variants(path)) {
+        const body = method === 'GET' || method === 'DELETE' ? undefined : {}
+        const viaRemote = await remote(h, method, url, auth, body)
+        const viaLoopback = await h.server.inject({ method: method as 'GET', url, headers: { ...auth, 'x-adf-local-proof': PROOF }, ...(body ? { payload: body } : {}) })
+        for (const [where, status, code] of [['remote', viaRemote.status, viaRemote.json?.code], ['loopback', viaLoopback.statusCode, viaLoopback.json()?.code]] as const) {
+          const refused = status === 403 && code === 'device_token_refused'
+          if (url === path && refused) refusedPlain++
+          if (!refused && status !== 404) leaks.push(`${where} ${method} ${url} → ${status} ${code ?? ''}`)
+        }
+      }
+    }
+    expect(leaks).toEqual([])
+    expect(refusedPlain).toBe(ROUTES.length * 2)
+  })
+})
