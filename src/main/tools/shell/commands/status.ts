@@ -10,6 +10,7 @@ import type { ArgumentNode } from '../parser/ast'
 // only resolved by the bundler — other command modules (meta.ts) do the same.
 import { SETTABLE_STATES } from '../../../../shared/types/adf-v02.types'
 import { isCodeForbiddenIdentityWrite, isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess } from '../../../adf/adf-workspace'
+import { summarizeLoopUsage } from '../../../runtime/loop-usage'
 
 /** Statically resolve an argument to its literal string, or null when it
  *  depends on runtime state (variables, substitutions). */
@@ -254,7 +255,7 @@ async function configTools(ctx: CommandContext): Promise<CommandResult> {
 const statusHandler: CommandHandler = {
   name: 'status',
   summary: 'Show agent status summary',
-  helpText: 'status               State, token usage, budget remaining',
+  helpText: 'status               State, model, token usage in the current loop',
   category: 'identity',
   resolvedTools: ['sys_get_config'],
 
@@ -266,6 +267,7 @@ const statusHandler: CommandHandler = {
       `Model:     ${config.model?.provider ?? ''}/${config.model?.model_id ?? ''}`,
       `Autonomy:  ${config.autonomous ? 'enabled' : 'disabled'}`,
     ]
+    lines.push(`Tokens:    ${tokenUsageLine(ctx)}`)
     return ok(lines.join('\n'))
   }
 }
@@ -484,3 +486,27 @@ export const statusHandlers: CommandHandler[] = [
   configHandler, statusHandler, stateHandler, envHandler, exportHandler,
   pwdHandler, dateHandler, trueHandler, falseHandler, sleepHandler,
 ]
+
+/**
+ * Same count as the daemon's /agents/:id/usage, with the context breakdown's
+ * semantics: `in` is each call's full prompt, cache included, and `cached`
+ * (cache reads) is part of it, not added to it; rows the provider reported no
+ * usage for are char estimates and are flagged. Loop rows only, so it resets
+ * with compaction and clear, and leaves out calls that write no loop row
+ * (model_invoke). Said in the line itself so it isn't read as a lifetime total.
+ */
+function tokenUsageLine(ctx: CommandContext): string {
+  let usage: ReturnType<typeof summarizeLoopUsage>
+  try {
+    usage = summarizeLoopUsage(ctx.workspace.getLoop())
+  } catch {
+    return 'unavailable'
+  }
+  if (usage.usageRows === 0) return 'none recorded in the current loop'
+  const n = (v: number) => v.toLocaleString('en-US')
+  const { input, output, cacheRead, total } = usage.totals
+  const cached = cacheRead > 0 ? ` (${n(cacheRead)} cached)` : ''
+  const estimated = usage.estimatedRows > 0 ? ` (${usage.estimatedRows} estimated)` : ''
+  const calls = `${usage.usageRows} call${usage.usageRows === 1 ? '' : 's'}${estimated}`
+  return `${n(total)} total: ${n(input)} in${cached}, ${n(output)} out; ${calls} in the current loop`
+}

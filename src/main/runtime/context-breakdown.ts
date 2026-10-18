@@ -18,6 +18,9 @@ import type {
   SystemPromptParts,
 } from '../../shared/types/ipc.types'
 import type { LoopTokenUsage } from '../../shared/types/adf-v02.types'
+import { hasReportedUsage } from './loop-usage'
+
+export { hasReportedUsage }
 
 /** Provider-bound token counter, e.g. `(t) => counter.countTokens(t, providerId)`. */
 export type CountTokensFn = (text: string) => number
@@ -142,18 +145,6 @@ export function findLastCall(
     if (messages[i].seq === last.seq) return { index: i, promptTokens, replyTokens: last.tokens.output }
   }
   return null
-}
-
-/**
- * Whether a row's usage came from the provider. Every path that reports
- * usage records at least `cache_read` (0 when nothing was cached); a row
- * holding only input/output predates the `estimated` flag and was a char
- * estimate from a provider that reported nothing.
- */
-export function hasReportedUsage(t: LoopTokenUsage): boolean {
-  if (t.estimated) return false
-  return t.cache_read !== undefined || t.cache_write !== undefined ||
-    t.reasoning !== undefined || t.cost_usd !== undefined
 }
 
 /**
