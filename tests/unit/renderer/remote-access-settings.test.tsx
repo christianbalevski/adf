@@ -109,10 +109,11 @@ describe('Pair device (host)', () => {
     expect(pairingCountdown('2026-10-18T12:01:45Z', now)).toBe('1:45')
     expect(pairingCountdown('2026-10-18T11:00:00Z', now)).toBe('0:00')
     expect(formatCode('012345')).toBe('012 345')
-    const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 5, claim: null }} fingerprint="ABCD-EFGH" now={now} />)
+    const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 20, lockedSources: 1, claim: null }} fingerprint="ABCD-EFGH" now={now} />)
     expect(html).toContain('Enter this code on the device.')
     expect(html).toContain('012 345')
-    expect(html).toContain('Expires in 2:00 · 5 tries left · Fingerprint ABCD-EFGH')
+    expect(html).toContain('Expires in 2:00 · 20 wrong codes left · Fingerprint ABCD-EFGH')
+    expect(html).toContain('1 device locked out after 5 wrong codes.')
   })
 })
 

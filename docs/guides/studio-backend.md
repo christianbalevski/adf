@@ -680,7 +680,7 @@ pairing dialog and other devices' lists.
 ### Pair device
 
 1. On this computer, **Pair device**. The **Pair device** window shows a
-   6-digit code, the time left (2 minutes) and the tries left (5).
+   6-digit code, the time left (2 minutes) and the wrong codes left (20).
 2. On the other device, choose this computer under **Discovered** and enter
    the code ([Discovered](#discovered)).
 3. This computer shows the **Allow device** dialog. Its first line is where
@@ -690,8 +690,10 @@ pairing dialog and other devices' lists.
    background, an OS notification opens it.
 
 The code alone never pairs a device: you must also allow it. Five wrong
-codes close the window ("Pairing closed after 5 wrong codes."); open a new
-one. After **Allow**: "Device added: *name*."
+codes from one device lock that device out of the window ("Pairing: a device
+was locked out after 5 wrong codes."); the window shows how many are locked
+out and stays open for others. Twenty wrong codes in all close it ("Pairing
+closed after too many wrong codes."); open a new one. After **Allow**: "Device added: *name*."
 
 ### Add device
 
@@ -733,6 +735,7 @@ computer is never replaced without the **Replace remote computer** dialog.
 | Message | What to do |
 |---|---|
 | "Wrong code. *N* tries left." | Enter the code shown on the host |
+| "Too many wrong codes from this computer for this pairing window. …" | This device is locked out of that window: on the host, **Pair device** again |
 | "Wrong code, and no tries are left. …" | On the host, **Pair device** again for a new code |
 | "The pairing window on *host* is closed. …" | The 2 minutes passed or the host cancelled: open a new window |
 | "*host* denied this device." | The host chose Deny |
@@ -852,7 +855,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Turn on remote access" / "Devices lose the connection when Studio quits." / "Remote access: On · *N* devices" | [Remote access](#remote-access) |
 | "Network: Private / Public …" / "Not reachable on this network (Public)." / "Listening on …" / Mark private | [Network status](#network-status) |
 | "Anyone on this network can read the token." / Encrypted / Not encrypted | [Addresses](#addresses) |
-| "Allow device" / "Pairing closed after 5 wrong codes." / "Device added: …" | [Pair device](#pair-device) |
+| "Allow device" / "Pairing: a device was locked out after 5 wrong codes." / "Pairing closed after too many wrong codes." / "Device added: …" | [Pair device](#pair-device) |
 | "Revoke device" / "Device revoked: …" | [Devices](#devices) |
 | "Waiting for *host* to allow this device…" / "Wrong code. …" / "… denied this device." / "… The host's firewall may block port 7385." | [Discovered](#discovered) |
 | "*N* devices connected" (Quit) / Keep running / Stop daemon | [Quit with devices connected](#quit-with-devices-connected) |

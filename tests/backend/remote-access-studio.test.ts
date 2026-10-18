@@ -192,12 +192,40 @@ describe('host panel (Settings → Backend → This computer)', () => {
     expect(h.daemon.requests.some((r) => r.path.startsWith('/remote-access/pairing/claims/'))).toBe(false)
   })
 
-  it('pairing closed by five wrong codes is a notice', async () => {
+  it('pairing closed by wrong codes is a notice', async () => {
+    h.daemon.state.enabled = true
+    await h.host.openPairing()
+    h.daemon.state.pairing!.attemptsLeft = 2
+    const shim = new PairingClientShim(h.daemon)
+    for (let i = 0; i < 2; i++) { await shim.claim('000000', 'stranger'); await tick(30) }
+    await until(() => h.notices.includes('Pairing closed after too many wrong codes.'))
+  })
+
+  it('a source locked out (pairing_lockout) is a notice each time; the window stays open with lockedSources', async () => {
     h.daemon.state.enabled = true
     await h.host.openPairing()
     const shim = new PairingClientShim(h.daemon)
-    for (let i = 0; i < 5; i++) { await shim.claim('000000', 'stranger'); await tick(30) }
-    await until(() => h.notices.includes('Pairing closed after 5 wrong codes.'))
+    for (let i = 0; i < 5; i++) await shim.claim('000000', 'stranger')
+    expect((await h.host.get()).status?.pairing).toMatchObject({ lockedSources: 1, attemptsLeft: 15 })
+    expect((await shim.claim('123456', 'stranger')).status).toBe(429)
+    h.host.onDaemonEvent({ type: 'pairing_lockout' })
+    h.host.onDaemonEvent({ type: 'pairing_lockout' })
+    expect(h.notices.filter((n) => n === 'Pairing: a device was locked out after 5 wrong codes.')).toHaveLength(2)
+  })
+
+  it('claim_pending carries nothing: the claim is read from the local status and "Allow device" asked', async () => {
+    h.daemon.state.enabled = true
+    await h.host.openPairing()
+    h.host.dispose()
+    // No poll running: only the event can bring the question.
+    h = hostSetup({ pollMs: 60_000 })
+    h.daemon.state.enabled = true
+    h.daemon.state.pairing = { code: '123456', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 20, lockedSources: 0, claim: null }
+    await new PairingClientShim(h.daemon).claim('123456', 'agent-2 laptop')
+    h.host.onDaemonEvent({ type: 'claim_pending' })
+    await until(() => h.asked.length === 1)
+    expect(h.asked).toEqual(['agent-2 laptop'])
+    expect(h.daemon.requests.some((r) => r.origin === LOOPBACK && r.path === '/remote-access')).toBe(true)
   })
 
   it('the daemon\'s events: device added elsewhere is a notice, and the view is pushed', async () => {
@@ -392,6 +420,33 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     expect(await p.flow.submitCode('111111')).toMatchObject({ step: 'need_code', code: 'wrong_code', attemptsLeft: 4, message: 'Wrong code. 4 tries left.' })
     p.daemon.state.pairing!.attemptsLeft = 1
     expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code, and no tries are left. Choose Pair device on agent-1-pc for a new code.' })
+  })
+
+  it('collects the token with the collect secret from the 202; the claim id alone gets nothing, and the secret is never pushed or logged', async () => {
+    const p = pairSetup()
+    await p.flow.start({ url: TAILNET })
+    await p.flow.submitCode('654321')
+    p.daemon.decide(true)
+    await until(() => p.last().step === 'paired')
+    const polls = p.daemon.requests.filter((r) => r.path.startsWith('/pair/claims/'))
+    expect(polls.length).toBeGreaterThan(0)
+    const secret = polls[0].headers['X-ADF-Pair-Secret']
+    expect(secret).toMatch(/^secret-/)
+    expect(JSON.stringify(p.states)).not.toContain(secret)
+    expect(p.logs.join('\n')).not.toContain(secret)
+    // Without the secret the fake daemon (like the real one) answers claim_not_found.
+    const bare = await p.daemon.fetch(`${TAILNET}${polls[0].path}`)
+    expect(bare.status).toBe(404)
+  })
+
+  it('a device locked out of the window (5 wrong codes) is told so plainly', async () => {
+    const p = pairSetup()
+    p.daemon.state.pairing!.attemptsLeft = 20
+    await p.flow.start({ url: TAILNET })
+    for (let i = 0; i < 4; i++) await p.flow.submitCode('111111')
+    expect(await p.flow.submitCode('111111')).toMatchObject({ step: 'failed', code: 'attempts_used' })
+    await p.flow.start({ url: TAILNET })
+    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'need_code', code: 'rate_limited', message: 'Too many wrong codes from this computer for this pairing window. Ask the host to open a new one.' })
   })
 
   it('a malformed code is refused here', async () => {

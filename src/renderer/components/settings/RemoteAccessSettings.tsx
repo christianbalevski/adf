@@ -173,9 +173,10 @@ export function PairingCodePanel({ pairing, fingerprint, now }: { pairing: Pairi
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the device.</p>
       <p className="font-mono text-[40px] font-semibold tracking-[0.15em] text-[var(--adf-ui-text)]" aria-label="Pairing code">{formatCode(pairing.code)}</p>
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
-        Expires in {pairingCountdown(pairing.expiresAt, now)} · {pairing.attemptsLeft} {pairing.attemptsLeft === 1 ? 'try' : 'tries'} left
+        Expires in {pairingCountdown(pairing.expiresAt, now)} · {pairing.attemptsLeft} wrong {pairing.attemptsLeft === 1 ? 'code' : 'codes'} left
         {(pairing.fingerprint || fingerprint) ? <> · Fingerprint {pairing.fingerprint || fingerprint}</> : null}
       </p>
+      {pairing.lockedSources > 0 && <p className="text-[12px] text-[var(--adf-ui-danger)]">{pairing.lockedSources} {pairing.lockedSources === 1 ? 'device' : 'devices'} locked out after 5 wrong codes.</p>}
       {pairing.claim && <p className="text-[12px] text-[var(--adf-ui-text)]">A device entered the code. Answer the Allow device dialog.</p>}
     </div>
   )

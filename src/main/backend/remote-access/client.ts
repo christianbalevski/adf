@@ -96,6 +96,9 @@ export class RemoteAccessManagement {
   }
 }
 
+/** The header that carries a claim's collect secret on GET /pair/claims/:claimId. */
+export const PAIR_SECRET_HEADER = 'X-ADF-Pair-Secret'
+
 /** Long-poll budget of GET /pair/claims/:claimId (§11.3: 0-25 s). */
 export const CLAIM_WAIT_S = 25
 
@@ -103,13 +106,13 @@ export const CLAIM_WAIT_S = 25
 export class PairingClient {
   constructor(private readonly baseUrl: string, private readonly fetchImpl: typeof fetch = (input, init) => fetch(input, init)) {}
 
-  private async call<T>(method: 'GET' | 'POST', path: string, opts: { body?: unknown; timeoutMs: number; signal?: AbortSignal }): Promise<T> {
+  private async call<T>(method: 'GET' | 'POST', path: string, opts: { body?: unknown; timeoutMs: number; signal?: AbortSignal; headers?: Record<string, string> }): Promise<T> {
     const signals = [AbortSignal.timeout(opts.timeoutMs), ...(opts.signal ? [opts.signal] : [])]
     let res: Response
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers: { Accept: 'application/json', ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { Accept: 'application/json', ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...opts.headers },
         ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
         redirect: 'manual',
         signal: AbortSignal.any(signals),
@@ -148,7 +151,12 @@ export class PairingClient {
     return this.call('POST', '/pair/claim', { body: request, timeoutMs: 15_000, ...(signal ? { signal } : {}) })
   }
 
-  poll(claimId: string, signal?: AbortSignal): Promise<PairClaimResult> {
-    return this.call('GET', `/pair/claims/${enc(claimId)}?wait=${CLAIM_WAIT_S}`, { timeoutMs: (CLAIM_WAIT_S + 10) * 1000, ...(signal ? { signal } : {}) })
+  /** The claim's collect secret (from the 202) is what collects the token; the claim id alone collects nothing. */
+  poll(claimId: string, collectSecret: string, signal?: AbortSignal): Promise<PairClaimResult> {
+    return this.call('GET', `/pair/claims/${enc(claimId)}?wait=${CLAIM_WAIT_S}`, {
+      timeoutMs: (CLAIM_WAIT_S + 10) * 1000,
+      headers: { [PAIR_SECRET_HEADER]: collectSecret },
+      ...(signal ? { signal } : {}),
+    })
   }
 }

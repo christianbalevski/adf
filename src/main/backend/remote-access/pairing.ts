@@ -162,7 +162,7 @@ export class PairingFlow {
     const abort = this.abort
     this.set({ step: 'claiming' })
     const client = new PairingClient(host.url, this.deps.fetch)
-    let claim: { claimId: string; expiresAt: string }
+    let claim: { claimId: string; expiresAt: string; collectSecret: string }
     try {
       claim = await client.claim({ code: code.trim(), deviceName: this.deviceName, clientKind: 'studio' }, abort.signal)
     } catch (err) {
@@ -187,14 +187,14 @@ export class PairingFlow {
     return this.set({ step: 'cancelled' })
   }
 
-  private async waitForHost(client: PairingClient, claim: { claimId: string; expiresAt: string }, abort: AbortController): Promise<void> {
+  private async waitForHost(client: PairingClient, claim: { claimId: string; expiresAt: string; collectSecret: string }, abort: AbortController): Promise<void> {
     const host = this.current.host!
     const deadline = Date.parse(claim.expiresAt)
     for (;;) {
       if (abort.signal.aborted) return
       let result
       try {
-        result = await client.poll(claim.claimId, abort.signal)
+        result = await client.poll(claim.claimId, claim.collectSecret, abort.signal)
       } catch (err) {
         if (abort.signal.aborted) return
         if (err instanceof RemoteAccessApiError && err.status !== null) {
@@ -287,7 +287,10 @@ export class PairingFlow {
       case 'pairing_busy':
         return this.fail('busy', `${host.name} is already asking about another device. Try again in a moment.`, true)
       case 'rate_limited':
-        return this.fail('rate_limited', `Too many tries.${err.extra.retryAfterS ? ` Wait ${err.extra.retryAfterS} s.` : ' Wait a moment.'}`, true)
+        // A source locked out of the window (5 wrong codes) and the per-address claim limit both answer 429; the daemon's sentence says which.
+        return this.fail('rate_limited', err.message && !/^HTTP \d+/.test(err.message)
+          ? err.message
+          : `Too many tries.${err.extra.retryAfterS ? ` Wait ${err.extra.retryAfterS} s.` : ' Wait a moment.'}`, true)
       case 'remote_access_off':
         return this.fail('remote_access_off', `${host.name} turned remote access off.`)
       case 'bad_request':

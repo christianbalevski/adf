@@ -21,7 +21,9 @@ export interface FakeRemoteDaemon {
     firewall: RemoteAccessStatus['firewall']
     tailscale: RemoteAccessStatus['tailscale']
     /** claimId → decision. */
-    claims: Map<string, { state: 'pending' | 'approved' | 'denied' | 'collected'; deviceName: string; token?: string; device?: RemoteDevice }>
+    claims: Map<string, { state: 'pending' | 'approved' | 'denied' | 'collected'; deviceName: string; token?: string; device?: RemoteDevice; secret: string }>
+    /** Wrong codes from the (one) source in the open window. */
+    sourceWrong: number
     /** Origins that time out (a firewall dropping packets). */
     unreachable: Set<string>
     /** An ADF from before remote access: no /remote-access routes, a token asked on /remote/hello and /pair/*. */
@@ -37,7 +39,7 @@ export interface FakeRemoteDaemon {
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(body === undefined ? '' : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } })
 
-const err = (status: number, code: string, error: string, extra: Record<string, unknown> = {}) => json(status, { error, code, ...extra })
+const err = (status: number, code: string, error: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) => json(status, { error, code, ...extra }, headers)
 
 export function device(over: Partial<RemoteDevice> = {}): RemoteDevice {
   return {
@@ -66,6 +68,7 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     unreachable: new Set(),
     old: false,
     trusted: null,
+    sourceWrong: 0,
   }
   const status = (): RemoteAccessStatus => ({
     enabled: state.enabled,
@@ -85,7 +88,7 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     mdns: { announcing: state.enabled, problem: null },
     firewall: state.firewall,
     devices: state.devices,
-    pairing: state.pairing ? { code: state.pairing.code, name: state.name, fingerprint: state.fingerprint, openedAt: state.pairing.openedAt, expiresAt: state.pairing.expiresAt, attemptsLeft: state.pairing.attemptsLeft, claim: state.pairing.claim } : null,
+    pairing: state.pairing ? { code: state.pairing.code, name: state.name, fingerprint: state.fingerprint, openedAt: state.pairing.openedAt, expiresAt: state.pairing.expiresAt, attemptsLeft: state.pairing.attemptsLeft, lockedSources: state.pairing.lockedSources ?? 0, claim: state.pairing.claim } : null,
   })
 
   const fake: FakeRemoteDaemon = {
@@ -147,7 +150,8 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
           return json(200, { device: d, closedSessions: 1, closedConnections: 2 })
         }
         if (method === 'POST' && path === '/remote-access/pairing') {
-          state.pairing = { code: '123456', name: state.name, fingerprint: state.fingerprint, openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
+          state.pairing = { code: '123456', name: state.name, fingerprint: state.fingerprint, openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 20, lockedSources: 0, claim: null }
+          state.sourceWrong = 0
           return json(201, status().pairing)
         }
         if (method === 'DELETE' && path === '/remote-access/pairing') {
@@ -177,22 +181,29 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
         const p = state.pairing
         if (!p || Date.parse(p.expiresAt) < Date.now()) return err(404, 'pairing_closed', 'No pairing window is open.')
         if (p.claim) return err(409, 'pairing_busy', 'Another computer is waiting for the host.')
+        // One source here: 5 wrong codes lock it out of the window (429), 20 in all close it.
+        if (state.sourceWrong >= 5) return err(429, 'rate_limited', 'Too many wrong codes from this computer for this pairing window. Ask the host to open a new one.', {}, { 'Retry-After': '100' })
         if (body.code !== p.code) {
           p.attemptsLeft--
-          const left = p.attemptsLeft
-          if (left <= 0) state.pairing = null
+          state.sourceWrong++
+          if (state.sourceWrong >= 5) p.lockedSources = 1
+          const left = Math.max(0, Math.min(5 - state.sourceWrong, p.attemptsLeft))
+          if (p.attemptsLeft <= 0) state.pairing = null
           return err(403, 'wrong_code', 'Wrong code.', { attemptsLeft: left })
         }
         const claimId = `claim${++seq}`
         const claim: PairingClaimView = { claimId, deviceName: body.deviceName, clientKind: body.clientKind, address: '192.168.1.31', via: 'lan', tailnetLogin: null, at: new Date().toISOString() }
         p.claim = claim
-        state.claims.set(claimId, { state: 'pending', deviceName: body.deviceName })
-        return json(202, { claimId, expiresAt: p.expiresAt })
+        const collectSecret = `secret-${claimId}-${'s'.repeat(30)}`
+        state.claims.set(claimId, { state: 'pending', deviceName: body.deviceName, secret: collectSecret })
+        return json(202, { claimId, expiresAt: p.expiresAt, collectSecret })
       }
       const poll = /^\/pair\/claims\/([^/]+)$/.exec(path)
       if (method === 'GET' && poll) {
         const record = state.claims.get(decodeURIComponent(poll[1]))
-        if (!record || record.state === 'collected') return err(404, 'claim_not_found', 'No such request.')
+        // The claim id alone collects nothing: the collect secret from the 202 must come along.
+        const secret = Object.entries(headers).find(([k]) => k.toLowerCase() === 'x-adf-pair-secret')?.[1]
+        if (!record || record.state === 'collected' || secret !== record.secret) return err(404, 'claim_not_found', 'No such request.')
         if (record.state === 'pending') {
           await new Promise((r) => setTimeout(r, 5))
           return json(200, { state: 'pending' })

@@ -59,7 +59,8 @@ export function deviceRemovedNotice(label: string): string {
   return `Device revoked: ${label}.`
 }
 
-export const WRONG_CODES_NOTICE = 'Pairing closed after 5 wrong codes.'
+export const WRONG_CODES_NOTICE = 'Pairing closed after too many wrong codes.'
+export const LOCKOUT_NOTICE = 'Pairing: a device was locked out after 5 wrong codes.'
 
 function errorText(err: unknown): string {
   if (err instanceof RemoteAccessApiError) {
@@ -78,6 +79,7 @@ export class RemoteAccessHost {
   private readonly prompts = new Map<string, AbortController>()
   private readonly recentNotices = new Map<string, number>()
   private disposed = false
+  private lockouts = 0
 
   constructor(private readonly deps: RemoteAccessHostDeps) {
     this.log = deps.log ?? console
@@ -244,8 +246,9 @@ export class RemoteAccessHost {
 
   /**
    * A `remote_access` event from the daemon's client stream. Every event
-   * re-reads the status and pushes it: `claim_pending` then raises "Allow
-   * <label>?" (watchPairing), `networks_changed` and `addresses_changed`
+   * re-reads the status and pushes it: `claim_pending` carries nothing (the
+   * claim is read from the local-only GET /remote-access) and then raises
+   * "Allow device" (watchPairing); `networks_changed` and `addresses_changed`
    * refresh the addresses and the status line, device_* the list.
    */
   onDaemonEvent(event: RemoteAccessEventPayload): void {
@@ -255,6 +258,8 @@ export class RemoteAccessHost {
     if (type === 'device_added' && label) this.notice(`added:${deviceId ?? label}`, deviceAddedNotice(label))
     else if (type === 'device_revoked' && label) this.notice(`revoked:${deviceId ?? label}`, deviceRemovedNotice(label))
     else if (type === 'pairing_closed' && event.reason === 'wrong_codes') this.notice('wrong_codes', WRONG_CODES_NOTICE)
+    // The window stays open; the key counts lockouts so each one is a notice.
+    else if (type === 'pairing_lockout') this.notice(`lockout:${this.lockouts++}`, LOCKOUT_NOTICE)
     void this.get().then((view) => this.publish(view))
   }
 
