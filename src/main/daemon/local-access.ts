@@ -113,8 +113,9 @@ export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT)
  * Routes the daemon answers for local callers only, where a client on this
  * machine sends the local proof: owner secrets and shutdown (proof required
  * behind a proxy), owner import, trust-daemon / untrust-daemon and the
- * stored-value reveal routes, agent values and app provider keys, and the
- * remote-access management routes (proof required in every mode). A client
+ * stored-value reveal routes, agent values and app provider keys, the
+ * remote-access management routes and the discovery feed (proof required in
+ * every mode). A client
  * never sends the proof for another route. A device token is refused on
  * every one of them, from any address (request-guard.ts).
  */
@@ -132,6 +133,8 @@ export function isLocalOnlyRoute(path: string): boolean {
     // Remote access management (remote-access.md §4.5): device tokens, pairing, the toggle.
     || p === '/remote-access'
     || p.startsWith('/remote-access/')
+    // The discovery feed (remote-access.md §5.1): the owner's view of the computers around this one.
+    || p === '/network/peers'
 }
 
 /**

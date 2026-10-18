@@ -118,7 +118,7 @@ function localDaemonOf(env: NodeJS.ProcessEnv): { url: string; token: string } |
 async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHello } | null> {
   io.stderr('Looking for ADF computers on this network and your tailnet…\n')
   // The one discovery feed (remote-access.md §5.1): this computer's daemon's when it runs, else this process's.
-  const found = await (io.discover ?? ((ms: number) => discoverDaemons(ms, { localDaemon: localDaemonOf(io.env ?? process.env), fetch: io.fetch })))(3_000)
+  const found = await (io.discover ?? ((ms: number) => discoverDaemons(ms, { localDaemon: localDaemonOf(io.env ?? process.env), fetch: io.fetch, env: io.env ?? process.env })))(3_000)
   if (found.length === 0) {
     io.stderr('No ADF computer found. On the other computer turn on Remote access (Settings → Networking, or adf daemon remote on), then run adf pair <its address>.\n')
     return null

@@ -39,6 +39,7 @@ import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-
 import { getLanAddresses } from '../utils/network'
 import { registerIdentityRoutes, requireLocalCaller, type IdentityRouteDeps } from './identity-routes'
 import { behindProxyFromEnv, type LocalAccessOptions } from './local-access'
+import { requireLocalProof } from './routes/identity-import-routes'
 import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
 import { remoteListenerOf } from './remote-access/listeners'
 import { setRequestAuth } from './remote-access/request-auth'
@@ -1299,6 +1300,9 @@ export function createDaemonHttpApi(
 
   // One discovery feed (remote-access.md §5.1): Studio's Discovered list and adf pair read it; the mesh list is its mesh half.
   server.get<{ Querystring: { wait?: string } }>('/network/peers', async (request, reply) => {
+    // The owner's only (isLocalOnlyRoute): this machine, its local proof, never a device token.
+    if (!requireLocalCaller(request, reply, localAccess, 'The discovery feed can be read')) return reply
+    if (!requireLocalProof(request, reply, localAccess.localProof ?? null, 'Only ADF Studio and adf on this computer can read the discovery feed (local proof missing).')) return reply
     if (!opts.networkService?.getPeers) return unavailable(reply, 'Peer discovery is not configured.')
     const wait = request.query.wait
     const waitMs = wait === undefined ? 0 : Number(wait)

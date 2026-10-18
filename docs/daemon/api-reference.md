@@ -11968,7 +11968,7 @@ Example 200 (`application/json`):
 
 **The discovery feed: ADF computers on this network and the tailnet**
 
-One feed per computer (remote-access.md §5.1): the one `_adf-runtime._tcp` browser (plus the legacy `_adf-daemon._tcp` one for a release) and the one tailnet sweep. Each entry carries both capabilities: its mesh (when visible to other computers) and its remote access (when on). Studio's Discovered list and `adf pair` read it; the mesh peer list is its mesh half. Keeps discovery running for a minute after the call. Changes are pushed to this computer's own sessions as `remote_access` `{type: "peers_changed"}`.
+One feed per computer (remote-access.md §5.1): the one `_adf-runtime._tcp` browser (plus the legacy `_adf-daemon._tcp` one for a release) and the one tailnet sweep. Each entry carries both capabilities: its mesh (when visible to other computers) and its remote access (when on). Studio's Discovered list and `adf pair` read it; the mesh peer list is its mesh half. Local-only: this machine's own clients with the local proof; a device token is refused (it would show the owner's view of the computers around this one). Keeps discovery running for a minute after the call. Changes are pushed to this computer's own sessions as `remote_access` `{type: "peers_changed"}`.
 
 Operation `getNetworkPeers` · bearer token
 

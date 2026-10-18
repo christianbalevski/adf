@@ -14,7 +14,7 @@ import { MdnsService } from '../services/mdns-service'
 import { fetchHello } from '../services/remote-hello'
 import { defaultExec, type Exec } from '../daemon/remote-access/network-category'
 import { TailscaleClient } from '../daemon/remote-access/tailscale'
-import { DEFAULT_DAEMON_PORT } from './daemon-url'
+import { DEFAULT_DAEMON_PORT, localProofHeaders } from './daemon-url'
 
 export { fetchHello }
 
@@ -94,11 +94,12 @@ export function mergeDiscovered(lists: DiscoveredDaemon[][]): DiscoveredDaemon[]
 }
 
 /** This computer's ADF daemon's feed, or null when none answers (GET /network/peers). */
-export async function peersFromDaemon(daemon: { url: string; token: string }, ms: number, fetchImpl: typeof fetch = fetch): Promise<NetworkPeer[] | null> {
+export async function peersFromDaemon(daemon: { url: string; token: string }, ms: number, fetchImpl: typeof fetch = fetch, env: NodeJS.ProcessEnv = process.env): Promise<NetworkPeer[] | null> {
   try {
     const wait = Math.min(Math.max(ms, 0), 5_000)
+    // A local-only route: this machine's proof goes with it (never to another host).
     const res = await fetchImpl(`${daemon.url.replace(/\/+$/, '')}/network/peers?wait=${wait}`, {
-      headers: { Authorization: `Bearer ${daemon.token}`, Accept: 'application/json' },
+      headers: { Authorization: `Bearer ${daemon.token}`, Accept: 'application/json', ...localProofHeaders(daemon.url, '/network/peers', env) },
       signal: AbortSignal.timeout(wait + 5_000),
     })
     if (!res.ok) return null
@@ -113,9 +114,9 @@ export async function peersFromDaemon(daemon: { url: string; token: string }, ms
  * The daemons `adf pair` offers: this computer's ADF daemon's feed when it
  * runs (one browser, one sweep per computer), else this process's own.
  */
-export async function discoverDaemons(ms = 3_000, opts: { localDaemon?: { url: string; token: string } | null; fetch?: typeof fetch } = {}): Promise<DiscoveredDaemon[]> {
+export async function discoverDaemons(ms = 3_000, opts: { localDaemon?: { url: string; token: string } | null; fetch?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Promise<DiscoveredDaemon[]> {
   if (opts.localDaemon) {
-    const peers = await peersFromDaemon(opts.localDaemon, ms, opts.fetch)
+    const peers = await peersFromDaemon(opts.localDaemon, ms, opts.fetch, opts.env)
     if (peers) return mergeDiscovered([daemonsOf(peers)])
   }
   const [lan, tailnet] = await Promise.all([browseMdns(ms), probeTailnet({ ...(opts.fetch ? { fetch: opts.fetch } : {}) })])

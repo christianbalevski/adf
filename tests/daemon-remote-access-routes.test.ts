@@ -352,6 +352,24 @@ describe('revocation closes streams (§4.7)', () => {
   })
 })
 
+describe('discovery review 1: GET /network/peers is the owner\'s only (local caller, local proof, never a device token)', () => {
+  it('a device token is refused even from loopback with the proof; the install token needs the proof', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const viaTunnel = await h.server.inject({ method: 'GET', url: '/network/peers', headers: { authorization: `Bearer ${device.token}`, 'x-adf-local-proof': PROOF } })
+    expect(viaTunnel.statusCode).toBe(403)
+    expect(viaTunnel.json().code).toBe('device_token_refused')
+    const over = await remote(h, 'GET', '/network/peers', { authorization: `Bearer ${device.token}` })
+    expect(over.status).toBe(403)
+    const noProof = await h.server.inject({ method: 'GET', url: '/network/peers', headers: master })
+    expect(noProof.statusCode).toBe(403)
+    expect(noProof.json().code).toBe('loopback_only')
+    // The owner, with the proof: past the gate (no discovery service in this harness).
+    expect((await h.server.inject({ method: 'GET', url: '/network/peers', headers: managed })).statusCode).toBe(503)
+  })
+})
+
 describe('consent per network (owner decision 2026-10-18 b)', () => {
   const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
   const status = async (h: Harness) => (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
