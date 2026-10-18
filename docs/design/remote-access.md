@@ -68,7 +68,7 @@ From `os.networkInterfaces()` (same API on Windows, macOS and Linux), skipping `
 | IPv4 `10/8`, `172.16/12`, `192.168/16` on a non-virtual interface | Yes | LAN |
 | IPv4 `100.64/10` that `tailscale status --json` lists in `Self.TailscaleIPs` | Yes, kind `tailnet` | Tailnet. Without that confirmation the range is carrier-grade NAT (a phone hotspot, some ISPs) and MUST NOT be bound. |
 | IPv6 in `fd7a:115c:a1e0::/48` listed in `Self.TailscaleIPs` | Yes, kind `tailnet` | Tailnet |
-| IPv6 ULA `fc00::/7` (other) | Yes | LAN |
+| IPv6 ULA `fc00::/7` (other) | Yes, only on an interface without a private IPv4 address | LAN. ULA privacy addresses come several at a time and rotate; IPv4 reaches the same LAN |
 | IPv6 link-local `fe80::/10` | No | Needs a zone id in every URL; IPv4 or ULA covers the same LAN |
 | Any other address (public IPv4, IPv6 global unicast) | No | Would be reachable from the internet where no NAT or router firewall stands in front |
 | Any address on a virtual interface | No | Docker, WSL, Hyper-V, VMware, VirtualBox, VPN taps: the regexes of `mdns-service.ts` (`VIRTUAL_IFACE_RE`, `VIRTUAL_IFACE_WIN_RE`), minus the Tailscale names, which are matched by address above |

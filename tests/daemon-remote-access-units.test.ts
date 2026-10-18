@@ -40,6 +40,7 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
     lo: [nic('127.0.0.1', { internal: true })],
     'Wi-Fi': [nic('192.168.1.20'), nic('fe80::1'), nic('2001:db8::5'), nic('fd12:3456::7')],
     Ethernet: [nic('10.0.0.4')],
+    eth2: [nic('fd99::2')],
     'vEthernet (WSL)': [nic('172.20.0.1')],
     docker0: [nic('172.17.0.1')],
     Tailscale: [nic('100.101.102.103'), nic('fd7a:115c:a1e0::1')],
@@ -51,14 +52,15 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
     const out = addressCandidates({
       interfaces,
       tailscaleIps: new Set(['100.101.102.103', 'fd7a:115c:a1e0::1']),
-      categories: new Map([['Wi-Fi', 'private'], ['Ethernet', 'private']]),
+      categories: new Map([['Wi-Fi', 'private'], ['Ethernet', 'private'], ['eth2', 'private']]),
     })
+    // Wi-Fi's ULA is left out: the interface has a private IPv4 address; eth2 has only ULA.
     expect(out.map(c => `${c.address}/${c.kind}/${c.network}`)).toEqual([
       '100.101.102.103/tailnet/tailnet',
       'fd7a:115c:a1e0::1/tailnet/tailnet',
       '10.0.0.4/lan/private',
       '192.168.1.20/lan/private',
-      'fd12:3456::7/lan/private',
+      'fd99::2/lan/private',
     ])
     expect(out.every(c => c.refusal === null)).toBe(true)
   })
@@ -66,7 +68,7 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
   it('never listens on a network that is not marked private: unsure = public (owner decision O2)', () => {
     const out = addressCandidates({ interfaces, tailscaleIps: new Set(), categories: new Map([['Wi-Fi', 'public']]) })
     const lan = out.filter(c => c.kind === 'lan')
-    expect(lan.length).toBe(3)
+    expect(lan.length).toBe(3) // 192.168.1.20, 10.0.0.4, fd99::2
     // Wi-Fi is Public; Ethernet has no category at all: both refused.
     expect(lan.every(c => c.network === 'public' && c.refusal === PUBLIC_NETWORK_SENTENCE)).toBe(true)
     // Unconfirmed 100.64/10 (carrier-grade NAT) and Tailscale IPv6 are never candidates.

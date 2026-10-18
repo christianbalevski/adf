@@ -53,6 +53,12 @@ export function addressCandidates(inputs: CandidateInputs): AddressCandidate[] {
   const out: AddressCandidate[] = []
   const seen = new Set<string>()
   const only = inputs.only ? new Set(inputs.only.map(a => a.toLowerCase())) : null
+  // IPv6 ULA only on an interface without a private IPv4 address: ULA privacy
+  // addresses come several at a time and rotate, and IPv4 reaches the same LAN.
+  const hasPrivateV4 = new Set<string>()
+  for (const [iface, infos] of Object.entries(inputs.interfaces)) {
+    if ((infos ?? []).some(i => !i.internal && isIP(i.address) === 4 && isRFC1918(i.address))) hasPrivateV4.add(iface)
+  }
   for (const [iface, infos] of Object.entries(inputs.interfaces)) {
     for (const info of infos ?? []) {
       if (info.internal) continue
@@ -70,7 +76,7 @@ export function addressCandidates(inputs: CandidateInputs): AddressCandidate[] {
       if (family === 'IPv4' && isCGNAT(address)) continue
       if (family === 'IPv6' && isTailnetV6(address)) continue
       if (isVirtualInterface(iface)) continue
-      const lan = family === 'IPv4' ? isRFC1918(address) : isUlaV6(address)
+      const lan = family === 'IPv4' ? isRFC1918(address) : isUlaV6(address) && !hasPrivateV4.has(iface)
       if (!lan) continue
       seen.add(address)
       const network = inputs.categories.get(iface) === 'private' ? 'private' : 'public'
