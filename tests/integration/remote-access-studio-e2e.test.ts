@@ -1,5 +1,5 @@
 /**
- * "Allow other computers to connect" end to end (docs/design/remote-access.md):
+ * Remote access end to end (docs/design/remote-access.md):
  * the built daemon (out/main/daemon.js, Electron as Node, isolated settings,
  * a free port, fake compute) and Studio main's real handlers against it
  * (daemon mode in local mode, the remote-access IPC, pairing, the quit
@@ -13,7 +13,7 @@
  * never stopped gracefully.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -77,6 +77,8 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     port = await freePort()
     base = `http://127.0.0.1:${port}`
     const token = ensureDaemonToken(dir).token
+    // One name: the runtime alias is what other computers see.
+    writeFileSync(join(dir, 'adf-settings.json'), JSON.stringify({ runtimeAlias: 'agent-1 e2e' }))
     const out = openSync(join(dir, 'adf-daemon.log'), 'a')
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -147,6 +149,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     expect(on.view.status?.enabled).toBe(true)
     const fingerprint = on.view.status!.fingerprint!
     expect(fingerprint).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/)
+    expect(on.view.status!.name).toBe('agent-1 e2e')
     console.log(`[e2e] on: ${on.view.status!.state}: ${on.view.status!.message}`)
 
     // Add a computer: a device token, accepted on the loopback listener, refused on the management routes.
@@ -165,7 +168,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     const code = opened.view.status!.pairing!.code
     expect(code).toMatch(/^\d{6}$/)
     const started = await invoke<RemotePairState>(IPC.REMOTE_PAIR_START, { url: base, deviceName: 'agent-2 laptop' })
-    expect(started).toMatchObject({ step: 'need_code', host: { fingerprint } })
+    expect(started).toMatchObject({ step: 'need_code', host: { fingerprint, name: 'agent-1 e2e' } })
     const wrong = await invoke<RemotePairState>(IPC.REMOTE_PAIR_SUBMIT_CODE, code === '000000' ? '111111' : '000000')
     expect(wrong).toMatchObject({ step: 'need_code', code: 'wrong_code', attemptsLeft: 4 })
     // One claim per 2 s per address (§5.5): at once is rate_limited, and the dialog keeps the code field.
@@ -179,7 +182,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     expect(config.remote.paired).toMatchObject({ fingerprint, label: 'agent-2 laptop' })
     const pairedToken = readRemoteToken(config, codec)!
     expect(pairedToken).toMatch(/^adfd_/)
-    await until(() => notices, (n) => n.includes('agent-2 laptop can now connect to this computer.'))
+    await until(() => notices, (n) => n.includes('Device added: agent-2 laptop.'))
     await until(() => events.map((e) => e.type), (t) => t.includes('claim_pending') && t.includes('device_added'))
     console.log(`[e2e] events: ${events.map((e) => `${e.type}${e.reason ? `(${e.reason})` : ''}`).join(', ')}`)
 
@@ -202,7 +205,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     const revoked = await fetch(`${base}/agents`, { headers: { Authorization: `Bearer ${pairedToken}` } })
     expect(revoked.status).toBe(401)
     expect((await revoked.json()).code).toBe('device_revoked')
-    await until(() => notices, (n) => n.includes('agent-2 laptop was removed and disconnected.'))
+    await until(() => notices, (n) => n.includes('Device revoked: agent-2 laptop.'))
 
     const offAgain = await invoke<{ ok: boolean; view: RemoteAccessView }>(IPC.REMOTE_ACCESS_SET, { enabled: false })
     expect(offAgain.ok && offAgain.view.status?.enabled).toBe(false)

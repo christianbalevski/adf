@@ -517,7 +517,7 @@ export const CHANNEL_MAP = {
   [IPC.BACKEND_REMOTE_CHECK]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: the remote handshake (remote/connector.ts) against a draft URL, with the saved token only for the saved origin. Never returns the token.'),
   [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: relaunchStudio (mode-switch.ts), then the normal quit path.'),
 
-  // --- Allow other computers to connect (remote-access.md §9.1) -------------
+  // --- Remote access (remote-access.md §9.1) --------------------------------
   // Registered in every mode in backend/remote-access-ipc.ts. The host
   // channels answer { ok: false, code: 'unavailable' } outside local mode;
   // in local mode they call the daemon's /remote-access routes (§11.2) with
@@ -538,6 +538,7 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_PAIR_SUBMIT_CODE]: local('invoke', 'POST /pair/claim, then the GET /pair/claims/:claimId long poll on the other computer; the token is saved in studio-backend.json as safe: and never returned.'),
   [IPC.REMOTE_PAIR_CANCEL]: local('invoke', 'Stops the pairing flow here.'),
   [IPC.REMOTE_PAIR_STATE]: local('push', 'Pairing progress and errors; never the code or the token.'),
+  [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------
   [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),

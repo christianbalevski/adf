@@ -6,7 +6,7 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import type { RemoteDiscoveryEntry, RemoteDiscoveryUpdate } from '../../../shared/types/remote-access-ipc.types'
 
 /**
- * Settings → Backend → Remote computer, "Found on your network"
+ * Settings → Backend → Remote computer, "Discovered"
  * (docs/design/remote-access.md §9.1): ADF daemons that allow other
  * computers, found two ways and merged by fingerprint.
  *
@@ -112,7 +112,7 @@ export class RemoteDiscovery {
       this.log.log('[Remote access] Looking for ADF computers on this network (mDNS _adf-daemon._tcp, tailnet hello)')
     } catch (err) {
       this.browsing = false
-      this.problem = 'Studio cannot listen for computers on this network (mDNS). Tailnet computers are still found; or enter an address.'
+      this.problem = 'mDNS is not available here. Tailnet computers are still listed; or enter an address.'
       this.log.warn(`[Remote access] mDNS browse failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     this.emit()

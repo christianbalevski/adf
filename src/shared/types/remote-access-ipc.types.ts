@@ -1,5 +1,5 @@
 /**
- * Studio IPC shapes for "Allow other computers to connect"
+ * Studio IPC shapes for remote access
  * (docs/design/remote-access.md §7, §9.1). The daemon's own shapes are in
  * remote-access.types.ts. No token ever crosses IPC towards the renderer,
  * except the one a device-token creation returns once (§4.6).
@@ -43,6 +43,29 @@ export type RemoteAccessResult =
 export type RemoteDeviceAddResult =
   | { ok: true; view: RemoteAccessView; device: RemoteDevice; token: string }
   | { ok: false; code: RemoteAccessErrorCode; error: string }
+
+// --- Settings → Networking: the status line ------------------------------------
+
+/**
+ * This computer's network, as the mesh's LAN mode and remote access see it
+ * (lan-reach.ts): one line at the top of Settings → Networking.
+ */
+export interface NetworkStatusView {
+  /** False in remote mode: the mesh and remote access are on the remote computer. */
+  available: boolean
+  /** private: some LAN address is on a private network; public: all are on a Public one; none: no LAN address. */
+  network: 'private' | 'public' | 'none'
+  /** LAN addresses with their network (no Tailscale). */
+  lan: Array<{ address: string; iface: string; network: 'private' | 'public' }>
+  tailscale: 'absent' | 'stopped' | 'running'
+  /** This computer's tailnet IPv4 address, or null. */
+  tailnetAddress: string | null
+  firewall: { state: 'ok' | 'blocked' | 'public_network' | 'unknown'; message: string }
+  /** Why the network category could not be read (it then counts as Public). */
+  problem: string | null
+  /** macOS and Linux: a network is private only when marked (remote access's Mark private); Windows: the OS decides. */
+  markable: boolean
+}
 
 // --- Client side: Settings → Backend → Remote computer ---------------------
 

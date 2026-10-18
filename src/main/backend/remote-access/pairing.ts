@@ -89,7 +89,7 @@ export class PairingFlow {
       return this.fail('insecure_unconfirmed', 'Confirm that you trust this network first: the token is sent unencrypted.')
     }
     if (deviceName.length > 64 || CONTROL_OR_BIDI.test(deviceName)) {
-      return this.fail('bad_request', 'This computer\'s name must be 1 to 64 characters, without control characters.')
+      return this.fail('bad_request', 'The device name must be 1 to 64 characters, without control characters.')
     }
     const blocked = this.deps.saveBlocked()
     if (blocked) return this.fail('encryption_unavailable', blocked)
@@ -98,12 +98,12 @@ export class PairingFlow {
     try {
       const hello = await new PairingClient(check.url, this.deps.fetch).hello({ signal: abort.signal })
       if (abort.signal.aborted) return this.current
-      if (hello?.v !== 1 || typeof hello.fingerprint !== 'string') return this.fail('unreachable', `${check.url} does not answer as an ADF computer that allows pairing.`)
+      if (hello?.v !== 1 || typeof hello.fingerprint !== 'string') return this.fail('unreachable', `${check.url} does not answer as an ADF computer with remote access on.`)
       this.log.log(`[Remote access] Pairing with ${hello.name} (${hello.fingerprint}) at ${check.url} as "${deviceName}"`)
       return this.set({
         step: 'need_code',
         host: { ...host, name: hello.name, fingerprint: hello.fingerprint },
-        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open. Choose Pair a computer there.`,
+        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open. Choose Pair device there.`,
       })
     } catch (err) {
       if (abort.signal.aborted) return this.current
@@ -131,7 +131,7 @@ export class PairingFlow {
     }
     if (abort.signal.aborted) return this.current
     this.log.log(`[Remote access] Pairing with ${host.name}: the code was accepted; waiting for the host to allow this computer`)
-    const waiting = this.set({ step: 'waiting', message: `Waiting for ${host.name} to allow this computer…` })
+    const waiting = this.set({ step: 'waiting', message: `Waiting for ${host.name} to allow this device…` })
     void this.waitForHost(client, claim, abort)
     return waiting
   }
@@ -176,7 +176,7 @@ export class PairingFlow {
       if (result?.state === 'pending') continue
       this.abort = null
       if (result?.state === 'denied') {
-        this.fail('denied', `${host.name} did not allow this computer.`)
+        this.fail('denied', `${host.name} denied this device.`)
         return
       }
       if (result?.state === 'approved' && typeof result.token === 'string' && result.token) {
@@ -213,7 +213,7 @@ export class PairingFlow {
       label: result.device?.label ?? this.deviceName,
     })
     if (!saved.ok) {
-      this.fail('save_failed', `${host.name} allowed this computer, but Studio could not save the token: ${saved.error} Remove "${result.device?.label ?? this.deviceName}" on ${host.name} and pair again.`)
+      this.fail('save_failed', `${host.name} allowed this device, but Studio could not save the token: ${saved.error} Remove "${result.device?.label ?? this.deviceName}" on ${host.name} and pair again.`)
       return
     }
     this.log.log(`[Remote access] Paired with ${host.name} (${host.fingerprint}) as "${result.device?.label ?? this.deviceName}"; saved ${url} and its token`)
@@ -225,18 +225,18 @@ export class PairingFlow {
     switch (err.code) {
       case 'wrong_code': {
         const left = err.extra.attemptsLeft ?? null
-        if (left === 0) return this.fail('attempts_used', `Wrong code, and no tries are left. Choose Pair a computer on ${host.name} for a new code.`)
+        if (left === 0) return this.fail('attempts_used', `Wrong code, and no tries are left. Choose Pair device on ${host.name} for a new code.`)
         this.log.warn(`[Remote access] Pairing with ${host.name}: wrong code${left !== null ? `, ${left} left` : ''}`)
         return this.set({ step: 'need_code', code: 'wrong_code', attemptsLeft: left, message: `Wrong code.${left !== null ? ` ${left} ${left === 1 ? 'try' : 'tries'} left.` : ''}` })
       }
       case 'pairing_closed':
-        return this.fail('window_closed', `The pairing window on ${host.name} is closed. Choose Pair a computer there for a new code.`)
+        return this.fail('window_closed', `The pairing window on ${host.name} is closed. Choose Pair device there for a new code.`)
       case 'pairing_busy':
-        return this.fail('busy', `${host.name} is already asking about another computer. Try again in a moment.`, true)
+        return this.fail('busy', `${host.name} is already asking about another device. Try again in a moment.`, true)
       case 'rate_limited':
         return this.fail('rate_limited', `Too many tries.${err.extra.retryAfterS ? ` Wait ${err.extra.retryAfterS} s.` : ' Wait a moment.'}`, true)
       case 'remote_access_off':
-        return this.fail('remote_access_off', `${host.name} no longer allows other computers to connect.`)
+        return this.fail('remote_access_off', `${host.name} turned remote access off.`)
       case 'bad_request':
         return this.fail('bad_request', err.message, true)
       default:
@@ -248,8 +248,8 @@ export class PairingFlow {
     if (err instanceof RemoteAccessApiError && err.status !== null) {
       // An ADF daemon from before remote access asks for a token on /remote/hello and /pair/*.
       if (err.status === 401) return this.fail('old_daemon', `${host.name} runs an older ADF. Update ADF there, then pair again.`)
-      if (err.code === 'remote_access_off') return this.fail('remote_access_off', `${host.url} does not allow other computers to connect. Turn it on there: Settings → Backend → This computer.`)
-      return this.fail('unreachable', `${host.url} does not answer as an ADF computer that allows pairing (${err.message}).`)
+      if (err.code === 'remote_access_off') return this.fail('remote_access_off', `${host.url} has remote access off. Turn it on there: Settings → Networking → Remote access.`)
+      return this.fail('unreachable', `${host.url} does not answer as an ADF computer with remote access on (${err.message}).`)
     }
     const code = err instanceof RemoteAccessApiError ? err.code : 'unreachable'
     const kind = checkRemoteDaemonUrl(host.url).kind

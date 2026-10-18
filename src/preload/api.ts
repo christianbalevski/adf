@@ -14,7 +14,7 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
-import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
+import type { NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -250,7 +250,7 @@ export interface AdfApi {
     adapters: { adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }
     peers: unknown[]
   }>
-  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string }>
+  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>
   restartMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   stopMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
@@ -734,7 +734,7 @@ export interface AdfApi {
    */
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => Promise<void>
 
-  // Allow other computers to connect (remote-access.md §7, §9.1). Host: Settings → Backend → This computer.
+  // Remote access (remote-access.md §7, §9.1). Host: Settings → Networking → Remote access.
   /** The host panel: the daemon's remote-access status, in local mode only. */
   getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
   /** The toggle (turning it on is confirmed in a native dialog first), the name, and macOS/Linux "Allow on This Network" (`trustNetwork`). */
@@ -759,6 +759,8 @@ export interface AdfApi {
   submitRemotePairingCode: (code: string) => Promise<RemotePairState>
   cancelRemotePairing: () => Promise<RemotePairState>
   onRemotePairingState: (callback: (state: RemotePairState) => void) => () => void
+  /** Settings → Networking's status line: network category, LAN address, Tailscale, firewall. */
+  getNetworkStatus: () => Promise<NetworkStatusView>
 
   // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void

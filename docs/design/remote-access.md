@@ -1,4 +1,4 @@
-# Allow other computers to connect
+# Remote access
 
 Design for letting Studio's local daemon be reached from another computer, by copy-paste (address + token) or by LAN pairing (discovery + 6-digit code). Status: daemon and CLI built on `feat/remote-access` (`src/main/daemon/remote-access/`, `routes/remote-access-routes.ts`, `src/main/cli/{remote-access-cli,pair,remotes,daemon-discovery}.ts`); Studio UI on `feat/remote-access-ui`.
 
@@ -12,8 +12,8 @@ Today (remote-daemon.md Option 2) a user who wants a second computer to reach th
 
 After this change:
 
-- Host: Settings → Backend → This computer → **Allow other computers to connect** (or `adf daemon remote on`). A panel shows the addresses (Copy), a token for copy-paste (New token, Show, Copy), the paired computers with who is connected now, and **Pair a computer** (6-digit code).
-- Client: Settings → Backend → Remote computer lists the ADF computers found on the LAN and the tailnet. Choose one, type the code shown on the host, the host confirms, done. Or paste address and token. `adf pair` does the same in the terminal.
+- Host: Settings → Networking → **Remote access** (or `adf daemon remote on`). The section shows the addresses (Copy), **Add device** (a token shown once), **Devices** with who is connected now and **Revoke**, and **Pair device** (6-digit code). Settings → Backend → This computer shows one line, "Remote access: On · *N* devices", with a link to Networking.
+- Client: Settings → Backend → Remote computer → **Discovered** lists the ADF computers found on the LAN and the tailnet. Choose one, type the code shown on the host, the host confirms, done. Or paste address and token. `adf pair` does the same in the terminal.
 - No environment variable, no foreground daemon, no hand-made firewall rule on Windows or macOS.
 
 Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less than full) tokens; access from the internet; more than one OS user per daemon.
@@ -108,9 +108,9 @@ The daemon adds to its Host allow-list, for every listener: the OS host name, `<
 Remote access works only while this daemon runs.
 
 - The setting is applied at every daemon boot, whoever starts it (Studio, `adf`, `adf daemon start`, a service). A daemon started with remote access on logs `[remote-access] on: listening on <addresses>`.
-- Studio-started daemon with **Keep the daemon running** off: quitting Studio stops the daemon and every remote client loses it. The remote-access panel MUST say so next to the toggle ("Other computers lose the connection when Studio quits.") with a button **Keep Running When Studio Quits** that sets `keepDaemonRunning`. Studio MUST NOT change `keepDaemonRunning` by itself.
+- Studio-started daemon with **Keep the daemon running** off: quitting Studio stops the daemon and every remote client loses it. The Remote access section MUST say so next to the toggle (row **On quit**: "Devices lose the connection when Studio quits.") with a button **Keep running** that sets `keepDaemonRunning`. Studio MUST NOT change `keepDaemonRunning` by itself.
 - Sessions opened with a device token MUST NOT hold a Studio-requested stop (`daemon_orphan_hold`, §8.3 of daemon-backend.md). Otherwise any paired laptop would keep this computer's daemon running indefinitely after the owner quit Studio.
-- Instead, Studio's quit MUST ask, every time a device is connected and the daemon would stop: "*N* computers are connected. Keep the daemon running for them, or stop it?" **Keep Running**, **Stop**, **Cancel**. The answer applies to this quit only: nothing is remembered and `keepDaemonRunning` is not changed (owner decision O3).
+- Instead, Studio's quit MUST ask, every time a device is connected and the daemon would stop: dialog **Quit**, "*N* devices connected", "Keep the daemon running for them, or stop it." **Keep running**, **Stop daemon**, **Cancel**. The answer applies to this quit only: nothing is remembered and `keepDaemonRunning` is not changed (owner decision O3).
 - Sleep, reboot, logout: the daemon is gone or unreachable; clients use their existing retry (remote connector, 2 s to 30 s).
 
 ### 3.7 The env path stays
@@ -297,16 +297,17 @@ A host cannot test its own firewall by connecting to its own LAN address (that t
 
 ## 7. What the host panel shows
 
-Settings → Backend → This computer (Studio in `local` mode; in `embedded` or `remote` the toggle is disabled with the reason):
+Settings → Networking (Studio in `local` mode; in `embedded` or `remote` the toggle is disabled with the reason). Copy rule (owner, 2026-10-18): headings, labels, buttons and dialog titles are plain nouns or short verb phrases; at most one short sentence under a heading.
 
-1. Toggle **Allow other computers to connect**, with the sentence "Other computers you pair or give a token get full control of this computer's agents and the same power as your seed phrase." and the keep-running line (§3.6).
-2. Status line (§8).
-3. **Name** (editable), **Fingerprint** `XXXX-XXXX`.
-4. **Addresses**: each URL with Copy and its encryption label (§5.7): Tailscale https, tailnet IP, each LAN IP, `<host>.local`. The automatic host names are under Details.
-5. **Pair a computer**: opens the window; shows the code in large digits, a countdown, attempts left; then the Allow / Deny prompt.
-6. **Token for copy-paste**: **New token** (§4.6).
-7. **Computers**: label, paired / token, created, last seen (address), Connected now, **Remove** (confirm: "Remove *label*? It is disconnected now and its token stops working.").
-8. Firewall and Tailscale rows when they have something to say.
+0. The tab's status line, shared with the mesh: network category (Private / Public), LAN address, Tailscale, firewall; **Mark private** on macOS and Linux (`trustNetwork`).
+1. Section and toggle **Remote access**, with "A device token is as powerful as your seed phrase." and the **On quit** row (§3.6).
+2. Status line under the toggle (§8): "Listening on …", "Off.", "Not reachable on this network (Public).".
+3. Name: the runtime alias (settings `runtimeAlias`), else the host name; one name in mDNS, hello, pairing and device lists. **Fingerprint** `XXXX-XXXX` in the Pair device window.
+4. **Addresses**: each URL with Copy and its encryption label (§5.7): Tailscale https, tailnet IP, each LAN IP, `<host>.local`; **Enable Tailscale https**.
+5. **Pair device**: opens the **Pair device** window; shows the code in large digits, a countdown, attempts left; then the **Allow device** dialog.
+6. **Add device** (§4.6): a token shown once, Copy, Done.
+7. **Devices**: label, Paired / Token, last seen (address), Connected now, **Revoke** (dialog **Revoke device**: "*label* is disconnected now and its token stops working.").
+8. Firewall row when it has something to say.
 
 `adf daemon remote status` prints the same items as text (`--json`: the status object).
 
@@ -314,16 +315,16 @@ Settings → Backend → This computer (Studio in `local` mode; in `embedded` or
 
 | Event | Studio | CLI | Daemon log |
 |---|---|---|---|
-| On / off | Status line "Reachable from other computers at 192.168.1.20, 100.101.102.103" / "Not reachable from other computers"; a status-bar indicator while on | `adf daemon remote on/off` prints the result; `adf daemon status` gains a `remote` line | `[remote-access] on: listening on …` / `off: closed N connections` |
+| On / off | Status line "Listening on 192.168.1.20, 100.101.102.103." / "Off." | `adf daemon remote on/off` prints the result; `adf daemon status` gains a `remote` line | `[remote-access] on: listening on …` / `off: closed N connections` |
 | Addresses change, no address, bind failure | Status line, address rows with the problem | `remote status` | One line each |
 | Pairing opened / closed (reason) | Panel; notice when closed by wrong codes | `adf daemon pair` output | Line, without the code |
 | Claim pending | Modal + OS notification | Prompt | Line: address, name |
-| Device added (paired or token) | Notice "*label* can now connect to this computer." | Output | Line |
-| Device revoked | Notice "*label* was removed and disconnected." | Output | Line with counts |
+| Device added (paired or token) | Notice "Device added: *label*." | Output | Line |
+| Device revoked | Notice "Device revoked: *label*." | Output | Line with counts |
 | Device first connection after start, disconnect | Devices list (live); no notice | `devices list` | Line |
 | Refusals (`master_token_remote`, `device_revoked`, rate limit) | — | — | Rate-limited line with count |
 
-Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (`claimId`, `label` = the device name; Studio shows "Allow *label*?" and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
+Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (`claimId`, `label` = the device name; Studio shows the **Allow device** dialog and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
 
 ## 9. Client side
 
@@ -331,8 +332,8 @@ Studio gets them through the client push topic `remote_access` and the daemon ev
 
 Settings → Backend → Remote computer gains, above the URL and token fields:
 
-- **Computers on this network**: Studio main browses `_adf-daemon._tcp` while the section is open, and, when Tailscale runs, probes `GET /remote/hello` on each online tailnet peer on port 7385 (the `TailnetDiscovery` sweep, 2.5 s timeout). Entries merge by fingerprint; each shows name, fingerprint, address kind (tailnet / LAN), "Ready to pair" when `pairingOpen`, and "Already paired" when the saved remote has that fingerprint. Browsing stops when the section closes. The renderer never sees a token.
-- **Pair…** opens the dialog: name and fingerprint of the host ("Check that the host shows the same fingerprint."), this computer's device name (default: OS host name), the plain-http confirmation when the address needs it (§5.7), the 6-digit field, then "Waiting for *host* to allow this computer…" with Cancel. On approval main saves URL and token (§9.3) and offers **Switch to This Daemon** (the existing switch dialog).
+- **Discovered**: Studio main browses `_adf-daemon._tcp` while the section is open, and, when Tailscale runs, probes `GET /remote/hello` on each online tailnet peer on port 7385 (the `TailnetDiscovery` sweep, 2.5 s timeout). Entries merge by fingerprint; each shows name, fingerprint, address kind (tailnet / LAN), "Pairing open" when `pairingOpen`, and "Paired" when the saved remote has that fingerprint. Browsing stops when the section closes. The renderer never sees a token.
+- **Pair** opens the **Pair** dialog: name and fingerprint of the host ("Check that the host shows the same fingerprint."), **Device name** (default: the runtime alias, else the OS host name), the plain-http confirmation when the address needs it (§5.7), **Code**, then "Waiting for *host* to allow this device…" with Cancel. On approval main saves URL and token (§9.3) and offers **Switch to This Daemon** (the existing switch dialog).
 - Paste stays as it is; a pasted `adfd_` token is stored the same way.
 
 IPC (new, Studio main): `REMOTE_DISCOVERY_START`, `REMOTE_DISCOVERY_STOP`, push `REMOTE_DISCOVERY_UPDATE {entries}`, `REMOTE_PAIR_START {url, deviceName, allowInsecureHttp}` → `{claimId}`, `REMOTE_PAIR_SUBMIT_CODE {code}`, push `REMOTE_PAIR_STATE {state, attemptsLeft?, message}`, `REMOTE_PAIR_CANCEL`. Host side: `REMOTE_ACCESS_GET`, `REMOTE_ACCESS_SET {enabled, name?}`, `REMOTE_ACCESS_DEVICE_ADD {label}` → `{device, token}`, `REMOTE_ACCESS_DEVICE_REMOVE {id}`, `REMOTE_ACCESS_PAIRING_OPEN`, `REMOTE_ACCESS_PAIRING_CLOSE`, `REMOTE_ACCESS_CLAIM_DECIDE {claimId, allow}`, `REMOTE_ACCESS_TAILSCALE_SERVE {enabled}`, push `REMOTE_ACCESS_CHANGED`. All `local`-mode channels proxied to the management routes with the master token and the local proof.

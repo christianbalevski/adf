@@ -438,8 +438,8 @@ export const IPC = {
   BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
   BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
 
-  // Allow other computers to connect (docs/design/remote-access.md §9.1).
-  // Host side: Settings → Backend → This computer, local mode, proxied to
+  // Remote access (docs/design/remote-access.md §9.1).
+  // Host side: Settings → Networking → Remote access, local mode, proxied to
   // the daemon's /remote-access routes. Client side: Settings → Backend →
   // Remote computer, discovery and pairing in Studio main. Registered in
   // every mode (backend/remote-access-ipc.ts).
@@ -458,6 +458,8 @@ export const IPC = {
   REMOTE_PAIR_SUBMIT_CODE: 'adf:remote-pair:submit-code',
   REMOTE_PAIR_CANCEL: 'adf:remote-pair:cancel',
   REMOTE_PAIR_STATE: 'adf:remote-pair:state',
+  // Settings → Networking's status line: network category, LAN and tailnet address, firewall (lan-reach.ts).
+  NETWORK_STATUS_GET: 'adf:network:status',
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   RECOVERY_STASH: 'adf:recovery:stash',

@@ -1,5 +1,5 @@
 /**
- * Settings → Backend, "Allow other computers to connect" in the renderer
+ * Remote access in the renderer (Settings → Networking, Settings → Backend)
  * (docs/design/remote-access.md §7, §9.1; owner decisions 2026-10-18): the
  * status line (Public network), the address order and labels, the devices
  * list, the pairing code, the token shown once, the computers found and the
@@ -10,6 +10,10 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   DiscoveredList,
+  meshServerHosts,
+  meshVisibilityLine,
+  networkStatusText,
+  remoteSummary,
   NewTokenPanel,
   NOT_ENCRYPTED_WARNING,
   PairingCodePanel,
@@ -23,7 +27,10 @@ import {
   remoteStatusLine,
 } from '../../../src/renderer/components/settings/RemoteAccessSettings'
 import type { RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../src/shared/types/remote-access.types'
-import type { RemotePairState } from '../../../src/shared/types/remote-access-ipc.types'
+import type { NetworkStatusView, RemoteAccessView, RemotePairState } from '../../../src/shared/types/remote-access-ipc.types'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { DOCS } from '../../../src/shared/constants/docs-links'
 
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
@@ -48,13 +55,13 @@ const device = (over: Partial<RemoteDevice> = {}): RemoteDevice => ({
 
 describe('status line', () => {
   it('off, on with the listening addresses, and Public (nothing listens)', () => {
-    expect(remoteStatusLine(status({ enabled: false, state: 'off' }))).toBe('Not reachable from other computers.')
-    expect(remoteStatusLine(status())).toBe('Reachable from other computers at 192.168.1.20, 100.101.102.103.')
+    expect(remoteStatusLine(status({ enabled: false, state: 'off' }))).toBe('Off.')
+    expect(remoteStatusLine(status())).toBe('Listening on 192.168.1.20, 100.101.102.103.')
     expect(remoteStatusLine(status({ addresses: [], firewall: { state: 'public_network', message: '', commands: [] } }))).toBe('Not reachable on this network (Public).')
   })
 
   it('no address, the env bind and errors show the daemon\'s sentence', () => {
-    expect(remoteStatusLine(status({ state: 'no_address', message: 'No private network address now; other computers cannot reach this computer.' }))).toBe('No private network address now; other computers cannot reach this computer.')
+    expect(remoteStatusLine(status({ state: 'no_address', message: 'No private network address now.' }))).toBe('No private network address now.')
     expect(remoteStatusLine(status({ state: 'error', message: '', problem: 'daemon-devices.json cannot be read.' }))).toBe('daemon-devices.json cannot be read.')
   })
 })
@@ -96,29 +103,30 @@ describe('computers list', () => {
   })
 })
 
-describe('Pair a computer (host)', () => {
+describe('Pair device (host)', () => {
   it('the 6-digit code in large digits, the countdown and the tries left', () => {
     const now = Date.parse('2026-10-18T12:00:00Z')
     expect(pairingCountdown('2026-10-18T12:01:45Z', now)).toBe('1:45')
     expect(pairingCountdown('2026-10-18T11:00:00Z', now)).toBe('0:00')
     expect(formatCode('012345')).toBe('012 345')
-    const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 5, claim: null }} name="agent-1-pc" fingerprint="ABCD-EFGH" now={now} />)
+    const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 5, claim: null }} fingerprint="ABCD-EFGH" now={now} />)
+    expect(html).toContain('Enter this code on the device.')
     expect(html).toContain('012 345')
     expect(html).toContain('Expires in 2:00 · 5 tries left · Fingerprint ABCD-EFGH')
   })
 })
 
-describe('Add a computer (host)', () => {
+describe('Add device (host)', () => {
   it('the token once, with Copy and Done', () => {
     const html = renderToStaticMarkup(<NewTokenPanel label="agent-2 laptop" token="adfd_k3j9q2m7xa_secret" onDone={() => {}} />)
     expect(html).toContain('adfd_k3j9q2m7xa_secret')
-    expect(html).toContain('Shown once')
+    expect(html).toContain('shown once')
     expect(html).toContain('>Copy<')
     expect(html).toContain('>Done<')
   })
 })
 
-describe('Found on your network (client)', () => {
+describe('Discovered (client)', () => {
   it('name, address and Encrypted / Not encrypted, with Pair', () => {
     const html = renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [
       { fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: 'http://100.101.102.103:7385', address: '100.101.102.103', kind: 'tailnet', encrypted: true, pairingOpen: true, alreadyPaired: false },
@@ -126,15 +134,15 @@ describe('Found on your network (client)', () => {
     ] }} />)
     expect(html).toContain('agent-1-pc')
     expect(html).toContain('100.101.102.103 · ABCD-EFGH')
-    expect(html).toContain('Ready to pair')
-    expect(html).toContain('Already paired')
+    expect(html).toContain('>Pairing open<')
+    expect(html).toContain('>Paired<')
     expect(html).toContain('>Encrypted<')
     expect(html).toContain('>Not encrypted<')
     expect(html.match(/>Pair</g)).toHaveLength(2)
   })
 
   it('says how to make one appear when none is found', () => {
-    expect(renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [] }} />)).toContain('turn on Allow other computers to connect')
+    expect(renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [] }} />)).toContain('None yet. Turn on Remote access on the other computer.')
   })
 })
 
@@ -142,9 +150,59 @@ describe('pairing dialog messages (client)', () => {
   const state = (over: Partial<RemotePairState>): RemotePairState => ({ step: 'need_code', host: null, deviceName: 'agent-2-laptop', attemptsLeft: null, message: null, code: null, savedUrl: null, ...over })
   it('errors inline; waiting and paired are plain', () => {
     expect(pairMessage(state({ step: 'need_code', code: 'wrong_code', message: 'Wrong code. 4 tries left.', attemptsLeft: 4 }), 'agent-1-pc')).toEqual({ kind: 'error', text: 'Wrong code. 4 tries left.' })
-    expect(pairMessage(state({ step: 'failed', code: 'denied', message: 'agent-1-pc did not allow this computer.' }), 'agent-1-pc')).toEqual({ kind: 'error', text: 'agent-1-pc did not allow this computer.' })
-    expect(pairMessage(state({ step: 'waiting' }), 'agent-1-pc')).toEqual({ kind: 'ok', text: 'Waiting for agent-1-pc to allow this computer…' })
+    expect(pairMessage(state({ step: 'failed', code: 'denied', message: 'agent-1-pc denied this device.' }), 'agent-1-pc')).toEqual({ kind: 'error', text: 'agent-1-pc denied this device.' })
+    expect(pairMessage(state({ step: 'waiting' }), 'agent-1-pc')).toEqual({ kind: 'ok', text: 'Waiting for agent-1-pc to allow this device…' })
     expect(pairMessage(state({ step: 'paired', message: 'Paired with agent-1-pc. Its address and token are saved.' }), 'agent-1-pc')?.kind).toBe('ok')
     expect(pairMessage(null, 'x')).toBeNull()
+  })
+})
+
+describe('Settings → Networking', () => {
+  const net = (over: Partial<NetworkStatusView>): NetworkStatusView => ({
+    available: true, network: 'private', lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', network: 'private' }],
+    tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, problem: null, markable: false, ...over,
+  })
+
+  it('the status line: category, LAN address, Tailscale, firewall', () => {
+    expect(networkStatusText(net({}))).toBe('Network: Private (Wi-Fi) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok')
+    expect(networkStatusText(net({ network: 'public', lan: [{ address: '10.0.0.5', iface: 'Wi-Fi', network: 'public' }], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'blocked', message: 'x' } })))
+      .toBe('Network: Public (Wi-Fi) · LAN 10.0.0.5, not listening · Tailscale not installed · Firewall blocked')
+    expect(networkStatusText(net({ network: 'none', lan: [], tailscale: 'stopped' }))).toBe('Network: no LAN address · Tailscale stopped · Firewall ok')
+  })
+
+  it('agent visibility on the mesh: the LanAgentsList predicate, then public, then the rest', () => {
+    expect(meshVisibilityLine([{ visibility: 'lan' }, { visibility: 'lan' }, { visibility: 'public' }, { visibility: 'localhost' }, { visibility: 'off' }, {}]))
+      .toBe('2 agents visible on LAN · 1 public · 3 private')
+    expect(meshVisibilityLine([{ visibility: 'lan' }])).toBe('1 agent visible on LAN · 0 public · 0 private')
+  })
+
+  it('the mesh server line names its listeners in LAN mode', () => {
+    expect(meshServerHosts({ host: '127.0.0.1' })).toBe('127.0.0.1')
+    expect(meshServerHosts({ host: '0.0.0.0', lanAddresses: ['192.168.1.20', '100.101.102.103'] })).toBe('127.0.0.1, 192.168.1.20, 100.101.102.103')
+    expect(meshServerHosts({ host: '0.0.0.0', lanAddresses: [] })).toBe('127.0.0.1 only (no private network)')
+    expect(meshServerHosts({ host: '0.0.0.0', lanAddresses: ['0.0.0.0'] })).toBe('all interfaces')
+  })
+
+  it('Settings → Backend: one line for remote access', () => {
+    const view = (over: Partial<RemoteAccessView>): RemoteAccessView => ({ available: true, unavailableReason: null, status: status({ devices: [device(), device({ id: 'b' })] }), error: null, stopsWithStudio: false, ...over })
+    expect(remoteSummary(view({}))).toBe('On · 2 devices')
+    expect(remoteSummary(view({ status: status({ enabled: false }) }))).toBe('Off')
+    expect(remoteSummary(view({ status: status({ devices: [device()] }) }))).toBe('On · 1 device')
+  })
+
+  it('every remote-access docs link is a heading of its guide', () => {
+    const slug = (heading: string) => heading.toLowerCase().replace(/[^\p{L}\p{N} -]/gu, '').replace(/ /g, '-')
+    const anchors = (file: string) => new Set(readFileSync(join(__dirname, '../../../docs/guides', file), 'utf-8').split(/\r?\n/).filter((l) => /^#{2,3} /.test(l)).map((l) => slug(l.replace(/^#+ /, ''))))
+    for (const url of [DOCS.remoteAccess, DOCS.remoteAccessPair, DOCS.remoteAccessDiscovered, DOCS.networkingStatus]) {
+      const [, file, anchor] = /\/docs\/guides\/([^#]+)#(.+)$/.exec(url)!
+      expect(anchors(file).has(anchor), url).toBe(true)
+    }
+  })
+
+  it('no question-style or banned phrasing in what the UI renders', () => {
+    const html = renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [] }} />)
+      + renderToStaticMarkup(<RemoteDeviceList devices={[]} busy={false} onRemove={() => {}} />)
+      + renderToStaticMarkup(<NewTokenPanel label="x" token="t" onDone={() => {}} />)
+    for (const banned of ['Allow other computers to connect', 'Found on your network', 'Who can reach this computer?', 'Your other computers']) expect(html).not.toContain(banned)
   })
 })

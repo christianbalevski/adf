@@ -1,17 +1,18 @@
 /**
- * Settings → Backend, "Allow other computers to connect"
- * (docs/design/remote-access.md §7, §9.1):
+ * Remote access in Settings (docs/design/remote-access.md §7, §9.1):
  *
- * - `ThisComputerGroup`: the host panel (local mode). Every action goes to
- *   main, which asks the daemon and confirms in a native dialog where the
- *   design says so. A new device token is shown once, here, and dropped on
- *   Done; nothing else here ever holds a token.
- * - `FoundOnNetwork` and `PairDialog`: the client side under Remote
- *   computer. Discovery and pairing run in main; the token never reaches
- *   the renderer.
+ * - Settings → Networking: `NetworkStatusLine` (the network the mesh and
+ *   remote access both use) and `RemoteAccessGroup`, the host side (local
+ *   mode). Every action goes to main, which asks the daemon and confirms in
+ *   a native dialog where the design says so. A new device token is shown
+ *   once, here, and dropped on Done; nothing else here holds a token.
+ * - Settings → Backend: `RemoteAccessSummary` (one line and a link), and the
+ *   client side under Remote computer, `DiscoveredRow` and `PairDialog`.
+ *   Discovery and pairing run in main; the token never reaches the renderer.
  *
- * Copy is short: a label and at most one sentence per row, with Learn more
- * linking to the guide (owner feedback 2026-10-18).
+ * Copy (owner rule 2026-10-18): headings, labels, buttons and dialog titles
+ * are plain nouns or short verb phrases; at most one short sentence under a
+ * heading; the rest is behind Learn more.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -20,19 +21,65 @@ import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
-import type { RemoteAccessView, RemoteDiscoveryEntry, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
+import type { NetworkStatusView, RemoteAccessView, RemoteDiscoveryEntry, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
+import type { MeshAgentStatus } from '../../../shared/types/ipc.types'
 
 // --- Pure helpers (tested) ------------------------------------------------------
 
-/** The status line (§8; owner decision 4 for a Public network). */
+/** Remote access's own line (§8; owner decision 4 for a Public network). */
 export function remoteStatusLine(status: RemoteAccessStatus): string {
-  if (!status.enabled) return 'Not reachable from other computers.'
+  if (!status.enabled) return 'Off.'
   if (status.firewall.state === 'public_network') return 'Not reachable on this network (Public).'
   if (status.state === 'on') {
     const listening = status.addresses.filter((a) => a.listening).map((a) => a.address)
-    return listening.length > 0 ? `Reachable from other computers at ${listening.join(', ')}.` : 'Reachable from other computers.'
+    return listening.length > 0 ? `Listening on ${listening.join(', ')}.` : 'On.'
   }
-  return status.message || status.problem || 'Not reachable from other computers.'
+  return status.message || status.problem || 'Off.'
+}
+
+/** "On · 2 devices" (Settings → Backend's one line). */
+export function remoteSummary(view: RemoteAccessView | null): string {
+  const status = view?.status
+  if (!view?.available || !status) return 'Off'
+  if (!status.enabled) return 'Off'
+  const n = status.devices.length
+  return `On · ${n} ${n === 1 ? 'device' : 'devices'}`
+}
+
+/** The status line at the top of Settings → Networking. */
+export function networkStatusText(view: NetworkStatusView): string {
+  const parts: string[] = []
+  const lan = view.lan[0]
+  if (view.network === 'none') parts.push('Network: no LAN address')
+  else parts.push(`Network: ${view.network === 'private' ? 'Private' : 'Public'}${lan ? ` (${lan.iface})` : ''}`)
+  if (view.lan.length > 0) parts.push(`LAN ${view.lan.map((a) => a.address).join(', ')}${view.network === 'public' ? ', not listening' : ''}`)
+  parts.push(view.tailscale === 'running' ? `Tailscale on${view.tailnetAddress ? ` (${view.tailnetAddress})` : ''}` : view.tailscale === 'stopped' ? 'Tailscale stopped' : 'Tailscale not installed')
+  parts.push(`Firewall ${view.firewall.state === 'blocked' ? 'blocked' : view.firewall.state === 'unknown' ? 'unknown' : 'ok'}`)
+  return parts.join(' · ')
+}
+
+/** Agents by visibility, with the LanAgentsList predicate (visibility 'lan'). */
+export function meshVisibilityCounts(agents: Array<Pick<MeshAgentStatus, 'visibility'>>): { lan: number; public: number; private: number } {
+  let lan = 0, pub = 0, priv = 0
+  for (const a of agents) {
+    if (a.visibility === 'lan') lan++
+    else if (a.visibility === 'public') pub++
+    else priv++
+  }
+  return { lan, public: pub, private: priv }
+}
+
+export function meshVisibilityLine(agents: Array<Pick<MeshAgentStatus, 'visibility'>>): string {
+  const c = meshVisibilityCounts(agents)
+  return `${c.lan} ${c.lan === 1 ? 'agent' : 'agents'} visible on LAN · ${c.public} public · ${c.private} private`
+}
+
+/** The mesh server's listeners: LAN mode lists its private-network and Tailscale addresses (lan-reach.ts). */
+export function meshServerHosts(status: { host: string; lanAddresses?: string[] }): string {
+  if (status.host !== '0.0.0.0') return status.host
+  if (!status.lanAddresses) return 'all interfaces'
+  if (status.lanAddresses.includes('0.0.0.0')) return 'all interfaces'
+  return status.lanAddresses.length > 0 ? ['127.0.0.1', ...status.lanAddresses].join(', ') : '127.0.0.1 only (no private network)'
 }
 
 const URL_ORDER: Record<RemoteUrl['kind'], number> = { 'tailscale-https': 0, tailnet: 1, lan: 2, 'mdns-name': 3 }
@@ -66,7 +113,7 @@ export function formatCode(code: string): string {
   return code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code
 }
 
-// --- Host: presentational parts ---------------------------------------------------
+// --- Presentational parts ----------------------------------------------------------
 
 function EncryptionBadge({ encrypted }: { encrypted: boolean }) {
   return (
@@ -80,8 +127,12 @@ function copy(text: string): void {
   void navigator.clipboard?.writeText(text).catch(() => {})
 }
 
+function LearnMore({ href }: { href: string }) {
+  return <DocsLink href={href} label="Learn more" className="ml-1.5 !text-[11px]" />
+}
+
 export function RemoteAddressList({ urls }: { urls: RemoteUrl[] }) {
-  if (urls.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No address yet.</p>
+  if (urls.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No address.</p>
   return (
     <ul className="space-y-1.5">
       {orderedUrls(urls).map((u) => (
@@ -97,7 +148,7 @@ export function RemoteAddressList({ urls }: { urls: RemoteUrl[] }) {
 }
 
 export function RemoteDeviceList({ devices, busy, onRemove, now }: { devices: RemoteDevice[]; busy: boolean; onRemove: (device: RemoteDevice) => void; now?: number }) {
-  if (devices.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No computers yet.</p>
+  if (devices.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No devices.</p>
   return (
     <ul className="divide-y divide-[var(--adf-ui-separator)]">
       {devices.map((d) => (
@@ -115,17 +166,17 @@ export function RemoteDeviceList({ devices, busy, onRemove, now }: { devices: Re
   )
 }
 
-/** "Pair a computer": the code in large digits, the countdown and the tries left. */
-export function PairingCodePanel({ pairing, name, fingerprint, now }: { pairing: PairingWindowView; name: string; fingerprint: string | null; now?: number }) {
+/** "Pair device": the code in large digits, the countdown and the tries left. */
+export function PairingCodePanel({ pairing, fingerprint, now }: { pairing: PairingWindowView; fingerprint: string | null; now?: number }) {
   return (
     <div className="space-y-3 text-center">
-      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">On the other computer, choose Pair next to {name} and enter:</p>
+      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the device.</p>
       <p className="font-mono text-[40px] font-semibold tracking-[0.15em] text-[var(--adf-ui-text)]" aria-label="Pairing code">{formatCode(pairing.code)}</p>
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
         Expires in {pairingCountdown(pairing.expiresAt, now)} · {pairing.attemptsLeft} {pairing.attemptsLeft === 1 ? 'try' : 'tries'} left
-        {fingerprint ? <> · Fingerprint {fingerprint}</> : null}
+        {(pairing.fingerprint || fingerprint) ? <> · Fingerprint {pairing.fingerprint || fingerprint}</> : null}
       </p>
-      {pairing.claim && <p className="text-[12px] text-[var(--adf-ui-text)]">{pairing.claim.deviceName} entered the code. Answer the question Studio shows.</p>}
+      {pairing.claim && <p className="text-[12px] text-[var(--adf-ui-text)]">A device entered the code. Answer the Allow device dialog.</p>}
     </div>
   )
 }
@@ -134,28 +185,56 @@ export function PairingCodePanel({ pairing, name, fingerprint, now }: { pairing:
 export function NewTokenPanel({ label, token, onDone }: { label: string; token: string; onDone: () => void }) {
   return (
     <div className="space-y-2">
-      <div className="text-[12px] text-[var(--adf-ui-text)]">Token for {label}. Shown once; it is as powerful as your seed phrase.</div>
+      <div className="text-[12px] text-[var(--adf-ui-text)]">Token for {label}, shown once. It is as powerful as your seed phrase.</div>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 break-all rounded border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 py-1 text-[12px]">{token}</code>
         <Button size="compact" onClick={() => copy(token)}>Copy</Button>
         <Button size="compact" variant="primary" onClick={onDone}>Done</Button>
       </div>
-      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On that computer: Settings → Backend → Remote computer, then paste an address and this token.</div>
+      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the device: Settings → Backend → Remote computer.</div>
     </div>
   )
 }
 
-// --- Host: This computer -----------------------------------------------------------
+// --- Settings → Networking -----------------------------------------------------------
 
-function LearnMore({ href }: { href: string }) {
-  return <DocsLink href={href} label="Learn more" className="ml-1.5 !text-[11px]" />
+/** One line: network category, LAN address, Tailscale, firewall. Mesh and remote access both follow it. */
+export function NetworkStatusLine() {
+  const [view, setView] = useState<NetworkStatusView | null>(null)
+  const [canMark, setCanMark] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const load = () => {
+    window.adfApi?.getNetworkStatus?.().then(setView).catch(() => {})
+    window.adfApi?.getRemoteAccess?.().then((v) => setCanMark(v.available)).catch(() => {})
+  }
+  useEffect(() => {
+    load()
+    const timer = setInterval(load, 10_000)
+    return () => clearInterval(timer)
+  }, [])
+  if (!view?.available) return null
+  const mark = async () => {
+    setNote(null)
+    const result = await window.adfApi.setRemoteAccess({ trustNetwork: true })
+    if (!result.ok) setNote(result.error)
+    load()
+  }
+  return (
+    <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+      <span>{networkStatusText(view)}<LearnMore href={DOCS.networkingStatus} /></span>
+      {view.network === 'public' && view.markable && canMark && <Button size="compact" onClick={() => void mark()}>Mark private</Button>}
+      {(view.firewall.state === 'blocked' || view.problem || note) && (
+        <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? (view.firewall.state === 'blocked' ? view.firewall.message : view.problem)}</span>
+      )}
+    </div>
+  )
 }
 
-export function ThisComputerGroup({ onKeepRunning }: { onKeepRunning: () => Promise<void> }) {
+export function RemoteAccessGroup({ onKeepRunning }: { onKeepRunning: () => Promise<void> }) {
   const [view, setView] = useState<RemoteAccessView | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  /** "Add a computer": the label being typed, then the token shown once. */
+  /** "Add device": the name being typed, then the token shown once. */
   const [adding, setAdding] = useState<string | null>(null)
   const [created, setCreated] = useState<{ label: string; token: string } | null>(null)
   const [pairingShown, setPairingShown] = useState(false)
@@ -230,11 +309,11 @@ export function ThisComputerGroup({ onKeepRunning }: { onKeepRunning: () => Prom
   const disabled = !view.available || busy
 
   return (
-    <SettingsGroup title="This computer" description="Let your other computers use the agents on this computer." docs={DOCS.backendAllowConnections}>
+    <SettingsGroup title="Remote access" description="Your devices use this computer's agents." docs={DOCS.remoteAccess}>
       <SettingsRow
-        label="Allow other computers to connect"
-        description={<>They get full control: a token is as powerful as your seed phrase.<LearnMore href={DOCS.backendAllowConnections} /></>}
-        help={view.available ? undefined : view.unavailableReason ?? undefined}
+        label="Remote access"
+        description={<>A device token is as powerful as your seed phrase.<LearnMore href={DOCS.remoteAccess} /></>}
+        help={view.available ? (status ? remoteStatusLine(status) : undefined) : view.unavailableReason ?? undefined}
         error={view.error ?? undefined}
       >
         <label className="flex items-center gap-2 cursor-pointer">
@@ -244,33 +323,24 @@ export function ThisComputerGroup({ onKeepRunning }: { onKeepRunning: () => Prom
             disabled={disabled || !status}
             onChange={(event) => void act(() => window.adfApi.setRemoteAccess({ enabled: event.target.checked }))}
             className="rounded text-blue-500"
-            aria-label="Allow other computers to connect"
+            aria-label="Remote access"
           />
           <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{enabled ? 'On' : 'Off'}</span>
         </label>
       </SettingsRow>
-      {status && (
-        <SettingsRow
-          separator
-          label="Status"
-          description={remoteStatusLine(status)}
-          help={status.enabled ? `${status.name}${status.fingerprint ? ` · fingerprint ${status.fingerprint}` : ''}` : undefined}
-          error={status.firewall.state === 'blocked' ? status.firewall.message : status.mdns.problem ?? undefined}
-        />
-      )}
       {enabled && view.stopsWithStudio && (
-        <SettingsRow separator label="When Studio quits" description="Other computers lose the connection when Studio quits.">
-          <Button size="compact" disabled={busy} onClick={() => void onKeepRunning().then(() => window.adfApi.getRemoteAccess()).then(setView).catch(() => {})}>Keep Running When Studio Quits</Button>
+        <SettingsRow separator label="On quit" description="Devices lose the connection when Studio quits.">
+          <Button size="compact" disabled={busy} onClick={() => void onKeepRunning().then(() => window.adfApi.getRemoteAccess()).then(setView).catch(() => {})}>Keep running</Button>
         </SettingsRow>
       )}
       {enabled && status && (
         <>
-          <SettingsRow stacked separator label="Addresses" description={<>Give one of these to the other computer.<LearnMore href={DOCS.backendAllowConnections} /></>}>
+          <SettingsRow stacked separator label="Addresses" description={<>Use one on the other device.<LearnMore href={DOCS.remoteAccess} /></>}>
             <RemoteAddressList urls={status.urls} />
             {status.tailscale.state === 'running' && status.tailscale.serve !== 'unknown' && (
               <div className="mt-2">
                 <Button size="compact" disabled={busy} onClick={() => void act(() => window.adfApi.setRemoteTailscaleServe(status.tailscale.serve !== 'on'))}>
-                  {status.tailscale.serve === 'on' ? 'Turn Off https with Tailscale' : 'Turn On https with Tailscale'}
+                  {status.tailscale.serve === 'on' ? 'Disable Tailscale https' : 'Enable Tailscale https'}
                 </Button>
               </div>
             )}
@@ -282,19 +352,19 @@ export function ThisComputerGroup({ onKeepRunning }: { onKeepRunning: () => Prom
               </details>
             )}
           </SettingsRow>
-          <SettingsRow stacked separator label="Computers" description={<>Pair with a code, or add one with a token.<LearnMore href={DOCS.backendPairComputer} /></>}>
+          <SettingsRow stacked separator label="Devices" description={<>Pair with a code, or add with a token.<LearnMore href={DOCS.remoteAccessPair} /></>}>
             {created ? (
               <NewTokenPanel label={created.label} token={created.token} onDone={() => setCreated(null)} />
             ) : adding !== null ? (
               <div className="flex items-center gap-2">
-                <TextInput value={adding} onChange={(e) => setAdding(e.target.value)} placeholder="Which computer is this for?" aria-label="Computer name" maxLength={64} autoFocus />
-                <Button size="compact" variant="primary" loading={busy} onClick={() => void addDevice()}>Create Token</Button>
+                <TextInput value={adding} onChange={(e) => setAdding(e.target.value)} placeholder="Device name" aria-label="Device name" maxLength={64} autoFocus />
+                <Button size="compact" variant="primary" loading={busy} onClick={() => void addDevice()}>Create token</Button>
                 <Button size="compact" disabled={busy} onClick={() => setAdding(null)}>Cancel</Button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <Button size="compact" variant="primary" disabled={busy} onClick={() => { setPairingShown(true); if (!pairing) void act(() => window.adfApi.openRemotePairing()) }}>Pair a Computer</Button>
-                <Button size="compact" disabled={busy} onClick={() => setAdding('')}>Add a Computer</Button>
+                <Button size="compact" variant="primary" disabled={busy} onClick={() => { setPairingShown(true); if (!pairing) void act(() => window.adfApi.openRemotePairing()) }}>Pair device</Button>
+                <Button size="compact" disabled={busy} onClick={() => setAdding('')}>Add device</Button>
               </div>
             )}
             <div className="mt-2">
@@ -315,11 +385,11 @@ export function ThisComputerGroup({ onKeepRunning }: { onKeepRunning: () => Prom
       )}
       <Dialog
         open={!!pairing && pairingShown}
-        title="Pair a computer"
+        title="Pair device"
         lightDismiss={false}
         onClose={() => { setPairingShown(false); if (pairing) void act(() => window.adfApi.closeRemotePairing()) }}
       >
-        {pairing && status && <PairingCodePanel pairing={pairing} name={status.name} fingerprint={status.fingerprint} now={now} />}
+        {pairing && status && <PairingCodePanel pairing={pairing} fingerprint={status.fingerprint} now={now} />}
         <div className="mt-4 flex justify-end">
           <Button onClick={() => { setPairingShown(false); void act(() => window.adfApi.closeRemotePairing()) }}>Cancel</Button>
         </div>
@@ -328,14 +398,29 @@ export function ThisComputerGroup({ onKeepRunning }: { onKeepRunning: () => Prom
   )
 }
 
-// --- Client: Remote computer --------------------------------------------------------
+// --- Settings → Backend ----------------------------------------------------------------
+
+/** This computer: one line, "Remote access: On · 2 devices", and a link to Networking. */
+export function RemoteAccessSummary({ onOpenNetworking }: { onOpenNetworking: () => void }) {
+  const [view, setView] = useState<RemoteAccessView | null>(null)
+  useEffect(() => {
+    window.adfApi?.getRemoteAccess?.().then(setView).catch(() => {})
+    return window.adfApi?.onRemoteAccessChanged?.((change) => setView(change.view))
+  }, [])
+  if (!view?.available) return null
+  return (
+    <SettingsRow separator label="Remote access" description={remoteSummary(view)}>
+      <Button size="compact" onClick={onOpenNetworking}>Open Networking</Button>
+    </SettingsRow>
+  )
+}
 
 /** One computer found, as the list shows it. */
 export function DiscoveredList({ update, onPair }: { update: RemoteDiscoveryUpdate | null; onPair: (entry: RemoteDiscoveryEntry) => void }) {
   if (!update) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Looking…</p>
   return (
     <div className="space-y-1.5">
-      {update.entries.length === 0 && <p className="text-[12px] text-[var(--adf-ui-text-muted)]">None found yet. On the other computer, turn on Allow other computers to connect.</p>}
+      {update.entries.length === 0 && <p className="text-[12px] text-[var(--adf-ui-text-muted)]">None yet. Turn on Remote access on the other computer.</p>}
       <ul className="divide-y divide-[var(--adf-ui-separator)]">
         {update.entries.map((e) => (
           <li key={e.fingerprint} className="flex items-center justify-between gap-3 py-1.5">
@@ -343,8 +428,8 @@ export function DiscoveredList({ update, onPair }: { update: RemoteDiscoveryUpda
               <div className="flex flex-wrap items-center gap-2 font-medium text-[var(--adf-ui-text)]">
                 {e.name}
                 <EncryptionBadge encrypted={e.encrypted} />
-                {e.alreadyPaired && <span className="text-[11px] font-normal text-[var(--adf-ui-text-muted)]">Already paired</span>}
-                {!e.alreadyPaired && e.pairingOpen && <span className="text-[11px] font-normal text-[var(--adf-ui-accent)]">Ready to pair</span>}
+                {e.alreadyPaired && <span className="text-[11px] font-normal text-[var(--adf-ui-text-muted)]">Paired</span>}
+                {!e.alreadyPaired && e.pairingOpen && <span className="text-[11px] font-normal text-[var(--adf-ui-accent)]">Pairing open</span>}
               </div>
               <div className="text-[var(--adf-ui-text-muted)]">{e.address} · {e.fingerprint}</div>
             </div>
@@ -357,7 +442,7 @@ export function DiscoveredList({ update, onPair }: { update: RemoteDiscoveryUpda
   )
 }
 
-export function FoundOnNetwork({ onPaired, onSwitch }: { onPaired: () => void; onSwitch: () => void }) {
+export function DiscoveredRow({ onPaired, onSwitch }: { onPaired: () => void; onSwitch: () => void }) {
   const [update, setUpdate] = useState<RemoteDiscoveryUpdate | null>(null)
   const [pairWith, setPairWith] = useState<RemoteDiscoveryEntry | null>(null)
   useEffect(() => {
@@ -367,7 +452,7 @@ export function FoundOnNetwork({ onPaired, onSwitch }: { onPaired: () => void; o
   }, [])
   return (
     <>
-      <SettingsRow stacked label="Found on your network" description={<>Pair with a computer that allows connections.<LearnMore href={DOCS.backendConnectToComputer} /></>}>
+      <SettingsRow stacked label="Discovered" description={<>Computers with remote access on.<LearnMore href={DOCS.remoteAccessDiscovered} /></>}>
         <DiscoveredList update={update} onPair={setPairWith} />
       </SettingsRow>
       {pairWith && <PairDialog entry={pairWith} onClose={() => setPairWith(null)} onPaired={onPaired} onSwitch={() => { setPairWith(null); onSwitch() }} />}
@@ -378,7 +463,7 @@ export function FoundOnNetwork({ onPaired, onSwitch }: { onPaired: () => void; o
 /** The dialog's message line: what to do now, or why it stopped. */
 export function pairMessage(state: RemotePairState | null, hostName: string): { kind: 'ok' | 'error'; text: string } | null {
   if (!state) return null
-  if (state.step === 'waiting') return { kind: 'ok', text: state.message ?? `Waiting for ${hostName} to allow this computer…` }
+  if (state.step === 'waiting') return { kind: 'ok', text: state.message ?? `Waiting for ${hostName} to allow this device…` }
   if (state.step === 'paired') return { kind: 'ok', text: state.message ?? `Paired with ${hostName}.` }
   if (state.step === 'claiming') return { kind: 'ok', text: 'Sending the code…' }
   if (state.message) return { kind: state.code ? 'error' : 'ok', text: state.message }
@@ -426,14 +511,14 @@ export function PairDialog({ entry, onClose, onPaired, onSwitch }: { entry: Remo
   const message = mismatch ? { kind: 'error' as const, text: mismatch } : pairMessage(state, entry.name)
 
   return (
-    <Dialog open title={`Pair with ${entry.name}`} onClose={close} lightDismiss={false}>
+    <Dialog open title="Pair" onClose={close} lightDismiss={false}>
       <div className="space-y-3 text-[12px]">
-        <p className="text-[var(--adf-ui-text-muted)]">Fingerprint {entry.fingerprint} at {entry.address}. Check that {entry.name} shows the same fingerprint.</p>
+        <p className="text-[var(--adf-ui-text-muted)]">{entry.name} at {entry.address}, fingerprint {entry.fingerprint}. Check that the host shows the same fingerprint.</p>
         {!done && (
           <>
             <label className="block space-y-1">
-              <span className="text-[var(--adf-ui-text)]">This computer's name</span>
-              <TextInput value={deviceName} onChange={(e) => setDeviceName(e.target.value)} placeholder="This computer's host name" maxLength={64} disabled={working} aria-label="This computer's name" />
+              <span className="text-[var(--adf-ui-text)]">Device name</span>
+              <TextInput value={deviceName} onChange={(e) => setDeviceName(e.target.value)} placeholder="Runtime alias or host name" maxLength={64} disabled={working} aria-label="Device name" />
             </label>
             {!entry.encrypted && (
               <label className="flex items-center gap-2 cursor-pointer text-[var(--adf-ui-text-muted)]">
@@ -442,7 +527,7 @@ export function PairDialog({ entry, onClose, onPaired, onSwitch }: { entry: Remo
               </label>
             )}
             <label className="block space-y-1">
-              <span className="text-[var(--adf-ui-text)]">Code shown on {entry.name}</span>
+              <span className="text-[var(--adf-ui-text)]">Code</span>
               <TextInput value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" maxLength={7} placeholder="123 456" disabled={!codeEnabled} aria-label="Pairing code" className="font-mono text-[18px] tracking-[0.2em]" />
             </label>
           </>

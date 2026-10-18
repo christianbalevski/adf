@@ -1,5 +1,5 @@
 /**
- * "Allow other computers to connect" in Studio main
+ * Remote access in Studio main
  * (docs/design/remote-access.md §7, §9, owner decisions 2026-10-18), against
  * a fake daemon with the contract's routes and error codes
  * (remote-access-fakes.ts):
@@ -26,7 +26,9 @@ import { RemoteAccessHost, deviceAddedNotice, deviceRemovedNotice, type RemoteAc
 import { PairingFlow, type PairingSaveInput } from '../../src/main/backend/remote-access/pairing'
 import { RemoteDiscovery, type DaemonAnnouncement } from '../../src/main/backend/remote-access/discovery'
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
-import { claimQuestion, registerRemoteAccessHandlers, unavailableReason } from '../../src/main/backend/remote-access-ipc'
+import { claimQuestion, networkStatusView, registerRemoteAccessHandlers, runtimeName, unavailableReason } from '../../src/main/backend/remote-access-ipc'
+import type { LanReach } from '../../src/main/services/lan-reach'
+import { hostname } from 'node:os'
 import { probeTailnet } from '../../src/main/cli/daemon-discovery'
 import { applyBackendPatch, createBackendSettingsStore, defaultBackendConfig, normalizeBackendConfig, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
 import type { RemoteAccessChange, RemotePairState, RemoteDiscoveryUpdate } from '../../src/shared/types/remote-access-ipc.types'
@@ -105,7 +107,7 @@ describe('host panel (Settings → Backend → This computer)', () => {
     expect(await h.host.set({ enabled: true })).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
     expect(h.daemon.requests.some((r) => r.method === 'PUT')).toBe(false)
     expect(h.confirms).toHaveLength(1)
-    expect(h.confirms[0].message).toBe('Allow other computers to connect?')
+    expect(h.confirms[0].message).toBe('Turn on remote access')
     expect(h.confirms[0].detail).toContain('as powerful as your seed phrase')
     expect(h.confirms[0].detail).toContain('Choose Allow on private networks')
     h.setConfirm(true)
@@ -137,7 +139,7 @@ describe('host panel (Settings → Backend → This computer)', () => {
     h.setConfirm(false)
     expect((await h.host.removeDevice('dev-a')).ok).toBe(false)
     expect(h.daemon.state.devices).toHaveLength(1)
-    expect(h.confirms.at(-1)).toMatchObject({ message: 'Remove agent-2 laptop?', detail: 'It is disconnected now and its token stops working.' })
+    expect(h.confirms.at(-1)).toMatchObject({ message: 'Revoke device', detail: '"agent-2 laptop" is disconnected now and its token stops working.' })
     h.setConfirm(true)
     const result = await h.host.removeDevice('dev-a')
     expect(result.ok && result.view.status?.devices).toEqual([])
@@ -147,7 +149,7 @@ describe('host panel (Settings → Backend → This computer)', () => {
     expect(h.notices).toHaveLength(1)
   })
 
-  it('Pair a computer: a claim raises "Allow <device>?" once; Allow adds the device with a notice', async () => {
+  it('Pair device: a claim raises "Allow device" once; Allow adds the device with a notice', async () => {
     h.daemon.state.enabled = true
     const opened = await h.host.openPairing()
     expect(opened.ok && opened.view.status?.pairing?.code).toBe('123456')
@@ -240,14 +242,14 @@ describe('host panel (Settings → Backend → This computer)', () => {
 
   it('an older daemon (404 not_found): one sentence', async () => {
     h.daemon.state.old = true
-    expect((await h.host.get()).error).toBe('This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.')
+    expect((await h.host.get()).error).toBe('This ADF daemon has no remote access. Update ADF, then restart the daemon.')
   })
 
   it('an older daemon without the routes: one sentence, no crash', async () => {
     const old = hostSetup({
       daemon: () => ({ client: async () => new DaemonClient({ baseUrl: LOOPBACK, fetch: (async () => new Response(JSON.stringify({ message: 'Route GET:/remote-access not found', error: 'Not Found', statusCode: 404 }), { status: 404 })) as typeof fetch }) }),
     })
-    expect((await old.host.get()).error).toBe('This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.')
+    expect((await old.host.get()).error).toBe('This ADF daemon has no remote access. Update ADF, then restart the daemon.')
   })
 })
 
@@ -286,7 +288,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     const started = await p.flow.start({ url: LAN, allowInsecureHttp: true })
     expect(started).toMatchObject({ step: 'need_code', code: null, host: { name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', url: LAN, encrypted: false }, deviceName: 'agent-2-laptop' })
     const waiting = await p.flow.submitCode('654321')
-    expect(waiting).toMatchObject({ step: 'waiting', message: 'Waiting for agent-1-pc to allow this computer…' })
+    expect(waiting).toMatchObject({ step: 'waiting', message: 'Waiting for agent-1-pc to allow this device…' })
     expect(p.daemon.state.pairing?.claim?.deviceName).toBe('agent-2-laptop')
     p.daemon.decide(true)
     await until(() => p.last().step === 'paired')
@@ -323,7 +325,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     await p.flow.start({ url: TAILNET })
     expect(await p.flow.submitCode('111111')).toMatchObject({ step: 'need_code', code: 'wrong_code', attemptsLeft: 4, message: 'Wrong code. 4 tries left.' })
     p.daemon.state.pairing!.attemptsLeft = 1
-    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code, and no tries are left. Choose Pair a computer on agent-1-pc for a new code.' })
+    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code, and no tries are left. Choose Pair device on agent-1-pc for a new code.' })
   })
 
   it('a malformed code is refused here', async () => {
@@ -338,7 +340,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     const p = pairSetup()
     await p.flow.start({ url: TAILNET })
     p.daemon.state.pairing = null
-    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed. Choose Pair a computer there for a new code.' })
+    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed. Choose Pair device there for a new code.' })
   })
 
   it('host refused', async () => {
@@ -347,7 +349,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     await p.flow.submitCode('654321')
     p.daemon.decide(false)
     await until(() => p.last().step === 'failed')
-    expect(p.last()).toMatchObject({ code: 'denied', message: 'agent-1-pc did not allow this computer.' })
+    expect(p.last()).toMatchObject({ code: 'denied', message: 'agent-1-pc denied this device.' })
     expect(p.saved).toEqual([])
   })
 
@@ -405,7 +407,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
 
 // --- Client: discovery ------------------------------------------------------------
 
-describe('Found on your network (discovery)', () => {
+describe('Discovered (discovery)', () => {
   function setup(peers: string[] = []) {
     const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
     daemon.state.enabled = true
@@ -507,9 +509,10 @@ describe('quit while computers are connected (owner decision 5)', () => {
   }
 
   it('the question names the count and both choices', () => {
-    expect(quitQuestion(2).message).toBe('2 computers are connected. Keep the daemon running for them, or stop it?')
-    expect(quitQuestion(1).message).toBe('1 computer is connected. Keep the daemon running for it, or stop it?')
-    expect(quitQuestion(2).buttons).toEqual(['Keep Running', 'Stop Daemon', 'Cancel'])
+    expect(quitQuestion(2)).toMatchObject({ title: 'Quit', message: '2 devices connected' })
+    expect(quitQuestion(2).detail).toMatch(/^Keep the daemon running for them, or stop it\./)
+    expect(quitQuestion(1).message).toBe('1 device connected')
+    expect(quitQuestion(2).buttons).toEqual(['Keep running', 'Stop daemon', 'Cancel'])
   })
 
   it('no question when the daemon keeps running anyway', () => {
@@ -529,7 +532,7 @@ describe('quit while computers are connected (owner decision 5)', () => {
     }
   })
 
-  it('asks every time: Cancel keeps Studio open and the next quit asks again; Keep Running is for this quit only', async () => {
+  it('asks every time: Cancel keeps Studio open and the next quit asks again; Keep running is for this quit only', async () => {
     const { g, asked } = gate({ answers: ['cancel', 'keep'] })
     let resumed = 0
     expect(g.hold(() => { resumed++ })).toBe(false)
@@ -608,9 +611,9 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
 
   it('the claim question names device, address, path and client, and the seed-phrase power', () => {
     const q = claimQuestion({ claimId: 'c', deviceName: 'agent-2 laptop', clientKind: 'studio', address: '192.168.1.31', via: 'lan', tailnetLogin: null, at: '' })
-    expect(q.message).toBe('Allow agent-2 laptop?')
+    expect(q).toMatchObject({ title: 'Allow device', message: 'Allow device' })
     expect(q.detail).toContain('agent-2 laptop (192.168.1.31, this network, ADF Studio)')
-    expect(q.detail).toContain('same power as your seed phrase')
+    expect(q.detail).toContain('as powerful as your seed phrase')
     expect(claimQuestion({ claimId: 'c', deviceName: 'x', clientKind: 'cli', address: '100.64.1.2', via: 'tailnet', tailnetLogin: 'agent-1@example.com', at: '' }).detail).toContain('Tailscale user: agent-1@example.com.')
   })
 
@@ -634,5 +637,57 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     // The renderer's patch cannot set it: `paired` is not a patch field.
     const sneaky = applyBackendPatch(base, { remoteUrl: TAILNET, remoteToken: 'x'.repeat(43), paired } as never, { codec })
     expect(sneaky.ok && sneaky.config.remote.paired).toBeUndefined()
+  })
+})
+
+describe('one name and the Networking status line', () => {
+  const dirs: string[] = []
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
+
+  it('this device\'s name for pairing is the runtime alias, else the host name', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-name-'))
+    dirs.push(dir)
+    expect(runtimeName(dir)).toBe(hostname())
+    writeFileSync(join(dir, 'adf-settings.json'), JSON.stringify({ runtimeAlias: '  agent-2 laptop ' }))
+    expect(runtimeName(dir)).toBe('agent-2 laptop')
+    writeFileSync(join(dir, 'adf-settings.json'), JSON.stringify({ runtimeAlias: 'evil\u202e' }))
+    expect(runtimeName(dir)).toBe(hostname())
+  })
+
+  it('the status line view: Private when a LAN address is on a private network, Public when none is', () => {
+    const snapshot = {
+      addresses: [
+        { address: '100.101.102.103', family: 'IPv4' as const, kind: 'tailnet' as const, iface: 'Tailscale', network: 'tailnet' as const, refusal: null },
+        { address: '192.168.1.20', family: 'IPv4' as const, kind: 'lan' as const, iface: 'Wi-Fi', network: 'public' as const, refusal: 'Not reachable on this network (Public).' },
+      ],
+      listenable: ['100.101.102.103'], tailscale: 'running' as const, problem: null,
+    }
+    expect(networkStatusView(snapshot, { state: 'ok', message: '', commands: [] }, 'darwin')).toEqual({
+      available: true, network: 'public', lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', network: 'public' }],
+      tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, problem: null, markable: true,
+    })
+    const priv = { ...snapshot, addresses: [snapshot.addresses[0], { ...snapshot.addresses[1], network: 'private' as const, refusal: null }] }
+    expect(networkStatusView(priv, { state: 'ok', message: '', commands: [] }, 'win32')).toMatchObject({ network: 'private', markable: false })
+  })
+
+  it('NETWORK_STATUS_GET reads this computer\'s network; remote mode answers available: false', async () => {
+    electronStub.handlers.clear()
+    const dir = mkdtempSync(join(tmpdir(), 'adf-netstatus-'))
+    dirs.push(dir)
+    writeFileSync(join(dir, 'studio-backend.json'), JSON.stringify({ v: 1, mode: 'local' }))
+    const store = createBackendSettingsStore({ boot: resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet), codec: fakeCodec(), log: quiet })
+    const reach = { snapshot: async () => ({ addresses: [{ address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', network: 'private', refusal: null }], listenable: ['192.168.1.20'], tailscale: 'absent', problem: null }) } as unknown as LanReach
+    const ipc = registerRemoteAccessHandlers({
+      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
+      overrides: { reach, firewall: async () => ({ state: 'ok', message: 'fine', commands: [] }), platform: 'win32', discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      log: quiet,
+    })
+    const view = await electronStub.handlers.get(IPC.NETWORK_STATUS_GET)!({})
+    expect(view).toMatchObject({ available: true, network: 'private', lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', network: 'private' }], tailscale: 'absent', firewall: { state: 'ok' } })
+    ipc.dispose()
+    electronStub.handlers.clear()
+    const remote = registerRemoteAccessHandlers({ mode: 'remote', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, overrides: { reach }, log: quiet })
+    expect(await electronStub.handlers.get(IPC.NETWORK_STATUS_GET)!({})).toMatchObject({ available: false })
+    remote.dispose()
   })
 })

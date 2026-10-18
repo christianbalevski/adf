@@ -161,8 +161,8 @@ describe('after a handover, and Settings → Backend', () => {
   })
 })
 
-describe('daemon mode and "Allow other computers to connect" (remote-access.md)', () => {
-  it('Keep Running in the quit question: this quit leaves the daemon running although keep-running is off', async () => {
+describe('daemon mode and remote access (remote-access.md)', () => {
+  it('Keep running in the quit question: this quit leaves the daemon running although keep-running is off', async () => {
     const { handle, quits, logs } = await boot({ keep: false })
     await handle.shutdown({ keepDaemonRunning: true })
     expect(quits).toEqual([false])

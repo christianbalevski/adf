@@ -4,7 +4,7 @@ import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDe
 import { RemoteAccessApiError, RemoteAccessManagement } from './client'
 
 /**
- * Settings → Backend → This computer: "Allow other computers to connect"
+ * Settings → Networking → Remote access
  * (docs/design/remote-access.md §7, §8). Studio main's side of the host
  * panel, local mode only: every action goes to the daemon's management
  * routes (master token, local proof); Studio keeps no remote-access state
@@ -48,15 +48,15 @@ export interface RemoteAccessHostDeps {
  */
 export type RemoteAccessEventPayload = { [K in keyof RemoteAccessEvent]?: unknown }
 
-export const ENABLE_DETAIL = 'A computer you pair or give a token can do anything you can on this computer\'s agents. Its token is as powerful as your seed phrase.'
+export const ENABLE_DETAIL = 'Devices you pair or add get full control of this computer\'s agents. A device token is as powerful as your seed phrase.'
 export const WINDOWS_FIREWALL_DETAIL = 'Windows may ask whether ADF Studio may accept connections. Choose Allow on private networks.'
 
 export function deviceAddedNotice(label: string): string {
-  return `${label} can now connect to this computer.`
+  return `Device added: ${label}.`
 }
 
 export function deviceRemovedNotice(label: string): string {
-  return `${label} was removed and disconnected.`
+  return `Device revoked: ${label}.`
 }
 
 export const WRONG_CODES_NOTICE = 'Pairing closed after 5 wrong codes.'
@@ -64,7 +64,7 @@ export const WRONG_CODES_NOTICE = 'Pairing closed after 5 wrong codes.'
 function errorText(err: unknown): string {
   if (err instanceof RemoteAccessApiError) {
     // An older daemon has no /remote-access route: 404 with code not_found, or no code at all.
-    if (err.status === 404 && (err.code === 'not_found' || err.code === 'http_404')) return 'This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.'
+    if (err.status === 404 && (err.code === 'not_found' || err.code === 'http_404')) return 'This ADF daemon has no remote access. Update ADF, then restart the daemon.'
     return err.message
   }
   return err instanceof Error ? err.message : String(err)
@@ -152,9 +152,9 @@ export class RemoteAccessHost {
     }
     if (enabled && !this.last?.enabled) {
       const ok = await this.deps.confirm({
-        message: 'Allow other computers to connect?',
+        message: 'Turn on remote access',
         detail: [ENABLE_DETAIL, ...((this.deps.platform ?? process.platform) === 'win32' ? [WINDOWS_FIREWALL_DETAIL] : [])].join('\n\n'),
-        ok: 'Allow',
+        ok: 'Turn on',
       })
       if (!ok) {
         this.log.log('[Remote access] Turning on cancelled in the confirmation')
@@ -189,10 +189,10 @@ export class RemoteAccessHost {
   }
 
   async removeDevice(id: unknown): Promise<RemoteAccessResult> {
-    if (typeof id !== 'string' || !id) return { ok: false, code: 'daemon', error: 'Unknown computer.' }
+    if (typeof id !== 'string' || !id) return { ok: false, code: 'daemon', error: 'Unknown device.' }
     const device = this.last?.devices.find((d) => d.id === id)
     const label = device?.label ?? id
-    const ok = await this.deps.confirm({ message: `Remove ${label}?`, detail: 'It is disconnected now and its token stops working.', ok: 'Remove' })
+    const ok = await this.deps.confirm({ message: 'Revoke device', detail: `"${label}" is disconnected now and its token stops working.`, ok: 'Revoke' })
     if (!ok) return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
     return this.run(`Removing ${label}`, async (m) => {
       const removed = await m.removeDevice(id)
@@ -218,13 +218,13 @@ export class RemoteAccessHost {
     })
   }
 
-  /** "Turn On https with Tailscale" / "Turn Off": the exact command is confirmed first (§5.7). */
+  /** "Enable Tailscale https" / "Disable Tailscale https": the exact command is confirmed first (§5.7). */
   async tailscaleServe(enabled: unknown): Promise<RemoteAccessResult & { output?: string }> {
     if (typeof enabled !== 'boolean') return { ok: false, code: 'daemon', error: 'enabled must be true or false.' }
     const command = this.last?.tailscale.serveCommand ?? null
     const ok = await this.deps.confirm(enabled
-      ? { message: 'Turn on https with Tailscale?', detail: `Studio asks the daemon to run:\n${command ?? 'tailscale serve'}\n\nOther computers on your tailnet then reach this computer over https.`, ok: 'Turn On' }
-      : { message: 'Turn off https with Tailscale?', detail: 'The daemon removes the tailscale serve entry for its port only.', ok: 'Turn Off' })
+      ? { message: 'Enable Tailscale https', detail: `The daemon runs:\n${command ?? 'tailscale serve'}\n\nDevices on your tailnet then reach this computer over https.`, ok: 'Enable' }
+      : { message: 'Disable Tailscale https', detail: 'The daemon removes the tailscale serve entry for its port only.', ok: 'Disable' })
     if (!ok) return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
     let output: string | undefined
     const result = await this.run(`tailscale serve ${enabled ? 'on' : 'off'}`, async (m) => {

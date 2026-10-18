@@ -23,11 +23,12 @@ export interface QuitGateDeps {
   log?: Pick<Console, 'log'>
 }
 
-export function quitQuestion(count: number): { message: string; detail: string; buttons: [string, string, string] } {
+export function quitQuestion(count: number): { title: string; message: string; detail: string; buttons: [string, string, string] } {
   return {
-    message: `${count} ${count === 1 ? 'computer is' : 'computers are'} connected. Keep the daemon running for ${count === 1 ? 'it' : 'them'}, or stop it?`,
-    detail: 'Stopping the daemon disconnects them and stops your agents. Keep Running leaves the daemon on after Studio quits, this time only.',
-    buttons: ['Keep Running', 'Stop Daemon', 'Cancel'],
+    title: 'Quit',
+    message: `${count} ${count === 1 ? 'device' : 'devices'} connected`,
+    detail: 'Keep the daemon running for them, or stop it. Stopping disconnects them and stops your agents. Keep running applies to this quit only.',
+    buttons: ['Keep running', 'Stop daemon', 'Cancel'],
   }
 }
 
@@ -61,7 +62,7 @@ export class RemoteQuitGate {
         const count = (await this.deps.connectedCount()) ?? 0
         if (count > 0) {
           decided = await this.deps.ask(count)
-          this.log.log(`[Remote access] Quit with ${count} computer(s) connected: ${decided === 'keep' ? 'Keep Running (this quit only)' : decided === 'stop' ? 'Stop Daemon' : 'Cancel'}`)
+          this.log.log(`[Remote access] Quit with ${count} device(s) connected: ${decided === 'keep' ? 'Keep running (this quit only)' : decided === 'stop' ? 'Stop daemon' : 'Cancel'}`)
         }
       } catch (err) {
         this.log.log(`[Remote access] The quit check failed (${err instanceof Error ? err.message : String(err)}); quitting as configured`)

@@ -336,8 +336,8 @@ A Studio that connects again in the meantime clears the pending stop.
 
 Remote computer: quitting Studio never stops the remote daemon.
 
-When other computers are connected to this one, quitting asks first:
-[Quitting while computers are connected](#quitting-while-computers-are-connected).
+When devices are connected to this computer, quitting asks first:
+[Quit with devices connected](#quit-with-devices-connected).
 
 ## Studio and the terminal app together
 
@@ -507,10 +507,9 @@ Then, in **Settings → Backend → Remote computer**:
    tailnet address in `100.64.0.0/10`). Any other `http://` URL needs the box "I trust this
    network; the token is sent unencrypted."
 2. **Token**: a device token from **Add a Computer** on the other computer
-   ([Add a computer with a token](#add-a-computer-with-a-token)), or the
+   ([Add device](#add-device)), or the
    `ADF_DAEMON_TOKEN` of a daemon set up by hand. Pairing fills in the URL
-   and the token for you ([Connect to a computer on your
-   network](#connect-to-a-computer-on-your-network)). It is saved
+   and the token for you ([Discovered](#discovered)). It is saved
    encrypted with safeStorage and never shown again. Changing the
    address removes a saved token ("The saved token was removed because the
    daemon address changed. Enter the token for the new address.").
@@ -606,45 +605,58 @@ daemon. …". ChatGPT sign-in relays its callback the same way in every mode.
 Providers, MCP servers, channels, compute and the mesh act on the server:
 `localhost` in a provider URL means the server.
 
-## Allow other computers to connect
+## Remote access
 
-Your other computers can use the agents on this computer: Studio on a laptop
+Your other devices use the agents on this computer: Studio on a laptop
 connects to the daemon on your desktop. This works while Studio runs agents
 on **This computer**; the daemon must be running. Design:
 [remote-access.md](../design/remote-access.md).
 
-In **Settings → Backend → This computer**, turn on **Allow other computers
-to connect**. Studio asks once:
+In **Settings → Networking → Remote access**, turn on **Remote access**.
+Studio asks once, in a dialog titled "Turn on remote access":
 
-> Allow other computers to connect? A computer you pair or give a token can
-> do anything you can on this computer's agents. Its token is as powerful as
-> your seed phrase.
+> Devices you pair or add get full control of this computer's agents. A
+> device token is as powerful as your seed phrase.
 
-A paired computer can attach an MCP server or adapter with any command and
+A paired device can attach an MCP server or adapter with any command and
 start an agent, so it can run code as you and read the owner seed phrase
-from the keychain. Pair only computers you trust with the phrase.
+from the keychain. Pair only devices you trust with the phrase.
 
 The daemon is not restarted: it starts listening on this computer's private
 network addresses and its Tailscale address, and running agents keep
-running. It never listens on a public address. Turning access off closes
-those listeners and disconnects every computer; the paired computers stay
-listed.
+running. It never listens on a public address or on a network that is not
+private. Turning remote access off closes those listeners and disconnects
+every device; the device list is kept.
 
-The **Status** line says where other computers reach this one:
+**Settings → Backend** shows one line for it on This computer, "Remote
+access: On · 2 devices", with **Open Networking**.
 
-| Status | Meaning |
+### Network status
+
+The line at the top of Settings → Networking is the network both the mesh's
+LAN mode and remote access follow:
+
+> Network: Private (Wi-Fi) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok
+
+| Part | Meaning |
 |---|---|
-| "Reachable from other computers at *addresses*." | Listening on those addresses |
-| "Not reachable from other computers." | Access is off |
-| "Not reachable on this network (Public)." | The network is not marked private (a hotel or café Wi-Fi); nothing listens on it. Windows: the network's category in Settings → Network. macOS and Linux: the networks you are on when you turn access on count as private; add the current one with `adf daemon remote trust` |
-| "No private network address now; …" | No LAN or Tailscale address; listening starts again when one appears |
+| Network: Private / Public | Windows: the network's category in Settings → Network. macOS and Linux: Private only for a network you marked: turning remote access on marks the current one; **Mark private** (or `adf daemon remote trust`) marks another |
+| LAN … , not listening | The LAN address is on a Public network: nothing listens on it, for the mesh or remote access |
+| Tailscale | Tailscale addresses always listen; the tailnet authenticates its peers |
+| Firewall | Blocked: the sentence under the line says how to allow ADF Studio |
 
-Under it, the computer's name and its fingerprint (`XXXX-XXXX`). The other
-computer shows the same fingerprint before pairing.
+Remote access's own line, under its toggle:
 
-With **Keep the daemon running when Studio quits** off, the panel says
-"Other computers lose the connection when Studio quits." **Keep Running When
-Studio Quits** turns that setting on.
+| Line | Meaning |
+|---|---|
+| "Listening on *addresses*." | Other devices reach this computer there |
+| "Off." | Remote access is off |
+| "Not reachable on this network (Public)." | No LAN address listens; join a private network or mark this one |
+| "No private network address now." | No LAN or Tailscale address; listening starts again when one appears |
+
+With **Keep the daemon running when Studio quits** off, the **On quit** row
+says "Devices lose the connection when Studio quits." **Keep running** turns
+that setting on.
 
 ### Addresses
 
@@ -657,67 +669,70 @@ Each address has **Copy** and a label:
 | `http://192.168.x.y:7385` (LAN) | Not encrypted: "Anyone on this network can read the token." |
 | `http://<name>.local:7385` | Not encrypted |
 
-Prefer the encrypted ones. When Tailscale runs, **Turn On https with
-Tailscale** shows the command (`tailscale serve --bg 7385`) and runs it only
-after you confirm.
+Prefer the encrypted ones. When Tailscale runs, **Enable Tailscale https**
+shows the command (`tailscale serve --bg 7385`) and runs it only after you
+confirm.
 
-### Pair a computer
+This computer's name for other devices is its runtime alias (Settings →
+Identity → Runtime alias), else its host name: the same name in mDNS, the
+pairing dialog and other devices' lists.
 
-1. On this computer, **Pair a Computer**. A window shows a 6-digit code, the
-   time left (2 minutes) and the tries left (5).
-2. On the other computer, choose this computer under **Found on your
-   network** and enter the code ([Connect to a computer on your
-   network](#connect-to-a-computer-on-your-network)).
-3. This computer asks: "Allow *device name*?", with its address and how it
-   connected. **Allow** or **Deny**. When Studio is in the background, an OS
-   notification opens it.
+### Pair device
 
-The code alone never pairs a computer: you must also allow it. Five wrong
+1. On this computer, **Pair device**. The **Pair device** window shows a
+   6-digit code, the time left (2 minutes) and the tries left (5).
+2. On the other device, choose this computer under **Discovered** and enter
+   the code ([Discovered](#discovered)).
+3. This computer shows the **Allow device** dialog with the device's name,
+   address and how it connected. **Allow** or **Deny**. When Studio is in the
+   background, an OS notification opens it.
+
+The code alone never pairs a device: you must also allow it. Five wrong
 codes close the window ("Pairing closed after 5 wrong codes."); open a new
-one. After **Allow**: "*device name* can now connect to this computer."
+one. After **Allow**: "Device added: *name*."
 
-### Add a computer with a token
+### Add device
 
-**Add a Computer** asks which computer the token is for and shows a device
-token (`adfd_…`) with **Copy** and **Done**. The token is shown once: after
-**Done** it cannot be shown again. If it is lost, revoke the computer and add
-it again. On the other computer, paste an address and the token in
-**Settings → Backend → Remote computer**.
+**Add device** asks for a device name and shows a device token (`adfd_…`)
+with **Copy** and **Done**. The token is shown once: after **Done** it
+cannot be shown again. If it is lost, revoke the device and add it again.
+On the other device, paste an address and the token in **Settings → Backend
+→ Remote computer**.
 
 The token in `adf daemon token` (this computer's own) is refused from other
-computers.
+devices.
 
-### Remove a computer
+### Devices
 
-The computers list shows each name, how it was added (Paired or Token), and
-"Connected now", "Last seen *time* (*address*)" or "Never connected".
-**Revoke** asks "Remove *name*? It is disconnected now and its token stops
-working." After it: "*name* was removed and disconnected."
+The **Devices** list shows each name, how it was added (Paired or Token),
+and "Connected now", "Last seen *time* (*address*)" or "Never connected".
+**Revoke** asks in a **Revoke device** dialog: "*name* is disconnected now and
+its token stops working." After it: "Device revoked: *name*."
 
-### Connect to a computer on your network
+### Discovered
 
-On the other computer, **Settings → Backend → Remote computer → Found on your
-network** lists the ADF computers that allow connections: on this network
-(mDNS) and on your tailnet. Each shows its name, address, fingerprint and
-Encrypted or Not encrypted; "Ready to pair" when a pairing window is open,
-"Already paired" when it is the saved remote computer.
+On the other device, **Settings → Backend → Remote computer → Discovered**
+lists the ADF computers with remote access on: on this network (mDNS) and on
+your tailnet. Each shows its name, address, fingerprint and Encrypted or Not
+encrypted; "Pairing open" when a pairing window is open, "Paired" when it is
+the saved remote computer.
 
-**Pair** opens a dialog: this computer's name (default: its host name), the
-code, and, for a plain-http address, "I trust this network; the token is sent
-unencrypted." Then "Waiting for *host* to allow this computer…". When the
-host allows it, Studio saves the address and token as for a pasted token
-(encrypted with safeStorage), preferring an encrypted address of the host.
-**Switch to This Daemon** switches to it.
+**Pair** opens the **Pair** dialog: this device's name (default: its runtime
+alias, else its host name), the code, and, for a plain-http address, "I
+trust this network; the token is sent unencrypted." Then "Waiting for *host*
+to allow this device…". When the host allows it, Studio saves the address
+and token as for a pasted token (encrypted with safeStorage), preferring an
+encrypted address of the host. **Switch to This Daemon** switches to it.
 
 | Message | What to do |
 |---|---|
 | "Wrong code. *N* tries left." | Enter the code shown on the host |
-| "Wrong code, and no tries are left. …" | On the host, **Pair a Computer** again for a new code |
+| "Wrong code, and no tries are left. …" | On the host, **Pair device** again for a new code |
 | "The pairing window on *host* is closed. …" | The 2 minutes passed or the host cancelled: open a new window |
-| "*host* did not allow this computer." | The host chose Deny |
+| "*host* denied this device." | The host chose Deny |
 | "Studio could not reach *host* at *url*. The host's firewall may block port 7385." | See [Firewall](#firewall) |
-| "*host* is already asking about another computer. …" | Wait, then try again |
-| "*url* does not allow other computers to connect. …" | Turn access on, on the host |
+| "*host* is already asking about another device. …" | Wait, then try again |
+| "*url* has remote access off. …" | Turn remote access on, on the host |
 | "*host* runs an older ADF. Update ADF there, then pair again." | The host's ADF predates this feature |
 
 Entering an address and token by hand still works.
@@ -730,16 +745,15 @@ find devices on the local network: choose **Allow**. Studio adds no firewall
 rule itself. On Linux, open port 7385 for your LAN, for example
 `sudo ufw allow from 192.168.0.0/16 to any port 7385 proto tcp`.
 
-### Quitting while computers are connected
+### Quit with devices connected
 
 When Studio would stop the daemon (Studio started it and **Keep the daemon
-running** is off) and another computer is connected, quitting Studio asks
-first, every time:
+running** is off) and a device is connected, quitting Studio asks first,
+every time, in a **Quit** dialog: "*N* devices connected", "Keep the daemon
+running for them, or stop it."
 
-> *N* computers are connected. Keep the daemon running for them, or stop it?
-
-**Keep Running** leaves the daemon running after Studio quits, this time
-only; the setting does not change. **Stop Daemon** stops it and disconnects
+**Keep running** leaves the daemon running after Studio quits, this time
+only; the setting does not change. **Stop daemon** stops it and disconnects
 them. **Cancel** keeps Studio open. Quitting from the menu, the tray, Cmd+Q
 and closing the window on Windows and Linux all ask.
 
@@ -825,12 +839,13 @@ Every message the backend features show, and where it is explained. Text in
 | "Connected to the ADF daemon at …" (Test connection) and the remote sentences | [Remote computer](#remote-computer) |
 | "I trust this network; the token is sent unencrypted." | [Remote computer](#remote-computer) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
-| "Allow other computers to connect?" / "Not reachable on this network (Public)." / "Other computers lose the connection when Studio quits." | [Allow other computers to connect](#allow-other-computers-to-connect) |
+| "Turn on remote access" / "Devices lose the connection when Studio quits." / "Remote access: On · *N* devices" | [Remote access](#remote-access) |
+| "Network: Private / Public …" / "Not reachable on this network (Public)." / "Listening on …" / Mark private | [Network status](#network-status) |
 | "Anyone on this network can read the token." / Encrypted / Not encrypted | [Addresses](#addresses) |
-| "Allow *device name*?" / "Pairing closed after 5 wrong codes." / "… can now connect to this computer." | [Pair a computer](#pair-a-computer) |
-| "Remove *name*? …" / "… was removed and disconnected." | [Remove a computer](#remove-a-computer) |
-| "Waiting for *host* to allow this computer…" / "Wrong code. …" / "… did not allow this computer." / "… The host's firewall may block port 7385." | [Connect to a computer on your network](#connect-to-a-computer-on-your-network) |
-| "*N* computers are connected. Keep the daemon running for them, or stop it?" | [Quitting while computers are connected](#quitting-while-computers-are-connected) |
+| "Allow device" / "Pairing closed after 5 wrong codes." / "Device added: …" | [Pair device](#pair-device) |
+| "Revoke device" / "Device revoked: …" | [Devices](#devices) |
+| "Waiting for *host* to allow this device…" / "Wrong code. …" / "… denied this device." / "… The host's firewall may block port 7385." | [Discovered](#discovered) |
+| "*N* devices connected" (Quit) / Keep running / Stop daemon | [Quit with devices connected](#quit-with-devices-connected) |
 | "*file* uses schema v2, which this version cannot upgrade …" / "… skipped: need upgrade or review" | [Troubleshooting](../cli/troubleshooting.md#an-agent-file-uses-schema-v2) |
 | "*name*.adf is on this computer, not on *host*." / Upload a copy… | [Files on the server](#files-on-the-server) |
 | "*name*.adf already exists in this folder. Replace it?" | [Files on the server](#files-on-the-server) |

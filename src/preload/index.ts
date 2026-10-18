@@ -714,7 +714,7 @@ const api: AdfApi = {
   checkRemoteBackend: (request: RemoteCheckRequest) => ipcRenderer.invoke(IPC.BACKEND_REMOTE_CHECK, request),
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO, kind),
 
-  // Allow other computers to connect (remote-access.md)
+  // Remote access (remote-access.md)
   getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
   setRemoteAccess: (request: { enabled?: boolean; name?: string; trustNetwork?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
   addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
@@ -742,6 +742,7 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.REMOTE_PAIR_STATE, handler)
     return () => ipcRenderer.removeListener(IPC.REMOTE_PAIR_STATE, handler)
   },
+  getNetworkStatus: () => ipcRenderer.invoke(IPC.NETWORK_STATUS_GET),
 
   // Remote mode: daemon-side picker
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {

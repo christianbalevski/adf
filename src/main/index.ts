@@ -683,6 +683,7 @@ app.whenReady().then(async () => {
     codec: safeStorageCodec,
     window: () => mainWindow,
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
+    settingsDir: getUserDataPath(),
   })
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))

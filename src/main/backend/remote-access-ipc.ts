@@ -1,5 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, Notification } from 'electron'
+import { readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
+import { join } from 'node:path'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { DaemonClient } from '../../shared/daemon-client'
@@ -10,11 +12,15 @@ import { RemoteDiscovery, type DiscoveryDeps } from './remote-access/discovery'
 import { RemoteAccessHost, type ClaimPrompt, type RemoteAccessHostDeps } from './remote-access/host'
 import { PairingFlow, type PairingFlowDeps } from './remote-access/pairing'
 import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/quit-gate'
+import { LanReach } from '../services/lan-reach'
+import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
+import { cleanDisplayName } from '../daemon/remote-access/config'
+import type { NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
 
 /**
- * "Allow other computers to connect" in Studio main
+ * Remote access in Studio main
  * (docs/design/remote-access.md §7, §9.1): the IPC channels of Settings →
- * Backend → This computer (host) and → Remote computer (discovery,
+ * Networking → Remote access (host) and Settings → Backend → Remote computer (discovery,
  * pairing), and the quit question. Registered in every backend mode, outside
  * the backend registration; the host channels answer "unavailable" unless
  * Studio runs the ADF daemon on this computer.
@@ -35,12 +41,17 @@ export interface RemoteAccessIpcDeps {
   codec: SecretCodec
   window: () => BrowserWindow | null
   keepDaemonRunning: () => boolean
+  /** Studio's user data: adf-settings.json (the runtime alias) and remote-access.json (networks marked private). */
+  settingsDir?: string
   /** Tests: replace the Electron dialogs, notifications and network. */
   overrides?: {
     host?: Partial<RemoteAccessHostDeps>
     discovery?: Partial<DiscoveryDeps>
     pairing?: Partial<PairingFlowDeps>
     askQuit?: (count: number) => Promise<QuitAnswer>
+    reach?: LanReach
+    firewall?: () => Promise<FirewallView>
+    platform?: NodeJS.Platform
   }
   log?: Pick<Console, 'log' | 'warn'>
 }
@@ -55,22 +66,55 @@ export interface RemoteAccessIpc {
   dispose(): void
 }
 
+/**
+ * This computer's name for other computers: the runtime alias (Settings →
+ * Identity), else the host name. One name everywhere (mDNS, pairing, device
+ * lists); the daemon reads the same setting.
+ */
+export function runtimeName(settingsDir: string | undefined): string {
+  if (settingsDir) {
+    try {
+      const alias = (JSON.parse(readFileSync(join(settingsDir, 'adf-settings.json'), 'utf-8')) as { runtimeAlias?: unknown }).runtimeAlias
+      const name = cleanDisplayName(alias, 64)
+      if (name) return name
+    } catch { /* no settings file yet: the host name */ }
+  }
+  return hostname()
+}
+
+/** The status line's view of a snapshot (pure). */
+export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapshot']>>, firewall: FirewallView, platform: NodeJS.Platform): NetworkStatusView {
+  const lan = snapshot.addresses.filter((a) => a.kind === 'lan').map((a) => ({ address: a.address, iface: a.iface, network: a.network === 'private' ? 'private' as const : 'public' as const }))
+  const tailnet = snapshot.addresses.find((a) => a.kind === 'tailnet' && a.family === 'IPv4')
+  return {
+    available: true,
+    network: lan.length === 0 ? 'none' : lan.some((a) => a.network === 'private') ? 'private' : 'public',
+    lan,
+    tailscale: snapshot.tailscale,
+    tailnetAddress: tailnet?.address ?? null,
+    firewall: { state: firewall.state, message: firewall.message },
+    problem: snapshot.problem,
+    markable: platform !== 'win32',
+  }
+}
+
 export function unavailableReason(mode: StudioBackendMode): string {
   return mode === 'remote'
-    ? 'Studio uses a remote computer now. Allow connections on that computer, or run agents on this computer.'
-    : 'Other computers can connect only when agents run on this computer (Run agents in: This computer).'
+    ? 'Remote access is set on the remote computer.'
+    : 'Remote access needs Run agents in: This computer.'
 }
 
 const VIA: Record<PairingClaimView['via'], string> = { lan: 'this network', tailnet: 'your tailnet', proxy: 'through a proxy' }
 const CLIENT: Record<PairingClaimView['clientKind'], string> = { studio: 'ADF Studio', cli: 'the ADF CLI' }
 
-/** "Allow <device>?" (§5.4): what the host's owner reads before deciding. */
-export function claimQuestion(claim: PairingClaimView): { message: string; detail: string } {
+/** "Allow device" (§5.4): what the host's owner reads before deciding. */
+export function claimQuestion(claim: PairingClaimView): { title: string; message: string; detail: string } {
   const where = [claim.address, VIA[claim.via] ?? claim.via, CLIENT[claim.clientKind] ?? claim.clientKind].join(', ')
   const login = claim.tailnetLogin ? ` Tailscale user: ${claim.tailnetLogin}.` : ''
   return {
-    message: `Allow ${claim.deviceName}?`,
-    detail: `${claim.deviceName} (${where}) entered the pairing code and asks to control this computer's ADF daemon. It gets the same power as your seed phrase.${login}\n\nAllow it only if it is your computer and you just paired it.`,
+    title: 'Allow device',
+    message: 'Allow device',
+    detail: `${claim.deviceName} (${where}) entered the pairing code. It gets full control, as powerful as your seed phrase.${login}\n\nAllow it only if it is your device and you just paired it.`,
   }
 }
 
@@ -116,14 +160,14 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     stopsWithStudio: () => !deps.keepDaemonRunning() && localDaemon()?.status().startedBy === 'studio',
     push: (change) => windows.send(IPC.REMOTE_ACCESS_CHANGED, change),
     notify,
-    confirm: async ({ message, detail, ok }) => (await box({ type: 'question', message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true })) === 0,
+    confirm: async ({ message, detail, ok }) => (await box({ type: 'question', title: message, message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true })) === 0,
     askClaim: async ({ claim, signal }: ClaimPrompt) => {
       const win = deps.window()
       const question = claimQuestion(claim)
       if (win && !win.isDestroyed() && !win.isFocused()) {
         try {
           if (Notification.isSupported()) {
-            const n = new Notification({ title: question.message, body: `${claim.deviceName} entered the pairing code. Open Studio to allow or deny it.` })
+            const n = new Notification({ title: 'Allow device', body: 'A device entered the pairing code. Open Studio to allow or deny it.' })
             n.on('click', () => { if (!win.isDestroyed()) { win.show(); win.focus() } })
             n.show()
           }
@@ -147,7 +191,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   const pairing = new PairingFlow({
     onState: (state) => windows.send(IPC.REMOTE_PAIR_STATE, state),
     saveBlocked: () => deps.codec.available() ? null : (deps.codec.unavailableReason?.() ?? 'OS keychain encryption is not available, so the token cannot be saved.'),
-    defaultDeviceName: () => hostname(),
+    defaultDeviceName: () => runtimeName(deps.settingsDir),
     save: async (input) => {
       const result = await deps.backend.savePairing({
         remoteUrl: input.url,
@@ -167,13 +211,13 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     connectedCount: () => withTimeout(host.connectedCount(1_500), 2_000, 'no answer').catch(() => null),
     ask: o.askQuit ?? (async (count) => {
       const q = quitQuestion(count)
-      const response = await box({ type: 'question', message: q.message, detail: q.detail, buttons: q.buttons, defaultId: 0, cancelId: 2, noLink: true })
+      const response = await box({ type: 'question', title: q.title, message: q.message, detail: q.detail, buttons: q.buttons, defaultId: 0, cancelId: 2, noLink: true })
       return response === 0 ? 'keep' : response === 1 ? 'stop' : 'cancel'
     }),
     log,
   })
 
-  // --- Host: Settings → Backend → This computer ---
+  // --- Host: Settings → Networking → Remote access ---
   ipcMain.handle(IPC.REMOTE_ACCESS_GET, (_event, opts?: { refresh?: unknown }) => host.get({ refresh: opts?.refresh === true }))
   ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown; trustNetwork?: unknown }) => host.set(request ?? {}))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, (_event, label: unknown) => host.addDevice(label))
@@ -181,6 +225,23 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, () => host.openPairing())
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_CLOSE, () => host.closePairing())
   ipcMain.handle(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, (_event, enabled: unknown) => host.tailscaleServe(enabled))
+
+  // --- Settings → Networking: the status line ---
+  const reach = o.reach ?? new LanReach({ settingsDir: deps.settingsDir ?? null })
+  const platform = o.platform ?? process.platform
+  let firewallCache: { at: number; view: FirewallView } | null = null
+  ipcMain.handle(IPC.NETWORK_STATUS_GET, async (): Promise<NetworkStatusView> => {
+    if (deps.mode === 'remote') {
+      return { available: false, network: 'none', lan: [], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'unknown', message: '' }, problem: null, markable: false }
+    }
+    const snapshot = await reach.snapshot()
+    const allPublic = snapshot.addresses.some((a) => a.kind === 'lan') && snapshot.addresses.every((a) => a.kind !== 'lan' || a.refusal !== null)
+    if (!firewallCache || Date.now() - firewallCache.at > 60_000) {
+      const view = await (o.firewall ?? (() => probeFirewall({ port: 7385, allLanPublic: allPublic, platform })))().catch((err): FirewallView => ({ state: 'unknown', message: err instanceof Error ? err.message : String(err), commands: [] }))
+      firewallCache = { at: Date.now(), view }
+    }
+    return networkStatusView(snapshot, firewallCache.view, platform)
+  })
 
   // --- Client: Settings → Backend → Remote computer ---
   ipcMain.handle(IPC.REMOTE_DISCOVERY_START, () => { discovery.start(); return true })
