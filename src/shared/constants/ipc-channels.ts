@@ -438,6 +438,34 @@ export const IPC = {
   BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
   BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
 
+  // Remote access (docs/design/remote-access.md §9.1).
+  // Host side: Settings → Networking → Remote access, local mode, proxied to
+  // the daemon's /remote-access routes. Client side: Settings → Backend →
+  // Remote computer, discovery and pairing in Studio main. Registered in
+  // every mode (backend/remote-access-ipc.ts).
+  REMOTE_ACCESS_GET: 'adf:remote-access:get',
+  REMOTE_ACCESS_SET: 'adf:remote-access:set',
+  REMOTE_ACCESS_DEVICE_ADD: 'adf:remote-access:device-add',
+  REMOTE_ACCESS_DEVICE_REMOVE: 'adf:remote-access:device-remove',
+  REMOTE_ACCESS_PAIRING_OPEN: 'adf:remote-access:pairing-open',
+  REMOTE_ACCESS_PAIRING_CLOSE: 'adf:remote-access:pairing-close',
+  REMOTE_ACCESS_TAILSCALE_SERVE: 'adf:remote-access:tailscale-serve',
+  REMOTE_ACCESS_CHANGED: 'adf:remote-access:changed',
+  REMOTE_DISCOVERY_START: 'adf:remote-discovery:start',
+  REMOTE_DISCOVERY_STOP: 'adf:remote-discovery:stop',
+  REMOTE_DISCOVERY_UPDATE: 'adf:remote-discovery:update',
+  REMOTE_PAIR_START: 'adf:remote-pair:start',
+  REMOTE_PAIR_SUBMIT_CODE: 'adf:remote-pair:submit-code',
+  REMOTE_PAIR_CANCEL: 'adf:remote-pair:cancel',
+  REMOTE_PAIR_STATE: 'adf:remote-pair:state',
+  // Settings → Networking's status line: network category, LAN and tailnet address, firewall (lan-reach.ts).
+  NETWORK_STATUS_GET: 'adf:network:status',
+  NETWORK_ALLOW: 'adf:network:allow',
+  NETWORK_FORGET: 'adf:network:forget',
+  NETWORK_NOTICES_GET: 'adf:network:notices',
+  NETWORK_NOTICE_DISMISS: 'adf:network:notice-dismiss',
+  NETWORK_NOTICES_CHANGED: 'adf:network:notices-changed',
+
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   RECOVERY_STASH: 'adf:recovery:stash',
   RECOVERY_LIST: 'adf:recovery:list',

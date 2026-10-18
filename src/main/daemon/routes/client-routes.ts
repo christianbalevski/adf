@@ -27,6 +27,7 @@
 // session's client, or `cli` without one, so the revision it takes and the
 // frames it raises name who wrote (W3-F).
 
+import { deviceIdOf } from '../remote-access/request-auth'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { approvalHub } from '../../runtime/approval-hub'
 import { DOCUMENT_HOLDER_FORMAT } from '../../runtime/runtime-service'
@@ -78,9 +79,11 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     if (body.umbilical !== undefined && typeof body.umbilical !== 'boolean') return badRequest(reply, 'umbilical must be a boolean')
     if (body.pid !== undefined && !(typeof body.pid === 'number' && Number.isInteger(body.pid) && body.pid > 0)) return badRequest(reply, 'pid must be a positive integer')
     // A pid names a process on the daemon's machine: taken from a local caller only (a remote one's pid means nothing here).
-    const local = body.pid !== undefined && !localAccessRefusal({ remoteAddress: request.socket?.remoteAddress, headers: request.headers }, ctx.localAccess)
+    // A device token is another computer, whatever the peer address (remote-access.md §4.5).
+    const deviceId = deviceIdOf(request.raw)
+    const local = body.pid !== undefined && !deviceId && !localAccessRefusal({ remoteAddress: request.socket?.remoteAddress, headers: request.headers }, ctx.localAccess)
     const pid = local ? body.pid as number : undefined
-    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true, ...(pid ? { pid } : {}) })))
+    return send(reply, () => reply.code(201).send(sessions.create({ client, version, exitDaemonWhenClosed: body.exitDaemonWhenClosed === true, umbilical: body.umbilical === true, ...(pid ? { pid } : {}), ...(deviceId ? { deviceId } : {}) })))
   })
 
   server.get<{ Params: SessionParams; Querystring: { since?: string; epoch?: string } }>('/client/sessions/:id/events', async (request, reply) => {
@@ -110,6 +113,7 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
       write: (chunk) => raw.write(chunk),
       once: (event, listener) => raw.once(event, listener),
       destroy: () => raw.destroy(),
+      end: (chunk, cb) => { raw.end(chunk, cb) },
       get destroyed() { return raw.destroyed || raw.writableEnded || !raw.socket || raw.socket.destroyed },
     }
     const detach = () => sessions.detach(id, sink)

@@ -1142,7 +1142,8 @@ describe('daemon file routes: re-review fixes', () => {
   it('daemon/index.ts wires the watcher into the routes and closes it at shutdown', () => {
     const source = readFileSync(join(__dirname, '../src/main/daemon/index.ts'), 'utf-8')
     expect(source).toMatch(/const trackedDirWatcher = new TrackedDirWatcher\(\{\s*runtime,\s*settings,\s*onTrackedDirectoriesChanged: \(dirs\) => meshManager\.setTrackedDirectories\(dirs\),/)
-    expect(source).toMatch(/routes: \{[^}]*\}\), trackedDirWatcher \}/)
+    // Other route deps may follow it (remoteAccess): the watcher must still be the routes' own.
+    expect(source).toMatch(/routes: \{[^}]*\}\), trackedDirWatcher(, \w+)* \}/)
     expect(source).toMatch(/onShutdown: \[\s*\(\) => trackedDirWatcher\.close\(\),/)
   })
 })

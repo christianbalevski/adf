@@ -1,8 +1,16 @@
 /**
- * Peer-runtime discovery for a runtime host: mDNS announce/browse, the
- * tailnet sweep and manual peers, and the decorated peer list Settings →
- * Networking and the fleet map show (directory cards, /ping metadata, trust
- * verification).
+ * The daemon's one discovery service (docs/design/remote-access.md §5.1):
+ * one mDNS announcement and browser (mdns-service.ts), one tailnet sweep,
+ * one cache, one event stream (`peers_changed`). It feeds the mesh peer list
+ * (`getDiscoveredRuntimes`, decorated for Settings → Networking and the
+ * fleet map: directory cards, /ping metadata, trust verification), Studio's
+ * Discovered list and `adf pair` (`peers()`, GET /network/peers). Remote
+ * access announces through `remoteAnnouncer()`, in the same record.
+ *
+ * It runs while the mesh is LAN-bound on an allowed network, while remote
+ * access is on (on an allowed network), or for a minute after a client
+ * asked for the peers. It announces only from an address of an allowed
+ * network.
  *
  * Electron-free and dependency-injected. The daemon uses it
  * (daemon/index.ts, `GET /network/mesh/discovered-runtimes`). Studio's
@@ -17,8 +25,11 @@
  * reads) instead; a start, stop or rebind is picked up within one poll.
  */
 import { createHash } from 'crypto'
+import { isIP } from 'net'
 import { networkInterfaces } from 'os'
-import { MdnsService, type DiscoveredRuntime } from './mdns-service'
+import { MdnsService, type DiscoveredRuntime, type MdnsAnnouncement } from './mdns-service'
+import type { Announcement, Announcer } from '../daemon/remote-access/announcer'
+import type { NetworkPeer } from '../../shared/types/remote-access.types'
 import { DirectoryFetchCache } from './directory-fetch-cache'
 import { TailnetDiscovery } from './tailnet-discovery'
 import { verifyAttestation } from './attestation.service'
@@ -44,6 +55,10 @@ export interface DiscoveryMeshServer {
   isRunning(): boolean
   getHost(): string
   getPort(): number
+  /** LAN mode listens on a private network or the tailnet now (lan-reach.ts); absent: the host decides. */
+  isLanReachable?(): boolean
+  /** The LAN addresses it listens on (allowed networks only); the mesh announces from one of them. */
+  getLanAddresses?(): string[]
 }
 
 /** The TailnetDiscovery surface discovery drives (a fake in tests). */
@@ -64,6 +79,10 @@ export interface RuntimeDiscoveryOptions {
   fetchFn?: typeof fetch
   /** Server-state poll. Default 2 s; the network check runs every fifth poll, as Studio's 10 s watch. */
   pollIntervalMs?: number
+  /** The ADF daemon's port: the tailnet sweep asks it for /remote/hello. */
+  daemonPort?: number
+  /** How long a peers() call keeps discovery running without the mesh or remote access. Default 60 s. */
+  demandMs?: number
 }
 
 /** A discovered peer as `MESH_DISCOVERED_RUNTIMES` returns it. */
@@ -92,14 +111,15 @@ const VERIFY_MEMO_TTL_MS = 30_000
 const VERIFY_MEMO_MAX = 512
 const PING_TIMEOUT_MS = 4_000
 const NETWORK_CHECK_EVERY = 5
+const DEMAND_MS = 60_000
+const PEERS_DEBOUNCE_MS = 250
+const MAX_PEERS_WAIT_MS = 5_000
 
 export class RuntimeDiscovery {
   private readonly opts: RuntimeDiscoveryOptions
   private readonly directoryCache: DirectoryFetchCache
   private readonly fetchFn: typeof fetch
   private mdns: MdnsService | null = null
-  /** Whether the running service was started with announce on. */
-  private mdnsAnnounceRequested = false
   /** The mDNS library failed to start; retried only after a network change. */
   private mdnsUnavailable = false
   private tailnet: DiscoveryTailnet | null = null
@@ -109,6 +129,14 @@ export class RuntimeDiscovery {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private polls = 0
   private lastNetSignature: string | null = null
+  /** Remote access's announcement while it is on, on an allowed network (remoteAnnouncer). */
+  private remote: Announcement | null = null
+  /** Discovery runs for clients asking for the peers until then. */
+  private demandUntil = 0
+  /** The address the running service announces from (undefined: the picked default). */
+  private startedIface: string | undefined = undefined
+  private readonly peersListeners = new Set<() => void>()
+  private peersTimer: ReturnType<typeof setTimeout> | null = null
   private readonly runtimeMetaCache = new Map<string, { expiresAt: number; meta: RuntimeMeta | null }>()
   private readonly verifyMemo = new Map<string, { at: number; value: boolean }>()
   private readonly onMeshEvent = (event: MeshEvent): void => {
@@ -147,6 +175,87 @@ export class RuntimeDiscovery {
   /** True while an mDNS service is up (announcing or browse-only). */
   isActive(): boolean {
     return this.mdns !== null
+  }
+
+  /**
+   * The feed (Studio's Discovered list, `adf pair`, GET /network/peers):
+   * every ADF computer found, both capabilities. Keeps discovery running
+   * for a minute; `waitMs` (at most 5 s) lets a fresh browse hear answers.
+   */
+  async peers(opts: { waitMs?: number } = {}): Promise<NetworkPeer[]> {
+    if (this.stopped) return []
+    this.demandUntil = Date.now() + (this.opts.demandMs ?? DEMAND_MS)
+    if (!this.mdns) await this.refresh()
+    else this.tailnet?.ensureFresh()
+    const wait = Math.min(Math.max(opts.waitMs ?? 0, 0), MAX_PEERS_WAIT_MS)
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    return this.mdns?.peers() ?? []
+  }
+
+  /** `peers_changed`: the feed changed (debounced). */
+  onPeersChanged(listener: () => void): () => void {
+    this.peersListeners.add(listener)
+    return () => { this.peersListeners.delete(listener) }
+  }
+
+  private notifyPeers(): void {
+    if (this.peersTimer) return
+    this.peersTimer = setTimeout(() => {
+      this.peersTimer = null
+      for (const listener of this.peersListeners) {
+        try { listener() } catch { /* a listener's problem */ }
+      }
+    }, PEERS_DEBOUNCE_MS)
+    this.peersTimer.unref?.()
+  }
+
+  /**
+   * Remote access announces through this (RemoteAccessService's announcer):
+   * its fields join the one `_adf-runtime._tcp` record. It calls announce only
+   * while remote access is on and a LAN address of an allowed network listens.
+   */
+  remoteAnnouncer(): Announcer {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const discovery = this
+    return {
+      async announce(a: Announcement): Promise<void> {
+        discovery.remote = a
+        await discovery.refresh()
+      },
+      async stop(): Promise<void> {
+        if (!discovery.remote) return
+        discovery.remote = null
+        await discovery.refresh()
+      },
+      get announcing(): boolean {
+        return !!discovery.remote && (discovery.mdns?.isAnnouncingRemote() ?? false)
+      },
+      get problem(): string | null {
+        return discovery.remote && discovery.mdnsUnavailable ? 'mDNS is not available on this computer; other computers find it by address or on the tailnet.' : null
+      },
+    }
+  }
+
+  /** What discovery should do now. */
+  private desired(): { run: boolean; announcement: MdnsAnnouncement; iface: string | undefined } {
+    const { meshServer, mesh } = this.opts
+    const meshUp = mesh.isEnabled() && meshServer.isRunning() && meshServer.getHost() === '0.0.0.0' && (meshServer.isLanReachable?.() ?? true)
+    // LAN-visible spans 'lan' and 'public': a public agent is reachable from
+    // the internet, which subsumes the LAN, so it announces over mDNS too.
+    const meshVisible = meshUp && (mesh.hasAgentOfTier('lan') || mesh.hasAgentOfTier('public'))
+    const remote = this.remote
+    const announce = meshVisible || !!remote
+    // Consent: announce only from an address of an allowed network (remote access's listener, else the mesh's).
+    const iface = announce ? remote?.iface ?? meshServer.getLanAddresses?.().find((a) => isIP(a) === 4) : undefined
+    return {
+      run: meshUp || !!remote || Date.now() < this.demandUntil,
+      announcement: {
+        announce,
+        mesh: meshVisible,
+        remote: remote ? { name: remote.name, alias: remote.alias ?? null, port: remote.port, fingerprint: remote.txt.fp, pairingOpen: remote.txt.pair === '1', api: remote.txt.api } : null,
+      },
+      iface,
+    }
   }
 
   /**
@@ -234,24 +343,23 @@ export class RuntimeDiscovery {
 
   private async refreshOnce(): Promise<void> {
     const { meshServer, mesh, settings } = this.opts
-    // A disabled mesh runs no discovery (Studio stops mDNS on MESH_DISABLE).
-    if (!mesh.isEnabled()) return
-    if (!meshServer.isRunning()) return
-    if (meshServer.getHost() !== '0.0.0.0') return // only announce/browse when LAN-bound
-
-    // LAN-visible spans 'lan' and 'public': a public agent is reachable from
-    // the internet, which subsumes the LAN, so it announces over mDNS too.
-    const hasLanAgent = mesh.hasAgentOfTier('lan') || mesh.hasAgentOfTier('public')
+    // Nothing needs discovery: the mesh is not LAN-bound on an allowed network, remote access is off, no client asks.
+    const desired = this.desired()
+    if (!desired.run) {
+      if (this.mdns) await this.stopMdns()
+      return
+    }
 
     mesh.setDirectoryFetchCache(this.directoryCache)
     if (this.mdns) {
-      mesh.setMdnsService(this.mdns)
-      if (!hasLanAgent) return            // still nothing to announce
-      if (this.mdns.isAnnouncing()) return // already announcing
-      // Asked to announce and it did not take (publish failed): restarting
-      // would fail the same way on every poll.
-      if (this.mdnsAnnounceRequested) return
-      console.log('[Discovery] LAN-visible agent registered — restarting mDNS to announce')
+      if (this.startedIface === desired.iface) {
+        mesh.setMdnsService(this.mdns)
+        // One record: a LAN-visible agent, remote access on or off, the pairing window: re-published, browser untouched.
+        // A publish that did not take is not retried until something changes.
+        await this.mdns.updateAnnouncement(desired.announcement)
+        return
+      }
+      console.log('[Discovery] The announcing address changed — restarting mDNS')
       await this.stopMdns()
     }
 
@@ -270,12 +378,14 @@ export class RuntimeDiscovery {
       this.mdnsUnavailable = true
       console.log(`[Discovery] mDNS unavailable: ${reason}`)
     })
+    service.on('peers_changed', () => this.notifyPeers())
     await service.start({
-      announce: hasLanAgent,
+      ...desired.announcement,
       browse: true,
       port: meshServer.getPort(),
       runtimeId,
       runtimeDid: this.opts.getRuntimeDid(),
+      ...(desired.iface ? { iface: desired.iface } : {}),
     })
     if (this.stopped) {
       // stop() ran while start() was in flight: never leave a service behind.
@@ -283,9 +393,10 @@ export class RuntimeDiscovery {
       return
     }
     this.mdns = service
-    this.mdnsAnnounceRequested = hasLanAgent
+    this.startedIface = desired.iface
     mesh.setMdnsService(service)
-    console.log(`[Discovery] mDNS ${hasLanAgent ? 'announcing and browsing' : 'browsing'} on port ${meshServer.getPort()}`)
+    this.notifyPeers()
+    console.log(`[Discovery] mDNS ${desired.announcement.announce ? `announcing (${[desired.announcement.mesh ? 'mesh' : '', desired.announcement.remote ? 'remote access' : ''].filter(Boolean).join(', ')}) and browsing` : 'browsing'} on port ${meshServer.getPort()}`)
 
     // Beyond the broadcast domain: the tailnet sweep and manual peers feed
     // the same table.
@@ -300,6 +411,10 @@ export class RuntimeDiscovery {
         getExistingRoute: (id) => this.mdns?.getDiscovered(id),
         onPeer: (peer, peerOpts) => this.mdns?.upsertExternalPeer(peer, peerOpts),
         onExpire: (id) => this.mdns?.removeExternalPeer(id),
+        // The same sweep asks each peer's daemon port for /remote/hello (remote access).
+        getDaemonPort: () => this.opts.daemonPort ?? null,
+        onDaemon: (found) => this.mdns?.upsertTailnetDaemon(found),
+        onDaemonSweep: (seen) => this.mdns?.expireTailnetDaemons(seen),
       }
       const tailnet = this.opts.createTailnet?.(tailnetOpts) ?? new TailnetDiscovery(tailnetOpts)
       tailnet.start()
@@ -313,7 +428,9 @@ export class RuntimeDiscovery {
     this.tailnet = null
     const service = this.mdns
     this.mdns = null
+    this.startedIface = undefined
     this.opts.mesh.setMdnsService(null)
+    if (service) this.notifyPeers()
     this.directoryCache.invalidate()
     if (service) {
       try { await service.stop() } catch (err) { console.error('[Discovery] mDNS stop failed:', err) }
@@ -322,10 +439,9 @@ export class RuntimeDiscovery {
 
   private poll(): void {
     if (this.stopped || this.running) return
-    const { meshServer, mesh } = this.opts
-    const eligible = mesh.isEnabled() && meshServer.isRunning() && meshServer.getHost() === '0.0.0.0'
+    const eligible = this.desired().run
     if (this.mdns && !eligible) {
-      console.log('[Discovery] Mesh disabled, or mesh server stopped or no longer LAN-bound — stopping mDNS')
+      console.log('[Discovery] Mesh not LAN-bound on an allowed network, remote access off, no client asking — stopping mDNS')
       void this.stopMdns()
       return
     }
@@ -343,7 +459,8 @@ export class RuntimeDiscovery {
       }
     }
     if (this.mdnsUnavailable) return
-    if (!this.mdns || !this.mdns.isAnnouncing()) void this.refresh()
+    // Cheap when nothing changed: the announcement is compared before anything is re-published.
+    void this.refresh()
   }
 
   private async fetchRuntimeMeta(baseUrl: string): Promise<RuntimeMeta | null> {

@@ -46,13 +46,13 @@ function noServer(err: unknown): boolean {
   return err instanceof DaemonError && (err.status === 503 || err.status === 405)
 }
 
-interface ServerStatus { running: boolean; port: number; host: string }
+interface ServerStatus { running: boolean; port: number; host: string; lanAddresses?: string[] }
 
 async function serverStatus(ctx: DaemonModeContext): Promise<ServerStatus | null> {
   const client = await ctx.ready()
   try {
     const s = await client.request<ServerStatus>('GET', '/network/server')
-    return { running: s.running, port: s.port, host: s.host }
+    return { running: s.running, port: s.port, host: s.host, ...(Array.isArray(s.lanAddresses) ? { lanAddresses: s.lanAddresses } : {}) }
   } catch (err) {
     if (noServer(err)) return null
     throw err

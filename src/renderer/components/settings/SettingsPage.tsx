@@ -14,6 +14,7 @@ import { AboutTab } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { BackendSettings } from './BackendSettings'
+import { NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
@@ -1382,7 +1383,7 @@ export function SettingsPage() {
   const [spellcheckDownloads, setSpellcheckDownloads] = useState(false)
   const [spellcheckStatus, setSpellcheckStatus] = useState<string | null>(null)
   const [spellcheckBusy, setSpellcheckBusy] = useState(false)
-  const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
+  const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [meshAutoStart, setMeshAutoStart] = useState(true)
   const [meshLan, setMeshLan] = useState(false)
   const [meshPort, setMeshPort] = useState(7295)
@@ -2253,7 +2254,7 @@ export function SettingsPage() {
           {activeTab === 'about' && <AboutTab />}
 
           {/* Backend tab */}
-          {activeTab === 'backend' && <BackendSettings />}
+          {activeTab === 'backend' && <BackendSettings onOpenNetworking={() => setActiveTab('networking')} />}
 
           {/* Packages tab */}
           {activeTab === 'packages' && <PackagesTab
@@ -2321,8 +2322,10 @@ export function SettingsPage() {
 
           {/* Networking tab */}
           {activeTab === 'networking' && <>
+          {/* The network the mesh and remote access both follow (lan-reach.ts). */}
+          <NetworkStatusLine />
           {/* Mesh auto-start */}
-          <SettingsGroup title="Mesh startup" docs={DOCS.lanDiscovery}>
+          <SettingsGroup title="Mesh" docs={DOCS.lanDiscovery}>
             <SettingsRow
               label="Mesh"
               description={<>
@@ -2353,7 +2356,7 @@ export function SettingsPage() {
               <div className={`w-2 h-2 rounded-full ${meshServerStatus.running ? 'bg-green-500' : 'bg-red-400'}`} />
               <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
                 {meshServerStatus.running
-                  ? `Server running on ${meshServerStatus.host === '0.0.0.0' ? 'all interfaces' : meshServerStatus.host}, port ${meshServerStatus.port}`
+                  ? `Server running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}`
                   : 'Server stopped'}
               </label>
               <Button
@@ -2427,7 +2430,7 @@ export function SettingsPage() {
               )}
             </label>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-5">
-              Binds to 0.0.0.0 instead of 127.0.0.1. Binding also flips to LAN automatically if any agent has <code>messaging.visibility = "lan"</code>.
+              Listens on private networks and Tailscale too, never on a Public network. Also on when an agent has <code>messaging.visibility = "lan"</code>.
             </p>
 
             {/* LAN addresses — reachable URLs when bound to 0.0.0.0 */}
@@ -2492,7 +2495,8 @@ export function SettingsPage() {
             {/* Verify the runtime is actually reachable (server bound + firewall open). */}
             <LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} />
 
-            {/* Agents currently declaring LAN visibility — live view, reused by mDNS toggle later. */}
+            {/* Agents by visibility (the LanAgentsList predicate), then the LAN ones. */}
+            <p className="mt-3 text-xs text-neutral-600 dark:text-neutral-300">{meshVisibilityLine(meshAgents)}</p>
             <LanAgentsList agents={meshAgents} />
 
             {/* Remote runtimes discovered via mDNS. Updates live via MESH_EVENT. */}
@@ -2563,6 +2567,9 @@ export function SettingsPage() {
             )}
           </SettingsGroup>
           )}
+
+          {/* Remote access: other devices use this computer's daemon (remote-access.md §7). */}
+          <RemoteAccessGroup onKeepRunning={async () => { await window.adfApi?.setBackendSettings({ keepDaemonRunning: true }) }} />
           </>}
 
           {/* Compute tab */}

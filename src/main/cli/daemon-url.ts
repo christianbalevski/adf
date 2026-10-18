@@ -5,13 +5,18 @@ import { join } from 'node:path'
 import { daemonSettingsDir, readDaemonToken } from '../daemon/daemon-token'
 import { isLocalOnlyRoute, readLocalProof } from '../daemon/local-access'
 import type { DaemonCredentials } from '../../shared/daemon-client/client'
+import { savedRemoteToken, selectedRemote } from './remotes'
 
 export const DEFAULT_DAEMON_PORT = 7385
 export const DEFAULT_DAEMON_URL = `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`
 
-/** `--url` wins, then `ADF_DAEMON_URL`, then the default. Trailing slashes are dropped. */
+/**
+ * `--url` wins, then `ADF_DAEMON_URL`, then the remote `--remote` /
+ * ADF_REMOTE names or the default saved remote (remotes.ts, `adf pair`),
+ * then this machine's daemon. Trailing slashes are dropped.
+ */
 export function resolveDaemonUrl(explicit?: string, env: NodeJS.ProcessEnv = process.env): string {
-  return (explicit ?? env.ADF_DAEMON_URL ?? DEFAULT_DAEMON_URL).replace(/\/+$/, '')
+  return (explicit ?? env.ADF_DAEMON_URL ?? selectedRemote(env)?.remote.url ?? DEFAULT_DAEMON_URL).replace(/\/+$/, '')
 }
 
 /** The port of a loopback `url` (127.x, localhost, [::1]); null for any other host. */
@@ -72,13 +77,15 @@ export function tunnelTokenHint(url: string, explicit?: string, env: NodeJS.Proc
 
 /**
  * Bearer token for the daemon at `url`: `--token`, then ADF_DAEMON_TOKEN,
- * then (this machine's daemon) the install's token file. Without `url` only the
- * first two are consulted.
+ * then the device token saved for that origin by `adf pair` (remotes.ts),
+ * then (this machine's daemon) the install's token file. Without `url` only
+ * the first two are consulted.
  */
 export function resolveDaemonToken(explicit?: string, env: NodeJS.ProcessEnv = process.env, url?: string): string | undefined {
   const token = explicit ?? env.ADF_DAEMON_TOKEN
   if (token) return token
-  return url ? localDaemonToken(url, env) : undefined
+  if (!url) return undefined
+  return savedRemoteToken(url, env) ?? localDaemonToken(url, env)
 }
 
 /** Routes that take this machine's local proof (local-access.ts). */

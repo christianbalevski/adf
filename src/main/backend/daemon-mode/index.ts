@@ -78,6 +78,23 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.RECOVERY_REVEAL,
   IPC.BACKEND_REMOTE_CHECK,
   IPC.BACKEND_RESTART_STUDIO,
+  IPC.REMOTE_ACCESS_GET,
+  IPC.REMOTE_ACCESS_SET,
+  IPC.REMOTE_ACCESS_DEVICE_ADD,
+  IPC.REMOTE_ACCESS_DEVICE_REMOVE,
+  IPC.REMOTE_ACCESS_PAIRING_OPEN,
+  IPC.REMOTE_ACCESS_PAIRING_CLOSE,
+  IPC.REMOTE_ACCESS_TAILSCALE_SERVE,
+  IPC.REMOTE_DISCOVERY_START,
+  IPC.REMOTE_DISCOVERY_STOP,
+  IPC.REMOTE_PAIR_START,
+  IPC.REMOTE_PAIR_SUBMIT_CODE,
+  IPC.REMOTE_PAIR_CANCEL,
+  IPC.NETWORK_STATUS_GET,
+  IPC.NETWORK_ALLOW,
+  IPC.NETWORK_FORGET,
+  IPC.NETWORK_NOTICES_GET,
+  IPC.NETWORK_NOTICE_DISMISS,
 ]
 
 export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
@@ -161,6 +178,8 @@ export interface DaemonModeDeps {
   relaunch?: { reconnect(reason: string): void; embeddedForSession(reason: string): void }
   /** How long a restart waits for the window to keep its unsaved editors and restart itself. Default 15 s. */
   stashWaitMs?: number
+  /** The daemon's `remote_access` push (remote-access.md §8), for Settings → Backend → This computer. */
+  onRemoteAccessEvent?: (payload: unknown) => void
 }
 
 export interface DaemonModeHandle {
@@ -180,6 +199,8 @@ export interface DaemonModeHandle {
   reconnect(): void
   /** Settings → Backend: the daemon this session uses and the connection state. */
   status(): BackendDaemonStatus
+  /** The daemon's client once connected (remote-access management routes); rejects when there is no daemon. */
+  client(): Promise<DaemonClient>
   /** keepDaemonRunning changed in Settings: the session's crash behaviour follows it (exitDaemonWhenClosed). */
   setKeepDaemonRunning(keep: boolean): Promise<void>
   /** The gated background start (BACKGROUND_AGENT_START): resumes an agent a switch carried over. */
@@ -192,9 +213,16 @@ export interface DaemonModeHandle {
    * started it and no other client session is open (the daemon decides,
    * POST /client/sessions/:id/quit). `waitForDaemonExitMs`: a switch to
    * embedded waits for that daemon to exit, so embedded Studio can start
-   * the agents it ran.
+   * the agents it ran. `keepDaemonRunning`: this quit only, the answer to
+   * the quit question about connected computers (remote-access.md §3.6).
    */
-  shutdown(opts?: { waitForDaemonExitMs?: number }): Promise<void>
+  shutdown(opts?: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean }): Promise<void>
+}
+
+/** The daemon's remote-access management routes (remote-access.md §11.2). */
+export function isRemoteAccessRoute(path: string): boolean {
+  const p = path.split('?')[0]
+  return p === '/remote-access' || p.startsWith('/remote-access/')
 }
 
 function isInvoke(entry: ChannelEntry): boolean {
@@ -230,7 +258,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         token: () => endpoint.source.token(),
         ...(endpoint.source.refresh ? { refresh: () => endpoint.source.refresh!() } : {}),
         localProof: (path: string): Record<string, string> => {
-          if (!isLocalOnlyRoute(path)) return {}
+          // /remote-access: the management routes need the proof in every mode (remote-access.md §4.5, §11.2).
+          if (!isLocalOnlyRoute(path) && !isRemoteAccessRoute(path)) return {}
           const proof = readLocalProof(deps.userDataDir, port)
           return proof ? { [LOCAL_PROOF_HEADER]: proof } : {}
         },
@@ -422,6 +451,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     onAgentsChanged: () => { approvals.refresh(); refreshTokens() },
     onFileRenamed: (oldPath, newPath) => session.rekey(oldPath, newPath),
     onNotice: (text) => statusUi.notice(text),
+    onRemoteAccess: (payload) => deps.onRemoteAccessEvent?.(payload),
     log,
   })
 
@@ -888,7 +918,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   }
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { waitForDaemonExitMs?: number } = {}): Promise<void> => {
+  const shutdown = (opts: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       stopExitWatch()
       if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
@@ -900,7 +930,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       remoteServices?.oauth.closeAll()
       bridge.dispose()
       batcher.dispose()
-      const stopDaemon = deps.mode === 'local' && !keepRunning()
+      const stopDaemon = deps.mode === 'local' && !keepRunning() && opts.keepDaemonRunning !== true
+      if (deps.mode === 'local' && opts.keepDaemonRunning === true && !keepRunning()) log.log('[Backend] Quit: the ADF daemon keeps running for the computers connected to it (this quit only)')
       let answer: ClientQuitAnswer | null = null
       try {
         await session.releaseAll()
@@ -1006,6 +1037,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     adfFile,
     reconnect,
     status,
+    client: () => started.then(sessionClient),
     setKeepDaemonRunning,
     startBackgroundAgent,
     agentActivity,

@@ -14,6 +14,7 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
+import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -249,7 +250,7 @@ export interface AdfApi {
     adapters: { adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }
     peers: unknown[]
   }>
-  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string }>
+  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>
   restartMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   stopMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
@@ -732,6 +733,43 @@ export interface AdfApi {
    * (the window first kept its unsaved editor text as recovery copies).
    */
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => Promise<void>
+
+  // Remote access (remote-access.md §7, §9.1). Host: Settings → Networking → Remote access.
+  /** The host panel: the daemon's remote-access status, in local mode only. */
+  getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
+  /** The toggle (turning it on is confirmed in a native dialog first) and the name. Networks: allowNetwork / forgetNetwork. */
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => Promise<RemoteAccessResult>
+  /** "Add a computer": a device token, returned this once. */
+  addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
+  /** Remove a computer (confirmed first): disconnected now, its token stops working. */
+  removeRemoteDevice: (id: string) => Promise<RemoteAccessResult>
+  /** "Pair a computer": a 6-digit code for 120 s; main asks "Allow <device>?" when a computer enters it. */
+  openRemotePairing: () => Promise<RemoteAccessResult>
+  closeRemotePairing: () => Promise<RemoteAccessResult>
+  /** `tailscale serve` for the daemon port, confirmed first with the exact command. */
+  setRemoteTailscaleServe: (enabled: boolean) => Promise<RemoteAccessResult & { output?: string }>
+  onRemoteAccessChanged: (callback: (change: RemoteAccessChange) => void) => () => void
+  // Client: Settings → Backend → Remote computer. No token reaches the renderer.
+  /** Look for ADF computers (mDNS, tailnet) while the section is open. */
+  startRemoteDiscovery: () => Promise<boolean>
+  stopRemoteDiscovery: () => Promise<boolean>
+  onRemoteDiscoveryUpdate: (callback: (update: RemoteDiscoveryUpdate) => void) => () => void
+  /** Pairing: hello the host, then the code, then the host's Allow; the token is saved in main. */
+  startRemotePairing: (request: RemotePairStartRequest) => Promise<RemotePairState>
+  submitRemotePairingCode: (code: string) => Promise<RemotePairState>
+  cancelRemotePairing: () => Promise<RemotePairState>
+  onRemotePairingState: (callback: (state: RemotePairState) => void) => () => void
+  /** Settings → Networking's status line: the networks and whether each is allowed, LAN address, Tailscale, firewall. */
+  getNetworkStatus: () => Promise<NetworkStatusView>
+  /** Allow on this network (remote access and the mesh's LAN mode listen there). */
+  allowNetwork: (id: string) => Promise<NetworkConsentResult>
+  /** Remove an allowed network: its listeners close now. */
+  forgetNetwork: (id: string) => Promise<NetworkConsentResult>
+  /** "Remote access paused on <network>." notices on screen now (non-modal, in the window). */
+  getNetworkNotices: () => Promise<NetworkNotice[]>
+  /** Not now: the notice goes and is not shown again this session. */
+  dismissNetworkNotice: (key: string) => Promise<boolean>
+  onNetworkNoticesChanged: (callback: (notices: NetworkNotice[]) => void) => () => void
 
   // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void

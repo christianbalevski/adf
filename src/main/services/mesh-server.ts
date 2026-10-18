@@ -51,6 +51,7 @@ import { classifyRemote, permits, denialReason, type Scope } from '../runtime/sc
 import { withSource } from '../runtime/execution-context'
 import { withAuthorization } from '../runtime/authorization-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+import { LanListeners, LanReach, type LanReachSnapshot } from './lan-reach'
 
 /**
  * Request body limit for the ALF inbox route. Inline attachments travel as
@@ -157,14 +158,34 @@ async function enforceVisibility(request: FastifyRequest, reply: FastifyReply) {
 // MeshServer
 // ===========================================================================
 
+/** How often LAN mode re-reads the addresses (a Wi-Fi change, another network). */
+const LAN_CHECK_MS = 10_000
+
+/**
+ * - `loopback`: 127.0.0.1 only.
+ * - `lan` ("Allow LAN access", or an agent with lan visibility): 127.0.0.1
+ *   plus each private and Tailscale address on a network the user allowed
+ *   (lan-reach.ts), never without that consent. `getHost()` reports '0.0.0.0' as the LAN-mode marker.
+ * - `all`: 0.0.0.0, for an agent with public visibility (the owner chose the internet).
+ * - `env`: MESH_HOST, as given.
+ */
+export type MeshBindMode = 'loopback' | 'lan' | 'all' | 'env'
+
 export class MeshServer {
   private server: FastifyInstance | null = null
   private meshManager: MeshManager | null = null
   private wsConnectionManager: WsConnectionManager | null = null
   private port = 7295
   private host = '127.0.0.1'
+  private bindMode: MeshBindMode = 'loopback'
   private running = false
   private agentCaches = new Map<string, ApiResponseCache>()
+  private lanReach: LanReach | null = null
+  private lanListeners: LanListeners | null = null
+  private lanTimer: ReturnType<typeof setInterval> | null = null
+  private lanSnapshot: LanReachSnapshot | null = null
+  private lanSyncing: Promise<void> | null = null
+  private lanBindAddress: ((address: string) => string) | null = null
 
   constructor(
     private codeSandboxService: CodeSandboxService,
@@ -181,6 +202,12 @@ export class MeshServer {
     if (manager && this.running) {
       manager.setMeshServerAddress(this.host, this.port)
     }
+  }
+
+  /** Where LAN mode reads the networks the user allowed (remote-access.json's directory). */
+  setLanReach(reach: LanReach, seams: { bindAddress?: (address: string) => string } = {}): void {
+    this.lanReach = reach
+    this.lanBindAddress = seams.bindAddress ?? null
   }
 
   setWsConnectionManager(manager: WsConnectionManager | null): void {
@@ -213,12 +240,16 @@ export class MeshServer {
     const envHost = process.env.MESH_HOST
     if (envHost) {
       this.host = envHost
+      this.bindMode = 'env'
     } else {
       const meshLan = !!this.settings.get('meshLan')
       const hasLanAgent = this.meshManager?.hasAgentOfTier('lan') ?? false
       const hasPublicAgent = this.meshManager?.hasAgentOfTier('public') ?? false
-      this.host = (meshLan || hasLanAgent || hasPublicAgent) ? '0.0.0.0' : '127.0.0.1'
+      // LAN mode follows remote access's rule (remote-access.md §3.3): private networks and Tailscale only.
+      this.bindMode = hasPublicAgent ? 'all' : (meshLan || hasLanAgent) ? 'lan' : 'loopback'
+      this.host = this.bindMode === 'loopback' ? '127.0.0.1' : '0.0.0.0'
     }
+    const listenHost = this.bindMode === 'lan' ? '127.0.0.1' : this.host
 
     this.server = Fastify({ logger: false, forceCloseConnections: true })
 
@@ -240,25 +271,83 @@ export class MeshServer {
     // of failing. getPort()/setMeshServerAddress report the actual bound port,
     // so reply_to and card URLs stay correct.
     const requestedPort = this.port
-    this.port = await findAvailablePort(requestedPort, this.host)
+    this.port = await findAvailablePort(requestedPort, listenHost)
     if (this.port !== requestedPort) {
       console.log(`[MeshServer] Port ${requestedPort} unavailable; using ${this.port}`)
     }
 
     try {
-      await this.server.listen({ port: this.port, host: this.host })
+      await this.server.listen({ port: this.port, host: listenHost })
       this.running = true
       if (this.meshManager) {
         this.meshManager.setMeshServerAddress(this.host, this.port)
       }
-      console.log(`[MeshServer] Listening on http://${this.host}:${this.port}`)
+      console.log(`[MeshServer] Listening on http://${listenHost}:${this.port}${this.bindMode === 'lan' ? ' (LAN mode: private networks and Tailscale only)' : ''}`)
+      if (this.bindMode === 'lan') await this.startLan()
     } catch (err) {
       console.error(`[MeshServer] Failed to start on port ${this.port}:`, err)
       this.server = null
     }
   }
 
+  private async startLan(): Promise<void> {
+    const fastify = this.server!
+    this.lanListeners = new LanListeners({
+      port: this.port,
+      handler: (req, res) => fastify.routing(req, res),
+      // @fastify/websocket upgrades on the main server's 'upgrade' event.
+      upgrade: (req, socket, head) => { fastify.server.emit('upgrade', req, socket, head) },
+      log: (line) => console.log(`[MeshServer] ${line}`),
+      ...(this.lanBindAddress ? { bindAddress: this.lanBindAddress } : {}),
+    })
+    await this.syncLan(true)
+    this.lanTimer = setInterval(() => { void this.syncLan(false) }, LAN_CHECK_MS)
+    this.lanTimer.unref?.()
+  }
+
+  /** Re-read the addresses and make the LAN listeners match. */
+  syncLan(force: boolean): Promise<void> {
+    this.lanSyncing ??= (async () => {
+      try {
+        const listeners = this.lanListeners
+        if (!listeners) return
+        this.lanReach ??= new LanReach({ settingsDir: null })
+        const snapshot = await this.lanReach.snapshot({
+          force,
+          // A network change closes that interface's listeners at once; they open again only on an allowed network.
+          onNetworkChanged: async (ifaces) => {
+            const closing = new Set((this.lanSnapshot?.addresses ?? []).filter((a) => a.kind === 'lan' && ifaces.includes(a.iface)).map((a) => a.address))
+            const keep = listeners.addresses().filter((a) => !closing.has(a))
+            if (keep.length === listeners.addresses().length) return
+            console.log(`[MeshServer] Network changed on ${ifaces.join(', ')}: closing its LAN listeners until that network is allowed`)
+            await listeners.sync(keep)
+          },
+        })
+        if (this.lanListeners !== listeners) return
+        const before = this.lanSnapshot?.listenable.join(',')
+        this.lanSnapshot = snapshot
+        const problems = await listeners.sync(snapshot.listenable)
+        for (const [address, problem] of problems) console.warn(`[MeshServer] ${problem}`)
+        if (before !== snapshot.listenable.join(',')) {
+          const refused = snapshot.addresses.filter((a) => a.refusal).map((a) => `${a.address} (${a.iface})`)
+          console.log(`[MeshServer] LAN addresses: ${listeners.addresses().join(', ') || 'none'}${refused.length ? `; on a network not allowed: ${refused.join(', ')}` : ''}`)
+        }
+      } catch (err) {
+        console.warn('[MeshServer] LAN address check failed:', err instanceof Error ? err.message : err)
+      } finally {
+        this.lanSyncing = null
+      }
+    })()
+    return this.lanSyncing
+  }
+
   async stop(): Promise<void> {
+    if (this.lanTimer) clearInterval(this.lanTimer)
+    this.lanTimer = null
+    const lan = this.lanListeners
+    this.lanListeners = null
+    this.lanSnapshot = null
+    if (lan) await lan.closeAll().catch(() => {})
     if (this.server) {
       try {
         await this.server.close()
@@ -284,6 +373,24 @@ export class MeshServer {
   isRunning(): boolean { return this.running }
   getPort(): number { return this.port }
   getHost(): string { return this.host }
+  getBindMode(): MeshBindMode { return this.bindMode }
+  /** The non-loopback addresses listening now: LAN mode's private and Tailscale addresses; ['0.0.0.0'] in `all` mode. */
+  getLanAddresses(): string[] {
+    if (!this.running) return []
+    if (this.bindMode === 'lan') return this.lanListeners?.addresses() ?? []
+    if (this.bindMode === 'all') return ['0.0.0.0']
+    if (this.bindMode === 'env') return this.host === '127.0.0.1' || this.host === 'localhost' || this.host === '::1' ? [] : [this.host]
+    return []
+  }
+  /** Other computers can reach this server now (mDNS announces only then). */
+  /** LAN mode is on (it listens only on allowed networks). */
+  isLanMode(): boolean {
+    return this.running && this.bindMode === 'lan'
+  }
+
+  isLanReachable(): boolean {
+    return this.getLanAddresses().length > 0
+  }
 
   // ===========================================================================
   // Route Registration

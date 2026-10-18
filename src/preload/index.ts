@@ -6,6 +6,7 @@ import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch, RemoteCheckRequest, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
+import type { NetworkNotice, RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 type SubscriptionPayload<Subscription> = Subscription extends (callback: (data: infer Payload) => void) => () => void
   ? Payload
@@ -712,6 +713,45 @@ const api: AdfApi = {
   setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
   checkRemoteBackend: (request: RemoteCheckRequest) => ipcRenderer.invoke(IPC.BACKEND_REMOTE_CHECK, request),
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO, kind),
+
+  // Remote access (remote-access.md)
+  getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
+  removeRemoteDevice: (id: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_REMOVE, id),
+  openRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_OPEN),
+  closeRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_CLOSE),
+  setRemoteTailscaleServe: (enabled: boolean) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, enabled),
+  onRemoteAccessChanged: (callback: (change: RemoteAccessChange) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, change: RemoteAccessChange) => callback(change)
+    ipcRenderer.on(IPC.REMOTE_ACCESS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_ACCESS_CHANGED, handler)
+  },
+  startRemoteDiscovery: () => ipcRenderer.invoke(IPC.REMOTE_DISCOVERY_START),
+  stopRemoteDiscovery: () => ipcRenderer.invoke(IPC.REMOTE_DISCOVERY_STOP),
+  onRemoteDiscoveryUpdate: (callback: (update: RemoteDiscoveryUpdate) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, update: RemoteDiscoveryUpdate) => callback(update)
+    ipcRenderer.on(IPC.REMOTE_DISCOVERY_UPDATE, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_DISCOVERY_UPDATE, handler)
+  },
+  startRemotePairing: (request: RemotePairStartRequest) => ipcRenderer.invoke(IPC.REMOTE_PAIR_START, request),
+  submitRemotePairingCode: (code: string) => ipcRenderer.invoke(IPC.REMOTE_PAIR_SUBMIT_CODE, code),
+  cancelRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_PAIR_CANCEL),
+  onRemotePairingState: (callback: (state: RemotePairState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: RemotePairState) => callback(state)
+    ipcRenderer.on(IPC.REMOTE_PAIR_STATE, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_PAIR_STATE, handler)
+  },
+  getNetworkStatus: () => ipcRenderer.invoke(IPC.NETWORK_STATUS_GET),
+  allowNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_ALLOW, id),
+  forgetNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_FORGET, id),
+  getNetworkNotices: () => ipcRenderer.invoke(IPC.NETWORK_NOTICES_GET),
+  dismissNetworkNotice: (key: string) => ipcRenderer.invoke(IPC.NETWORK_NOTICE_DISMISS, key),
+  onNetworkNoticesChanged: (callback: (notices: NetworkNotice[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, notices: NetworkNotice[]) => callback(notices)
+    ipcRenderer.on(IPC.NETWORK_NOTICES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.NETWORK_NOTICES_CHANGED, handler)
+  },
 
   // Remote mode: daemon-side picker
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {

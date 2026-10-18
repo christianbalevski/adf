@@ -2,6 +2,9 @@
 // calls runCli (this module never runs itself).
 
 import { createInterface } from 'readline'
+import { runPair, runRemotes, type PairIo } from './pair'
+import { pinnedRemoteRefusal } from './remotes'
+import { stdinPrompt, type LinePrompt } from './prompt'
 import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
   AUTH_PROVIDER_LABELS,
@@ -49,6 +52,10 @@ export interface CliIo {
   readLines?: (onLine: (line: string) => void) => () => void
   /** Test seam for Ctrl-C. Calls fn on interrupt until the returned stop is called. */
   onInterrupt?: (fn: () => void) => () => void
+  /** Test seam: daemon discovery (adf pair without a host). */
+  discover?: PairIo['discover']
+  /** Test seam: environment for saved remotes (adf pair, adf remotes). */
+  env?: NodeJS.ProcessEnv
 }
 
 export interface CliCallbackServer {
@@ -122,10 +129,23 @@ async function daemonReady(io: CliIo, url: string): Promise<{ ok: boolean; start
   }
 }
 
+/**
+ * A saved remote's device token goes only to the computer it was paired with
+ * (remotes.ts pinnedRemoteRefusal). False = refused, and the reason printed.
+ */
+async function pinnedRemoteOk(io: CliIo, url: string, explicitToken: boolean): Promise<boolean> {
+  const env = io.env ?? process.env
+  if (explicitToken || env.ADF_DAEMON_TOKEN) return true
+  const refusal = await pinnedRemoteRefusal(url, env, io.fetch)
+  if (refusal) io.stderr(`${refusal}\n`)
+  return refusal === null
+}
+
 export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo): Promise<number> {
   const tuiArgv = tuiInvocation(argv)
   if (tuiArgv) {
     const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
+    if (!wantsHelp && !(await pinnedRemoteOk(io, urlFromArgv(tuiArgv), tuiArgv.some(a => a === '--token' || a.startsWith('--token='))))) return 1
     const ready = wantsHelp ? { ok: true, started: null } : await daemonReady(io, urlFromArgv(tuiArgv))
     if (!ready.ok) return 1
     try {
@@ -147,7 +167,9 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   }
 
   const { command, args, options } = parsed
-  if (!['help', '--help', '-h'].includes(command) && !(await daemonReady(io, options.daemonUrl)).ok) return 1
+  if (!['help', '--help', '-h', 'pair', 'remotes'].includes(command) && !(await pinnedRemoteOk(io, options.daemonUrl, !!options.token))) return 1
+  // pair / remotes talk to other computers or read local files: they never start this machine's daemon.
+  if (!['help', '--help', '-h', 'pair', 'remotes'].includes(command) && !(await daemonReady(io, options.daemonUrl)).ok) return 1
 
   try {
     switch (command) {
@@ -236,6 +258,16 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
         return await printGet(io, options, '/templates', formatTemplates)
       case 'new':
         return await newAgent(io, options, args)
+      case 'pair': {
+        const prompt = io.prompt ? null : stdinPrompt()
+        try {
+          return await runPair(args, { fetch: io.fetch, stdout: io.stdout, stderr: io.stderr, prompt: io.prompt ? ((q) => (io.prompt as NonNullable<CliIo['prompt']>)(q)) : ((q) => (prompt as LinePrompt).ask(q)), ...(io.discover ? { discover: io.discover } : {}), ...(io.sleep ? { sleep: io.sleep } : {}), ...(io.env ? { env: io.env } : {}) })
+        } finally {
+          prompt?.close()
+        }
+      }
+      case 'remotes':
+        return await runRemotes(args, { stdout: io.stdout, stderr: io.stderr, ...(io.env ? { env: io.env } : {}) }, options.json)
       default:
         io.stderr(`Unknown command: ${command}\n\n${usage()}\n`)
         return 2
@@ -248,7 +280,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
 
 function parseArgs(argv: string[]): ParsedArgs {
   const args = [...argv]
-  let daemonUrl = process.env.ADF_DAEMON_URL ?? DEFAULT_DAEMON_URL
+  let daemonUrl = resolveDaemonUrl(undefined)
   let json = false
   let token: string | undefined
   const positional: string[] = []
@@ -1493,6 +1525,13 @@ Commands:
   new [name] [--template <id>] [--provider <id>] [--model <id>]
       [--dir <path>] [--start]   Create an agent from a template, sealed
                                   with the owner identity (like Studio)
+  pair [<host>[:<port>]]
+      [--name <n>] [--yes]       Pair with another computer's daemon (its
+                                  6-digit code); without a host, lists the
+                                  ADF computers found on this network and
+                                  your tailnet. Saves the device token
+  remotes [use <name|local> | forget <name>]
+                                  Saved remote daemons; use picks the default
 
 Daemon:
   daemon [--port <n>] [--host <h>] [--settings <file>]
@@ -1509,12 +1548,18 @@ Daemon:
                                   containers stopped)
   daemon restart                 Stop, then start in the background
   daemon logs [-f] [-n <lines>]  Show the background daemon's log (-f follows)
-  daemon token                   Print this machine's daemon access token (for
-                                  clients on other machines: --token or
-                                  ADF_DAEMON_TOKEN)
+  daemon token                   Print this machine's daemon access token
+                                  (this machine only; other computers get a
+                                  device token: daemon devices add / pair)
+  daemon remote on|off|status    Remote access (live, no restart); also
+                                  trust|untrust, serve on|off
+  daemon devices [list|add <label>|revoke <id|label>]
+                                  Computers with a device token
+  daemon pair                    Open a pairing window and show its code
 
 Options:
   --url, -u <url>                Daemon URL
+  --remote <name>                A daemon saved by adf pair (adf remotes)
   --token <token>                Daemon access token (default: ADF_DAEMON_TOKEN,
                                   else the local daemon's token file)
   --json                         JSON output
@@ -1525,6 +1570,7 @@ Environment:
   ADF_DAEMON_URL                 Defaults to ${DEFAULT_DAEMON_URL}
   ADF_DAEMON_TOKEN               Daemon access token (overrides the local
                                   <data dir>/daemon-token file)
-  ADF_NO_AUTOSTART=1             Same as --no-daemon`
+  ADF_NO_AUTOSTART=1             Same as --no-daemon
+  ADF_REMOTE                     Same as --remote (local = this computer)`
 }
 

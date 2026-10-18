@@ -63,7 +63,31 @@ export interface StudioBackendConfig {
     token: string | null
     /** The user confirmed plain HTTP to a non-loopback, non-tailnet `url` (§9.2). */
     allowInsecureHttp: boolean
+    /**
+     * The computer `url` and `token` came from by pairing (remote-access.md
+     * §9.3); null or absent for a pasted token. It belongs to the token.
+     */
+    paired?: RemotePairedComputer | null
   }
+}
+
+/** A remote computer paired from Settings → Backend (remote-access.md §9.3). */
+export interface RemotePairedComputer {
+  fingerprint: string
+  name: string
+  deviceId: string
+  label: string
+}
+
+function readPaired(raw: unknown): RemotePairedComputer | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const field = (key: string): string | null => {
+    const value = r[key]
+    return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : null
+  }
+  const fingerprint = field('fingerprint'), name = field('name'), deviceId = field('deviceId'), label = field('label')
+  return fingerprint && name && deviceId && label ? { fingerprint, name, deviceId, label } : null
 }
 
 export interface SecretCodec {
@@ -189,8 +213,11 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
       warnings.push('remote.url is plain http to an address that is not loopback or tailnet, and allowInsecureHttp is not set; it is not used until confirmed')
     }
     if (r.token !== undefined && r.token !== null && config.remote.url) {
-      if (typeof r.token === 'string' && r.token.startsWith(SAFE_PREFIX)) config.remote.token = r.token
-      else {
+      if (typeof r.token === 'string' && r.token.startsWith(SAFE_PREFIX)) {
+        config.remote.token = r.token
+        const paired = readPaired(r.paired)
+        if (paired) config.remote.paired = paired
+      } else {
         warnings.push('remote.token is not an encrypted (safe:) token; ignored')
         dropped.push('the remote token, which was not stored encrypted')
       }
@@ -329,6 +356,7 @@ export function toBackendSettingsView(
       remoteUrl: config.remote.url,
       remoteTokenSaved: config.remote.token !== null,
       allowInsecureHttp: config.remote.allowInsecureHttp,
+      remotePaired: config.remote.paired ? { fingerprint: config.remote.paired.fingerprint, name: config.remote.paired.name, label: config.remote.paired.label } : null,
     },
     daemon,
     pendingSwitch,
@@ -357,7 +385,8 @@ function fail(code: BackendSettingsErrorCode, error: string): ApplyPatchResult {
 export function applyBackendPatch(
   current: StudioBackendConfig,
   patch: BackendSettingsPatch,
-  opts: { codec: SecretCodec },
+  /** `paired`: main only, when a pairing saves this URL and token (remote-access.md §9.3); never from the renderer's patch. */
+  opts: { codec: SecretCodec; paired?: RemotePairedComputer },
 ): ApplyPatchResult {
   const next: StudioBackendConfig = { ...current, remote: { ...current.remote } }
   const notices: string[] = []
@@ -439,6 +468,8 @@ export function applyBackendPatch(
     next.remote.token = null
     changes.push('remote token removed')
   }
+  // The pairing record belongs to the token: another token, or none, drops it.
+  if (next.remote.paired && (next.remote.token === null || patch.remoteToken !== undefined)) delete next.remote.paired
 
   if (patch.remoteToken !== undefined) {
     const token = patch.remoteToken.trim()
@@ -455,6 +486,10 @@ export function applyBackendPatch(
       return fail('encryption_unavailable', 'The token could not be encrypted. It was not saved.')
     }
     changes.push('remote token saved')
+    if (opts.paired) {
+      next.remote.paired = { ...opts.paired }
+      changes.push(`paired with ${opts.paired.name} (${opts.paired.fingerprint})`)
+    }
   }
 
   // Only a save that touches the remote fields is checked, so an unrelated
@@ -485,6 +520,8 @@ export function applyBackendPatch(
 export interface BackendSettingsStore {
   get(): BackendSettingsView
   set(patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult>
+  /** Main only: save the URL and token a pairing returned, with the paired computer (remote-access.md §9.3). */
+  savePairing(patch: Pick<BackendSettingsPatch, 'remoteUrl' | 'remoteToken' | 'allowInsecureHttp' | 'insecureHttpOrigin'>, paired: RemotePairedComputer): Promise<BackendSettingsSaveResult>
   /** Current config (main only; holds the encrypted token). */
   config(): StudioBackendConfig
 }
@@ -532,7 +569,7 @@ export function createBackendSettingsStore(deps: {
 
   const view = (): BackendSettingsView => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null, deps.pendingSwitch?.() ?? null)
 
-  const save = async (input: BackendSettingsPatch): Promise<BackendSettingsSaveResult> => {
+  const save = async (input: BackendSettingsPatch, paired?: RemotePairedComputer): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
     const { switchAction, ...rest } = input
     // Studio is restarting into a switch already: a mode change or a switch action now would not apply (nor be undone).
@@ -556,7 +593,7 @@ export function createBackendSettingsStore(deps: {
       patch = { ...rest, mode: restore }
     }
     const previous = current
-    const result = applyBackendPatch(current, patch, { codec: deps.codec })
+    const result = applyBackendPatch(current, patch, { codec: deps.codec, ...(paired ? { paired } : {}) })
     if (!result.ok) return result
     // A switch away from the running backend restarts Studio (D9); back to it is a plain save.
     const switching = result.config.mode !== current.mode && result.config.mode !== deps.boot.mode
@@ -598,6 +635,12 @@ export function createBackendSettingsStore(deps: {
     get: view,
     set: (patch) => {
       const run = queue.then(() => save(patch))
+      queue = run.catch(() => {})
+      return run
+    },
+    savePairing: (patch, paired) => {
+      const { remoteUrl, remoteToken, allowInsecureHttp, insecureHttpOrigin } = patch
+      const run = queue.then(() => save({ remoteUrl, remoteToken, allowInsecureHttp, insecureHttpOrigin }, paired))
       queue = run.catch(() => {})
       return run
     },

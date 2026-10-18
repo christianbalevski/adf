@@ -48,6 +48,8 @@ export interface BackendSettingsView {
     remoteTokenSaved: boolean
     /** The user confirmed sending the token over plain HTTP to `remoteUrl`. */
     allowInsecureHttp: boolean
+    /** The saved token came from pairing with this computer (remote-access.md §9.3); null for a pasted one. */
+    remotePaired?: { fingerprint: string; name: string; label: string } | null
   }
   /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
   daemon?: BackendDaemonStatus | null

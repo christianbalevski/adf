@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react'
 import { Button, SegmentedControl, SettingsGroup, SettingsRow, TextInput } from '../ui'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
+import { DiscoveredRow, RemoteAccessSummary } from './RemoteAccessSettings'
 import { checkRemoteDaemonUrl, remoteUrlOrigin, type RemoteUrlClass } from '../../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, RemoteCheckResult, StudioBackendMode } from '../../../shared/types/backend.types'
 
@@ -140,7 +141,7 @@ function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: strin
   )
 }
 
-export function BackendSettings() {
+export function BackendSettings({ onOpenNetworking }: { onOpenNetworking?: () => void } = {}) {
   const [view, setView] = useState<BackendSettingsView | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [urlDraft, setUrlDraft] = useState('')
@@ -255,6 +256,11 @@ export function BackendSettings() {
 
   const messageFor = (group: MessageGroup) =>
     message?.group === group ? message : null
+  /** A pairing saved a URL and token in main: show them (drafts reset). */
+  const reloadAfterPairing = () => {
+    setCheck(null)
+    window.adfApi.getBackendSettings().then((next) => adopt(next, true)).catch(() => {})
+  }
 
   return (
     <>
@@ -356,6 +362,7 @@ export function BackendSettings() {
             </span>
           </label>
         </SettingsRow>}
+        {(view.configured.mode === 'local' || view.active.mode === 'local') && onOpenNetworking && <RemoteAccessSummary onOpenNetworking={onOpenNetworking} />}
         {messageFor('backend') && (
           <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5">
             <MessageLine message={messageFor('backend')} />
@@ -368,8 +375,10 @@ export function BackendSettings() {
         description="Used when agents run on a remote computer."
         docs={DOCS.backendRemote}
       >
+        <DiscoveredRow onPaired={reloadAfterPairing} onSwitch={() => void save('remote', { mode: 'remote' }, '')} />
         <SettingsRow
           stacked
+          separator
           label="Daemon URL"
           help="https://, or http:// to localhost or a Tailscale address."
           error={urlCheck?.kind === 'invalid' ? urlCheck.reason : !urlChanged && view.remoteUrlProblem ? view.remoteUrlProblem : undefined}
@@ -399,7 +408,9 @@ export function BackendSettings() {
           separator
           label="Token"
           description={!view.configured.remoteTokenSaved
-            ? 'Run adf daemon token on the server and paste the result.'
+            ? 'Paste a token from Add a Computer on the other computer.'
+            : view.configured.remotePaired && !originChanged && !tokenDraft.trim()
+              ? `Paired with ${view.configured.remotePaired.name} as ${view.configured.remotePaired.label}. Enter a token to replace it.`
             : originChanged && !tokenDraft.trim()
               ? 'Saving the new address removes the saved token.'
               : 'A token is saved. Enter a new one to replace it.'}

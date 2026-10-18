@@ -517,6 +517,34 @@ export const CHANNEL_MAP = {
   [IPC.BACKEND_REMOTE_CHECK]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: the remote handshake (remote/connector.ts) against a draft URL, with the saved token only for the saved origin. Never returns the token.'),
   [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: relaunchStudio (mode-switch.ts), then the normal quit path.'),
 
+  // --- Remote access (remote-access.md §9.1) --------------------------------
+  // Registered in every mode in backend/remote-access-ipc.ts. The host
+  // channels answer { ok: false, code: 'unavailable' } outside local mode;
+  // in local mode they call the daemon's /remote-access routes (§11.2) with
+  // the master token and the local proof (routes listed in the notes until
+  // the routes are in openapi.json).
+  [IPC.REMOTE_ACCESS_GET]: local('invoke', 'Local mode: GET /remote-access[?refresh=1]. A pairing window open is re-read every second.'),
+  [IPC.REMOTE_ACCESS_SET]: local('invoke', 'Local mode: PUT /remote-access after a native confirmation when turning on.'),
+  [IPC.REMOTE_ACCESS_DEVICE_ADD]: local('invoke', 'Local mode: POST /remote-access/devices; the token is returned once to the renderer and never logged.'),
+  [IPC.REMOTE_ACCESS_DEVICE_REMOVE]: local('invoke', 'Local mode: DELETE /remote-access/devices/:id after a native confirmation.'),
+  [IPC.REMOTE_ACCESS_PAIRING_OPEN]: local('invoke', 'Local mode: POST /remote-access/pairing. A claim raises the native "Allow <device>?" dialog, answered with POST /remote-access/pairing/claims/:claimId.'),
+  [IPC.REMOTE_ACCESS_PAIRING_CLOSE]: local('invoke', 'Local mode: DELETE /remote-access/pairing.'),
+  [IPC.REMOTE_ACCESS_TAILSCALE_SERVE]: local('invoke', 'Local mode: POST /remote-access/tailscale-serve after a native confirmation naming the command.'),
+  [IPC.REMOTE_ACCESS_CHANGED]: local('push', 'Studio main pushes the host view after an action, a poll of an open pairing window, or the daemon\'s remote_access push topic.'),
+  [IPC.REMOTE_DISCOVERY_START]: local('invoke', 'Studio main reads this computer\'s one discovery feed: the daemon\'s GET /network/peers in local mode, else its own mDNS browse and tailnet hello sweep.'),
+  [IPC.REMOTE_DISCOVERY_STOP]: local('invoke', 'Stops the browse and the probes.'),
+  [IPC.REMOTE_DISCOVERY_UPDATE]: local('push', 'The merged list of computers found; no token.'),
+  [IPC.REMOTE_PAIR_START]: local('invoke', 'GET /remote/hello on the other computer (no token).'),
+  [IPC.REMOTE_PAIR_SUBMIT_CODE]: local('invoke', 'POST /pair/claim, then the GET /pair/claims/:claimId long poll on the other computer; the token is saved in studio-backend.json as safe: and never returned.'),
+  [IPC.REMOTE_PAIR_CANCEL]: local('invoke', 'Stops the pairing flow here.'),
+  [IPC.REMOTE_PAIR_STATE]: local('push', 'Pairing progress and errors; never the code or the token.'),
+  [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
+  [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
+  [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),
+  [IPC.NETWORK_NOTICE_DISMISS]: local('invoke', 'Not now on a notice: it goes and is not shown again this session.'),
+  [IPC.NETWORK_NOTICES_CHANGED]: local('push', 'The notices list, pushed when one is shown, dismissed, allowed or withdrawn; non-modal, never a dialog.'),
+  [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),
+
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------
   [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),
   [IPC.REMOTE_PICKER_RESPOND]: local('invoke', 'Settles the pick remote/picker.ts is waiting for; reads no daemon state. Outside daemon mode it answers false (backend-settings-ipc.ts).'),

@@ -12,6 +12,7 @@ import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { MeshServer } from '../services/mesh-server'
+import { LanReach } from '../services/lan-reach'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { PackageResolver } from '../services/mcp-package-resolver'
 import { UvManager } from '../services/uv-manager'
@@ -19,6 +20,8 @@ import { UvxPackageResolver } from '../services/uvx-package-resolver'
 import { killAllHostExecs } from '../services/host-exec.service'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { DaemonHost } from './daemon-host'
+import { RemoteAccessService } from './remote-access/service'
+import { isLoopbackName } from './request-guard'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
@@ -40,7 +43,7 @@ import { killAllTracked } from '../utils/child-registry'
 import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
-import { takeLaunchEnv } from './routes/meta-routes'
+import { CLIENT_API_VERSION, takeLaunchEnv } from './routes/meta-routes'
 import { daemonGapRouteDeps } from './routes/gap-deps'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
 import { applySettingLive } from './live-setting'
@@ -247,6 +250,8 @@ meshManager.setWsConnectionManager(wsConnectionManager)
 // /ping advertises the runtime DID + delegation the daemon signs with (Studio's
 // only when adopted), not whatever the shared settings file holds.
 const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
+// LAN mode: only on networks the user allowed, the rule and the list remote access uses (remote-access.md §3.3.1).
+meshServer.setLanReach(new LanReach({ settingsDir: dirname(settingsPath) }))
 // When the mesh server binds, and a stop on request that holds (mesh-controls.ts).
 const meshServerBinder = createMeshServerBinder({ settings, mesh: meshManager, server: meshServer })
 meshServer.setMeshManager(meshManager)
@@ -263,6 +268,8 @@ const runtimeDiscovery = new RuntimeDiscovery({
   mesh: meshManager,
   getRuntimeDid: discoveryRuntimeDid,
   getOwnerDid: () => (settings.get('ownerDid') as string | undefined) || undefined,
+  // The one tailnet sweep also asks each peer's daemon port for /remote/hello (remote-access.md §5.2).
+  daemonPort: port,
 })
 runtimeDiscovery.start()
 // The mDNS TXT record carries the runtime DID: re-announce when the daemon
@@ -376,6 +383,32 @@ const client = createDaemonClientSessions({
     },
   },
 })
+// --- Remote access (docs/design/remote-access.md) -------------------------------
+// Other computers reach this daemon on its private and Tailscale addresses
+// when remote-access.json says so, whoever started it. Listeners open after
+// the loopback one (DaemonHost.start). A non-loopback ADF_DAEMON_HOST is the
+// older env path and wins.
+const remoteAccess = new RemoteAccessService({
+  settingsDir: dirname(settingsPath),
+  port,
+  clientApiVersion: CLIENT_API_VERSION,
+  envBindHost: isLoopbackName(host) ? null : host,
+  // tailscale serve's Tailscale-User-* headers are trusted only in proxy mode, from a loopback peer.
+  behindProxy,
+  sessions: () => client.sessions,
+  // One name for other computers: the runtime alias (Settings → Identity), else the host name.
+  runtimeAlias: { get: () => settings.get('runtimeAlias'), set: (name) => settings.set('runtimeAlias', name) },
+  // This machine's own clients only (LOCAL_ONLY_PUSH_TOPICS): never the
+  // umbilical bus, which GET /events serves to device tokens and agent taps read.
+  emit: (event) => client.sessions.publishPush('remote_access', event),
+  // One announcement (remote-access.md §5.1): remote access's fields join the discovery service's _adf-runtime._tcp record.
+  announcer: runtimeDiscovery.remoteAnnouncer(),
+  // One consent list: the mesh's LAN listeners follow an allow or a remove at once.
+  onNetworksChanged: () => { void meshServer.syncLan(true) },
+  meshLan: () => meshServer.isLanMode(),
+})
+// The feed changed: this machine's own clients re-read GET /network/peers (one event stream, peers_changed).
+runtimeDiscovery.onPeersChanged(() => client.sessions.publishPush('remote_access', { type: 'peers_changed' }))
 agentFactory.startTemplatesWatcher()
 // Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.
 void sweepStaleSnapshots().then((removed) => {
@@ -401,7 +434,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher, remoteAccess },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
@@ -419,6 +452,7 @@ const daemon = new DaemonHost({
         running: meshServer.isRunning(),
         port: meshServer.getPort(),
         host: meshServer.getHost(),
+        lanAddresses: meshServer.getLanAddresses(),
       },
       agents: meshManager.getAgentStatuses(),
       debug: meshManager.getDebugInfo(),
@@ -437,9 +471,11 @@ const daemon = new DaemonHost({
       running: meshServer.isRunning(),
       port: meshServer.getPort(),
       host: meshServer.getHost(),
+      lanAddresses: meshServer.getLanAddresses(),
     }),
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
+    getPeers: (args: { waitMs?: number }) => runtimeDiscovery.peers(args),
   },
   // The admin install routes report progress on the client stream, as
   // Studio's install handlers push *_INSTALL_PROGRESS (client-wiring.ts).

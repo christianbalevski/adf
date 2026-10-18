@@ -13,6 +13,7 @@ import { ShareAgentDialog } from '../common/ShareAgentDialog'
 import { AgentReviewBanner } from '../common/AgentReviewBanner'
 import { RecoveredEditsNotice } from '../common/RecoveredEditsNotice'
 import { IdentityRestoreBanner } from '../common/IdentityRestoreBanner'
+import { NetworkNoticeBanner } from '../common/NetworkNoticeBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
 import { ApprovalToasts } from './ApprovalsMenu'
@@ -198,6 +199,8 @@ export function AppShell() {
       {!showMeshGraph && !showSettings && <IdentityRestoreBanner />}
       {/* W3-F: unsaved versions a quit left under a "changed elsewhere" notice. */}
       {!showMeshGraph && <RecoveredEditsNotice />}
+      {/* Remote access paused on a network not allowed: non-modal, everywhere but the fleet map (it has its own bar). */}
+      {!showMeshGraph && <NetworkNoticeBanner />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Settings has its own navigation; the workspace tree stays out of

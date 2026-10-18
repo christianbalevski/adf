@@ -557,6 +557,11 @@ export async function askVersionMismatch(
 
 let relaunching = false
 
+/** A restart has started (app.relaunch is set): its quit is not held by another question. */
+export function isRelaunching(): boolean {
+  return relaunching
+}
+
 /**
  * One restart per process: each app.relaunch() starts one more instance at
  * quit, so a second request (the window's answer and main's fallback, or

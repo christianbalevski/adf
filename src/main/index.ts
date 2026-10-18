@@ -22,10 +22,12 @@ import { backendConfigPath, resolveBootBackend, type BackendSettingsStore } from
 import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/backend-settings-ipc'
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
+import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
   askVersionMismatch,
   createModeSwitcher,
+  isRelaunching,
   notifyDaemonOfHandover,
   relaunchStudio,
   restartingMessage,
@@ -125,6 +127,20 @@ let daemonMode: DaemonModeHandle | null = null
 let embeddedIpc: EmbeddedIpc | null = null
 // Set when Settings → Backend confirmed a switch: the quit that follows is a restart into it.
 let switchingTo: StudioBackendMode | null = null
+// Settings → Backend → This computer, discovery, pairing and the quit question (remote-access.md).
+let remoteAccess: RemoteAccessIpc | null = null
+// A quit from a signal is not held for the question about connected computers.
+let quitUnasked = false
+/**
+ * Owner decision 5 (remote-access.md §3.6): a quit while other computers are
+ * connected to the daemon Studio would stop asks first. Not for a signal, an
+ * update, a switch or a restart (they have their own dialogs, or none can be
+ * shown). True: go on now; false: held, `resume` runs after the answer.
+ */
+function remoteQuitHold(resume: () => void): boolean {
+  if (!remoteAccess || quitUnasked || quittingForUpdate || switchingTo !== null || isRelaunching()) return true
+  return remoteAccess.quitGate.hold(resume)
+}
 // Set at the end of the whenReady continuation, once IPC handlers and the
 // adf-file protocol exist. app.isReady() flips earlier, on the 'ready' event.
 let startupComplete = false
@@ -161,8 +177,13 @@ function runShutdownCleanup(): Promise<void> {
       // Daemon mode runs no agents here: quitting ends the client session and,
       // per keepDaemonRunning, stops the daemon Studio started (§8.3). A switch
       // to embedded waits for that daemon, so embedded Studio can start its agents.
+      remoteAccess?.dispose()
       const cleanup = daemonMode
-        ? daemonMode.shutdown(switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? { waitForDaemonExitMs: SWITCH_DAEMON_EXIT_WAIT_MS } : undefined)
+        ? daemonMode.shutdown({
+          ...(switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? { waitForDaemonExitMs: SWITCH_DAEMON_EXIT_WAIT_MS } : {}),
+          // "Keep Running" in the question about connected computers: this quit only.
+          ...(remoteAccess?.quitGate.keepDaemonForThisQuit ? { keepDaemonRunning: true } : {}),
+        })
         : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
       const { timedOut } = await withDeadline(cleanup, daemonMode && switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? SWITCH_DAEMON_EXIT_WAIT_MS + 3_000 : budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
@@ -191,6 +212,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as NodeJS.Signals[
       return
     }
     console.log(`[App] Received ${sig} — quitting`)
+    quitUnasked = true
     // Windows grants ~5s on console close/logoff before killing the process.
     if (process.platform === 'win32') shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
     app.quit()
@@ -410,12 +432,17 @@ function createWindow(): BrowserWindow {
   // Every orderly exit starts with the window closing. Log the request so the
   // main log can distinguish a user/OS close (this line, then cleanup) from a
   // hard kill (log simply stops).
-  mainWindow.on('close', () => {
-    console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
-  })
   // Drop the reference so later requests recreate the window instead of
   // calling into a destroyed one (macOS keeps the app alive with no window).
   const createdWindow = mainWindow
+  mainWindow.on('close', (event) => {
+    console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
+    // Windows and Linux: closing the window quits, so computers connected to the daemon are asked about first.
+    if (process.platform !== 'darwin' && !shutdownCleanup && !remoteQuitHold(() => { if (!createdWindow.isDestroyed()) createdWindow.close() })) {
+      event.preventDefault()
+      console.log('[App] Main window close held: asking about the computers connected to the ADF daemon')
+    }
+  })
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
     if (mainWindow === createdWindow) mainWindow = null
@@ -612,6 +639,7 @@ app.whenReady().then(async () => {
       // Read at quit: a change in Settings → Backend applies to the next quit.
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,
+      onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
       ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
     })
     const handle = daemonMode
@@ -647,6 +675,17 @@ app.whenReady().then(async () => {
     cancelSwitch: switcher.cancel,
     restarting: () => { const target = switcher.restartingInto(); return target ? restartingMessage(target) : null },
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
+  })
+  remoteAccess = registerRemoteAccessHandlers({
+    mode: backend.mode,
+    daemon: () => daemonMode,
+    backend: backendStore,
+    codec: safeStorageCodec,
+    window: () => mainWindow,
+    keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
+    settingsDir: getUserDataPath(),
+    meshLan: () => embeddedIpc?.meshLanState() ?? null,
+    meshPeers: () => embeddedIpc?.meshPeerFeed() ?? null,
   })
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))
@@ -747,6 +786,10 @@ app.on('before-quit', (event) => {
   if (quittingForUpdate) return
   event.preventDefault()
   if (shutdownCleanup) return
+  if (!remoteQuitHold(() => app.quit())) {
+    console.log('[App] before-quit held: asking about the computers connected to the ADF daemon')
+    return
+  }
   console.log('[App] before-quit — starting shutdown cleanup')
   // A boot dialog still open (macOS keeps one after its window closed) is no answer: nothing restarts from it.
   dismissBootDialogs('Studio is quitting')

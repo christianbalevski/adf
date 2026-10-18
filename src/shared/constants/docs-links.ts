@@ -96,7 +96,13 @@ export const DOCS = {
   backendStatus: guideUrl('studio-backend', 'daemon-status'),
   backendQuit: guideUrl('studio-backend', 'quit-studio'),
   backendEmbedded: guideUrl('studio-backend', 'run-agents-inside-studio-when-the-daemon-does-not-work'),
-  backendRemote: guideUrl('studio-backend', 'remote-computer')
+  backendRemote: guideUrl('studio-backend', 'remote-computer'),
+
+  // Remote access (Settings → Networking; client side in Settings → Backend)
+  remoteAccess: guideUrl('studio-backend', 'remote-access'),
+  remoteAccessPair: guideUrl('studio-backend', 'pair-device'),
+  remoteAccessDiscovered: guideUrl('studio-backend', 'discovered'),
+  networkingStatus: guideUrl('settings', 'network-status')
 } as const
 
 export type DocsKey = keyof typeof DOCS

@@ -5,7 +5,7 @@
  * is read at quit. After a handover the daemon is asked to reload its
  * credential stores; Settings → Backend gets the daemon line.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,6 +16,7 @@ import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { registerDaemonModeHandlers } from '../../src/main/backend/daemon-mode'
 import type { ClientQuitAnswer } from '../../src/main/backend/daemon-mode/client-stream'
 import type { DaemonVersionInfo } from '../../src/main/daemon/routes/meta-routes'
+import { localProofPath } from '../../src/main/daemon/local-access'
 
 const BASE = 'http://127.0.0.1:47385'
 const TOKEN = 'a'.repeat(43)
@@ -27,9 +28,10 @@ const versionInfo = (over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo =
   localProof: { available: false, problem: 'the local proof file could not be written or protected: icacls failed' }, ...over,
 })
 
-async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>; pending?: unknown[] }) {
+async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>; pending?: unknown[]; onRemoteAccessEvent?: (payload: unknown) => void; proof?: string }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-quit-'))
   dirs.push(dir)
+  if (opts.proof) writeFileSync(localProofPath(dir, 47385), opts.proof)
   const daemon = createFakeDaemon(BASE)
   daemon.routes.set('GET /agents', () => [])
   daemon.routes.set('GET /approvals', () => ({ pending: opts.pending ?? [], history: [] }))
@@ -56,6 +58,7 @@ async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => b
     keepDaemonRunning: opts.keep,
     reloadCredentials: opts.reloadCredentials,
     waitForExit: opts.waitForExit,
+    onRemoteAccessEvent: opts.onRemoteAccessEvent,
     log,
   })
   expect(await handle.ready).toBe(true)
@@ -155,5 +158,33 @@ describe('after a handover, and Settings → Backend', () => {
     daemon.routes.set('GET /version', () => versionInfo())
     await session.listener!.onReattached?.({ epochChanged: false })
     await vi.waitFor(() => expect(handle.status()).toMatchObject({ pid: 4242, startedBy: 'studio', how: 'spawned' }))
+  })
+})
+
+describe('daemon mode and remote access (remote-access.md)', () => {
+  it('Keep running in the quit question: this quit leaves the daemon running although keep-running is off', async () => {
+    const { handle, quits, logs } = await boot({ keep: false })
+    await handle.shutdown({ keepDaemonRunning: true })
+    expect(quits).toEqual([false])
+    expect(logs).toContain('[Backend] Quit: the ADF daemon keeps running for the computers connected to it (this quit only)')
+  })
+
+  it('client(): the management routes get the master token and the local proof; other routes no proof', async () => {
+    const proof = 'p'.repeat(43)
+    const { handle, daemon } = await boot({ keep: false, proof })
+    daemon.routes.set('GET /remote-access', () => ({ enabled: false }))
+    const client = await handle.client()
+    await client.request('GET', '/remote-access', { query: { refresh: '1' } })
+    const req = daemon.requests.find((r) => r.path === '/remote-access')!
+    expect(req.auth).toBe(`Bearer ${TOKEN}`)
+    expect(req.headers['x-adf-local-proof']).toBe(proof)
+    expect(daemon.requests.find((r) => r.path === '/agents')?.headers['x-adf-local-proof']).toBeUndefined()
+  })
+
+  it('the remote_access push reaches Studio main (the host panel re-reads the status)', async () => {
+    const events: unknown[] = []
+    const { session } = await boot({ keep: false, onRemoteAccessEvent: (p) => events.push(p) })
+    session.listener!.onFrame({ kind: 'push', topic: 'remote_access', payload: { type: 'device_added', deviceId: 'd1', label: 'agent-2 laptop' } } as never)
+    expect(events).toEqual([{ type: 'device_added', deviceId: 'd1', label: 'agent-2 laptop' }])
   })
 })

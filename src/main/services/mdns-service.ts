@@ -1,6 +1,9 @@
+import { randomBytes } from 'crypto'
 import { EventEmitter } from 'events'
 import { hostname, networkInterfaces, type NetworkInterfaceInfo } from 'os'
 import { Bonjour, type Service } from 'bonjour-service'
+import type { NetworkPeer } from '../../shared/types/remote-access.types'
+import { peerName, txtWithinBounds } from './peer-text'
 
 /**
  * Discovered remote ADF runtime, as seen through mDNS browsing.
@@ -21,22 +24,80 @@ export interface DiscoveredRuntime {
   source?: 'mdns' | 'tailnet' | 'manual'
 }
 
-export interface MdnsStartOptions {
+/**
+ * Remote access in the one announcement (docs/design/remote-access.md §5.1):
+ * only while remote access is on and a LAN address of an allowed network
+ * listens. Never a token, a code, an owner DID, a path or a user name.
+ */
+export interface RemoteAnnouncement {
+  /** The computer name (the runtime alias, else the host name). */
+  name: string
+  /** The ADF daemon's port. */
+  port: number
+  fingerprint: string
+  pairingOpen: boolean
+  /** The daemon's client API version. */
+  api: string
+  /** The runtime alias, when the user set one: the instance name of a record without the mesh. */
+  alias?: string | null
+}
+
+export interface MdnsAnnouncement {
+  /** Publish `_adf-runtime._tcp`: the mesh is LAN-visible, or remote access is on (or both). */
   announce: boolean
+  /** The mesh is visible to other computers (TXT `mesh=0` when not). Default true. */
+  mesh?: boolean
+  remote?: RemoteAnnouncement | null
+}
+
+export interface MdnsStartOptions extends MdnsAnnouncement {
   browse: boolean
   port: number
   runtimeId: string
   runtimeDid?: string
+  /** The LAN address to announce from (an address of an allowed network). Default: pickMdnsInterface(). */
+  iface?: string
+}
+
+/**
+ * One sighting of a daemon with remote access on. Kept per source (an
+ * announcement instance, a tailnet address), never merged into another:
+ * one fingerprint at two addresses is shown twice and flagged (discovery
+ * review 3).
+ */
+interface RemoteSighting {
+  /** Cleaned and bounded at intake (peerName). */
+  name: string
+  address: string
+  port: number
+  pairingOpen: boolean
+  kind: 'lan' | 'tailnet'
+  /** The runtime announcing it (`_adf-runtime._tcp` with its mesh). */
+  runtimeId: string | null
+  /** The addresses the announcement itself lists (its A/AAAA records); empty for a tailnet sighting. */
+  listed: string[]
 }
 
 const SERVICE_TYPE = 'adf-runtime'
+/**
+ * The remote-access-only announcement of this PR's intermediate commits.
+ * Still browsed for one release so such a daemon is found; never announced.
+ * TODO(remove after the next release): LEGACY_DAEMON_SERVICE_TYPE and its browser.
+ */
+export const LEGACY_DAEMON_SERVICE_TYPE = 'adf-daemon'
+/** Fingerprint as the daemon shows it: `XXXX-XXXX`, RFC 4648 base32. */
+const FINGERPRINT = /^[A-Z2-7]{4}-[A-Z2-7]{4}$/
 export const PROTO_VERSION = 'alf/0.2'
 const DIRECTORY_PATH = '/agents'
 const GOODBYE_FLUSH_MS = 100
 
 /**
- * Thin wrapper around `bonjour-service` that announces this runtime and
- * browses for peers.
+ * The one mDNS endpoint of a process (docs/design/remote-access.md §5.1):
+ * one Bonjour instance, one `_adf-runtime._tcp` announcement carrying the
+ * mesh and, while remote access is on, its fields, and one browser (plus
+ * the legacy `_adf-daemon._tcp` one for a release). One cache feeds the
+ * mesh peer list (`getDiscoveredRuntimes`), Studio's Discovered list and
+ * `adf pair` (`peers()`); every change emits `peers_changed`.
  *
  * - Announcement is gated externally (caller passes `announce: true` only when
  *   at least one LAN-tier agent is configured).
@@ -54,13 +115,28 @@ export class MdnsService extends EventEmitter {
   private bonjour: Bonjour | null = null
   private published: Service | null = null
   private discovered = new Map<string, DiscoveredRuntime>()
+  /** Remote-access sightings: fingerprint → source (`mdns:<instance>`, `legacy:<instance>`, `tailnet:<address>`) → sighting. */
+  private remotes = new Map<string, Map<string, RemoteSighting>>()
   private selfRuntimeId: string | null = null
+  private selfFingerprint: string | null = null
+  private base: { port: number; runtimeId: string; runtimeDid?: string } | null = null
+  private announced: string | null = null
+  private announcedRemote = false
+  /**
+   * The instance name of a record without the mesh when no alias is set: random
+   * per service, so per network (a network change restarts the service). Nothing
+   * in such a record links it to this runtime on another network.
+   */
+  private readonly hiddenToken = randomBytes(6).toString('hex')
 
   /** True iff we've successfully published our own service record. */
   isAnnouncing(): boolean { return this.published !== null }
 
+  /** True while the published record carries remote access. */
+  isAnnouncingRemote(): boolean { return this.published !== null && this.announcedRemote }
+
   async start(opts: MdnsStartOptions): Promise<void> {
-    const iface = pickMdnsInterface()
+    const iface = opts.iface ?? pickMdnsInterface()
     try {
       // bonjour-service's type decl doesn't include `interface`/`bind`, but it
       // forwards unknown opts straight to multicast-dns which accepts them.
@@ -83,45 +159,92 @@ export class MdnsService extends EventEmitter {
     console.log(`[mdns] using interface=${iface ?? '<default/all>'} (bind=${iface ? '0.0.0.0' : '<default>'})`)
 
     this.selfRuntimeId = opts.runtimeId
+    this.base = { port: opts.port, runtimeId: opts.runtimeId, ...(opts.runtimeDid ? { runtimeDid: opts.runtimeDid } : {}) }
 
-    if (opts.announce) {
-      try {
-        const host = ensureLocalSuffix(hostname())
-        const txt: Record<string, string> = {
-          runtime_id: opts.runtimeId,
-          proto: PROTO_VERSION,
-          directory: DIRECTORY_PATH
-        }
-        if (opts.runtimeDid) txt.runtime_did = opts.runtimeDid
-        this.published = this.bonjour.publish({
-          name: `adf-${opts.runtimeId}`,
-          type: SERVICE_TYPE,
-          protocol: 'tcp',
-          port: opts.port,
-          host,
-          txt,
-          // The name is runtime_id-unique, so the only record that can hold
-          // it is our OWN stale announcement from before a restart — probing
-          // sees that ghost within its TTL and throws "Service name is
-          // already in use on the network" (async, from multicast-dns'
-          // onresponse, so no try/catch reaches it). Skip the probe.
-          probe: false
-        })
-        console.log(`[mdns] announcing _${SERVICE_TYPE}._tcp as ${host}:${opts.port} (runtime_id=${opts.runtimeId})`)
-      } catch (err) {
-        console.error('[mdns] publish failed:', err)
-      }
-    }
+    await this.updateAnnouncement(opts)
 
     if (opts.browse) {
       try {
         const browser = this.bonjour.find({ type: SERVICE_TYPE, protocol: 'tcp' })
         browser.on('up', (service: Service) => this.onServiceUp(service))
         browser.on('down', (service: Service) => this.onServiceDown(service))
-        console.log(`[mdns] browsing for _${SERVICE_TYPE}._tcp peers`)
+        // TODO(remove after the next release): daemons built from this PR's intermediate commits.
+        const legacy = this.bonjour.find({ type: LEGACY_DAEMON_SERVICE_TYPE, protocol: 'tcp' })
+        legacy.on('up', (service: Service) => this.onLegacyDaemonUp(service))
+        legacy.on('down', (service: Service) => this.onLegacyDaemonDown(service))
+        console.log(`[mdns] browsing for _${SERVICE_TYPE}._tcp peers (and legacy _${LEGACY_DAEMON_SERVICE_TYPE}._tcp)`)
       } catch (err) {
         console.error('[mdns] browse failed:', err)
       }
+    }
+  }
+
+  /**
+   * Publish, change or withdraw the one announcement without touching the
+   * browser. bonjour-service cannot change a published TXT record, so a
+   * change (pairing window opened, remote access on) re-publishes.
+   */
+  async updateAnnouncement(next: MdnsAnnouncement): Promise<void> {
+    const bonjour = this.bonjour
+    const base = this.base
+    if (!bonjour || !base) return
+    const mesh = next.mesh ?? true
+    const remote = next.announce ? next.remote ?? null : null
+    const key = next.announce ? JSON.stringify({ mesh, remote }) : null
+    // Unchanged: nothing to do (a publish that did not take is not retried until something changes).
+    if (key === this.announced) return
+    if (this.published) {
+      const old = this.published
+      this.published = null
+      await new Promise<void>((resolve) => {
+        try { (old as unknown as { stop?: (cb: () => void) => void }).stop?.(() => resolve()) ?? resolve() } catch { resolve() }
+        setTimeout(resolve, GOODBYE_FLUSH_MS)
+      })
+    }
+    this.announced = key
+    this.announcedRemote = false
+    this.selfFingerprint = remote?.fingerprint ?? this.selfFingerprint
+    if (!next.announce) return
+    try {
+      const host = ensureLocalSuffix(hostname())
+      // The mesh hidden (discovery review 2): only the remote-access fields, and an instance name that
+      // is not the runtime id, so a hidden runtime's id and DID cannot be followed from network to network.
+      const hidden = !mesh && !!remote
+      const txt: Record<string, string> = hidden ? {} : {
+        runtime_id: base.runtimeId,
+        proto: PROTO_VERSION,
+        directory: DIRECTORY_PATH
+      }
+      if (!hidden && base.runtimeDid) txt.runtime_did = base.runtimeDid
+      if (remote) {
+        txt.v = '1'
+        txt.fp = remote.fingerprint
+        txt.pair = remote.pairingOpen ? '1' : '0'
+        txt.daemon_port = String(remote.port)
+        if (!hidden) {
+          txt.api = remote.api
+          txt.name = remote.name
+        }
+      }
+      this.published = bonjour.publish({
+        name: hidden ? remote!.alias || `adf-${this.hiddenToken}` : `adf-${base.runtimeId}`,
+        type: SERVICE_TYPE,
+        protocol: 'tcp',
+        // A mesh that is not LAN-visible has nothing to reach on its port: the daemon's then.
+        port: hidden ? remote!.port : base.port,
+        host,
+        txt,
+        // The name is runtime_id-unique, so the only record that can hold
+        // it is our OWN stale announcement from before a restart — probing
+        // sees that ghost within its TTL and throws "Service name is
+        // already in use on the network" (async, from multicast-dns'
+        // onresponse, so no try/catch reaches it). Skip the probe.
+        probe: false
+      })
+      this.announcedRemote = !!remote
+      console.log(`[mdns] announcing _${SERVICE_TYPE}._tcp as ${host}:${base.port} (runtime_id=${base.runtimeId}${mesh ? '' : ', mesh not visible'}${remote ? `, remote access fp ${remote.fingerprint} on ${remote.port}, pairing ${remote.pairingOpen ? 'open' : 'closed'}` : ''})`)
+    } catch (err) {
+      console.error('[mdns] publish failed:', err)
     }
   }
 
@@ -149,7 +272,118 @@ export class MdnsService extends EventEmitter {
     } catch { /* best-effort */ }
 
     this.published = null
+    this.announced = null
+    this.announcedRemote = false
     this.discovered.clear()
+    this.remotes.clear()
+  }
+
+  /**
+   * The feed: every ADF computer found, with both capabilities. The mesh
+   * list is the entries with a mesh; Studio's Discovered list and
+   * `adf pair` are the entries with remote access.
+   */
+  peers(): NetworkPeer[] {
+    const out: NetworkPeer[] = []
+    const byAddress = new Map<string, NetworkPeer>()
+    const clashEntry = (fp: string, sighting: RemoteSighting, count: number): NetworkPeer => ({
+      key: `fp:${fp}@${sighting.address}`,
+      name: sighting.name,
+      source: sighting.kind === 'tailnet' ? 'tailnet' : 'mdns',
+      mesh: null,
+      remote: { url: buildBaseUrl(sighting.address, sighting.port), port: sighting.port, fingerprint: fp, pairingOpen: sighting.pairingOpen, kind: sighting.kind, clash: count },
+    })
+    for (const [fp, sightings] of this.remotes) {
+      const list = [...sightings.values()]
+      if (list.length === 0) continue
+      const lan = list.filter((s) => s.kind === 'lan')
+      const tailnet = list.filter((s) => s.kind === 'tailnet')
+      // A LAN and a tailnet sighting are one computer only on the host's own word: its LAN record lists
+      // that exact tailnet IP. The tailnet address is WireGuard-authenticated, so nobody else can make the
+      // real host's record name theirs (discovery re-check). Otherwise both are listed, flagged, neither preferred.
+      const merged = lan.length === 1 && tailnet.length === 1 && lan[0].listed.includes(tailnet[0].address.toLowerCase())
+      if (!merged && list.length > 1) {
+        for (const s of list) out.push(clashEntry(fp, s, list.length))
+        continue
+      }
+      const best = merged ? tailnet[0] : list[0]
+      const entry: NetworkPeer = {
+        key: `fp:${fp}`,
+        // Merged: the tailnet host's own name (authenticated address), not the LAN record's.
+        name: best.name,
+        source: best.kind === 'tailnet' ? 'tailnet' : 'mdns',
+        mesh: null,
+        remote: { url: buildBaseUrl(best.address, best.port), port: best.port, fingerprint: fp, pairingOpen: list.some((s) => s.pairingOpen), kind: best.kind, clash: null },
+      }
+      out.push(entry)
+      byAddress.set(best.address.toLowerCase(), entry)
+    }
+    // A mesh runtime joins an entry only when it comes from the same source address as that entry.
+    for (const runtime of this.discovered.values()) {
+      let host = ''
+      try { host = new URL(runtime.url).hostname.replace(/^\[|\]$/g, '').toLowerCase() } catch { /* no link */ }
+      const entry = host ? byAddress.get(host) : undefined
+      if (entry && !entry.mesh) {
+        entry.key = runtime.runtime_id
+        entry.mesh = { url: runtime.url, port: runtime.port }
+        if (entry.source === 'mdns') entry.source = runtime.source ?? 'mdns'
+        continue
+      }
+      out.push({
+        key: runtime.runtime_id,
+        name: runtime.host.replace(/\.local\.?$/, ''),
+        source: runtime.source ?? 'mdns',
+        mesh: { url: runtime.url, port: runtime.port },
+        remote: null,
+      })
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key))
+  }
+
+  /** The tailnet sweep found an ADF daemon with remote access on (GET /remote/hello, already bounded and checked). */
+  upsertTailnetDaemon(found: { fingerprint: string; name: string; address: string; port: number; pairingOpen: boolean }): void {
+    if (!FINGERPRINT.test(found.fingerprint) || found.fingerprint === this.selfFingerprint) return
+    const name = peerName(found.name) ?? found.fingerprint
+    if (this.setSighting(found.fingerprint, `tailnet:${found.address}`, { name, address: found.address, port: found.port, pairingOpen: found.pairingOpen, kind: 'tailnet', runtimeId: null, listed: [] })) {
+      this.emit('peers_changed')
+    }
+  }
+
+  /** After a tailnet sweep: sightings it no longer found (`<fingerprint>@<address>`) go. */
+  expireTailnetDaemons(seen: ReadonlySet<string>): void {
+    let changed = false
+    for (const [fp, sightings] of this.remotes) {
+      for (const [source, s] of sightings) {
+        if (s.kind !== 'tailnet' || seen.has(`${fp}@${s.address}`)) continue
+        sightings.delete(source)
+        changed = true
+      }
+      if (sightings.size === 0) this.remotes.delete(fp)
+    }
+    if (changed) this.emit('peers_changed')
+  }
+
+  /** Store a sighting; true when something changed. */
+  private setSighting(fp: string, source: string, sighting: RemoteSighting): boolean {
+    const sightings = this.remotes.get(fp) ?? new Map<string, RemoteSighting>()
+    const before = JSON.stringify(sightings.get(source) ?? null)
+    sightings.set(source, sighting)
+    this.remotes.set(fp, sightings)
+    return before !== JSON.stringify(sighting)
+  }
+
+  /** Drop sightings that match; true when something went. */
+  private dropSightings(match: (fp: string, source: string, s: RemoteSighting) => boolean): boolean {
+    let changed = false
+    for (const [fp, sightings] of this.remotes) {
+      for (const [source, s] of sightings) {
+        if (!match(fp, source, s)) continue
+        sightings.delete(source)
+        changed = true
+      }
+      if (sightings.size === 0) this.remotes.delete(fp)
+    }
+    return changed
   }
 
   getDiscoveredRuntimes(): DiscoveredRuntime[] {
@@ -198,7 +432,10 @@ export class MdnsService extends EventEmitter {
     }
     const isNew = !existing || existing.url !== next.url
     this.discovered.set(entry.runtime_id, next)
-    if (isNew) this.emit('discovered', next)
+    if (isNew) {
+      this.emit('discovered', next)
+      this.emit('peers_changed')
+    }
   }
 
   /** Remove an externally-sourced peer (never touches mDNS entries). */
@@ -207,6 +444,7 @@ export class MdnsService extends EventEmitter {
     if (!entry || (entry.source ?? 'mdns') === 'mdns') return
     this.discovered.delete(runtimeId)
     this.emit('expired', entry)
+    this.emit('peers_changed')
   }
 
   // --- Internal ---
@@ -214,7 +452,10 @@ export class MdnsService extends EventEmitter {
   private onServiceUp(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
     const runtimeId = typeof txt.runtime_id === 'string' ? txt.runtime_id : undefined
-    if (!runtimeId) return
+    // Untrusted input (discovery review 3): a record over 4 KB, or with a value over 255 bytes, is dropped.
+    if (!txtWithinBounds(txt)) return
+    // A record without the mesh carries remote access only (no runtime id): by fingerprint.
+    if (!runtimeId) { this.onRemoteOnlyUp(service, txt); return }
     if (runtimeId === this.selfRuntimeId) return // self-skip (race-safe via TXT)
 
     const runtimeDid = typeof txt.runtime_did === 'string' ? txt.runtime_did : undefined
@@ -239,8 +480,30 @@ export class MdnsService extends EventEmitter {
     const addresses = (service.addresses ?? []) as string[]
     const reachHost = referer?.address ?? addresses.find(isPrivateV4) ?? host
 
+    // Remote access in the same announcement (§5.1).
+    const fp = txtString(txt, 'fp')
+    const daemonPort = Number(txtString(txt, 'daemon_port'))
+    const source = `mdns:${service.name}`
+    if (fp && FINGERPRINT.test(fp) && txtString(txt, 'v') === '1' && Number.isInteger(daemonPort) && daemonPort > 0 && daemonPort < 65536) {
+      const name = peerName(txtString(txt, 'name')) ?? peerName(host.replace(/\.local\.?$/, '')) ?? fp
+      this.dropSightings((f, src) => src === source && f !== fp)
+      this.setSighting(fp, source, { name, address: reachHost, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId, listed: listedAddresses(service) })
+    } else {
+      // Remote access went off on that runtime.
+      this.dropSightings((_f, src, s) => src === source || s.runtimeId === runtimeId)
+    }
+
     const now = Date.now()
     const existing = this.discovered.get(runtimeId)
+    // TXT mesh=0: its mesh is not visible to other computers (only remote access is announced).
+    if (txtString(txt, 'mesh') === '0') {
+      if (existing) {
+        this.discovered.delete(runtimeId)
+        this.emit('expired', existing)
+      }
+      this.emit('peers_changed')
+      return
+    }
     const entry: DiscoveredRuntime = {
       runtime_id: runtimeId,
       runtime_did: runtimeDid,
@@ -254,16 +517,60 @@ export class MdnsService extends EventEmitter {
     }
     this.discovered.set(runtimeId, entry)
     this.emit('discovered', entry)
+    this.emit('peers_changed')
+  }
+
+  /** TODO(remove after the next release): `_adf-daemon._tcp` of this PR's intermediate commits. */
+  private onLegacyDaemonUp(service: Service): void {
+    const txt = (service.txt ?? {}) as Record<string, unknown>
+    if (!txtWithinBounds(txt)) return
+    const fp = txtString(txt, 'fp')
+    if (!fp || !FINGERPRINT.test(fp) || txtString(txt, 'v') !== '1' || !service.port) return
+    if (fp === this.selfFingerprint) return
+    const address = sourceAddress(service)
+    if (!address) return
+    const name = peerName(service.name) ?? fp
+    this.setSighting(fp, `legacy:${service.name}`, { name, address, port: service.port, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null, listed: listedAddresses(service) })
+    this.emit('peers_changed')
+  }
+
+  private onLegacyDaemonDown(service: Service): void {
+    const fp = txtString((service.txt ?? {}) as Record<string, unknown>, 'fp')
+    const changed = this.dropSightings((f, src) => service.name ? src === `legacy:${service.name}` : f === fp && src.startsWith('legacy:'))
+    if (changed) this.emit('peers_changed')
+  }
+
+  /** A record with remote access only (the mesh hidden): no runtime id, keyed by fingerprint. */
+  private onRemoteOnlyUp(service: Service, txt: Record<string, unknown>): void {
+    const fp = txtString(txt, 'fp')
+    const daemonPort = Number(txtString(txt, 'daemon_port'))
+    if (!fp || !FINGERPRINT.test(fp) || txtString(txt, 'v') !== '1' || !Number.isInteger(daemonPort) || daemonPort <= 0 || daemonPort >= 65536) return
+    if (fp === this.selfFingerprint) return
+    const address = sourceAddress(service)
+    if (!address) return
+    // The alias, or (a per-network token is not a name) the host name.
+    const host = (service.host || '').replace(/\.local\.?$/, '')
+    const name = (/^adf-[0-9a-f]{12}$/.test(service.name ?? '') ? null : peerName(service.name)) ?? peerName(host) ?? fp
+    const source = `mdns:${service.name}`
+    this.dropSightings((f, src) => src === source && f !== fp)
+    this.setSighting(fp, source, { name, address, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null, listed: listedAddresses(service) })
+    this.emit('peers_changed')
   }
 
   private onServiceDown(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
     const runtimeId = typeof txt.runtime_id === 'string' ? txt.runtime_id : undefined
-    if (!runtimeId) return
-    const entry = this.discovered.get(runtimeId)
-    if (!entry) return
-    this.discovered.delete(runtimeId)
-    this.emit('expired', entry)
+    const fp = txtString(txt, 'fp')
+    // This announcement's sightings go (by instance; without one, by runtime or fingerprint).
+    this.dropSightings((f, src, s) => (service.name ? src === `mdns:${service.name}` : false)
+      || (!!runtimeId && s.runtimeId === runtimeId)
+      || (!service.name && !runtimeId && f === fp && src.startsWith('mdns:')))
+    const entry = runtimeId ? this.discovered.get(runtimeId) : undefined
+    if (runtimeId && entry) {
+      this.discovered.delete(runtimeId)
+      this.emit('expired', entry)
+    }
+    this.emit('peers_changed')
   }
 
   private emitUnavailable(err: unknown): void {
@@ -279,10 +586,10 @@ export class MdnsService extends EventEmitter {
  * Windows specifically, producing the asymmetric "I can see them, they can't
  * see me" symptom. macOS tun / awdl / bridge / ipsec are likewise noise.
  */
-const VIRTUAL_IFACE_RE = /^(lo\d*|gif\d*|stf\d*|awdl\d*|llw\d*|anpi\d*|ap\d+|bridge\d*|utun\d*|ipsec\d*|ppp\d*|tun\d*|tap\d*|veth|vmnet\d*|vboxnet\d*|docker\d*|br-|wg\d*|tailscale\d*|zt[a-z0-9]+)/i
-const VIRTUAL_IFACE_WIN_RE = /(vEthernet|VMware|VirtualBox|Hyper-?V|WSL|Bluetooth|Loopback|Npcap|Pseudo-|Wintun|Tailscale|TAP-Windows|OpenVPN)/i
+export const VIRTUAL_IFACE_RE = /^(lo\d*|gif\d*|stf\d*|awdl\d*|llw\d*|anpi\d*|ap\d+|bridge\d*|utun\d*|ipsec\d*|ppp\d*|tun\d*|tap\d*|veth|vmnet\d*|vboxnet\d*|docker\d*|br-|wg\d*|tailscale\d*|zt[a-z0-9]+)/i
+export const VIRTUAL_IFACE_WIN_RE = /(vEthernet|VMware|VirtualBox|Hyper-?V|WSL|Bluetooth|Loopback|Npcap|Pseudo-|Wintun|Tailscale|TAP-Windows|OpenVPN)/i
 
-function isRFC1918(ipv4: string): boolean {
+export function isRFC1918(ipv4: string): boolean {
   const [o1, o2] = ipv4.split('.').map(Number)
   if (o1 === 10) return true
   if (o1 === 172 && o2 >= 16 && o2 <= 31) return true
@@ -290,7 +597,7 @@ function isRFC1918(ipv4: string): boolean {
   return false
 }
 
-function isCGNAT(ipv4: string): boolean {
+export function isCGNAT(ipv4: string): boolean {
   const [o1, o2] = ipv4.split('.').map(Number)
   // 100.64.0.0/10 — Tailscale lives here.
   return o1 === 100 && o2 >= 64 && o2 <= 127
@@ -343,6 +650,30 @@ export function ensureLocalSuffix(host: string): string {
   // IPv6 literal — bonjour would reject with a host argument anyway; keep raw.
   if (host.includes(':')) return host
   return `${host}.local`
+}
+
+function txtString(txt: Record<string, unknown>, key: string): string | null {
+  const value = txt[key]
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8')
+  return null
+}
+
+/** The addresses an announcement lists (A/AAAA), lowercased, bounded. */
+function listedAddresses(service: Service): string[] {
+  return ((service.addresses ?? []) as unknown[])
+    .filter((a): a is string => typeof a === 'string' && a.length <= 64)
+    .slice(0, 32)
+    .map((a) => a.toLowerCase())
+}
+
+/** The address an announcement came from (preferred), else a private IPv4 of it, else its first. */
+function sourceAddress(service: Service): string | null {
+  const referer = (service as unknown as { referer?: { address?: string } }).referer?.address
+  const addresses = ((service.addresses ?? []) as unknown[]).filter((a): a is string => typeof a === 'string' && a.length <= 64)
+  const address = referer ?? addresses.find((ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) ?? addresses[0]
+  return address && address.length <= 64 ? address : null
 }
 
 /** Build a URL base; wrap bare IPv6 addresses in brackets. */

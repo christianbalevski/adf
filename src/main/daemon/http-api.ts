@@ -39,7 +39,10 @@ import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-
 import { getLanAddresses } from '../utils/network'
 import { registerIdentityRoutes, requireLocalCaller, type IdentityRouteDeps } from './identity-routes'
 import { behindProxyFromEnv, type LocalAccessOptions } from './local-access'
+import { requireLocalProof } from './routes/identity-import-routes'
 import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
+import { remoteListenerOf } from './remote-access/listeners'
+import { setRequestAuth } from './remote-access/request-auth'
 import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
 import { registerContextRoutes } from './context-routes'
@@ -156,6 +159,8 @@ export interface DaemonNetworkService {
   getLanAddresses?(): unknown
   /** `force` (the refresh button) waits for a full scan. */
   getDiscoveredRuntimes?(args?: { force?: boolean }): Promise<unknown[]> | unknown[]
+  /** The discovery feed (remote-access.md §5.1): every ADF computer found, with its mesh and remote access. */
+  getPeers?(args: { waitMs?: number }): Promise<unknown[]>
 }
 
 export interface DaemonPackageService {
@@ -748,17 +753,25 @@ export function createDaemonHttpApi(
   // always passes `security` (Host allow-list + the install's token); a
   // bare createDaemonHttpApi (tests) still refuses browser origins and
   // honours ADF_DAEMON_TOKEN.
+  const remoteAccess = opts.routes?.remoteAccess
   const guard = new DaemonRequestGuard({
     token: opts.security?.token ?? process.env.ADF_DAEMON_TOKEN ?? null,
     allowedHosts: opts.security?.allowedHosts ?? null,
     ipLiteralPort: opts.security?.ipLiteralPort ?? null,
+    deviceTokens: remoteAccess?.deviceAuthority() ?? null,
   })
   server.addHook('onRequest', (request, reply, done) => {
-    const rejection = guard.check(request.method, request.url.split('?')[0], request.headers)
+    // A socket of a remote listener (remote-access.md §3.2) never takes the install's own token.
+    const conn = { remoteListener: remoteListenerOf(request.raw.socket) !== null }
+    // The route Fastify matched (its pattern), not the raw URL: `/client/session%73` routes to
+    // /client/sessions and must be judged as it (security review item 5).
+    const { rejection, auth } = guard.authenticate(request.method, request.routeOptions?.url ?? normalizedRequestPath(request.url), request.headers, conn)
     if (rejection) {
       void reply.code(rejection.status).header('Cache-Control', 'no-store').send(rejection.body)
       return
     }
+    setRequestAuth(request.raw, auth)
+    remoteAccess?.noteRequest(request.raw, auth)
     done()
   })
 
@@ -1283,6 +1296,19 @@ export function createDaemonHttpApi(
     const force = request.query.force
     if (force !== undefined && !['1', '0', 'true', 'false'].includes(force)) return badRequest(reply, 'force must be 1, 0, true or false')
     return { runtimes: await opts.networkService.getDiscoveredRuntimes?.({ force: force === '1' || force === 'true' }) ?? [] }
+  })
+
+  // One discovery feed (remote-access.md §5.1): Studio's Discovered list and adf pair read it; the mesh list is its mesh half.
+  server.get<{ Querystring: { wait?: string } }>('/network/peers', async (request, reply) => {
+    // The owner's only (isLocalOnlyRoute): this machine, its local proof, never a device token.
+    if (!requireLocalCaller(request, reply, localAccess, 'The discovery feed can be read')) return reply
+    if (!requireLocalProof(request, reply, localAccess.localProof ?? null, 'Only ADF Studio and adf on this computer can read the discovery feed (local proof missing).')) return reply
+    if (!opts.networkService?.getPeers) return unavailable(reply, 'Peer discovery is not configured.')
+    const wait = request.query.wait
+    const waitMs = wait === undefined ? 0 : Number(wait)
+    if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 5_000) return badRequest(reply, 'wait must be an integer from 0 to 5000 (milliseconds)')
+    void reply.header('Cache-Control', 'no-store')
+    return { peers: await opts.networkService.getPeers({ waitMs }) }
   })
 
   server.get('/network/server', async (request, reply) => {
@@ -3375,6 +3401,18 @@ export const DEFAULT_ERROR_CODES: Record<number, string> = {
   500: 'internal_error',
   502: 'upstream_error',
   503: 'unavailable',
+}
+
+/**
+ * A request path as the guard judges it when no route matched: the query
+ * dropped, percent-decoding applied, repeated slashes collapsed, a trailing
+ * slash and `;` parameters removed.
+ */
+export function normalizedRequestPath(url: string): string {
+  let path = url.split('?')[0]
+  try { path = decodeURIComponent(path) } catch { /* malformed escape: judge it as sent */ }
+  path = path.split(';')[0].replace(/\/{2,}/g, '/')
+  return path.length > 1 ? path.replace(/\/+$/, '') : path
 }
 
 function withDefaultErrorCode(status: number, contentType: unknown, payload: unknown): unknown {

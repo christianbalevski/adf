@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 318 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 332 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -42,7 +42,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Templates](#tag-templates) (14)
 - [Tracked folders](#tag-tracked-folders) (6)
 - [Runtime](#tag-runtime) (14)
-- [Network](#tag-network) (14)
+- [Network](#tag-network) (15)
 - [Compute](#tag-compute) (16)
 - [Admin](#tag-admin) (16)
 - [Settings](#tag-settings) (4)
@@ -52,6 +52,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Jobs](#tag-jobs) (2)
 - [Agent files](#tag-agent-files) (28)
 - [Client (internal)](#tag-client-internal) (13)
+- [Remote access](#tag-remote-access) (13)
 - [Schemas](#schemas)
 
 <a id="tag-health"></a>
@@ -11563,6 +11564,7 @@ Mesh registration, the mesh HTTP server and WebSocket diagnostics.
 | GET | [`/network/mesh/recent-tools`](#op-getrecentmeshtools) | Recent tool calls per mesh agent |
 | GET | [`/network/mesh/lan-addresses`](#op-getlanaddresses) | This host's name and LAN addresses |
 | GET | [`/network/mesh/discovered-runtimes`](#op-getdiscoveredruntimes) | Remote mesh runtimes discovered on the LAN |
+| GET | [`/network/peers`](#op-getnetworkpeers) | The discovery feed: ADF computers on this network and the tailnet |
 | GET | [`/network/server`](#op-getmeshserverstatus) | Mesh HTTP server status |
 | POST | [`/network/server/start`](#op-startmeshserver) | Start the mesh HTTP server (persisted) |
 | POST | [`/network/server/stop`](#op-stopmeshserver) | Stop the mesh HTTP server (persisted) |
@@ -11956,6 +11958,58 @@ Example 200 (`application/json`):
 {
   "runtimes": [
     {}
+  ]
+}
+```
+
+<a id="op-getnetworkpeers"></a>
+
+### GET `/network/peers`
+
+**The discovery feed: ADF computers on this network and the tailnet**
+
+One feed per computer (remote-access.md §5.1): the one `_adf-runtime._tcp` browser (plus the legacy `_adf-daemon._tcp` one for a release) and the one tailnet sweep. Each entry carries both capabilities: its mesh (when visible to other computers) and its remote access (when on). Studio's Discovered list and `adf pair` read it; the mesh peer list is its mesh half. Local-only: this machine's own clients with the local proof; a device token is refused (it would show the owner's view of the computers around this one). Keeps discovery running for a minute after the call. Changes are pushed to this computer's own sessions as `remote_access` `{type: "peers_changed"}`.
+
+Operation `getNetworkPeers` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `wait` | query | integer |  | Milliseconds to listen first, 0-5000 (a browser that just started hears answers) |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The peers |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "peers": [
+    {
+      "key": "string",
+      "name": "string",
+      "source": "mdns",
+      "mesh": {
+        "url": "string",
+        "port": 0
+      },
+      "remote": {
+        "url": "string",
+        "port": 0,
+        "fingerprint": "string",
+        "pairingOpen": true,
+        "kind": "lan",
+        "clash": 0
+      }
+    }
   ]
 }
 ```
@@ -17195,6 +17249,963 @@ Example 200 (`application/json`):
 }
 ```
 
+<a id="tag-remote-access"></a>
+
+## Remote access
+
+Other computers reach this daemon (docs/design/remote-access.md): the toggle, device tokens, pairing. Management routes answer this machine only: the install's token, a loopback caller without proxy headers, and the local proof (`X-ADF-Local-Proof`) in every mode; a device token gets 403 `device_token_refused`. `/remote/hello` and `/pair/*` need no token and answer 404 `remote_access_off` while remote access is off.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | [`/remote-access`](#op-getremoteaccess) | Remote access status |
+| PUT | [`/remote-access`](#op-updateremoteaccess) | Turn remote access on or off, rename |
+| POST | [`/remote-access/networks`](#op-allowremotenetwork) | Allow on this network |
+| DELETE | [`/remote-access/networks/{id}`](#op-forgetremotenetwork) | Remove an allowed network |
+| POST | [`/remote-access/devices`](#op-createremotedevice) | Create a device token (copy-paste) |
+| DELETE | [`/remote-access/devices/{id}`](#op-revokeremotedevice) | Revoke a device |
+| POST | [`/remote-access/pairing`](#op-openpairing) | Open the pairing window |
+| DELETE | [`/remote-access/pairing`](#op-closepairing) | Close the pairing window |
+| POST | [`/remote-access/pairing/claims/{claimId}`](#op-decidepairingclaim) | Allow or deny a pairing request |
+| POST | [`/remote-access/tailscale-serve`](#op-settailscaleserve) | Turn https through tailscale serve on or off |
+| GET | [`/remote/hello`](#op-remotehello) | Who is this daemon (no token) |
+| POST | [`/pair/claim`](#op-claimpairing) | Claim pairing with the host's code (no token) |
+| GET | [`/pair/claims/{claimId}`](#op-pollpairingclaim) | Collect the result of a claim (no token) |
+
+<a id="op-getremoteaccess"></a>
+
+### GET `/remote-access`
+
+**Remote access status**
+
+The toggle, addresses (with the network category), URLs, Tailscale, mDNS, firewall, devices and the open pairing window (with its code). `refresh=1` re-reads the network, Tailscale and the firewall first.
+
+Operation `getRemoteAccess` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `refresh` | query | `"1"` \| `"true"` |  |  |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteAccessStatus](#schema-remoteaccessstatus) | Status |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "enabled": true,
+  "state": "off",
+  "message": "string",
+  "problem": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "port": 0,
+  "addresses": [
+    {
+      "address": "string",
+      "family": "IPv4",
+      "kind": "lan",
+      "iface": "string",
+      "networkId": "string",
+      "allowed": true,
+      "listening": true,
+      "problem": "string"
+    }
+  ],
+  "urls": [
+    {
+      "url": "string",
+      "kind": "tailscale-https",
+      "encrypted": true
+    }
+  ],
+  "hostNames": [
+    "string"
+  ],
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "mdns": {
+    "announcing": true,
+    "problem": "string"
+  },
+  "firewall": {
+    "state": "ok",
+    "message": "string",
+    "commands": [
+      "string"
+    ]
+  },
+  "devices": [
+    {
+      "id": "string",
+      "label": "string",
+      "origin": "paired",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "studio",
+      "lastSeenAt": "2026-01-01T00:00:00.000Z",
+      "lastSeenAddress": "string",
+      "connected": true,
+      "connections": 0,
+      "sessions": 0
+    }
+  ],
+  "pairing": {
+    "code": "string",
+    "name": "string",
+    "fingerprint": "string",
+    "openedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:00.000Z",
+    "attemptsLeft": 0,
+    "lockedSources": 0,
+    "claim": {
+      "claimId": "string",
+      "deviceName": "string",
+      "clientKind": "studio",
+      "address": "string",
+      "via": "lan",
+      "tailnetLogin": "string",
+      "at": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
+}
+```
+
+<a id="op-updateremoteaccess"></a>
+
+### PUT `/remote-access`
+
+**Turn remote access on or off, rename**
+
+Live: no daemon restart. Turning on mints the daemon id (fingerprint); it listens only on networks the user allowed (POST /remote-access/networks). Turning off closes every remote listener, ends device sessions and connections, keeps the devices.
+
+Operation `updateRemoteAccess` · bearer token
+
+**Request body** (required): [RemoteAccessPatch](#schema-remoteaccesspatch)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean |  | On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept. |
+| `name` | string |  | The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name |
+
+```json
+{
+  "enabled": true,
+  "name": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteAccessStatus](#schema-remoteaccessstatus) | Status after the change |
+| 400 | [ErrorResponse](#schema-errorresponse) | Empty body, wrong types or a bad name (`bad_request`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 409 | [ErrorResponse](#schema-errorresponse) | `env_bind`: ADF_DAEMON_HOST binds the daemon to the network itself |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "enabled": true,
+  "state": "off",
+  "message": "string",
+  "problem": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "port": 0,
+  "addresses": [
+    {
+      "address": "string",
+      "family": "IPv4",
+      "kind": "lan",
+      "iface": "string",
+      "networkId": "string",
+      "allowed": true,
+      "listening": true,
+      "problem": "string"
+    }
+  ],
+  "urls": [
+    {
+      "url": "string",
+      "kind": "tailscale-https",
+      "encrypted": true
+    }
+  ],
+  "hostNames": [
+    "string"
+  ],
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "mdns": {
+    "announcing": true,
+    "problem": "string"
+  },
+  "firewall": {
+    "state": "ok",
+    "message": "string",
+    "commands": [
+      "string"
+    ]
+  },
+  "devices": [
+    {
+      "id": "string",
+      "label": "string",
+      "origin": "paired",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "studio",
+      "lastSeenAt": "2026-01-01T00:00:00.000Z",
+      "lastSeenAddress": "string",
+      "connected": true,
+      "connections": 0,
+      "sessions": 0
+    }
+  ],
+  "pairing": {
+    "code": "string",
+    "name": "string",
+    "fingerprint": "string",
+    "openedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:00.000Z",
+    "attemptsLeft": 0,
+    "lockedSources": 0,
+    "claim": {
+      "claimId": "string",
+      "deviceName": "string",
+      "clientKind": "studio",
+      "address": "string",
+      "via": "lan",
+      "tailnetLogin": "string",
+      "at": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
+}
+```
+
+<a id="op-allowremotenetwork"></a>
+
+### POST `/remote-access/networks`
+
+**Allow on this network**
+
+The user's consent for a network this computer is on now (owner decision 2026-10-18 b): remote access and the mesh's LAN mode listen there from now on. Works while remote access is off. Local-only: a device token cannot allow a network.
+
+Operation `allowRemoteNetwork` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | A `networks[].id` from GET /remote-access |
+
+```json
+{
+  "id": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteAccessStatus](#schema-remoteaccessstatus) | Status after the change |
+| 400 | [ErrorResponse](#schema-errorresponse) | No or malformed id (`bad_request`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Not a network this computer is on now (`network_not_found`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "enabled": true,
+  "state": "off",
+  "message": "string",
+  "problem": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "port": 0,
+  "addresses": [
+    {
+      "address": "string",
+      "family": "IPv4",
+      "kind": "lan",
+      "iface": "string",
+      "networkId": "string",
+      "allowed": true,
+      "listening": true,
+      "problem": "string"
+    }
+  ],
+  "urls": [
+    {
+      "url": "string",
+      "kind": "tailscale-https",
+      "encrypted": true
+    }
+  ],
+  "hostNames": [
+    "string"
+  ],
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "mdns": {
+    "announcing": true,
+    "problem": "string"
+  },
+  "firewall": {
+    "state": "ok",
+    "message": "string",
+    "commands": [
+      "string"
+    ]
+  },
+  "devices": [
+    {
+      "id": "string",
+      "label": "string",
+      "origin": "paired",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "studio",
+      "lastSeenAt": "2026-01-01T00:00:00.000Z",
+      "lastSeenAddress": "string",
+      "connected": true,
+      "connections": 0,
+      "sessions": 0
+    }
+  ],
+  "pairing": {
+    "code": "string",
+    "name": "string",
+    "fingerprint": "string",
+    "openedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:00.000Z",
+    "attemptsLeft": 0,
+    "lockedSources": 0,
+    "claim": {
+      "claimId": "string",
+      "deviceName": "string",
+      "clientKind": "studio",
+      "address": "string",
+      "via": "lan",
+      "tailnetLogin": "string",
+      "at": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
+}
+```
+
+<a id="op-forgetremotenetwork"></a>
+
+### DELETE `/remote-access/networks/{id}`
+
+**Remove an allowed network**
+
+Removes the consent; the listeners on that network (remote access and the mesh's LAN mode) close now. Local-only.
+
+Operation `forgetRemoteNetwork` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Allowed network id |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteAccessStatus](#schema-remoteaccessstatus) | Status after the change |
+| 400 | [ErrorResponse](#schema-errorresponse) | Not a network id (`bad_request`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Not an allowed network (`network_not_found`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "enabled": true,
+  "state": "off",
+  "message": "string",
+  "problem": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "port": 0,
+  "addresses": [
+    {
+      "address": "string",
+      "family": "IPv4",
+      "kind": "lan",
+      "iface": "string",
+      "networkId": "string",
+      "allowed": true,
+      "listening": true,
+      "problem": "string"
+    }
+  ],
+  "urls": [
+    {
+      "url": "string",
+      "kind": "tailscale-https",
+      "encrypted": true
+    }
+  ],
+  "hostNames": [
+    "string"
+  ],
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "mdns": {
+    "announcing": true,
+    "problem": "string"
+  },
+  "firewall": {
+    "state": "ok",
+    "message": "string",
+    "commands": [
+      "string"
+    ]
+  },
+  "devices": [
+    {
+      "id": "string",
+      "label": "string",
+      "origin": "paired",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "studio",
+      "lastSeenAt": "2026-01-01T00:00:00.000Z",
+      "lastSeenAddress": "string",
+      "connected": true,
+      "connections": 0,
+      "sessions": 0
+    }
+  ],
+  "pairing": {
+    "code": "string",
+    "name": "string",
+    "fingerprint": "string",
+    "openedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:00.000Z",
+    "attemptsLeft": 0,
+    "lockedSources": 0,
+    "claim": {
+      "claimId": "string",
+      "deviceName": "string",
+      "clientKind": "studio",
+      "address": "string",
+      "via": "lan",
+      "tailnetLogin": "string",
+      "at": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
+}
+```
+
+<a id="op-createremotedevice"></a>
+
+### POST `/remote-access/devices`
+
+**Create a device token (copy-paste)**
+
+Mints a device token and returns it once; only its SHA-256 is stored (daemon-devices.json). The token is as powerful as the owner seed phrase.
+
+Operation `createRemoteDevice` · bearer token
+
+**Request body** (required): [RemoteDeviceInput](#schema-remotedeviceinput)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+
+```json
+{
+  "label": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 201 | [RemoteDeviceCreated](#schema-remotedevicecreated) | The device and its token |
+| 400 | [ErrorResponse](#schema-errorresponse) | Bad label (`bad_request`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 201 (`application/json`):
+
+```json
+{
+  "device": {
+    "id": "string",
+    "label": "string",
+    "origin": "paired",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "createdBy": "studio",
+    "lastSeenAt": "2026-01-01T00:00:00.000Z",
+    "lastSeenAddress": "string",
+    "connected": true,
+    "connections": 0,
+    "sessions": 0
+  },
+  "token": "string"
+}
+```
+
+<a id="op-revokeremotedevice"></a>
+
+### DELETE `/remote-access/devices/{id}`
+
+**Revoke a device**
+
+Removes the device (a 30-day tombstone answers its token with 401 `device_revoked`), ends its client sessions (their stream gets `session.ended` first) and destroys its connections, streams included.
+
+Operation `revokeRemoteDevice` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Device id |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteDeviceRevoked](#schema-remotedevicerevoked) | The revoked device and what was closed |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown device (`device_not_found`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "device": {
+    "id": "string",
+    "label": "string",
+    "origin": "paired",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "createdBy": "studio",
+    "lastSeenAt": "2026-01-01T00:00:00.000Z",
+    "lastSeenAddress": "string",
+    "connected": true,
+    "connections": 0,
+    "sessions": 0
+  },
+  "closedSessions": 0,
+  "closedConnections": 0
+}
+```
+
+<a id="op-openpairing"></a>
+
+### POST `/remote-access/pairing`
+
+**Open the pairing window**
+
+A new 6-digit code for 120 s; replaces an open window. 5 wrong codes close it. The mDNS announcement shows `pair=1` while it is open.
+
+Operation `openPairing` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 201 | [PairingWindowView](#schema-pairingwindowview) | The window, with its code |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 409 | [ErrorResponse](#schema-errorresponse) | Remote access is off (`remote_access_off`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 201 (`application/json`):
+
+```json
+{
+  "code": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "openedAt": "2026-01-01T00:00:00.000Z",
+  "expiresAt": "2026-01-01T00:00:00.000Z",
+  "attemptsLeft": 0,
+  "lockedSources": 0,
+  "claim": {
+    "claimId": "string",
+    "deviceName": "string",
+    "clientKind": "studio",
+    "address": "string",
+    "via": "lan",
+    "tailnetLogin": "string",
+    "at": "2026-01-01T00:00:00.000Z"
+  }
+}
+```
+
+<a id="op-closepairing"></a>
+
+### DELETE `/remote-access/pairing`
+
+**Close the pairing window**
+
+Discards the code and any pending claim.
+
+Operation `closePairing` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 204 | — | Closed (or none was open) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+<a id="op-decidepairingclaim"></a>
+
+### POST `/remote-access/pairing/claims/{claimId}`
+
+**Allow or deny a pairing request**
+
+The owner's answer after a correct code. Allow mints the device (origin `paired`) and keeps its token for the claimant's poll; the window closes either way.
+
+Operation `decidePairingClaim` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `claimId` | path | string | yes | Claim id (PairingClaimView) |
+
+**Request body** (required): [PairingDecisionInput](#schema-pairingdecisioninput)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `allow` | boolean | yes |  |
+
+```json
+{
+  "allow": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [PairingDecision](#schema-pairingdecision) | The decision |
+| 400 | [ErrorResponse](#schema-errorresponse) | `allow` is not a boolean |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No such pending claim (`claim_not_found`) |
+| 409 | [ErrorResponse](#schema-errorresponse) | Already decided (`claim_decided`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "state": "approved",
+  "device": {
+    "id": "string",
+    "label": "string",
+    "origin": "paired",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "createdBy": "studio",
+    "lastSeenAt": "2026-01-01T00:00:00.000Z",
+    "lastSeenAddress": "string",
+    "connected": true,
+    "connections": 0,
+    "sessions": 0
+  }
+}
+```
+
+<a id="op-settailscaleserve"></a>
+
+### POST `/remote-access/tailscale-serve`
+
+**Turn https through tailscale serve on or off**
+
+Runs `tailscale serve --bg <port>` (on) or removes the https:443 entry when it forwards to this daemon (off). Clients call it only after the owner confirmed the command.
+
+Operation `setTailscaleServe` · bearer token
+
+**Request body** (required): [TailscaleServeInput](#schema-tailscaleserveinput)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+
+```json
+{
+  "enabled": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [TailscaleServeResult](#schema-tailscaleserveresult) | Tailscale state and the command output |
+| 400 | [ErrorResponse](#schema-errorresponse) | `enabled` is not a boolean |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 502 | [ErrorResponse](#schema-errorresponse) | The tailscale command failed (`tailscale_failed`, with `output` and `command`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "output": "string"
+}
+```
+
+<a id="op-remotehello"></a>
+
+### GET `/remote/hello`
+
+**Who is this daemon (no token)**
+
+The mDNS announcement's content, for clients that cannot hear mDNS (tailnet peers, a typed address). No secret. 30 per minute per source address.
+
+Operation `remoteHello` · no authentication
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteHello](#schema-remotehello) | Name, fingerprint, pairing open |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Remote access is off (`remote_access_off`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Rate limited (`rate_limited`, Retry-After) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "v": 1,
+  "name": "string",
+  "fingerprint": "string",
+  "pairingOpen": true,
+  "clientApiVersion": 0
+}
+```
+
+<a id="op-claimpairing"></a>
+
+### POST `/pair/claim`
+
+**Claim pairing with the host's code (no token)**
+
+A correct code puts the claim before the owner (202); the token comes only after the owner allows it (GET /pair/claims/{claimId}, with the collect secret). Wrong codes are answered after 1 s; 5 from one source lock that source out of the window (429 until it closes, the owner is told), 20 in total close it. Per source: one claim per 2 s, 10 per 10 minutes. A source is the socket address (forwarded headers are never read), or the tailnet user behind tailscale serve.
+
+Operation `claimPairing` · no authentication
+
+**Request body** (required): [PairClaimRequest](#schema-pairclaimrequest)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | yes |  |
+| `deviceName` | string | yes | Becomes the device label; control and bidi characters are refused |
+| `clientKind` | `"studio"` \| `"cli"` | yes |  |
+
+```json
+{
+  "code": "string",
+  "deviceName": "string",
+  "clientKind": "studio"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 202 | [PairClaimAccepted](#schema-pairclaimaccepted) | Waiting for the owner |
+| 400 | [ErrorResponse](#schema-errorresponse) | Bad code, device name or client kind (`bad_request`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Wrong code (`wrong_code`, with `attemptsLeft`: for this source and the window together), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | No open window (`pairing_closed`) or remote access is off (`remote_access_off`) |
+| 409 | [ErrorResponse](#schema-errorresponse) | Another claim waits for the owner (`pairing_busy`) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Rate limited, or this source is locked out of the window after 5 wrong codes (`rate_limited`, Retry-After) |
+
+Example 202 (`application/json`):
+
+```json
+{
+  "claimId": "string",
+  "expiresAt": "2026-01-01T00:00:00.000Z",
+  "collectSecret": "string"
+}
+```
+
+<a id="op-pollpairingclaim"></a>
+
+### GET `/pair/claims/{claimId}`
+
+**Collect the result of a claim (no token)**
+
+Long poll: waits up to `wait` seconds while pending. Needs the claim's collect secret (`X-ADF-Pair-Secret`); the claim id alone collects nothing. An approved result (with the device token) is delivered once, then the claim is gone (404). `Cache-Control: no-store`.
+
+Operation `pollPairingClaim` · no authentication
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `claimId` | path | string | yes | Claim id (POST /pair/claim) |
+| `wait` | query | integer |  |  |
+| `X-ADF-Pair-Secret` | header | string | yes | The claim's collectSecret (POST /pair/claim). Compared in constant time; a missing or wrong one answers 404 `claim_not_found`, as an unknown claim does |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [PairClaimResult](#schema-pairclaimresult) | pending, denied, or approved with the token |
+| 400 | [ErrorResponse](#schema-errorresponse) | `wait` out of range |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown, expired or collected claim, or a missing or wrong collect secret (`claim_not_found`), or remote access is off (`remote_access_off`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "state": "pending"
+}
+```
+
 <a id="schemas"></a>
 
 ## Schemas
@@ -19080,6 +20091,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `running` | boolean | yes |  |
 | `port` | integer | yes |  |
 | `host` | string | yes |  |
+| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility. |
 
 <a id="schema-meshserverstatus"></a>
 
@@ -19090,6 +20102,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `running` | boolean | yes |  |
 | `port` | integer | yes |  |
 | `host` | string | yes |  |
+| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility. |
 
 <a id="schema-meshstatus"></a>
 
@@ -21869,3 +22882,264 @@ W3-F: who made a change. `agent`: the agent's own runtime, or a change no client
 | `sessions[].client` | string | yes |  |
 | `sessions[].version` | string | yes |  |
 | `sessions[].exitDaemonWhenClosed` | boolean | yes |  |
+
+<a id="schema-remoteaddress"></a>
+
+### RemoteAddress
+
+An address other computers may reach. It listens only when the user allowed its network (`allowed`; owner decision 2026-10-18 b).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `address` | string | yes |  |
+| `family` | `"IPv4"` \| `"IPv6"` | yes |  |
+| `kind` | `"lan"` \| `"tailnet"` | yes |  |
+| `iface` | string | yes |  |
+| `networkId` | string \| null | yes | The network it is on (`NetworkView.id`); null when it cannot be identified yet |
+| `allowed` | boolean | yes | The user allowed that network |
+| `listening` | boolean | yes |  |
+| `problem` | string \| null | yes |  |
+
+<a id="schema-networkview"></a>
+
+### NetworkView
+
+A network this computer is on now. LAN: identified by the default gateway's MAC address and the subnet (and the Wi-Fi name where readable without a permission prompt); tailnet: by the tailnet name.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | yes | Null: cannot be identified yet (no gateway MAC); it cannot be allowed |
+| `kind` | `"lan"` \| `"tailnet"` | yes |  |
+| `label` | string | yes |  |
+| `allowed` | boolean | yes |  |
+| `osCategory` | `"private"` \| `"public"` \| `"unknown"` | yes | Windows' category (shown as a warning only; never consent); unknown elsewhere |
+| `ifaces` | string[] | yes |  |
+| `addresses` | string[] | yes |  |
+
+<a id="schema-allowednetwork"></a>
+
+### AllowedNetwork
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `kind` | `"lan"` \| `"tailnet"` | yes |  |
+| `label` | string | yes |  |
+| `addedAt` | string | yes |  |
+
+<a id="schema-networkpeer"></a>
+
+### NetworkPeer
+
+One ADF computer the discovery feed found. No token, code or owner DID.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | yes | The runtime id, or `fp:<fingerprint>` for a computer known only through remote access |
+| `name` | string | yes |  |
+| `source` | `"mdns"` \| `"tailnet"` \| `"manual"` | yes |  |
+| `mesh` | object \| null | yes | Its mesh, when visible to other computers |
+| `remote` | object \| null | yes | Its remote access, when on: the tailnet address wins over the LAN one |
+
+<a id="schema-remoteurl"></a>
+
+### RemoteUrl
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `url` | string | yes |  |
+| `kind` | `"tailscale-https"` \| `"tailnet"` \| `"lan"` \| `"mdns-name"` | yes |  |
+| `encrypted` | boolean | yes | TLS (tailscale serve) or WireGuard (tailnet); plain LAN http is not |
+
+<a id="schema-remotedevice"></a>
+
+### RemoteDevice
+
+A computer with a device token. The token itself is never returned after creation.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `label` | string | yes |  |
+| `origin` | `"paired"` \| `"token"` | yes |  |
+| `createdAt` | string | yes |  |
+| `createdBy` | `"studio"` \| `"cli"` | yes |  |
+| `lastSeenAt` | string \| null | yes |  |
+| `lastSeenAddress` | string \| null | yes |  |
+| `connected` | boolean | yes | An open client session or stream, or a request in the last 60 s |
+| `connections` | integer | yes |  |
+| `sessions` | integer | yes |  |
+
+<a id="schema-pairingclaimview"></a>
+
+### PairingClaimView
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `claimId` | string | yes |  |
+| `deviceName` | string | yes |  |
+| `clientKind` | `"studio"` \| `"cli"` | yes |  |
+| `address` | string | yes |  |
+| `via` | `"lan"` \| `"tailnet"` \| `"proxy"` | yes |  |
+| `tailnetLogin` | string \| null | yes |  |
+| `at` | string | yes |  |
+
+<a id="schema-pairingwindowview"></a>
+
+### PairingWindowView
+
+The open pairing window. `code` is shown on this computer only.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | yes |  |
+| `name` | string | yes | This computer's name, as GET /remote/hello shows it |
+| `fingerprint` | string | yes |  |
+| `openedAt` | string | yes |  |
+| `expiresAt` | string | yes |  |
+| `attemptsLeft` | integer | yes | Wrong codes left in this window, all sources together; 0 closes it |
+| `lockedSources` | integer | yes | Sources locked out of this window after 5 wrong codes each (the window stays open) |
+| `claim` | [PairingClaimView](#schema-pairingclaimview) \| null | yes | A correct claim waiting for the owner's Allow / Deny |
+
+<a id="schema-remoteaccessstatus"></a>
+
+### RemoteAccessStatus
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+| `state` | `"off"` \| `"on"` \| `"paused"` \| `"no_address"` \| `"env_bind"` \| `"error"` | yes | `paused`: on, but this computer's networks are not allowed, so nothing listens |
+| `message` | string | yes | The status line, e.g. "Listening on 192.168.1.20." or "Paused on Wi-Fi (192.168.1.0/24)." |
+| `problem` | string \| null | yes |  |
+| `name` | string | yes |  |
+| `fingerprint` | string \| null | yes |  |
+| `port` | integer | yes |  |
+| `addresses` | [RemoteAddress](#schema-remoteaddress)[] | yes |  |
+| `urls` | [RemoteUrl](#schema-remoteurl)[] | yes |  |
+| `hostNames` | string[] | yes |  |
+| `tailscale` | object | yes |  |
+| `tailscale.state` | `"absent"` \| `"stopped"` \| `"running"` | yes |  |
+| `tailscale.serve` | `"on"` \| `"off"` \| `"unknown"` | yes |  |
+| `tailscale.httpsUrl` | string \| null | yes |  |
+| `tailscale.serveCommand` | string \| null | yes |  |
+| `mdns` | object | yes |  |
+| `mdns.announcing` | boolean | yes |  |
+| `mdns.problem` | string \| null | yes |  |
+| `firewall` | object | yes |  |
+| `firewall.state` | `"ok"` \| `"blocked"` \| `"unknown"` | yes |  |
+| `firewall.message` | string | yes |  |
+| `firewall.commands` | string[] | yes |  |
+| `devices` | [RemoteDevice](#schema-remotedevice)[] | yes |  |
+| `pairing` | [PairingWindowView](#schema-pairingwindowview) \| null | yes |  |
+| `networks` | [NetworkView](#schema-networkview)[] | yes | The networks this computer is on now (also while off) |
+| `allowedNetworks` | [AllowedNetwork](#schema-allowednetwork)[] | yes | The networks the user allowed (remote-access.json; the mesh's LAN mode uses the same list) |
+| `meshLan` | boolean | yes | The daemon's mesh listens on the LAN (it needs the same consent) |
+
+<a id="schema-remoteaccesspatch"></a>
+
+### RemoteAccessPatch
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean |  | On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept. |
+| `name` | string |  | The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name |
+
+<a id="schema-remotedeviceinput"></a>
+
+### RemoteDeviceInput
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+
+<a id="schema-remotedevicecreated"></a>
+
+### RemoteDeviceCreated
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device` | [RemoteDevice](#schema-remotedevice) | yes |  |
+| `token` | string | yes | Shown once: only its hash is stored. As powerful as the owner seed phrase. |
+
+<a id="schema-remotedevicerevoked"></a>
+
+### RemoteDeviceRevoked
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device` | [RemoteDevice](#schema-remotedevice) | yes |  |
+| `closedSessions` | integer | yes |  |
+| `closedConnections` | integer | yes |  |
+
+<a id="schema-pairingdecisioninput"></a>
+
+### PairingDecisionInput
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `allow` | boolean | yes |  |
+
+<a id="schema-pairingdecision"></a>
+
+### PairingDecision
+
+Type: object \| object
+
+<a id="schema-tailscaleserveinput"></a>
+
+### TailscaleServeInput
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+
+<a id="schema-tailscaleserveresult"></a>
+
+### TailscaleServeResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tailscale` | object | yes |  |
+| `tailscale.state` | `"absent"` \| `"stopped"` \| `"running"` | yes |  |
+| `tailscale.serve` | `"on"` \| `"off"` \| `"unknown"` | yes |  |
+| `tailscale.httpsUrl` | string \| null | yes |  |
+| `tailscale.serveCommand` | string \| null | yes |  |
+| `output` | string | yes |  |
+
+<a id="schema-remotehello"></a>
+
+### RemoteHello
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `v` | `1` | yes |  |
+| `name` | string | yes |  |
+| `fingerprint` | string | yes |  |
+| `pairingOpen` | boolean | yes |  |
+| `clientApiVersion` | integer | yes |  |
+
+<a id="schema-pairclaimrequest"></a>
+
+### PairClaimRequest
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | yes |  |
+| `deviceName` | string | yes | Becomes the device label; control and bidi characters are refused |
+| `clientKind` | `"studio"` \| `"cli"` | yes |  |
+
+<a id="schema-pairclaimaccepted"></a>
+
+### PairClaimAccepted
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `claimId` | string | yes | The claim's id. The owner's clients see it (GET /remote-access); it does not collect the token |
+| `expiresAt` | string | yes |  |
+| `collectSecret` | string | yes | 256-bit random, only in this answer: send it as `X-ADF-Pair-Secret` to collect the result (GET /pair/claims/{claimId}) |
+
+<a id="schema-pairclaimresult"></a>
+
+### PairClaimResult
+
+Type: object \| object \| object

@@ -33,6 +33,7 @@ import type { FastifyInstance } from 'fastify'
 import { readTokens as readChatGptTokens } from '../../providers/chatgpt-subscription/token-store'
 import { readTokens as readGrokTokens } from '../../providers/grok-subscription/token-store'
 import { requireLocalCaller } from '../identity-routes'
+import { DEVICE_TOKEN_REFUSED_MESSAGE, getRequestAuth } from '../remote-access/request-auth'
 import type { ClientSessionRegistry } from '../client-sessions'
 import type { DaemonRouteContext } from './index'
 import { badRequest } from './route-helpers'
@@ -70,7 +71,9 @@ export function registerClientLifecycleRoutes(server: FastifyInstance, ctx: Daem
   const registry = (): ClientSessionRegistry | undefined =>
     (server as unknown as { adfClientSessions?: ClientSessionRegistry }).adfClientSessions
 
-  server.get('/client/sessions', async (_request, reply) => {
+  server.get('/client/sessions', async (request, reply) => {
+    // This machine's clients only; the guard refuses device tokens too, this holds whatever URL spelling reached it.
+    if (getRequestAuth(request.raw)?.kind === 'device') return reply.code(403).send({ error: DEVICE_TOKEN_REFUSED_MESSAGE, code: 'device_token_refused' })
     const sessions = registry()
     if (!sessions) return reply.code(405).send({ error: 'Client sessions are not available on this daemon.', code: 'method_not_allowed' })
     return { sessions: sessions.list() }
@@ -101,7 +104,8 @@ export function registerClientLifecycleRoutes(server: FastifyInstance, ctx: Daem
       await sessions.end(id)
       ended = true
     }
-    const others = sessions.size
+    // Sessions of other computers (device tokens) never hold the stop: Studio asked the owner first (remote-access.md §3.6).
+    const others = sessions.localSize
     const startedBy = ctx.options.routes?.startedBy ?? 'cli'
     const answer = (stopping: boolean, reason: string): ClientQuitResult => {
       log(`Client session ${id} quit${ended ? '' : ' (it had already ended)'}: ${stopping ? 'stopping the daemon' : 'the daemon keeps running'}: ${reason}`)
