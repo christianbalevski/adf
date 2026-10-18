@@ -383,15 +383,29 @@ Assets: device tokens (each = the owner phrase, §4.5), the pairing code during 
 | Passive sniffer on the LAN | Read every plain-http request, including the bearer token, and chat and file content | Tailnet listener (WireGuard) and `tailscale serve` (TLS) are offered first and labelled; plain LAN http needs an explicit "I trust this network" on the client | Yes, for plain LAN http the owner confirmed. Same as copy-paste today. |
 | Sniffer during pairing | Read the code (single use, consumed by the legitimate claim) and the token in the poll answer | As above | Yes (the token leaks on the next request anyway, §5.6) |
 | Active attacker on the LAN (ARP spoof, rogue AP) | Everything a sniffer can, plus modify traffic, impersonate host or client | Host confirmation shows source address; encrypted transports | Yes on plain http. Not defended without TLS or WireGuard. |
-| Rogue mDNS responder | Announce a fake "*owner*'s PC" with `pair=1` and the real fingerprint; learn the code the user types; relay it to the real host within the window | Host prompt names the source address and arrival path; the client's dialog shows the address it is talking to; one claim per window; the window is short and owner-opened | Partly: an owner who allows without reading the address is fooled. SPAKE2 would close this; deferred (§5.6, Q3). |
-| LAN guesser | Guess codes | 5 guesses per owner-opened window, per-address rate limit, host confirmation | Residual 5 × 10^-6 per window, and still needs Allow |
+| Rogue mDNS responder | Announce a fake "*owner*'s PC" with `pair=1` and the real fingerprint; learn the code the user types; relay it to the real host within the window | Host prompt names the source (socket) address and arrival path, never a forwarded header; `adf` pins the fingerprint and refuses an approval from another one; the client's dialog shows the address it is talking to; one claim per window; the window is short and owner-opened | Partly: an owner who allows without reading the address is fooled. SPAKE2 would close this; deferred (§5.6, Q3). |
+| LAN guesser | Guess codes; or enter wrong codes to close the owner's window | 5 wrong codes per source (then locked out), 20 per window, per-source rate limit, host confirmation | Residual 2 × 10^-5 per window, and still needs Allow; one source cannot close the window |
 | LAN stranger without a code | Spam claims, probe hello | 404 without a window; rate limits; hello carries no secret | Learns name and fingerprint (also in mDNS) |
 | Web page in the user's browser | CSRF / DNS rebinding to the daemon | Existing Host, Origin, `Sec-Fetch-Site` checks on every listener and route | — |
-| Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens |
+| Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens. It cannot see or collect other devices' pairing claims (no remote_access events, collect secret), nor reach local-only routes by any URL spelling |
 | Device token holder | Mint more tokens, lock the owner out | §4.5: management and local-only routes refuse device tokens | — |
 | Public / hostile Wi-Fi with private addresses (hotel 10.x) | Reach the listeners, attempt pairing | Token required; pairing only in an owner-opened window; Windows' Public profile usually blocks; the status line names the addresses | Yes; see Q4 |
 | Carrier-grade NAT peers | Reach a 100.64/10 listener | Bound only when Tailscale confirms the address | — |
 | Process of the same OS user on the host | Read `daemon-token`, `daemon-devices.json`, mint via the proof | Out of scope, as in daemon-backend.md §5.4.1 | Yes |
+
+### 10.0 Security review 2026-10-18 (FIX), daemon and CLI
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | `claim_pending` carried the claim id to every session and the umbilical bus; a paired device could collect the next device's token | Collecting needs the 202's `collectSecret` (`X-ADF-Pair-Secret`, constant time); events carry no claim; `remote_access` goes to this computer's own sessions only, never to device sessions or `/events` (§5.4, §8) |
+| 2 | Network categories cached 60 s by interface name: a new network inherited "private" | Category keyed on the interface's addresses and gateway, re-read on any change with that interface's listeners closed meanwhile (§3.4) |
+| 3 | `X-Forwarded-For` from any local process set the prompt's address, reset the limits and reached `tailscale whois` | Socket address only; Tailscale-User-* headers only behind serve in proxy mode; whois on socket addresses only; bounded counters (§5.5) |
+| 4 | Device-name filter missed U+061C, U+2028/9, zero-width characters, U+FEFF | Full set refused, whitespace collapsed, length capped (§5.4) |
+| 5 | Percent-encoded paths (`/client/session%73`) slipped past the device refusal | The guard judges the matched route pattern or the decoded, normalised path (§4.5) |
+| 6 | "Off" raced an address check: a listener opened after `closeAll` | Off is serialized with the checks; each listener re-checks before and after it opens (§3.2) |
+| 7 | The CLI trusted the approval's fingerprint and URLs | Fingerprint must match the hello; saved remotes pinned (TOFU); URL switch only to tailnet addresses after asking; token never sent to another fingerprint (§9.3) |
+| 8 | 5 wrong codes from anyone closed the owner's window | 5 per source lock that source out (owner told), 20 in total close it (§5.3) |
+| 9 | Secret files written before they were restricted; failures only logged | Restricted temp file, then rename; failure fails the write visibly (§10.1) |
 
 ### 10.1 Secret files
 
