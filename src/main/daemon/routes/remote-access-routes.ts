@@ -5,7 +5,9 @@
 // is refused by the request guard before it gets here):
 //
 //   GET    /remote-access[?refresh=1]              status
-//   PUT    /remote-access                          {enabled?, name?, trustNetwork?}
+//   PUT    /remote-access                          {enabled?, name?}
+//   POST   /remote-access/networks                 {id}: allow a network this computer is on now
+//   DELETE /remote-access/networks/:id             remove an allowed network; its listeners close
 //   POST   /remote-access/devices                  {label} → {device, token} (the token is shown once)
 //   DELETE /remote-access/devices/:id              revoke: closes the device's sessions and connections
 //   POST   /remote-access/pairing                  open the window (new 6-digit code)
