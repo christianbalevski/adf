@@ -66,9 +66,15 @@ export function fingerprintOf(daemonId: string): string {
  * Refused in names shown to people (spoofing in the Allow prompt and the
  * devices list, security review item 4): C0/C1 controls, every bidi control
  * (U+061C, U+200E/F, U+202A-E, U+2066-9), line and paragraph separators
- * (U+2028/9), zero-width characters (U+200B-D, U+2060) and U+FEFF.
+ * (U+2028/9), zero-width characters (U+200B-D, U+2060) and U+FEFF; and
+ * (re-review 4) the soft hyphen U+00AD, the combining grapheme joiner
+ * U+034F, the Hangul fillers U+115F, U+3164, U+FFA0, the Mongolian vowel
+ * separator U+180E, the invisible operators U+2061-4 and the tag characters
+ * U+E0000-E007F (U+034F, a combining mark, outside the class). Studio's
+ * own checks and dialogs use the same set.
  */
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/
+export const UNSAFE_DISPLAY_CHARS = /[\u0000-\u001f\u007f-\u009f\u00ad\u061c\u115f\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0\u{e0000}-\u{e007f}]|\u034f/u
+const UNSAFE_CHARS = UNSAFE_DISPLAY_CHARS
 
 /**
  * A display name (computer name, device label): no unsafe character (above),

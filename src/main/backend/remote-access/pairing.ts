@@ -2,6 +2,7 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import type { RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { PairingClient, RemoteAccessApiError } from './client'
+import { UNSAFE_DISPLAY_CHARS } from '../../daemon/remote-access/config'
 import { TailscaleClient, tailnetUrlAllowed, type TailnetView } from '../../daemon/remote-access/tailscale'
 
 /**
@@ -72,7 +73,7 @@ export function switchableUrl(raw: string, view: TailnetView): string | null {
 }
 
 /** C0/C1 controls and bidirectional overrides, refused in a device name (§5.4). */
-const CONTROL_OR_BIDI = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/
+const CONTROL_OR_BIDI = UNSAFE_DISPLAY_CHARS
 
 const IDLE: RemotePairState = { step: 'cancelled', host: null, deviceName: '', attemptsLeft: null, message: null, code: null, savedUrl: null }
 

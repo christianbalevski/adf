@@ -555,6 +555,15 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     expect(p.saved).toEqual([])
   })
 
+  it('re-review 4: a device name with an invisible filler, a tag character or a soft hyphen is refused here, and shown escaped in Allow device', async () => {
+    for (const c of ['\u180E', '\u034F', '\u{E0001}', '\u{E0041}', '\u{E007F}', '\u2060', '\u2061', '\u2062', '\u2063', '\u2064', '\u3164', '\u115F', '\uFFA0', '\u00AD']) {
+      const p = pairSetup()
+      expect(await p.flow.start({ url: TAILNET, deviceName: `agent${c}-2` }), c.codePointAt(0)!.toString(16)).toMatchObject({ step: 'failed', code: 'bad_request' })
+      const q = claimQuestion({ claimId: 'c', deviceName: `agent${c}-2`, clientKind: 'studio', address: '192.168.1.31', via: 'lan', tailnetLogin: null, at: '' })
+      expect(q.detail.split('\n')[1]).not.toContain(c)
+    }
+  })
+
   it('a device name with control characters is refused', async () => {
     const p = pairSetup()
     expect(await p.flow.start({ url: TAILNET, deviceName: 'agent‮-2' })).toMatchObject({ step: 'failed', code: 'bad_request' })

@@ -14,7 +14,7 @@ import { PairingFlow, type PairingFlowDeps } from './remote-access/pairing'
 import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/quit-gate'
 import { LanReach } from '../services/lan-reach'
 import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
-import { cleanDisplayName } from '../daemon/remote-access/config'
+import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
 import type { NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
 
 /**
@@ -108,11 +108,14 @@ const VIA: Record<PairingClaimView['via'], string> = { lan: 'this network', tail
 const CLIENT: Record<PairingClaimView['clientKind'], string> = { studio: 'ADF Studio', cli: 'the ADF CLI' }
 
 /** C0/C1 controls (newlines too), bidi overrides and isolates: shown escaped, so a name cannot add lines or reorder text. */
-const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+const UNSAFE_TEXT = new RegExp(UNSAFE_DISPLAY_CHARS.source, 'gu')
 
 /** Text the other device chose, safe for a dialog line: escaped, at most `max` characters. */
 export function shownText(text: string, max = 64): string {
-  const escaped = text.replace(UNSAFE_TEXT, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  const escaped = text.replace(UNSAFE_TEXT, (c) => {
+    const code = c.codePointAt(0) ?? 0
+    return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, '0')}`
+  })
   return [...escaped].length > max ? `${[...escaped].slice(0, max).join('')}…` : escaped
 }
 

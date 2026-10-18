@@ -164,6 +164,12 @@ describe('remote-access.json (§3.1)', () => {
     expect(cleanDisplayName('', 64)).toBeNull()
     expect(cleanDisplayName('x'.repeat(65), 64)).toBeNull()
   })
+
+  it('re-review 4: invisible fillers, tag characters and the soft hyphen are refused too', () => {
+    for (const c of ['\u180E', '\u034F', '\u{E0001}', '\u{E0041}', '\u{E007F}', '\u2060', '\u2061', '\u2062', '\u2063', '\u2064', '\u3164', '\u115F', '\uFFA0', '\u00AD']) expect(cleanDisplayName(`agent${c}-2 laptop`, 64), c.codePointAt(0)!.toString(16)).toBeNull()
+    // A name made only of Hangul fillers looks blank.
+    expect(cleanDisplayName('\u3164\u3164', 64)).toBeNull()
+  })
 })
 
 describe('device token store (§4.2, §4.3)', () => {
