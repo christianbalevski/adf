@@ -1,6 +1,6 @@
 # Settings scopes: Studio and Runtime
 
-Status: design, not implemented. Branch `feat/settings-scopes`, off `78d5498f`.
+Status: implemented on branch `feat/settings-scopes` (off `78d5498f`). User checks: [daemon-backend-user-testing.md §32 (SCOPE)](daemon-backend-user-testing.md#32-settings-scopes-scope).
 
 ## 1. Problem
 
