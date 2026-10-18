@@ -84,7 +84,7 @@ interface Harness {
   logs: string[]
   requestShutdown: ReturnType<typeof vi.fn>
   /** The fake network: eth0's address, its gateway identity, the category the next read answers (after `gate`, if set). */
-  network: { category: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number }
+  network: { category: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number; onBind?: () => void }
   sessions(): ClientSessionRegistry
   whoisCalls: string[]
 }
@@ -136,7 +136,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
     behindProxy: opts.behindProxy ?? false,
     announcer,
     firewall: async () => ({ state: 'unknown', message: 'test', commands: [] }),
-    bindAddress: () => '127.0.0.1',
+    bindAddress: () => { network.onBind?.(); return '127.0.0.1' },
     wrongCodeDelayMs: 0,
     log: (line) => logs.push(line),
     // As daemon/index.ts wires it: the client push topic.
@@ -663,5 +663,47 @@ describe('security review item 5: URL spellings do not get past the device refus
     }
     expect(leaks).toEqual([])
     expect(refusedPlain).toBe(ROUTES.length * 2)
+  })
+})
+
+describe('security review item 6: turning off wins over an address check in flight', () => {
+  it('no listener survives "off", wherever the check was when it came', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const svc = h.service as unknown as { listeners: { addresses(): string[]; closeAll(): Promise<number> } }
+    const survivors: string[] = []
+    for (let k = 0; k < 12; k++) {
+      await svc.listeners.closeAll()
+      const check = h.service.apply({ force: true })
+      const off = (async () => {
+        for (let i = 0; i < k; i++) await new Promise(r => setImmediate(r))
+        return h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { enabled: false } })
+      })()
+      await Promise.all([check, off])
+      await new Promise(r => setTimeout(r, 30))
+      if (svc.listeners.addresses().length) survivors.push(`k=${k}: ${svc.listeners.addresses().join(',')}`)
+      await turnOn(h)
+    }
+    expect(survivors).toEqual([])
+  })
+})
+
+describe('security review item 6: "off" during a listener opening', () => {
+  it('a listener that was opening when remote access turned off does not stay', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const svc = h.service as unknown as { listeners: { addresses(): string[]; closeAll(): Promise<number> } }
+    await svc.listeners.closeAll()
+    let off: Promise<unknown> | null = null
+    // The owner turns it off at the moment the address check binds its listener.
+    h.network.onBind = () => {
+      h.network.onBind = undefined
+      off = h.service.update({ enabled: false })
+    }
+    await h.service.apply({ force: true })
+    await off
+    await new Promise(r => setTimeout(r, 50))
+    expect(svc.listeners.addresses()).toEqual([])
+    await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
   })
 })

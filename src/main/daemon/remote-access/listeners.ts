@@ -52,16 +52,21 @@ export class RemoteListeners {
    * Listen on exactly `wanted`: open the new ones, close the vanished ones.
    * Returns a problem per address that failed to bind (retried at the next sync).
    */
-  async sync(wanted: readonly string[]): Promise<Map<string, string>> {
+  async sync(wanted: readonly string[], opts: { shouldOpen?: () => boolean } = {}): Promise<Map<string, string>> {
     const problems = new Map<string, string>()
     const want = new Set(wanted)
+    const allowed = opts.shouldOpen ?? (() => true)
     for (const address of [...this.listeners.keys()]) {
       if (!want.has(address)) await this.close(address)
     }
     for (const address of want) {
       if (this.listeners.has(address)) continue
+      // Asked again before each listener and after it opened: remote access may have been
+      // turned off meanwhile (security review item 6); a listener opened too late closes at once.
+      if (!allowed()) break
       try {
         await this.open(address)
+        if (!allowed()) await this.close(address)
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code
         problems.set(address, code === 'EADDRINUSE'

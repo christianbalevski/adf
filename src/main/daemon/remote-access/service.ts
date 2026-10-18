@@ -354,7 +354,7 @@ export class RemoteAccessService {
     this.candidates = addressCandidates({ interfaces, tailscaleIps, categories: this.categories.categories, only: this.config.addresses })
     const wanted = this.candidates.filter(c => !c.refusal).map(c => c.address)
     const previous = new Set(this.listeners.addresses())
-    this.listenerProblems = await this.listeners.sync(wanted)
+    this.listenerProblems = await this.listeners.sync(wanted, { shouldOpen: () => this.enabled && !this.stopped })
     for (const [address, problem] of this.listenerProblems) this.log(`[remote-access] ${problem}`)
     const after = this.candidates.map(c => `${c.address}:${c.refusal ? 'off' : 'on'}`).join(',')
     const listening = this.listeners.addresses()
@@ -621,12 +621,19 @@ export class RemoteAccessService {
   }
 
   private async turnOff(): Promise<void> {
+    // Off at once (device tokens refused, no new listener opens), then the closing runs in the
+    // address checks' chain, after any check in flight (security review item 6).
     this.config = { ...this.config, enabled: false }
     this.save()
     this.stopTimer()
     this.pairing.dispose()
-    await this.announcer.stop()
-    const closed = (await this.listeners?.closeAll()) ?? 0
+    let closed = 0
+    const closing = this.applying.then(async () => {
+      await this.announcer.stop()
+      closed = (await this.listeners?.closeAll()) ?? 0
+    })
+    this.applying = closing.catch(() => {})
+    await closing
     // Device connections through a proxy on this host (tailscale serve) end too.
     let proxied = 0
     for (const conn of this.connections.values()) {
