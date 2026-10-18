@@ -7,7 +7,7 @@
 
 import { hostname } from 'node:os'
 import type { PairClaimAccepted, PairClaimResult, RemoteHello, RemoteUrl } from '../../shared/types/remote-access.types'
-import { cleanDisplayName } from '../daemon/remote-access/config'
+import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
 import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT } from './daemon-url'
@@ -160,6 +160,18 @@ async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint:
   return used
 }
 
+/**
+ * The device name when --name is not given: this computer's host name, made
+ * safe. Any host name pairs (a CI runner's, a long FQDN, a control
+ * character): unsafe characters are dropped, it is cut to 64 characters, and
+ * an empty one becomes "ADF computer".
+ */
+export function hostDeviceName(raw: string): string {
+  const unsafe = new RegExp(UNSAFE_DISPLAY_CHARS.source, 'gu')
+  const name = [...raw.replace(unsafe, '').replace(/\s+/g, ' ').trim()].slice(0, 64).join('').trim()
+  return cleanDisplayName(name, 64) ?? 'ADF computer'
+}
+
 export async function runPair(args: string[], io: PairIo): Promise<number> {
   const env = io.env ?? process.env
   const sleep = io.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
@@ -172,7 +184,7 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
     io.stdout(`${parsed}\n`)
     return parsed === PAIR_USAGE ? 0 : 2
   }
-  const deviceName = cleanDisplayName(parsed.name ?? hostname(), 64)
+  const deviceName = parsed.name !== undefined ? cleanDisplayName(parsed.name, 64) : hostDeviceName(hostname())
   if (!deviceName) {
     io.stderr('--name must be 1-64 characters without control or bidi characters.\n')
     return 2

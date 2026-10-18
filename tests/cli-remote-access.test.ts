@@ -12,6 +12,15 @@ import { join } from 'node:path'
 import type { NetworkInterfaceInfo } from 'node:os'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
+/** This computer's host name as node:os reports it; a test sets one a CI runner could have. */
+const os = vi.hoisted(() => ({ hostname: null as string | null }))
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>()
+  const hostname = () => os.hostname ?? actual.hostname()
+  return { ...actual, hostname, default: { ...actual, hostname } }
+})
+afterEach(() => { os.hostname = null })
+
 vi.mock('electron', () => {
   const dir = join(tmpdir(), `adf-cli-remote-${process.pid}`)
   return {
@@ -318,6 +327,21 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     return { io, env, out, err, asked }
   }
   const HOST = 'http://192.168.77.10:7385'
+
+  it('any host name pairs: one that is too long or has control characters becomes a safe device name (no --name needed)', async () => {
+    for (const [raw, sent] of [['m'.repeat(80), 'm'.repeat(64)], ['build\u0007box‮-7', 'buildbox-7'], ['', 'ADF computer']] as const) {
+      os.hostname = raw
+      const claims: unknown[] = []
+      const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+      const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+        if (new URL(String(input)).pathname === '/pair/claim') claims.push(JSON.parse(String(init?.body)))
+        return host.fetchImpl(input, init)
+      }) as typeof fetch
+      const c = client(fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+      expect(await runPair([HOST], c.io)).toBe(0)
+      expect(claims).toEqual([expect.objectContaining({ deviceName: sent })])
+    }
+  })
 
   it('refuses an approval from another fingerprint than the hello showed; nothing is saved', async () => {
     const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_B })
