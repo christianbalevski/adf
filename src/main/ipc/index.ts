@@ -4,11 +4,16 @@ import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync
 import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
-import { nanoid } from 'nanoid'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
+import { prepareFoundAgent } from '../utils/found-agent'
+import {
+  AdapterAttachArgs, AdapterCredentialGetArgs, AdapterCredentialSetArgs, AdapterDetachArgs, AdapterListFilesArgs,
+  AdapterPackageArgs, AdapterTypeArgs, McpAttachArgs, McpCredentialGetArgs, McpCredentialListArgs, McpCredentialSetArgs,
+  McpDetachArgs, McpNameArgs, McpPackageArgs, McpUninstallArgs, mcpAttachEntry, validateMcpArgs,
+} from './mcp-adapter-args'
 import { initApplicationMenu, recordRecentFile } from '../menu'
+import { recentFileSweepDirs } from '../utils/boot-wal-sweep'
 import { verifyCardSignature } from '../services/mesh-server'
-import { verifyAttestation } from '../services/attestation.service'
 import { identityDrafts } from '../services/identity-drafts'
 import { BackgroundEventBatcher } from './background-event-batch'
 import { FileCreateRefusedError, makeFileCreateHandler, runFileCreateTransition, type FileCreateTransitionDeps } from './file-create-handler'
@@ -44,107 +49,28 @@ function deleteAdfFile(filePath: string): void {
   }
 }
 /**
- * Per-session cache of provider connection test results.
- * Keyed by a snapshot of fields that materially affect the test
- * (type/baseUrl/apiKey-presence). Cleared on app restart only.
- * Used by the home dashboard so revisiting the home screen doesn't
- * re-hit `/models` for every provider every time.
+ * Provider connection checks (services/provider-checks.ts): a per-session
+ * result cache plus the `providerChecksEnabled` opt-out for checks Studio
+ * starts on its own (dashboard, provider list, agent review). An explicit
+ * Test click calls testProviderCredentialsForDashboard directly.
  */
-const providerTestSessionCache = new Map<string, 'ok' | 'failed' | 'unconfigured'>()
+const providerChecks = new ProviderChecks({ isEnabled: () => settings?.get('providerChecksEnabled') !== false })
 
-function providerTestCacheKey(cfg: ProviderConfig): string {
-  // `id` alone isn't enough — the same provider id may have its key
-  // rotated mid-session. Include the credentials so edits bust the cache.
-  return `${cfg.id}::${cfg.type}::${cfg.baseUrl ?? ''}::${cfg.apiKey ? 'k' : '-'}`
-}
-
-/**
- * Probe for checks Studio starts on its own (dashboard, provider list, agent
- * review). Honors the `providerChecksEnabled` opt-out: off = no request, the
- * last result from this session if there is one, else 'unchecked'. An explicit
- * Test click always calls testProviderCredentialsForDashboard directly.
- */
 async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'unconfigured' | 'unchecked'> {
-  if (settings?.get('providerChecksEnabled') === false) {
-    return providerTestSessionCache.get(providerTestCacheKey(cfg)) ?? 'unchecked'
-  }
-  return testProviderCredentialsForDashboard(cfg)
+  return providerChecks.autoCheck(cfg)
 }
 
 async function testProviderCredentialsForDashboard(
   cfg: ProviderConfig,
   force = false
 ): Promise<'ok' | 'failed' | 'unconfigured'> {
-  const cacheKey = providerTestCacheKey(cfg)
-  if (force) providerTestSessionCache.delete(cacheKey)
-  const cached = providerTestSessionCache.get(cacheKey)
-  if (cached) return cached
-
-  const finish = (result: 'ok' | 'failed' | 'unconfigured') => {
-    providerTestSessionCache.set(cacheKey, result)
-    return result
-  }
-
-  if (cfg.type === 'chatgpt-subscription') {
-    // No /models endpoint we can hit cheaply — treat session-auth presence as "ok".
-    return finish(getChatGptAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
-  }
-
-  if (cfg.type === 'grok-subscription') {
-    const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
-    return finish(getGrokAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
-  }
-
-  if (cfg.type === 'claude-subscription') {
-    const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
-    return finish(await getClaudeAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
-  }
-
-  if (cfg.type === 'anthropic') {
-    if (!cfg.apiKey) return finish('unconfigured')
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/models', {
-        headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
-        signal: AbortSignal.timeout(5000),
-      })
-      return finish(response.ok ? 'ok' : 'failed')
-    } catch {
-      return finish('failed')
-    }
-  }
-
-  if (cfg.type === 'openrouter') {
-    if (!cfg.apiKey) return finish('unconfigured')
-    try {
-      const url = (cfg.baseUrl?.replace(/\/+$/, '') || 'https://openrouter.ai/api/v1') + '/models'
-      const response = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
-        signal: AbortSignal.timeout(5000),
-      })
-      return finish(response.ok ? 'ok' : 'failed')
-    } catch {
-      return finish('failed')
-    }
-  }
-
-  // openai + openai-compatible — both use /models with Bearer.
-  // openai requires a key; openai-compatible may omit one (local proxies).
-  if (cfg.type === 'openai' && !cfg.apiKey) return finish('unconfigured')
-  if (cfg.type === 'openai-compatible' && !cfg.baseUrl) return finish('unconfigured')
-
-  try {
-    const baseUrl = cfg.type === 'openai' ? 'https://api.openai.com/v1' : cfg.baseUrl
-    const url = baseUrl.replace(/\/+$/, '') + '/models'
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
-    const response = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
-    return finish(response.ok ? 'ok' : 'failed')
-  } catch {
-    return finish('failed')
-  }
+  return providerChecks.test(cfg, force)
 }
 
-import chokidar from 'chokidar'
+import chokidar, { type FSWatcher } from 'chokidar'
+import { isKeyMaterialPurpose, REVEAL_REFUSED_REASON } from '../../shared/constants/identity-reveal'
+import { lockedCredentialCancelled, lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
+import { askReplaceLockedCredential } from '../services/locked-credential-dialog'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
@@ -155,7 +81,7 @@ import { openSharedMnemonicStore } from '../services/owner-secret-store'
 import { AdfDatabase } from '../adf/adf-database'
 import { AgentVitalsService, overlayLiveStates } from '../services/agent-vitals'
 import type { AgentActivity, AgentVitals } from '../../shared/types/agent-vitals.types'
-import { resolveDefaultProvider, applyDefaultProviderToOptions } from '../adf/apply-default-provider'
+import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
 import { AgentTemplatesService, templateFilePath } from '../adf/agent-templates'
@@ -163,11 +89,18 @@ import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { withSource } from '../runtime/execution-context'
+import { AGENT_WRITER, configRevision, documentRevision, fileRevision, runAsWriter } from '../runtime/resource-revisions'
+import { isValidAgentFileName } from '../../shared/utils/agent-file-name'
+import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-conflicts'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
+import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
+import { appendOwnerMessageUnderLease } from '../runtime/owner-message-append'
+import { agentFileBusy, describeEnvelopeSweep } from '../services/owner-identity.service'
+import { getUserDataPath } from '../utils/user-data-path'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
@@ -189,7 +122,7 @@ import type { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
-import { issueOwnerAttestation, readAdfAttestations, verifyAttestation } from '../services/attestation.service'
+import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
@@ -198,12 +131,10 @@ import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
 import { AgentRegistryService } from '../services/agent-registry.service'
-import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
-import { guardedFetch } from '../utils/guarded-fetch'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs, scratchRootPath } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
-import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
@@ -215,7 +146,8 @@ import { McpPackageResolver, PackageResolver } from '../services/mcp-package-res
 import { captureEnvSchema, resolveMcpSpawnConfig, resolveMcpEnvVars } from '../services/mcp-spawn-utils'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
-import { PodmanService, isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
+import { isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
+import { createComputeService } from '../services/compute-service-factory'
 import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
@@ -225,12 +157,13 @@ import { resolveAgentComputeTargetSelection } from '../services/execution-target
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
-import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
+import { listAdapterCredentialFiles, listMcpCredentialFiles, listProviderCredentialFiles, type CredentialFileSources } from '../services/credential-list-files'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
@@ -239,7 +172,7 @@ import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '.
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
-import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -247,61 +180,18 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
-
-/**
- * Read recent tool calls from an agent's workspace loop table.
- * Extracts tool_use/tool_result pairs from the last ~30 loop entries.
- */
-function readRecentToolsFromWorkspace(
-  workspace: AdfWorkspace,
-  limit: number
-): { name: string; args?: string; isError?: boolean; timestamp: number }[] {
-  try {
-    const totalCount = workspace.getLoopCount()
-    const offset = Math.max(0, totalCount - 30)
-    const entries = offset > 0
-      ? workspace.getLoopPaginated(30, offset)
-      : workspace.getLoop()
-
-    const toolUseMap = new Map<string, { name: string; args?: string; timestamp: number }>()
-    const tools: { name: string; args?: string; isError?: boolean; timestamp: number }[] = []
-
-    for (const entry of entries) {
-      for (const block of entry.content_json) {
-        if (block.type === 'tool_use' && block.name && block.id) {
-          let args: string | undefined
-          if (block.input) {
-            try {
-              const input = block.input as Record<string, unknown>
-              if (typeof input._reason === 'string' && input._reason) {
-                args = input._reason
-              } else {
-                const str = typeof block.input === 'string' ? block.input : JSON.stringify(block.input)
-                args = str.length > 40 ? str.slice(0, 40) + '...' : str
-              }
-            } catch { /* ignore */ }
-          }
-          toolUseMap.set(block.id, { name: block.name, args, timestamp: entry.created_at })
-        } else if (block.type === 'tool_result' && block.tool_use_id) {
-          const matched = toolUseMap.get(block.tool_use_id)
-          if (matched) {
-            tools.push({ ...matched, isError: !!block.is_error })
-            toolUseMap.delete(block.tool_use_id)
-          }
-        }
-      }
-    }
-
-    // Unmatched tool_use (still in progress)
-    for (const pending of toolUseMap.values()) {
-      tools.push(pending)
-    }
-
-    return tools.slice(-limit)
-  } catch {
-    return []
-  }
-}
+import { readRecentToolsFromWorkspace } from '../services/recent-tools'
+import { ProviderChecks } from '../services/provider-checks'
+import { buildToolDescriptions } from '../services/tool-descriptions'
+import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
+import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword, convertOwnLegacyPassword } from '../services/envelope-actions'
+import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProviderById } from '../services/dashboard-stats'
+import { buildMeshStatus } from '../services/mesh-status'
+import { appendMcpLog, ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
+import { mergeAdapterStates } from '../services/adapter-status'
+import { fetchPeerSharedFile, probePeerHealth } from '../services/peer-fetch'
+import { fetchSkillPackage, fetchSkillsCatalog } from '../services/skills-catalog-fetch'
+import { getComputeBrowserInfo } from '../services/compute-browser-info'
 
 // Application state
 let currentWorkspace: AdfWorkspace | null = null
@@ -459,7 +349,11 @@ function notifyRendererConfigChanged(filePath: string, config: AgentConfig): voi
   // Guard on the OPEN file, not on which agent emitted: a change from an agent
   // the user has already navigated away from must not overwrite the store.
   if (currentFilePath !== filePath) return
-  getMainWindow()?.webContents.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath, config })
+  // W3-F: the revision the change took and who made it (the agent: Studio's
+  // own saves never reach here), so a config edit in flight can be refused
+  // instead of silently reverting this change.
+  const revision = currentWorkspace ? configRevision(currentWorkspace, AGENT_WRITER) : null
+  getMainWindow()?.webContents.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath, config, ...(revision ? { revision: revision.revision, writer: revision.writer } : {}) })
 }
 
 /**
@@ -653,7 +547,8 @@ async function stopMdnsAndCleanup(): Promise<void> {
     try { await svc.stop() } catch (err) { console.error('[mdns] stop failed:', err) }
   }
 }
-const podmanService = new PodmanService()
+// ADF_COMPUTE=fake (test seam, never in a packaged app): no podman/wsl at all.
+const podmanService = createComputeService({ packaged: app.isPackaged })
 // Container MCP servers that attach over CDP ask for the managed browser before spawning.
 setManagedBrowserEnsurer((containerName) => podmanService.ensureManagedBrowserUp(containerName))
 const externalExecutionService = new ExternalExecutionService()
@@ -748,8 +643,8 @@ function getAppOAuthStore(): AppSettingsOAuthStore {
 const MCP_CONNECT_BUDGET_MS = 25_000
 /** Persisted MCP server logs — survives agent stop so the settings Logs viewer works */
 const MCP_LOG_CACHE_MAX_SERVERS = 50
-const mcpLogCache = new Map<string, import('../shared/types/adf-v02.types').McpServerLogEntry[]>()
-function mcpLogCacheSet(name: string, logs: import('../shared/types/adf-v02.types').McpServerLogEntry[]): void {
+const mcpLogCache = new Map<string, import('../../shared/types/adf-v02.types').McpServerLogEntry[]>()
+function mcpLogCacheSet(name: string, logs: import('../../shared/types/adf-v02.types').McpServerLogEntry[]): void {
   mcpLogCache.set(name, logs)
   // Evict oldest entries (Map insertion order) when over limit
   while (mcpLogCache.size > MCP_LOG_CACHE_MAX_SERVERS) {
@@ -761,6 +656,16 @@ function mcpLogCacheSet(name: string, logs: import('../shared/types/adf-v02.type
 let extractedDisplayState: string | null = null
 // Set of filePaths with in-flight AGENT_START so cleanupCurrentFile doesn't close their workspaces
 const startingFilePaths = new Set<string>()
+
+// Agent lease (design §10, runtime/agent-lease.ts): the foreground's share of
+// the agents this process runs is the open file while it has a live handle,
+// plus the files AGENT_START is building.
+const foregroundStarts = new LeasedStartTracker(() => startingFilePaths)
+function foregroundLeasedPaths(): string[] {
+  const paths = foregroundStarts.startingPaths()
+  if (currentFilePath && (currentAssembledAgent || agentExecutor)) paths.push(currentFilePath)
+  return paths
+}
 
 function rememberAdfDirectory(filePath: string): void {
   openedAdfDirs.add(resolve(dirname(filePath)))
@@ -817,13 +722,7 @@ function syncDerivedKeyToMesh(filePath: string, key: Buffer | null): void {
  */
 function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
   try {
-    const ownerIdentity = settings.getOwnerIdentity()
-    issueOwnerAttestation(workspace, {
-      ownerDid: ownerIdentity.getOwnerDid(),
-      ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
-      runtimeDid: ownerIdentity.getRuntimeDid(),
-      runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
-    })
+    issueAttestationsFor(workspace, settings.getOwnerIdentity())
   } catch (err) {
     console.warn('[OwnerIdentity] Attestation issuance failed:', err)
   }
@@ -1001,7 +900,7 @@ function executorToDisplayState(executorState: string): string {
 }
 
 // --- Tracked directory watcher ---
-let dirWatcher: chokidar.FSWatcher | null = null
+let dirWatcher: FSWatcher | null = null
 
 /**
  * Auto-track the parent directory of a newly created ADF file (if not already tracked)
@@ -1053,6 +952,8 @@ function notifyAdfFileCreated(newFilePath: string): void {
  * only works against a tracked root, not an arbitrary nested parent dir.
  */
 let watchedDirectoryRoots: string[] = []
+/** IpcHostHooks.skipBootAutostart for this process: the watcher does not autostart new files either (E3, W5-I). */
+let autostartSkippedReason: string | null = null
 
 function findTrackedRootFor(filePath: string): string | null {
   // Prefer the longest match in case of nested tracked dirs.
@@ -1207,6 +1108,10 @@ function startDirWatcher(directories: string[]): void {
  */
 function maybeAutostartTrackedFile(filePath: string): void {
   if (!filePath.endsWith('.adf') || !backgroundAgentManager) return
+  if (autostartSkippedReason) {
+    console.warn(`[autostart] Watcher autostart skipped for ${basename(filePath)}: ${autostartSkippedReason}`)
+    return
+  }
   if (currentFilePath && canonicalizePath(filePath) === canonicalizePath(currentFilePath)) return
   backgroundAgentManager.tryAutostart(filePath).catch((err) =>
     console.warn(`[autostart] Watcher autostart failed for ${basename(filePath)}:`, err)
@@ -1306,7 +1211,8 @@ async function cleanupCurrentFile(): Promise<void> {
     meshManager.unregisterAgent(filePath, { keepWsConnections: willTransitionToBackground })
   }
 
-  if (willTransitionToBackground) {
+  const backgroundManager = backgroundAgentManager
+  if (willTransitionToBackground && backgroundManager) {
     const config = workspace.getAgentConfig()
 
     // The handle retains resource ownership; foreground globals are aliases only.
@@ -1318,18 +1224,18 @@ async function cleanupCurrentFile(): Promise<void> {
     currentTapManager = null
 
     const t1 = performance.now()
-    await backgroundAgentManager.transitionToBackground(
+    await backgroundManager.transitionToBackground(
       filePath, config, assembledAgent, derivedKeyCache.get(filePath) ?? null,
     )
     perfLog(`[PERF] cleanupCurrentFile.transitionToBackground: ${(performance.now() - t1).toFixed(1)}ms`)
 
-    if (meshManager?.isEnabled() && backgroundAgentManager.hasAgent(filePath)) {
-      const agentRefs = backgroundAgentManager.getAgent(filePath)
+    if (meshManager?.isEnabled() && backgroundManager.hasAgent(filePath)) {
+      const agentRefs = backgroundManager.getAgent(filePath)
       if (agentRefs) {
         meshManager.registerAgent(
           filePath, agentRefs.config, agentRefs.toolRegistry,
           agentRefs.workspace, agentRefs.session, agentRefs.triggerEvaluator, false,
-          () => backgroundAgentManager!.getIsMessageTriggered(filePath),
+          () => backgroundManager.getIsMessageTriggered(filePath),
           agentRefs.executor,
           agentRefs.adfCallHandler,
           agentRefs.codeSandboxService
@@ -1352,6 +1258,7 @@ async function cleanupCurrentFile(): Promise<void> {
 
   // No transition — the stable handle remains the sole teardown owner.
   if (assembledAgent) await assembledAgent.disposeAsync({ mode: 'immediate' })
+  await processAgentLeases().reconcile()
   currentAdapterManager = null
   currentStreamBindingManager = null
   currentMcpManager = null
@@ -1418,6 +1325,7 @@ async function handleAgentOff(filePath: string): Promise<void> {
       currentAdfCallHandler = null
       if (meshManager) meshManager.removeAdapterManager(filePath)
       if (assembled) await assembled.disposeAsync({ mode: 'owner-off' })
+      await processAgentLeases().reconcile()
       applyPendingRename(filePath)
     } else if (backgroundAgentManager?.hasAgent(filePath)) {
       // Background teardown — stopAgent handles executor abort, MCP, adapters, sandbox.
@@ -1438,13 +1346,6 @@ async function handleAgentOff(filePath: string): Promise<void> {
  * rename is applied when the agent stops. Keyed by current file path.
  */
 const pendingAgentRenames = new Map<string, string>()
-
-/** Characters not allowed in file names on Windows (superset of POSIX). */
-const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
-
-function isValidAgentFileName(name: string): boolean {
-  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
-}
 
 function isAgentFileRunning(filePath: string): boolean {
   if (startingFilePaths.has(filePath)) return true
@@ -1501,6 +1402,8 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
         return { success: false, error: 'WAL sidecars could not be checkpointed — rename aborted to avoid losing unflushed data.' }
       }
       renameSync(filePath, newPath)
+      // No-op unless this process still holds the lease (it never runs the file here).
+      void processAgentLeases().rekey(filePath, newPath)
     }
 
     // Update agent name inside
@@ -1594,15 +1497,6 @@ function willRelocateOnAccept(filePath: string): boolean {
 function displayPath(p: string): string {
   const home = app.getPath('home')
   return p === home || p.startsWith(home + sep) ? `~${p.slice(home.length)}` : p
-}
-
-/** First free "name.adf" / "name (2).adf" / … path in dir. */
-function availableAdfPath(dir: string, baseName: string): string {
-  let candidate = join(dir, `${baseName}.adf`)
-  for (let n = 2; existsSync(candidate); n++) {
-    candidate = join(dir, `${baseName} (${n}).adf`)
-  }
-  return candidate
 }
 
 /**
@@ -1854,18 +1748,93 @@ function setLiveAgentName(filePath: string, name: string): void {
   }
 }
 
+/**
+ * Main-process actions of the embedded backend for the backend switch
+ * (W4-A, backend/mode-switch.ts): which agents run and whether a turn is in
+ * flight, and the gated background start (the same path as
+ * BACKGROUND_AGENT_START) to resume agents a switch carried over. Set by
+ * registerAllIpcHandlers; nothing in the IPC layer reads it.
+ */
+export const hostActions: {
+  startBackgroundAgent?: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>
+  agentActivity?: () => Array<{ filePath: string; busy: boolean }>
+  /** Resolves when the mesh boot finished: autostart waits for it, and so must any other boot-time start (null wsConnectionManager otherwise). */
+  ready?: Promise<void>
+} = {}
+
+/** The boot envelope sweep's timer until it fires (registerAllIpcHandlers). */
+let pendingEnvelopeSweep: NodeJS.Timeout | null = null
+
+/**
+ * The boot envelope sweep (spec §8), as the daemon runs it. Skipped: the
+ * open file and the agents this process runs (provisioned when opened), and
+ * files another runtime runs.
+ */
+async function runEnvelopeSweep(): Promise<void> {
+  try {
+    const t0 = performance.now()
+    const leases = processAgentLeases()
+    const sweep = await settings.getOwnerIdentity().sweepEnvelopeMigration({
+      skip: (filePath) => openHereOrLeasedElsewhere(leases, filePath, currentFilePath ? [currentFilePath] : []),
+    })
+    const line = describeEnvelopeSweep(sweep, performance.now() - t0)
+    if (line) console.log(line)
+  } catch (err) {
+    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  }
+}
+
+/**
+ * Tests (parity harness): drop the boot envelope sweep before it runs; true
+ * when it was pending. A recording captures the backend's first seconds,
+ * before the sweep. On its 2 s timer it ran inside any scenario that
+ * outlasted 2 s on a loaded runner and provisioned the reviewed agents of the
+ * tracked folders (keys, DID, owner and operator attestations), so the
+ * recording depended on the run's speed. The daemon's switch is
+ * ADF_TEST_ENVELOPE_SWEEP (daemon/index.ts).
+ */
+export function cancelDeferredEnvelopeSweep(): boolean {
+  if (!pendingEnvelopeSweep) return false
+  clearTimeout(pendingEnvelopeSweep)
+  pendingEnvelopeSweep = null
+  return true
+}
+
+/** Tests (parity harness): run the boot envelope sweep now instead of on its timer; resolves when it is done. */
+export async function runDeferredEnvelopeSweepNow(): Promise<void> {
+  if (!cancelDeferredEnvelopeSweep()) return
+  await runEnvelopeSweep()
+}
+
 export interface IpcHostHooks {
   /** Show the main window, creating it when none exists (see main/index.ts). */
   showMainWindow?: () => BrowserWindow | null
   /** Open an .adf in the main window, as a Finder double-click does. */
   openFile?: (filePath: string) => void
+  /**
+   * Skip the boot autostart of tracked folders, and the watcher's autostart
+   * of new files in them, for this reason (logged).
+   * W5-I: a first launch that found an older ADF daemon running these
+   * settings' agents (it takes no agent lease) runs Embedded for one session.
+   */
+  skipBootAutostart?: string
 }
 
 export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   showMainWindowHook = hooks.showMainWindow ?? null
   openFileHook = hooks.openFile ?? null
+  autostartSkippedReason = hooks.skipBootAutostart ?? null
   settings = new SettingsService()
   initApplicationMenu(settings)
+
+  // This process is a runtime host: register it and the foreground's leases.
+  processAgentLeases().addHostedPathsProbe(foregroundLeasedPaths)
+  void processAgentLeases().configure({
+    kind: 'studio-embedded',
+    settingsPath: join(getUserDataPath(), 'adf-settings.json'),
+    version: app.getVersion(),
+    mode: 'embedded',
+  })
 
   // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
   // on an explicit disable). Persisting means a model fails at most once, ever.
@@ -1915,18 +1884,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
   // Deferred — it opens every tracked .adf, which must not block window
-  // creation. Behavior is otherwise identical to the old synchronous sweep.
-  setTimeout(() => {
-    try {
-      const t0 = performance.now()
-      const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
-      if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
-        console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
-      }
-    } catch (err) {
-      console.warn('[OwnerIdentity] Envelope sweep failed:', err)
-    }
-  }, 2_000).unref?.()
+  // creation. The daemon runs the same sweep the same way (daemon/index.ts).
+  pendingEnvelopeSweep = setTimeout(() => {
+    pendingEnvelopeSweep = null
+    void runEnvelopeSweep()
+  }, 2_000)
+  pendingEnvelopeSweep.unref?.()
 
   // Global approvals menu: every pending HIL approval, from every agent and
   // loop, plus the recently-resolved tail, pushed as a full snapshot to EVERY
@@ -2117,6 +2080,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     : enableMeshInMain().then((result) => {
         if (!result.success) console.error('[Mesh] Boot enablement failed:', result.error)
       }).catch((err) => console.error('[Mesh] Boot enablement failed:', err))
+  hostActions.ready = meshBoot.then(() => undefined)
 
   // Autostart agents from tracked directories (fire-and-forget, after mesh)
   const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
@@ -2140,13 +2104,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           try { cleanupWalFilesRecursive(resolve(dir), sweepDepth, openDbPaths) }
           catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
         }
-        const recentDirs = new Set<string>()
-        try {
-          const recent = settings.get('recentFiles')
-          if (Array.isArray(recent)) {
-            for (const f of recent) if (typeof f === 'string' && f) recentDirs.add(resolve(dirname(f)))
-          }
-        } catch { /* ignore */ }
+        let recentDirs: string[] = []
+        try { recentDirs = recentFileSweepDirs(settings.get('recentFiles')) } catch { /* ignore */ }
         for (const dir of recentDirs) {
           try { AdfDatabase.cleanupOrphanedWalFiles(dir, openDbPaths) }
           catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
@@ -2156,7 +2115,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     timer.unref?.()
   }
 
-  if (trackedDirs.length > 0) {
+  if (hooks.skipBootAutostart && trackedDirs.length > 0) {
+    console.warn(`[autostart] Boot autostart skipped: ${hooks.skipBootAutostart}`)
+    scheduleBootWalSweep()
+  } else if (trackedDirs.length > 0) {
     const bootScanDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
     void meshBoot.then(() =>
       backgroundAgentManager?.autostartFromDirectories(trackedDirs, bootScanDepth)
@@ -2438,6 +2400,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           owner.ensureWorkspaceIdentity(workspace)
         }
       } catch (err) {
+        const busy = agentFileBusy(err, filePath)
+        if (busy) {
+          // Another program is writing the new file: the create fails with a
+          // sentence naming it. The file is kept (it may have replaced one);
+          // its identity is provisioned when it is next opened.
+          workspace.close()
+          throw new Error(`${busy.message} The new agent file is kept at ${filePath}; its identity is set up when it is next opened.`)
+        }
         console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
       } finally {
         draft?.privateKey.fill(0)
@@ -2817,6 +2787,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { success: true, ...persistAcceptedAgent() }
     } catch (err) {
       console.warn('[IPC] FILE_REVIEW_ACCEPT error:', err)
+      // Another program writing the file: the sentence names it; accepting again retries.
+      const busy = agentFileBusy(err, currentFilePath ?? args?.expectedPath ?? 'The agent file')
+      if (busy) return { success: false, code: busy.code, error: busy.message }
       return { success: false, error: String(err) }
     }
   })
@@ -2944,10 +2917,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.DOC_GET_DOCUMENT, async () => {
     if (!currentWorkspace) return { content: '' }
-    return { content: currentWorkspace.readDocument() }
+    return { content: currentWorkspace.readDocument(), revision: documentRevision(currentWorkspace).revision }
   })
 
-  ipcMain.handle(IPC.DOC_SET_DOCUMENT, async (_event, args: { content: string }) => {
+  ipcMain.handle(IPC.DOC_SET_DOCUMENT, async (_event, args: { content: string; baseRevision?: number }) => {
     if (!currentWorkspace) {
       console.error('[IPC] DOC_SET_DOCUMENT: No workspace open')
       return { success: false }
@@ -2955,21 +2928,31 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     // Read current content before writing so triggers can compute a diff
     const previousContent = currentWorkspace.readDocument()
-    currentWorkspace.writeDocument(args.content)
+    // W3-F: a save over a revision someone else replaced is refused, not applied.
+    const current = documentRevision(currentWorkspace)
+    const base = baseRevisionArg(args.baseRevision)
+    if (base !== undefined && base !== current.revision) {
+      return conflictAnswer({ resource: 'document', revision: current.revision, writer: current.writer, content: previousContent })
+    }
+    const workspace = currentWorkspace
+    workspace.writeDocument(args.content)
+    const revision = documentRevision(workspace, STUDIO_WRITER).revision
 
     if (triggerEvaluator) {
       triggerEvaluator.onDocumentEdit(args.content, previousContent)
     }
 
-    return { success: true }
+    return { success: true, revision }
   })
 
-  ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async () => {
+  ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async (_event, opts?: { withRevision?: boolean }) => {
+    // W3-F: `withRevision` answers { config, revision } for a read-modify-write; without it, the config as before.
+    if (opts?.withRevision) return currentWorkspace ? { config: currentWorkspace.getAgentConfig(), revision: configRevision(currentWorkspace).revision } : { config: null }
     if (!currentWorkspace) return null
     return currentWorkspace.getAgentConfig()
   })
 
-  ipcMain.handle(IPC.DOC_SET_AGENT_CONFIG, async (_event, config: AgentConfig) => {
+  ipcMain.handle(IPC.DOC_SET_AGENT_CONFIG, async (_event, config: AgentConfig, opts?: { baseRevision?: number }) => {
     if (!currentWorkspace) return { success: false, error: 'No file open' }
     const previousConfig = currentWorkspace.getAgentConfig()
     // A save racing a file switch must never write one agent's entire config
@@ -2978,11 +2961,18 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (config?.id && previousConfig.id && config.id !== previousConfig.id) {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
+    // W3-F: a save over a revision the agent (or anyone) replaced is refused, not applied.
+    const currentRevision = configRevision(currentWorkspace)
+    const base = baseRevisionArg(opts?.baseRevision)
+    if (base !== undefined && base !== currentRevision.revision) {
+      return conflictAnswer({ resource: 'config', revision: currentRevision.revision, writer: currentRevision.writer, config: previousConfig })
+    }
     // `metadata.loop_name` is a derived-config-only marker; strip BEFORE the
     // save so an imported/hand-edited .adf cannot persist one that would bind
     // main's executor to a side loop's stream on the next open.
     stripLoopNameMarker(config)
     currentWorkspace.setAgentConfig(config)
+    const revision = configRevision(currentWorkspace, STUDIO_WRITER).revision
 
     // The assembled agent's single config-change choke point: re-derives every
     // side loop, reconciles the pool (revoked grants actually leave the loops),
@@ -3036,11 +3026,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Keep the .adf file name in sync with a changed agent name
     if (currentFilePath && config.name !== previousConfig.name) {
       const sync = syncAgentFileToName(currentFilePath, config.name)
-      if (sync.filePath) return { success: true, filePath: sync.filePath }
-      if (sync.deferred) return { success: true, renameDeferred: true }
+      if (sync.filePath) return { success: true, filePath: sync.filePath, revision }
+      if (sync.deferred) return { success: true, renameDeferred: true, revision }
     }
 
-    return { success: true }
+    return { success: true, revision }
   })
 
   // --- Chat/Loop history ---
@@ -3540,7 +3530,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const textExts = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
     const isText = textExts.has(ext)
     if (isText) {
-      return { content: buf.toString('utf-8'), binary: false, ...info }
+      // W3-F: the revision an editor saves over (writeInternalFile's baseRevision).
+      return { content: buf.toString('utf-8'), binary: false, ...info, revision: fileRevision(currentWorkspace, filePath).revision }
     }
     // Binary bytes cross IPC only for a caller that will use them (the image
     // viewer). Every other caller just needs the `binary` flag, and base64 of a
@@ -3552,12 +3543,20 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { content: buf.toString('base64'), binary: true, ...info }
   })
 
-  ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content }: { path: string; content: string }) => {
+  ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content, baseRevision }: { path: string; content: string; baseRevision?: number }) => {
     if (!currentWorkspace) return { success: false }
-    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
-      currentWorkspace!.writeFile(path, content)
-    })
-    return { success: true }
+    const workspace = currentWorkspace
+    // W3-F: a save over a revision someone else replaced is refused, not applied.
+    const current = fileRevision(workspace, path)
+    const base = baseRevisionArg(baseRevision)
+    if (base !== undefined && base !== current.revision) {
+      const now = workspace.readFileBuffer(path)
+      return conflictAnswer({ resource: path, revision: current.revision, writer: current.writer, content: now ? now.toString('utf-8') : null })
+    }
+    runAsWriter(STUDIO_WRITER, () => withSource('system:studio', workspace.getAgentConfig().id, () => {
+      workspace.writeFile(path, content)
+    }))
+    return { success: true, revision: fileRevision(workspace, path, STUDIO_WRITER).revision }
   })
 
   ipcMain.handle(IPC.DOC_DOWNLOAD_INTERNAL_FILE, async (_event, { path: filePath }: { path: string }) => {
@@ -3644,6 +3643,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const result = {
       document,
       agentConfig,
+      // W3-F: the revisions the config panel and the document tab save over.
+      configRevision: configRevision(currentWorkspace).revision,
+      documentRevision: documentRevision(currentWorkspace).revision,
       lastTokens,
       contextBaseline,
       statusText,
@@ -3675,7 +3677,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- Agent runtime ---
 
-  ipcMain.handle(IPC.AGENT_START, async (_event, args?: { filePath?: string; hasUserMessage?: boolean }) => {
+  ipcMain.handle(IPC.AGENT_START, foregroundStarts.wrap(async (_event: Electron.IpcMainInvokeEvent, args?: { filePath?: string; hasUserMessage?: boolean }) => {
     const t0 = performance.now()
     if (!currentWorkspace || !currentFilePath) {
       return { success: false, error: 'No file open' }
@@ -3898,6 +3900,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Signal that a start is in-flight — prevents cleanupCurrentFile from
     // closing the workspace database while we're still using it.
     startingFilePaths.add(capturedFilePath)
+
+    // Another ADF process on this machine (a daemon) may run this file.
+    const lease = await processAgentLeases().acquire(capturedFilePath, { agentId: config.id })
+    if (!lease.ok) {
+      startingFilePaths.delete(capturedFilePath)
+      console.warn(`[AGENT_START] ${lease.message}`)
+      return { success: false, error: lease.message, code: lease.code }
+    }
+    if (lease.unprotected) {
+      getMainWindow()?.webContents.send(IPC.AGENT_EVENT, { type: 'error', payload: { error: lease.unprotected }, timestamp: Date.now() })
+    }
 
     // Helper: check if the foreground file has changed during an await
     const fileChanged = () => currentFilePath !== capturedFilePath
@@ -5007,7 +5020,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     startingFilePaths.delete(capturedFilePath)
     perfLog(`[PERF] AGENT_START (fresh): ${(performance.now() - t0).toFixed(1)}ms`)
     return { success: true, sessionId: session.getSessionId(), agentState: initialDisplayState }
-  })
+  }))
 
   ipcMain.handle(IPC.AGENT_STOP, async () => {
     const stoppedFilePath = currentFilePath
@@ -5034,6 +5047,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
     if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
+    await processAgentLeases().reconcile()
     // Teardown drains the executor's pending HIL (which unregisters each row);
     // this is the safety net so a dispose that failed part-way can never leave
     // an approval in the menu that nobody is waiting on.
@@ -5447,6 +5461,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     canReceive?: boolean
     sendMode?: string
     autonomous?: boolean
+    agentId?: string
+    icon?: string
+    did?: string | null
     isDirectory: boolean
     children?: TrackedDirEntry[]
   }
@@ -5742,51 +5759,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // that sequence come back and `logSeq` names the newest one the bus holds, so
   // the 5s poll stops re-sending the whole 200-entry log (with its content) every
   // cycle. Callers that omit it get the full log exactly as before.
-  const getMeshStatus = async (args?: { debug?: boolean; sinceSeq?: number }): Promise<Record<string, unknown>> => {
-    if (!meshManager || !meshManager.isEnabled()) {
-      if (args?.debug) {
-        return {
-          running: false,
-          agents: [],
-          busRegistrations: [],
-          backgroundAgents: [],
-          foregroundAgents: [],
-          messageLog: []
-        }
-      }
-      return { running: false, agents: [] }
-    }
-
-    const agents = getLiveMeshAgents()
-
-    const result: Record<string, unknown> = {
-      running: true,
-      agents
-    }
-
-    if (args?.debug) {
-      try {
-        const debugInfo = meshManager.getDebugInfo()
-        Object.assign(result, debugInfo)
-        const fullLog = debugInfo.messageLog
-        const newest = fullLog.length > 0 ? fullLog[fullLog.length - 1].seq ?? 0 : 0
-        result.logSeq = newest
-        if (typeof args.sinceSeq === 'number') {
-          result.messageLog = fullLog.filter((e) => (e.seq ?? 0) > args.sinceSeq!)
-          result.logIncremental = true
-        }
-      } catch (error) {
-        console.error('[IPC] Mesh debug error:', error)
-        result.busRegistrations = []
-        result.backgroundAgents = []
-        result.foregroundAgents = []
-        result.messageLog = []
-        result.error = String(error)
-      }
-    }
-
-    return result
-  }
+  const getMeshStatus = (args?: { debug?: boolean; sinceSeq?: number }): Promise<Record<string, unknown>> =>
+    buildMeshStatus({
+      isRunning: () => !!meshManager && meshManager.isEnabled(),
+      liveAgents: () => getLiveMeshAgents(),
+      debugInfo: () => meshManager!.getDebugInfo(),
+    }, args)
 
   ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean; sinceSeq?: number }) => getMeshStatus(args))
 
@@ -6029,15 +6007,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
         // Start refused (unreviewed / password-locked / foreground file) —
         // write the chat into the loop so it's the next thing the agent sees
-        // when the user starts it properly. No inbox row.
+        // when the user starts it properly. No inbox row. Written under the
+        // agent's lease: a file another runtime runs is refused, with the
+        // holder's sentence.
         const isForeground = filePath === currentFilePath && !!currentWorkspace
-        const workspace = isForeground ? currentWorkspace! : AdfWorkspace.open(filePath)
-        try {
-          workspace.appendToLoop('user', [{ type: 'text', text: content }])
-          if (isForeground) pushForegroundLoop(filePath)
-        } finally {
-          if (!isForeground) workspace.close()
+        const appended = await appendOwnerMessageUnderLease(processAgentLeases(), filePath, content, isForeground ? { workspace: currentWorkspace! } : {})
+        if (!appended.ok) {
+          failed.push({ filePath, error: appended.error })
+          continue
         }
+        if (isForeground) pushForegroundLoop(filePath)
         delivered.push(filePath)
       } catch (error) {
         failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
@@ -6054,26 +6033,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // closed — the renderer opens it through the normal FILE_OPEN flow.
   ipcMain.handle(IPC.MESH_FOUND_AGENT, async (_e, args: { dir: string; name: string; newRoot?: boolean }): Promise<{ success: boolean; filePath?: string; error?: string }> => {
     try {
-      const name = (args?.name ?? '').trim()
-      const dir = args?.dir ?? ''
-      if (!name) return { success: false, error: 'Agent name required' }
-
-      const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-      const canonDir = canonicalizePath(dir)
-      const inTracked = trackedDirs.some((d) => containsPath(canonicalizePath(d), canonDir))
-      // New-root founding: the folder may sit OUTSIDE tracked space, but only
-      // as a sibling of an existing tracked root (its parent must be some
-      // tracked root's parent) — never an arbitrary disk location. The
-      // notifyAdfFileCreated call below auto-tracks it as a new terrain root.
-      const allowedAsNewRoot = args?.newRoot === true && trackedDirs.some((d) =>
-        containsPath(dirname(canonicalizePath(d)), canonDir)
-      )
-      if (!inTracked && !allowedAsNewRoot) return { success: false, error: 'Destination is outside tracked directories' }
-
-      mkdirSync(dir, { recursive: true })
-      const fileName = name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
-      const filePath = join(dir, `${fileName}.adf`)
-      if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
+      // The checks, the folder and the file name (utils/found-agent.ts, shared
+      // with the daemon). A new-root folder is auto-tracked as a new terrain
+      // root by the notifyAdfFileCreated call below.
+      const plan = prepareFoundAgent(args, (settings.get('trackedDirectories') as string[]) ?? [])
+      if (!plan.ok) return { success: false, error: plan.error }
+      const { name, filePath } = plan
 
       // User-created from Studio: the default agent template applies (never to
       // agent-spawned children, which go through sys_create_adf's own path).
@@ -6321,19 +6286,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // Live health probe for a remote agent — the fleet map's peer readout shows
   // the /health state (idle/active) on open. Runs in main because the mesh
   // server doesn't send CORS headers.
-  ipcMain.handle(IPC.MESH_PEER_AGENT_HEALTH, async (_event, healthUrl: string) => {
-    if (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl)) {
-      return { ok: false as const, error: 'Bad health URL' }
-    }
-    try {
-      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) })
-      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
-      const body = (await res.json()) as { status?: string; state?: string }
-      return { ok: true as const, status: body?.status, state: body?.state }
-    } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : 'Fetch failed' }
-    }
-  })
+  ipcMain.handle(IPC.MESH_PEER_AGENT_HEALTH, async (_event, healthUrl: string) => probePeerHealth(healthUrl))
 
   // LAN reachability preconditions: is the mesh server LAN-bound, and is the
   // inbound firewall rule that lets peers fetch our directory in place? Drives
@@ -6365,33 +6318,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // renderer can't fetch a peer directly. baseUrl is the agent's base
   // (<runtime>/<handle>); shared files are served at <base>/<path>
   // (mesh-server agentCatchAll).
-  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, baseUrl: string, filePath: string) => {
-    const MAX_BYTES = 2_000_000
-    if (typeof baseUrl !== 'string' || !/^https?:\/\//.test(baseUrl)) {
-      return { ok: false as const, error: 'Bad base URL' }
-    }
-    if (typeof filePath !== 'string' || filePath.includes('..') || filePath.startsWith('/')) {
-      return { ok: false as const, error: 'Bad file path' }
-    }
-    const url = `${baseUrl.replace(/\/+$/, '')}/${filePath.split('/').map(encodeURIComponent).join('/')}`
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
-      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
-      const buf = Buffer.from(await res.arrayBuffer())
-      if (buf.length > MAX_BYTES) return { ok: false as const, error: 'File too large to preview (>2 MB)' }
-      // Null byte in the head = binary; the viewer offers download-only
-      const binary = buf.subarray(0, 8192).includes(0)
-      return {
-        ok: true as const,
-        mime: res.headers.get('content-type') ?? '',
-        size: buf.length,
-        binary,
-        content: binary ? buf.toString('base64') : buf.toString('utf8')
-      }
-    } catch {
-      return { ok: false as const, error: 'Peer unreachable' }
-    }
-  })
+  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, baseUrl: string, filePath: string) => fetchPeerSharedFile(baseUrl, filePath))
 
   ipcMain.handle(IPC.MESH_SERVER_STOP, async () => {
     console.log('[IPC] MESH_SERVER_STOP called, meshServer exists:', !!meshServer, 'running:', meshServer?.isRunning())
@@ -6484,6 +6411,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.BACKGROUND_AGENT_START, async (_event, args: { filePath: string }) => {
     return startBackgroundAgentGated(args.filePath)
   })
+  hostActions.startBackgroundAgent = startBackgroundAgentGated
+  hostActions.agentActivity = () => [
+    ...(currentFilePath && agentExecutor ? [{ filePath: currentFilePath, busy: agentExecutor.isTurnActive() }] : []),
+    ...(backgroundAgentManager?.getStatuses() ?? []).map((s) => ({ filePath: s.filePath, busy: s.state === 'active' || (s.activeLoops ?? 0) > 0 })),
+  ]
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_STATUS, async () => {
     if (!backgroundAgentManager) return { agents: [], starting: [] }
@@ -6594,81 +6526,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.TOOLS_DESCRIPTIONS, async () => {
     const t0 = performance.now()
-    const definitions: Record<string, unknown> = {}
-    for (const tool of toolRegistry.getAll()) {
-      definitions[tool.name] = tool.toProviderFormat()
-    }
-    if (currentAgentToolRegistry) {
-      for (const tool of currentAgentToolRegistry.getAll()) {
-        if (!definitions[tool.name]) {
-          definitions[tool.name] = tool.toProviderFormat()
-        }
-      }
-    }
-    // Always ensure runtime-registered tools have definitions (they may not be in the
-    // global registry since they require per-agent dependencies)
-    if (!definitions['sys_code']) {
-      const sysCodeTool = new SysCodeTool(codeSandboxService, '')
-      definitions['sys_code'] = sysCodeTool.toProviderFormat()
-    }
-    if (!definitions['sys_lambda']) {
-      // Stub SysLambdaTool for schema display — uses null handler (never executed)
-      const sysLambdaTool = new SysLambdaTool(codeSandboxService, null as any, '')
-      definitions['sys_lambda'] = sysLambdaTool.toProviderFormat()
-    }
-    if (!definitions['msg_send']) {
-      const sendMessageTool = new SendMessageTool(
-        async () => { throw new Error('Not available') },
-        () => ({ sendMode: 'respond_only', isMessageTriggered: false })
-      )
-      definitions['msg_send'] = sendMessageTool.toProviderFormat()
-    }
-    if (!definitions['agent_discover']) {
-      const discoverTool = new AgentDiscoverTool(() => [])
-      definitions['agent_discover'] = discoverTool.toProviderFormat()
-    }
-    if (!definitions['npm_install']) {
-      definitions['npm_install'] = new NpmInstallTool(sandboxPackagesService).toProviderFormat()
-    }
-    if (!definitions['npm_uninstall']) {
-      definitions['npm_uninstall'] = new NpmUninstallTool().toProviderFormat()
-    }
-    if (!definitions['fs_transfer']) {
-      const stubCaps = { hasIsolated: false, hasShared: false, hasHost: false, agentId: '' }
-      definitions['fs_transfer'] = new FsTransferTool(null, stubCaps).toProviderFormat()
-    }
-    if (!definitions['mcp_install']) {
-      definitions['mcp_install'] = new McpInstallTool().toProviderFormat()
-    }
-    if (!definitions['mcp_uninstall']) {
-      definitions['mcp_uninstall'] = new McpUninstallTool().toProviderFormat()
-    }
-    if (!definitions['mcp_restart']) {
-      definitions['mcp_restart'] = new McpRestartTool().toProviderFormat()
-    }
-    if (!definitions['compute_exec']) {
-      const stubCaps = { hasIsolated: false, hasShared: false, hasHost: false, agentId: '' }
-      definitions['compute_exec'] = new ComputeExecTool(null, stubCaps).toProviderFormat()
-    }
-    if (!definitions['ws_connect']) {
-      definitions['ws_connect'] = new WsConnectTool(async () => ({ error: 'Not available' })).toProviderFormat()
-    }
-    if (!definitions['ws_disconnect']) {
-      definitions['ws_disconnect'] = new WsDisconnectTool(async () => ({ success: false })).toProviderFormat()
-    }
-    if (!definitions['ws_connections']) {
-      definitions['ws_connections'] = new WsConnectionsTool(() => []).toProviderFormat()
-    }
-    if (!definitions['ws_send']) {
-      definitions['ws_send'] = new WsSendTool(async () => ({ success: false })).toProviderFormat()
-    }
-    // Include code-execution-only method schemas (model_invoke, task_resolve, etc.)
-    const ceSchemas = AdfCallHandler.getCodeExecutionSchemas()
-    for (const [name, schema] of Object.entries(ceSchemas)) {
-      if (!definitions[name]) {
-        definitions[name] = schema
-      }
-    }
+    const definitions = buildToolDescriptions([toolRegistry, currentAgentToolRegistry], { codeSandboxService, sandboxPackagesService })
     perfLog(`[PERF] TOOLS_DESCRIPTIONS: ${(performance.now() - t0).toFixed(1)}ms (tools=${Object.keys(definitions).length})`)
     return definitions
   })
@@ -6703,54 +6561,20 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // data resolves rather than waiting on the slowest one). ---
 
   // Slice 1: instant. Settings reads + in-memory services.
-  ipcMain.handle(IPC.DASHBOARD_QUICK_STATS, async () => {
-    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
-    const mcpServers = (settings.get('mcpServers') as McpServerRegistration[]) ?? []
-    const adapters = (settings.get('adapters') as AdapterRegistration[]) ?? []
-    const compute = (settings.get('compute') as { hostAccessEnabled?: boolean } | undefined) ?? {}
-
-    return {
-      providers: { total: providers.length },
-      mcp: { configured: mcpServers.length },
-      adapters: {
-        configured: adapters.length,
-        types: Array.from(new Set(adapters.map((a) => a.type).filter(Boolean))),
-      },
-      packages: { total: sandboxPackagesService.getInstalledPackages().length },
-      hostAccess: { enabledGlobally: !!compute.hostAccessEnabled },
-      tokens: getTokenUsageService().getSummary(),
-    }
-  })
+  ipcMain.handle(IPC.DASHBOARD_QUICK_STATS, async () => buildQuickStats({
+    get: (key) => settings.get(key),
+    installedPackageCount: () => sandboxPackagesService.getInstalledPackages().length,
+    tokenSummary: () => getTokenUsageService().getSummary(),
+  }))
 
   // Slice 2: provider connection tests. Session-cached in main.
-  ipcMain.handle(IPC.DASHBOARD_PROVIDER_TESTS, async () => {
-    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
-    let ok = 0
-    let failed = 0
-    let unconfigured = 0
-    await Promise.all(providers.map(async (cfg) => {
-      const result = await autoProviderCheck(cfg)
-      if (result === 'ok') ok++
-      else if (result === 'failed') failed++
-      else if (result === 'unconfigured') unconfigured++
-    }))
-    return { ok, failed, unconfigured }
-  })
+  ipcMain.handle(IPC.DASHBOARD_PROVIDER_TESTS, async () =>
+    runDashboardProviderTests((settings.get('providers') as ProviderConfig[]) ?? [], providerChecks))
 
   // Test a single provider's connection. `force` busts the session cache so the
   // Settings "Test" button always re-checks live.
-  ipcMain.handle(IPC.PROVIDER_TEST, async (_event, args: { providerId: string; force?: boolean }) => {
-    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
-    const cfg = providers.find((p) => p.id === args?.providerId)
-    if (!cfg) return { status: 'unconfigured' as const }
-    // force = the owner clicked Test; the automatic first-sight test honors the opt-out.
-    if (args?.force !== true) {
-      const auto = await autoProviderCheck(cfg)
-      return { status: auto === 'unchecked' ? 'unknown' as const : auto }
-    }
-    const status = await testProviderCredentialsForDashboard(cfg, true)
-    return { status }
-  })
+  ipcMain.handle(IPC.PROVIDER_TEST, async (_event, args: { providerId: string; force?: boolean }) =>
+    testProviderById((settings.get('providers') as ProviderConfig[]) ?? [], args?.providerId, args?.force === true, providerChecks))
 
   // Slice 3: podman container probe.
   // `listContainers()` returns `{ name, status, running }` — the `running`
@@ -6776,41 +6600,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   // Slice 4: readonly peek across tracked .adf files.
-  ipcMain.handle(IPC.DASHBOARD_AGENT_STATS, async () => {
-    const { realpath } = await import('fs/promises')
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-
-    const seen = new Set<string>()
-    const uniqueFiles: string[] = []
-    for (const dir of trackedDirs) {
-      // Shared cached async walk — the same listing the fleet poll uses.
-      const files = await listAdfFiles(dir, 5)
-      const resolved = await mapWithConcurrency(files, 8, async (file) => {
-        try { return await realpath(file) } catch { return file }
-      })
-      files.forEach((file, i) => {
-        const settled = resolved[i]
-        const canon = settled.status === 'fulfilled' ? settled.value : file
-        if (seen.has(canon)) return
-        seen.add(canon)
-        uniqueFiles.push(file)
-      })
-    }
-
-    let autostart = 0
-    let autonomous = 0
-    let hostAccessAgents = 0
-    for (const filePath of uniqueFiles) {
-      // mtime-keyed — an unchanged agent file is never reopened.
-      const meta = peekAgentMetaCached(filePath)
-      if (!meta) continue
-      if (meta.autostart) autostart++
-      if (meta.autonomous) autonomous++
-      if (meta.hostAccess) hostAccessAgents++
-    }
-
-    return { total: uniqueFiles.length, autostart, autonomous, hostAccessAgents }
-  })
+  ipcMain.handle(IPC.DASHBOARD_AGENT_STATS, async () =>
+    buildAgentStats((settings.get('trackedDirectories') as string[]) ?? [], {
+      listAdfFiles: (dir, maxDepth) => listAdfFiles(dir, maxDepth),
+      peekMeta: (filePath) => peekAgentMetaCached(filePath),
+    }))
 
   ipcMain.handle(IPC.TOKEN_COUNT, async (_event, { text, provider, model }: { text: string; provider?: string; model?: string }) => {
     const tokenCounter = getTokenCounterService()
@@ -6863,387 +6657,43 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return backgroundAgentManager?.getLoopExecutor(filePath, loop)?.getContextBreakdown() ?? null
   })
 
-  // --- MCP IPC Argument Schemas ---
-
-  const McpProbeArgs = z.object({
-    transport: z.enum(['stdio', 'http']).optional(),
-    command: z.string().min(1).optional(),
-    args: z.array(z.string()).optional(),
-    url: z.string().url().optional(),
-    name: z.string().min(1),
-    env: z.record(z.string()).optional(),
-    headers: z.record(z.string()).optional(),
-    headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-    bearerTokenEnvVar: z.string().optional()
-  }).refine((value) => {
-    const transport = value.transport ?? 'stdio'
-    return transport === 'http' ? !!value.url : !!value.command
-  }, { message: 'HTTP probes require url; stdio probes require command.' })
-  const McpPackageArgs = z.object({ package: z.string().min(1), name: z.string().min(1) })
-  const McpUninstallArgs = z.object({ package: z.string().min(1) })
-  const McpNameArgs = z.object({ name: z.string().min(1) })
-  const McpCredentialSetArgs = z.object({
-    filePath: z.string().min(1),
-    npmPackage: z.string().min(1),
-    envKey: z.string().min(1),
-    value: z.string()
-  })
-  const McpCredentialGetArgs = z.object({
-    filePath: z.string().min(1),
-    npmPackage: z.string().min(1)
-  })
-  const McpCredentialListArgs = z.object({
-    mcpServerName: z.string().min(1),
-    npmPackage: z.string().min(1)
-  })
-  const McpAttachArgs = z.object({
-    filePath: z.string().min(1),
-    serverConfig: z.object({
-      name: z.string().min(1),
-      type: z.enum(['npm', 'uvx', 'pip', 'custom', 'http']).optional(),
-      npmPackage: z.string().optional(),
-      pypiPackage: z.string().optional(),
-      command: z.string().optional(),
-      args: z.array(z.string()).optional(),
-      url: z.string().url().optional(),
-      envKeys: z.array(z.string()).optional(),
-      headers: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      bearerTokenEnvVar: z.string().optional(),
-      credentialStorage: z.enum(['app', 'agent']).optional(),
-      runLocation: z.enum(['host', 'shared']).optional(),
-      // OAuth remote flags — see McpRegistrationTestArgs: Zod strips unlisted
-      // keys, which would drop oauth on agent attach too. Keep in sync with
-      // McpServerRegistration / McpServerConfig.
-      oauth: z.boolean().optional(),
-      oauthClientId: z.string().optional(),
-      oauthScopes: z.array(z.string()).optional()
-    })
-  })
-  const McpDetachArgs = z.object({
-    filePath: z.string().min(1),
-    serverName: z.string().min(1),
-    credentialNamespace: z.string().min(1)
-  })
-
-  /** Validate IPC args against a Zod schema, returning parsed data or an error response. */
-  function validateMcpArgs<T>(schema: z.ZodType<T>, args: unknown): { data: T } | { error: string } {
-    const result = schema.safeParse(args)
-    if (!result.success) return { error: `Invalid arguments: ${result.error.issues.map((i) => i.message).join(', ')}` }
-    return { data: result.data }
-  }
+  // MCP and adapter IPC argument schemas: ipc/mcp-adapter-args.ts (shared with daemon mode).
 
   // --- MCP Server Probe ---
 
-  ipcMain.handle(IPC.MCP_PROBE_SERVER, async (_event, rawArgs: unknown) => {
-    const v = validateMcpArgs(McpProbeArgs, rawArgs)
-    if ('error' in v) return { success: false, tools: [], error: v.error }
-    const args = v.data
-    const transport = args.transport ?? 'stdio'
+  // Logs from probe and test runs land in mcpLogCache so the Logs panel can show them.
+  const cacheMcpLog = (name: string, entry: McpServerLogEntry) => appendMcpLog(mcpLogCache, name, entry)
 
-    if (transport === 'http') {
-      console.log(`[MCP:probe] "${args.name}": url=${args.url}`)
-      const tempManager = new McpClientManager()
-      tempManager.on('log', (name, entry) => {
-        const cached = mcpLogCache.get(name) ?? []
-        cached.push(entry)
-        if (cached.length > 500) cached.splice(0, cached.length - 500)
-        mcpLogCache.set(name, cached)
-      })
-      try {
-        const tools = await tempManager.connect({
-          name: args.name,
-          transport: 'http',
-          url: args.url,
-          env: args.env,
-          headers: args.headers,
-          header_env: args.headerEnv?.map((entry) => ({ header: entry.key, env: entry.value, required: true })),
-          bearer_token_env_var: args.bearerTokenEnvVar
-        })
-        const serverState = tempManager.getServerState(args.name)
-        await tempManager.disconnectAll()
-        if (tools) return { success: true, tools }
-        return { success: false, tools: [], error: serverState?.error ?? 'Failed to connect' }
-      } catch (error) {
-        await tempManager.disconnectAll()
-        return { success: false, tools: [], error: String(error) }
-      }
-    }
-
-    // Resolve uvx command to actual uv binary (uvx may not be on PATH inside Electron)
-    let probeCommand = args.command!
-    let probeArgs = args.args ?? []
-    if (probeCommand === 'uvx') {
-      try {
-        const uvPath = await uvManager.ensureUv()
-        probeCommand = uvPath
-        probeArgs = ['tool', 'run', ...args.args]
-      } catch (e) {
-        console.warn('[MCP:probe] Failed to resolve uv binary for uvx command:', e)
-      }
-    }
-
-    console.log(`[MCP:probe] "${args.name}": command=${probeCommand}, args=${JSON.stringify(probeArgs)}`)
-    const tempManager = new McpClientManager()
-    // Cache logs from the probe so the Logs panel can show them
-    tempManager.on('log', (name, entry) => {
-      const cached = mcpLogCache.get(name) ?? []
-      cached.push(entry)
-      if (cached.length > 500) cached.splice(0, cached.length - 500)
-      mcpLogCache.set(name, cached)
-    })
-    try {
-      const tools = await tempManager.connect({
-        name: args.name,
-        transport: 'stdio',
-        command: probeCommand,
-        args: probeArgs,
-        env: args.env
-      })
-      const serverState = tempManager.getServerState(args.name)
-      await tempManager.disconnectAll()
-      if (tools) {
-        return { success: true, tools }
-      }
-      const errorMsg = serverState?.error ?? 'Failed to connect'
-      return { success: false, tools: [], error: errorMsg }
-    } catch (error) {
-      await tempManager.disconnectAll()
-      return { success: false, tools: [], error: String(error) }
-    }
-  })
+  ipcMain.handle(IPC.MCP_PROBE_SERVER, async (_event, rawArgs: unknown) =>
+    probeMcpServer(rawArgs, { uvManager, onLog: cacheMcpLog }))
 
   // --- MCP Package Management ---
 
 
   // --- MCP Registration Connect Test (Settings "Connect" button) ---
-  // Runs the real pipeline for a registration draft: credential-file
-  // materialization + auth preflight on host-located servers, containerized
-  // launch for shared-located ones (ephemeral test home, cleaned up), plain
-  // HTTP connect for remote servers. See deriveRegistrationTestPlan for what
-  // each location can meaningfully verify.
-  const McpRegistrationTestArgs = z.object({
-    registration: z.object({
-      id: z.string().optional(),
-      name: z.string().min(1),
-      type: z.enum(['npm', 'uvx', 'pip', 'custom', 'http']).optional(),
-      npmPackage: z.string().optional(),
-      pypiPackage: z.string().optional(),
-      command: z.string().optional(),
-      args: z.array(z.string()).optional(),
-      url: z.string().url().optional(),
-      headers: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      bearerTokenEnvVar: z.string().optional(),
-      env: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-      toolCallTimeout: z.number().optional(),
-      runLocation: z.enum(['host', 'shared']).optional(),
-      // OAuth remote (Streamable HTTP): without these, Zod strips the flags at
-      // the IPC boundary and the handler's `reg.oauth` check below is never
-      // true — the interactive sign-in is silently skipped and the connect goes
-      // out with no Authorization header (401 "Missing or invalid authorization
-      // header"). Keep in sync with McpServerRegistration.
-      oauth: z.boolean().optional(),
-      oauthClientId: z.string().optional(),
-      oauthScopes: z.array(z.string()).optional(),
-      auth: z.boolean().optional(),
-      authArgs: z.array(z.string()).optional(),
-      authPort: z.number().int().min(1).max(65535).optional(),
-      credentialFiles: z.array(z.object({
-        path: z.string().min(1),
-        required: z.boolean().optional(),
-        writeBack: z.boolean().optional(),
-      })).optional(),
-    }),
-    credentialFiles: z.array(z.object({
-      path: z.string().min(1),
-      contentB64: z.string(),
-    })).optional(),
-  })
-
-  ipcMain.handle(IPC.MCP_REGISTRATION_TEST, async (_event, rawArgs: unknown) => {
-    const v = validateMcpArgs(McpRegistrationTestArgs, rawArgs)
-    if ('error' in v) {
-      // Type-complete failure: McpRegistrationTestResult declares
-      // location/authRan/notes non-optional, and this exit runs before the
-      // test plan exists — derive location best-effort from the raw input.
-      const rawReg = (rawArgs as { registration?: { url?: unknown; type?: unknown; runLocation?: unknown } } | null | undefined)?.registration
-      const location: McpRegistrationTestResult['location'] =
-        rawReg?.type === 'http' || typeof rawReg?.url === 'string'
-          ? 'remote http'
-          : rawReg?.runLocation === 'host' ? 'host' : 'shared container'
-      return { success: false, tools: [], error: v.error, location, authRan: false, notes: [] } satisfies McpRegistrationTestResult
-    }
-    const { registration, credentialFiles } = v.data
-    const reg = registration as McpServerRegistration
-    const testComputeSettings = (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings
-    const plan = deriveRegistrationTestPlan(reg, { hostAccessEnabled: testComputeSettings.hostAccessEnabled })
-    const notes = [...plan.notes]
-    // Whether an interactive OAuth sign-in was driven during this test.
-    let oauthRan = false
-    const serverCfg = buildMcpServerConfigFromRegistration(reg)
-
-    const env: Record<string, string> = {}
-    for (const e of reg.env ?? []) { if (e.key && e.value) env[e.key] = e.value }
-
-    // Settings-only test: no agent context, so the app store IS the token store
-    // (see resolveOAuthStoreForConnect). The connect factory attaches the token
-    // stored by the interactive flow below; it returns undefined for non-oauth
-    // servers, so it is harmless on the host/container branches.
-    const appOAuthStore = getAppOAuthStore()
-    const tempManager = new McpClientManager(undefined, buildOAuthProviderFactory(
-      () => resolveOAuthStoreForConnect({ appStore: appOAuthStore }),
-    ))
-    tempManager.on('log', (name, entry) => {
-      const cached = mcpLogCache.get(name) ?? []
-      cached.push(entry)
-      if (cached.length > 500) cached.splice(0, cached.length - 500)
-      mcpLogCache.set(name, cached)
-    })
-    const finish = async (result: { success: boolean; tools: unknown[]; error?: string }) => {
-      // Capture state BEFORE disconnect — teardown clears the log buffer.
-      const state = tempManager.getServerState(reg.name)
-      const stderrTail = state?.logs.filter((l) => l.stream === 'stderr').slice(-10).map((l) => l.message)
-      // Version from the initialize handshake (serverInfo.version) — the
-      // truthful version for host npx/uvx and remote HTTP servers whose
-      // registration never gets a resolvable package version.
-      const serverVersion = tempManager.getServerReportedVersion(reg.name)
-      await tempManager.disconnectAll().catch(() => {})
-      return { ...result, location: plan.location, authRan: plan.authMode === 'run', oauthRan, notes, ...(serverVersion ? { serverVersion } : {}), ...(stderrTail?.length && !result.success ? { stderrTail } : {}) }
-    }
-
-    try {
-      if (plan.location === 'remote http') {
-        // Interactive OAuth sign-in BEFORE connect when this is an OAuth remote.
-        // Idempotent: runMcpHttpOAuthFlow returns AUTHORIZED with no browser hop
-        // when a valid token/refresh is already stored. The app store is the
-        // Studio "signed-in" source of truth; the connect factory built above
-        // then attaches the freshly-stored token to the transport.
-        if (reg.oauth && serverCfg.url) {
-          const oauthReg = reg as { oauthClientId?: string; oauthScopes?: string[] }
-          oauthRan = true
-          const flow = await runMcpHttpOAuthFlow(serverCfg.url, appOAuthStore, studioOAuthIO, {
-            clientId: oauthReg.oauthClientId,
-            scopes: oauthReg.oauthScopes,
-          })
-          if (!flow.authorized) {
-            return finish({ success: false, tools: [], error: flow.error ?? 'OAuth sign-in did not complete.' })
-          }
-        }
-        const tools = await tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined })
-        if (tools) return finish({ success: true, tools })
-        return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
-      }
-
-      if (plan.location === 'host') {
-        // Materialize provided credential files into the real host home —
-        // for a host-located server the host FS IS the runtime credential
-        // store, so these persist (write-if-absent: never clobber existing
-        // credentials). Paths are ~-confined by expandCredentialPath.
-        for (const f of credentialFiles ?? []) {
-          const dest = expandCredentialPath(f.path, { kind: 'host' })
-          if (existsSync(dest)) { notes.push(`${f.path} already exists on the host — kept the existing file.`); continue }
-          const content = Buffer.from(f.contentB64, 'base64')
-          if (content.length > CREDENTIAL_FILE_MAX_BYTES) {
-            return finish({ success: false, tools: [], error: `Credential file ${f.path} exceeds the ${Math.round(CREDENTIAL_FILE_MAX_BYTES / 1024)}KiB cap.` })
-          }
-          mkdirSync(dirname(dest), { recursive: true })
-          writeFileSync(dest, content, { mode: 0o600 })
-          notes.push(`Wrote ${f.path} to the host home.`)
-        }
-
-        // Resolve the launch command the way the probe does — BEFORE the auth
-        // preflight, which needs the exact invocation. A registration-shaped
-        // serverCfg has package fields but no command, and runMcpAuthPreflight
-        // would fall through to `npx <authArgs>` for a pypi package (executing
-        // an unrelated npm package literally named e.g. "auth").
-        let command: string
-        let args: string[]
-        const userArgs = (reg.args ?? []).filter(Boolean)
-        if (reg.pypiPackage) {
-          try {
-            const uvPath = await uvManager.ensureUv()
-            command = uvPath
-            args = ['tool', 'run', reg.pypiPackage, ...userArgs]
-          } catch {
-            command = 'uvx'
-            args = [reg.pypiPackage, ...userArgs]
-          }
-        } else if (reg.npmPackage) {
-          command = 'npx'
-          args = ['-y', reg.npmPackage, ...userArgs]
-        } else {
-          command = reg.command ?? ''
-          args = userArgs
-        }
-        if (!command) return finish({ success: false, tools: [], error: 'No command or package to launch.' })
-
-        if (plan.authMode === 'run') {
-          // Pass the fully resolved invocation: with command set, the
-          // preflight's own npx/uv fallbacks never fire, so the auth run is
-          // exactly `<command> <args> <authArgs>` — e.g.
-          // `uv tool run <pkg> <userArgs> <authArgs>` for pypi.
-          await studioMcpAuthPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env })
-        }
-        const tools = await tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined })
-        if (tools) return finish({ success: true, tools })
-        return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
-      }
-
-      // Shared container: real containerized launch under an ephemeral test
-      // home (auth + credential capture are per-agent concerns — see plan
-      // notes). Cleaned up afterwards.
-      await podmanService.ensureRunning()
-      const podmanBin = await podmanService.findPodman()
-      if (!podmanBin) return finish({ success: false, tools: [], error: 'Podman is unavailable — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute.' })
-      // Per-invocation test dir so overlapping Connect/Reconnect tests never
-      // delete each other's ephemeral home.
-      const testDir = `/workspace/_settings_test_${randomUUID()}`
-      const testHome = `${testDir}/home`
-      try { await podmanService.ensureWorkspace('adf-mcp', testHome) } catch { /* mkdir in wrapper */ }
-      const containerCmd = resolveContainerCommand(serverCfg)
-      try {
-        const tools = await tempManager.connect(
-          { name: reg.name, transport: 'stdio', env },
-          { externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env }, cwd: testDir }) },
-        )
-        if (tools) return finish({ success: true, tools })
-        return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
-      } finally {
-        podmanService.execInContainer('adf-mcp', '/workspace', `rm -rf ${testDir}`).catch(() => {})
-      }
-    } catch (error) {
-      return finish({ success: false, tools: [], error: error instanceof Error ? error.message : String(error) })
-    }
-  })
+  // Body in services/mcp-connect-tests.ts (shared with the daemon). Studio
+  // supplies the interactive pieces: the OS browser for OAuth and the native
+  // Continue dialog of the stdio auth preflight.
+  ipcMain.handle(IPC.MCP_REGISTRATION_TEST, async (_event, rawArgs: unknown) =>
+    runMcpRegistrationTest(rawArgs, {
+      computeSettings: () => (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings,
+      uvManager,
+      podman: podmanService,
+      appOAuthStore: getAppOAuthStore(),
+      oauthIO: studioOAuthIO,
+      authPreflight: studioMcpAuthPreflight,
+      onLog: cacheMcpLog,
+    }))
 
   // Phase 4 HTTP OAuth: clear the stored token for a remote server URL so the
   // renderer's "Sign out" works. Clears the app-level (Studio) store — the
   // sign-in source of truth. Agent-sealed copies are re-captured on the next
   // attach, so this does not need to reach into every .adf.
-  ipcMain.handle(IPC.MCP_OAUTH_SIGNOUT, async (_event, rawArgs: unknown) => {
-    const url = (rawArgs as { url?: unknown } | null | undefined)?.url
-    if (typeof url !== 'string' || !url) return { success: false, error: 'A server url is required to sign out.' }
-    try {
-      await getAppOAuthStore().invalidate(url, 'all')
-      return { success: true }
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) }
-    }
-  })
+  ipcMain.handle(IPC.MCP_OAUTH_SIGNOUT, async (_event, rawArgs: unknown) => mcpOAuthSignOut(getAppOAuthStore(), rawArgs))
 
   // Phase 4 HTTP OAuth: whether a valid token is stored (app store) for a URL —
   // lets the renderer show a "signed in" indicator without exposing the token.
-  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => {
-    const url = (rawArgs as { url?: unknown } | null | undefined)?.url
-    if (typeof url !== 'string' || !url) return { signedIn: false }
-    try {
-      const record = await getAppOAuthStore().get(url)
-      return { signedIn: !!record?.tokens }
-    } catch {
-      return { signedIn: false }
-    }
-  })
+  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => mcpOAuthStatus(getAppOAuthStore(), rawArgs))
 
   ipcMain.handle(IPC.MCP_INSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpPackageArgs, rawArgs)
@@ -7337,32 +6787,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
-  ipcMain.handle(IPC.MCP_ENSURE_PYTHON_RUNTIME, async () => {
-    try {
-      const uvPath = await uvManager.ensureUv()
-      const uvVersion = await uvManager.getUvVersion()
-      const pythonAvailable = await uvManager.isPythonAvailable()
-
-      if (!pythonAvailable) {
-        await uvManager.ensurePython()
-      }
-
-      return {
-        success: true,
-        uvAvailable: true,
-        uvVersion,
-        pythonAvailable: true,
-        uvPath
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: String(error),
-        uvAvailable: false,
-        pythonAvailable: false
-      }
-    }
-  })
+  ipcMain.handle(IPC.MCP_ENSURE_PYTHON_RUNTIME, async () => ensurePythonRuntime(uvManager))
 
   // Curated registry — remote-first with cached/bundled fallback; the service
   // never rejects, so this always yields a usable entry list.
@@ -7393,59 +6818,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // into place at the end; a failure leaves nothing behind.
   ipcMain.handle(IPC.AGENT_REGISTRY_BRING_HOME, async (_event, args: { id: string }) => {
     if (typeof args?.id !== 'string' || args.id === '') return { success: false, error: 'Missing registry id' }
-    let partial: string | null = null
+    const result = await bringRegistryAgentHome(() => getAgentRegistryService().resolveFile(args.id), {
+      agentsFolder: defaultAgentsFolder,
+      providers: (settings.get('providers') as ProviderConfig[]) ?? [],
+      defaultProviderId: settings.get('defaultProviderId') as string | undefined,
+    })
+    if (!result.success) return result
     try {
-      const { path: src, entry } = await getAgentRegistryService().resolveFile(args.id)
-      const dest = availableAdfPath(defaultAgentsFolder(), basename(entry.file, '.adf'))
-      partial = `${dest}.partial`
-      copyFileSync(src, partial)
-      // Defence in depth: a registry entry is fetched from a remote index, so
-      // it may carry whatever its author's install put in it. Strip identity
-      // (signing keys, identity envelope, attestations, DID meta) exactly as
-      // an outgoing copy does, BEFORE anything reads the file — the review
-      // dialog must classify it 'unclaimed' on the merits, not on trust.
-      AdfDatabase.stripIdentity(partial)
-      const ws = AdfWorkspace.open(partial)
-      try {
-        const config = ws.getAgentConfig()
-        config.id = nanoid(12)
-        config.name = basename(dest, '.adf')
-        const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
-        const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
-        const patched = applyDefaultProviderToOptions(
-          { name: config.name, model: config.model, providers: config.providers },
-          defaultProvider
-        )
-        const incomingModelId = config.model.model_id
-        config.model = { ...config.model, ...(patched.model as AgentConfig['model']) }
-        // The default provider fills in its own default model. The author's
-        // model_id only means something on the provider the author had, so
-        // it is kept only when the provider we just applied has no default
-        // model of its own to offer (the claim step lets the user change it).
-        if (incomingModelId && !config.model.model_id) config.model.model_id = incomingModelId
-        if (patched.providers) config.providers = patched.providers
-        ws.setAgentConfig(config)
-      } finally {
-        ws.close()
-      }
-      for (const side of ['-wal', '-shm']) {
-        try { unlinkSync(`${partial}${side}`) } catch { /* none */ }
-      }
-      renameSync(partial, dest)
-      partial = null
-      recordRecentFile(dest)
-      notifyAdfFileCreated(dest)
-      return { success: true, filePath: dest }
+      recordRecentFile(result.filePath)
+      notifyAdfFileCreated(result.filePath)
     } catch (error) {
-      if (partial) {
-        // AdfDatabase.open()'s repair path can leave .bak/.corrupt/.repaired
-        // beside the partial — a failed bring-home must leave nothing behind.
-        for (const suffix of ['', '-wal', '-shm', '.bak', '.corrupt', '.repaired']) {
-          try { unlinkSync(`${partial}${suffix}`) } catch { /* none */ }
-        }
-      }
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
+    return result
   })
 
   ipcMain.handle(IPC.AGENT_MODEL_SET_FOR_FILE, async (_event, args: { filePath: string; model: { provider: string; model_id: string } }) => {
@@ -7602,49 +6987,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // local control API), the redirect hop cap, and the size ceiling all have to
   // hold on every hop — not just the one the user typed.
 
-  const SKILLS_FETCH_TIMEOUT_MS = 10_000
+  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => fetchSkillsCatalog(url))
 
-  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => {
-    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
-      return { ok: false as const, error: 'Catalog URL must be https' }
-    }
-    const body = await guardedFetch(url, {
-      maxBytes: MAX_CATALOG_BYTES,
-      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
-    })
-    if ('error' in body) return { ok: false as const, error: body.error }
-    let json: unknown
-    try {
-      json = JSON.parse(body.bytes.toString('utf8'))
-    } catch {
-      return { ok: false as const, error: 'Catalog is not valid JSON' }
-    }
-    const parsed = parseSkillsCatalogDocument(json)
-    if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
-    return {
-      ok: true as const,
-      entries: parsed.entries,
-      publisher: parsed.publisher,
-      dropped: parsed.dropped
-    }
-  })
-
-  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => {
-    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
-      return { ok: false as const, error: 'Package URL must be https' }
-    }
-    // The indexer rejects anything past this bound anyway — the guard aborts the
-    // stream at the cap rather than installing a package that could never index.
-    const body = await guardedFetch(url, {
-      maxBytes: MAX_SKILL_PACKAGE_BYTES,
-      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
-    })
-    if ('error' in body) return { ok: false as const, error: body.error }
-    if (body.bytes.subarray(0, 8192).includes(0)) {
-      return { ok: false as const, error: 'SKILL.md is not text' }
-    }
-    return { ok: true as const, content: body.bytes.toString('utf8') }
-  })
+  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => fetchSkillPackage(url))
 
   // --- Sandbox Package Management ---
 
@@ -7841,6 +7186,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
+  /** The files the credential "list files" scans start from: foreground, background, tracked dirs. */
+  const credentialFileSources = (): CredentialFileSources => ({
+    knownFiles: [
+      ...(currentWorkspace ? [currentWorkspace.getFilePath()] : []),
+      ...(backgroundAgentManager ? backgroundAgentManager.getAllAgentFilePaths() : []),
+    ],
+    trackedDirs: (settings.get('trackedDirectories') as string[]) ?? [],
+  })
+
   /**
    * List all known ADF files (from tracked directories + current foreground)
    * that reference a given MCP server in their agent config.
@@ -7849,86 +7203,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.MCP_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpCredentialListArgs, rawArgs)
     if ('error' in v) return { files: [] }
-    const args = v.data
-    const prefix = `mcp:${args.npmPackage}:`
-    const results: Array<{
-      filePath: string
-      fileName: string
-      hasCredentials: boolean
-      populatedKeys: string[]
-    }> = []
-    const seen = new Set<string>()
-
-    // Helper: check a single ADF file
-    // Include if it has the MCP server in its config OR has stored credentials for it
-    const checkFile = (filePath: string) => {
-      if (seen.has(filePath)) return
-      seen.add(filePath)
-
-      try {
-        const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-        const populatedKeys = purposes.map((p) => p.slice(prefix.length))
-
-        // Include if file has stored credentials for this server
-        if (populatedKeys.length > 0) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: true,
-            populatedKeys
-          })
-          return
-        }
-
-        // Also include if the file references this MCP server in its config (even without creds yet)
-        const mcpNames = AdfDatabase.peekMcpServerNames(filePath)
-        if (mcpNames.includes(args.mcpServerName)) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: false,
-            populatedKeys: []
-          })
-        }
-      } catch {
-        // Skip files that can't be read
-      }
-    }
-
-    // Check foreground workspace
-    if (currentWorkspace) {
-      checkFile(currentWorkspace.getFilePath())
-    }
-
-    // Check background agents
-    if (backgroundAgentManager) {
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        checkFile(fp)
-      }
-    }
-
-    // Scan tracked directories for ADF files
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dir of trackedDirs) {
-      try {
-        const scanFiles = (dirPath: string, depth: number) => {
-          if (depth > 3) return
-          const entries = readdirSync(dirPath, { withFileTypes: true })
-          for (const e of entries) {
-            if (e.isFile() && e.name.endsWith('.adf')) {
-              checkFile(join(dirPath, e.name))
-            } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-              scanFiles(join(dirPath, e.name), depth + 1)
-            }
-          }
-        }
-        scanFiles(dir, 0)
-      } catch {
-        // Skip dirs that can't be read
-      }
-    }
-
-    return { files: results }
+    return listMcpCredentialFiles(v.data, credentialFileSources())
   })
 
   /**
@@ -7949,22 +7224,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         return { success: true, alreadyAttached: true }
       }
 
-      const entry = buildMcpServerConfigFromRegistration({
-        id: `mcp:${args.serverConfig.name}`,
-        name: args.serverConfig.name,
-        type: args.serverConfig.type,
-        npmPackage: args.serverConfig.npmPackage,
-        pypiPackage: args.serverConfig.pypiPackage,
-        command: args.serverConfig.command,
-        args: args.serverConfig.args,
-        url: args.serverConfig.url,
-        env: args.serverConfig.envKeys?.map((key) => ({ key, value: '' })),
-        headers: args.serverConfig.headers,
-        headerEnv: args.serverConfig.headerEnv,
-        bearerTokenEnvVar: args.serverConfig.bearerTokenEnvVar,
-        credentialStorage: args.serverConfig.credentialStorage,
-        runLocation: args.serverConfig.runLocation
-      })
+      const entry = mcpAttachEntry(args.serverConfig)
 
       config.mcp.servers.push(entry)
       ws.setAgentConfig(config)
@@ -8063,7 +7323,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // --- Channel Adapters ---
 
   ipcMain.handle(IPC.ADAPTER_INSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
-    const args = z.object({ package: z.string() }).parse(rawArgs)
+    const args = AdapterPackageArgs.parse(rawArgs)
     try {
       const win = getMainWindow()
       const installed = await adapterPackageResolver.install(args.package, (msg) => {
@@ -8085,7 +7345,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_UNINSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
-    const args = z.object({ package: z.string() }).parse(rawArgs)
+    const args = AdapterPackageArgs.parse(rawArgs)
     try {
       await adapterPackageResolver.uninstall(args.package)
       // Remove from app settings
@@ -8105,36 +7365,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // Extracted so the fleet map's aggregate poll can reuse the body.
   const getAdapterStatus = async (): Promise<{ adapters: ReturnType<ChannelAdapterManager['getStates']>; perAgent: AdapterAgentStatus[] }> => {
     // Merge adapter states across the foreground agent AND every background
-    // agent — adapters run per-agent, and the fleet map's base stations must
-    // exist regardless of which agent hosts the channel. Deduped by type,
-    // healthiest instance wins.
-    const rank = (status: string): number =>
-      status === 'connected' || status === 'running' ? 2 : status === 'error' ? 1 : 0
-    const byType = new Map<string, ReturnType<ChannelAdapterManager['getStates']>[number]>()
-    // Per-agent view for Settings → Channels: which agent hosts which adapter
-    // and how that instance is doing. Logs are dropped (the by-type view
-    // keeps them) to keep the payload small.
-    const perAgent: AdapterAgentStatus[] = []
-    const fold = (filePath: string | null, states: ReturnType<ChannelAdapterManager['getStates']>): void => {
-      for (const s of states) {
-        const prev = byType.get(s.type)
-        if (!prev || rank(s.status) > rank(prev.status)) byType.set(s.type, s)
-      }
-      if (filePath && states.length > 0) {
-        perAgent.push({
-          filePath,
-          adapters: states.map((s) => ({ type: s.type, status: s.status, error: s.error, connectedAt: s.connectedAt })),
-        })
-      }
-    }
-    if (currentAdapterManager) fold(currentWorkspace?.getFilePath() ?? null, currentAdapterManager.getStates())
+    // agent (services/adapter-status.ts).
+    const sources: Array<{ filePath: string | null; states: ReturnType<ChannelAdapterManager['getStates']> }> = []
+    if (currentAdapterManager) sources.push({ filePath: currentWorkspace?.getFilePath() ?? null, states: currentAdapterManager.getStates() })
     if (backgroundAgentManager) {
       for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
         const refs = backgroundAgentManager.getAgent(fp)
-        if (refs?.adapterManager) fold(fp, refs.adapterManager.getStates())
+        if (refs?.adapterManager) sources.push({ filePath: fp, states: refs.adapterManager.getStates() })
       }
     }
-    return { adapters: [...byType.values()], perAgent }
+    return mergeAdapterStates(sources)
   }
 
   ipcMain.handle(IPC.ADAPTER_GET_STATUS, async () => getAdapterStatus())
@@ -8149,7 +7389,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   }
 
   ipcMain.handle(IPC.ADAPTER_RESTART, async (_event, rawArgs: unknown) => {
-    const args = z.object({ type: z.string(), filePath: z.string().optional() }).parse(rawArgs)
+    const args = AdapterTypeArgs.parse(rawArgs)
     const manager = resolveAdapterManager(args.filePath)
     if (!manager) {
       return {
@@ -8164,19 +7404,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_GET_LOGS, async (_event, rawArgs: unknown) => {
-    const args = z.object({ type: z.string(), filePath: z.string().optional() }).parse(rawArgs)
+    const args = AdapterTypeArgs.parse(rawArgs)
     const manager = resolveAdapterManager(args.filePath)
     if (!manager) return { logs: [], running: false }
     return { logs: manager.getLogs(args.type), running: true }
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_SET, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string(),
-      envKey: z.string(),
-      value: z.string()
-    }).parse(rawArgs)
+    const args = AdapterCredentialSetArgs.parse(rawArgs)
     const purpose = `adapter:${args.adapterType}:${args.envKey}`
 
     // Same shape as MCP_CREDENTIAL_SET: reuse an already-open workspace rather
@@ -8230,10 +7465,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_GET, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string()
-    }).parse(rawArgs)
+    const args = AdapterCredentialGetArgs.parse(rawArgs)
     // Same workspace resolution as ADAPTER_CREDENTIAL_SET: an already-open
     // workspace (foreground or background agent) has its envelopes unlocked;
     // a temp open must run the unlock cascade or every sealed row reads as
@@ -8276,98 +7508,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
-    const args = z.object({ adapterType: z.string() }).parse(rawArgs)
-    const prefix = `adapter:${args.adapterType}:`
-    const results: { filePath: string; fileName: string; hasCredentials: boolean; populatedKeys: string[] }[] = []
-    const seen = new Set<string>()
-
-    // Helper: check a single ADF file
-    const checkFile = (filePath: string) => {
-      if (seen.has(filePath)) return
-      seen.add(filePath)
-
-      try {
-        const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-        const populatedKeys = purposes.map((p) => p.slice(prefix.length))
-
-        // Include if file has stored credentials for this adapter
-        if (populatedKeys.length > 0) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: true,
-            populatedKeys
-          })
-          return
-        }
-
-        // Also include if the file references this adapter type in its config
-        const adapterTypes = AdfDatabase.peekAdapterTypes(filePath)
-        if (adapterTypes.includes(args.adapterType)) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: false,
-            populatedKeys: []
-          })
-        }
-      } catch {
-        // Skip files that can't be read
-      }
-    }
-
-    // Check foreground workspace
-    if (currentWorkspace) {
-      checkFile(currentWorkspace.getFilePath())
-    }
-
-    // Check background agents
-    if (backgroundAgentManager) {
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        checkFile(fp)
-      }
-    }
-
-    // Scan tracked directories for ADF files (recursive, depth 3)
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dir of trackedDirs) {
-      try {
-        const scanFiles = (dirPath: string, depth: number) => {
-          if (depth > 3) return
-          const entries = readdirSync(dirPath, { withFileTypes: true })
-          for (const e of entries) {
-            if (e.isFile() && e.name.endsWith('.adf')) {
-              checkFile(join(dirPath, e.name))
-            } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-              scanFiles(join(dirPath, e.name), depth + 1)
-            }
-          }
-        }
-        scanFiles(dir, 0)
-      } catch {
-        // Skip dirs that can't be read
-      }
-    }
-
-    return { files: results }
+    const args = AdapterListFilesArgs.parse(rawArgs)
+    return listAdapterCredentialFiles(args.adapterType, credentialFileSources())
   })
 
   ipcMain.handle(IPC.ADAPTER_ATTACH, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string(),
-      config: z.object({
-        enabled: z.boolean(),
-        policy: z.object({
-          dm: z.enum(['all', 'allowlist', 'none']).optional(),
-          groups: z.enum(['all', 'mention', 'none']).optional(),
-          allow_from: z.array(z.string()).optional()
-        }).optional(),
-        limits: z.object({
-          max_attachment_size: z.number().int().positive().optional()
-        }).optional()
-      })
-    }).parse(rawArgs)
+    const args = AdapterAttachArgs.parse(rawArgs)
 
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
@@ -8400,10 +7546,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_DETACH, async (_event, rawArgs: unknown) => {
-    const args = z.object({
-      filePath: z.string(),
-      adapterType: z.string()
-    }).parse(rawArgs)
+    const args = AdapterDetachArgs.parse(rawArgs)
 
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
@@ -8439,6 +7582,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
       if (!workspace) return { success: false, error: 'Cannot open file' }
+      // A temp-open starts locked: run the unlock cascade first (as the MCP and
+      // adapter credential sets do), so the owner's own sealed key is replaced
+      // sealed and only a file this install cannot open asks (Rule E3).
+      if (workspace !== currentWorkspace) unlockWorkspaceEnvelopes(workspace)
       try {
         const purpose = `provider:${args.providerId}:apiKey`
         const derivedKey = derivedKeyCache.get(args.filePath) ?? null
@@ -8447,7 +7594,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           const kdfParamsJson = workspace.getDatabase().getIdentity('crypto:kdf:params')
           workspace.getDatabase().setIdentityRaw(purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson)
         } else {
-          workspace.setIdentity(purpose, args.value)
+          // A locked credentials envelope: the owner chooses (Rule E3, design §3.2).
+          const locked = lockedCredentialWrite(workspace, purpose)
+          if (!locked) workspace.setIdentity(purpose, args.value)
+          else if (await askReplaceLockedCredential(locked, 'this machine', (line) => console.log(`[Credentials] ${line}`))) {
+            replaceLockedCredential(workspace, locked, args.value, (line) => console.warn(`[Credentials] ${args.filePath}: ${line}`))
+          } else {
+            return { success: false, error: String(new Error(lockedCredentialCancelled(locked))) }
+          }
         }
         return { success: true }
       } finally {
@@ -8496,85 +7650,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.PROVIDER_CREDENTIAL_LIST_FILES, async (_event, rawArgs: unknown) => {
     const args = z.object({ providerId: z.string() }).parse(rawArgs)
-    const prefix = `provider:${args.providerId}:`
-    const results: import('../../shared/types/ipc.types').ProviderCredentialFileInfo[] = []
-    const seen = new Set<string>()
-
-    const checkFile = (filePath: string) => {
-      if (seen.has(filePath)) return
-      seen.add(filePath)
-
-      try {
-        const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-        const populatedKeys = purposes.map((p) => p.slice(prefix.length))
-        // The agent's copy of the provider (no secrets): the renderer compares
-        // it to the app values to tell a real override from Studio's unchanged
-        // copy-on-create.
-        const copy = AdfDatabase.peekProviderConfig(filePath, args.providerId)
-        const providerConfig = copy
-          ? { defaultModel: copy.defaultModel, params: copy.params, requestDelayMs: copy.requestDelayMs }
-          : undefined
-
-        if (populatedKeys.length > 0) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: true,
-            populatedKeys,
-            providerConfig
-          })
-          return
-        }
-
-        // Also include if the file references this provider in its config
-        if (copy) {
-          results.push({
-            filePath,
-            fileName: basename(filePath),
-            hasCredentials: false,
-            populatedKeys: [],
-            providerConfig
-          })
-        }
-      } catch {
-        // Skip files that can't be read
-      }
-    }
-
-    // Check foreground workspace
-    if (currentWorkspace) {
-      checkFile(currentWorkspace.getFilePath())
-    }
-
-    // Check background agents
-    if (backgroundAgentManager) {
-      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
-        checkFile(fp)
-      }
-    }
-
-    // Scan tracked directories for ADF files (recursive, depth 3)
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dir of trackedDirs) {
-      try {
-        const scanFiles = (dirPath: string, depth: number) => {
-          if (depth > 3) return
-          const entries = readdirSync(dirPath, { withFileTypes: true })
-          for (const e of entries) {
-            if (e.isFile() && e.name.endsWith('.adf')) {
-              checkFile(join(dirPath, e.name))
-            } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
-              scanFiles(join(dirPath, e.name), depth + 1)
-            }
-          }
-        }
-        scanFiles(dir, 0)
-      } catch {
-        // Skip dirs that can't be read
-      }
-    }
-
-    return { files: results }
+    return listProviderCredentialFiles(args.providerId, credentialFileSources())
   })
 
   ipcMain.handle(IPC.PROVIDER_ATTACH, async (_event, rawArgs: unknown) => {
@@ -8652,7 +7728,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.PROVIDER_AGENT_KEY_SOURCES, async (_event, rawArgs: unknown) => {
     const args = z.object({
       filePath: z.string(),
-      providers: z.array(z.object({ id: z.string(), type: z.string(), baseUrl: z.string() }))
+      providers: z.array(z.object({ id: z.string(), type: z.enum(['anthropic', 'openrouter', 'openai', 'openai-compatible', 'chatgpt-subscription', 'grok-subscription', 'claude-subscription']), baseUrl: z.string() }))
     }).parse(rawArgs)
     try {
       const workspace = args.filePath === currentFilePath ? currentWorkspace : AdfWorkspace.open(args.filePath)
@@ -8683,12 +7759,22 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         args.purpose, ciphertext, 'aes-256-gcm', iv, kdfParamsJson
       )
     } else {
-      currentWorkspace.setIdentity(args.purpose, args.value)
+      // A locked credentials envelope: the owner chooses (Rule E3, design §3.2).
+      const workspace = currentWorkspace
+      const locked = args.purpose.startsWith('crypto:') ? null : lockedCredentialWrite(workspace, args.purpose)
+      if (!locked) workspace.setIdentity(args.purpose, args.value)
+      else if (await askReplaceLockedCredential(locked, 'this machine', (line) => console.log(`[Credentials] ${line}`))) {
+        replaceLockedCredential(workspace, locked, args.value, (line) => console.warn(`[Credentials] ${currentFilePath}: ${line}`))
+      } else {
+        throw new Error(lockedCredentialCancelled(locked))
+      }
     }
   })
 
   ipcMain.handle(IPC.IDENTITY_GET, async (_event, args: { purpose: string }) => {
     if (!currentWorkspace) return null
+    // Key material never reaches the renderer (Rule E3, design §3.2).
+    if (isKeyMaterialPurpose(args.purpose)) return null
     return currentWorkspace.getIdentityDecrypted(args.purpose, currentDerivedKey)
   })
 
@@ -8721,44 +7807,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       derivedKeyCache.set(currentFilePath, currentDerivedKey)
       syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
 
-      // Whole-file passwords are deprecated: convert the user's OWN files on
-      // unlock — strip the whole-file password, mint keys + envelopes, then
-      // carry the SAME password forward as a credentials-envelope password
-      // slot (multi-route: opens silently via owner/runtime keys, and the
-      // password keeps working as a share password). Foreign files are left
-      // exactly as-is — the claim flow owns their conversion. Without
-      // envelope recipients, skip silently: never strip protection without
-      // re-protecting.
-      let converted = false
-      try {
-        const svc = settings.getOwnerIdentity()
-        const fileOwnerDid = currentWorkspace.getMeta('adf_owner_did')
-        const isMine = fileOwnerDid
-          ? fileOwnerDid === svc.getOwnerDid()
-          : !readAdfAttestations(currentWorkspace).some((a) => a.role === 'owner')
-        if (isMine && svc.getEnvelopeRecipients()) {
-          currentWorkspace.removePassword(currentDerivedKey)
+      // Whole-file passwords are deprecated: the user's OWN file is converted
+      // on unlock (services/envelope-actions.ts, shared with the daemon).
+      const unlockedPath = currentFilePath
+      const converted = convertOwnLegacyPassword(currentWorkspace, currentDerivedKey, args.password, {
+        svc: settings.getOwnerIdentity(),
+        onPasswordRemoved: () => {
           currentDerivedKey = null
-          derivedKeyCache.delete(currentFilePath)
-          syncDerivedKeyToMesh(currentFilePath, null)
-          converted = true
-          // Now unblocked (no longer password-protected): envelopes + keys +
-          // sealing. A failure here leaves a plain file that the FILE_OPEN
-          // lazy migration retries on next open.
-          try {
-            svc.ensureWorkspaceIdentity(currentWorkspace)
-            if (currentWorkspace.getEnvelopeState('credentials') === 'unlocked') {
-              // Same replace pattern as the share-password set flow.
-              currentWorkspace.removeEnvelopePasswordSlots('credentials')
-              currentWorkspace.addEnvelopePasswordSlot('credentials', args.password)
-            }
-          } catch (err) {
-            console.warn('[IDENTITY_PASSWORD_UNLOCK] Post-convert provisioning failed:', err)
-          }
-        }
-      } catch (err) {
-        console.warn('[IDENTITY_PASSWORD_UNLOCK] Auto-convert check failed:', err)
-      }
+          derivedKeyCache.delete(unlockedPath)
+          syncDerivedKeyToMesh(unlockedPath, null)
+        },
+      })
       return { success: true, converted }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -8808,6 +7867,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_REVEAL, async (_event, args: { purpose: string }) => {
     if (!currentWorkspace) return { value: null }
+    // The agent's private signing key and other key material are never
+    // revealed (Rule E3, design §3.2): the panel shows why.
+    if (isKeyMaterialPurpose(args.purpose)) return { value: null, reason: REVEAL_REFUSED_REASON }
     return { value: currentWorkspace.getIdentityDecrypted(args.purpose, currentDerivedKey) }
   })
 
@@ -8838,30 +7900,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_CLAIM, async () => {
     if (!currentWorkspace || !currentFilePath) return { success: false, error: 'No ADF open' }
-    try {
-      if (currentWorkspace.isPasswordProtected() && !currentDerivedKey) {
-        // Claiming without the derived key would wipe the signing keys and
-        // then bail at provisioning, leaving the file key-less and still
-        // password-protected.
-        return { success: false, error: 'File is password-protected — enter the password before claiming' }
-      }
-      settings.ensureRuntimeIdentity()
-      if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
-        // Fail plainly: claiming without envelope recipients would mint an
-        // identity with no envelopes (plaintext keys, no credential sealing).
-        return { success: false, error: 'Owner and runtime encryption keys are unavailable (keystore locked?), so the template cannot be claimed securely.' }
-      }
-      // If password-protected, decrypt everything first, then remove password
-      if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
-        currentWorkspace.removePassword(currentDerivedKey)
+    const claimedPath = currentFilePath
+    return claimAgentWorkspace(currentWorkspace, {
+      derivedKey: currentDerivedKey,
+      svc: settings.getOwnerIdentity(),
+      ensureRuntimeIdentity: () => { settings.ensureRuntimeIdentity() },
+      onPasswordRemoved: () => {
         currentDerivedKey = null
-        derivedKeyCache.delete(currentFilePath)
-      }
-      const { did } = settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
-      return { success: true, did }
-    } catch (err) {
-      return { success: false, error: String(err) }
-    }
+        derivedKeyCache.delete(claimedPath)
+      },
+    })
   })
 
   // --- Owner identity (app-level, mnemonic-backed) ---
@@ -8892,119 +7940,39 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.IDENTITY_ATTESTATIONS_GET, async () => {
     if (!currentWorkspace) return { attestations: [] }
-    return { attestations: readAdfAttestations(currentWorkspace), did: currentWorkspace.getDid() }
+    return readAttestations(currentWorkspace)
   })
 
   ipcMain.handle(IPC.IDENTITY_ATTESTATIONS_REISSUE, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    if (!currentWorkspace.getDid()) return { success: false, error: 'Agent has no DID — generate keys first' }
-    issueAttestationsForCurrentOwner(currentWorkspace)
-    return { success: true, attestations: readAdfAttestations(currentWorkspace) }
+    return reissueAttestations(currentWorkspace, settings.getOwnerIdentity())
   })
 
   // --- Envelope keystore (dual-envelope secret protection) ---
+  // Bodies in services/envelope-actions.ts (shared with the daemon routes).
 
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_STATUS, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    // 'foreign' from getEnvelopeState only means "no cached DEK, no password
-    // slot" — a session-cache artifact for an own file whose open path never
-    // unlocked (e.g. legacy password gate). Attempt the local-key unwrap
-    // first, then classify leftovers by slot DIDs: local owner/runtime slot
-    // present → ours-but-not-unlocked → 'locked', never 'foreign'.
-    unlockWorkspaceEnvelopes(currentWorkspace)
-    const svc = settings.getOwnerIdentity()
-    const localDids = new Set([svc.getOwnerDid(), svc.getRuntimeDid()])
-    const classify = (name: 'identity' | 'credentials') => {
-      const state = currentWorkspace!.getEnvelopeState(name)
-      if (state !== 'foreign') return state
-      const slots = currentWorkspace!.readEnvelopeSlots(name) ?? []
-      const oursBySlot = slots.some(
-        (s) => s.type !== 'password' && localDids.has((s as { recipient_did?: string }).recipient_did ?? '')
-      )
-      return oursBySlot ? 'locked' : 'foreign'
-    }
-    const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
-    return {
-      success: true,
-      identity: classify('identity'),
-      credentials: classify('credentials'),
-      sharePasswordSet: credentialSlots.some((s) => s.type === 'password')
-    }
+    return readEnvelopeStatus(currentWorkspace, settings.getOwnerIdentity(), unlockWorkspaceEnvelopes)
   })
 
-  // Share flow (D12): add a password slot to the credentials envelope so the
-  // file can travel; identity is never password-shareable.
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, async (_event, password: string) => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    if (typeof password !== 'string' || password.length < 8) {
-      return { success: false, error: 'Share password must be at least 8 characters' }
-    }
-    try {
-      // One password slot at a time — replace rather than accumulate.
-      currentWorkspace.removeEnvelopePasswordSlots('credentials')
-      currentWorkspace.addEnvelopePasswordSlot('credentials', password)
-      return { success: true }
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return setSharePassword(currentWorkspace, password)
   })
 
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    currentWorkspace.removeEnvelopePasswordSlots('credentials')
-    return { success: true }
+    return removeSharePassword(currentWorkspace)
   })
 
-  // Recipient flow (D12): unlock foreign credentials with the share password.
-  // adopt: true (the post-claim manual path, e.g. IdentityPanel) additionally
-  // re-wraps to the local owner/runtime; the password slot is PRESERVED
-  // (multi-route — the same password keeps working for re-sharing). adopt:
-  // false (the pre-accept review flow) caches the DEK for this session only
-  // and writes NOTHING — rejecting the review must leave the file untouched;
-  // adoption then happens inside the claim path.
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (
     _event,
     password: string,
     adopt?: boolean
   ) => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
-    if (!currentWorkspace.unlockEnvelopeWithPassword('credentials', String(password))) {
-      return { success: false, error: 'Wrong password' }
-    }
-    if (adopt === false) {
-      return { success: true, adopted: false, credentials: currentWorkspace.getEnvelopeState('credentials') }
-    }
-    try {
-      const svc = settings.getOwnerIdentity()
-      const ownerEncPub = svc.getOwnerEncPublicKey()
-      const runtimeEncPub = svc.getRuntimeEncPublicKey()
-      const adopted = !!(ownerEncPub && runtimeEncPub)
-      if (ownerEncPub && runtimeEncPub) {
-        currentWorkspace.adoptEnvelope('credentials', {
-          ownerDid: svc.getOwnerDid(),
-          ownerEncPublicKey: ownerEncPub,
-          runtimeDid: svc.getRuntimeDid(),
-          runtimeEncPublicKey: runtimeEncPub
-        })
-      }
-      // Credentials written while the envelope was locked landed plain —
-      // seal them now that the DEK is available.
-      currentWorkspace.sealPlainRowsIntoEnvelopes()
-      return {
-        success: true,
-        adopted,
-        // Adopt skipped ≠ adopted: the envelope stays usable this session but
-        // no local key slots were added — the password stays the only route
-        // on this machine. Warn, don't fail — failing here would block
-        // credential use entirely.
-        ...(adopted
-          ? {}
-          : { warning: 'Owner/runtime encryption keys are unavailable — envelope unlocked for this session only; the password will be required again next time' }),
-        credentials: currentWorkspace.getEnvelopeState('credentials')
-      }
-    } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
+    return unlockWithSharePassword(currentWorkspace, password, adopt, settings.getOwnerIdentity())
   })
 
   // --- ChatGPT Subscription Auth ---
@@ -9175,8 +8143,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
+  // Rows carry `users` (other live runtimes using the container, W1-G), as in daemon mode: the Stop, Remove and Rebuild confirmations name them.
   ipcMain.handle(IPC.COMPUTE_LIST_CONTAINERS, async () => {
-    return { containers: await podmanService.listContainers() }
+    return { containers: await podmanService.listContainersWithUsers() }
   })
 
   ipcMain.handle(IPC.COMPUTE_STOP_CONTAINER, async (_event, args: { name: string }) => {
@@ -9222,20 +8191,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     getMainWindow()?.webContents.send(IPC.COMPUTE_CONTAINER_PHASE, payload)
   })
 
-  ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) => {
-    const containerName = isolatedContainerName(args.agentName, args.agentId)
-    // The Computer tab opens in any phase and shows it; only a ready
-    // container gets the (slow) browser bring-up awaited, so the viewer
-    // never lands on connection-refused right after a restart.
-    const { phase, detail } = await podmanService.containerPhase(containerName)
-    if (phase !== 'ready') return { containerName, hostPort: null, phase, detail }
-    let browserError: string | undefined
-    await podmanService.browserReady(containerName).catch((err) => {
-      browserError = err instanceof Error ? err.message : String(err)
-    })
-    const hostPort = await podmanService.getNovncHostPort(containerName)
-    return { containerName, hostPort, phase, detail: browserError }
-  })
+  ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) =>
+    getComputeBrowserInfo(podmanService, args))
 
   ipcMain.handle(IPC.COMPUTE_TEST_EXECUTION_TARGET, async (_event, target) => {
     return externalExecutionService.probe(target)
@@ -9389,6 +8346,11 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // points at an agent that no longer exists.
   try { nativeNotifier?.dispose() } catch { /* best effort */ }
   try { menuBar?.dispose() } catch { /* best effort */ }
+  // The templates-folder watcher registerAllIpcHandlers started (and its
+  // pending TEMPLATES_CHANGED): nothing may push to a closing window.
+  try { templatesService?.stopWatcher() } catch { /* best effort */ }
+  // The tracked-folder watcher (startDirWatcher): its autostart must not fire mid-teardown.
+  try { stopDirWatcher() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }

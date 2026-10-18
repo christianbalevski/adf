@@ -18,7 +18,7 @@ vi.mock('../../../src/main/runtime/emit-umbilical', () => ({
   emitUmbilicalEvent: () => { /* noop */ },
 }))
 
-function makeHandler() {
+function makeHandler(topP?: number | null) {
   const providerCalls: CreateMessageOptions[] = []
   const provider = {
     providerId: 'test',
@@ -42,7 +42,7 @@ function makeHandler() {
     name: 'test-agent',
     id: 'test-agent',
     tools: [],
-    model: { model_id: 'test-model' },
+    model: { model_id: 'test-model', top_p: topP },
     code_execution: { model_invoke: true } as AgentConfig['code_execution'],
   } as unknown as AgentConfig
 
@@ -57,6 +57,13 @@ function makeHandler() {
 }
 
 describe('model_invoke input shapes', () => {
+  it.each([null, 0.25])('normalizes the configured top_p %s for the provider contract', async (topP) => {
+    const { handler, providerCalls } = makeHandler(topP)
+    const result = await handler.handleCall('model_invoke', { prompt: 'hello' })
+    expect(result.error).toBeUndefined()
+    expect(providerCalls[0].topP).toBe(topP ?? undefined)
+  })
+
   it('accepts the canonical messages array', async () => {
     const { handler, providerCalls } = makeHandler()
     const result = await handler.handleCall('model_invoke', {

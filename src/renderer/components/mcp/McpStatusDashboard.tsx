@@ -8,20 +8,22 @@ import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../sha
 import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
 
-const STATUS_COLORS: Record<string, string> = {
+export const STATUS_COLORS: Record<string, string> = {
   connected: 'bg-green-500',
   connecting: 'bg-yellow-500 animate-pulse',
   error: 'bg-red-500',
   stopped: 'bg-neutral-400',
-  installing: 'bg-blue-500 animate-pulse'
+  installing: 'bg-blue-500 animate-pulse',
+  needs_sign_in: 'bg-amber-500'
 }
 
-const STATUS_LABELS: Record<string, string> = {
+export const STATUS_LABELS: Record<string, string> = {
   connected: 'Connected',
   connecting: 'Connecting...',
   error: 'Error',
   stopped: 'Stopped',
-  installing: 'Installing...'
+  installing: 'Installing...',
+  needs_sign_in: 'Sign in needed'
 }
 
 interface McpStatusDashboardProps {

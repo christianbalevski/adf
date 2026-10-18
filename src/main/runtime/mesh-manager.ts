@@ -37,6 +37,8 @@ import { didToPublicKey, rawPublicKeyToSpki } from '../crypto/identity-crypto'
 import { ancestorScope, permits, denialReason } from './scope-resolver'
 import type { MdnsService, DiscoveredRuntime } from '../services/mdns-service'
 import type { DirectoryFetchCache } from '../services/directory-fetch-cache'
+import { currentAgentDerivedKey, subscribeAgentRuntimeSignals } from './agent-runtime-signals'
+import { isUrlRecipient, urlRecipientError } from '../utils/message-recipient'
 
 /**
  * Which cognition stream an inbound owner message is pre-appended to, or `null`
@@ -338,7 +340,7 @@ export class MeshManager extends EventEmitter {
     toolRegistry: ToolRegistry,
     workspace: AdfWorkspace,
     session: AgentSession,
-    triggerEvaluator: TriggerEvaluator,
+    triggerEvaluator: TriggerEvaluator | null,
     isForeground: boolean,
     isMessageTriggeredFn: (() => boolean) | null,
     executor: AgentExecutor | null,
@@ -440,12 +442,26 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
-   * Register an agent for HTTP serving without requiring a TriggerEvaluator.
+   * Register a daemon-hosted agent (daemon/index.ts, on RuntimeService
+   * `agent-loaded`). Identical to Studio's background registration
+   * (BackgroundAgentManager.onAgentStarted → registerAgent): message-bus
+   * subscription, mesh defaults and communication tools, mesh context,
+   * `isMessageTriggered` read live from the executor (msg_send's
+   * respond_only check), WS connections, card builder. Like Studio, a
+   * disabled mesh registers nobody; enableMesh callers re-register.
    *
-   * The daemon uses this while it grows toward full Studio parity: public files,
-   * shared files, agent cards, API routes, and outbound mesh messaging work
-   * immediately, while trigger-driven inbox handling remains optional until the
-   * daemon owns a TriggerEvaluator for each agent.
+   * Studio's hosts push config changes and the derived key into the
+   * registration by hand (updateAgentConfig, setDerivedKey). The daemon's
+   * AgentRuntimeBuilder announces both through agent-runtime-signals instead,
+   * so this subscribes for the life of the registration.
+   *
+   * Delivery is unchanged by the bus subscription: nothing publishes on the
+   * bus (sendMessage delivers locally in-process, the HTTP and WS ingress go
+   * through processIngressMessage), so each message still lands once.
+   *
+   * `adapterManager` is stored only when the agent is registered, and dropped
+   * with the registration, so a disabled mesh never holds a manager the
+   * agent's teardown disposes.
    */
   registerServableAgent(
     filePath: string,
@@ -456,77 +472,40 @@ export class MeshManager extends EventEmitter {
     executor: AgentExecutor | null,
     adfCallHandler: AdfCallHandler | null,
     codeSandboxService: CodeSandboxService | null,
-    triggerEvaluator: TriggerEvaluator | null
+    triggerEvaluator: TriggerEvaluator | null,
+    adapterManager: ChannelAdapterManager | null = null
   ): void {
+    if (!this.enabled) return
     if (this.registeredAgents.has(filePath)) return
 
-    let handle = config.handle || deriveHandle(filePath)
-    if (this.handleToFilePath.has(handle)) {
-      const base = handle
-      let suffix = 1
-      while (this.handleToFilePath.has(`${base}-${suffix}`)) suffix++
-      handle = `${base}-${suffix}`
-      console.warn(`[Mesh] Handle "${base}" already taken, using "${handle}" for ${filePath}`)
-    }
-    this.handleToFilePath.set(handle, filePath)
+    this.registerAgent(
+      filePath, config, toolRegistry, workspace, session, triggerEvaluator, false,
+      () => executor?.isMessageTriggered ?? false,
+      executor, adfCallHandler, codeSandboxService,
+    )
+    const reg = this.registeredAgents.get(filePath)
+    if (!reg) return
 
-    if (this.enabled) {
-      this.applyMeshDefaults(config)
-      this.persistMeshDefaults(filePath, workspace)
-      this.registerCommunicationTools(filePath, config, toolRegistry, () => false)
-    }
-
-    const trackedDirRoot = this.findTrackedDirRoot(filePath) || dirname(filePath)
-
-    this.registeredAgents.set(filePath, {
-      filePath,
-      trackedDirRoot,
-      handle,
-      config,
-      toolRegistry,
-      workspace,
-      session,
-      triggerEvaluator,
-      isForeground: false,
-      messageUnsubscribe: () => {},
-      executor,
-      adfCallHandler,
-      codeSandboxService,
+    if (adapterManager) this.setAdapterManager(filePath, adapterManager)
+    const key = currentAgentDerivedKey(workspace)
+    if (key) this.setDerivedKey(filePath, key)
+    const unsubscribeSignals = subscribeAgentRuntimeSignals(workspace, {
+      onConfigChanged: (updated) => this.updateAgentConfig(filePath, updated),
+      onDerivedKeyChanged: (derivedKey) => {
+        if (derivedKey) this.setDerivedKey(filePath, derivedKey)
+        else this.clearDerivedKey(filePath)
+      },
     })
-
-    if (executor) {
-      executor.setMeshContext(() => this.getMeshContext(filePath))
+    const unsubscribeBus = reg.messageUnsubscribe
+    reg.messageUnsubscribe = () => {
+      unsubscribeBus()
+      unsubscribeSignals()
+      // The key and the adapter manager belong to this load (Studio's
+      // agent-off teardown removes the adapter manager too): a reload starts
+      // locked and sets its own manager.
+      this.clearDerivedKey(filePath)
+      this.removeAdapterManager(filePath)
     }
-
-    workspace._cardBuilder = () => {
-      const reg = this.registeredAgents.get(filePath)
-      if (!reg) return null
-      // _cardBuilder is invoked by in-process tools/lambdas — serve loopback URLs.
-      // HTTP-served cards (via /agents/{handle}/card and /agents) go through
-      // the route handlers and get requester-aware hosts instead.
-      return buildAgentCard({
-        handle: reg.handle,
-        filePath: reg.filePath,
-        config: reg.config,
-        workspace: reg.workspace,
-        triggerEvaluator: reg.triggerEvaluator,
-        adfCallHandler: reg.adfCallHandler,
-        codeSandboxService: reg.codeSandboxService,
-        getSigningKey: () => reg.workspace.getSigningKeys(this.derivedKeys.get(filePath) ?? null)?.privateKey ?? null
-      }, '127.0.0.1', this.meshPort)
-    }
-
-    this.emitMeshEvent({
-      type: 'agent_joined',
-      payload: { filePath, state: 'idle' },
-      timestamp: Date.now()
-    })
-
-    if (this.wsConnectionManager && config.ws_connections?.length) {
-      this.wsConnectionManager.registerAgent(filePath, config.ws_connections)
-    }
-
-    console.log(`[Mesh] Registered ${basename(filePath, '.adf')} (servable)`)
   }
 
   /**
@@ -682,6 +661,7 @@ export class MeshManager extends EventEmitter {
         content: msgContent
       })
     }
+    this.emitAgentIncoming(filePath, senderHandle, recipientName, msgContent)
 
     // Fire on_inbox trigger with source and message metadata
     reg.triggerEvaluator?.onInbox(senderDid, msgContent, {
@@ -875,6 +855,7 @@ export class MeshManager extends EventEmitter {
       const unread = recipientReg.workspace.getInbox('unread')
       const read = recipientReg.workspace.getInbox('read')
       this.emit('inbox_updated', { filePath: recipientFilePath, inbox: [...unread, ...read] })
+      this.emitAgentIncoming(recipientFilePath, String(senderDid ?? 'unknown'), recipientReg.handle, content)
 
       // Fleet map: draw the incoming trace from the sender's base station.
       // returnPath carries the transport-observed origin; reply_to is the
@@ -922,6 +903,9 @@ export class MeshManager extends EventEmitter {
     // Use `||` not `??` — getDid() can return an empty string when no keypair is configured.
     const senderDid = senderReg.workspace.getDid() || senderHandle
     const network = senderConfig.messaging?.network ?? 'devnet'
+
+    // A URL is not `{adapterType}:{id}`: "http://host/..." must not read as adapter "http".
+    if (isUrlRecipient(recipient)) return { success: false, error: urlRecipientError(recipient) }
 
     // --- Adapter routing: recipient matching `{adapterType}:{id}` ---
     const adapterManager = this.adapterManagers.get(fromFilePath)
@@ -1229,6 +1213,7 @@ export class MeshManager extends EventEmitter {
         const unread = recipientLocal.workspace.getInbox('unread')
         const read = recipientLocal.workspace.getInbox('read')
         this.emit('inbox_updated', { filePath: recipientLocal.filePath, inbox: [...unread, ...read] })
+        this.emitAgentIncoming(recipientLocal.filePath, senderHandle, recipientLocal.handle, content)
 
         // Fire on_inbox trigger
         recipientLocal.triggerEvaluator?.onInbox(senderDid, content, {
@@ -1461,7 +1446,7 @@ export class MeshManager extends EventEmitter {
       try {
         const now = Date.now()
         for (const t of reg.workspace.getTimers()) {
-          if (t.expired || t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
+          if (t.expired || !t.next_wake_at || t.next_wake_at <= now) continue
           if (nextWakeAt === undefined || t.next_wake_at < nextWakeAt) {
             nextWakeAt = t.next_wake_at
             nextWakeLabel = t.payload ? t.payload.slice(0, 48) : undefined
@@ -2234,7 +2219,8 @@ export class MeshManager extends EventEmitter {
               ...(opts.keepalive_interval_ms !== undefined && { keepalive_interval_ms: opts.keepalive_interval_ms })
             }
 
-            const result = await wsm.connectOutbound(fp, cfg)
+            // The tool's egress policy pins the socket to checked addresses (and its reconnects).
+            const result = await wsm.connectOutbound(fp, cfg, undefined, opts.guard)
             if (result.error) return result
 
             // `persist` defaults to true (see the ws_connect schema). Make the
@@ -2560,6 +2546,21 @@ export class MeshManager extends EventEmitter {
       ogg: 'audio/ogg', wav: 'audio/wav', mp3: 'audio/mpeg', opus: 'audio/opus'
     }
     return types[ext ?? ''] ?? 'application/octet-stream'
+  }
+
+  /**
+   * A message was delivered to a registered agent's inbox (local send, mesh
+   * ingress, message bus). Every agent, foreground or not: the daemon's
+   * client stream (W2-B) turns it into the `inter_agent_message` push that
+   * Studio's chat and mesh graph show; Studio's own foreground path keeps
+   * `foreground_incoming`.
+   */
+  private emitAgentIncoming(filePath: string, fromAgent: string, toAgent: string, content: string): void {
+    try {
+      this.emit('agent_incoming', { filePath, fromAgent, toAgent, content })
+    } catch (err) {
+      console.error('[Mesh] agent_incoming listener failed:', err)
+    }
   }
 
   private emitMeshEvent(event: MeshEvent): void {

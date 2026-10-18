@@ -1,7 +1,7 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, useStore } from '@xyflow/react'
 import type { NodeProps, ReactFlowState } from '@xyflow/react'
-import { useMeshGraphStore, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore, findLastActivity, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ApprovalControls } from '../agent/ApprovalControls'
@@ -129,7 +129,7 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
   // the full click-through contract.
   const [scrollable, setScrollable] = useState(false)
   const textRef = useRef<HTMLDivElement | null>(null)
-  const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
+  const lastSay = findLastActivity(activities, (a) => a.type === 'turn' && a.args?.startsWith('“') === true)
 
   useEffect(() => {
     if (!lastSay || dismissedBubbles.has(lastSay.id)) return

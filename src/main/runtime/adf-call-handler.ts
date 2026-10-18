@@ -603,7 +603,7 @@ export class AdfCallHandler {
     // Resolve parameters — input overrides config, with fallback defaults
     const temperature = input.temperature ?? this.config.model.temperature ?? 0.7
     const maxTokens = (input.max_tokens ?? this.config.model.max_tokens) || undefined
-    const topP = input.top_p ?? this.config.model.top_p
+    const topP = input.top_p ?? this.config.model.top_p ?? undefined
 
     try {
       const { response, metadata } = await callLlmWithMetadata(provider, {
@@ -621,7 +621,7 @@ export class AdfCallHandler {
       // Extract text from response content blocks
       const textParts: string[] = []
       for (const block of response.content) {
-        if (block.type === 'text') {
+        if (block.type === 'text' && typeof block.text === 'string') {
           textParts.push(block.text)
         }
       }

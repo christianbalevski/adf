@@ -1,16 +1,27 @@
 import { nanoid } from 'nanoid'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
-import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, type QueuedMessage } from '../stores/message-queue.store'
+import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, heldForOwner, MAX_AUTOMATIC_SENDS, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
+import type { ContentBlock } from '../../shared/types/provider.types'
 
 /**
  * Send a loop's queued messages as one chat, now that its turn has ended.
  *
  * Works for any agent, open or not: the queue is taken (removed) first, so a
  * second settle signal for the same turn end finds nothing.
+ *
+ * `automatic`: a turn end sends it, not the owner. A queue whose send failed
+ * MAX_AUTOMATIC_SENDS times in a row is then left alone: it stays shown as
+ * "Not sent" with the reason until the owner acts: Send now, or a new
+ * message, which releases the hold (queueOwnerMessage) so the old messages
+ * go first and the new one after them.
  */
-export function deliverQueuedMessages(filePath: string, loop: string): boolean {
+export function deliverQueuedMessages(filePath: string, loop: string, opts: { automatic?: boolean } = {}): boolean {
+  if (opts.automatic && heldForOwner(selectQueue(useMessageQueueStore.getState(), filePath, loop))) {
+    console.warn(`[queue] Not retrying the queue of ${filePath} (${loop}) on this turn end: its send failed ${MAX_AUTOMATIC_SENDS} times; it waits for the owner`)
+    return false
+  }
   const queue = useMessageQueueStore.getState().take(filePath, loop)
   if (queue.length === 0) return false
   sendQueuedMessages(filePath, loop, queue)
@@ -25,7 +36,13 @@ export function deliverQueuedMessages(filePath: string, loop: string): boolean {
  * A send main did not take ({success: false}, or a rejected call) is never
  * dropped: the messages go back to the head of their queue in order, marked
  * with the error so the queue shows them as not sent, and the bubble that
- * claimed they went is taken back.
+ * claimed they went is taken back. A send the backend took but could not see
+ * through (`accepted`: daemon mode, the connection dropped or the wait timed
+ * out after the daemon answered the chat) was delivered: it stays sent, or
+ * the next idle would send it twice. One exception: the daemon exited before
+ * the turn ended (`code: 'daemon_exited'`) and the agent is not the open one.
+ * Nothing showed it (a background loop's error reaches no view), so the
+ * messages go back marked "Not sent" for the owner to see when they open it.
  */
 export function sendQueuedMessages(filePath: string, loop: string, queue: QueuedMessage[]): void {
   const combined = queue.map((m) => m.text).join('\n\n')
@@ -65,8 +82,90 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
     return
   }
   void Promise.resolve(pending).then(
-    (result) => { if (result && result.success === false) fail(result.error ?? 'The agent did not take the message') },
+    (result) => {
+      if (!result || result.success !== false) return
+      const exitedUnseen = result.code === 'daemon_exited' && !sameAgentPath(useDocumentStore.getState().filePath, filePath)
+      if (result.accepted && !exitedUnseen) {
+        console.warn(`[queue] Queued message to ${filePath} (${loop}) was delivered; its turn's end was not seen: ${result.error ?? 'unknown'}`)
+        return
+      }
+      fail(exitedUnseen ? DAEMON_EXITED : result.error ?? 'The agent did not take the message')
+    },
     (error: unknown) => fail(error instanceof Error ? error.message : String(error))
+  )
+}
+
+/** The "Not sent" reason of a message whose daemon exited before its turn ended. */
+export const DAEMON_EXITED = 'the ADF daemon exited before its turn ended'
+
+type InvokeAnswer = Awaited<ReturnType<typeof window.adfApi.invokeAgent>> | undefined
+
+/**
+ * What went wrong with a send, for the owner to see; null when it went
+ * through. `notSent`: the message did not reach the agent (refused, or a
+ * daemon that exited before its turn ended); otherwise it was delivered and
+ * only its end is unknown.
+ */
+export function sendProblem(result: InvokeAnswer): { reason: string; notSent: boolean } | null {
+  if (!result || result.success !== false) return null
+  if (result.code === 'daemon_exited') return { reason: DAEMON_EXITED, notSent: true }
+  return { reason: result.error ?? 'The agent did not take the message', notSent: !result.accepted }
+}
+
+/**
+ * Orders the fleet map sends one agent (a steward's appointment or relief).
+ * The call resolves when the turn ends, so it is not awaited; a send that
+ * went wrong is said through `notify`, in both backends.
+ */
+export function sendFleetOrders(filePath: string, who: string, text: string, notify: (notice: string) => void): void {
+  const pending = window.adfApi?.invokeAgent(text, filePath)
+  if (!pending) {
+    notify(`Orders not sent to ${who}: Studio is not connected to the agent runtime`)
+    return
+  }
+  void Promise.resolve(pending).then(
+    (result) => {
+      const problem = sendProblem(result)
+      if (!problem) return
+      console.warn(`[fleet] Orders to ${filePath}: ${problem.reason}`)
+      notify(problem.notSent ? `Orders not sent to ${who}: ${problem.reason}` : `Orders sent to ${who}, but ${problem.reason}`)
+    },
+    (error: unknown) => notify(`Orders not sent to ${who}: ${error instanceof Error ? error.message : String(error)}`)
+  )
+}
+
+/**
+ * Send a message the owner typed straight to an idle loop (the composer shows
+ * it already, and the loop as active). A send the backend refused (the agent
+ * is not running, the message is too large) ends in that chat as an error
+ * row, and the loop's optimistic `active` goes back to idle, the same in
+ * both backends. When the owner has switched to another agent meanwhile, the
+ * message goes into its own agent's queue instead, marked "Not sent" with
+ * the reason, so it is never lost. A send the backend accepted is the turn's
+ * own business.
+ */
+export function sendOwnerMessage(filePath: string | null, loop: string, text: string, content: ContentBlock[], imagePreviewUrls: string[] = []): void {
+  const pending = window.adfApi?.invokeAgent(text, filePath ?? undefined, content, loop)
+  if (!pending) return
+  const refused = (error: string, showInChat: boolean): void => {
+    console.warn(`[chat] Message to ${filePath ?? 'the open agent'} (${loop}) was not sent: ${error}`)
+    if (filePath && !sameAgentPath(useDocumentStore.getState().filePath, filePath)) {
+      const message: QueuedMessage = { id: nanoid(), text, content, ...(imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}) }
+      useMessageQueueStore.getState().restore(filePath, loop, [message], error)
+      return
+    }
+    if (!showInChat) return
+    const agentStore = useAgentStore.getState()
+    agentStore.addLogEntry({ id: nanoid(), type: 'error', content: `Not sent: ${error}`, timestamp: Date.now() }, loop)
+    if (selectLoopSlice(agentStore, loop).state === 'active') agentStore.setState('idle', loop)
+  }
+  void Promise.resolve(pending).then(
+    (result) => {
+      const problem = sendProblem(result)
+      // A daemon exit on the open agent shows its own error row in this chat already.
+      if (problem?.notSent) refused(problem.reason, result?.code !== 'daemon_exited')
+    },
+    (error: unknown) => refused(error instanceof Error ? error.message : String(error), true)
   )
 }
 
@@ -75,6 +174,15 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
  * the loop is mid-turn, and also while older queued messages still wait (a
  * send that failed, a loop held on an approval), so it can never jump ahead of
  * them. On an idle loop the whole queue then goes now, oldest first.
+ *
+ * A stopped agent can still have a queue (one kept when it was closed while
+ * running, or a send that failed). The new message then joins it and the
+ * agent is started with `start`, the composer's own start-before-send (review
+ * gate, provider sheet, errors shown in the chat); once it runs the queue
+ * goes, oldest first. A start that did not happen leaves the queue as it is,
+ * the reason shown by `start`, as the composer's direct path leaves its
+ * message unsent.
+ *
  * False: nothing is queued, the caller sends it directly.
  */
 export function queueOwnerMessage(
@@ -82,13 +190,31 @@ export function queueOwnerMessage(
   loop: string,
   loopState: string,
   agentState: string,
-  message: Omit<QueuedMessage, 'id'>
+  message: Omit<QueuedMessage, 'id'>,
+  start?: () => Promise<boolean>
 ): boolean {
   if (!filePath) return false
   const waiting = selectQueue(useMessageQueueStore.getState(), filePath, loop).length > 0
   if (loopState !== 'active' && !waiting) return false
+  // The owner is sending again: older messages held after repeated failures
+  // get their retries back and go first, at this loop's next turn end.
+  useMessageQueueStore.getState().releaseHold(filePath, loop)
   useMessageQueueStore.getState().enqueue(filePath, loop, message)
-  if (loopState === 'idle' && agentState !== 'off') deliverQueuedMessages(filePath, loop)
+  if (agentState === 'off') {
+    const count = selectQueue(useMessageQueueStore.getState(), filePath, loop).length
+    if (!start) {
+      console.warn(`[queue] ${filePath} is off: its ${count} queued messages (${loop}) wait until it is started`)
+      return true
+    }
+    console.info(`[queue] ${filePath} is off: starting it to send its ${count} queued messages (${loop})`)
+    void start().then(
+      // Taken once: a turn end the start reported may have sent it already.
+      (started) => { if (started) deliverQueuedMessages(filePath, loop) },
+      (error: unknown) => console.warn(`[queue] Starting ${filePath} for its queue failed: ${error instanceof Error ? error.message : String(error)}`)
+    )
+    return true
+  }
+  if (loopState === 'idle') deliverQueuedMessages(filePath, loop)
   return true
 }
 
@@ -104,7 +230,7 @@ export function deliverSettledQueues(filePath: string, loopStates: Record<string
   for (const loop of queuedLoops(useMessageQueueStore.getState(), filePath)) {
     if (loopStates[loop] !== 'idle') continue
     if (loop !== MAIN_LOOP && mainState === 'off') continue
-    deliverQueuedMessages(filePath, loop)
+    deliverQueuedMessages(filePath, loop, { automatic: true })
   }
 }
 

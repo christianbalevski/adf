@@ -84,13 +84,18 @@ const call = async (server: Server, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | '
 const templatesDir = () => join(h.userDataDir, 'templates')
 
 describe('daemon template routes', () => {
-  it('need the owner identity (409 identity_not_ready)', async () => {
+  it('work without the owner identity, as embedded Studio; only a review accept needs it (W5-D2)', async () => {
     const { server } = makeDaemon()
+    const list = await call(server, 'GET', '/templates')
+    expect(list.status).toBe(200)
+    expect(list.body.templates.map((t: { id: string }) => t.id)).toContain('standard')
     const early = await call(server, 'GET', '/templates/standard')
-    expect(early.status).toBe(409)
-    expect(early.body.code).toBe('identity_not_ready')
-    expect((await call(server, 'POST', '/templates', { name: 'x' })).status).toBe(409)
-    expect((await call(server, 'POST', '/templates/standard/review/accept')).status).toBe(409)
+    expect(early.status).toBe(200)
+    expect(early.body).toMatchObject({ isDefault: true, template: { id: 'standard' } })
+    expect((await call(server, 'POST', '/templates', { name: 'x' })).status).toBe(201)
+    const accept = await call(server, 'POST', '/templates/standard/review/accept')
+    expect(accept.status).toBe(409)
+    expect(accept.body.code).toBe('identity_not_ready')
   })
 
   it('create, contents, notes, rename, default, files, config, delete into the trash folder', async () => {

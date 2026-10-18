@@ -24,6 +24,7 @@ import {
   emptyTranscript,
   finalizeStreaming,
   historyToItems,
+  isTaskRef,
   localId,
   mergeHistory,
   prependHistory,
@@ -73,6 +74,16 @@ export type TuiAction =
   | { type: 'transcript/reset'; key: TranscriptKey }
   /** The loop's turn is over (interrupted, stopped): close streaming items, clear `live`. */
   | { type: 'transcript/idle'; key: TranscriptKey }
+  /** The full result of a tool call (client-session executor frame); tool.completed carries a truncated copy. */
+  | { type: 'tool/result'; key: TranscriptKey; toolUseId: string; result: string; isError: boolean }
+  /**
+   * The task row of a backgrounded call still shown running (looked up after
+   * a history load); null: the daemon has no such task, so the row shows its
+   * task reference as before.
+   */
+  | { type: 'tool/task'; key: TranscriptKey; toolUseId: string; task: Pick<TaskEntry, 'status' | 'result' | 'error' | 'completed_at'> | null }
+  /** A line in the activity log that no event carries (how live events arrive). */
+  | { type: 'activity/note'; text: string; kind: string }
   | { type: 'event'; frame: DaemonEventFrame }
   /** Frames that arrived together (one SSE read): one state change, one render. */
   | { type: 'events'; frames: DaemonEventFrame[] }
@@ -312,10 +323,45 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return patchTranscript(state, action.key, () => ({ ...emptyTranscript(), loaded: true }))
     case 'transcript/idle':
       return patchTranscript(state, action.key, endLive)
+    case 'tool/result':
+      return patchTranscript(state, action.key, t => {
+        const index = t.items.findIndex(item => item.kind === 'tool' && item.toolUseId === action.toolUseId)
+        const item = t.items[index]
+        if (!item || item.kind !== 'tool' || item.result === action.result) return t
+        const items = t.items.slice()
+        // A backgrounded call's first result is its task reference (the live
+        // input has `_async` stripped, so the result is what tells): the row
+        // stays as it is, marked async as history marks it, and the real
+        // result comes as tool.completed later.
+        if (!action.isError && isTaskRef(action.result)) {
+          items[index] = { ...item, async: true, taskRef: action.result }
+          return { ...t, items }
+        }
+        items[index] = { ...item, result: action.result, status: action.isError ? 'error' : 'ok', completedAt: item.completedAt ?? Date.now() }
+        return { ...t, items }
+      })
+    case 'tool/task':
+      return patchTranscript(state, action.key, t => {
+        const index = t.items.findIndex(item => item.kind === 'tool' && item.toolUseId === action.toolUseId)
+        const item = t.items[index]
+        // Settled meanwhile (tool.completed): that result stands.
+        if (!item || item.kind !== 'tool' || item.status !== 'running') return t
+        const task = action.task
+        let patch: Partial<typeof item>
+        if (!task) patch = { status: 'ok', result: item.taskRef }
+        else if (task.status === 'completed') patch = { status: 'ok', result: task.result ?? '' }
+        else if (task.status === 'failed' || task.status === 'denied' || task.status === 'cancelled') patch = { status: 'error', result: task.error ?? task.result ?? task.status }
+        else return t
+        const items = t.items.slice()
+        items[index] = { ...item, ...patch, completedAt: task?.completed_at ?? item.at }
+        return { ...t, items }
+      })
     case 'event':
-      return applyEvent(state, action.frame.event)
+      return applyEvent(state, action.frame.event, !isSynthetic(action.frame))
     case 'events':
-      return action.frames.reduce((next, frame) => applyEvent(next, frame.event), state)
+      return action.frames.reduce((next, frame) => applyEvent(next, frame.event, !isSynthetic(frame)), state)
+    case 'activity/note':
+      return { ...state, activity: pushBounded(state.activity, { id: localId('a'), at: Date.now(), agentId: null, loop: MAIN_LOOP, type: action.kind, summary: action.text }, MAX_ACTIVITY) }
     case 'viewState/set':
       return { ...state, viewState: { ...state.viewState, [action.view]: action.value } }
     default:
@@ -337,10 +383,21 @@ const TRANSCRIPT_EVENTS = new Set([
   'chat.delivered', 'chat.discarded',
 ])
 
-function applyEvent(state: TuiState, event: UmbilicalEvent): TuiState {
+/**
+ * A frame the app built itself (client-stream.ts: the focused agent's token
+ * stream as `turn.delta`): it updates the transcript only, never the activity
+ * log or the event tail, which show what the daemon sent.
+ */
+export type LiveFrame = DaemonEventFrame & { synthetic?: true }
+
+function isSynthetic(frame: DaemonEventFrame): boolean {
+  return (frame as LiveFrame).synthetic === true
+}
+
+function applyEvent(state: TuiState, event: UmbilicalEvent, log = true): TuiState {
   const agentId = event.agent_id ?? null
   const loop = eventLoop(event)
-  let next: TuiState = {
+  let next: TuiState = log ? {
     ...state,
     activity: pushBounded(state.activity, {
       id: localId('a'),
@@ -351,7 +408,7 @@ function applyEvent(state: TuiState, event: UmbilicalEvent): TuiState {
       summary: summarizeEvent(event),
     }, MAX_ACTIVITY),
     lastEvents: pushBounded(state.lastEvents, event, MAX_LAST_EVENTS),
-  }
+  } : state
   if (!agentId || !next.agents[agentId]) return next
   const p = event.payload ?? {}
 

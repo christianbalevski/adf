@@ -10,7 +10,7 @@ import type {
 interface MockFetchMessage {
   uid: number
   envelope: { date?: Date }
-  source: Buffer
+  source?: Buffer
 }
 
 declare global {
@@ -153,6 +153,37 @@ function imapClientOf(adapter: EmailAdapter): {
 }
 
 describe('EmailAdapter dedup identity', () => {
+  it('leaves a message unseen when IMAP omits its source', async () => {
+    const adapter = new EmailAdapter()
+    const ctx = makeCtx()
+    globalThis.__emailCatchupMocks.fetchMessages = [{ uid: 7, envelope: {} }]
+    try {
+      await startAndDrain(adapter, ctx)
+      expect(ctx.ingest).not.toHaveBeenCalled()
+      expect(imapClientOf(adapter).messageFlagsAdd).not.toHaveBeenCalled()
+      expect(ctx.logs.some(log => log.msg.includes('IMAP did not return the source'))).toBe(true)
+    } finally { await adapter.stop() }
+  })
+
+  it('includes recipients from repeated To and Cc headers in group context', async () => {
+    const adapter = new EmailAdapter()
+    const ctx = makeCtx()
+    globalThis.__emailCatchupMocks.fetchMessages = [{ uid: 7, envelope: {}, source: Buffer.from([
+      'From: Sender <sender@example.com>',
+      'To: One <one@example.com>', 'To: Two <two@example.com>',
+      'Cc: Three <three@example.com>', 'Cc: Four <four@example.com>',
+      'Subject: Group', '', 'Hello',
+    ].join('\r\n')) }]
+    try {
+      await startAndDrain(adapter, ctx)
+      expect(ctx.ingest).toHaveBeenCalledTimes(1)
+      expect(ctx.ingest.mock.calls[0][0].meta.group.participants).toEqual([
+        { id: 'one@example.com', name: 'One' }, { id: 'two@example.com', name: 'Two' },
+        { id: 'three@example.com', name: 'Three' }, { id: 'four@example.com', name: 'Four' },
+      ])
+    } finally { await adapter.stop() }
+  })
+
   it('sets InboundMessage.messageId from the RFC Message-ID header when present', async () => {
     const adapter = new EmailAdapter()
     const ctx = makeCtx()

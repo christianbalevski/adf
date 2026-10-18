@@ -3,7 +3,8 @@ import { catalogEntryForProvider, providerTypeHint } from '../../../shared/const
 import { BrandMark } from '../common/BrandMark'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
-import { ProviderModal } from './ProviderModal'
+import { ProviderModal, ProviderSaveError } from './ProviderModal'
+import type { ProviderSaveFailure } from './provider-save'
 import { providerDotClass, providerStatusLabel } from './provider-status'
 import { useProviderManager } from './useProviderManager'
 
@@ -19,6 +20,8 @@ interface ProvidersPanelProps {
    * models see fresh values. Resolves once the write has landed.
    */
   flushSave: () => Promise<void> | void
+  /** The last save the settings store refused (null: saved): its reason shows on the rows it concerns. */
+  saveFailure?: ProviderSaveFailure | null
   onOpenTemplate: () => void
 }
 
@@ -29,8 +32,8 @@ interface ProvidersPanelProps {
  * The state behind the modal lives in useProviderManager, shared with the
  * provider-at-need sheet.
  */
-export function ProvidersPanel({ loaded, providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, onOpenTemplate }: ProvidersPanelProps) {
-  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave })
+export function ProvidersPanel({ loaded, providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure, onOpenTemplate }: ProvidersPanelProps) {
+  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure })
 
   return (
     <div className="space-y-3">
@@ -46,6 +49,8 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
       </div>
 
       <ProviderModal {...m.modalProps} />
+
+      {saveFailure?.panel && <ProviderSaveError message={saveFailure.panel} />}
 
       {!loaded ? (
         <div className="space-y-2" aria-busy="true">
@@ -101,6 +106,9 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
                     <p className="truncate text-[10.5px] text-[var(--adf-ui-text-subtle)]">
                       {detail}{p.defaultModel ? ` · ${p.defaultModel}` : ''}
                     </p>
+                    {saveFailure?.rows[p.id] && (
+                      <p role="alert" className="mt-0.5 text-[11px] leading-4 text-[var(--adf-ui-danger)]">Not saved: {saveFailure.rows[p.id]}</p>
+                    )}
                   </div>
                 </div>
                 <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-subtle)]">Configure ›</span>

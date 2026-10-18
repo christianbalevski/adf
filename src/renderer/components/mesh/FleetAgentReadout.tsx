@@ -1,6 +1,6 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactElement, type ReactNode } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
-import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore, findLastActivity, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
@@ -116,7 +116,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
   // The agent's last spoken reply — same source as the tile's transient say
   // bubble (turn activity with quoted args), but with no expiry: the readout
   // is where you catch what you missed.
-  const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
+  const lastSay = findLastActivity(activities, (a) => a.type === 'turn' && a.args?.startsWith('“') === true)
   const lastSayText = lastSay ? (lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')) : null
 
   const copy = (label: string, value: string): void => {
@@ -125,13 +125,13 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
     setTimeout(() => setCopied(null), 1200)
   }
 
-  const pill = (content: ReactNode, cls: string, title?: string): JSX.Element => (
+  const pill = (content: ReactNode, cls: string, title?: string): ReactElement => (
     <span className={`text-[10px] px-2 py-0.5 rounded-full ${cls}`} title={title}>
       {content}
     </span>
   )
 
-  const relative = (a: typeof agent, role: string): JSX.Element => (
+  const relative = (a: typeof agent, role: string): ReactElement => (
     <button
       key={a.filePath}
       onClick={() => {

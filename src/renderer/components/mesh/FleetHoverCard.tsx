@@ -1,6 +1,6 @@
 import { memo, useMemo } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
-import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore, findLastActivity, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
@@ -90,7 +90,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
   const isGhost = agent.online === false
   // Newest first — same reading order as the full readout modal
   const recent = activities.slice(-5).reverse()
-  const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
+  const lastSay = findLastActivity(activities, (a) => a.type === 'turn' && a.args?.startsWith('“') === true)
   const lastSayLine = lastSay ? (lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')).replace(/\s+/g, ' ') : null
 
   return (

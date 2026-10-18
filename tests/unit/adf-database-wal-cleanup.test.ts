@@ -271,6 +271,7 @@ describe('AdfDatabase WAL cleanup', () => {
         child = spawn(process.execPath, ['-e', childScript, sqlitePath, crashed], {
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
           stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+          windowsHide: true,
         })
         const spawned = child
         await new Promise<void>((res, rej) => {

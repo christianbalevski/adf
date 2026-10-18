@@ -13,6 +13,23 @@ export interface ContainerDestroyRequest {
 }
 
 /**
+ * The question Stop asks before stopping a running container, or null to
+ * stop without asking: the shared container while agents use it, and any
+ * container another live runtime on this machine uses (`users`, W1-G: an
+ * embedded Studio and a daemon share one podman).
+ */
+export function containerStopConfirmation(container: ContainerSummary, isShared: boolean, activeAgents: string[]): string | null {
+  if (!container.running) return null
+  const parts: string[] = []
+  if (isShared && activeAgents.length > 0) parts.push(`${activeAgents.length} active agent(s) may be interrupted.`)
+  const users = container.users ?? []
+  if (users.length > 0) {
+    parts.push(`${users.join(', ')} also ${users.length === 1 ? 'uses' : 'use'} this container; ${users.length === 1 ? 'its' : 'their'} agents lose it until it starts again.`)
+  }
+  return parts.length > 0 ? `Stop ${container.name}? ${parts.join(' ')}` : null
+}
+
+/**
  * Confirmation for the two container actions that run `podman rm -f`. Both
  * delete the writable layer — /workspace is an in-container directory, not a
  * mount — so the dialog spells out what is lost rather than saying "state".
@@ -77,6 +94,12 @@ export function ContainerDestroyDialog({
           : 'A fresh container is created the next time the agent starts.'}{' '}
         The agent definition, its identity, and the shared npm cache are not affected.
       </p>
+
+      {container.users && container.users.length > 0 && (
+        <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
+          {container.users.join(', ')} also {container.users.length === 1 ? 'uses' : 'use'} this container. It is deleted anyway; the other runtime creates it again the next time it needs it.
+        </p>
+      )}
 
       {activeAgents.length > 0 && (
         <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">

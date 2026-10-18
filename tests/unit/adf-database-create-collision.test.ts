@@ -40,6 +40,7 @@ function runConcurrentCreate(filePath: string, name: string): Promise<{ ok: bool
     const child = spawn(process.execPath, ['-r', require.resolve('tsx/cjs'), '-e', script, filePath, name], {
       cwd: resolve(__dirname, '../..'),
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     })
     let output = ''
     let error = ''

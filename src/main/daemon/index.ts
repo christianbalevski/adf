@@ -6,7 +6,8 @@ import { CodeSandboxService } from '../runtime/code-sandbox'
 import { MeshManager } from '../runtime/mesh-manager'
 import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
-import { PodmanService, type ComputeEnvSettings } from '../services/podman.service'
+import { type ComputeEnvSettings } from '../services/podman.service'
+import { createComputeService } from '../services/compute-service-factory'
 import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
@@ -21,9 +22,11 @@ import { DaemonHost } from './daemon-host'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
+import { TrackedDirWatcher } from './dir-watcher'
+import { createMeshControls, createMeshServerBinder } from './mesh-controls'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
-import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof } from './local-access'
+import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof, noteLocalProofProblem } from './local-access'
 import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
@@ -37,6 +40,21 @@ import { killAllTracked } from '../utils/child-registry'
 import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { takeLaunchEnv } from './routes/meta-routes'
+import { daemonGapRouteDeps } from './routes/gap-deps'
+import { RuntimeDiscovery } from '../services/runtime-discovery'
+import { applySettingLive } from './live-setting'
+import { approvalHub } from '../runtime/approval-hub'
+import { createDaemonClientSessions } from './client-wiring'
+import { wireRuntimeToMesh } from './runtime-mesh-wiring'
+import { processAgentLeases } from '../runtime/agent-lease'
+import { createBootEnvelopeSweep } from './boot-envelope-sweep'
+import { testSeamsAllowed } from '../utils/test-seams'
+import { sweepStaleSnapshots } from './file-ops'
+
+// Defined by the builds that ship the daemon (electron.vite.config.ts for
+// out/main/daemon.js, scripts/build-npm.mjs for the npm package).
+declare const __ADF_VERSION__: string | undefined
 
 // A console.log after the parent's stdout pipe is gone emits EIO/EPIPE; with
 // no 'error' listener that becomes an uncaught exception over a harmless
@@ -89,8 +107,15 @@ const port = Number(process.env.ADF_DAEMON_PORT ?? 7385)
 const host = process.env.ADF_DAEMON_HOST ?? '127.0.0.1'
 const pidFile = process.env.ADF_DAEMON_PIDFILE
 const settingsPath = process.env.ADF_DAEMON_SETTINGS ?? defaultSettingsPath()
+const daemonVersion = typeof __ADF_VERSION__ === 'string' ? __ADF_VERSION__ : process.env.ADF_VERSION ?? process.env.npm_package_version ?? 'dev'
+// Also strips ELECTRON_RUN_AS_NODE and ADF_DAEMON_STARTED_BY from process.env (see takeLaunchEnv).
+const startedBy = takeLaunchEnv()
+console.log(`[ADF Daemon] Version ${daemonVersion} (pid ${process.pid}, started by ${startedBy})`)
 
 const settings = new FileSettingsStore(settingsPath)
+// Runtime host record (§10.3) at boot, with this build's version (the
+// registry's default reads npm_package_version, absent in the bundle).
+void processAgentLeases().configure({ kind: 'daemon', settingsPath, version: daemonVersion })
 const eventBus = new DaemonEventBus(1000)
 registerDaemonEventBus(eventBus)
 
@@ -132,12 +157,22 @@ if (process.env.ADF_DAEMON_TOKEN) {
 // Behind a same-host reverse proxy every proxied request arrives from loopback,
 // so identity secrets and shutdown additionally need the per-run local proof
 // that only this machine's adf clients can read.
+// The proof is minted on every run: POST /identity/import (owner switch)
+// requires it in every mode, the other local-only routes only behind a proxy.
 const behindProxy = behindProxyFromEnv()
 let localProof: string | null = null
 if (behindProxy) {
   const minted = mintLocalProof(dirname(settingsPath), port)
   localProof = minted.proof
   console.log(`[ADF Daemon] Proxy mode (${BEHIND_PROXY_ENV}): identity and shutdown routes need the local proof in ${minted.path}; run those adf commands on this host`)
+} else {
+  try {
+    localProof = mintLocalProof(dirname(settingsPath), port).proof
+  } catch (err) {
+    // Visible in GET /version (`localProof`), Studio's Settings → Backend and `adf daemon status`.
+    noteLocalProofProblem(`the local proof file could not be written or protected: ${err instanceof Error ? err.message : String(err)}`)
+    console.error('[ADF Daemon] Could not write or protect the local proof file; owner import (adf identity import) and the stored-value reveal routes stay unavailable:', err instanceof Error ? err.message : err)
+  }
 }
 
 const ownerIdentity = new DaemonIdentity({
@@ -152,14 +187,9 @@ settings.setProviderKeyVault(ownerIdentity.providerKeys)
   const initial = ownerIdentity.refresh()
   console.log(`[ADF Daemon] Owner identity: ${initial.status}${initial.ownerDid ? ` (${initial.ownerDid})` : ''}, ${initial.storage} storage — ${initial.message}`)
 }
-setWorkspaceIdentityHooks({
-  ensureIdentity: (ws) => {
-    if (ownerIdentity.isReady()) ownerIdentity.service.ensureWorkspaceIdentity(ws)
-    else ownerIdentity.service.unlockWorkspaceEnvelopes(ws)
-  },
-  unlockEnvelopes: (ws) => ownerIdentity.service.unlockWorkspaceEnvelopes(ws),
-  canProvision: () => ownerIdentity.isReady(),
-})
+// Unlock cascade: Studio's runtime key when adopted (design daemon-backend.md
+// §5.3), then the daemon's own runtime-enc-key, then the owner key.
+setWorkspaceIdentityHooks(ownerIdentity.workspaceHooks())
 // Children spawned via sys_create_adf are trusted (parity with Studio; see
 // child-trust.ts). RuntimeService also wires the per-agent hook.
 setChildTrustRegistrar((childConfig) => {
@@ -180,7 +210,14 @@ const trackedDirs = (settings.get('trackedDirectories') as string[] | undefined)
 const codeSandboxService = new CodeSandboxService()
 // Same global worker ceiling as Studio — the daemon hosts every background
 // agent in one process, so it is exactly where the cap has to bind.
-codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | undefined)
+// Applies live, as Studio's SETTINGS_SET: the gate re-pumps its queue, so a
+// raised ceiling releases waiting executions without a restart.
+applySettingLive(settings, 'sandboxMaxWorkers', (value, initial) => {
+  codeSandboxService.setMaxWorkers(value as number | undefined)
+  if (initial) return
+  const { maxCold, maxWarm } = codeSandboxService.getResourceStats()
+  console.log(`[ADF Daemon] sandboxMaxWorkers changed to ${value ?? 'default'}: sandbox worker ceiling now ${maxCold} cold / ${maxWarm} warm`)
+})
 const sandboxPackagesService = new SandboxPackagesService()
 // Runtime packages (Settings > Packages) are importable by every agent; read
 // at each execution so a settings change applies without a restart. Each
@@ -188,7 +225,8 @@ const sandboxPackagesService = new SandboxPackagesService()
 codeSandboxService.setUserPackages(sandboxPackagesService.getBasePath(), () =>
   ((settings.get('sandboxPackages') as Array<{ name: string }> | undefined) ?? []).map((p) => p.name))
 const sandboxStdlibService = new SandboxStdlibService()
-const podmanService = new PodmanService()
+// ADF_COMPUTE=fake (test seam, never in a packaged app): no podman/wsl at all.
+const podmanService = createComputeService()
 // Container MCP servers that attach over CDP ask for the managed browser before spawning.
 setManagedBrowserEnsurer((containerName) => podmanService.ensureManagedBrowserUp(containerName))
 podmanService.setSettingsAccessor(() => readComputeSettings(settings.get('compute')))
@@ -206,11 +244,40 @@ uvxPackageResolver.repairManifest().catch((err) =>
 const meshManager = new MeshManager(trackedDirs)
 const wsConnectionManager = new WsConnectionManager(meshManager.createWsDelegate())
 meshManager.setWsConnectionManager(wsConnectionManager)
-const meshServer = new MeshServer(codeSandboxService, settings)
+// /ping advertises the runtime DID + delegation the daemon signs with (Studio's
+// only when adopted), not whatever the shared settings file holds.
+const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
+// When the mesh server binds, and a stop on request that holds (mesh-controls.ts).
+const meshServerBinder = createMeshServerBinder({ settings, mesh: meshManager, server: meshServer })
 meshServer.setMeshManager(meshManager)
 meshServer.setWsConnectionManager(wsConnectionManager)
 if (settings.get('meshEnabled') !== false) {
   meshManager.enableMesh()
+}
+// Peer discovery: mDNS announce/browse, tailnet sweep, manual peers (Studio
+// parity for Settings → Networking and the fleet map). Follows the mesh
+// server on its own; stopped before it at shutdown so goodbyes go out.
+const runtimeDiscovery = new RuntimeDiscovery({
+  settings,
+  meshServer,
+  mesh: meshManager,
+  getRuntimeDid: discoveryRuntimeDid,
+  getOwnerDid: () => (settings.get('ownerDid') as string | undefined) || undefined,
+})
+runtimeDiscovery.start()
+// The mDNS TXT record carries the runtime DID: re-announce when the daemon
+// starts or stops presenting Studio's.
+ownerIdentity.onRuntimeChange(() => {
+  void runtimeDiscovery.stop().then(() => runtimeDiscovery.start())
+})
+
+/**
+ * The runtime DID mDNS advertises: the one this daemon signs with, the
+ * adopted Studio runtime DID while adoption is active, else its own
+ * (`daemonRuntimeDid`). Same source as mesh /ping (presentedSettings).
+ */
+function discoveryRuntimeDid(): string | undefined {
+  return ownerIdentity.presentedRuntime().did ?? undefined
 }
 const agentRuntimeBuilder = new AgentRuntimeBuilder({
   settings,
@@ -228,6 +295,9 @@ const agentRuntimeBuilder = new AgentRuntimeBuilder({
   basePrompt,
   toolPrompts,
   compactionPrompt,
+  // App-level MCP OAuth sign-ins: capture-on-attach and interactive sign-in
+  // store here first, as Studio's mcpOauthCredentials.
+  mcpOAuthAppStore: ownerIdentity.mcpOAuth,
 })
 const runtime = new RuntimeService({
   settings,
@@ -250,22 +320,68 @@ ownerIdentity.onReady(() => {
   runtime.refreshAgentCredentials('owner identity ready')
     .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
 })
+// Same when the daemon starts or stops using Studio's runtime identity.
+ownerIdentity.onRuntimeChange((adoption) => {
+  runtime.refreshAgentCredentials(`runtime identity ${adoption.state}`)
+    .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
+})
 // While any agent is degraded, re-check once a minute: picks up a keychain
-// phrase or a trusted-daemon slot Studio wrote, with no daemon restart.
-// Silent while nothing changes; every unlock is logged + evented.
+// phrase, a Studio runtime entry or a trusted-daemon slot Studio wrote, with
+// no daemon restart. Silent while nothing changes; every unlock is logged +
+// evented.
 const CREDENTIAL_RECHECK_MS = 60_000
 setInterval(() => {
   if (!runtime.hasDegradedAgents()) return
   try {
-    if (!ownerIdentity.isReady()) ownerIdentity.refresh() // a transition fires onReady
+    ownerIdentity.refresh() // a transition fires onReady / onRuntimeChange
   } catch (err) {
     console.error('[ADF Daemon] Owner identity refresh failed:', err)
   }
   runtime.refreshAgentCredentials('periodic re-check')
     .catch(err => console.error('[ADF Daemon] Credential re-check failed:', err))
 }, CREDENTIAL_RECHECK_MS).unref?.()
-const loadedAgentEvents = new Map<string, RuntimeAgentLoadedEvent>()
-const agentFactory =new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime })
+// Template changes (route writes and the templates-folder watcher) go to
+// every client session as `templates`, Studio's TEMPLATES_CHANGED.
+const agentFactory = new DaemonAgentFactory({ settings, identity: ownerIdentity, runtime, notifyTemplatesChanged: () => client.sessions.publishPush('templates', {}) })
+// Tracked-folder watcher (W1-E): autostarts new agent files and feeds the
+// tracked_dirs / file_renamed pushes. Started when the HTTP server is ready,
+// closed with it, and closed again (idempotent) in the shutdown hooks.
+const trackedDirWatcher = new TrackedDirWatcher({
+  runtime,
+  settings,
+  onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
+})
+// Client sessions and the client event stream (design daemon-backend.md D5):
+// every push Studio's window gets in embedded mode, as frames, and session
+// documents as W2-A's open documents. Built by client-wiring.ts (the gate
+// test builds the same); the HTTP side is routes/client-routes.ts.
+const client = createDaemonClientSessions({
+  runtime,
+  mesh: meshManager,
+  compute: podmanService,
+  approvals: approvalHub,
+  trackedDirWatcher,
+  eventBus,
+  packages: { mcp: mcpPackageResolver, python: uvxPackageResolver, adapters: adapterPackageResolver, sandbox: sandboxPackagesService },
+  options: {
+    startedBy,
+    // Test seam (ADF_TEST_SEAMS=1, unpackaged): a short session expiry, so the orphan rule is testable end to end.
+    ...(testSeamsAllowed() && Number(process.env.ADF_TEST_CLIENT_SESSION_EXPIRY_MS) > 0
+      ? { expiryMs: Number(process.env.ADF_TEST_CLIENT_SESSION_EXPIRY_MS) }
+      : {}),
+    // §8.3 orphan rule: the session of a Studio that crashed expired.
+    requestShutdown: () => {
+      console.log('[ADF Daemon] The last client session that owned this daemon run expired — shutting down...')
+      void boundedShutdown(0)
+    },
+  },
+})
+agentFactory.startTemplatesWatcher()
+// Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.
+void sweepStaleSnapshots().then((removed) => {
+  if (removed.length > 0) console.log(`[ADF Daemon] Removed ${removed.length} leftover snapshot folder(s) from the temp dir: ${removed.join(', ')}`)
+}).catch((err) => console.warn('[ADF Daemon] Leftover snapshot sweep failed:', err instanceof Error ? err.message : err))
+
 const daemon = new DaemonHost({
   runtime,
   identity: ownerIdentity,
@@ -281,6 +397,11 @@ const daemon = new DaemonHost({
   behindProxy,
   localProof,
   pidFile,
+  version: daemonVersion,
+  // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
+  // stops the mesh server and sandbox workers; MCP admin shares the uv
+  // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),
@@ -302,50 +423,30 @@ const daemon = new DaemonHost({
       agents: meshManager.getAgentStatuses(),
       debug: meshManager.getDebugInfo(),
     }),
-    enableMesh: () => {
-      // Persist so an explicit enable survives restart (boot auto-enables
-      // unless meshEnabled === false) — parity with Studio's MESH_ENABLE IPC.
-      settings.set('meshEnabled', true)
-      if (!meshManager.isEnabled()) meshManager.enableMesh()
-      for (const event of loadedAgentEvents.values()) registerAgentWithMesh(event)
-      return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
-    },
-    disableMesh: () => {
-      // Persist first: boot auto-enables mesh when meshEnabled !== false, so
-      // without this a user's disable would not survive restart.
-      settings.set('meshEnabled', false)
-      meshManager.disableMesh()
-      return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
-    },
+    // Mesh on/off (off closes WS connections) and server start/stop/restart (mesh-controls.ts).
+    ...createMeshControls({
+      settings,
+      mesh: meshManager,
+      server: meshServer,
+      ws: wsConnectionManager,
+      registerLoaded: () => { for (const event of meshWiring.loaded()) registerAgentWithMesh(event) },
+      onServerSwitch: (state) => meshServerBinder.serverSwitched(state),
+    }),
     getRecentTools: (limit) => meshManager.getRecentTools(limit),
     getServerStatus: () => ({
       running: meshServer.isRunning(),
       port: meshServer.getPort(),
       host: meshServer.getHost(),
     }),
-    // Start/stop persist, so a user's choice survives restart (default: on).
-    startServer: async () => {
-      settings.set('meshServerEnabled', true)
-      await meshServer.start()
-      return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
-    },
-    stopServer: async () => {
-      settings.set('meshServerEnabled', false)
-      await meshServer.stop()
-      return { success: true, running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
-    },
-    restartServer: async () => {
-      await meshServer.stop()
-      await meshServer.start()
-      return { success: meshServer.isRunning(), running: meshServer.isRunning(), port: meshServer.getPort(), host: meshServer.getHost() }
-    },
     getLanAddresses,
-    getDiscoveredRuntimes: () => [],
+    getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
   },
-  mcpPackageService: mcpPackageResolver,
-  mcpPythonPackageService: uvxPackageResolver,
-  adapterPackageService: adapterPackageResolver,
-  sandboxPackageService: sandboxPackagesService,
+  // The admin install routes report progress on the client stream, as
+  // Studio's install handlers push *_INSTALL_PROGRESS (client-wiring.ts).
+  mcpPackageService: client.packages.mcp,
+  mcpPythonPackageService: client.packages.python,
+  adapterPackageService: client.packages.adapters,
+  sandboxPackageService: client.packages.sandbox,
   // Runs FIRST in DaemonHost.stop(), before server close and agent unload —
   // debounced token usage is the most losable data, and a hang anywhere later
   // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).
@@ -356,7 +457,10 @@ const daemon = new DaemonHost({
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is
   // independently try-caught by the host.
   onShutdown: [
+    () => trackedDirWatcher.close(),
+    () => agentFactory.stopTemplatesWatcher(),
     () => wsConnectionManager.stopAll(),
+    () => runtimeDiscovery.stop(),
     () => meshServer.stop(),
     () => meshManager.disableMesh(),
     () => codeSandboxService.destroyAll(),
@@ -401,7 +505,7 @@ function sweepTrackedDirWalFiles(): void {
 
 /**
  * Directories of every .adf loaded at any point in this daemon session.
- * Unlike loadedAgentEvents this never shrinks on unload, so the shutdown
+ * Unlike the mesh wiring's loaded list this never shrinks on unload, so the shutdown
  * sweep covers agents that were loaded outside tracked dirs and already
  * unloaded (their sidecars may have been left by a kill/crash of a helper).
  */
@@ -424,22 +528,42 @@ function sweepWalFilesRecursive(directory: string, maxDepth: number, skipPaths: 
 // lives in runtime/umbilical-lifecycle.ts and is attached as lifecycle
 // resources by AgentRuntimeBuilder, so the daemon and both Studio hosts emit
 // the identical stream. These listeners carry only daemon-specific bookkeeping.
+// Mesh registration follows load, stop (unregistered before the teardown,
+// as Studio) and path changes: runtime-mesh-wiring.ts.
+const meshWiring = wireRuntimeToMesh(runtime, {
+  register: registerAgentWithMesh,
+  unregister: (filePath) => meshManager.unregisterAgent(filePath),
+})
 runtime.on('agent-loaded', (event) => {
-  loadedAgentEvents.set(event.agentId, event)
   if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
-  registerAgentWithMesh(event)
 })
-runtime.on('agent-unloaded', ({ agentId, filePath }) => {
-  loadedAgentEvents.delete(agentId)
-  if (filePath) meshManager.unregisterAgent(filePath)
+
+// --- Boot envelope sweep (spec §8) -------------------------------------------
+// As Studio (registerAllIpcHandlers), 2 s after boot: boot-envelope-sweep.ts.
+// Test seam ADF_TEST_ENVELOPE_SWEEP (ADF_TEST_SEAMS=1, unpackaged), the
+// daemon side of the parity harness's switch: `off` never runs it, `boot`
+// runs it before the daemon listens.
+const envelopeSweepSeam = testSeamsAllowed() ? process.env.ADF_TEST_ENVELOPE_SWEEP : undefined
+const envelopeSweep = createBootEnvelopeSweep({
+  identity: ownerIdentity,
+  leases: processAgentLeases(),
+  openHere: () => [
+    ...runtime.listAgents().map((ref) => ref.filePath).filter((p): p is string => !!p),
+    ...runtime.listOpenDocuments().map((doc) => doc.filePath),
+  ],
 })
+const runEnvelopeSweep = () => envelopeSweep.run()
+let bootEnvelopeSweep: Promise<void> = Promise.resolve()
+if (envelopeSweepSeam === 'boot') bootEnvelopeSweep = runEnvelopeSweep()
+else if (envelopeSweepSeam !== 'off') setTimeout(() => { void runEnvelopeSweep() }, 2_000).unref?.()
+if (envelopeSweepSeam) console.log(`[ADF Daemon] Test seam: boot envelope sweep ${envelopeSweepSeam} (ADF_TEST_ENVELOPE_SWEEP)`)
 
 withSource('system:daemon', () => {
   // Clean up scratch dirs left by previous processes that exited uncleanly
   // (parity with Studio boot).
   try { purgeStaleProcessDirs() } catch (err) { console.warn('[ADF Daemon] Stale scratch purge failed:', err) }
 
-  daemon.start()
+  bootEnvelopeSweep.then(() => daemon.start())
     .then(address => {
       console.log(`[ADF Daemon] Listening on http://${address.host}:${address.port}`)
       console.log(`[ADF Daemon] Settings: ${settings.filePath ?? '(memory)'}`)
@@ -488,6 +612,7 @@ withSource('system:daemon', () => {
       }
 
       if (trackedDirs.length > 0) {
+        meshServerBinder.autostartSettling(true)
         withSource('system:daemon', () => runtime.autostartFromDirectories(trackedDirs, { maxDepth }))
           .then(report => {
             console.log('[ADF Daemon] Autostart report:', JSON.stringify(report))
@@ -497,7 +622,10 @@ withSource('system:daemon', () => {
             })
           })
           .catch(err => console.error('[ADF Daemon] Autostart failed:', err))
-          .finally(scheduleWalSweep)
+          .finally(() => {
+            meshServerBinder.autostartSettling(false)
+            scheduleWalSweep()
+          })
       } else {
         // No tracked dirs: still schedule the sweep (Studio parity) — it
         // covers sessionAdfDirs, so HTTP-API loads outside tracked dirs get
@@ -533,32 +661,14 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
     event.agent.adfCallHandler ?? null,
     event.agent.codeSandboxService ?? codeSandboxService,
     event.agent.triggerEvaluator,
+    // Stored only when the agent registered; dropped when it unregisters.
+    event.agent.adapterManager ?? null,
   )
-  if (event.agent.adapterManager) {
-    meshManager.setAdapterManager(event.filePath, event.agent.adapterManager)
-  }
   ensureMeshServer()
 }
 
-// The mesh server serves agent web/API routes and mesh delivery, and is on by
-// default (Studio parity). MeshServer.start() skips while no reachable agent is
-// registered — true at boot, before autostart loads anything — so (re)try as
-// agents register. Debounced so an autostart burst binds once, after the agents
-// that decide the host (loopback vs LAN) are known. A LAN/public agent arriving
-// while bound to loopback rebinds to all interfaces.
-let meshServerTimer: ReturnType<typeof setTimeout> | null = null
 function ensureMeshServer(): void {
-  if (settings.get('meshServerEnabled') === false) return
-  if (meshServerTimer) clearTimeout(meshServerTimer)
-  meshServerTimer = setTimeout(() => {
-    meshServerTimer = null
-    const wantsLan = !process.env.MESH_HOST && (meshManager.hasAgentOfTier('lan') || meshManager.hasAgentOfTier('public'))
-    const rebind = meshServer.isRunning() && wantsLan && meshServer.getHost() === '127.0.0.1'
-    if (meshServer.isRunning() && !rebind) return
-    const run = rebind ? meshServer.stop().then(() => meshServer.start()) : meshServer.start()
-    run.catch(err => console.error('[MeshServer] Failed to start:', err))
-  }, 500)
-  meshServerTimer.unref?.()
+  meshServerBinder.ensure()
 }
 
 // Compute defaults come from the shared single source of truth — a local copy

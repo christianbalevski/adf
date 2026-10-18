@@ -165,11 +165,11 @@ function createFakePodman(): {
       registerAgent: async (agentId: string) => { calls.push(`registerAgent:${agentId}`) },
       spawnExec: (_agentId: string, command: string, args: string[]) => {
         calls.push('spawnExec')
-        return spawn(command, args, { stdio: 'pipe' })
+        return spawn(command, args, { stdio: 'pipe', windowsHide: true })
       },
       spawnImageProcess: async (image: string, command: string, args: string[]) => {
         calls.push(`spawnImageProcess:${image}`)
-        return spawn(command, args, { stdio: 'pipe' })
+        return spawn(command, args, { stdio: 'pipe', windowsHide: true })
       }
     }
   }

@@ -216,7 +216,8 @@ function validateMessage(message: unknown, index: number): asserts message is LL
   if (typeof message.content !== 'string' && !Array.isArray(message.content)) {
     throw new PreLlmHookError(`returned request.messages[${index}].content must be a string or content-block array`)
   }
-  if (Array.isArray(message.content)) message.content.forEach((block, blockIndex) => validateContentBlock(block, index, blockIndex, message.role))
+  const role = message.role
+  if (Array.isArray(message.content)) message.content.forEach((block, blockIndex) => validateContentBlock(block, index, blockIndex, role))
   if (!isJsonValue(message)) {
     throw new PreLlmHookError(`returned request.messages[${index}] must be JSON-safe`)
   }

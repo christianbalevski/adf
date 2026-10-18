@@ -1,4 +1,4 @@
-import { readTokens, writeTokens, clearTokens } from './token-store'
+import { readTokens, writeTokens, clearTokens, noteSignIn } from './token-store'
 import type { TokenSet, AuthStatus, DeviceCodeResponse } from './types'
 
 // xAI's shared public Grok-CLI OAuth client (no secret; same client used by
@@ -206,6 +206,7 @@ class GrokAuthManager {
           expires_at: Date.now() + positiveSecondsToMs(tokenData.expires_in, 3600 * 1000),
           account_id: accountId
         })
+        noteSignIn(accountId)
       } catch (err) {
         this.lastFlowError = err instanceof Error ? err.message : String(err)
         throw err

@@ -15,6 +15,28 @@ token). `adf` never starts a daemon for a remote URL (or a tunnelled local
 port), and never sends your machine's own token file to another host. In the app, `/url <url> --token
 <token>` switches daemons live.
 
+## The token is as powerful as your seed phrase
+
+Whoever holds the daemon token can run code on the server as the daemon's
+user: attaching an MCP server or a channel adapter sets the command the
+daemon starts, and starting the agent runs it. That code can read what the
+daemon reads, including the owner seed phrase in the OS keychain (or in the
+daemon's memory once its passphrase file is unlocked). Treat the token as you
+treat the 12 words:
+
+- Give it only to machines you trust with the seed phrase. Never paste it
+  into a chat, a ticket, a shared shell history or a CI log.
+- Send it only over an encrypted transport (SSH tunnel, https). Plain http
+  on a network you do not control hands it to that network.
+- If it leaks, rotate it: on the server run `adf daemon stop`, delete the
+  `daemon-token` file (`adf daemon status` names the data directory) or set a
+  new `ADF_DAEMON_TOKEN`, and start the daemon again. If the daemon held the
+  seed phrase, also move your agents to a new owner (`adf identity import`).
+
+Routes that hand secrets out directly (owner import, stored values, full
+`.adf` exports) additionally need the local proof file, which only the
+server's own user can read; that does not stop the path above.
+
 ## Option 1: SSH tunnel (recommended)
 
 The daemon stays on the server's loopback, where it is by default; SSH does
@@ -38,6 +60,10 @@ adf
   daemon answers `401` and `adf` points you to `adf daemon token`.
 - Through the tunnel the daemon sees a loopback connection, so owner identity
   create / restore / unlock and `adf daemon stop` work as on the server.
+  This holds for `adf` only: ADF Studio in remote mode (URL
+  `http://127.0.0.1:7386`) never sends a seed phrase to another machine and
+  has no local proof for the server, so its owner identity actions say to run
+  `adf identity` on the server, through the tunnel too.
 
 ## Option 2: bind to the network
 
@@ -58,6 +84,13 @@ ADF_DAEMON_ALLOWED_HOSTS=server.lan adf daemon --host 0.0.0.0
   separated; `name` or `name:port`).
 - Owner identity create / restore / unlock and `adf daemon stop` are refused
   from other machines: run them on the server.
+- On a tailnet, bind to the server's tailnet address (`--host 100.x.y.z`).
+  `100.64.0.0/10` is also the range internet providers use for carrier-grade
+  NAT, so a `http://100.x.y.z` URL on a network you do not control may reach
+  another machine with your token. Prefer https through `tailscale serve` and
+  the MagicDNS name. ADF Studio accepts plain http to a `100.64.0.0/10`
+  address without asking; any other plain-http address (a LAN address, a
+  MagicDNS name) needs its "I trust this network" confirmation.
 
 ## Option 3: TLS reverse proxy
 
@@ -71,7 +104,7 @@ adf.example.com {
 ```
 
 - Start the daemon with `ADF_DAEMON_ALLOWED_HOSTS=adf.example.com` so it
-  accepts the proxied `Host`.
+  accepts the proxied `Host` (also on its loopback bind).
 - The token is the install's file token: `adf daemon token` on the server.
   Clients: `adf --url https://adf.example.com --token <token>`.
 - Live events are a streaming response (`/events`). Caddy streams them as is;
@@ -84,6 +117,93 @@ adf.example.com {
   `127.0.0.1:7385`, not through the proxy. A request that carries proxy
   headers (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, …) is never treated
   as local, with or without the setting.
+
+## Option 4: tailscale serve
+
+On a tailnet, `tailscale serve` gives the daemon an https address with a
+certificate your devices trust, and the daemon stays on the server's
+loopback.
+
+```bash
+# on the server: the daemon on loopback, told the tailnet name and that a proxy is in front
+export ADF_DAEMON_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+export ADF_DAEMON_BEHIND_PROXY=1
+adf daemon start
+# https://<machine>.<tailnet>.ts.net → 127.0.0.1:7385, in the background
+tailscale serve --bg 7385
+tailscale serve status
+adf daemon token
+```
+
+- Make the two variables permanent for whatever starts the daemon: `export`
+  holds only for that shell, and a daemon that `adf` starts later by
+  itself (or after a reboot) would come up without them and refuse the
+  `ts.net` name. Use a service with the variables in it, or the account's
+  persistent environment:
+
+  ```bash
+  # Linux: a systemd user unit (systemctl --user enable --now adf-daemon)
+  # ~/.config/systemd/user/adf-daemon.service
+  [Service]
+  Environment=ADF_DAEMON_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net
+  Environment=ADF_DAEMON_BEHIND_PROXY=1
+  ExecStart=/usr/bin/env adf daemon
+  Restart=on-failure
+  [Install]
+  WantedBy=default.target
+
+  # macOS: for the login session (or the same keys in a launchd agent's EnvironmentVariables)
+  launchctl setenv ADF_DAEMON_ALLOWED_HOSTS <machine>.<tailnet>.ts.net
+  launchctl setenv ADF_DAEMON_BEHIND_PROXY 1
+
+  # Windows: the user's persistent environment (new shells and processes)
+  setx ADF_DAEMON_ALLOWED_HOSTS <machine>.<tailnet>.ts.net
+  setx ADF_DAEMON_BEHIND_PROXY 1
+  ```
+
+  Restart the daemon after changing them (`adf daemon stop`, then start it
+  the same way).
+- `tailscale serve` forwards the browser's Host header (the `ts.net` name)
+  to the daemon, and adds `X-Forwarded-For`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto` and `Tailscale-User-*` headers (Tailscale's
+  `ipn/ipnlocal/serve.go`). So the name MUST be in
+  `ADF_DAEMON_ALLOWED_HOSTS`; the daemon accepts it on a loopback bind.
+  Without it every request answers `403 host_not_allowed`.
+- The forwarded headers make every request through `serve` a remote one:
+  owner identity create / restore / unlock / lock and `adf daemon stop`
+  are refused there. Run them on the server against `127.0.0.1:7385`.
+- Clients: `adf --url https://<machine>.<tailnet>.ts.net --token <token>`.
+- To stop serving: `tailscale serve reset`.
+
+Without `serve`, a daemon bound to its tailnet address
+(`adf daemon --host <100.x.y.z>`, with `ADF_DAEMON_TOKEN`) is reachable as
+`http://100.x.y.z:7385`; ADF Studio accepts plain http to a tailnet
+address (100.64.0.0/10) without a confirmation. A MagicDNS name over plain
+http needs the confirmation; use `serve` instead.
+
+## ADF Studio
+
+Settings → Backend → Remote computer takes the same URL and token. Test
+connection checks the address, the token and the client API version;
+Switch to This Daemon shows what moves (client settings only) and restarts
+Studio connected to it. Details and every message:
+[Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).
+
+- Open agent…, New agent, Track folder and folder fields pick paths on
+  the server (a picker over `GET /fs/browse`). A remote client lists folder
+  and `.adf` names under the server's home folder, tracked folders and
+  agents folder; set `ADF_DAEMON_BROWSE_ROOTS` on the server to list
+  other folders instead of the home folder.
+- A `.adf` this computer's OS hands to Studio (double-click, the command
+  line, a second instance) is offered
+  as an upload of a copy into a tracked folder or the agents folder on the
+  server. Nothing is uploaded without your choice. Open Recent lists paths on
+  the server, and Studio adds none of them to the OS recent documents.
+- MCP OAuth sign-in: Studio asks before it opens the page, takes the
+  browser's callback on this computer and hands it to the daemon
+  (`POST /oauth/relay`). No port needs to be tunnelled.
+- Owner identity, stored credential values and the agent browser viewer
+  stay on the server; Studio says so where you ask for them.
 
 ## Sign in to ChatGPT
 
@@ -115,3 +235,7 @@ and signed in on the server, not your laptop.
   to the daemon on save.
 - `adf daemon logs`, `status` details (data dir, log) and `token` read the
   local machine: run them on the server.
+- ADF Studio in remote mode picks paths on the server, offers files of your
+  laptop as uploads, and keeps owner identity, stored credential values and
+  the agent browser viewer on the server. See
+  [Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).

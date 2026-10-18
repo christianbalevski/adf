@@ -1116,6 +1116,16 @@ export class AdfWorkspace {
     return this.db.getConfig()
   }
 
+  /** Config writes through this file's connection so far (AdfDatabase.configWriteCount); no SQLite read. */
+  configWriteCount(): number {
+    return this.db.configWriteCount()
+  }
+
+  /** Commits by other connections to this file (AdfDatabase.dataVersion); no table read. */
+  dataVersion(): number {
+    return this.db.dataVersion()
+  }
+
   setAgentConfig(config: AgentConfig): void {
     let previous: AgentConfig | null = null
     try { previous = this.db.getConfig() } catch { previous = null }
@@ -2558,5 +2568,10 @@ export class AdfWorkspace {
 
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)
+  }
+
+  /** AdfDatabase.immediateTransaction: an atomic check-then-write against other connections to the file. */
+  immediateTransaction<T>(fn: () => T, busyTimeoutMs?: number): T {
+    return this.db.immediateTransaction(fn, busyTimeoutMs)
   }
 }

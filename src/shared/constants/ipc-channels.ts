@@ -419,7 +419,30 @@ export const IPC = {
   // Identity drafts: a keypair minted before the agent exists, so the home
   // composer can show its DID. Only { draftId, did } crosses IPC.
   IDENTITY_DRAFT_MINT: 'adf:identity:draft-mint',
-  IDENTITY_DRAFT_DISCARD: 'adf:identity:draft-discard'
+  IDENTITY_DRAFT_DISCARD: 'adf:identity:draft-discard',
+
+  // Remote mode (W4-B, design §9.3): the daemon-side picker. Main asks the
+  // renderer for a pick (push), the renderer lists the daemon's folders
+  // through GET /fs/browse and answers with the chosen daemon path.
+  REMOTE_PICKER_REQUEST: 'adf:remote:picker-request',
+  REMOTE_PICKER_RESPOND: 'adf:remote:picker-respond',
+  REMOTE_FS_BROWSE: 'adf:remote:fs-browse',
+  REMOTE_FS_MKDIR: 'adf:remote:fs-mkdir',
+  // Settings → Backend, remote daemon: test a URL and token (handshake only),
+  // and restart Studio so a saved backend applies. Registered in every mode.
+  BACKEND_REMOTE_CHECK: 'adf:backend:remote-check',
+  BACKEND_RESTART_STUDIO: 'adf:backend:restart-studio',
+
+  // Settings → Backend (studio-backend.json). Registered in every backend
+  // mode. GET never returns the remote token; SET may carry a new one.
+  BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
+  BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
+
+  // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
+  RECOVERY_STASH: 'adf:recovery:stash',
+  RECOVERY_LIST: 'adf:recovery:list',
+  RECOVERY_ARCHIVE: 'adf:recovery:archive',
+  RECOVERY_REVEAL: 'adf:recovery:reveal'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

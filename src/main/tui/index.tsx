@@ -230,7 +230,8 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
     await instance.waitUntilExit()
   } finally {
     clearTimeout(tipTimer)
-    store.stop()
+    // Ends the client session at the daemon (bounded; it would expire anyway).
+    await store.close()
     uninstallMirror()
     uninstallModes()
   }

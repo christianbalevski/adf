@@ -4,6 +4,7 @@ import { isSubscriptionType, nextProviderName, type ProviderCatalogEntry } from 
 import type { ModelListState, SubscriptionAuthState } from './ProviderModal'
 import { generateProviderId, type ProviderTestStatus } from './provider-status'
 import { countOverrides } from './override-utils'
+import type { ProviderSaveFailure } from './provider-save'
 import type { ClaudeAuthStatusView } from '../../../preload/api'
 
 export interface ProviderManagerInput {
@@ -16,6 +17,8 @@ export interface ProviderManagerInput {
    * models see fresh values. Resolves once the write has landed.
    */
   flushSave: () => Promise<void> | void
+  /** The last save the store refused (null: saved), shown on the rows and in the form. */
+  saveFailure?: ProviderSaveFailure | null
 }
 
 /**
@@ -25,7 +28,7 @@ export interface ProviderManagerInput {
  * both drive the same ProviderModal with this, so a provider connected
  * from either place is the same provider.
  */
-export function useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave }: ProviderManagerInput) {
+export function useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure }: ProviderManagerInput) {
   const providersRef = useRef(providers)
   providersRef.current = providers
 
@@ -289,6 +292,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     provider: editing,
     isDefault: !!editing && editing.id === defaultProviderId,
     status: editing ? status[editing.id] : undefined,
+    saveError: editing ? saveFailure?.rows[editing.id] ?? saveFailure?.panel ?? undefined : undefined,
     onPick: (entry: ProviderCatalogEntry) => { void pick(entry) },
     onUpdate: (patch: Partial<ProviderConfig>) => { if (editing) update(editing.id, patch) },
     onRemove: () => { if (editing) remove(editing.id) },

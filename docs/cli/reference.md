@@ -61,7 +61,10 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf identity` | Show the owner identity status |
 | `adf identity new` | Create an owner identity; shows the 12-word seed phrase once — write it down |
 | `adf identity restore` | Restore the owner identity from its seed phrase (typed at a hidden prompt; the same phrase as ADF Studio = the same owner) |
+| `adf identity import [--i-have-a-backup]` | Import an owner phrase like Studio's Import identity: another owner's phrase replaces this machine's owner (asks first; needs the old phrase backed up) and restamps local agents |
 | `adf identity unlock\|lock` | Unlock/lock a passphrase-protected identity (machines without an OS keychain) |
+| `adf identity trust-daemon [--yes]` | No OS keychain: let ADF Studio wrap agent credentials to this daemon's key file, so they unlock without the passphrase (asks) |
+| `adf identity untrust-daemon` | Revoke that trust |
 | `adf templates` | List agent templates |
 | `adf new [name] [--template <id>] [--provider <id>] [--model <id>] [--dir <path>] [--start]` | Create an agent from a template, sealed with the owner identity (like Studio) |
 

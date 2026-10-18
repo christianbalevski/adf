@@ -1,5 +1,16 @@
 import { create } from 'zustand'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import type { ResourceWriter } from '../../shared/types/resource-revision.types'
+
+/** W3-F: a config save refused because the config changed elsewhere; the config panel shows the notice. */
+export interface ConfigConflictState {
+  mine: AgentConfig
+  theirs: AgentConfig | null
+  revision: number
+  writer: ResourceWriter | null
+  /** The agent file the edit belongs to. */
+  owner: string | null
+}
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 
 /** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
@@ -126,6 +137,14 @@ interface AgentStoreState extends LoopSlice {
   /** Streams for non-main loops, keyed by loop name. Never contains `main`. */
   sideLoops: Record<string, LoopSlice>
   config: AgentConfig | null
+  /**
+   * W3-F: the revision `config` is, as the backend last said (the batch, a
+   * config push, this window's last save). The config panel saves over it;
+   * undefined saves without one.
+   */
+  configRevision?: number
+  /** W3-F: the config panel's unsaved version under a "changed elsewhere" notice (null: none). */
+  configConflict: ConfigConflictState | null
   statusText: string
   /**
    * Which loop's stream the user is currently LOOKING AT (the selected tab in
@@ -165,6 +184,8 @@ interface AgentStoreState extends LoopSlice {
   /** Drop a side loop's slice entirely (loop disabled/deleted). No-op for main. */
   dropLoop: (loop: string) => void
   setConfig: (config: AgentConfig | null) => void
+  setConfigRevision: (revision: number | undefined) => void
+  setConfigConflict: (conflict: ConfigConflictState | null) => void
   setStatusText: (text: string) => void
   setTokenUsage: (usage: TokenUsage, loop?: string) => void
   setTokenEstimate: (estimate: number | null, loop?: string) => void
@@ -178,7 +199,8 @@ interface AgentStoreState extends LoopSlice {
    *  inside the shell/code that raised it and reports its output there — so
    *  without a stamp they render as "running…" forever. No-op for entries that
    *  belong to a real tool call (their paired result is the terminal state). */
-  markApprovalOutcome: (logEntryId: string, approved: boolean, loop?: string) => void
+  /** `'completed'`: the runtime settled the request (no human decision). */
+  markApprovalOutcome: (logEntryId: string, approved: boolean | 'completed', loop?: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string, loop?: string) => void
   removePendingAsk: (logEntryId: string, loop?: string) => void
   setPendingSuspend: (logEntryId: string | null, loop?: string) => void
@@ -234,6 +256,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     earlierCount: 0,
     sideLoops: {},
     config: null,
+    configConflict: null,
     statusText: '',
     viewedLoop: MAIN_LOOP,
     tokenUsage: { input: 0, output: 0 },
@@ -313,6 +336,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       set({ sideLoops: next, ...(s.viewedLoop === loop ? { viewedLoop: MAIN_LOOP } : {}) })
     },
     setConfig: (config) => set({ config }),
+    setConfigRevision: (revision) => set({ configRevision: revision }),
+    setConfigConflict: (conflict) => set({ configConflict: conflict }),
     setStatusText: (text) => set({ statusText: text }),
     setTokenUsage: (usage, loop) => patchSlice(loop, () => ({ tokenUsage: usage })),
     setTokenEstimate: (estimate, loop) => patchSlice(loop, () => ({ tokenEstimate: estimate })),
@@ -333,7 +358,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       if (!entry || entry.metadata?.outOfBand !== true) return {}
       s.log[index] = {
         ...entry,
-        metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
+        metadata: { ...entry.metadata, overrideOutcome: approved === 'completed' ? 'completed' : approved ? 'approved' : 'denied' }
       }
       // A new entry object — the grouping passes must hand the row out again.
       return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
@@ -357,6 +382,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         sessionId: null,
         sideLoops: {},
         config: null,
+        configRevision: undefined,
+        configConflict: null,
         statusText: '',
         viewedLoop: MAIN_LOOP
       })

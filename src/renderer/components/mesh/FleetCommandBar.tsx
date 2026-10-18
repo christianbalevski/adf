@@ -5,6 +5,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
 import { MOD_KEY } from '../../utils/platform'
+import { sendFleetOrders } from '../../utils/queued-delivery'
 
 function MoreItem({
   label,
@@ -103,6 +104,8 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const setMessageOpen = useFleetStore((s) => s.setComposerOpen)
   const [message, setMessage] = useState('')
   const [messageResult, setMessageResult] = useState<string | null>(null)
+  /** A steward order the agent did not get (or whose turn's end is unknown), shown until dismissed. */
+  const [orderNotice, setOrderNotice] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   const [groupNameOpen, setGroupNameOpen] = useState(false)
   const [groupName, setGroupName] = useState('')
@@ -223,9 +226,12 @@ If you are later relieved of stewardship, delete that timer and return your stat
         markStarting([single.filePath])
         await window.adfApi.startBackgroundAgent(single.filePath)
       }
-      // Not awaited: invokeAgent resolves only when the LLM turn completes
-      void window.adfApi.invokeAgent(charge, single.filePath).catch(() => {})
-    } catch { /* appointment itself already persisted */ }
+      // Not awaited: invokeAgent resolves only when the LLM turn completes.
+      // A refused order is said here; the appointment itself is persisted.
+      sendFleetOrders(single.filePath, single.handle || pathBasename(single.filePath), charge, setOrderNotice)
+    } catch (err) {
+      setOrderNotice(`Orders not sent to ${single.handle || pathBasename(single.filePath)}: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }, [single, stewards, setStewards, markStarting])
 
   const saveGroup = useCallback(async () => {
@@ -291,6 +297,12 @@ If you are later relieved of stewardship, delete that timer and return your stat
 
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[35] flex flex-col items-center gap-1.5">
+      {orderNotice && (
+        <div role="alert" className="flex items-center gap-1.5 px-2.5 py-1 rounded-2xl bg-white/95 dark:bg-neutral-900/95 border border-red-300 dark:border-red-800 shadow-lg max-w-[420px] text-[11px] text-red-600 dark:text-red-400">
+          <span className="flex-1">{orderNotice}</span>
+          <button type="button" onClick={() => setOrderNotice(null)} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200" aria-label="Dismiss">&times;</button>
+        </div>
+      )}
       {/* Group-name composer */}
       {groupNameOpen && (
         <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg w-[300px]">

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
+import { changeAgentConfig } from '../../utils/edit-conflict'
+import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 import { ProviderModal } from '../providers/ProviderModal'
 import { useProviderManager } from '../providers/useProviderManager'
 import { useOwnedProviderList } from '../providers/useOwnedProviderList'
@@ -26,11 +28,11 @@ export function ProviderSetupDialog() {
   const agentProvider = useAgentStore((s) => s.config?.model?.provider)
 
   const list = useOwnedProviderList()
-  const { providers, setProviders, defaultProviderId, setDefaultProviderId, load, flushSave } = list
+  const { providers, setProviders, defaultProviderId, setDefaultProviderId, load, flushSave, saveFailure } = list
   const [error, setError] = useState<string | null>(null)
   const addedIdRef = useRef<string | null>(null)
 
-  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave })
+  const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure })
   const { openPicker, closeModal, pick, remove } = m
 
   // Fresh sheet for every request: read the current list, then open the picker.
@@ -77,12 +79,8 @@ export function ProviderSetupDialog() {
       const foreground = useDocumentStore.getState().filePath
       const target = request?.filePath
       if (target && target === foreground) {
-        const config = await window.adfApi.getAgentConfig()
-        if (config) {
-          const updated = { ...config, model: { ...config.model, provider: provider.id, model_id: model } }
-          await window.adfApi.setAgentConfig(updated)
-          useAgentStore.getState().setConfig(updated)
-        }
+        // W3-F: over the config's revision; the store takes the saved config and revision.
+        await changeAgentConfig<AgentConfig>((config) => ({ ...config, model: { ...config.model, provider: provider.id, model_id: model } }))
       } else if (target) {
         const r = await window.adfApi.setAgentModelForFile(target, { provider: provider.id, model_id: model })
         if (!r.success) { setError(r.error ?? 'Could not update the agent'); return }

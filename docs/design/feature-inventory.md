@@ -496,7 +496,7 @@ Grouped by area, then category.
 - **config tools** — Lists every tool (incl. hidden/absorbed/disabled) with schema lookup by name/substring.
 
 ### Code Execution Sandbox
-- **Sandbox runtime** — Node.js Worker Threads + V8 VM Contexts; `codeGeneration: { strings: false, wasm: true }` (no eval/new Function, WASM allowed).
+- **Sandbox runtime** — Node.js Worker Threads + V8 VM Contexts; `codeGeneration: { strings: true, wasm: true }` (eval/new Function compile in the VM realm; WASM allowed).
 - **Execution contexts** — `sys_code` (persistent worker, unauthorized), `sys_lambda`/trigger/timer/API-route/middleware lambdas (fresh VM context unless `warm: true`).
 - **Import/export transform** — Rewrites `import` to `await __require()` and strips `export` keywords pre-execution.
 - **TS transpilation** — `ts-transpiler.ts`: Node `stripTypeScriptTypes` (mode `transform`) primary, sucrase fallback; SHA-256 content-hash cached.
@@ -605,7 +605,7 @@ Grouped by area, then category.
 ### Capability Profiles (Runtime Subsystem Gating)
 - **11 capability flags** — timers, codeSystemScope, compute, mcp, mcpManagementTools, adapters, npmTools, shell, streamBindings, umbilicalTaps, meshWebSocket.
 - **studioForeground / studioBackground profiles** — All 11 capabilities enabled.
-- **daemon profile** — All enabled except `umbilicalTaps`.
+- **daemon profile** — All enabled.
 - **headlessLive profile** — Only `timers` enabled; everything else off.
 - **benchmark profile** — All capabilities disabled.
 - **Async teardown tracking** — `ASYNC_TEARDOWN_CAPABILITIES` set flags which subsystems can't use the sync `dispose()` contract (compute, mcp, adapters, streamBindings, umbilicalTaps, meshWebSocket).
@@ -1549,7 +1549,7 @@ Grouped by area, then category.
 ### Security Architecture — Trust Boundaries
 
 - **Renderer-to-main isolation** — `contextIsolation`, `sandbox`, `nodeIntegration:false`, strict CSP (`script-src 'self'`, `connect-src` localhost-only, `frame-src`/`object-src 'none'`), DOMPurify on LLM/message markdown, `will-navigate` blocked, `shell.openExternal` protocol allowlist.
-- **Sandbox-to-main (code execution)** — Worker Thread + V8 VM context; `codeGeneration.strings:false`, frozen built-in prototypes, deleted `fetch`/`Request`/etc. (only reachable via `adf.sys_fetch`), module allowlist, execution timeout (default 60s, ceiling `min(configured,300s)`, 10s bare fallback), RPC-bridge tool-call validation.
+- **Sandbox-to-main (code execution)** — Worker Thread + V8 VM context; realm membrane, frozen built-in prototypes, deleted `fetch`/`Request`/etc. (only reachable via `adf.sys_fetch`), module allowlist, execution timeout (default 60s, ceiling `min(configured,300s)`, 10s bare fallback), RPC-bridge tool-call validation.
 - **Network boundary** — mesh server binds `127.0.0.1` by default (`meshLan` opt-in), Ed25519 envelope/payload signature verification, configurable `allow_unsigned`, DID allow/block lists, inbox middleware pipeline.
 - **External process boundary (MCP/packages)** — blocked env vars (`ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`, `LD_PRELOAD`, etc.), health-check auto-restart (60s/10s), 120s connect timeout, native-addon-install blocking (`binding.gyp`/`node-gyp`/`gypfile` scan), per-package 50MB / total 200MB size limits.
 - **Settings-install vs agent-install trust split** — a user-initiated Settings MCP install defaults to host with a persistent host badge; an agent-initiated `mcp_install` defaults to container and needs the two-tier host gate.
@@ -1609,7 +1609,7 @@ Grouped by area, then category.
 - **Scope resolver** — classifies remote socket addresses into `directory`/`localhost`/`lan`/`public` tiers (RFC1918, CGNAT-as-tailnet-lan, link-local, IPv6 ULA); `permits()`/`denialReason()` enforce agent `Visibility` settings.
 - **Ancestor-directory scope** — same-runtime message delivery scoped by `.adf` file directory ancestry, degrading to `localhost` for untracked senders.
 - **Execution-context provenance** — `AsyncLocalStorage`-backed `withSource()`/`currentSource()` tags every umbilical event with `agent:<turn_id>`/`lambda:<file>:<fn>`/`system:<subsystem>`; dev-mode throws on missing wrap.
-- **Lifecycle characterization ledger** — closed migration ledger (9 findings: 6 `fixed`, 3 `declaredByProfile`, 0 `pending`), no `pending` status type member; CI independently verifies terminal counts.
+- **Lifecycle characterization ledger** — closed migration ledger (9 findings: 7 `fixed`, 2 `declaredByProfile`, 0 `pending`), no `pending` status type member; CI independently verifies terminal counts.
 - **Architecture fence in CI** — production-source scan fails if removed ownership-bridge identifiers or the raw-adoption helper reappear; enforces single `AgentExecutor` construction site and single evaluator dispatch path.
 
 ### Packaging & Release

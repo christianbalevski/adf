@@ -44,6 +44,23 @@ export function isTaskRef(text: string | undefined): boolean {
   }
 }
 
+/** The task id of a task reference, or undefined. */
+export function taskRefId(text: string | undefined): string | undefined {
+  if (!isTaskRef(text)) return undefined
+  return (JSON.parse(text!) as { task_id: string }).task_id
+}
+
+/** Backgrounded calls still waiting on their task: what the store looks up after a history load. */
+export function unresolvedTasks(items: TranscriptItem[]): Array<{ toolUseId: string; taskId: string }> {
+  const out: Array<{ toolUseId: string; taskId: string }> = []
+  for (const item of items) {
+    if (item.kind !== 'tool' || item.status !== 'running' || !item.toolUseId) continue
+    const taskId = taskRefId(item.taskRef)
+    if (taskId) out.push({ toolUseId: item.toolUseId, taskId })
+  }
+  return out
+}
+
 /** The question of an `ask` call's input. */
 export function askQuestion(input: unknown): string {
   const q = input && typeof input === 'object' ? (input as { question?: unknown }).question : undefined
@@ -102,15 +119,17 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
         const call = useId ? toolsById.get(useId) : undefined
         const status = meta.isError ? 'error' : 'ok'
         if (call) {
-          call.status = status
-          call.result = entry.content
-          call.completedAt = entry.timestamp
-          // A backgrounded call's row holds only the task reference; the real
-          // result arrives later as tool.completed with the same tool_use id.
+          // A backgrounded call's persisted result is only its task reference:
+          // the row stays running until its task settles (tool.completed with
+          // the same tool_use id, or the task row the store looks up).
           if (!meta.isError && isTaskRef(entry.content)) {
             call.async = true
             call.taskRef = entry.content
+            break
           }
+          call.status = status
+          call.result = entry.content
+          call.completedAt = entry.timestamp
         } else {
           items.push({ ...base, kind: 'tool', toolUseId: useId, name: typeof meta.name === 'string' ? meta.name : 'tool', input: undefined, status, result: entry.content, completedAt: entry.timestamp })
         }
@@ -128,9 +147,10 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
  * never will (HIL, asks, notices, local errors).
  */
 export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptItem[]): TranscriptItem[] {
-  // A backgrounded call's persisted result is only its task reference. The
-  // real result came live (tool.completed with the same tool_use id) and is
-  // not in the loop, so it is carried over instead of reverting to the ref.
+  // A backgrounded call's persisted result is only its task reference, so
+  // its history row is running. Once settled on screen (tool.completed with
+  // the same tool_use id, or its task row), that is carried over instead;
+  // a row still running stays running.
   const finished = new Map<string, ToolItem>()
   for (const item of existing) {
     if (item.kind === 'tool' && item.toolUseId && item.status !== 'running' && item.result !== undefined) finished.set(item.toolUseId, item)
@@ -138,7 +158,7 @@ export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptIte
   const history = incoming.map(item => {
     if (item.kind !== 'tool' || item.taskRef === undefined || !item.toolUseId) return item
     const live = finished.get(item.toolUseId)
-    if (!live || live.result === item.taskRef) return item
+    if (!live) return item
     return { ...item, status: live.status, result: live.result, completedAt: live.completedAt }
   })
   const historyTools = new Set<string>()
@@ -361,7 +381,7 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
     case 'hil.resolved': {
       const taskId = str(p.task_id) ?? str(p.request_id)
       const index = items.findIndex(item => item.kind === 'hil' && item.taskId === taskId)
-      const status = p.approved === true ? 'approved' as const : 'denied' as const
+      const status = p.settled === true ? 'completed' as const : p.approved === true ? 'approved' as const : 'denied' as const
       if (index < 0) {
         return cap([...items, { id: localId(), at, local: true, kind: 'notice', level: 'info', event: event.event_type, text: `Approval ${taskId ?? ''} ${status}${p.timed_out ? ' (timed out)' : ''}` }])
       }

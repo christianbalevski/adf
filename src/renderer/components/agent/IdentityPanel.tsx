@@ -4,6 +4,8 @@ import { Tooltip } from '../common/Tooltip'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { useDocumentStore } from '../../stores/document.store'
+import { changeAgentConfig } from '../../utils/edit-conflict'
+import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 
 interface IdentityEntry {
   purpose: string
@@ -95,6 +97,8 @@ export function IdentityPanel() {
   const [entries, setEntries] = useState<IdentityEntry[]>([])
   const [isProtected, setIsProtected] = useState(false)
   const [revealed, setRevealed] = useState<Record<string, string>>({})
+  /** Why the last Reveal showed nothing (key material, or a remote daemon). */
+  const [revealNote, setRevealNote] = useState<string | null>(null)
   const [attestations, setAttestations] = useState<AttestationEntry[]>([])
   const [publishOnCard, setPublishOnCard] = useState(false)
   const [addKeyOpen, setAddKeyOpen] = useState(false)
@@ -128,6 +132,7 @@ export function IdentityPanel() {
       sharePasswordSet: !!envResult.sharePasswordSet
     } : null)
     setRevealed({})
+    setRevealNote(null)
   }, [])
 
   const handleReissueAttestations = useCallback(async () => {
@@ -138,14 +143,13 @@ export function IdentityPanel() {
   }, [])
 
   const handleTogglePublish = useCallback(async () => {
-    const config = await window.adfApi.getAgentConfig()
-    if (!config) return
-    const enabled = !config.card?.publish_attestations
-    await window.adfApi.setAgentConfig({
-      ...config,
-      card: { ...(config.card ?? {}), publish_attestations: enabled || undefined }
+    // W3-F: over the config's revision, re-applied when someone saved in between.
+    let enabled = false
+    const saved = await changeAgentConfig<AgentConfig>((config) => {
+      enabled = !config.card?.publish_attestations
+      return { ...config, card: { ...(config.card ?? {}), publish_attestations: enabled || undefined } }
     })
-    setPublishOnCard(enabled)
+    if (saved) setPublishOnCard(enabled)
   }, [])
 
   useEffect(() => {
@@ -162,6 +166,7 @@ export function IdentityPanel() {
       return
     }
     const result = await window.adfApi.revealIdentity(purpose)
+    setRevealNote(result.value === null && result.reason ? result.reason : null)
     if (result.value !== null) {
       setRevealed((prev) => ({ ...prev, [purpose]: result.value! }))
     }
@@ -546,6 +551,9 @@ export function IdentityPanel() {
         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
           <span className="text-amber-500 dark:text-amber-400">Locked</span> = agent code cannot access &nbsp; <span className="text-neutral-500 dark:text-neutral-400">Unlocked</span> = agent code can read via get_identity
         </p>
+        {revealNote && (
+          <p className="text-[10px] text-amber-500 dark:text-amber-400 mb-2">{revealNote}</p>
+        )}
         {entries.length === 0 ? (
           <p className="text-xs text-neutral-400">No identity entries</p>
         ) : (

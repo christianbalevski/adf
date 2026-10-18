@@ -69,7 +69,7 @@ What this buys you:
 - **Same-owner machines just work.** On a machine where you've imported your seed, the owner slot unlocks the file once, and a runtime slot for that install is added automatically ("re-wrap") — the seed is needed at most once per file per machine.
 - **Foreign files stay sealed.** On someone else's machine, neither slot opens. Their Studio offers the claim flow instead (below).
 
-Migration is automatic: a boot sweep provisions envelopes for existing files (with a lazy fallback on open), keeping DIDs intact and sealing previously-plain secrets in place. Password-protected files are left untouched until unlocked.
+Migration is automatic: a boot sweep provisions envelopes for existing files (with a lazy fallback on open), keeping DIDs intact and sealing previously-plain secrets in place. Password-protected files are left untouched until unlocked. The sweep decides read-only and does not open a file that needs a schema upgrade or has not been reviewed; such a file is upgraded and provisioned when you open it ([An agent file uses schema v2](../cli/troubleshooting.md#an-agent-file-uses-schema-v2)).
 
 ### Envelope states
 

@@ -21,13 +21,19 @@
  * reports "not logged in" rather than guessing.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
 import { encryptCredential, decryptCredential, SAFE_STORAGE_PREFIX } from '../utils/credential-cipher'
 
 const STUDIO_FILE = 'auth.json'
 const DAEMON_FILE = 'auth.daemon.json'
+/**
+ * The sessions the accounts-conflict dialog did not keep, one file each
+ * (`auth.replaced.<time>.json`, or the single `auth.replaced.json` of earlier
+ * builds; backend/handover.ts REPLACED_TOKEN_PATTERN), key-file cipher.
+ */
+const REPLACED_FILE_PATTERN = /^auth\.replaced(\.[\w-]+)?\.json$/
 
 interface ElectronSafeStorage {
   isEncryptionAvailable: () => boolean
@@ -39,6 +45,12 @@ export interface SubscriptionTokenStore<T> {
   readTokens: () => T | null
   writeTokens: (tokens: T) => void
   clearTokens: () => void
+  /**
+   * A sign-in to `accountId` succeeded: every session the accounts-conflict
+   * dialog set aside for that account (auth.replaced.*.json) is no longer
+   * needed and is deleted (logged). Never throws.
+   */
+  signedIn: (accountId: string | undefined) => void
 }
 
 function getSafeStorage(): ElectronSafeStorage | null {
@@ -166,5 +178,27 @@ export function createSubscriptionTokenStore<T>(dirName: string): SubscriptionTo
     }
   }
 
-  return { readTokens, writeTokens, clearTokens }
+  function signedIn(accountId: string | undefined): void {
+    if (!accountId) return
+    let names: string[]
+    try {
+      names = readdirSync(getDir()).filter((name) => REPLACED_FILE_PATTERN.test(name))
+    } catch (err) {
+      console.warn(`${logTag} Could not list the sessions set aside after the sign-in:`, err instanceof Error ? err.message : err)
+      return
+    }
+    for (const name of names) {
+      try {
+        const path = join(getDir(), name)
+        const saved = JSON.parse(decryptValue(readFileSync(path, 'utf-8')) ?? 'null') as { account_id?: unknown } | null
+        if (saved?.account_id !== accountId) continue
+        unlinkSync(path)
+        console.log(`${logTag} Deleted ${name}: ${accountId} signed in again, so the session set aside for it is no longer needed`)
+      } catch (err) {
+        console.warn(`${logTag} Could not check ${name} after the sign-in:`, err instanceof Error ? err.message : err)
+      }
+    }
+  }
+
+  return { readTokens, writeTokens, clearTokens, signedIn }
 }

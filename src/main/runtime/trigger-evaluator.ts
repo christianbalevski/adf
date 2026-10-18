@@ -476,7 +476,7 @@ export class TriggerEvaluator extends EventEmitter {
 
             // Get current file content for diff
             const currentContent = this.workspace?.readFile(filePath)
-            if (snapshot !== undefined && currentContent !== undefined) {
+            if (snapshot !== undefined && currentContent != null) {
               const diff = computeUnifiedDiff(filePath, snapshot, currentContent)
               // Create updated event with recomputed diff
               const meta = this.workspace?.getFileMeta(filePath)
@@ -591,7 +591,7 @@ export class TriggerEvaluator extends EventEmitter {
     this.evaluateTargets('on_file_change', event, { path })
   }
 
-  private isSelfGeneratedFileEvent(event: AdfEvent<'file_change'>): boolean {
+  private isSelfGeneratedFileEvent(event: Pick<AdfEvent, 'source'>): boolean {
     return event.source.startsWith('agent:') || event.source.startsWith('lambda:')
   }
 

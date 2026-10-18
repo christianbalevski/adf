@@ -33,7 +33,7 @@ const env = {
 
 function adf(args) {
   // adf is a .cmd shim on Windows, which needs a shell.
-  return execFileSync(WIN ? 'adf.cmd' : 'adf', args, { env, encoding: 'utf-8', timeout: 60_000, shell: WIN })
+  return execFileSync(WIN ? 'adf.cmd' : 'adf', args, { env, encoding: 'utf-8', timeout: 60_000, shell: WIN, windowsHide: true })
 }
 
 function fail(message, log = '') {
@@ -48,7 +48,7 @@ if (!/^\d+\.\d+\.\d+/.test(version)) fail(`unexpected version output "${version}
 if (!adf(['--help']).includes('daemon [--port')) fail('--help lacks the daemon command')
 
 const started = Date.now()
-const daemon = spawn(WIN ? 'adf.cmd' : 'adf', ['daemon'], { env, shell: WIN, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'] })
+const daemon = spawn(WIN ? 'adf.cmd' : 'adf', ['daemon'], { env, shell: WIN, detached: !WIN, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
 let log = ''
 daemon.stdout.on('data', (d) => { log += d })
 daemon.stderr.on('data', (d) => { log += d })
@@ -69,7 +69,7 @@ try {
     const tokenFile = join(data, 'daemon-token')
     const token = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf-8').trim() : ''
     if (!token) fail(`no daemon token at ${tokenFile}`, log)
-    const printed = execFileSync(WIN ? 'adf.cmd' : 'adf', ['daemon', 'token', '--port', String(PORT)], { env, encoding: 'utf-8', timeout: 60_000, shell: WIN, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    const printed = execFileSync(WIN ? 'adf.cmd' : 'adf', ['daemon', 'token', '--port', String(PORT)], { env, encoding: 'utf-8', timeout: 60_000, shell: WIN, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim()
     if (printed !== token) fail('adf daemon token does not print the daemon\'s token')
     const noToken = await fetch(`${URL}/openapi.json`)
     if (noToken.status !== 401) fail(`/openapi.json without a token -> ${noToken.status} (want 401)`, log)
@@ -84,7 +84,7 @@ try {
   fail(err instanceof Error ? err.message : String(err), log)
 } finally {
   try {
-    if (WIN) execFileSync('taskkill', ['/PID', String(daemon.pid), '/T', '/F'], { stdio: 'ignore' })
+    if (WIN) execFileSync('taskkill', ['/PID', String(daemon.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
     // Graceful stop on CI; elsewhere SIGKILL, because a graceful stop also
     // stops ADF's compute containers, which a real daemon may be using.
     else process.kill(-daemon.pid, process.env.CI ? 'SIGTERM' : 'SIGKILL')
@@ -109,7 +109,7 @@ if (!process.exitCode) {
   try {
     if (await healthy()) throw new Error('the first daemon is still running')
     const t0 = Date.now()
-    const out = execFileSync(WIN ? 'adf.cmd' : 'adf', ['agents'], { env, encoding: 'utf-8', timeout: 120_000, shell: WIN, stdio: ['ignore', 'pipe', 'pipe'] })
+    const out = execFileSync(WIN ? 'adf.cmd' : 'adf', ['agents'], { env, encoding: 'utf-8', timeout: 120_000, shell: WIN, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     console.log(`adf agents (auto-start, ${Date.now() - t0} ms): ${out.trim()}`)
     if (!await healthy()) throw new Error('adf agents did not leave a daemon running')
     const status = adf(['daemon', 'status', '--port', String(PORT)])
@@ -131,7 +131,7 @@ if (!process.exitCode) {
   } finally {
     if (autoPid) {
       try {
-        if (WIN) execFileSync('taskkill', ['/PID', String(autoPid), '/T', '/F'], { stdio: 'ignore' })
+        if (WIN) execFileSync('taskkill', ['/PID', String(autoPid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
         else process.kill(autoPid, 'SIGKILL')
       } catch { /* already gone */ }
       await new Promise((r) => setTimeout(r, 1000))

@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore, findLastActivity, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
@@ -110,7 +110,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
       const acts = nodeActivities[agent.filePath]
       // Last real work beats a trailing state flip in the radio line
       const latest = acts && acts.length > 0
-        ? acts.findLast((x) => x.type !== 'state') ?? acts[acts.length - 1]
+        ? findLastActivity(acts, (x) => x.type !== 'state') ?? acts[acts.length - 1]
         : null
       const baseline = burnBaseline[agent.filePath] ?? 0
       ranked.push({

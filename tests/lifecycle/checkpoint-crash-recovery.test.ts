@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process'
-import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -65,16 +65,17 @@ describe('assembled-agent crash checkpoint recovery', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'adf-lifecycle-crash-recovery-'))
     const filePath = join(tempDir, 'crashed-agent.adf')
     const fixturePath = fileURLToPath(new URL('./fixtures/checkpoint-crash-child.ts', import.meta.url))
-    const childBundlePath = join(tempDir, 'checkpoint-crash-child.mjs')
-    const nodeModulesPath = realpathSync(fileURLToPath(new URL('../../node_modules', import.meta.url)))
+    // The bundle lives in the worktree's gitignored out/ so its bare imports
+    // resolve by walking up to node_modules. No link to node_modules is made:
+    // a recursive delete would follow it into the shared tree.
+    const bundleDir = fileURLToPath(new URL('../../out/test-fixtures/', import.meta.url))
+    mkdirSync(bundleDir, { recursive: true })
+    const childBundlePath = join(bundleDir, `checkpoint-crash-child-${process.pid}-${Date.now()}.mjs`)
     let stderr = ''
     let child: ChildProcess | null = null
 
     try {
-      // Bundle repo TypeScript while keeping third-party packages external. The
-      // temporary node_modules link lets ordinary ESM resolution find those
-      // packages from the isolated fixture directory.
-      symlinkSync(nodeModulesPath, join(tempDir, 'node_modules'), 'dir')
+      // Bundle repo TypeScript while keeping third-party packages external.
       await build({
         entryPoints: [fixturePath],
         outfile: childBundlePath,
@@ -89,6 +90,7 @@ describe('assembled-agent crash checkpoint recovery', () => {
         cwd: fileURLToPath(new URL('../..', import.meta.url)),
         env: { ...process.env, NODE_ENV: 'test' },
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       })
       child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
 
@@ -139,6 +141,7 @@ describe('assembled-agent crash checkpoint recovery', () => {
         child.kill('SIGKILL')
         await waitForExit(child)
       }
+      rmSync(childBundlePath, { force: true })
       rmSync(tempDir, { recursive: true, force: true })
     }
   }, 30_000)

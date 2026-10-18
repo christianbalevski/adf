@@ -7,11 +7,13 @@ vi.mock('react', async (importOriginal) => ({
 }))
 import { useAgentStore, selectLoopSlice } from '../../../src/renderer/stores/agent.store'
 import { useDocumentStore } from '../../../src/renderer/stores/document.store'
-import { useMessageQueueStore, selectQueue } from '../../../src/renderer/stores/message-queue.store'
+import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../../src/renderer/stores/message-queue.store'
 import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
 import type { ContentBlock } from '../../../src/shared/types/provider.types'
-import { queueOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
+import { queueOwnerMessage, sendOwnerMessage, sendProblem, sendFleetOrders, DAEMON_EXITED } from '../../../src/renderer/utils/queued-delivery'
+import { startForegroundAgent } from '../../../src/renderer/utils/start-agent'
+import { sendComposerMessage } from '../../../src/renderer/utils/composer-send'
 import { createOpenFileHarness, type OpenFileHarness } from './open-file-harness'
 
 /**
@@ -339,6 +341,95 @@ describe('a new message never jumps ahead of older queued ones', () => {
   })
 })
 
+describe('a new message to a stopped agent that still has a queue', () => {
+  /** The composer's submit: its own start-before-send. */
+  const startForQueue = async () => (await startForegroundAgent({ hasUserMessage: true, announce: false })).success
+  const send = (text: string) => {
+    const store = useAgentStore.getState()
+    return queueOwnerMessage(AGENT_1, 'main', selectLoopSlice(store, 'main').state, store.state, { text }, startForQueue)
+  }
+  const adfApi = () => (window as unknown as { adfApi: Record<string, unknown> }).adfApi
+
+  beforeEach(async () => {
+    main.agents.delete(AGENT_1)
+    await main.openFile(AGENT_1)
+    expect(useAgentStore.getState().state).toBe('off')
+    // Kept from an earlier run (closed while running, or a failed send).
+    queue(AGENT_1, 'older')
+  })
+
+  it('starts the agent and sends the lot, oldest first', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    expect(send('newer')).toBe(true)
+    await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
+    expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, [{ type: 'text', text: 'older' }, { type: 'text', text: 'newer' }], 'main')
+    expect(queued(AGENT_1)).toEqual([])
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('starting it to send its 2 queued messages'))
+    info.mockRestore()
+  })
+
+  it('sends it once when the start also reports the loop idle', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    adfApi().startAgent = async () => {
+      main.pushForeground(idle())
+      return { success: true, sessionId: 's-1', agentState: 'idle' }
+    }
+    send('newer')
+    await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, expect.any(Array), 'main')
+  })
+
+  it('a start that fails says why in the chat; the messages stay queued, in order', async () => {
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    adfApi().startAgent = async () => ({ success: false, error: 'No model configured' })
+    send('newer')
+    await vi.waitFor(() => expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'No model configured' }))
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+    expect(queued(AGENT_1).map((m) => m.text)).toEqual(['older', 'newer'])
+  })
+
+  describe("through the composer's send path (AgentLoop's sendUserMessage)", () => {
+    const submit = (text: string) => {
+      const store = useAgentStore.getState()
+      return sendComposerMessage({ filePath: AGENT_1, loop: 'main', loopState: selectLoopSlice(store, 'main').state, agentState: store.state }, text, [{ type: 'text', text }], [])
+    }
+
+    it('starts this agent and sends the lot, oldest first', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {})
+      const startAgent = vi.fn(adfApi().startAgent as (...args: unknown[]) => Promise<unknown>)
+      adfApi().startAgent = startAgent
+      await submit('newer')
+      await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
+      expect(startAgent).toHaveBeenCalledWith(AGENT_1, true)
+      expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, [{ type: 'text', text: 'older' }, { type: 'text', text: 'newer' }], 'main')
+      expect(queued(AGENT_1)).toEqual([])
+    })
+
+    it('the owner switching agents during the review check still starts and sends to this one', async () => {
+      vi.spyOn(console, 'info').mockImplementation(() => {})
+      const startAgent = vi.fn(async () => ({ success: true, sessionId: 's-1', agentState: 'idle' }))
+      adfApi().startAgent = startAgent
+      adfApi().checkAgentReview = async () => {
+        useDocumentStore.getState().setFilePath(AGENT_2)
+        return { needsReview: false }
+      }
+      await submit('newer')
+      await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
+      expect(startAgent).toHaveBeenCalledWith(AGENT_1, true)
+      expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, expect.any(Array), 'main')
+    })
+
+    it('without a queue: starts it, then sends the message directly', async () => {
+      useMessageQueueStore.setState({ queues: {} })
+      await submit('hello')
+      expect(main.invokeAgent).toHaveBeenCalledWith('hello', AGENT_1, [{ type: 'text', text: 'hello' }], 'main')
+      expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'user', content: 'hello' })
+    })
+  })
+})
+
 describe('a send main does not take', () => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -368,6 +459,47 @@ describe('a send main does not take', () => {
     // The next turn end retries them, oldest first.
     main.pushForeground(idle())
     expect(main.invokeAgent).toHaveBeenLastCalledWith('first\n\nsecond\n\nthird', AGENT_1, expect.any(Array), 'main')
+  })
+
+  it('keeps a send the backend accepted but could not see through as sent: never requeued, never sent twice', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'once')
+    await main.openFile(AGENT_2)
+
+    // Daemon mode: the chat route took it, then the connection dropped before its turn ended.
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, error: 'The connection to the ADF daemon was lost' })
+    main.pushBatch([stateChanged(AGENT_1, 'idle')])
+    await settle()
+    expect(queued(AGENT_1)).toEqual([])
+
+    main.pushBatch([stateChanged(AGENT_1, 'active'), stateChanged(AGENT_1, 'idle')])
+    await settle()
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("stops retrying on turn ends after repeated failures; the owner's next message still takes the queue along", async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'too big')
+    await main.openFile(AGENT_2)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    main.invokeAgent.mockResolvedValue({ success: false, error: 'This message is too large to send' })
+    for (let i = 0; i < MAX_AUTOMATIC_SENDS + 2; i++) {
+      main.pushBatch([stateChanged(AGENT_1, 'active'), stateChanged(AGENT_1, 'idle')])
+      await settle()
+    }
+    expect(main.invokeAgent).toHaveBeenCalledTimes(MAX_AUTOMATIC_SENDS)
+    expect(queued(AGENT_1).map((m) => [m.text, m.error, m.failures])).toEqual([['too big', 'This message is too large to send', MAX_AUTOMATIC_SENDS]])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('waits for the owner'))
+
+    // The owner sends again: the held message goes first, with the new one.
+    main.invokeAgent.mockResolvedValue({ success: true })
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    const store = useAgentStore.getState()
+    expect(queueOwnerMessage(AGENT_1, 'main', selectLoopSlice(store, 'main').state, store.state, { text: 'smaller' })).toBe(true)
+    expect(main.invokeAgent).toHaveBeenLastCalledWith('too big\n\nsmaller', AGENT_1, expect.any(Array), 'main')
+    warn.mockRestore()
   })
 
   it('takes back the bubble and the optimistic state of the open agent on a rejected send', async () => {
@@ -442,5 +574,135 @@ describe('stale queues', () => {
     main.pushBatch([stateChanged(reported, 'idle')])
     expect(main.invokeAgent).toHaveBeenCalledTimes(1)
     expect(queued(spelled)).toEqual([])
+  })
+})
+
+describe('a message sent straight to an idle loop', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a refused send ends in the chat: an error row, the optimistic state back to idle, no retry', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    useAgentStore.getState().setState('active')
+    main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+    sendOwnerMessage(AGENT_1, 'main', 'hello', [{ type: 'text', text: 'hello' }])
+    await settle()
+    expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'Not sent: Agent not running' })
+    expect(useAgentStore.getState().state).toBe('idle')
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('an accepted send whose end was not seen shows nothing extra', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    useAgentStore.getState().setState('active')
+    const before = useAgentStore.getState().log.length
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, error: 'The connection to the ADF daemon was lost' })
+    sendOwnerMessage(AGENT_1, 'main', 'hello', [{ type: 'text', text: 'hello' }])
+    await settle()
+    expect(useAgentStore.getState().log).toHaveLength(before)
+    expect(useAgentStore.getState().state).toBe('active')
+  })
+})
+
+describe('W5-L review: holds, refusals after a switch, a daemon that exited', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a new message queued while the loop is busy releases the hold: the old "Not sent" messages go first, then the new one', async () => {
+    await main.openFile(AGENT_1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    queue(AGENT_1, 'old')
+    main.invokeAgent.mockResolvedValue({ success: false, error: 'Agent not running' })
+    for (let i = 0; i < MAX_AUTOMATIC_SENDS; i++) {
+      main.pushForeground(idle())
+      await settle()
+    }
+    expect(queued(AGENT_1)[0]).toMatchObject({ text: 'old', failures: MAX_AUTOMATIC_SENDS })
+    // Held: a turn end alone sends nothing.
+    main.invokeAgent.mockClear()
+    main.pushForeground(idle())
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+
+    // The loop is busy again and the owner queues a new message.
+    useAgentStore.getState().setState('active')
+    const store = useAgentStore.getState()
+    expect(queueOwnerMessage(AGENT_1, 'main', selectLoopSlice(store, 'main').state, store.state, { text: 'new' })).toBe(true)
+    expect(main.invokeAgent).not.toHaveBeenCalled()
+    expect(queued(AGENT_1).map((m) => [m.text, m.error, m.failures ?? 0])).toEqual([['old', 'Agent not running', 0], ['new', undefined, 0]])
+
+    // Its turn ends: both go, oldest first.
+    main.invokeAgent.mockResolvedValue({ success: true })
+    main.pushForeground(idle())
+    expect(main.invokeAgent).toHaveBeenCalledWith('old\n\nnew', AGENT_1, expect.any(Array), 'main')
+    warn.mockRestore()
+  })
+
+  it('a direct send refused after the owner switched away goes into its own agent\'s queue, marked "Not sent"', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let answer: (value: unknown) => void = () => {}
+    main.invokeAgent.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+    sendOwnerMessage(AGENT_1, 'critic', 'hello', [{ type: 'text', text: 'hello' }], ['adf-file://a.png'])
+    await main.openFile(AGENT_2)
+    answer({ success: false, error: 'Agent not running' })
+    await settle()
+    expect(queued(AGENT_1, 'critic')).toEqual([expect.objectContaining({ text: 'hello', error: 'Agent not running', failures: 1, imagePreviewUrls: ['adf-file://a.png'] })])
+    expect(useAgentStore.getState().log.some((e) => e.type === 'error')).toBe(false)
+    warn.mockRestore()
+  })
+
+  it('a background queue whose daemon exited before the turn ended goes back as "Not sent"; on the open agent the chat shows the error instead', async () => {
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'to the critic', 'critic')
+    await main.openFile(AGENT_2)
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, code: 'daemon_exited', error: 'The ADF daemon exited while the message waited for its turn' })
+    main.pushBatch([loopState(AGENT_1, 'critic', 'idle')])
+    await settle()
+    expect(queued(AGENT_1, 'critic').map((m) => [m.text, m.error])).toEqual([['to the critic', DAEMON_EXITED]])
+
+    // The open agent: its chat shows the daemon's error row; the message is not requeued.
+    queue(AGENT_2, 'here')
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, code: 'daemon_exited', error: 'exited' })
+    main.pushForeground(idle())
+    await settle()
+    expect(queued(AGENT_2)).toEqual([])
+  })
+})
+
+describe('sendProblem: what a steward order or a send says when it went wrong', () => {
+  it('names refusals and exits as not sent, an unseen end as sent, and nothing for a success', () => {
+    expect(sendProblem({ success: true })).toBeNull()
+    expect(sendProblem(undefined)).toBeNull()
+    expect(sendProblem({ success: false, error: 'Agent not running' })).toEqual({ reason: 'Agent not running', notSent: true })
+    expect(sendProblem({ success: false, accepted: true, error: 'connection lost' })).toEqual({ reason: 'connection lost', notSent: false })
+    expect(sendProblem({ success: false, accepted: true, code: 'daemon_exited', error: 'x' })).toEqual({ reason: DAEMON_EXITED, notSent: true })
+  })
+})
+
+describe('fleet map orders (a steward appointment)', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  it('a refused order is said, an unseen end is said, a delivered one is not', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const notices: string[] = []
+    main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    main.invokeAgent.mockResolvedValueOnce({ success: false, accepted: true, error: 'The connection to the ADF daemon was lost' })
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    main.invokeAgent.mockResolvedValueOnce({ success: true })
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    main.invokeAgent.mockRejectedValueOnce(new Error('IPC closed'))
+    sendFleetOrders(AGENT_1, 'agent-1', 'You are the steward.', (n) => notices.push(n))
+    await settle()
+    expect(notices).toEqual([
+      'Orders not sent to agent-1: Agent not running',
+      'Orders sent to agent-1, but The connection to the ADF daemon was lost',
+      'Orders not sent to agent-1: IPC closed',
+    ])
+    expect(main.invokeAgent).toHaveBeenCalledWith('You are the steward.', AGENT_1)
+    warn.mockRestore()
   })
 })

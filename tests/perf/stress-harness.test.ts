@@ -78,7 +78,9 @@ describe.runIf(RUN_BENCH)('runtime stress harness', () => {
       durationMs: 3_000,
     }))
     expect(result.metrics.turns.completed).toBeGreaterThan(0)
+    expect(result.metrics.turns.total).toBe(result.metrics.turns.completed)
     expect(result.metrics.turns.errored).toBe(0)
+    expect(result.providerCallCount).toBeGreaterThan(0)
   }, 30_000)
 
   it('multi-agent: 10 agents, overhead scenario', async () => {

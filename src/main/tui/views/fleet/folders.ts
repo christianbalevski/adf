@@ -9,7 +9,7 @@
 import { DaemonError, type FolderAgent, type TrackDirResult, type TrackedDirEntry, type UntrackDirResult } from '../../api/types'
 import type { TuiStore } from '../../state/store'
 import type { TuiState } from '../../state/types'
-import { completePath, type PathCompletionOptions } from './model'
+import { completePath, lockedNote, type PathCompletionOptions } from './model'
 
 export const TRACK_OVERLAY = 'fleet.track'
 export const UNTRACK_OVERLAY = 'fleet.untrack'
@@ -133,7 +133,7 @@ export type FolderLoadOutcome = { ok: true; agentId: string } | { ok: false; err
  */
 export async function loadFolderAgent(store: TuiStore, agent: FolderAgent, options: { accept?: boolean } = {}): Promise<FolderLoadOutcome> {
   try {
-    if (options.accept) await store.client.acceptReview(agent.filePath)
+    const accepted = options.accept ? await store.client.acceptReview(agent.filePath) : null
     const ref = await store.client.load(agent.filePath, true)
     const name = ref.config?.handle || ref.config?.name || agent.name
     let started = ''
@@ -145,7 +145,7 @@ export async function loadFolderAgent(store: TuiStore, agent: FolderAgent, optio
         started = ` (start failed: ${err instanceof Error ? err.message : String(err)})`
       }
     }
-    store.actions.toast(`${options.accept ? 'Reviewed and loaded' : 'Loaded'} ${name}${started}`, started.startsWith(' (') ? 'warn' : 'success', 5000)
+    store.actions.toast(`${options.accept ? 'Reviewed and loaded' : 'Loaded'} ${name}${started}${lockedNote(accepted?.lockedFields)}`, started.startsWith(' (') ? 'warn' : 'success', 6000)
     writeFolders(store, {}, true)
     await store.actions.refreshAgents()
     void store.actions.refreshTracked()

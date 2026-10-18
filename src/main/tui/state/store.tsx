@@ -6,10 +6,20 @@
 // its outcome visibly (transcript item or toast); nothing fails silently.
 
 import { createContext, useContext, useRef, useSyncExternalStore, type ReactNode } from 'react'
+
+/**
+ * The oldest client API whose sessions this app reads. Version 2 added turn
+ * ids to executor frames and the `turn` frame, which the terminal app does
+ * not use (it reads umbilical frames), so a version-1 daemon still gets a
+ * session. Studio stays strict (client-stream.ts).
+ */
+export const TUI_MIN_CLIENT_API_VERSION: number = 1
 import type { DaemonClient } from '../api/client'
-import type { EventStream } from '../api/sse'
+import type { ConnectionInfo, EventStream, ResumeInfo, StreamGap } from '../api/sse'
 import {
   DaemonError,
+  SUPPORTED_CLIENT_API_VERSION,
+  type ClientFrame,
   MAIN_LOOP,
   type AgentConfig,
   type AgentCreateInput,
@@ -29,12 +39,14 @@ import {
   type TimerInput,
 } from '../api/types'
 import { initialState, tuiReducer, eventLoop, type TuiAction } from './reducer'
-import { localId } from './transcript'
+import { localId, unresolvedTasks } from './transcript'
+import { clientFrameEffects, TUI_CLIENT_NAME } from './client-stream'
 import {
   transcriptKey,
   type FocusZone,
   type Overlay,
   type ToastLevel,
+  type TranscriptKey,
   type TuiState,
   type UserItem,
   type WebState,
@@ -169,6 +181,10 @@ export interface TuiStore {
   /** Initial snapshot + live events. Resolves once the first agent list attempt settles. */
   start(): Promise<void>
   stop(): void
+  /** stop(), then end the client session at the daemon (bounded wait). */
+  close(): Promise<void>
+  /** How live events arrive: `session` (client session stream), `events` (GET /events), or `none` yet. */
+  readonly liveMode: 'session' | 'events' | 'none'
   /** Resolve a pending confirm overlay (called by the overlay host). */
   resolveConfirm(id: string, confirmed: boolean): void
 }
@@ -176,8 +192,15 @@ export interface TuiStore {
 export interface CreateStoreOptions {
   client: DaemonClient
   initialView?: string
-  /** Subscribe to /events. Default true. */
+  /** Subscribe to live events. Default true. */
   live?: boolean
+  /**
+   * Live events over a client session (GET /client/sessions/:id/events) when
+   * the daemon has them; false: always GET /events. Default true.
+   */
+  clientSessions?: boolean
+  /** Version sent when opening the client session (the daemon logs it). Default ADF_VERSION, else 'dev'. */
+  clientVersion?: string
   /** Loop rows per history page. Default 100. */
   pageSize?: number
 }
@@ -199,14 +222,39 @@ export const PROMPT_PREFILL_KEY = 'shell.prompt.prefill'
 const CHAT_VIEW_ID = 'chat'
 
 export function createTuiStore(options: CreateStoreOptions): TuiStore {
+  /**
+   * This daemon's client. Once a client session is open it names the session
+   * on every request (X-ADF-Client-Session), so the daemon records the TUI's
+   * writes as `client:tui` and does not echo them back on its stream.
+   */
   let client = options.client
+  /** The same daemon without the session header: sessions open and end through it, other daemons derive from it. */
+  let plain = options.client
+  /** `plain` and its session-named copies: a read started through one of them is not stale. */
+  let current = new WeakSet<DaemonClient>([client])
   const pageSize = options.pageSize ?? 100
   let state = initialState(client.baseUrl, options.initialView)
+  // Explicit selection changes invalidate a pending start's auto-selection;
+  // reducer reconciliation from a tracked path to a loaded ID does not.
+  let selectionRevision = 0
   const listeners = new Set<() => void>()
   const confirmResolvers = new Map<string, (value: boolean) => void>()
   const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const debounced = new Map<string, ReturnType<typeof setTimeout>>()
-  let stream: EventStream | null = null
+  let stream: EventStream<DaemonEventFrame> | EventStream<ClientFrame> | null = null
+  /** The open client session (design D5), or null on the /events path. */
+  let sessionId: string | null = null
+  /** The /events path was taken; said once per store. */
+  let fallbackNoticed = false
+  /** The daemon was unreachable when the session was first tried: try again once it answers. */
+  let sessionRetry = false
+  let reopening = false
+  /** The focus last confirmed by the daemon (undefined: none sent on this session yet). */
+  let focusSent: string | null | undefined
+  let focusInFlight = false
+  let focusRetryAt = 0
+  /** When the last resync started: a resume verdict and its stream.gap trigger one, not two. */
+  let lastResyncAt = 0
   let webTick: ReturnType<typeof setInterval> | null = null
   let trackedTick: ReturnType<typeof setInterval> | null = null
   let stopped = false
@@ -219,8 +267,11 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   const dispatch = (action: TuiAction) => {
     const next = tuiReducer(state, action)
     if (next === state) return
+    if (action.type === 'select/agent') selectionRevision++
     state = next
     for (const listener of listeners) listener()
+    // The session follows the agent whose chat view is open.
+    if (sessionId && desiredFocus() !== focusSent) void syncFocus()
   }
   const subscribe = (listener: () => void) => {
     listeners.add(listener)
@@ -255,11 +306,30 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   const selectedLoopOf = (agentId: string) => state.selectedLoop[agentId] ?? MAIN_LOOP
   /** Reads started against a daemon we have since switched away from are dropped. */
-  const stale = (c: DaemonClient) => c !== client
+  const stale = (c: DaemonClient) => !current.has(c)
+  /**
+   * After a history load: a backgrounded call shown running is settled from
+   * its task row once that task is done (its tool.completed may have come
+   * while this app was not listening). Still running: it stays so, and its
+   * tool.completed settles it. Unreachable: left for the next load.
+   */
+  const settleBackgroundTasks = (c: DaemonClient, agentId: string, key: TranscriptKey) => {
+    for (const { toolUseId, taskId } of unresolvedTasks(state.transcripts[key]?.items ?? [])) {
+      c.task(agentId, taskId).then(
+        result => { if (!stale(c)) dispatch({ type: 'tool/task', key, toolUseId, task: result.task }) },
+        err => { if (!stale(c) && err instanceof DaemonError && err.status === 404) dispatch({ type: 'tool/task', key, toolUseId, task: null }) },
+      )
+    }
+  }
+  /** Requests name session `id` from now on (null: none). */
+  const useSession = (id: string | null) => {
+    client = id ? plain.withClientSession(id) : plain
+    current.add(client)
+  }
 
   const actions: TuiActions = {
     async setDaemonUrl(url, token) {
-      const next = client.withBaseUrl(url, token)
+      const next = plain.withBaseUrl(url, token)
       if (next.baseUrl === client.baseUrl && token === undefined) {
         toast(`Already connected to ${next.baseUrl}`, 'info')
         return true
@@ -275,9 +345,12 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       const previous = client.baseUrl
       stream?.close()
       stream = null
+      endSession(client)
       for (const timer of debounced.values()) clearTimeout(timer)
       debounced.clear()
       client = next
+      plain = next
+      current = new WeakSet([next])
       dispatch({ type: 'daemon/switch', url: next.baseUrl })
       toast(`Switched from ${previous} to ${next.baseUrl} — agents on the old daemon keep running`, 'success', 6000)
       await start()
@@ -441,6 +514,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       }
       if (agent.status === 'needs_review') return review()
       const start = options.start ?? true
+      const selectionAtStart = selectionRevision
       const c = client
       dispatch({ type: 'tracked/busy', filePath, busy: 'loading' })
       dispatch({ type: 'tracked/file-error', filePath, error: undefined })
@@ -482,7 +556,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       // take it back (it used to, whenever the owner picked a stopped row).
       const current = state.selectedAgentId
       const untouched = current === selectedBefore || current === ref.id
-      if (untouched && (wasSelected || !selectedBefore || isTrackedKey(selectedBefore)) && state.agents[ref.id]) actions.selectAgent(ref.id)
+      if (selectionRevision === selectionAtStart && untouched && (wasSelected || !selectedBefore || isTrackedKey(selectedBefore)) && state.agents[ref.id]) actions.selectAgent(ref.id)
       actions.notice(ref.id, MAIN_LOOP, text, level === 'success' ? 'info' : 'warn')
       return ref.id
     },
@@ -568,7 +642,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       dispatch({ type: 'transcript/loading', key })
       try {
         const page = await c.loopHistory(agentId, { loop, limit: pageSize })
-        if (!stale(c)) dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'replace' })
+        if (stale(c)) return
+        dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'replace' })
+        settleBackgroundTasks(c, agentId, key)
       } catch (err) {
         if (!stale(c)) dispatch({ type: 'transcript/error', key, error: describe(err) })
       }
@@ -584,7 +660,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       dispatch({ type: 'transcript/loading', key })
       try {
         const page = await c.loopHistory(agentId, { loop, limit, offset })
-        if (!stale(c)) dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'prepend' })
+        if (stale(c)) return
+        dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'prepend' })
+        settleBackgroundTasks(c, agentId, key)
       } catch (err) {
         if (!stale(c)) dispatch({ type: 'transcript/error', key, error: describe(err) })
       }
@@ -938,54 +1016,204 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     } catch {
       dispatch({ type: 'daemon/reachable', reachable: false })
     }
+    // The stream opens while the snapshots load: frames that arrive first apply on top of the snapshot.
+    let opening: Promise<void> = Promise.resolve()
     if (options.live !== false) {
-      stream = client.events({
-        onEvent: onFrame,
-        onState: info => {
-          dispatch({ type: 'connection', info })
-          if (info.state === 'reconnecting') {
-            needsResync = true
-            if (info.error) dispatch({ type: 'daemon/reachable', reachable: false })
-          }
-          if (info.state === 'open' && info.resumed) {
-            // Wait for the daemon's verdict (onResume): an exact resume needs no reload.
-            needsResync = false
-            if (resumeFallback) clearTimeout(resumeFallback)
-            resumeFallback = setTimeout(() => {
-              resumeFallback = null
-              toast('Reconnected to daemon — resyncing', 'info', 2500)
-              void resync()
-            }, RESUME_VERDICT_MS)
-          } else if (info.state === 'open' && needsResync) {
-            needsResync = false
-            toast('Connected to daemon', 'info', 2500)
-            void resync()
-          }
-        },
-        onResume: info => {
-          if (resumeFallback) { clearTimeout(resumeFallback); resumeFallback = null }
-          if (info.exact) {
-            // Every missed event was replayed into the transcripts: refresh the
-            // snapshots that are not evented, skip reloading every transcript.
-            toast('Reconnected to daemon — no events missed', 'info', 2500)
-            void Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
-            return
-          }
-          toast(info.reason === 'epoch_changed' ? 'The daemon restarted — reloading' : 'Events were missed while disconnected — reloading', 'warn', 4000)
-          void resync()
-        },
-      }).start()
+      opening = openStream()
       // Studio or the CLI may start / stop the web server: no event says so.
       if (webTick) clearInterval(webTick)
       webTick = setInterval(() => { if (!stopped) void actions.refreshWeb() }, WEB_POLL_MS)
       if (trackedTick) clearInterval(trackedTick)
       trackedTick = setInterval(() => { if (!stopped && state.daemonReachable !== false) void actions.refreshTracked() }, TRACKED_POLL_MS)
     }
-    await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+    await Promise.all([opening, actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
     await actions.refreshTracked()
   }
 
+  function onStreamState(info: ConnectionInfo) {
+    dispatch({ type: 'connection', info })
+    if (info.state === 'reconnecting') {
+      needsResync = true
+      if (info.error) dispatch({ type: 'daemon/reachable', reachable: false })
+      // The session is gone (it expired while we were away, or the daemon restarted): open a new one.
+      if (sessionId && info.error?.startsWith('HTTP 404')) void reopenSession()
+    }
+    if (info.state === 'open' && sessionRetry && !sessionId) {
+      // The daemon answers now: move from /events onto a client session.
+      sessionRetry = false
+      void reopenSession()
+      return
+    }
+    if (info.state === 'open' && info.resumed) {
+      // Wait for the daemon's verdict (onResume): an exact resume needs no reload.
+      needsResync = false
+      if (resumeFallback) clearTimeout(resumeFallback)
+      resumeFallback = setTimeout(() => {
+        resumeFallback = null
+        toast('Reconnected to daemon — resyncing', 'info', 2500)
+        void resync()
+      }, RESUME_VERDICT_MS)
+    } else if (info.state === 'open' && needsResync) {
+      needsResync = false
+      toast('Connected to daemon', 'info', 2500)
+      void resync()
+    }
+  }
+
+  function onStreamResume(info: ResumeInfo) {
+    if (resumeFallback) { clearTimeout(resumeFallback); resumeFallback = null }
+    if (info.exact) {
+      // Every missed event was replayed into the transcripts: refresh the
+      // snapshots that are not evented, skip reloading every transcript.
+      toast('Reconnected to daemon — no events missed', 'info', 2500)
+      void Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+      return
+    }
+    toast(info.reason === 'epoch_changed' ? 'The daemon restarted — reloading' : 'Events were missed while disconnected — reloading', 'warn', 4000)
+    void resync()
+  }
+
+  /** The session stream dropped frames (a slow read, or a long disconnect): reload what they would have changed. */
+  function onStreamGap(gap: StreamGap) {
+    if (Date.now() - lastResyncAt < RESUME_VERDICT_MS) return // the resume verdict already reloaded
+    toast(`${gap.dropped ? `${gap.dropped} live event${gap.dropped === 1 ? ' was' : 's were'}` : 'Live events were'} dropped — reloading`, 'warn', 4000)
+    void resync()
+  }
+
+  function onClientFrame(frame: ClientFrame) {
+    const effects = clientFrameEffects(frame)
+    for (const envelope of effects.frames) onFrame(envelope)
+    if (effects.toolResult) {
+      // After the tool.completed already queued for this call.
+      flushFrames()
+      const { agentId, loop, toolUseId, result, isError } = effects.toolResult
+      dispatch({ type: 'tool/result', key: transcriptKey(agentId, loop), toolUseId, result, isError })
+    }
+    if (effects.notice) toast(effects.notice.text, effects.notice.level, effects.notice.level === 'warn' ? 10_000 : 4000)
+    if (effects.reload) {
+      const { agentId, loop } = effects.reload
+      const key = transcriptKey(agentId, loop)
+      if (state.transcripts[key]?.loaded) debounce(`t:${key}`, () => { void actions.loadTranscript(agentId, loop) })
+    }
+  }
+
+  /** Taking the /events path: log why, once. */
+  function noticeFallback(reason: string) {
+    if (fallbackNoticed) return
+    fallbackNoticed = true
+    // In the activity log, not a toast: an older daemon is a normal setup, and the screen is unchanged.
+    dispatch({ type: 'activity/note', kind: 'client.fallback', text: `Live events over /events: ${reason}. Token streaming follows each agent's umbilical.stream_deltas.` })
+  }
+
+  /**
+   * A client session on this daemon, or null for the /events path: the
+   * daemon's client API version must be one this app reads (from
+   * TUI_MIN_CLIENT_API_VERSION up to SUPPORTED_CLIENT_API_VERSION), and the
+   * daemon must have the routes.
+   */
+  async function openSession(c: DaemonClient): Promise<string | null> {
+    try {
+      const info = await c.version()
+      const version = info.clientApiVersion
+      if (typeof version !== 'number' || version < TUI_MIN_CLIENT_API_VERSION || version > SUPPORTED_CLIENT_API_VERSION) {
+        noticeFallback(`the daemon speaks client API ${version}, this app ${TUI_MIN_CLIENT_API_VERSION}-${SUPPORTED_CLIENT_API_VERSION}`)
+        return null
+      }
+    } catch (err) {
+      if (err instanceof DaemonError && err.unreachable) {
+        sessionRetry = true
+        return null
+      }
+      noticeFallback(err instanceof DaemonError && err.status === 404 ? 'the daemon has no client sessions (an older version)' : `GET /version failed (${describe(err)})`)
+      return null
+    }
+    try {
+      const created = await c.createClientSession({ client: TUI_CLIENT_NAME, version: options.clientVersion ?? process.env.ADF_VERSION ?? 'dev', umbilical: true })
+      return created.sessionId
+    } catch (err) {
+      if (err instanceof DaemonError && err.unreachable) {
+        sessionRetry = true
+        return null
+      }
+      noticeFallback(err instanceof DaemonError && err.status === 404 ? 'the daemon has no client sessions (an older version)' : `opening a client session failed (${describe(err)})`)
+      return null
+    }
+  }
+
+  async function openStream() {
+    const c = plain
+    const id = options.clientSessions === false ? null : await openSession(c)
+    if (stale(c) || stopped) {
+      if (id) void c.endClientSession(id).catch(() => {})
+      return
+    }
+    sessionId = id
+    useSession(id)
+    focusSent = undefined
+    if (id) {
+      stream = c.clientSessionEvents(id, { onEvent: onClientFrame, onState: onStreamState, onResume: onStreamResume, onGap: onStreamGap }).start()
+      void syncFocus()
+    } else {
+      stream = c.events({ onEvent: onFrame, onState: onStreamState, onResume: onStreamResume }).start()
+    }
+  }
+
+  /** Replace the stream with one on a new client session (the old one is gone, or there was none yet), then reload. */
+  async function reopenSession() {
+    if (reopening || stopped) return
+    reopening = true
+    try {
+      const hadSession = sessionId !== null
+      stream?.close()
+      stream = null
+      sessionId = null
+      useSession(null)
+      await openStream()
+      if (stopped) return
+      if (hadSession) toast('The daemon no longer had this app\'s client session — reopened, reloading', 'warn', 4000)
+      await resync()
+    } finally {
+      reopening = false
+    }
+  }
+
+  /** The agent whose chat view is open: the session's focus (its tokens stream here). */
+  function desiredFocus(): string | null {
+    const id = state.selectedAgentId
+    return state.activeView === CHAT_VIEW_ID && id && !isTrackedKey(id) ? id : null
+  }
+
+  async function syncFocus() {
+    if (!sessionId || focusInFlight || Date.now() < focusRetryAt) return
+    const want = desiredFocus()
+    if (want === focusSent) return
+    const id = sessionId
+    const c = client
+    focusInFlight = true
+    try {
+      await c.setClientSessionFocus(id, want)
+      if (sessionId === id) focusSent = want
+    } catch {
+      // Retried on the next state change; the stream's own state shows a lost daemon.
+      focusRetryAt = Date.now() + 2000
+    } finally {
+      focusInFlight = false
+    }
+    if (sessionId === id && desiredFocus() !== focusSent) void syncFocus()
+  }
+
+  /** End the client session at the daemon (its 60 s expiry would end it too). */
+  function endSession(c: DaemonClient): Promise<void> {
+    const id = sessionId
+    sessionId = null
+    if (c === client) useSession(null)
+    focusSent = undefined
+    if (!id) return Promise.resolve()
+    return c.endClientSession(id).then(() => {}, () => {})
+  }
+
   async function resync() {
+    lastResyncAt = Date.now()
     await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
     void actions.refreshTracked()
     for (const key of Object.keys(state.transcripts)) {
@@ -995,10 +1223,11 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     }
   }
 
-  function stop() {
+  function stop(): Promise<void> {
     stopped = true
     stream?.close()
     stream = null
+    const ended = endSession(client)
     if (resumeFallback) { clearTimeout(resumeFallback); resumeFallback = null }
     if (webTick) { clearInterval(webTick); webTick = null }
     if (trackedTick) { clearInterval(trackedTick); trackedTick = null }
@@ -1009,6 +1238,14 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     debounced.clear()
     for (const resolve of confirmResolvers.values()) resolve(false)
     confirmResolvers.clear()
+    return ended
+  }
+
+  async function close(): Promise<void> {
+    const ended = stop()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([ended, new Promise<void>(resolve => { timer = setTimeout(resolve, 1000) })])
+    if (timer) clearTimeout(timer)
   }
 
   function resolveConfirm(id: string, confirmed: boolean) {
@@ -1025,7 +1262,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     dispatch,
     subscribe,
     start,
-    stop,
+    stop: () => { void stop() },
+    close,
+    get liveMode() { return sessionId ? 'session' as const : stream ? 'events' as const : 'none' as const },
     resolveConfirm,
   }
 }

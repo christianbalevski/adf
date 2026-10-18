@@ -116,7 +116,6 @@ function RichMarkdownView({ content, onChange, active, onEditorChange, flushRef,
     try {
       // Use the contentType option - this is the standard Tiptap v3 Markdown way
       editorInstance.commands.setContent(processed, {
-        // @ts-expect-error - contentType is added by @tiptap/markdown extension
         contentType: 'markdown'
       })
       if (DEBUG) console.log('[MarkdownEditor] Content set successfully via contentType: markdown')

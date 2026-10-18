@@ -41,6 +41,8 @@ export function stripForRenderer(event: BackgroundAgentEvent): RendererBackgroun
     name?: string
     id?: string
     result?: { content?: unknown; isError?: unknown }
+    /** Already stripped (daemon mode: the client stream sends unfocused results this way, D5.1). */
+    resultSize?: unknown
   }
   const content = payload.result?.content
   return {
@@ -51,15 +53,18 @@ export function stripForRenderer(event: BackgroundAgentEvent): RendererBackgroun
       name: payload.name,
       id: payload.id,
       result: { isError: !!payload.result?.isError },
-      resultSize: typeof content === 'string' ? content.length : 0
+      resultSize: typeof content === 'string' ? content.length : typeof payload.resultSize === 'number' ? payload.resultSize : 0
     }
   }
 }
 
 export class BackgroundEventBatcher {
   private buffer: RendererBackgroundAgentEvent[] = []
-  /** filePath → the trailing state change in `buffer`, still open to collapse */
-  private stateSlots = new Map<string, { index: number; state?: AgentState }>()
+  /**
+   * filePath → the trailing state change in `buffer`, still open to collapse.
+   * `adf_file_created` names the created file, which may be absent.
+   */
+  private stateSlots = new Map<string | undefined, { index: number; state?: AgentState }>()
   private timer: ReturnType<typeof setTimeout> | null = null
   private disposed = false
 

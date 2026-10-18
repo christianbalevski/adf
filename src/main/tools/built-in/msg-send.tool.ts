@@ -7,6 +7,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { InboxMessage } from '../../../shared/types/adf-v02.types'
 import { isLoopbackHostname, isLoopbackIp } from '../../utils/ssrf-guard'
+import { isUrlRecipient, urlRecipientError } from '../../utils/message-recipient'
 
 const InputSchema = z.object({
   recipient: z
@@ -204,6 +205,12 @@ export class SendMessageTool implements Tool {
         content: 'Either recipient or parent_id is required.',
         isError: true
       }
+    }
+
+    // A URL is never a recipient: the DID goes in recipient, the inbox URL in
+    // address. Without this, "http://host/..." read as adapter "http".
+    if (isUrlRecipient(recipient)) {
+      return { content: urlRecipientError(recipient), isError: true }
     }
 
     // Bare-handle shortcut: if the recipient is a bare handle (no `:`) and no

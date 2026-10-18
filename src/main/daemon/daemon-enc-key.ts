@@ -14,13 +14,14 @@
  * `secretStatus === 'locked'` guard exists for).
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { createHash, createPrivateKey, createPublicKey } from 'crypto'
 import {
   generateX25519KeyPair,
   extractRawX25519PublicKey,
 } from '../crypto/envelope-crypto'
+import { protectSecretFile } from '../utils/secret-file'
 
 export interface DaemonEncKey {
   /** X25519 private key, PKCS8 DER — feeds AdfWorkspace.unlockEnvelopes. */
@@ -83,8 +84,11 @@ export function ensureDaemonEncKey(settingsDir: string): DaemonEncKey {
         'backup, or delete it deliberately to start over (agents will need re-provisioning in Studio).',
       )
     }
-    // Enforce permissions even if the file predates this check or was copied.
-    try { chmodSync(keyPath, 0o600) } catch { /* windows / read-only fs */ }
+    // Enforce permissions even if the file predates this check or was copied
+    // (on Windows its own ACL, W5-D1), and on the revocation list next to it.
+    protectSecretFile(keyPath)
+    const revokedPath = join(settingsDir, REVOKED_FILENAME)
+    if (existsSync(revokedPath)) protectSecretFile(revokedPath)
   } else {
     const kp = generateX25519KeyPair()
     privateKeyPkcs8 = kp.privateKey
@@ -94,6 +98,7 @@ export function ensureDaemonEncKey(settingsDir: string): DaemonEncKey {
       public_key: extractRawX25519PublicKey(kp.publicKey).toString('base64'),
     }
     writeFileSync(keyPath, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 })
+    protectSecretFile(keyPath)
   }
 
   const publicKeyRaw = publicFromPrivate(privateKeyPkcs8)
@@ -112,4 +117,50 @@ export function ensureDaemonEncKey(settingsDir: string): DaemonEncKey {
     keyPath,
     pubKeyPath,
   }
+}
+
+const REVOKED_FILENAME = KEY_FILENAME + '.revoked'
+
+/**
+ * Slot labels of daemon keys the owner revoked (`adf identity untrust-daemon`):
+ * the daemon removes slots under these labels from every agent it opens.
+ */
+export function readRevokedDaemonKeyLabels(settingsDir: string): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(join(settingsDir, REVOKED_FILENAME), 'utf-8')) as { labels?: unknown }
+    return Array.isArray(parsed.labels) ? parsed.labels.filter((l): l is string => typeof l === 'string' && l.startsWith('daemon:')) : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Revocation (`adf identity untrust-daemon`): replace the daemon's key with a
+ * fresh one and record the old key's label as revoked. The label is recorded
+ * first, so a crash in between leaves the old key in use with its slots
+ * already marked for removal; the new key replaces the file atomically, and
+ * the old private key is gone from it. Envelope slots wrapped to the old key
+ * no longer open for this daemon; a copy of the old key file elsewhere still
+ * opens them until they are removed.
+ */
+export function rotateDaemonEncKey(settingsDir: string): { key: DaemonEncKey; retiredLabel: string } {
+  const current = ensureDaemonEncKey(settingsDir)
+  const revoked = readRevokedDaemonKeyLabels(settingsDir)
+  if (!revoked.includes(current.label)) {
+    const revokedPath = join(settingsDir, REVOKED_FILENAME)
+    writeFileSync(revokedPath + '.tmp', JSON.stringify({ v: 1, labels: [...revoked, current.label] }, null, 2) + '\n', { mode: 0o600 })
+    protectSecretFile(revokedPath + '.tmp') // the ACL moves with the rename
+    renameSync(revokedPath + '.tmp', revokedPath)
+  }
+  const kp = generateX25519KeyPair()
+  const record: KeyFileShape = {
+    v: 1,
+    private_key_pkcs8: kp.privateKey.toString('base64'),
+    public_key: extractRawX25519PublicKey(kp.publicKey).toString('base64'),
+  }
+  writeFileSync(current.keyPath + '.tmp', JSON.stringify(record, null, 2) + '\n', { mode: 0o600 })
+  protectSecretFile(current.keyPath + '.tmp') // the ACL moves with the rename
+  renameSync(current.keyPath + '.tmp', current.keyPath)
+  try { chmodSync(current.keyPath, 0o600) } catch { /* windows / read-only fs */ }
+  return { key: ensureDaemonEncKey(settingsDir), retiredLabel: current.label }
 }

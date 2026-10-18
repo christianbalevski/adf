@@ -58,6 +58,8 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { toDisplayState } from './display-state'
+import { AGENT_LEASED_CODE, processAgentLeases } from './agent-lease'
+import { applyBackgroundEvent, countActiveLoops, type BackgroundMappedEvent } from './background-event-mapping'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -72,12 +74,8 @@ const MCP_CONNECT_BUDGET_MS = 25_000
 // Shared with the daemon (agent vitals); re-exported for existing importers.
 export { toDisplayState }
 
-/** How many inner loops are mid-turn. The sidebar's count badge reads this. */
-export function countActiveLoops(loopStates: Map<string, AgentState>): number {
-  let count = 0
-  for (const state of loopStates.values()) if (state === 'active') count++
-  return count
-}
+// Moved to the pure mapping module; re-exported for existing importers.
+export { countActiveLoops }
 
 export interface BackgroundManagedAgent {
   assembledAgent: AssembledAgent<AgentProfileName>
@@ -197,9 +195,10 @@ const IDLE_MEMORY_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
  * Coded start failures the renderer can act on, mirroring the foreground
  * AGENT_START gate: 'provider_missing' — the agent names a provider this
  * install does not have; 'provider_unconfigured' — the provider exists but
- * carries no API key and its type needs one.
+ * carries no API key and its type needs one; 'agent_leased' — another ADF
+ * process on this machine runs the agent (agent-lease.ts).
  */
-export type BackgroundStartErrorCode = 'provider_missing' | 'provider_unconfigured'
+export type BackgroundStartErrorCode = 'provider_missing' | 'provider_unconfigured' | typeof AGENT_LEASED_CODE
 
 /** Error carrying a start code, so doStartAgent's catch can classify it. */
 class BackgroundStartError extends Error {
@@ -304,6 +303,10 @@ export class BackgroundAgentManager extends EventEmitter {
   /** Starts announced via agent_starting that haven't completed or failed yet. */
   private pendingStarts: Set<string> = new Set()
 
+  /** Cross-process agent lease: one process runs an agent file (agent-lease.ts). */
+  private readonly agentLeases = processAgentLeases()
+  private readonly unregisterLeaseProbe: () => void
+
   constructor(settings: SettingsService, basePrompt: string, toolPrompts: Record<string, string>, compactionPrompt?: string) {
     super()
     this.settings = settings
@@ -312,6 +315,7 @@ export class BackgroundAgentManager extends EventEmitter {
     this.compactionPrompt = compactionPrompt
     // Periodically check for idle agents when we have many agents running
     this.idleSweepTimer = setInterval(() => this.sweepIdleAgents(), 60_000)
+    this.unregisterLeaseProbe = this.agentLeases.addHostedPathsProbe(() => [...this.agents.keys(), ...this.inFlightStarts.keys()])
   }
 
   setCodeSandboxService(service: CodeSandboxService): void {
@@ -528,6 +532,8 @@ export class BackgroundAgentManager extends EventEmitter {
       return await start
     } finally {
       this.inFlightStarts.delete(canonicalPath)
+      // Releases the lease when the start failed (the agent is not registered).
+      await this.agentLeases.reconcile()
     }
   }
 
@@ -548,6 +554,12 @@ export class BackgroundAgentManager extends EventEmitter {
     })
 
     try {
+      const lease = await this.agentLeases.acquire(filePath)
+      if (!lease.ok) throw new BackgroundStartError(lease.message, AGENT_LEASED_CODE)
+      if (lease.unprotected) {
+        this.emitEvent({ type: 'error', payload: { filePath, error: lease.unprotected, code: 'LEASES_UNAVAILABLE' }, timestamp: Date.now() })
+      }
+
       const workspace = AdfWorkspace.open(filePath)
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
@@ -563,6 +575,13 @@ export class BackgroundAgentManager extends EventEmitter {
         try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
       }
       const config = workspace.getAgentConfig()
+      // The lease names the agent now; a copy of an agent another runtime
+      // (or this one) runs from another file is refused (W5-D3).
+      const idLease = await this.agentLeases.noteAgentId(filePath, config.id)
+      if (idLease && !idLease.ok) {
+        try { workspace.close() } catch { /* already closed */ }
+        throw new BackgroundStartError(idLease.message, AGENT_LEASED_CODE)
+      }
       // Agent name is derived from filename, same as opening the file does: a
       // file renamed outside the app must not run under its old name.
       const fileDerivedName = basename(filePath, '.adf')
@@ -792,6 +811,7 @@ export class BackgroundAgentManager extends EventEmitter {
     // this sweeps anything a partial dispose left behind, so the title-bar
     // approvals menu can never list a stopped agent's unanswerable request.
     approvalHub.unregisterAgent(filePath)
+    await this.agentLeases.reconcile()
 
     this.emitEvent({
       type: 'agent_stopped',
@@ -845,6 +865,7 @@ export class BackgroundAgentManager extends EventEmitter {
           console.error(`[BackgroundAgent] dispose error for ${fp}:`, e)
         }
       }
+      await this.agentLeases.reconcile()
       // Stop compute environment container
       try { if (this.podmanService) await this.podmanService.stop() } catch { /* ignore */ }
     } finally {
@@ -1046,39 +1067,8 @@ export class BackgroundAgentManager extends EventEmitter {
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
         // Side-loop events never move the agent's display state or its
-        // accumulated text: `AgentState` is MAIN's (§6.3), and a backgrounded
-        // agent has no loop tabs to route them to. Their states are tracked
-        // apart, in `loopStates`, so the sidebar can still say how many inner
-        // loops are mid-turn without main's dot ever lying.
-        this.recordLoopState(managed, filePath, event)
-        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
-        if (event.type === 'state_changed') {
-          managed.state = toDisplayState((event.payload as { state: string }).state)
-          this.emitEvent({
-            type: 'agent_state_changed',
-            payload: { filePath, state: managed.state },
-            timestamp: Date.now(),
-          })
-        }
-        if (event.type === 'text_delta') managed.accumulatedText += (event.payload as { delta: string }).delta
-        if (event.type === 'tool_call_start') this.flushAccumulatedText(managed)
-        if (event.type === 'tool_call_start' || event.type === 'tool_call_result' ||
-            event.type === 'ask_request' || event.type === 'tool_approval_request' ||
-            event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
-          this.emitEvent({
-            type: event.type,
-            payload: { filePath, ...(event.payload as Record<string, unknown>) },
-            timestamp: event.timestamp,
-          })
-        }
-        if (event.type === 'adf_file_created') {
-          this.emitEvent({
-            type: 'adf_file_created',
-            payload: { agentFilePath: filePath, filePath: (event.payload as Record<string, unknown>).filePath },
-            timestamp: event.timestamp,
-          })
-        }
-        if (event.type === 'turn_complete') this.flushAccumulatedText(managed)
+        // accumulated text (see background-event-mapping.ts).
+        applyBackgroundEvent(managed, filePath, event, (mapped) => this.emitBackgroundMappedEvent(mapped))
       },
     })
     this.agents.set(filePath, managed)
@@ -1896,73 +1886,14 @@ export class BackgroundAgentManager extends EventEmitter {
           filePath,
           inbox: {
             version: 1,
-            messages: allMessages.map(m => ({
-              id: m.id,
-              from: m.sender,
-              sender: m.sender,
-              reply_to: m.reply_to,
-              source: m.source,
-              content: m.payload,
-              payload: m.payload,
-              type: (m.intent ?? 'broadcast') as const,
-              direction: 'incoming' as const,
-              status: m.status,
-              timestamp: m.received_at,
-              received_at: m.received_at,
-              sent_at: m.sent_at,
-              trace_id: m.trace_id,
-              parent_id: m.parent_id,
-              replyTo: m.parent_id,
-              intent: m.intent,
-              attachments: m.attachments,
-              source_meta: m.source_meta
-            }))
+            messages: allMessages
           }
         })
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
-        // See the adopt path above: side-loop events are MAIN-state-inert, and
-        // their states are tracked apart for the inner-loop count.
-        this.recordLoopState(managed, filePath, event)
-        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
-        if (event.type === 'state_changed') {
-          const payload = event.payload as { state: string }
-          managed.state = toDisplayState(payload.state)
-          this.emitEvent({
-            type: 'agent_state_changed',
-            payload: { filePath, state: managed.state },
-            timestamp: Date.now()
-          })
-        }
-        if (event.type === 'text_delta') {
-          managed.accumulatedText += (event.payload as { delta: string }).delta
-        }
-        if (event.type === 'tool_call_start') {
-          this.flushAccumulatedText(managed)
-          this.emitEvent({
-            type: 'tool_call_start',
-            payload: { filePath, ...(event.payload as Record<string, unknown>) },
-            timestamp: event.timestamp
-          })
-        }
-        if (event.type === 'tool_call_result' || event.type === 'ask_request' || event.type === 'tool_approval_request' ||
-            event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
-          this.emitEvent({
-            type: event.type,
-            payload: { filePath, ...(event.payload as Record<string, unknown>) },
-            timestamp: event.timestamp
-          })
-        }
-        if (event.type === 'adf_file_created') {
-          const payload = event.payload as Record<string, unknown>
-          this.emitEvent({
-            type: 'adf_file_created',
-            payload: { agentFilePath: filePath, filePath: payload.filePath },
-            timestamp: event.timestamp
-          })
-        }
-        if (event.type === 'turn_complete') this.flushAccumulatedText(managed)
+        // Same mapping as the adopt path above.
+        applyBackgroundEvent(managed, filePath, event, (mapped) => this.emitBackgroundMappedEvent(mapped))
       },
     })
 
@@ -2001,49 +1932,6 @@ export class BackgroundAgentManager extends EventEmitter {
       throw error
     }
     return managed
-  }
-
-  /**
-   * Fold a SIDE loop's `state_changed` into `loopStates` and broadcast the new
-   * inner-loop count when it moved; main's own `state_changed` only matters
-   * here when it goes off, which empties the map. Every other event passes
-   * through untouched — the caller still runs its own main-loop handling.
-   */
-  private recordLoopState(
-    managed: BackgroundManagedAgent,
-    filePath: string,
-    event: { type: string; payload: unknown; loop?: string }
-  ): void {
-    if (event.type !== 'state_changed') return
-    const loop = event.loop ?? MAIN_LOOP
-    const state = toDisplayState((event.payload as { state: string }).state)
-    if (loop === MAIN_LOOP) {
-      // Main going off takes its inner loops with it — they stop with the
-      // executor pool and will never report their own way back to idle.
-      if (state !== 'off' || managed.loopStates.size === 0) return
-      managed.loopStates.clear()
-    } else {
-      const previous = managed.loopStates.get(loop)
-      managed.loopStates.set(loop, state)
-      // Per loop, not only the count: a loop going busy â†’ idle while another
-      // goes idle â†’ busy leaves the count unchanged, and a queue waiting on
-      // that loop has to see its own turn end.
-      if (previous !== state) {
-        this.emitEvent({
-          type: 'agent_loop_state_changed',
-          payload: { filePath, loop, state },
-          timestamp: Date.now()
-        })
-      }
-    }
-    const activeLoops = countActiveLoops(managed.loopStates)
-    if (activeLoops === managed.activeLoops) return
-    managed.activeLoops = activeLoops
-    this.emitEvent({
-      type: 'agent_loops_changed',
-      payload: { filePath, activeLoops },
-      timestamp: Date.now()
-    })
   }
 
   private flushAccumulatedText(managed: BackgroundManagedAgent): void {
@@ -2156,19 +2044,24 @@ export class BackgroundAgentManager extends EventEmitter {
     managed.session.restoreMessages(loop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq })))
   }
 
+  /** Emit a mapped executor/host event, `adf_file_created` included (ipc/index.ts refreshes tracked directories from it). */
+  private emitBackgroundMappedEvent(event: BackgroundMappedEvent): void {
+    this.emitEvent(event)
+  }
+
   private emitEvent(event: BackgroundAgentEvent): void {
     // Mirror start-lifecycle events into pendingStarts so a renderer that
     // mounts mid-boot can seed its spinners from getPendingStarts().
-    const fp = event.payload.filePath
-    if (event.type === 'agent_starting') this.pendingStarts.add(fp)
+    if (event.type === 'agent_starting') this.pendingStarts.add(event.payload.filePath)
     else if (event.type === 'agent_started' || event.type === 'agent_start_failed' || event.type === 'agent_stopped') {
-      this.pendingStarts.delete(fp)
+      this.pendingStarts.delete(event.payload.filePath)
     }
     this.emit('background_agent_event', event)
   }
 
   /** Clean up the idle sweep timer when the manager is destroyed */
   dispose(): void {
+    this.unregisterLeaseProbe()
     if (this.idleSweepTimer) {
       clearInterval(this.idleSweepTimer)
       this.idleSweepTimer = null

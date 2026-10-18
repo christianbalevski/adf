@@ -13,10 +13,11 @@
  * malformed file is simply replaced (clients re-read it on a 401).
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { defaultUserDataPath } from '../utils/user-data-path'
+import { protectSecretFile } from '../utils/secret-file'
 
 export const DAEMON_TOKEN_FILENAME = 'daemon-token'
 const MIN_TOKEN_LENGTH = 32
@@ -50,7 +51,8 @@ export function ensureDaemonToken(settingsDir: string): { token: string; path: s
   const path = daemonTokenPath(settingsDir)
   const existing = readDaemonToken(settingsDir)
   if (existing) {
-    try { chmodSync(path, 0o600) } catch { /* windows / read-only fs */ }
+    // A file from before W5-D1 (or copied in) gets the same protection at every boot.
+    protectSecretFile(path)
     return { token: existing, path, created: false }
   }
   mkdirSync(settingsDir, { recursive: true })
@@ -60,6 +62,7 @@ export function ensureDaemonToken(settingsDir: string): { token: string; path: s
       // 'wx': two daemons sharing these settings may start at once; the
       // loser reads the winner's token instead of overwriting it.
       writeFileSync(path, `${token}\n`, { mode: 0o600, flag: 'wx' })
+      protectSecretFile(path)
       return { token, path, created: true }
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
@@ -69,7 +72,7 @@ export function ensureDaemonToken(settingsDir: string): { token: string; path: s
   }
   // Present but malformed: replace it.
   writeFileSync(path, `${token}\n`, { mode: 0o600 })
-  try { chmodSync(path, 0o600) } catch { /* windows */ }
+  protectSecretFile(path)
   return { token, path, created: true }
 }
 

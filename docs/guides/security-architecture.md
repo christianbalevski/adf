@@ -38,7 +38,7 @@ The Electron renderer is treated as untrusted. Even though it's our own React ap
 `sys_code` and `sys_lambda` execute in a Node.js Worker Thread with a V8 VM context. This is not a security sandbox in the browser sense — `vm` does not provide hard isolation. The defense is layered:
 
 **Controls:**
-- `codeGeneration: { strings: false }` — no `eval()` or `new Function()`
+- A membrane between the VM realm and the worker: host values reach sandbox code only as their VM twins (host `Function` → VM `Function`), and the worker realm's own Function-family constructors are inert. `eval()` and `new Function()` are allowed: they compile in the VM realm, where `process` is a stand-in.
 - All built-in prototypes frozen inside the VM context (Object, Array, Function, String, etc.)
 - `fetch`, `Request`, `Response`, `Headers` deleted from worker scope — all network goes through `adf.sys_fetch()` which routes through security middleware
 - Module allowlist: only `crypto`, `buffer`, `url`, `querystring`, `path`, `util`, `string_decoder`, `punycode`, `assert`, `events`, `stream`, `zlib`
