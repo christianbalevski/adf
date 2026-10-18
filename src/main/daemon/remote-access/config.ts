@@ -8,10 +8,10 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { dirname, join } from 'node:path'
-import { protectSecretFile } from '../../utils/secret-file'
+import { join } from 'node:path'
+import { writeSecretFileAtomic } from '../../utils/secret-write'
 
 export const REMOTE_ACCESS_FILENAME = 'remote-access.json'
 
@@ -129,14 +129,9 @@ export function loadRemoteAccessConfig(settingsDir: string, defaultName?: string
   }
 }
 
-/** Atomic write (temp + rename), restricted to the current user before the rename. */
+/** Atomic write, readable by the current user only from the first byte; throws SecretFileError when it cannot be restricted. */
 export function saveRemoteAccessConfig(settingsDir: string, config: RemoteAccessConfig): void {
-  const path = remoteAccessConfigPath(settingsDir)
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  protectSecretFile(tmp)
-  renameSync(tmp, path)
+  writeSecretFileAtomic(remoteAccessConfigPath(settingsDir), `${JSON.stringify(config, null, 2)}\n`)
 }
 
 export function newDaemonId(): string {

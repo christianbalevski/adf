@@ -37,7 +37,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 
 ### 3.1 Setting
 
-File `<settings dir>/remote-access.json` (next to `daemon-token`), written with mode 0600 and `protectSecretFile`. Only the daemon writes it, through the management routes (§11.2).
+File `<settings dir>/remote-access.json` (next to `daemon-token`), written with `writeSecretFileAtomic` (§10.1). Only the daemon writes it, through the management routes (§11.2).
 
 | Field | Type | Content |
 |---|---|---|
@@ -138,7 +138,7 @@ Remote access works only while this daemon runs.
 
 ### 4.3 Store
 
-`<settings dir>/daemon-devices.json`, mode 0600, `protectSecretFile` on every write, written atomically (temp + rename).
+`<settings dir>/daemon-devices.json`, written with `writeSecretFileAtomic` on every write (§10.1).
 
 ```json
 { "v": 1,
@@ -363,7 +363,7 @@ adf remotes forget <name>         delete the saved URL and token (the host still
 | Client | URL and metadata | Token |
 |---|---|---|
 | Studio | `studio-backend.json` `remote.url`, `remote.allowInsecureHttp`, new `remote.paired: {fingerprint, name, deviceId, label} \| null` | `remote.token` as `safe:` (safeStorage), unchanged; sent only to that origin |
-| CLI | `<data dir>/cli-remotes.json` `{v: 1, default, remotes: {<name>: {url, fingerprint, deviceId, label, pairedAt}}}` | OS keychain, service `ADF`, account `remote-token:<fingerprint>` (`@napi-rs/keyring`, already a CLI dependency); without a keychain `<data dir>/cli-remote-tokens.json`, 0600 / own ACL, and `adf pair` says so |
+| CLI | `<data dir>/cli-remotes.json` `{v: 1, default, remotes: {<name>: {url, fingerprint, deviceId, label, pairedAt}}}` | OS keychain, service `ADF`, account `remote-token:<fingerprint>` (`@napi-rs/keyring`, already a CLI dependency); without a keychain `<data dir>/cli-remote-tokens.json`, written with `writeSecretFileAtomic` (§10.1), and `adf pair` says so; both CLI files are written that way |
 
 When a saved remote stops answering at its IP, Studio and the CLI SHOULD look the fingerprint up in mDNS and offer the new address ("*host* is now at 192.168.1.44. Use it?"); they MUST NOT switch silently.
 
@@ -385,6 +385,10 @@ Assets: device tokens (each = the owner phrase, §4.5), the pairing code during 
 | Public / hostile Wi-Fi with private addresses (hotel 10.x) | Reach the listeners, attempt pairing | Token required; pairing only in an owner-opened window; Windows' Public profile usually blocks; the status line names the addresses | Yes; see Q4 |
 | Carrier-grade NAT peers | Reach a 100.64/10 listener | Bound only when Tailscale confirms the address | — |
 | Process of the same OS user on the host | Read `daemon-token`, `daemon-devices.json`, mint via the proof | Out of scope, as in daemon-backend.md §5.4.1 | Yes |
+
+### 10.1 Secret files
+
+`remote-access.json`, `daemon-devices.json`, `cli-remotes.json` and `cli-remote-tokens.json` are written by `writeSecretFileAtomic` (`src/main/utils/secret-write.ts`): the content goes into a temp file that is already readable by the current user only, then the temp file is renamed over the target. On POSIX the temp file is created exclusively with mode 0600; on Windows it is created empty, given its own ACL (`icacls /inheritance:r /grant:r <user>:F`), and only then filled. A restriction that fails MUST fail the write: nothing is written, the caller gets `SecretFileError`, the daemon answers the error (no device token is issued), and `adf pair` says the token was not saved and which device to remove on the host. Nothing reports "readable by you only" for a file that is not (security review item 9).
 
 ## 11. API (the fixed contract)
 

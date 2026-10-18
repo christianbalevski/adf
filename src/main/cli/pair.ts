@@ -237,7 +237,15 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
   const existing = Object.entries(file.remotes).find(([, r]) => r.fingerprint === result.daemon.fingerprint)
   const name = parsed.as ?? existing?.[0] ?? remoteNameFor(result.daemon.name, file.remotes)
   const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint)
-  const stored = storeRemoteToken(result.daemon.fingerprint, result.token, env)
+  let stored: ReturnType<typeof storeRemoteToken>
+  try {
+    stored = storeRemoteToken(result.daemon.fingerprint, result.token, env)
+  } catch (err) {
+    // Never a token in a file others could read, and never a claim that it is safe when it is not.
+    io.stderr(`The token was not saved: ${err instanceof Error ? err.message : String(err)}\n`)
+    io.stderr(`"${result.daemon.name}" lists this computer as "${result.device.label}": remove it there (adf daemon devices revoke ${result.device.id}) and pair again once this is fixed.\n`)
+    return 1
+  }
   file.remotes[name] = {
     url: saveUrl,
     fingerprint: result.daemon.fingerprint,
@@ -252,7 +260,13 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
     makeDefault = answer !== null && /^\s*(y|yes)?\s*$/i.test(answer)
   }
   if (makeDefault) file.default = name
-  saveRemotes(file, env)
+  try {
+    saveRemotes(file, env)
+  } catch (err) {
+    deleteRemoteToken(result.daemon.fingerprint, env)
+    io.stderr(`The remote was not saved: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
   io.stdout(`Paired with "${result.daemon.name}" as "${result.device.label}". Saved as remote "${name}" (${saveUrl})${makeDefault ? ', the default' : `; use it with --remote ${name}`}.\n`)
   io.stderr(stored.where === 'keychain'
     ? 'The token is in the OS keychain.\n'

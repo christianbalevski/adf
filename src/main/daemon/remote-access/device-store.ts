@@ -16,9 +16,9 @@
  */
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { protectSecretFile } from '../../utils/secret-file'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { writeSecretFileAtomic } from '../../utils/secret-write'
 import { base32 } from './config'
 
 export const DEVICES_FILENAME = 'daemon-devices.json'
@@ -223,10 +223,7 @@ export class DeviceStore {
 
   private write(): void {
     const file: DevicesFile = { v: 1, devices: this.list(), revoked: [...this.revoked.values()] }
-    mkdirSync(dirname(this.path), { recursive: true })
-    const tmp = `${this.path}.${process.pid}.tmp`
-    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 })
-    protectSecretFile(tmp)
-    renameSync(tmp, this.path)
+    // Restricted from the first byte; a failure throws (create/revoke roll back and answer the error).
+    writeSecretFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`)
   }
 }
