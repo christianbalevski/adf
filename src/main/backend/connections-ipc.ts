@@ -128,7 +128,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (!hello && pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
     if (hello) {
       const pinned = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin && s.fingerprint !== hello!.fingerprint)
-      if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired. Studio sent nothing. If that computer was set up again, remove ${pinned[0]} first.`)
+      if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired; Studio sent nothing.`)
       // The computer is saved under another address: never move it without asking, as Pair does.
       const moved = Object.entries(all).find(([, s]) => s.fingerprint === hello!.fingerprint && remoteUrlOrigin(s.url) !== origin)
       if (moved) {

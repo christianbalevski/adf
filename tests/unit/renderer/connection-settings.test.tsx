@@ -73,6 +73,10 @@ describe('the Connection page rows', () => {
     // One sentence for a connection without a fingerprint (review item 13).
     expect(source).toContain('No fingerprint; identity not checked.')
     expect(source).not.toContain('Studio cannot check')
+    // Every sentence added on the page is one sentence (review item 15).
+    expect(source).toContain('Check that {pair.host.name} shows fingerprint {pair.host.fingerprint}.')
+    const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
+    expect(page).toContain('help="Off: Studio never contacts GitHub for updates; nothing downloads until you click the update badge."')
   })
 })
 

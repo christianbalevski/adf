@@ -136,20 +136,20 @@ export class PairingFlow {
       const saved = this.deps.savedConnections?.() ?? []
       const pinned = saved.find((s) => s.fingerprint && originOf(s.url) === originOf(check.url) && s.fingerprint !== hello.fingerprint)
       if (pinned) {
-        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${pinned.fingerprint} as when ${pinned.name} was paired. Studio sent nothing. If that computer was set up again, remove ${pinned.name} in Settings → Connection first.`)
+        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${pinned.fingerprint} as when ${pinned.name} was paired; Studio sent nothing.`)
       }
       // Never move a saved connection to another address without asking.
       const moved = saved.find((s) => s.fingerprint === hello.fingerprint && originOf(s.url) !== originOf(check.url))
       if (moved) {
         const replace = this.deps.confirmReplace ? await this.deps.confirmReplace({ name: moved.name, from: moved.url, to: check.url }).catch(() => false) : false
         if (abort.signal.aborted) return this.current
-        if (!replace) return this.fail('kept', `Kept the saved address of ${moved.name}. Nothing was sent.`)
+        if (!replace) return this.fail('kept', `Kept the saved address of ${moved.name}; nothing was sent.`)
       }
       this.log.log(`[Remote access] Pairing with ${hello.name} (${hello.fingerprint}) at ${check.url} as "${deviceName}"`)
       return this.set({
         step: 'need_code',
         host: { ...host, name: hello.name, fingerprint: hello.fingerprint },
-        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open. Choose Add device there.`,
+        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open; choose Add device there.`,
       })
     } catch (err) {
       if (abort.signal.aborted) return this.current
@@ -286,12 +286,12 @@ export class PairingFlow {
     switch (err.code) {
       case 'wrong_code': {
         const left = err.extra.attemptsLeft ?? null
-        if (left === 0) return this.fail('attempts_used', `Wrong code, and no tries are left. Choose Add device on ${host.name} for a new code.`)
+        if (left === 0) return this.fail('attempts_used', `Wrong code and no tries left; choose Add device on ${host.name} for a new code.`)
         this.log.warn(`[Remote access] Pairing with ${host.name}: wrong code${left !== null ? `, ${left} left` : ''}`)
         return this.set({ step: 'need_code', code: 'wrong_code', attemptsLeft: left, message: `Wrong code.${left !== null ? ` ${left} ${left === 1 ? 'try' : 'tries'} left.` : ''}` })
       }
       case 'pairing_closed':
-        return this.fail('window_closed', `The pairing window on ${host.name} is closed. Choose Add device there for a new code.`)
+        return this.fail('window_closed', `The pairing window on ${host.name} is closed; choose Add device there for a new code.`)
       case 'pairing_busy':
         return this.fail('busy', `${host.name} is already asking about another device. Try again in a moment.`, true)
       case 'rate_limited':

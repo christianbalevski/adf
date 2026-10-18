@@ -1959,7 +1959,7 @@ export function SettingsPage() {
             <SettingsRow
               label="Automatic checks"
               description="Ask GitHub Releases for a newer version after launch and every hour."
-              help="Nothing downloads until you click the update badge. Off: Studio never contacts GitHub for updates."
+              help="Off: Studio never contacts GitHub for updates; nothing downloads until you click the update badge."
             >
               <label className="flex items-center gap-2 cursor-pointer">
                 <input

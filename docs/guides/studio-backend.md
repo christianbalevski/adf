@@ -71,10 +71,9 @@ whose fingerprint is saved is its saved row: a Paired row never offers
 then Studio restarts on that connection. For a saved connection Studio first
 reads its token from the OS keychain. On macOS the keychain may ask once
 whether ADF Studio may use a token `adf pair` saved; answer that prompt (it
-can be behind other windows). If the keychain does not give the token:
-"Studio could not read the token for *name* from the OS keychain. Allow ADF
-Studio to use it, or pair again." Nothing is saved and Studio does not
-restart.
+can be behind other windows). If the keychain does not give the token: "The
+OS keychain did not give the token for *name*; allow ADF Studio to use it, or
+pair again." Nothing is saved and Studio does not restart.
 
 While This computer is in use, **This computer** under the list shows the
 **ADF daemon** line ([Daemon status](#daemon-status)) and **Keep running after
@@ -107,7 +106,7 @@ fingerprint (a daemon set up by hand, remote access off there) is kept in
    `http://100.x.y.z:7385` (a tailnet address). Any other `http://` address
    needs "I trust this network; the token is sent unencrypted." **Next**.
 2. Studio asks the computer for its name and fingerprint (no token is sent):
-   "*name* · *fingerprint*. Check that the host shows the same fingerprint."
+   "Check that *name* shows fingerprint *fingerprint*."
    Enter the **Code** shown by **Add device** on that computer, or choose
    **Use a token instead**.
 3. If the computer does not answer with a fingerprint (remote access off
@@ -254,7 +253,7 @@ saved mode; the dialog says so and Settings → Connection shows "Agents run
 | "Studio restarts now." | A confirmed switch |
 | "Studio already runs this mode; no restart is needed." | You chose the mode this launch already runs (after a session-only launch) |
 | "Restart to connect to *name*." with **Restart now** | The saved connection differs from the one this launch runs (another remote included) |
-| "Studio could not read the token for *name* from the OS keychain. …" | Allow ADF Studio in the keychain prompt, or pair again |
+| "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "In use." | Remove: connect to another row first |
 | "Pair first." | Connect on a computer that is not paired |
 | "Could not save *path*." / "Could not save the backend settings." / "Could not read the backend settings." | `studio-backend.json` could not be written or read; check the user data folder |
@@ -635,7 +634,7 @@ choose another one there:
 | "… does not answer as an ADF daemon" | Wrong address or port |
 | "… speaks client API N; this Studio needs M." | Update the daemon on the server (or Studio) to the same version |
 | "No token is saved for … or it cannot be decrypted on this computer." | Add the connection again |
-| "Studio could not read the token for *name* from the OS keychain. …" | Allow ADF Studio in the keychain prompt, or pair again |
+| "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "*url* is not *name* (fingerprint …, paired as …); the token was not sent." | Another computer answers at the saved address. Studio checks this before every new connection (launch, a dropped connection, wake, Reconnect), sends nothing, and stops. If that computer was set up again, remove *name* and pair again |
 
 ### Files on the server
@@ -871,16 +870,16 @@ address** dialog ("*name* is now at *url*."). **Connect** connects to it.
 |---|---|
 | "Wrong code. *N* tries left." | Enter the code shown on the host |
 | "Too many wrong codes from this computer for this pairing window. …" | This device is locked out of that window: on the host, **Add device** again |
-| "Wrong code, and no tries are left. …" | On the host, **Add device** again for a new code |
+| "Wrong code and no tries left; …" | On the host, **Add device** again for a new code |
 | "The pairing window on *host* is closed. …" | The 2 minutes passed or the host cancelled: open a new window |
 | "*host* denied this device." | The host chose Deny |
 | "Studio could not reach *host* at *url*. The host's firewall may block port 7385." | See [Firewall](#firewall) |
 | "*host* is already asking about another device. …" | Wait, then try again |
 | "*url* has remote access off. …" | Turn remote access on, on the host |
 | "*host* runs an older ADF. Update ADF there, then pair again." | The host's ADF predates this feature |
-| "*address* now answers with fingerprint *X*, not *Y* as when *name* was paired. …" | Another computer answers at the saved address. If that computer was set up again, remove *name* first |
+| "*address* now answers with fingerprint *X*, not *Y* as when *name* was paired; Studio sent nothing." | Another computer answers at the saved address. If that computer was set up again, remove *name* first |
 | "The approval came with fingerprint *X*, but *host* showed *Y*. …" | Nothing was saved; revoke the device on the host and pair again |
-| "Kept the saved address of *name*. Nothing was sent." | You chose Cancel in Use new address |
+| "Kept the saved address of *name*; nothing was sent." | You chose Cancel in Use new address |
 
 ### Firewall
 
@@ -983,7 +982,7 @@ Every message the backend features show, and where it is explained. Text in
 | "The running ADF daemon is version *X*; this Studio is *Y*." / Restart It Anyway | [Version mismatch](#version-mismatch) |
 | "Agents run … because ADF_STUDIO_BACKEND is set." / "… for this session only" | [Run agents inside Studio when the daemon does not work](#run-agents-inside-studio-when-the-daemon-does-not-work) |
 | The remote sentences | [Connection problems](#connection-problems) |
-| "Studio could not read the token for *name* from the OS keychain. …" / "In use." / "Pair first." | [Connection](#connection) |
+| "The OS keychain did not give the token for *name*; …" / "In use." / "Pair first." | [Connection](#connection) |
 | "No fingerprint; identity not checked." / "Saved without a fingerprint; identity not checked." / "Replace connection" | [Add connection](#add-connection) |
 | "I trust this network; the token is sent unencrypted." | [Remote computer](#remote-computer) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |

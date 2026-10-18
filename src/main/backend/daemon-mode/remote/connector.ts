@@ -227,7 +227,7 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       progress(`Reading the token for ${name}…`)
       try {
         const target = await savedConnectionTarget(config, name, opts.env ?? process.env, {
-          onSlow: () => progress(`Waiting for the OS keychain: macOS may ask whether ADF Studio may use the token for ${name}. Answer that prompt (it can be behind other windows).`),
+          onSlow: () => progress(`Waiting for the OS keychain: answer its prompt for ${name} (it can be behind other windows).`),
         })
         url = target.url
         token = target.token

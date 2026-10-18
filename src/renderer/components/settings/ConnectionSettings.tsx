@@ -296,7 +296,7 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
         )}
         {step === 'code' && pair?.host && (
           <>
-            <p className="text-[var(--adf-ui-text-muted)]">{pair.host.name} · {pair.host.fingerprint}. Check that the host shows the same fingerprint.</p>
+            <p className="text-[var(--adf-ui-text-muted)]">Check that {pair.host.name} shows fingerprint {pair.host.fingerprint}.</p>
             <label className="block space-y-1">
               <span className="text-[var(--adf-ui-text)]">Code</span>
               <TextInput value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" maxLength={7} placeholder="123 456" disabled={waiting} aria-label="Pairing code" className="font-mono text-[18px] tracking-[0.2em]" />

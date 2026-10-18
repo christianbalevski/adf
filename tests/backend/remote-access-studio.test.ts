@@ -385,7 +385,7 @@ describe('pairing from Settings → Connection', () => {
   it('a saved connection\'s pinned fingerprint (trust on first use): another one at its address is refused (security review 4)', async () => {
     const p = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: TAILNET, fingerprint: 'QQQQ-QQQQ' }] })
     expect(await p.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'fingerprint_mismatch' })
-    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when rawl-hub was paired. Studio sent nothing. If that computer was set up again, remove rawl-hub in Settings → Connection first.')
+    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when rawl-hub was paired; Studio sent nothing.')
     expect(p.replaces).toEqual([])
     expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
   })
@@ -393,7 +393,7 @@ describe('pairing from Settings → Connection', () => {
   it('a saved connection is never moved to another address without asking (security review 4); other saved connections are not touched', async () => {
     const saved = [{ name: 'agent-1-pc', url: 'https://adf.example.com', fingerprint: 'ABCD-EFGH' }]
     const kept = pairSetup({ savedConnections: saved, replace: false })
-    expect(await kept.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'kept', message: 'Kept the saved address of agent-1-pc. Nothing was sent.' })
+    expect(await kept.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'kept', message: 'Kept the saved address of agent-1-pc; nothing was sent.' })
     expect(kept.replaces).toEqual([`agent-1-pc: https://adf.example.com → ${TAILNET}`])
     expect(kept.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
 
@@ -466,7 +466,7 @@ describe('pairing from Settings → Connection', () => {
     await p.flow.start({ url: TAILNET })
     expect(await p.flow.submitCode('111111')).toMatchObject({ step: 'need_code', code: 'wrong_code', attemptsLeft: 4, message: 'Wrong code. 4 tries left.' })
     p.daemon.state.pairing!.attemptsLeft = 1
-    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code, and no tries are left. Choose Add device on agent-1-pc for a new code.' })
+    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code and no tries left; choose Add device on agent-1-pc for a new code.' })
   })
 
   it('collects the token with the collect secret from the 202; the claim id alone gets nothing, and the secret is never pushed or logged', async () => {
@@ -508,7 +508,7 @@ describe('pairing from Settings → Connection', () => {
     const p = pairSetup()
     await p.flow.start({ url: TAILNET })
     p.daemon.state.pairing = null
-    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed. Choose Add device there for a new code.' })
+    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed; choose Add device there for a new code.' })
   })
 
   it('host refused', async () => {

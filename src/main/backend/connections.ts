@@ -96,7 +96,7 @@ export class ConnectionError extends Error {
 }
 
 export function keychainSentence(name: string): string {
-  return `Studio could not read the token for ${name} from the OS keychain. Allow ADF Studio to use it, or pair again.`
+  return `The OS keychain did not give the token for ${name}; allow ADF Studio to use it, or pair again.`
 }
 
 /**
@@ -108,11 +108,11 @@ export function keychainSentence(name: string): string {
  */
 export async function savedConnectionTarget(config: Pick<StudioBackendConfig, 'insecureHttpOrigins'>, name: string, env: NodeJS.ProcessEnv, hooks: { log?: (line: string) => void; onSlow?: () => void } = {}): Promise<{ url: string; token: string; remote: SavedRemote }> {
   const remote = (await loadRemotesAsync(env)).remotes[name]
-  if (!remote) throw new ConnectionError('not_configured', `No saved connection named "${name}". Choose one in Settings → Connection.`)
+  if (!remote) throw new ConnectionError('not_configured', `No saved connection named "${name}".`)
   const check = checkRemoteDaemonUrl(remote.url)
   if (!check.url) throw new ConnectionError('transport', `The address of ${name} is not valid: ${check.reason ?? remote.url}`)
   if (check.kind === 'insecure-http' && !(config.insecureHttpOrigins ?? []).includes(remoteUrlOrigin(check.url) ?? '')) {
-    throw new ConnectionError('transport', `${check.url} is plain http to an address that is not loopback or a tailnet address. Pair ${name} in Studio to confirm that you trust this network, or use https://.`)
+    throw new ConnectionError('transport', `${check.url} is plain http to an address that is not loopback or a tailnet address; pair ${name} in Studio to confirm the network, or use https://.`)
   }
   await awaitKeychainAccess(env, { log: hooks.log ?? (() => {}), onSlow: hooks.onSlow ?? (() => {}) })
   let token: string | null

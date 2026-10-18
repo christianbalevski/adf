@@ -280,7 +280,7 @@ Overall 5/10, about 4-5 hours of agent time. Step 1 and steps 2 and 7 MAY ship f
 
 Owner answers, 2026-10-18:
 
-1. **Connections and tokens are shared with `adf`.** Studio uses `cli-remotes.json` and the OS keychain (`ADF` / `remote-token:<fingerprint>`), so a computer paired in Studio or with `adf pair` shows in both. Studio reads a token only when it connects, never to draw the list. A keychain read that is refused or fails (macOS asks once per app the first time Studio reads an item `adf` wrote) ends that connection attempt with "Studio could not read the token for <name> from the OS keychain. Allow ADF Studio to use it, or pair again." Nothing falls back silently.
+1. **Connections and tokens are shared with `adf`.** Studio uses `cli-remotes.json` and the OS keychain (`ADF` / `remote-token:<fingerprint>`), so a computer paired in Studio or with `adf pair` shows in both. Studio reads a token only when it connects, never to draw the list. A keychain read that is refused or fails (macOS asks once per app the first time Studio reads an item `adf` wrote) ends that connection attempt with "The OS keychain did not give the token for <name>; allow ADF Studio to use it, or pair again." Nothing falls back silently.
 2. **Owner identity is under Runtime → Identity.** With a remote runtime it is read-only, with "Change on <name>." (§7).
 
 Out of scope: an identity for the Studio client itself, so changes made from Studio can be attributed to it. Tracked in #148 (client DIDs).
