@@ -18,16 +18,20 @@ export const useConnectionStore = create<ConnectionStoreState>((set) => ({
   setView: (view) => set({ view }),
 }))
 
-let started = false
+/** The CONNECTION_CHANGED subscription while the feed runs; null before it starts or after a failed load. */
+let unsubscribe: (() => void) | null = null
 
-/** Load the list once and follow CONNECTION_CHANGED for the life of the window. */
+/** Load the list once and follow CONNECTION_CHANGED for the life of the window; a failed load drops its listener, so a retry adds exactly one. */
 export function startConnectionFeed(): void {
-  if (started) return
+  if (unsubscribe) return
   const api = window.adfApi
   if (!api?.listConnections) return
-  started = true
-  api.onConnectionChanged?.((view) => useConnectionStore.getState().setView(view))
-  api.listConnections().then((view) => useConnectionStore.getState().setView(view)).catch(() => { started = false })
+  const off = api.onConnectionChanged?.((view) => useConnectionStore.getState().setView(view)) ?? (() => {})
+  unsubscribe = off
+  api.listConnections().then((view) => useConnectionStore.getState().setView(view)).catch(() => {
+    off()
+    if (unsubscribe === off) unsubscribe = null
+  })
 }
 
 /** The connection this window uses (null until main answers). */
