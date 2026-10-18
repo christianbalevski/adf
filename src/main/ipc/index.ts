@@ -166,6 +166,7 @@ import { getFleetBurnService } from '../services/fleet-burn.service'
 import { listAdapterCredentialFiles, listMcpCredentialFiles, listProviderCredentialFiles, type CredentialFileSources } from '../services/credential-list-files'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { inboxSnapshot } from '../runtime/inbox-snapshot'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
@@ -4722,20 +4723,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       // Render inbound state here; the canonical assembler is the sole owner
       // of adapter-inbound trigger delivery.
       adapterMgr.on('inbound', () => {
-        const unread = capturedWorkspace.getInbox('unread')
-        const read = capturedWorkspace.getInbox('read')
-        const archived = capturedWorkspace.getInbox('archived')
-        const allMessages = [...unread, ...read, ...archived]
-
-        // Emit inbox_updated to renderer — transform to the same shape as DOC_GET_INBOX
         const win = getMainWindow()
         if (win) {
-          win.webContents.send(IPC.INBOX_UPDATED, {
-            inbox: {
-              version: 1,
-              messages: allMessages
-            }
-          })
+          win.webContents.send(IPC.INBOX_UPDATED, { inbox: inboxSnapshot(capturedWorkspace) })
         }
 
       })

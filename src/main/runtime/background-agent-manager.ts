@@ -60,6 +60,7 @@ import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { toDisplayState } from './display-state'
 import { AGENT_LEASED_CODE, processAgentLeases } from './agent-lease'
 import { applyBackgroundEvent, countActiveLoops, type BackgroundMappedEvent } from './background-event-mapping'
+import { inboxSnapshot } from './inbox-snapshot'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -1881,14 +1882,7 @@ export class BackgroundAgentManager extends EventEmitter {
       onAutostartChild: async (childPath) => this.startAgent(childPath),
       onAdapterInbound: (adapterType) => {
         this.emit('adapter_inbound', { filePath, type: adapterType })
-        const allMessages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
-        this.emit('inbox_updated', {
-          filePath,
-          inbox: {
-            version: 1,
-            messages: allMessages
-          }
-        })
+        this.emit('inbox_updated', { filePath, inbox: inboxSnapshot(workspace) })
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
