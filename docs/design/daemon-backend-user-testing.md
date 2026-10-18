@@ -884,7 +884,6 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `emergencyStop` | DASH-08 |
 | `platform` | HIL-17 (platform-specific badge), APP-02 |
 | `getBackendSettings`, `setBackendSettings` | MODE-02, MODE-03, MODE-12, SW-04, SW-07, REM-04, REM-05 |
-| `checkRemoteBackend` | REM-02, REM-03 |
 | `listConnections`, `onConnectionChanged` | SCOPE-01, SCOPE-02, SCOPE-03, SCOPE-08 |
 | `useConnection` | SCOPE-02, SCOPE-04, REM-05, RA-06 |
 | `addConnection` | REM-02, REM-03, REM-04, RA-05 |

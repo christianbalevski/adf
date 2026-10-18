@@ -6,7 +6,7 @@ import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
 import type { ConnectionAddRequest, ConnectionsView } from '../shared/types/connection.types'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
-import type { BackendSettingsPatch, RemoteCheckRequest, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
+import type { BackendSettingsPatch, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
 import type { NetworkNotice, RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 type SubscriptionPayload<Subscription> = Subscription extends (callback: (data: infer Payload) => void) => () => void
@@ -712,7 +712,6 @@ const api: AdfApi = {
   // Settings → Connection
   getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
   setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
-  checkRemoteBackend: (request: RemoteCheckRequest) => ipcRenderer.invoke(IPC.BACKEND_REMOTE_CHECK, request),
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO, kind),
 
   // Remote access (remote-access.md)

@@ -151,20 +151,6 @@ export type BackendSettingsSaveResult =
 
 // --- Remote mode (design §9, tracker W4-B) ---------------------------------
 
-/** Settings → Connection "Test connection": a draft URL and token, or the saved ones. */
-export interface RemoteCheckRequest {
-  /** Default: the saved URL. */
-  url?: string
-  /** Default: the saved token, and only while `url` has the saved URL's origin. */
-  token?: string
-  /** The user ticked the plain-http confirmation for `url`'s origin. */
-  allowInsecureHttp?: boolean
-}
-
-export type RemoteCheckResult =
-  | { ok: true; url: string; version: string; startedBy: string }
-  | { ok: false; problem: string; error: string }
-
 /** What the daemon-side picker picks (§9.3): an agent file, a folder, or a folder plus a new file name. */
 export type RemotePickKind = 'open-adf' | 'folder' | 'save-adf'
 

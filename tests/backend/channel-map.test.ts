@@ -59,6 +59,17 @@ function documented(route: string): boolean {
   return !!ops && match[1].toLowerCase() in ops
 }
 
+describe('no dead channels (review item 6)', () => {
+  it('Test connection is gone: no BACKEND_REMOTE_CHECK channel, no checkRemoteBackend bridge method', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    expect(Object.keys(IPC)).not.toContain('BACKEND_REMOTE_CHECK')
+    for (const file of ['src/preload/api.ts', 'src/preload/index.ts', 'src/main/backend/backend-settings-ipc.ts']) {
+      expect(readFileSync(join(__dirname, '../..', file), 'utf-8'), file).not.toMatch(/checkRemoteBackend|BACKEND_REMOTE_CHECK/)
+    }
+  })
+})
+
 describe('channel map', () => {
   it('classifies every IPC channel and raw channel exactly once', () => {
     const expected = [...Object.values(IPC), ...RAW_CHANNELS].sort()

@@ -18,7 +18,6 @@ import { defaultBackendConfig, type SecretCodec, type StudioBackendConfig } from
 import { DaemonConnection } from '../../src/main/backend/daemon-mode/connection'
 import { remoteDaemonConnector, remoteHandshake, RemoteConnectError } from '../../src/main/backend/daemon-mode/remote/connector'
 import { LOCAL_PROOF_HEADER } from '../../src/main/daemon/local-access'
-import { checkRemoteBackend } from '../../src/main/backend/backend-settings-ipc'
 
 const TOKEN = 'tok_7c1e9a3b5d2f4e6081a9c3e5b7d1f2a4c6e8'
 const TLS_DIR = join(__dirname, 'fixtures', 'remote-tls')
@@ -270,28 +269,6 @@ describe('version handshake and its failures', () => {
     const err = await connectError(remoteConfig(`http://127.0.0.1:${port}`))
     expect(err.problem).toBe('redirect')
     expect(elsewhere).toEqual([])
-  })
-})
-
-describe('Settings → Connection "Test connection" (BACKEND_REMOTE_CHECK)', () => {
-  it('uses the saved token only for the saved origin, and refuses unconfirmed plain http before any request', async () => {
-    const seen: Seen[] = []
-    const port = await listen(createHttpServer(daemonHandler(seen)))
-    const saved = remoteConfig(`http://127.0.0.1:${port}`)
-    // The saved URL and token.
-    expect(await checkRemoteBackend(saved, codec, {})).toEqual({ ok: true, url: `http://127.0.0.1:${port}`, version: '0.9.0', startedBy: 'cli' })
-    // Another origin without a draft token: the saved token is not sent there.
-    const other = await listen(createHttpServer(daemonHandler(seen)))
-    seen.length = 0
-    expect(await checkRemoteBackend(saved, codec, { url: `http://localhost:${other}` })).toMatchObject({ ok: false, problem: 'no_token', error: expect.stringMatching(/belongs to another address/) })
-    expect(seen).toEqual([])
-    // A draft token for the draft address.
-    expect(await checkRemoteBackend(saved, codec, { url: `http://localhost:${other}`, token: TOKEN })).toMatchObject({ ok: true })
-    expect(await checkRemoteBackend(saved, codec, { url: `http://localhost:${other}`, token: 'tok_wrong_wrong_wrong_wrong_wrong_wrong' })).toMatchObject({ ok: false, problem: 'unauthorized' })
-    // Unconfirmed plain http to a LAN address: refused before any request.
-    const spy = (async () => { throw new Error('no request expected') }) as unknown as typeof fetch
-    expect(await checkRemoteBackend(saved, codec, { url: 'http://192.168.1.5:7385', token: TOKEN }, { fetch: spy })).toMatchObject({ ok: false, problem: 'transport' })
-    expect(await checkRemoteBackend(defaultBackendConfig(), codec, {})).toMatchObject({ ok: false, problem: 'not_configured' })
   })
 })
 
