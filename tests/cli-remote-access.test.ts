@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { NetworkInterfaceInfo } from 'node:os'
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
 /** This computer's host name as node:os reports it; a test sets one a CI runner could have. */
 const os = vi.hoisted(() => ({ hostname: null as string | null }))
@@ -152,10 +152,12 @@ async function host(opts: { allowed?: boolean; platform?: NodeJS.Platform; gatew
   return { run, out, err, answers, remoteUrl: `http://127.0.0.1:${remotePort}`, remotePort, target }
 }
 
-describe.each(['linux', 'darwin', 'win32'] as const)('adf daemon remote status text for every state (process.platform %s)', (platform) => {
-  const real = process.platform
-  beforeEach(() => { Object.defineProperty(process, 'platform', { value: platform, configurable: true }) })
-  afterEach(() => { Object.defineProperty(process, 'platform', { value: real, configurable: true }) })
+/**
+ * The platform is injected into the network and status layer (RemoteAccessService `platform`, its
+ * network seams), never stubbed on process.platform: that sent the host's own file security down the
+ * other OS's path (icacls on a POSIX runner, CI run 39161499868) and the CLI exited 1.
+ */
+describe.each(['linux', 'darwin', 'win32'] as const)('adf daemon remote status text for every state (platform %s)', (platform) => {
   const lines = (out: string[]) => out.join('').split('\n')
 
   it('off: one line, not twice', async () => {
