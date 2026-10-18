@@ -16,7 +16,7 @@ import {
 } from '../src/main/daemon/remote-access/network-category'
 import { DeviceStore, DEVICES_FILENAME, parseDeviceToken } from '../src/main/daemon/remote-access/device-store'
 import { cleanDisplayName, fingerprintOf, loadRemoteAccessConfig, newDaemonId, saveRemoteAccessConfig, defaultRemoteAccessConfig } from '../src/main/daemon/remote-access/config'
-import { PairingError, PairingManager, PAIRING_MAX_WRONG } from '../src/main/daemon/remote-access/pairing'
+import { PairingError, PairingManager, PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL } from '../src/main/daemon/remote-access/pairing'
 import { BoundedMap, SOURCE_TRACKING_CAP } from '../src/main/daemon/remote-access/bounded-map'
 import { parseServeStatus, parseTailscaleStatus } from '../src/main/daemon/remote-access/tailscale'
 import { probeFirewall } from '../src/main/daemon/remote-access/firewall'
@@ -229,29 +229,46 @@ describe('pairing window (§5.3-§5.5)', () => {
       opened: () => events.push('opened'),
       closed: (reason) => events.push(`closed:${reason}`),
       claimPending: (claim) => events.push(`pending:${claim.deviceName}`),
+      sourceLocked: (address) => events.push(`locked:${address}`),
     }, { now: () => now.t })
     return { m, events, now }
   }
   const claimInput = (code: string, address: string) => ({ code, deviceName: 'agent-2 laptop', clientKind: 'cli' as const, address, via: 'lan' as const, tailnetLogin: null })
   const wrongOf = (code: string) => String((Number(code) + 1) % 1_000_000).padStart(6, '0')
 
-  it('locks out after 5 wrong codes, across addresses, and then answers as if never opened', () => {
+  it('locks one source out after 5 wrong codes, tells the owner, and keeps the window open for others (security review item 8)', () => {
     const { m, events, now } = manager()
     const view = m.open()
     expect(view.code).toMatch(/^\d{6}$/)
+    expect(view).toMatchObject({ attemptsLeft: PAIRING_MAX_WRONG_TOTAL, lockedSources: 0 })
     for (let i = 0; i < PAIRING_MAX_WRONG; i++) {
       now.t += 2_500
       let err: unknown
-      try { m.claim(claimInput(wrongOf(view.code), `192.168.1.${30 + i}`)) } catch (e) { err = e }
+      try { m.claim(claimInput(wrongOf(view.code), '192.168.1.66')) } catch (e) { err = e }
       expect(err).toBeInstanceOf(PairingError)
       expect((err as PairingError).code).toBe('wrong_code')
       expect((err as PairingError).extra.attemptsLeft).toBe(PAIRING_MAX_WRONG - 1 - i)
     }
+    expect(m.isOpen).toBe(true)
+    expect(events).toContain('locked:192.168.1.66')
+    expect(m.view()).toMatchObject({ attemptsLeft: PAIRING_MAX_WRONG_TOTAL - PAIRING_MAX_WRONG, lockedSources: 1 })
+    now.t += 2_500
+    // The locked source is refused even with the right code; another computer still pairs.
+    expect(() => m.claim(claimInput(view.code, '192.168.1.66'))).toThrow(expect.objectContaining({ code: 'rate_limited', status: 429 }))
+    expect(m.claim(claimInput(view.code, '192.168.1.31')).claimId).toMatch(/^[A-Za-z0-9_-]{22}$/)
+  })
+
+  it('closes the window after 20 wrong codes in total, and then answers as if never opened', () => {
+    const { m, events, now } = manager()
+    const view = m.open()
+    for (let i = 0; i < PAIRING_MAX_WRONG_TOTAL; i++) {
+      now.t += 2_500
+      try { m.claim(claimInput(wrongOf(view.code), `192.168.1.${30 + i}`)) } catch { /* wrong */ }
+    }
     expect(m.isOpen).toBe(false)
     expect(events).toContain('closed:wrong_codes')
     now.t += 2_500
-    // Even the right code is refused now: the window is closed.
-    expect(() => m.claim(claimInput(view.code, '192.168.1.40'))).toThrow(expect.objectContaining({ code: 'pairing_closed', status: 404 }))
+    expect(() => m.claim(claimInput(view.code, '192.168.1.99'))).toThrow(expect.objectContaining({ code: 'pairing_closed', status: 404 }))
   })
 
   it('rate-limits each address (1 per 2 s, 10 per 10 minutes) with Retry-After', () => {
@@ -386,7 +403,7 @@ describe('request guard token matrix (§4.4, §4.5)', () => {
 
 describe('bounded per-source counters (security review item 3)', () => {
   it('the pairing limiter keeps at most SOURCE_TRACKING_CAP sources, dropping the oldest', () => {
-    const m = new PairingManager({ opened: () => {}, closed: () => {}, claimPending: () => {} })
+    const m = new PairingManager({ opened: () => {}, closed: () => {}, claimPending: () => {}, sourceLocked: () => {} })
     m.open()
     for (let i = 0; i < SOURCE_TRACKING_CAP + 500; i++) {
       try { m.claim({ code: 'xxxxxx', deviceName: 'agent-2', clientKind: 'cli', source: `src-${i}`, address: '192.168.1.2', via: 'lan', tailnetLogin: null }) } catch { /* wrong code or closed */ }

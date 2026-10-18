@@ -16543,13 +16543,13 @@
           "Remote access"
         ],
         "summary": "Claim pairing with the host's code (no token)",
-        "description": "A correct code puts the claim before the owner (202); the token comes only after the owner allows it (GET /pair/claims/{claimId}). Wrong codes are answered after 1 s; 5 in total close the window. Per source address: one claim per 2 s, 10 per 10 minutes.",
+        "description": "A correct code puts the claim before the owner (202); the token comes only after the owner allows it (GET /pair/claims/{claimId}, with the collect secret). Wrong codes are answered after 1 s; 5 from one source lock that source out of the window (429 until it closes, the owner is told), 20 in total close it. Per source: one claim per 2 s, 10 per 10 minutes. A source is the socket address (forwarded headers are never read), or the tailnet user behind tailscale serve.",
         "operationId": "claimPairing",
         "x-adf-stability": "experimental",
         "security": [],
         "responses": {
           "403": {
-            "description": "Wrong code (`wrong_code`, with `attemptsLeft`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "description": "Wrong code (`wrong_code`, with `attemptsLeft`: for this source and the window together), or the request guard (`host_not_allowed`, `cross_origin`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -16599,7 +16599,7 @@
             }
           },
           "429": {
-            "description": "Rate limited (`rate_limited`, Retry-After)",
+            "description": "Rate limited, or this source is locked out of the window after 5 wrong codes (`rate_limited`, Retry-After)",
             "content": {
               "application/json": {
                 "schema": {
@@ -30349,6 +30349,7 @@
           "openedAt",
           "expiresAt",
           "attemptsLeft",
+          "lockedSources",
           "claim"
         ],
         "additionalProperties": false,
@@ -30376,7 +30377,13 @@
           "attemptsLeft": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 5
+            "maximum": 20,
+            "description": "Wrong codes left in this window, all sources together; 0 closes it"
+          },
+          "lockedSources": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Sources locked out of this window after 5 wrong codes each (the window stays open)"
           },
           "claim": {
             "oneOf": [

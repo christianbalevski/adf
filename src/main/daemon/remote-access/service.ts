@@ -37,7 +37,7 @@ import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
 import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from './network-category'
-import { PairingError, PairingManager } from './pairing'
+import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
 import { TailscaleClient, type TailscaleSelf, type TailscaleServe } from './tailscale'
 
@@ -183,7 +183,7 @@ export class RemoteAccessService {
         void this.reannounce()
       },
       closed: (reason) => {
-        this.log(`[remote-access] pairing window closed: ${reason === 'wrong_codes' ? 'after 5 wrong codes' : reason}`)
+        this.log(`[remote-access] pairing window closed: ${reason === 'wrong_codes' ? `after ${PAIRING_MAX_WRONG_TOTAL} wrong codes` : reason}`)
         this.emit({ type: 'pairing_closed', reason })
         void this.reannounce()
       },
@@ -191,6 +191,10 @@ export class RemoteAccessService {
         this.log(`[remote-access] pairing request from "${claim.deviceName}" at ${claim.address} (${claim.via}${claim.tailnetLogin ? `, ${claim.tailnetLogin}` : ''}): waiting for the owner`)
         // "Pending claims changed" only: the claim (its id included) is read through GET /remote-access, this machine only.
         this.emit({ type: 'claim_pending' })
+      },
+      sourceLocked: (address, lockedSources) => {
+        this.log(`[remote-access] pairing: ${address} locked out of this window after ${PAIRING_MAX_WRONG} wrong codes (${lockedSources} source(s) locked; the window stays open)`)
+        this.emit({ type: 'pairing_lockout' })
       },
     }, { now: this.now, host: () => ({ name: this.config.name, fingerprint: this.fingerprint ?? '' }) })
   }

@@ -207,6 +207,7 @@ async function pairCommand(io: HostCliIo, target: HostTarget): Promise<number> {
   let interrupted = false
   const stop = io.onInterrupt?.(() => { interrupted = true })
   let lastAttempts = window.attemptsLeft
+  let lastLocked = window.lockedSources ?? 0
   try {
     for (;;) {
       if (interrupted) {
@@ -218,12 +219,16 @@ async function pairCommand(io: HostCliIo, target: HostTarget): Promise<number> {
       const p = now.pairing
       if (!p || p.openedAt !== window.openedAt) {
         io.stderr(lastAttempts <= 1 && Date.now() < Date.parse(window.expiresAt)
-          ? 'Pairing closed after 5 wrong codes. Open a new window when you are ready: adf daemon pair\n'
+          ? 'Pairing closed after 20 wrong codes. Open a new window when you are ready: adf daemon pair\n'
           : 'Pairing closed: the 2 minutes are over. Open a new window: adf daemon pair\n')
         return 1
       }
-      if (p.attemptsLeft < lastAttempts) io.stderr(`A wrong code was entered (${p.attemptsLeft} attempt(s) left).\n`)
+      if (p.attemptsLeft < lastAttempts) io.stderr(`A wrong code was entered (${p.attemptsLeft} left in this window).\n`)
       lastAttempts = p.attemptsLeft
+      if (p.lockedSources > lastLocked) {
+        io.stderr(`A computer entered 5 wrong codes and is locked out of this window (${p.lockedSources} so far). Others can still pair.\n`)
+        lastLocked = p.lockedSources
+      }
       if (p.claim) {
         const c = p.claim
         const where = `${c.address}, ${c.via === 'tailnet' ? 'tailnet' : c.via === 'proxy' ? 'through a proxy on this computer' : 'this network'}${c.tailnetLogin ? `, ${c.tailnetLogin}` : ''}`

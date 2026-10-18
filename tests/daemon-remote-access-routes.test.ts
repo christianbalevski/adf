@@ -389,21 +389,26 @@ describe('pairing over the remote listener (§5)', () => {
     expect(h.events.map(e => e.type)).toEqual(expect.arrayContaining(['pairing_opened', 'claim_pending', 'device_added', 'pairing_closed']))
   })
 
-  it('brute force: 5 wrong codes close the window; the right code is then refused', async () => {
+  it('brute force: 5 wrong codes lock that source out; the window stays open and the owner is told', async () => {
     const h = await harness()
     await turnOn(h)
     const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
     const svc = h.service as unknown as { pairing: { perAddress: Map<string, number[]> } }
     for (let i = 4; i >= 0; i--) {
-      svc.pairing.perAddress.clear() // one source address here; the per-address limit has its own test
+      svc.pairing.perAddress.clear() // the per-address rate limit has its own test
       const res = await claim(h, wrongOf(code))
       expect(res.status).toBe(403)
       expect(res.json).toMatchObject({ code: 'wrong_code', attemptsLeft: i })
     }
     svc.pairing.perAddress.clear()
-    expect((await claim(h, code)).json.code).toBe('pairing_closed')
-    expect(h.events.some(e => e.type === 'pairing_closed' && e.reason === 'wrong_codes')).toBe(true)
-    expect(h.logs.some(l => /after 5 wrong codes/.test(l))).toBe(true)
+    const locked = await claim(h, code)
+    expect(locked.status).toBe(429)
+    expect(locked.json.code).toBe('rate_limited')
+    const pairing = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing
+    expect(pairing).toMatchObject({ attemptsLeft: 15, lockedSources: 1 })
+    expect(h.events.some(e => e.type === 'pairing_lockout')).toBe(true)
+    expect(h.events.some(e => e.type === 'pairing_closed')).toBe(false)
+    expect(h.logs.some(l => /locked out of this window after 5 wrong codes/.test(l))).toBe(true)
   })
 
   it('rate limit answers 429 with Retry-After; bad bodies 400; deny answers denied', async () => {

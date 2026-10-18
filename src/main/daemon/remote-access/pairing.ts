@@ -6,9 +6,12 @@
  * claim before the owner, who MUST allow it before a device token exists.
  * The code alone never yields a token.
  *
- * Limits: 5 wrong codes in total close the window; per source address one
- * claim per 2 s and 10 per 10 minutes. A closed window answers like one that
- * never opened. The code is never logged, announced or put in an event.
+ * Limits: 5 wrong codes from one source lock that source out of the window
+ * (the owner is told each time); 20 wrong codes in total close it. Per source
+ * one claim per 2 s and 10 per 10 minutes. One stranger on the LAN can no
+ * longer close the owner's window (security review item 8). A closed window
+ * answers like one that never opened. The code is never logged, announced or
+ * put in an event.
  */
 
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
@@ -16,7 +19,10 @@ import type { PairClaimResult, PairingClaimView, PairingWindowView, RemoteUrl } 
 import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
 
 export const PAIRING_WINDOW_MS = 120_000
+/** Wrong codes from one source before that source is locked out of the window. */
 export const PAIRING_MAX_WRONG = 5
+/** Wrong codes from all sources before the window closes. */
+export const PAIRING_MAX_WRONG_TOTAL = 20
 export const CLAIM_MIN_INTERVAL_MS = 2_000
 export const CLAIM_BURST_WINDOW_MS = 10 * 60_000
 export const CLAIM_BURST_MAX = 10
@@ -30,7 +36,7 @@ export class PairingError extends Error {
   }
 }
 
-/** `wrong_codes`: 5 wrong codes; `cancelled`: the owner closed it or opened a new one. */
+/** `wrong_codes`: 20 wrong codes in total; `cancelled`: the owner closed it or opened a new one. */
 export type PairingCloseReason = 'expired' | 'wrong_codes' | 'cancelled' | 'paired' | 'denied' | 'disabled'
 
 interface Claim {
@@ -47,7 +53,11 @@ interface PairingWindow {
   code: string
   openedAt: number
   expiresAt: number
+  /** Wrong codes from all sources. */
   wrong: number
+  /** Wrong codes per source, and the sources locked out of this window. */
+  wrongBySource: BoundedMap<string, number>
+  locked: Set<string>
   claimId: string | null
   timer: ReturnType<typeof setTimeout>
 }
@@ -56,6 +66,8 @@ export interface PairingEvents {
   opened(): void
   closed(reason: PairingCloseReason): void
   claimPending(claim: PairingClaimView): void
+  /** A source reached PAIRING_MAX_WRONG and is locked out of this window; `address` is its display address. */
+  sourceLocked(address: string, lockedSources: number): void
 }
 
 export interface ApprovedDevice {
@@ -98,7 +110,8 @@ export class PairingManager {
       ...this.host(),
       openedAt: new Date(w.openedAt).toISOString(),
       expiresAt: new Date(w.expiresAt).toISOString(),
-      attemptsLeft: PAIRING_MAX_WRONG - w.wrong,
+      attemptsLeft: Math.max(0, PAIRING_MAX_WRONG_TOTAL - w.wrong),
+      lockedSources: w.locked.size,
       claim: claim && claim.state === 'pending' ? claim.view : null,
     }
   }
@@ -110,7 +123,7 @@ export class PairingManager {
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
     const timer = setTimeout(() => this.close('expired'), PAIRING_WINDOW_MS)
     timer.unref?.()
-    this.window = { code, openedAt, expiresAt: openedAt + PAIRING_WINDOW_MS, wrong: 0, claimId: null, timer }
+    this.window = { code, openedAt, expiresAt: openedAt + PAIRING_WINDOW_MS, wrong: 0, wrongBySource: new BoundedMap(SOURCE_TRACKING_CAP), locked: new Set(), claimId: null, timer }
     this.events.opened()
     return this.view() as PairingWindowView
   }
@@ -157,14 +170,31 @@ export class PairingManager {
     this.rateLimit(input.source ?? input.address)
     const w = this.window
     if (!w || w.expiresAt <= this.now()) throw new PairingError('No pairing window is open on this computer. Open one on the host (Pair a computer, or adf daemon pair) and try again.', 404, 'pairing_closed')
+    const source = input.source ?? input.address
+    if (w.locked.has(source)) {
+      throw new PairingError('Too many wrong codes from this computer for this pairing window. Ask the host to open a new one.', 429, 'rate_limited', { retryAfter: Math.max(1, Math.ceil((w.expiresAt - this.now()) / 1000)) })
+    }
     if (w.claimId) throw new PairingError('Another computer is waiting for the host to allow it. Try again when the host has answered.', 409, 'pairing_busy')
     const a = Buffer.from(input.code.padEnd(6, ' ').slice(0, 6), 'utf-8')
     const b = Buffer.from(w.code, 'utf-8')
     if (input.code.length !== 6 || !timingSafeEqual(a, b)) {
       w.wrong += 1
-      const attemptsLeft = PAIRING_MAX_WRONG - w.wrong
-      if (attemptsLeft <= 0) this.close('wrong_codes')
-      throw new PairingError(attemptsLeft > 0 ? 'That code is not the one the host shows.' : 'That code is not the one the host shows. Pairing closed after 5 wrong codes; open a new window on the host.', 403, 'wrong_code', { attemptsLeft: Math.max(0, attemptsLeft) })
+      const mine = (w.wrongBySource.get(source) ?? 0) + 1
+      w.wrongBySource.set(source, mine)
+      const sourceLeft = PAIRING_MAX_WRONG - mine
+      const totalLeft = PAIRING_MAX_WRONG_TOTAL - w.wrong
+      if (sourceLeft <= 0 && !w.locked.has(source)) {
+        w.locked.add(source)
+        this.events.sourceLocked(input.address, w.locked.size)
+      }
+      if (totalLeft <= 0) this.close('wrong_codes')
+      const attemptsLeft = Math.max(0, Math.min(sourceLeft, totalLeft))
+      throw new PairingError(attemptsLeft > 0
+        ? 'That code is not the one the host shows.'
+        : totalLeft <= 0
+          ? `That code is not the one the host shows. Pairing closed after ${PAIRING_MAX_WRONG_TOTAL} wrong codes; open a new window on the host.`
+          : `That code is not the one the host shows. ${PAIRING_MAX_WRONG} wrong codes from this computer: ask the host to open a new pairing window.`,
+      403, 'wrong_code', { attemptsLeft })
     }
     const claimId = randomBytes(16).toString('base64url')
     const view: PairingClaimView = {

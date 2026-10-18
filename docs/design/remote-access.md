@@ -28,7 +28,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 | R4 | Per-device tokens, SHA-256 hashed at rest, with label, created, last seen. Revoking one closes that device's sessions and streams. | §4 |
 | R5 | The install's file token (the master token) is never accepted on a remote listener. Device tokens are never accepted on local-only routes or on the remote-access management routes, from anywhere. | §4.4, §4.5 |
 | R6 | "New token" creates a device token and shows it once. "Show" works only while that dialog is open. | §4.6 |
-| R7 | Pairing: 6-digit code, window 120 s, 5 wrong codes close it, AND the host MUST confirm "Allow *name*?". Code alone never suffices. | §5 |
+| R7 | Pairing: 6-digit code, window 120 s, 5 wrong codes lock that source out, 20 in total close it, AND the host MUST confirm "Allow *name*?". Code alone never suffices. | §5 |
 | R8 | No PAKE, no X25519 in v1. Every later request carries the bearer token in clear over http, so protecting only the claim buys nothing against a sniffer. The transport answer is Tailscale (WireGuard) and `tailscale serve` (https). | §5.6, §5.7 |
 | R9 | Firewall: rely on the OS prompts (Windows, macOS); never add a rule ourselves; detect a block where it can be read without elevation and say how to fix it. Linux: documented commands. | §6 |
 | R10 | Every state change is visible: a status line, the devices list, notices, the daemon log, `adf daemon remote status`. | §8 |
@@ -227,7 +227,7 @@ Opened by **Pair a computer** in Studio or `adf daemon pair` (`POST /remote-acce
 
 - Code: `crypto.randomInt(0, 1_000_000)`, six digits zero-padded, shown on the host only (panel, CLI). Never logged, never in an event payload, never announced.
 - Lifetime 120 s from opening. Opening again replaces the window with a new code.
-- 5 wrong codes in total (across all source addresses) close the window ("Pairing closed after 5 wrong codes."). The owner opens a new one by hand; nothing reopens by itself.
+- 5 wrong codes from one source lock that source out of the window: its later claims, the right code included, answer 429 `rate_limited` until the window closes. The owner is told each time (event `pairing_lockout`, `PairingWindowView.lockedSources`, a log line naming the address) and the window stays open for everyone else, so one stranger on the LAN cannot close it (security review item 8). 20 wrong codes in total close the window ("Pairing closed after 20 wrong codes."). The owner opens a new one by hand; nothing reopens by itself.
 - One correct claim moves the window to `claim_pending`; further claims get 409 `pairing_busy`. The window closes when the host decides or when it expires, whichever is first.
 - Closing (**Cancel**, Ctrl+C in `adf daemon pair`, expiry, remote access off, daemon stop) discards the code and any pending claim.
 
@@ -256,11 +256,11 @@ client                                   host daemon                         hos
 
 | Control | Value |
 |---|---|
-| Code space | 10^6; 5 guesses per window, so 5 × 10^-6 per window an owner opens |
+| Code space | 10^6; at most 20 guesses per window (5 per source), so at most 2 × 10^-5 per window an owner opens, and a correct guess still needs the owner's Allow |
 | Per source address | 1 claim per 2 s, 10 per 10 minutes; over that: 429 `rate_limited` with `Retry-After` |
 | What a source is | The socket's peer address. `X-Forwarded-For` and other forwarded headers are never read (any process on this machine can send them to the loopback listener). Behind `tailscale serve` only (`ADF_DAEMON_BEHIND_PROXY` set, loopback peer), the `Tailscale-User-Login` / `Tailscale-User-Name` headers serve sets name the tailnet user: the prompt shows it and the limits count per user. `tailscale whois` runs only on the socket address of a tailnet listener, never on a header value (security review item 3) |
 | Memory | The per-source counters (`/remote/hello`, `/pair/claim`) keep at most 1024 sources, dropping the least recently seen |
-| Wrong code | 403 `wrong_code` with `attemptsLeft`, answered after a fixed 1 s delay |
+| Wrong code | 403 `wrong_code` with `attemptsLeft` (the smaller of this source's and the window's), answered after a fixed 1 s delay |
 | Window closed / never opened | 404 `pairing_closed`, same body whether a window existed or not |
 | Remote access off | `/remote/hello`, `/pair/*` answer 404 `remote_access_off` on loopback; remote listeners do not exist |
 | Bearer guessing | 256-bit secrets, no lockout needed; 401s from one source are logged at most once a minute with a count |
@@ -398,7 +398,7 @@ interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' 
 interface RemoteUrl { url: string; kind: 'tailscale-https' | 'tailnet' | 'lan' | 'mdns-name'; encrypted: boolean }
 interface RemoteDevice { id: string; label: string; origin: 'paired' | 'token'; createdAt: string; createdBy: 'studio' | 'cli'; lastSeenAt: string | null; lastSeenAddress: string | null; connected: boolean; connections: number; sessions: number }
 interface PairingClaimView { claimId: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null; at: string }
-interface PairingWindowView { code: string; name: string; fingerprint: string; openedAt: string; expiresAt: string; attemptsLeft: number; claim: PairingClaimView | null }
+interface PairingWindowView { code: string; name: string; fingerprint: string; openedAt: string; expiresAt: string; attemptsLeft: number; lockedSources: number; claim: PairingClaimView | null }
 interface RemoteAccessStatus {
   enabled: boolean; state: RemoteAccessState; message: string; problem: string | null
   name: string; fingerprint: string | null; port: number
