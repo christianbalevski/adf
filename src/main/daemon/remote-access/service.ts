@@ -445,6 +445,8 @@ export class RemoteAccessService {
       alias: cleanDisplayName(this.opts.runtimeAlias?.get(), 63),
       port: this.port,
       iface: lan.address,
+      // Its own tailnet addresses on an allowed network (TXT ts). A client merges only with a hello that answered there.
+      tailnet: this.candidates.filter(c => c.kind === 'tailnet' && !c.refusal).map(c => c.address),
       txt: { v: '1', fp: fingerprintOf(this.config.daemonId), pair: this.pairing.isOpen ? '1' : '0', api: String(this.opts.clientApiVersion) },
     })
   }

@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto'
 import { EventEmitter } from 'events'
+import { isIP } from 'net'
 import { hostname, networkInterfaces, type NetworkInterfaceInfo } from 'os'
 import { Bonjour, type Service } from 'bonjour-service'
 import type { NetworkPeer } from '../../shared/types/remote-access.types'
@@ -40,7 +41,16 @@ export interface RemoteAnnouncement {
   api: string
   /** The runtime alias, when the user set one: the instance name of a record without the mesh. */
   alias?: string | null
+  /**
+   * This computer's tailnet addresses where the daemon listens (TXT `ts`):
+   * the host's own word that its LAN record and its tailnet hello are one
+   * computer, so clients merge the two into one entry (peers()).
+   */
+  tailnet?: string[]
 }
+
+/** At most this many addresses in TXT `ts` (4 IPv6 addresses fit well inside 255 bytes). */
+export const MAX_TS_ADDRESSES = 4
 
 export interface MdnsAnnouncement {
   /** Publish `_adf-runtime._tcp`: the mesh is LAN-visible, or remote access is on (or both). */
@@ -221,6 +231,9 @@ export class MdnsService extends EventEmitter {
         txt.fp = remote.fingerprint
         txt.pair = remote.pairingOpen ? '1' : '0'
         txt.daemon_port = String(remote.port)
+        // The fingerprint is already a stable id in this record, so the tailnet addresses add no tracking (hidden mesh too).
+        const ts = (remote.tailnet ?? []).filter((a) => isIP(a) !== 0).slice(0, MAX_TS_ADDRESSES)
+        if (ts.length > 0) txt.ts = ts.join(',')
         if (!hidden) {
           txt.api = remote.api
           txt.name = remote.name
@@ -660,12 +673,24 @@ function txtString(txt: Record<string, unknown>, key: string): string | null {
   return null
 }
 
-/** The addresses an announcement lists (A/AAAA), lowercased, bounded. */
+/**
+ * The addresses an announcement lists, lowercased, bounded: its A/AAAA
+ * records and the tailnet addresses of TXT `ts` (the host's own word, as
+ * the A records are; the mDNS socket binds a LAN interface, so those never
+ * carry the tailnet address).
+ */
 function listedAddresses(service: Service): string[] {
-  return ((service.addresses ?? []) as unknown[])
+  const records = ((service.addresses ?? []) as unknown[])
     .filter((a): a is string => typeof a === 'string' && a.length <= 64)
     .slice(0, 32)
-    .map((a) => a.toLowerCase())
+  return [...records, ...tsAddresses((service.txt ?? {}) as Record<string, unknown>)].map((a) => a.toLowerCase())
+}
+
+/** TXT `ts`: at most MAX_TS_ADDRESSES comma-separated IP addresses; anything else is ignored. */
+export function tsAddresses(txt: Record<string, unknown>): string[] {
+  const raw = txtString(txt, 'ts')
+  if (!raw) return []
+  return raw.split(',').map((a) => a.trim()).filter((a) => a.length > 0 && a.length <= 64 && isIP(a) !== 0).slice(0, MAX_TS_ADDRESSES)
 }
 
 /** The address an announcement came from (preferred), else a private IPv4 of it, else its first. */

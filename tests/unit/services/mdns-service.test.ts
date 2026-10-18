@@ -38,7 +38,7 @@ vi.mock('bonjour-service', () => {
   return { Bonjour: MockBonjour }
 })
 
-import { MdnsService, ensureLocalSuffix, buildBaseUrl, pickMdnsInterface } from '../../../src/main/services/mdns-service'
+import { MdnsService, ensureLocalSuffix, buildBaseUrl, pickMdnsInterface, tsAddresses } from '../../../src/main/services/mdns-service'
 import { InProcessPeerFeed, RemoteDiscovery } from '../../../src/main/backend/remote-access/discovery'
 import type { RemoteDiscoveryUpdate } from '../../../src/shared/types/remote-access-ipc.types'
 import type { NetworkInterfaceInfo } from 'os'
@@ -566,5 +566,68 @@ describe('discovery re-check: LAN and tailnet merge only on the host\'s own word
     const remotes = svc.peers().filter((p) => p.remote)
     expect(remotes).toEqual([expect.objectContaining({ name: 'Home PC', remote: expect.objectContaining({ url: 'http://100.101.102.103:7385', kind: 'tailnet', clash: null, pairingOpen: true }) })])
     await svc.stop()
+  })
+})
+
+
+describe('TXT ts: the host names its tailnet addresses, so its LAN record and tailnet hello are one row', () => {
+  let browsers: Record<string, ReturnType<typeof makeBrowser>>
+  beforeEach(() => {
+    mocks.publishMock.mockReset()
+    mocks.findMock.mockReset()
+    mocks.ctorThrows = null
+    browsers = { 'adf-runtime': makeBrowser(), 'adf-daemon': makeBrowser() }
+    mocks.findMock.mockImplementation((opts: { type: string }) => browsers[opts.type])
+    mocks.publishMock.mockImplementation(() => ({ stop: (cb?: () => void) => cb?.() }))
+  })
+  const remote = { name: 'rawl-hub', port: 7385, fingerprint: 'ABCD-EFGH', pairingOpen: false, api: '2' }
+  // The A records name only the LAN address: the mDNS socket binds a LAN interface.
+  const lanRecord = (runtimeId: string, name: string, address: string, ts?: string) => ({
+    name: `adf-${runtimeId}`, host: 'host.local', port: 7295, addresses: [address], referer: { address },
+    txt: { runtime_id: runtimeId, v: '1', fp: 'ABCD-EFGH', pair: '0', daemon_port: '7385', api: '2', name, ...(ts !== undefined ? { ts } : {}) },
+  })
+
+  it('announces ts with the tailnet addresses, at most 4, valid IPs only, the hidden mesh included; none without one', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: true, mesh: true, remote: { ...remote, tailnet: ['100.101.102.103', 'fd7a:115c:a1e0::1'] }, browse: false, port: 7295, runtimeId: 'runtime-a' })
+    expect((mocks.publishMock.mock.calls[0][0] as { txt: Record<string, string> }).txt.ts).toBe('100.101.102.103,fd7a:115c:a1e0::1')
+    await svc.updateAnnouncement({ announce: true, mesh: false, remote: { ...remote, tailnet: ['100.64.0.1', 'not-an-ip', '100.64.0.2', '100.64.0.3', '100.64.0.4', '100.64.0.5'] } })
+    const hidden = (mocks.publishMock.mock.calls[1][0] as { txt: Record<string, string> }).txt
+    expect(hidden.ts).toBe('100.64.0.1,100.64.0.2,100.64.0.3,100.64.0.4')
+    expect(Object.keys(hidden).sort()).toEqual(['daemon_port', 'fp', 'pair', 'ts', 'v'])
+    await svc.updateAnnouncement({ announce: true, mesh: true, remote })
+    expect((mocks.publishMock.mock.calls[2][0] as { txt: Record<string, string> }).txt.ts).toBeUndefined()
+    await svc.stop()
+  })
+
+  it('a LAN record whose ts names the tailnet address merges with the tailnet hello: one entry, the tailnet address', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    svc.upsertTailnetDaemon({ fingerprint: 'ABCD-EFGH', name: 'rawl-hub', address: '100.101.102.103', port: 7385, pairingOpen: false })
+    browsers['adf-runtime'].emit('up', lanRecord('hub', 'rawl-hub', '192.168.1.20'))
+    // Without ts: two flagged entries (the bug the owner saw).
+    expect(svc.peers().filter((p) => p.remote).map((p) => p.remote!.clash)).toEqual([2, 2])
+    browsers['adf-runtime'].emit('up', lanRecord('hub', 'rawl-hub', '192.168.1.20', '100.101.102.103'))
+    const remotes = svc.peers().filter((p) => p.remote)
+    expect(remotes).toEqual([expect.objectContaining({ name: 'rawl-hub', remote: expect.objectContaining({ url: 'http://100.101.102.103:7385', kind: 'tailnet', clash: null }) })])
+    await svc.stop()
+  })
+
+  it("a LAN spoofer naming the real host's tailnet IP in ts only steers clients to the real host; its runtime is not the mesh link", async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    svc.upsertTailnetDaemon({ fingerprint: 'ABCD-EFGH', name: 'rawl-hub', address: '100.101.102.103', port: 7385, pairingOpen: false })
+    browsers['adf-runtime'].emit('up', lanRecord('evil', 'Totally rawl-hub', '192.168.1.66', '100.101.102.103'))
+    const real = svc.peers().find((p) => p.remote?.url === 'http://100.101.102.103:7385')!
+    expect(real).toMatchObject({ name: 'rawl-hub', mesh: null, remote: { clash: null } })
+    expect(svc.peers().filter((p) => p.remote)).toHaveLength(1)
+    await svc.stop()
+  })
+
+  it('tsAddresses reads at most 4 IP addresses and ignores anything else', () => {
+    expect(tsAddresses({ ts: '100.64.0.1, fd7a:115c:a1e0::1,host.example,' })).toEqual(['100.64.0.1', 'fd7a:115c:a1e0::1'])
+    expect(tsAddresses({ ts: Array.from({ length: 6 }, (_, i) => `100.64.0.${i + 1}`).join(',') })).toHaveLength(4)
+    expect(tsAddresses({})).toEqual([])
+    expect(tsAddresses({ ts: 42 })).toEqual([])
   })
 })

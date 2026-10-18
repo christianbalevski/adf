@@ -459,7 +459,11 @@ describe('consent per network (owner decision 2026-10-18 b)', () => {
       expect.objectContaining({ address: '100.101.102.103', kind: 'tailnet', networkId: TAILNET, allowed: false, listening: false }),
       expect.objectContaining({ address: LAN, allowed: true, listening: true }),
     ])
+    // The tailnet not allowed yet: the LAN record names no tailnet address (TXT ts).
+    expect(h.announcer.announced.at(-1)?.tailnet).toEqual([])
     expect((await allow(h, TAILNET)).json().addresses[0]).toMatchObject({ address: '100.101.102.103', allowed: true })
+    // Allowed there now: the LAN record names it, so clients merge the LAN and tailnet sightings (settings-scopes.md §8).
+    expect(h.announcer.announced.at(-1)).toMatchObject({ iface: LAN, tailnet: ['100.101.102.103'] })
   })
 })
 
