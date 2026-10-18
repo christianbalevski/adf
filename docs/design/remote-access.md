@@ -1,6 +1,6 @@
 # Allow other computers to connect
 
-Design for letting Studio's local daemon be reached from another computer, by copy-paste (address + token) or by LAN pairing (discovery + 6-digit code). Status: design, nothing built. Branch `feat/remote-access`.
+Design for letting Studio's local daemon be reached from another computer, by copy-paste (address + token) or by LAN pairing (discovery + 6-digit code). Status: daemon and CLI built on `feat/remote-access` (`src/main/daemon/remote-access/`, `routes/remote-access-routes.ts`, `src/main/cli/{remote-access-cli,pair,remotes,daemon-discovery}.ts`); Studio UI on `feat/remote-access-ui`.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 
@@ -45,6 +45,7 @@ File `<settings dir>/remote-access.json` (next to `daemon-token`), written with 
 | `enabled` | boolean | Remote access on. |
 | `name` | string | Computer name shown to other computers. Default: OS host name. 1-63 characters, no control or bidi characters. |
 | `daemonId` | string | 128-bit random, base32, minted on first enable, never changed. Its display form is the fingerprint (§5.1). |
+| `privateNetworks` | `{id, label, addedAt}[]` | macOS and Linux only: networks the owner marked private (§3.3.1). |
 | `addresses` | string[] \| absent | Advanced (CLI only, `--address`): bind exactly these addresses instead of the automatic set. Each MUST be a private or Tailscale address (§3.3). |
 
 Device records are a separate file (§4.3) so a corrupt device file never turns remote access on or off.
@@ -67,12 +68,25 @@ From `os.networkInterfaces()` (same API on Windows, macOS and Linux), skipping `
 | IPv4 `10/8`, `172.16/12`, `192.168/16` on a non-virtual interface | Yes | LAN |
 | IPv4 `100.64/10` that `tailscale status --json` lists in `Self.TailscaleIPs` | Yes, kind `tailnet` | Tailnet. Without that confirmation the range is carrier-grade NAT (a phone hotspot, some ISPs) and MUST NOT be bound. |
 | IPv6 in `fd7a:115c:a1e0::/48` listed in `Self.TailscaleIPs` | Yes, kind `tailnet` | Tailnet |
-| IPv6 ULA `fc00::/7` (other) | Yes | LAN |
+| IPv6 ULA `fc00::/7` (other) | Yes, only on an interface without a private IPv4 address | LAN. ULA privacy addresses come several at a time and rotate; IPv4 reaches the same LAN |
 | IPv6 link-local `fe80::/10` | No | Needs a zone id in every URL; IPv4 or ULA covers the same LAN |
 | Any other address (public IPv4, IPv6 global unicast) | No | Would be reachable from the internet where no NAT or router firewall stands in front |
 | Any address on a virtual interface | No | Docker, WSL, Hyper-V, VMware, VirtualBox, VPN taps: the regexes of `mdns-service.ts` (`VIRTUAL_IFACE_RE`, `VIRTUAL_IFACE_WIN_RE`), minus the Tailscale names, which are matched by address above |
 
+A LAN address (the first and fourth rows) gets a listener only when its network is private (§3.3.1). Tailscale addresses are never subject to that check: the tailnet authenticates its peers.
+
 The Tailscale check reuses `TailnetDiscovery`'s binary lookup (`tailscale` on PATH, `C:\Program Files\Tailscale\tailscale.exe`, `/opt/homebrew/bin/tailscale`, `/usr/local/bin/tailscale`; on macOS also `/Applications/Tailscale.app/Contents/MacOS/Tailscale`). Interface names differ per OS (`en0`/`eth0`/`wlan0`, `Wi-Fi`/`Ethernet`, `utun4`/`tailscale0`/`Tailscale`); the decision is by address, the names only exclude virtual adapters.
+
+#### 3.3.1 Private or public network (owner decision O2)
+
+The daemon MUST NOT listen on a network the OS, or the rule below, does not mark private. Remote access stays on; the address is listed with `listening: false`, `network: 'public'` and the problem "Not reachable on this network (Public)." When no address listens for that reason the status is `no_address` with the same sentence.
+
+| OS | Rule |
+|---|---|
+| Windows | `Get-NetConnectionProfile` (no elevation): `NetworkCategory` `Private` or `DomainAuthenticated` → private; `Public`, an interface without a profile, or a failed or timed-out query → public. Matched by `InterfaceAlias` = the `os.networkInterfaces()` name. Re-read every 60 s and on every address change. |
+| macOS, Linux | No OS category exists, so the daemon keeps its own list of private networks (`privateNetworks` in `remote-access.json`). A network is identified by the interface's default gateway: `sha256("<gateway IP>\|<gateway MAC>")`, first 16 hex characters, label `<interface> via <gateway IP>`. Gateway: macOS `netstat -rn -f inet` (`default` rows), Linux `/proc/net/route`. MAC: macOS `arp -an`, Linux `/proc/net/arp`. The networks of the current LAN interfaces are added when remote access is turned on (off → on) and by `PUT /remote-access {trustNetwork: true}` (Studio **Allow on This Network**, `adf daemon remote trust`); `trustNetwork: false` removes them (`adf daemon remote untrust`). Each change is logged and shown. No default gateway on the interface, no MAC for it, a failed command, or a network not in the list → public. |
+
+Rationale for macOS and Linux: neither OS records whether a network is trusted, and nothing in the network itself tells a home from a hotel. The only signal that is not a guess is the owner's own choice on that network; a gateway's MAC address changes with the network, so a hotel never matches home. A spoofed gateway MAC only gets an attacker a listener that still requires a device token.
 
 ### 3.4 Network changes
 
@@ -96,7 +110,7 @@ Remote access works only while this daemon runs.
 - The setting is applied at every daemon boot, whoever starts it (Studio, `adf`, `adf daemon start`, a service). A daemon started with remote access on logs `[remote-access] on: listening on <addresses>`.
 - Studio-started daemon with **Keep the daemon running** off: quitting Studio stops the daemon and every remote client loses it. The remote-access panel MUST say so next to the toggle ("Other computers lose the connection when Studio quits.") with a button **Keep Running When Studio Quits** that sets `keepDaemonRunning`. Studio MUST NOT change `keepDaemonRunning` by itself.
 - Sessions opened with a device token MUST NOT hold a Studio-requested stop (`daemon_orphan_hold`, §8.3 of daemon-backend.md). Otherwise any paired laptop would keep this computer's daemon running indefinitely after the owner quit Studio.
-- Instead, Studio's quit MUST ask when a device is connected and the daemon would stop: "*N* other computers are connected to this computer. Quitting Studio stops the ADF daemon and disconnects them." **Quit**, **Keep Running and Quit** (sets `keepDaemonRunning`), **Cancel**.
+- Instead, Studio's quit MUST ask, every time a device is connected and the daemon would stop: "*N* computers are connected. Keep the daemon running for them, or stop it?" **Keep Running**, **Stop**, **Cancel**. The answer applies to this quit only: nothing is remembered and `keepDaemonRunning` is not changed (owner decision O3).
 - Sleep, reboot, logout: the daemon is gone or unreachable; clients use their existing retry (remote connector, 2 s to 30 s).
 
 ### 3.7 The env path stays
@@ -155,7 +169,7 @@ Rationale for refusing the master token remotely: it cannot be revoked without b
 
 A device token MUST be refused (403 `device_token_refused`), on every listener, for:
 
-- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, client lifecycle);
+- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, credential reload, `GET /client/sessions`), except the three client-session routes whose handlers decide per request: `POST /client/sessions`, `POST /client/sessions/:id/quit`, `PUT /client/sessions/:id/exit-when-closed` (a remote Studio opens and quits its session; `exitDaemonWhenClosed` and `stopDaemon` still refuse a device token through `requireLocalCaller`). Code: `isDeviceRefusedRoute` (local-access.ts);
 - every `/remote-access` management route (§11.2): a device cannot mint tokens, list or revoke devices, open pairing or turn remote access on or off.
 
 `isLocalOnlyRoute` gains `/remote-access` and `/remote-access/*`; `requireLocalCaller` gains the token-kind check, so the refusal does not depend on the peer address (an SSH tunnel to loopback with a device token is still refused). The management routes also require the local proof in every mode, as `POST /identity/import` does, because they create credentials.
@@ -309,7 +323,7 @@ Settings → Backend → This computer (Studio in `local` mode; in `embedded` or
 | Device first connection after start, disconnect | Devices list (live); no notice | `devices list` | Line |
 | Refusals (`master_token_remote`, `device_revoked`, rate limit) | — | — | Rate-limited line with count |
 
-Studio gets them through the daemon event bus type `remote_access` (client push topic `remote_access`): `{type, deviceId?, label?, claimId?, reason?}`; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
+Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (`claimId`, `label` = the device name; Studio shows "Allow *label*?" and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
 
 ## 9. Client side
 
@@ -373,11 +387,11 @@ Step 0 commits `src/shared/types/remote-access.types.ts` with the shapes below a
 
 ```ts
 type RemoteAccessState = 'off' | 'on' | 'no_address' | 'env_bind' | 'error'
-interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' | 'tailnet'; iface: string; listening: boolean; problem: string | null }
+interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' | 'tailnet'; iface: string; network: 'private' | 'public' | 'tailnet'; listening: boolean; problem: string | null }
 interface RemoteUrl { url: string; kind: 'tailscale-https' | 'tailnet' | 'lan' | 'mdns-name'; encrypted: boolean }
 interface RemoteDevice { id: string; label: string; origin: 'paired' | 'token'; createdAt: string; createdBy: 'studio' | 'cli'; lastSeenAt: string | null; lastSeenAddress: string | null; connected: boolean; connections: number; sessions: number }
 interface PairingClaimView { claimId: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null; at: string }
-interface PairingWindowView { code: string; openedAt: string; expiresAt: string; attemptsLeft: number; claim: PairingClaimView | null }
+interface PairingWindowView { code: string; name: string; fingerprint: string; openedAt: string; expiresAt: string; attemptsLeft: number; claim: PairingClaimView | null }
 interface RemoteAccessStatus {
   enabled: boolean; state: RemoteAccessState; message: string; problem: string | null
   name: string; fingerprint: string | null; port: number
@@ -406,7 +420,7 @@ Master token, local caller (`requireLocalCaller`), local proof in every mode (`r
 | Method, path | Body | 2xx answer |
 |---|---|---|
 | `GET /remote-access[?refresh=1]` | — | 200 `RemoteAccessStatus` (`refresh` re-runs the firewall and Tailscale probes) |
-| `PUT /remote-access` | `{enabled: boolean, name?: string}` | 200 `RemoteAccessStatus` |
+| `PUT /remote-access` | `{enabled?: boolean, name?: string, trustNetwork?: boolean}` (at least one) | 200 `RemoteAccessStatus` |
 | `POST /remote-access/devices` | `{label: string}` | 201 `{device: RemoteDevice, token: string}` |
 | `DELETE /remote-access/devices/:id` | — | 200 `{device: RemoteDevice, closedSessions: number, closedConnections: number}` |
 | `POST /remote-access/pairing` | `{}` | 201 `PairingWindowView` (replaces an open window) |
@@ -446,6 +460,8 @@ Body `{error: string, code: string}` as today; `error` is the sentence clients s
 | 409 | `pairing_busy` | A correct claim is already waiting for the host |
 | 409 | `claim_decided` | Decision on a claim already decided |
 | 409 | `env_bind` | Enable while `ADF_DAEMON_HOST` is non-loopback |
+| 409 | `network_category_os` | `trustNetwork` on Windows, where the OS network category decides (§3.3.1) |
+| 409 | `network_unidentified` | `trustNetwork: true` where no network with a default gateway and a known gateway MAC is found |
 | 429 | `rate_limited` | Per-address limits; `Retry-After` header |
 | 502 | `tailscale_failed` | The `tailscale` command failed; body adds `output` and `command` |
 | 503 | `devices_unreadable` | `daemon-devices.json` cannot be read; no device token is accepted |
@@ -478,13 +494,15 @@ Parts A and B run in parallel against §11 after step 0.
 
 Agentic duration: step 0 about 20 minutes; A about 3 hours; B about 2 hours in parallel; C and the cross-OS manual pass about 1 hour plus the owner's time on three machines. Overall 6/10: the risky parts are A1 (one guard on every route) and A2 (listeners outside Fastify's own server).
 
-## 13. Open questions for the owner
+## 13. Owner decisions (2026-10-18)
 
-| # | Question | Recommendation |
+The owner answered the questions of the first draft on 2026-10-18.
+
+| # | Question | Decision |
 |---|---|---|
-| Q1 | The request said Studio restarts its daemon to apply the toggle. Live listeners avoid the restart and keep agents running. Accept the deviation? | Yes |
-| Q2 | Refuse the master token on remote listeners (§4.4)? Existing users of Option 2 keep `ADF_DAEMON_TOKEN`, so nothing breaks, but `adf daemon token` no longer works for a remote computer of a toggle-enabled daemon. | Yes |
-| Q3 | SPAKE2 for pairing, against the relayed-code attack from a rogue mDNS responder, while plain http leaks the token afterwards anyway? | No for v1; revisit together with signed requests |
-| Q4 | Turn remote access off automatically when the computer joins a network it has not seen before (hotel Wi-Fi)? Needs network identity per OS (SSID, gateway MAC). | Not in v1; the status line and Windows' Public profile cover it |
-| Q5 | Should a paired device's sessions keep a Studio-started daemon alive after Studio quits (today's `daemon_orphan_hold`), instead of the quit confirmation of §3.6? | No: the quit asks |
-| Q6 | Token shown once (hash at rest) instead of a persistent "Show" for one standing copy-paste token? | Shown once |
+| O1 | Restart the daemon to apply the toggle, or open listeners live? Refuse the master token from other computers? SPAKE2 for pairing? | As recommended: live listeners only, no restart (§3.2); the master token is refused on remote listeners (§4.4); SPAKE2 is deferred, `tailscale serve` (https) is the encrypted option (§5.6, §5.7). |
+| O2 | Turn remote access off on networks not seen before? | No listener on a network the OS marks Public; remote access stays on and only private and Tailscale addresses listen. Status: "Not reachable on this network (Public)." Windows uses the NetConnectionProfile category; macOS and Linux use the documented conservative rule, unsure = not private (§3.3.1). |
+| O3 | Paired devices keep a Studio-started daemon alive after Studio quits? | No. Studio's quit asks every time a device is connected: "*N* computers are connected. Keep the daemon running for them, or stop it?" Nothing is remembered (§3.6). |
+| O4 | Token shown once, or a standing token with Show? | Shown once at creation; only the hash is stored (§4.3, §4.6). |
+
+Contract changes made with these decisions (additive, against 1c2e5441): `RemoteAddress.network`; `PUT /remote-access` body `trustNetwork` and optional `enabled`; errors `409 network_category_os` and `409 network_unidentified`; `remote-access.json` `privateNetworks`; event type `networks_changed`; the device-token refusal list of §4.5 spelled out per route.

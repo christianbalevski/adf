@@ -67,6 +67,8 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf identity untrust-daemon` | Revoke that trust |
 | `adf templates` | List agent templates |
 | `adf new [name] [--template <id>] [--provider <id>] [--model <id>] [--dir <path>] [--start]` | Create an agent from a template, sealed with the owner identity (like Studio) |
+| `adf pair [<host>[:<port>]] [--name <n>] [--yes]` | Pair with another computer's daemon (its 6-digit code); without a host, lists the ADF computers found on this network and your tailnet. Saves the device token |
+| `adf remotes [use <name\|local> \| forget <name>]` | Saved remote daemons; use picks the default |
 
 ### Daemon
 
@@ -78,7 +80,10 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf daemon stop` | Stop it gracefully (agents unloaded, containers stopped) |
 | `adf daemon restart` | Stop, then start in the background |
 | `adf daemon logs [-f] [-n <lines>]` | Show the background daemon's log (-f follows) |
-| `adf daemon token` | Print this machine's daemon access token (for clients on other machines: --token or ADF_DAEMON_TOKEN) |
+| `adf daemon token` | Print this machine's daemon access token (this machine only; other computers get a device token: daemon devices add / pair) |
+| `adf daemon remote on\|off\|status` | Allow other computers to connect (live, no restart); also trust\|untrust, serve on\|off |
+| `adf daemon devices [list\|add <label>\|revoke <id\|label>]` | Computers with a device token |
+| `adf daemon pair` | Open a pairing window and show its code |
 
 `adf daemon --help`:
 
@@ -88,6 +93,9 @@ Usage: adf daemon [--port <n>] [--host <h>] [--settings <file>]
        adf daemon status | stop | restart [--port <n>]
        adf daemon logs [-f] [-n <lines>] [--port <n>]
        adf daemon token
+       adf daemon remote on [--name <name>] | off | status | trust | untrust | serve on|off
+       adf daemon devices [list | add <label> | revoke <id|label>]
+       adf daemon pair
 
 Without a subcommand the daemon runs in the foreground (Ctrl+C stops it).
 start runs it in the background, like adf does on its own when it needs one;
@@ -102,6 +110,12 @@ ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity
 secrets and stop then work only from adf on this host, against its loopback port.
 
+remote on lets other computers connect without any of that: the daemon
+listens on this computer's private-network and Tailscale addresses too (no
+restart), and each other computer gets its own device token (pair, or
+devices add). A device token is as powerful as your owner seed phrase.
+See adf daemon remote --help.
+
 Environment: ADF_DAEMON_PORT, ADF_DAEMON_HOST, ADF_DAEMON_SETTINGS,
 ADF_USER_DATA_DIR, ADF_DAEMON_PIDFILE, ADF_DAEMON_TOKEN,
 ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
@@ -112,6 +126,7 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 | Option | Description |
 |---|---|
 | `--url, -u <url>` | Daemon URL |
+| `--remote <name>` | A daemon saved by adf pair (adf remotes) |
 | `--token <token>` | Daemon access token (default: ADF_DAEMON_TOKEN, else the local daemon's token file) |
 | `--json` | JSON output |
 | `--no-daemon` | Never start the daemon automatically |
@@ -144,6 +159,7 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 | `ADF_DAEMON_URL` | CLI, terminal app | Daemon URL (default `http://127.0.0.1:7385`); `--url` wins |
 | `ADF_DAEMON_TOKEN` | CLI, terminal app | Daemon access token. Clients: sent as the bearer token (`--token` wins). Daemon: used instead of the `<data dir>/daemon-token` file; required with a non-loopback `--host` |
 | `ADF_NO_AUTOSTART` | CLI, terminal app | `1`: never start the daemon automatically (same as `--no-daemon`) |
+| `ADF_REMOTE` | CLI, terminal app | A remote saved by `adf pair` to talk to (same as `--remote <name>`); `local` = this computer's daemon |
 | `ADF_DAEMON_PORT` | daemon | Port for `adf daemon` (default `7385`); `adf daemon <sub>` also uses it when no `--url` / `--port` is given |
 | `ADF_DAEMON_HOST` | daemon | Bind address for `adf daemon` (default `127.0.0.1`). Non-loopback needs `ADF_DAEMON_TOKEN` |
 | `ADF_DAEMON_SETTINGS` | daemon | Settings file path; its folder is the data dir (token, pid file, logs, identity file). Clients use it to find the local token file |

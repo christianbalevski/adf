@@ -74,6 +74,7 @@ export const PUSH_TOPICS: Readonly<Record<PushTopic, PushTopicRoute>> = {
   agent_path_changed: { channel: null, action: 'rekey' },
   autostart: { channel: null, none: 'the tracked-folder watcher\'s autostart; embedded Studio pushes nothing for it' },
   autostart_overflow: { channel: null, none: 'logged by the daemon; embedded Studio pushes nothing for it' },
+  remote_access: { channel: null, none: 'remote access changed (remote-access.md §8); Settings → Backend reads GET /remote-access (the Studio UI part maps it)' },
 }
 
 /** The channels fed by executor and host frames rather than a push topic. */

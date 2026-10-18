@@ -137,6 +137,10 @@
     {
       "name": "Client (internal)",
       "description": "Client sessions and the client event stream, for clients that need exact UI parity (ADF Studio in daemon mode, the terminal app): one session per client, one SSE stream per session carrying executor, host and push frames (design daemon-backend.md D5). Internal: these routes MAY change between versions; a client checks `clientApiVersion` (GET /version) first."
+    },
+    {
+      "name": "Remote access",
+      "description": "Other computers reach this daemon (docs/design/remote-access.md): the toggle, device tokens, pairing. Management routes answer this machine only: the install's token, a loopback caller without proxy headers, and the local proof (`X-ADF-Local-Proof`) in every mode; a device token gets 403 `device_token_refused`. `/remote/hello` and `/pair/*` need no token and answer 404 `remote_access_off` while remote access is off."
     }
   ],
   "paths": {
@@ -15888,6 +15892,804 @@
           }
         }
       }
+    },
+    "/remote-access": {
+      "get": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Remote access status",
+        "description": "The toggle, addresses (with the network category), URLs, Tailscale, mDNS, firewall, devices and the open pairing window (with its code). `refresh=1` re-reads the network, Tailscale and the firewall first.",
+        "operationId": "getRemoteAccess",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAccessStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            }
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Turn remote access on or off, rename, mark the network",
+        "description": "Live: no daemon restart. Turning on mints the daemon id (fingerprint), and on macOS and Linux marks the current networks private. Turning off closes every remote listener, ends device sessions and connections, keeps the devices.",
+        "operationId": "updateRemoteAccess",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "200": {
+            "description": "Status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAccessStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty body, wrong types or a bad name (`bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`env_bind`: ADF_DAEMON_HOST binds the daemon to the network itself; `network_category_os`: trustNetwork on Windows; `network_unidentified`: trustNetwork where no network with a default gateway is found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoteAccessPatch"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/devices": {
+      "post": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Create a device token (copy-paste)",
+        "description": "Mints a device token and returns it once; only its SHA-256 is stored (daemon-devices.json). The token is as powerful as the owner seed phrase.",
+        "operationId": "createRemoteDevice",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "201": {
+            "description": "The device and its token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteDeviceCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad label (`bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoteDeviceInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/devices/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Device id",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Revoke a device",
+        "description": "Removes the device (a 30-day tombstone answers its token with 401 `device_revoked`), ends its client sessions (their stream gets `session.ended` first) and destroys its connections, streams included.",
+        "operationId": "revokeRemoteDevice",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "200": {
+            "description": "The revoked device and what was closed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteDeviceRevoked"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown device (`device_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/pairing": {
+      "post": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Open the pairing window",
+        "description": "A new 6-digit code for 120 s; replaces an open window. 5 wrong codes close it. The mDNS announcement shows `pair=1` while it is open.",
+        "operationId": "openPairing",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "201": {
+            "description": "The window, with its code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingWindowView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Remote access is off (`remote_access_off`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Close the pairing window",
+        "description": "Discards the code and any pending claim.",
+        "operationId": "closePairing",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "204": {
+            "description": "Closed (or none was open)"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/pairing/claims/{claimId}": {
+      "parameters": [
+        {
+          "name": "claimId",
+          "in": "path",
+          "required": true,
+          "description": "Claim id (PairingClaimView)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Allow or deny a pairing request",
+        "description": "The owner's answer after a correct code. Allow mints the device (origin `paired`) and keeps its token for the claimant's poll; the window closes either way.",
+        "operationId": "decidePairingClaim",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "200": {
+            "description": "The decision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingDecision"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`allow` is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such pending claim (`claim_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already decided (`claim_decided`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingDecisionInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/tailscale-serve": {
+      "post": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Turn https through tailscale serve on or off",
+        "description": "Runs `tailscale serve --bg <port>` (on) or removes the https:443 entry when it forwards to this daemon (off). Clients call it only after the owner confirmed the command.",
+        "operationId": "setTailscaleServe",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "200": {
+            "description": "Tailscale state and the command output",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`enabled` is not a boolean",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The tailscale command failed (`tailscale_failed`, with `output` and `command`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TailscaleServeInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote/hello": {
+      "get": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Who is this daemon (no token)",
+        "description": "The mDNS announcement's content, for clients that cannot hear mDNS (tailnet peers, a typed address). No secret. 30 per minute per source address.",
+        "operationId": "remoteHello",
+        "x-adf-stability": "experimental",
+        "security": [],
+        "responses": {
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "200": {
+            "description": "Name, fingerprint, pairing open",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteHello"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Remote access is off (`remote_access_off`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (`rate_limited`, Retry-After)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pair/claim": {
+      "post": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Claim pairing with the host's code (no token)",
+        "description": "A correct code puts the claim before the owner (202); the token comes only after the owner allows it (GET /pair/claims/{claimId}). Wrong codes are answered after 1 s; 5 in total close the window. Per source address: one claim per 2 s, 10 per 10 minutes.",
+        "operationId": "claimPairing",
+        "x-adf-stability": "experimental",
+        "security": [],
+        "responses": {
+          "403": {
+            "description": "Wrong code (`wrong_code`, with `attemptsLeft`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Waiting for the owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairClaimAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad code, device name or client kind (`bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No open window (`pairing_closed`) or remote access is off (`remote_access_off`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another claim waits for the owner (`pairing_busy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (`rate_limited`, Retry-After)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairClaimRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pair/claims/{claimId}": {
+      "parameters": [
+        {
+          "name": "claimId",
+          "in": "path",
+          "required": true,
+          "description": "Claim id (POST /pair/claim)",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Collect the result of a claim (no token)",
+        "description": "Long poll: waits up to `wait` seconds while pending. An approved result (with the device token) is delivered once, then the claim is gone (404). `Cache-Control: no-store`.",
+        "operationId": "pollPairingClaim",
+        "x-adf-stability": "experimental",
+        "security": [],
+        "responses": {
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "200": {
+            "description": "pending, denied, or approved with the token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairClaimResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`wait` out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown, expired or collected claim (`claim_not_found`), or remote access is off (`remote_access_off`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 25
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -15895,7 +16697,7 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Per-install token from `<settings dir>/daemon-token` (printed by `adf daemon token`), or ADF_DAEMON_TOKEN. Local adf clients send it automatically."
+        "description": "The install's token from `<settings dir>/daemon-token` (printed by `adf daemon token`; this machine only, refused from other computers), or ADF_DAEMON_TOKEN; or a device token (`adfd_…`) from pairing or `adf daemon devices add`, accepted while remote access is on and never on local-only routes. Local adf clients send the install token automatically."
       }
     },
     "parameters": {
@@ -29329,6 +30131,783 @@
             }
           }
         }
+      },
+      "RemoteAddress": {
+        "type": "object",
+        "description": "An address other computers may reach. `network: public`: the OS (Windows) or the owner's list (macOS, Linux) does not mark the network private, so nothing listens on it.",
+        "required": [
+          "address",
+          "family",
+          "kind",
+          "iface",
+          "network",
+          "listening",
+          "problem"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "IPv4",
+              "IPv6"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "lan",
+              "tailnet"
+            ]
+          },
+          "iface": {
+            "type": "string"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public",
+              "tailnet"
+            ]
+          },
+          "listening": {
+            "type": "boolean"
+          },
+          "problem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RemoteUrl": {
+        "type": "object",
+        "required": [
+          "url",
+          "kind",
+          "encrypted"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tailscale-https",
+              "tailnet",
+              "lan",
+              "mdns-name"
+            ]
+          },
+          "encrypted": {
+            "type": "boolean",
+            "description": "TLS (tailscale serve) or WireGuard (tailnet); plain LAN http is not"
+          }
+        }
+      },
+      "RemoteDevice": {
+        "type": "object",
+        "description": "A computer with a device token. The token itself is never returned after creation.",
+        "required": [
+          "id",
+          "label",
+          "origin",
+          "createdAt",
+          "createdBy",
+          "lastSeenAt",
+          "lastSeenAddress",
+          "connected",
+          "connections",
+          "sessions"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z2-7]{10}$"
+          },
+          "label": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "paired",
+              "token"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdBy": {
+            "type": "string",
+            "enum": [
+              "studio",
+              "cli"
+            ]
+          },
+          "lastSeenAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "lastSeenAddress": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "An open client session or stream, or a request in the last 60 s"
+          },
+          "connections": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "PairingClaimView": {
+        "type": "object",
+        "required": [
+          "claimId",
+          "deviceName",
+          "clientKind",
+          "address",
+          "via",
+          "tailnetLogin",
+          "at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "claimId": {
+            "type": "string"
+          },
+          "deviceName": {
+            "type": "string"
+          },
+          "clientKind": {
+            "type": "string",
+            "enum": [
+              "studio",
+              "cli"
+            ]
+          },
+          "address": {
+            "type": "string"
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "lan",
+              "tailnet",
+              "proxy"
+            ]
+          },
+          "tailnetLogin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PairingWindowView": {
+        "type": "object",
+        "description": "The open pairing window. `code` is shown on this computer only.",
+        "required": [
+          "code",
+          "name",
+          "fingerprint",
+          "openedAt",
+          "expiresAt",
+          "attemptsLeft",
+          "claim"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$"
+          },
+          "name": {
+            "type": "string",
+            "description": "This computer's name, as GET /remote/hello shows it"
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[A-Z2-7]{4}-[A-Z2-7]{4}$"
+          },
+          "openedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attemptsLeft": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "claim": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PairingClaimView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A correct claim waiting for the owner's Allow / Deny"
+          }
+        }
+      },
+      "RemoteAccessStatus": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "state",
+          "message",
+          "problem",
+          "name",
+          "fingerprint",
+          "port",
+          "addresses",
+          "urls",
+          "hostNames",
+          "tailscale",
+          "mdns",
+          "firewall",
+          "devices",
+          "pairing"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "off",
+              "on",
+              "no_address",
+              "env_bind",
+              "error"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "The status line, e.g. \"Reachable from other computers at 192.168.1.20.\" or \"Not reachable on this network (Public).\""
+          },
+          "problem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Z2-7]{4}-[A-Z2-7]{4}$"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteAddress"
+            }
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteUrl"
+            }
+          },
+          "hostNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tailscale": {
+            "type": "object",
+            "required": [
+              "state",
+              "serve",
+              "httpsUrl",
+              "serveCommand"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "stopped",
+                  "running"
+                ]
+              },
+              "serve": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off",
+                  "unknown"
+                ]
+              },
+              "httpsUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "serveCommand": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "mdns": {
+            "type": "object",
+            "required": [
+              "announcing",
+              "problem"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "announcing": {
+                "type": "boolean"
+              },
+              "problem": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "firewall": {
+            "type": "object",
+            "required": [
+              "state",
+              "message",
+              "commands"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "blocked",
+                  "public_network",
+                  "unknown"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RemoteDevice"
+            }
+          },
+          "pairing": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PairingWindowView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RemoteAccessPatch": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "description": "The computer name other computers see"
+          },
+          "trustNetwork": {
+            "type": "boolean",
+            "description": "macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os` (the OS category decides). Turning remote access on also marks them."
+          }
+        }
+      },
+      "RemoteDeviceInput": {
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
+      },
+      "RemoteDeviceCreated": {
+        "type": "object",
+        "required": [
+          "device",
+          "token"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/RemoteDevice"
+          },
+          "token": {
+            "type": "string",
+            "pattern": "^adfd_[a-z2-7]{10}_[A-Za-z0-9_-]{43}$",
+            "description": "Shown once: only its hash is stored. As powerful as the owner seed phrase."
+          }
+        }
+      },
+      "RemoteDeviceRevoked": {
+        "type": "object",
+        "required": [
+          "device",
+          "closedSessions",
+          "closedConnections"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/RemoteDevice"
+          },
+          "closedSessions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "closedConnections": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "PairingDecisionInput": {
+        "type": "object",
+        "required": [
+          "allow"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PairingDecision": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state",
+              "device"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "approved"
+              },
+              "device": {
+                "$ref": "#/components/schemas/RemoteDevice"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "denied"
+              }
+            }
+          }
+        ]
+      },
+      "TailscaleServeInput": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "TailscaleServeResult": {
+        "type": "object",
+        "required": [
+          "tailscale",
+          "output"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tailscale": {
+            "type": "object",
+            "required": [
+              "state",
+              "serve",
+              "httpsUrl",
+              "serveCommand"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "absent",
+                  "stopped",
+                  "running"
+                ]
+              },
+              "serve": {
+                "type": "string",
+                "enum": [
+                  "on",
+                  "off",
+                  "unknown"
+                ]
+              },
+              "httpsUrl": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "serveCommand": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "output": {
+            "type": "string"
+          }
+        }
+      },
+      "RemoteHello": {
+        "type": "object",
+        "required": [
+          "v",
+          "name",
+          "fingerprint",
+          "pairingOpen",
+          "clientApiVersion"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "v": {
+            "const": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[A-Z2-7]{4}-[A-Z2-7]{4}$"
+          },
+          "pairingOpen": {
+            "type": "boolean"
+          },
+          "clientApiVersion": {
+            "type": "integer"
+          }
+        }
+      },
+      "PairClaimRequest": {
+        "type": "object",
+        "required": [
+          "code",
+          "deviceName",
+          "clientKind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$"
+          },
+          "deviceName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Becomes the device label; control and bidi characters are refused"
+          },
+          "clientKind": {
+            "type": "string",
+            "enum": [
+              "studio",
+              "cli"
+            ]
+          }
+        }
+      },
+      "PairClaimAccepted": {
+        "type": "object",
+        "required": [
+          "claimId",
+          "expiresAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "claimId": {
+            "type": "string",
+            "description": "128-bit random; the capability to collect the token"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PairClaimResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "pending"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "denied"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state",
+              "token",
+              "device",
+              "daemon"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "const": "approved"
+              },
+              "token": {
+                "type": "string",
+                "pattern": "^adfd_[a-z2-7]{10}_[A-Za-z0-9_-]{43}$",
+                "description": "Shown once: only its hash is stored. As powerful as the owner seed phrase."
+              },
+              "device": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "label"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                }
+              },
+              "daemon": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "fingerprint",
+                  "urls"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "fingerprint": {
+                    "type": "string"
+                  },
+                  "urls": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/RemoteUrl"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     }
   }

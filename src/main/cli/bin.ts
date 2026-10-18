@@ -23,6 +23,9 @@ const DAEMON_HELP = `Usage: adf daemon [--port <n>] [--host <h>] [--settings <fi
        adf daemon status | stop | restart [--port <n>]
        adf daemon logs [-f] [-n <lines>] [--port <n>]
        adf daemon token
+       adf daemon remote on [--name <name>] | off | status | trust | untrust | serve on|off
+       adf daemon devices [list | add <label> | revoke <id|label>]
+       adf daemon pair
 
 Without a subcommand the daemon runs in the foreground (Ctrl+C stops it).
 start runs it in the background, like adf does on its own when it needs one;
@@ -36,6 +39,12 @@ ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 --host (plus ADF_DAEMON_ALLOWED_HOSTS for host names clients use).
 Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity
 secrets and stop then work only from adf on this host, against its loopback port.
+
+remote on lets other computers connect without any of that: the daemon
+listens on this computer's private-network and Tailscale addresses too (no
+restart), and each other computer gets its own device token (pair, or
+devices add). A device token is as powerful as your owner seed phrase.
+See adf daemon remote --help.
 
 Environment: ADF_DAEMON_PORT, ADF_DAEMON_HOST, ADF_DAEMON_SETTINGS,
 ADF_USER_DATA_DIR, ADF_DAEMON_PIDFILE, ADF_DAEMON_TOKEN,
@@ -58,7 +67,7 @@ export function applyDaemonArgs(args: string[], env: NodeJS.ProcessEnv = process
   }
 }
 
-const DAEMON_SUBCOMMANDS = new Set(['start', 'status', 'stop', 'restart', 'logs', 'token'])
+const DAEMON_SUBCOMMANDS = new Set(['start', 'status', 'stop', 'restart', 'logs', 'token', 'remote', 'devices', 'pair'])
 
 async function daemonSubcommand(sub: string, args: string[]): Promise<number> {
   const control = await import('./daemon-control')
@@ -113,6 +122,36 @@ async function daemonSubcommand(sub: string, args: string[]): Promise<number> {
       out(`${token}\n`)
       return 0
     }
+    case 'remote':
+    case 'devices':
+    case 'pair': {
+      // Remote access works only while the daemon runs: `remote on` starts it, the rest say so.
+      const turningOn = sub === 'remote' && rest[0] === 'on'
+      const help = rest.includes('--help') || rest.includes('-h')
+      if (!help && !(await control.isHealthy(target.url))) {
+        if (!turningOn) {
+          process.stderr.write(`The ADF daemon is not running at ${target.url}; remote access works only while it runs. Start it with: adf daemon start\n`)
+          return 3
+        }
+        if ((await start()) !== 0) return 1
+      }
+      const [{ runHostRemoteCommand }, { stdinPrompt }] = await Promise.all([import('./remote-access-cli'), import('./prompt')])
+      const prompt = stdinPrompt()
+      try {
+        return await runHostRemoteCommand(sub as 'remote' | 'devices' | 'pair', rest, {
+          fetch: globalThis.fetch.bind(globalThis),
+          stdout: out,
+          stderr: (text) => { process.stderr.write(text) },
+          prompt: (q) => prompt.ask(q),
+          onInterrupt: (fn) => {
+            process.on('SIGINT', fn)
+            return () => { process.off('SIGINT', fn) }
+          },
+        }, { url: target.url, port: target.port, dataDir: control.daemonPaths(target.port).dataDir })
+      } finally {
+        prompt.close()
+      }
+    }
     case 'logs': {
       const follow = rest.includes('-f') || rest.includes('--follow')
       const at = rest.findIndex(a => a === '-n' || a === '--lines')
@@ -140,6 +179,20 @@ async function main(argv: string[]): Promise<number> {
   // --no-daemon: never start a daemon on our own (also ADF_NO_AUTOSTART=1).
   const noDaemon = argv.includes('--no-daemon')
   if (noDaemon) argv = argv.filter(a => a !== '--no-daemon')
+  // --remote <name>: a daemon saved by adf pair, for this invocation (remotes.ts).
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--remote' || arg.startsWith('--remote=')) {
+      const value = arg === '--remote' ? argv[i + 1] : arg.slice('--remote='.length)
+      if (!value) {
+        process.stderr.write('--remote requires a name (adf remotes lists them)\n')
+        return 2
+      }
+      process.env.ADF_REMOTE = value
+      argv = [...argv.slice(0, i), ...argv.slice(i + (arg === '--remote' ? 2 : 1))]
+      break
+    }
+  }
   const [command, ...rest] = argv
   if (command === '--version' || command === '-v' || command === 'version') {
     process.stdout.write(`${version()}\n`)

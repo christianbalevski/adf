@@ -279,10 +279,10 @@ export class MdnsService extends EventEmitter {
  * Windows specifically, producing the asymmetric "I can see them, they can't
  * see me" symptom. macOS tun / awdl / bridge / ipsec are likewise noise.
  */
-const VIRTUAL_IFACE_RE = /^(lo\d*|gif\d*|stf\d*|awdl\d*|llw\d*|anpi\d*|ap\d+|bridge\d*|utun\d*|ipsec\d*|ppp\d*|tun\d*|tap\d*|veth|vmnet\d*|vboxnet\d*|docker\d*|br-|wg\d*|tailscale\d*|zt[a-z0-9]+)/i
-const VIRTUAL_IFACE_WIN_RE = /(vEthernet|VMware|VirtualBox|Hyper-?V|WSL|Bluetooth|Loopback|Npcap|Pseudo-|Wintun|Tailscale|TAP-Windows|OpenVPN)/i
+export const VIRTUAL_IFACE_RE = /^(lo\d*|gif\d*|stf\d*|awdl\d*|llw\d*|anpi\d*|ap\d+|bridge\d*|utun\d*|ipsec\d*|ppp\d*|tun\d*|tap\d*|veth|vmnet\d*|vboxnet\d*|docker\d*|br-|wg\d*|tailscale\d*|zt[a-z0-9]+)/i
+export const VIRTUAL_IFACE_WIN_RE = /(vEthernet|VMware|VirtualBox|Hyper-?V|WSL|Bluetooth|Loopback|Npcap|Pseudo-|Wintun|Tailscale|TAP-Windows|OpenVPN)/i
 
-function isRFC1918(ipv4: string): boolean {
+export function isRFC1918(ipv4: string): boolean {
   const [o1, o2] = ipv4.split('.').map(Number)
   if (o1 === 10) return true
   if (o1 === 172 && o2 >= 16 && o2 <= 31) return true
@@ -290,7 +290,7 @@ function isRFC1918(ipv4: string): boolean {
   return false
 }
 
-function isCGNAT(ipv4: string): boolean {
+export function isCGNAT(ipv4: string): boolean {
   const [o1, o2] = ipv4.split('.').map(Number)
   // 100.64.0.0/10 — Tailscale lives here.
   return o1 === 100 && o2 >= 64 && o2 <= 127

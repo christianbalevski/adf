@@ -101,7 +101,8 @@ export function registerClientLifecycleRoutes(server: FastifyInstance, ctx: Daem
       await sessions.end(id)
       ended = true
     }
-    const others = sessions.size
+    // Sessions of other computers (device tokens) never hold the stop: Studio asked the owner first (remote-access.md §3.6).
+    const others = sessions.localSize
     const startedBy = ctx.options.routes?.startedBy ?? 'cli'
     const answer = (stopping: boolean, reason: string): ClientQuitResult => {
       log(`Client session ${id} quit${ended ? '' : ' (it had already ended)'}: ${stopping ? 'stopping the daemon' : 'the daemon keeps running'}: ${reason}`)

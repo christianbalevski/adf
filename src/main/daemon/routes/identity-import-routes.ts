@@ -17,6 +17,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { DaemonIdentityError, type DaemonOwnerImportOptions } from '../daemon-identity'
 import { requireLocalCaller } from '../identity-routes'
 import { LOCAL_PROOF_HEADER } from '../local-access'
+import { DEVICE_TOKEN_REFUSED_MESSAGE, getRequestAuth } from '../remote-access/request-auth'
 import { tokensEqual } from '../daemon-token'
 import { leaseHolderElsewhere } from '../file-ops'
 import { canonicalSettingsPath } from '../studio-runtime-entry'
@@ -167,6 +168,10 @@ const IMPORT_REFUSAL = 'Importing an owner identity needs this machine\'s local 
  * loopback port (`ssh -L`, socat), does not pass.
  */
 export function requireLocalProof(request: FastifyRequest, reply: FastifyReply, localProof: string | null, refusal = IMPORT_REFUSAL): boolean {
+  if (getRequestAuth(request.raw)?.kind === 'device') {
+    void reply.code(403).send({ error: DEVICE_TOKEN_REFUSED_MESSAGE, code: 'device_token_refused' })
+    return false
+  }
   const raw = request.headers[LOCAL_PROOF_HEADER]
   const presented = (Array.isArray(raw) ? raw[0] : raw)?.trim()
   if (presented && localProof && tokensEqual(presented, localProof)) return true

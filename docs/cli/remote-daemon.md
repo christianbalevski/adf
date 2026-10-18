@@ -37,6 +37,50 @@ Routes that hand secrets out directly (owner import, stored values, full
 `.adf` exports) additionally need the local proof file, which only the
 server's own user can read; that does not stop the path above.
 
+## Allow other computers to connect
+
+The simplest way on a home or office network or a tailnet. No environment
+variable, no foreground daemon, no restart (agents keep running).
+
+```bash
+# on the server (the computer whose agents you want to reach)
+adf daemon remote on          # also Settings → Backend → This computer in ADF Studio
+adf daemon pair               # shows a 6-digit code for 2 minutes
+
+# on your laptop
+adf pair                      # lists the ADF computers it finds; or: adf pair <host>
+```
+
+- `adf pair` asks for the code; the server then asks "Allow *laptop*?".
+  Only after Allow does the laptop get its own device token, saved in the
+  OS keychain (or a file only you can read). `adf` then talks to that
+  server by default (`adf remotes use local` switches back; `--remote
+  <name>` picks one for a command).
+- Without pairing: `adf daemon devices add <label>` prints a device token
+  once; use it with `--url` and `--token`, or paste both in ADF Studio.
+- `adf daemon devices` lists the computers (connected now, last seen);
+  `adf daemon devices revoke <id|label>` disconnects one at once and voids
+  its token. `adf daemon remote off` disconnects them all and keeps the list.
+- The daemon listens only on private-network and Tailscale addresses, and
+  never on a network Windows calls Public. On macOS and Linux it listens on
+  a network only once you marked it private: turning remote access on marks
+  the current one; elsewhere run `adf daemon remote trust`.
+- This computer's own token (`adf daemon token`) is refused from other
+  computers. A device token cannot reach the owner identity, stored
+  values, shutdown or remote-access management; it can still run agents
+  and their tools, so it is as powerful as your seed phrase (below).
+- On a LAN the connection is plain http: the token travels unencrypted.
+  With Tailscale, pair over the tailnet address (WireGuard encrypts it), or
+  run `adf daemon remote serve on` for https through `tailscale serve`.
+- Windows and macOS ask once whether ADF may accept connections: allow it
+  on private networks. On Linux, open the port in ufw or firewalld if they
+  run (`adf daemon remote status` prints the commands).
+- It works while the daemon runs. A daemon ADF Studio started stops when
+  Studio quits unless **Keep the daemon running** is on; Studio asks first
+  when other computers are connected.
+
+Design and every rule: [remote-access.md](../design/remote-access.md).
+
 ## Option 1: SSH tunnel (recommended)
 
 The daemon stays on the server's loopback, where it is by default; SSH does

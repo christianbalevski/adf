@@ -40,6 +40,8 @@ import { getLanAddresses } from '../utils/network'
 import { registerIdentityRoutes, requireLocalCaller, type IdentityRouteDeps } from './identity-routes'
 import { behindProxyFromEnv, type LocalAccessOptions } from './local-access'
 import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
+import { remoteListenerOf } from './remote-access/listeners'
+import { setRequestAuth } from './remote-access/request-auth'
 import { registerTemplateRoutes } from './template-routes'
 import { registerProviderRoutes } from './provider-routes'
 import { registerContextRoutes } from './context-routes'
@@ -748,17 +750,23 @@ export function createDaemonHttpApi(
   // always passes `security` (Host allow-list + the install's token); a
   // bare createDaemonHttpApi (tests) still refuses browser origins and
   // honours ADF_DAEMON_TOKEN.
+  const remoteAccess = opts.routes?.remoteAccess
   const guard = new DaemonRequestGuard({
     token: opts.security?.token ?? process.env.ADF_DAEMON_TOKEN ?? null,
     allowedHosts: opts.security?.allowedHosts ?? null,
     ipLiteralPort: opts.security?.ipLiteralPort ?? null,
+    deviceTokens: remoteAccess?.deviceAuthority() ?? null,
   })
   server.addHook('onRequest', (request, reply, done) => {
-    const rejection = guard.check(request.method, request.url.split('?')[0], request.headers)
+    // A socket of a remote listener (remote-access.md §3.2) never takes the install's own token.
+    const conn = { remoteListener: remoteListenerOf(request.raw.socket) !== null }
+    const { rejection, auth } = guard.authenticate(request.method, request.url.split('?')[0], request.headers, conn)
     if (rejection) {
       void reply.code(rejection.status).header('Cache-Control', 'no-store').send(rejection.body)
       return
     }
+    setRequestAuth(request.raw, auth)
+    remoteAccess?.noteRequest(request.raw, auth)
     done()
   })
 

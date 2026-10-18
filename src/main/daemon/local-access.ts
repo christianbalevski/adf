@@ -113,7 +113,10 @@ export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT)
  * Routes the daemon answers for local callers only, where a client on this
  * machine sends the local proof: owner secrets and shutdown (proof required
  * behind a proxy), owner import, trust-daemon / untrust-daemon and the
- * stored-value reveal routes, agent values and app provider keys (proof required in every mode). A client never sends the proof for another route.
+ * stored-value reveal routes, agent values and app provider keys, and the
+ * remote-access management routes (proof required in every mode). A client
+ * never sends the proof for another route. A device token is refused on
+ * every one of them, from any address (request-guard.ts).
  */
 export function isLocalOnlyRoute(path: string): boolean {
   const p = path.split('?')[0]
@@ -126,6 +129,25 @@ export function isLocalOnlyRoute(path: string): boolean {
     || /^\/agents\/[^/]+\/identity\/reveal$/.test(p)
     || p === '/files/agent/identity/reveal'
     || p === '/settings/providers/keys/reveal'
+    // Remote access management (remote-access.md §4.5): device tokens, pairing, the toggle.
+    || p === '/remote-access'
+    || p.startsWith('/remote-access/')
+}
+
+/**
+ * Routes a device token (another computer, remote-access.md §4.5) is refused
+ * on by the request guard, from any address: every local-only route except
+ * the client-session routes whose handlers decide per request (opening a
+ * session, quitting it, its quit behaviour): those stay usable by a remote
+ * client and refuse a device only where they need a local caller
+ * (requireLocalCaller: stopDaemon, exitDaemonWhenClosed).
+ */
+export function isDeviceRefusedRoute(method: string, path: string): boolean {
+  const p = path.split('?')[0]
+  if (!isLocalOnlyRoute(p)) return false
+  if (method === 'POST' && p === '/client/sessions') return false
+  if (/^\/client\/sessions\/[^/]+\/(quit|exit-when-closed)$/.test(p)) return false
+  return true
 }
 
 export interface LocalAccessOptions {
