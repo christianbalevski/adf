@@ -178,6 +178,37 @@ export function savedRemoteToken(url: string, env: NodeJS.ProcessEnv = process.e
   return undefined
 }
 
+/** The saved remote whose origin `url` is, or null. */
+export function savedRemoteFor(url: string, env: NodeJS.ProcessEnv = process.env): { name: string; remote: SavedRemote } | null {
+  if (!existsSync(remotesPath(env))) return null
+  for (const [name, remote] of Object.entries(loadRemotes(env).remotes)) {
+    if (sameOrigin(remote.url, url)) return { name, remote }
+  }
+  return null
+}
+
+/**
+ * Before a saved device token goes to `url` (security review item 7): the
+ * daemon there MUST answer /remote/hello with the fingerprint pinned when it
+ * was paired. Null = go ahead (no saved remote for that origin); otherwise the
+ * sentence to show, and the token is not sent. A token given with --token or
+ * ADF_DAEMON_TOKEN is the user's own choice and is not checked.
+ */
+export async function pinnedRemoteRefusal(url: string, env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): Promise<string | null> {
+  const saved = savedRemoteFor(url, env)
+  if (!saved) return null
+  const { fetchHello } = await import('./daemon-discovery')
+  const hello = await fetchHello(url, fetchImpl)
+  const host = `"${saved.name}" (${saved.remote.hostName ?? saved.remote.url})`
+  if (!hello) {
+    return `${url} did not answer as ${host}: it is down, its remote access is off, or another program answers there. The saved token was not sent.`
+  }
+  if (hello.fingerprint !== saved.remote.fingerprint) {
+    return `The ADF daemon at ${url} is not ${host}: it shows fingerprint ${hello.fingerprint}, and ${saved.remote.fingerprint} was saved when you paired. The saved token was not sent. If that computer was set up again, pair it again: adf remotes forget ${saved.name}, then adf pair ${url}.`
+  }
+  return null
+}
+
 /** A remote name from the host's name: lower case, letters, digits and dashes. */
 export function remoteNameFor(hostName: string, taken: Record<string, unknown>): string {
   const base = hostName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'remote'

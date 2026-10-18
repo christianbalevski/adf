@@ -367,6 +367,13 @@ adf remotes forget <name>         delete the saved URL and token (the host still
 
 When a saved remote stops answering at its IP, Studio and the CLI SHOULD look the fingerprint up in mDNS and offer the new address ("*host* is now at 192.168.1.44. Use it?"); they MUST NOT switch silently.
 
+Host pinning in the CLI (security review item 7, trust on first use):
+
+- `adf pair` refuses an approval whose `daemon.fingerprint` differs from the fingerprint `/remote/hello` showed before the code was typed; nothing is saved, and the output names the device to remove on the host.
+- A saved remote is pinned to the fingerprint it was paired with. Pairing another fingerprint under its name is refused ("forget it first"); re-pairing the same computer replaces its address or token only after the user says yes (`--yes` accepts).
+- The saved URL is the one the user typed or chose. A URL the host lists replaces it only when it is `https://*.ts.net` or a 100.64/10 / `fd7a:115c:a1e0::/48` address that this computer's own Tailscale lists as a peer, answers with the same fingerprint, and the user agrees.
+- Before any command sends a saved device token, `adf` asks `/remote/hello` at that URL; another fingerprint, or no answer as that computer, refuses the command and the token is not sent. A token given with `--token` / `ADF_DAEMON_TOKEN` is not checked.
+
 ## 10. Security review
 
 Assets: device tokens (each = the owner phrase, §4.5), the pairing code during its window, the master token (stays on the host).

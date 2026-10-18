@@ -35,6 +35,7 @@ import { hostToUrl, runPair, runRemotes, transportOf } from '../src/main/cli/pai
 import { mergeDiscovered } from '../src/main/cli/daemon-discovery'
 import { loadRemotes, readRemoteToken, REMOTE_TOKENS_FILENAME } from '../src/main/cli/remotes'
 import { resolveDaemonToken, resolveDaemonUrl } from '../src/main/cli/daemon-url'
+import { runCli } from '../src/main/cli/index'
 
 const TOKEN = 't'.repeat(43)
 const PROOF = 'p'.repeat(43)
@@ -276,5 +277,110 @@ describe('client helpers', () => {
       { name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: true },
       { name: 'host-2', fingerprint: 'CCCC-DDDD', url: 'http://100.1.1.1:7385', kind: 'tailnet', pairingOpen: false },
     ])
+  })
+})
+
+describe('security review item 7: the CLI pins the host it paired with', () => {
+  const FP_A = 'AAAA-BBBB'
+  const FP_B = 'CCCC-DDDD'
+  const TOKEN_A = `adfd_aaaaaaaaaa_${'a'.repeat(43)}`
+
+  /** A fake ADF host behind fetch: hello answers `helloFp` per origin; approval answers `approvalFp`. */
+  function fakeHost(opts: { helloFp: Record<string, string>; approvalFp: string; urls?: Array<{ url: string; kind: string; encrypted: boolean }> }) {
+    const authSeen: string[] = []
+    const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+      const u = new URL(String(input))
+      const headers = new Headers(init?.headers)
+      if (headers.get('authorization')) authSeen.push(`${u.origin} ${headers.get('authorization')}`)
+      const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+      if (u.pathname === '/remote/hello') {
+        const fp = opts.helloFp[u.origin]
+        return fp ? json(200, { v: 1, name: 'host-1', fingerprint: fp, pairingOpen: true, clientApiVersion: 2 }) : json(404, { error: 'off', code: 'remote_access_off' })
+      }
+      if (u.pathname === '/pair/claim') return json(202, { claimId: 'c1', expiresAt: new Date(Date.now() + 60_000).toISOString(), collectSecret: 's'.repeat(43) })
+      if (u.pathname === '/pair/claims/c1') {
+        return json(200, { state: 'approved', token: TOKEN_A, device: { id: 'abcdefghij', label: 'agent-2 laptop' }, daemon: { name: 'host-1', fingerprint: opts.approvalFp, urls: opts.urls ?? [] } })
+      }
+      return json(200, { ok: true })
+    }) as typeof fetch
+    return { fetchImpl, authSeen }
+  }
+  function client(fetchImpl: typeof fetch, answers: Record<string, string>, extra: Partial<Parameters<typeof runPair>[1]> = {}) {
+    const env = { ADF_DAEMON_SETTINGS: join(tempDir(), 'adf-settings.json'), ADF_KEYCHAIN: '0' }
+    const out: string[] = []
+    const err: string[] = []
+    const asked: string[] = []
+    const io = {
+      fetch: fetchImpl, env, stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t), sleep: async () => {},
+      prompt: async (q: string) => { asked.push(q); const key = Object.keys(answers).find(k => q.includes(k)); return key ? answers[key] : null },
+      ...extra,
+    }
+    return { io, env, out, err, asked }
+  }
+  const HOST = 'http://192.168.77.10:7385'
+
+  it('refuses an approval from another fingerprint than the hello showed; nothing is saved', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_B })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(1)
+    expect(c.err.join('')).toMatch(/Refused: the approval came from a computer with fingerprint CCCC-DDDD, not AAAA-BBBB/)
+    expect(loadRemotes(c.env).remotes).toEqual({})
+  })
+
+  it('a saved remote stays pinned: another fingerprint under its name is refused, its address and token are replaced only after asking', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    const saved = loadRemotes(c.env).remotes['host-1']
+    expect(saved).toMatchObject({ url: HOST, fingerprint: FP_A })
+
+    // Another computer (fingerprint B) paired under the same name: refused, nothing changes.
+    const other = fakeHost({ helloFp: { 'http://192.168.77.11:7385': FP_B }, approvalFp: FP_B })
+    const c2 = { ...c, io: { ...c.io, fetch: other.fetchImpl } }
+    expect(await runPair(['http://192.168.77.11:7385', '--as', 'host-1'], c2.io)).toBe(1)
+    expect(c.err.join('')).toMatch(/the saved remote "host-1" is host-1 with fingerprint AAAA-BBBB, not this computer \(CCCC-DDDD\)/)
+    expect(loadRemotes(c.env).remotes['host-1']).toEqual(saved)
+
+    // The same computer at a new address: asked; "no" keeps the saved address and token.
+    const moved = fakeHost({ helloFp: { 'http://192.168.77.12:7385': FP_A }, approvalFp: FP_A })
+    const c3 = client(moved.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'already saved': 'n' })
+    const c3io = { ...c3.io, env: c.env }
+    expect(await runPair(['http://192.168.77.12:7385'], c3io)).toBe(1)
+    expect(c3.asked.join('\n')).toMatch(/"host-1" \(host-1\) is already saved\. Replace its address \(http:\/\/192\.168\.77\.10:7385 → http:\/\/192\.168\.77\.12:7385\) and its token\?/)
+    expect(loadRemotes(c.env).remotes['host-1'].url).toBe(HOST)
+  })
+
+  it('switches to a host-listed URL only for *.ts.net https or a confirmed tailnet peer, and only after asking', async () => {
+    const urls = [
+      { url: 'https://evil.example.com', kind: 'tailscale-https', encrypted: true },
+      { url: 'http://192.168.99.99:7385', kind: 'tailnet', encrypted: true },
+      { url: 'http://100.70.1.2:7385', kind: 'tailnet', encrypted: true },
+      { url: 'https://host-1.tail1234.ts.net', kind: 'tailscale-https', encrypted: true },
+    ]
+    const everyone = { [HOST]: FP_A, 'https://evil.example.com': FP_A, 'http://192.168.99.99:7385': FP_A, 'http://100.70.1.2:7385': FP_A, 'https://host-1.tail1234.ts.net': FP_A }
+    // 100.70.1.2 is not one of this computer's Tailscale peers: skipped; evil.example.com and the LAN address are never followed.
+    const host = fakeHost({ helloFp: everyone, approvalFp: FP_A, urls })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save that address': 'n' }, { tailnetPeers: async () => new Set<string>() })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    expect(c.asked.filter(q => /Save that address/.test(q))).toEqual([expect.stringContaining('https://host-1.tail1234.ts.net')])
+    expect(loadRemotes(c.env).remotes['host-1'].url).toBe(HOST)
+    // Said yes: the ts.net address is saved.
+    const c2 = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save that address': 'y' }, { tailnetPeers: async () => new Set(['100.70.1.2']) })
+    expect(await runPair([HOST], c2.io)).toBe(0)
+    expect(c2.asked.find(q => /Save that address/.test(q))).toContain('http://100.70.1.2:7385')
+    expect(loadRemotes(c2.env).remotes['host-1'].url).toBe('http://100.70.1.2:7385')
+  })
+
+  it('later commands refuse to send the saved token to a daemon with another fingerprint', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    // The address now answers as another ADF computer (DHCP gave it away, or a spoof).
+    const impostor = fakeHost({ helloFp: { [HOST]: FP_B }, approvalFp: FP_B })
+    const err: string[] = []
+    const code = await runCli(['--url', HOST, 'agents'], { fetch: impostor.fetchImpl, stdout: () => {}, stderr: (t) => err.push(t), env: c.env } as never)
+    expect(code).toBe(1)
+    expect(err.join('')).toMatch(/is not "host-1" .*fingerprint CCCC-DDDD, and AAAA-BBBB was saved .*The saved token was not sent/)
+    expect(impostor.authSeen).toEqual([])
   })
 })
