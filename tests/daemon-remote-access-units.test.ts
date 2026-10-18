@@ -230,7 +230,7 @@ describe('pairing window (§5.3-§5.5)', () => {
       expect((err as PairingError).extra.attemptsLeft).toBe(PAIRING_MAX_WRONG - 1 - i)
     }
     expect(m.isOpen).toBe(false)
-    expect(events).toContain('closed:attempts')
+    expect(events).toContain('closed:wrong_codes')
     now.t += 2_500
     // Even the right code is refused now: the window is closed.
     expect(() => m.claim(claimInput(view.code, '192.168.1.40'))).toThrow(expect.objectContaining({ code: 'pairing_closed', status: 404 }))

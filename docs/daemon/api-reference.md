@@ -17306,6 +17306,8 @@ Example 200 (`application/json`):
   ],
   "pairing": {
     "code": "string",
+    "name": "string",
+    "fingerprint": "string",
     "openedAt": "2026-01-01T00:00:00.000Z",
     "expiresAt": "2026-01-01T00:00:00.000Z",
     "attemptsLeft": 0,
@@ -17424,6 +17426,8 @@ Example 200 (`application/json`):
   ],
   "pairing": {
     "code": "string",
+    "name": "string",
+    "fingerprint": "string",
     "openedAt": "2026-01-01T00:00:00.000Z",
     "expiresAt": "2026-01-01T00:00:00.000Z",
     "attemptsLeft": 0,
@@ -17564,6 +17568,8 @@ Example 201 (`application/json`):
 ```json
 {
   "code": "string",
+  "name": "string",
+  "fingerprint": "string",
   "openedAt": "2026-01-01T00:00:00.000Z",
   "expiresAt": "2026-01-01T00:00:00.000Z",
   "attemptsLeft": 0,
@@ -22559,6 +22565,8 @@ The open pairing window. `code` is shown on this computer only.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `code` | string | yes |  |
+| `name` | string | yes | This computer's name, as GET /remote/hello shows it |
+| `fingerprint` | string | yes |  |
 | `openedAt` | string | yes |  |
 | `expiresAt` | string | yes |  |
 | `attemptsLeft` | integer | yes |  |

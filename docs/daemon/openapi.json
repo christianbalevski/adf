@@ -30335,6 +30335,8 @@
         "description": "The open pairing window. `code` is shown on this computer only.",
         "required": [
           "code",
+          "name",
+          "fingerprint",
           "openedAt",
           "expiresAt",
           "attemptsLeft",
@@ -30345,6 +30347,14 @@
           "code": {
             "type": "string",
             "pattern": "^[0-9]{6}$"
+          },
+          "name": {
+            "type": "string",
+            "description": "This computer's name, as GET /remote/hello shows it"
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[A-Z2-7]{4}-[A-Z2-7]{4}$"
           },
           "openedAt": {
             "type": "string",

@@ -53,6 +53,9 @@ export interface PairingClaimView {
 export interface PairingWindowView {
   /** The 6-digit code. Only management routes (this machine) return it. */
   code: string
+  /** This computer's name and fingerprint, as the other computer sees them (GET /remote/hello). */
+  name: string
+  fingerprint: string
   openedAt: string
   expiresAt: string
   attemptsLeft: number
@@ -120,5 +123,6 @@ export interface RemoteAccessEvent {
   deviceId?: string
   label?: string
   claimId?: string
+  /** `pairing_closed`: 'wrong_codes' | 'expired' | 'cancelled' | 'paired' | 'denied' | 'disabled'. */
   reason?: string
 }

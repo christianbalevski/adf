@@ -29,7 +29,8 @@ export class PairingError extends Error {
   }
 }
 
-export type PairingCloseReason = 'expired' | 'attempts' | 'closed' | 'paired' | 'denied' | 'disabled'
+/** `wrong_codes`: 5 wrong codes; `cancelled`: the owner closed it or opened a new one. */
+export type PairingCloseReason = 'expired' | 'wrong_codes' | 'cancelled' | 'paired' | 'denied' | 'disabled'
 
 interface Claim {
   view: PairingClaimView
@@ -66,9 +67,12 @@ export class PairingManager {
   private readonly perAddress = new Map<string, number[]>()
   private readonly now: () => number
 
-  constructor(private readonly events: PairingEvents, opts: { now?: () => number } = {}) {
+  constructor(private readonly events: PairingEvents, opts: { now?: () => number; host?: () => { name: string; fingerprint: string } } = {}) {
     this.now = opts.now ?? Date.now
+    this.host = opts.host ?? (() => ({ name: '', fingerprint: '' }))
   }
+
+  private readonly host: () => { name: string; fingerprint: string }
 
   get isOpen(): boolean {
     return this.window !== null && this.window.expiresAt > this.now()
@@ -80,6 +84,7 @@ export class PairingManager {
     const claim = w.claimId ? this.claims.get(w.claimId) : undefined
     return {
       code: w.code,
+      ...this.host(),
       openedAt: new Date(w.openedAt).toISOString(),
       expiresAt: new Date(w.expiresAt).toISOString(),
       attemptsLeft: PAIRING_MAX_WRONG - w.wrong,
@@ -89,7 +94,7 @@ export class PairingManager {
 
   /** Open (or replace) the window with a new code. */
   open(): PairingWindowView {
-    if (this.window) this.close('closed', { quiet: true })
+    if (this.window) this.close('cancelled', { quiet: true })
     const openedAt = this.now()
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
     const timer = setTimeout(() => this.close('expired'), PAIRING_WINDOW_MS)
@@ -142,7 +147,7 @@ export class PairingManager {
     if (input.code.length !== 6 || !timingSafeEqual(a, b)) {
       w.wrong += 1
       const attemptsLeft = PAIRING_MAX_WRONG - w.wrong
-      if (attemptsLeft <= 0) this.close('attempts')
+      if (attemptsLeft <= 0) this.close('wrong_codes')
       throw new PairingError(attemptsLeft > 0 ? 'That code is not the one the host shows.' : 'That code is not the one the host shows. Pairing closed after 5 wrong codes; open a new window on the host.', 403, 'wrong_code', { attemptsLeft: Math.max(0, attemptsLeft) })
     }
     const claimId = randomBytes(16).toString('base64url')

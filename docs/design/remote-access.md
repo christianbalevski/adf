@@ -323,7 +323,7 @@ Settings → Backend → This computer (Studio in `local` mode; in `embedded` or
 | Device first connection after start, disconnect | Devices list (live); no notice | `devices list` | Line |
 | Refusals (`master_token_remote`, `device_revoked`, rate limit) | — | — | Rate-limited line with count |
 
-Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type` one of the rows above plus `networks_changed` (§3.3.1); it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
+Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (`claimId`, `label` = the device name; Studio shows "Allow *label*?" and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
 
 ## 9. Client side
 
@@ -391,7 +391,7 @@ interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' 
 interface RemoteUrl { url: string; kind: 'tailscale-https' | 'tailnet' | 'lan' | 'mdns-name'; encrypted: boolean }
 interface RemoteDevice { id: string; label: string; origin: 'paired' | 'token'; createdAt: string; createdBy: 'studio' | 'cli'; lastSeenAt: string | null; lastSeenAddress: string | null; connected: boolean; connections: number; sessions: number }
 interface PairingClaimView { claimId: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null; at: string }
-interface PairingWindowView { code: string; openedAt: string; expiresAt: string; attemptsLeft: number; claim: PairingClaimView | null }
+interface PairingWindowView { code: string; name: string; fingerprint: string; openedAt: string; expiresAt: string; attemptsLeft: number; claim: PairingClaimView | null }
 interface RemoteAccessStatus {
   enabled: boolean; state: RemoteAccessState; message: string; problem: string | null
   name: string; fingerprint: string | null; port: number

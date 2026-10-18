@@ -167,7 +167,7 @@ export class RemoteAccessService {
         void this.reannounce()
       },
       closed: (reason) => {
-        this.log(`[remote-access] pairing window closed: ${reason === 'attempts' ? 'after 5 wrong codes' : reason}`)
+        this.log(`[remote-access] pairing window closed: ${reason === 'wrong_codes' ? 'after 5 wrong codes' : reason}`)
         this.emit({ type: 'pairing_closed', reason })
         void this.reannounce()
       },
@@ -175,7 +175,7 @@ export class RemoteAccessService {
         this.log(`[remote-access] pairing request from "${claim.deviceName}" at ${claim.address} (${claim.via}${claim.tailnetLogin ? `, ${claim.tailnetLogin}` : ''}): waiting for the owner`)
         this.emit({ type: 'claim_pending', claimId: claim.claimId, label: claim.deviceName })
       },
-    }, { now: this.now })
+    }, { now: this.now, host: () => ({ name: this.config.name, fingerprint: this.fingerprint ?? '' }) })
   }
 
   // --- state ---------------------------------------------------------------------
@@ -374,6 +374,20 @@ export class RemoteAccessService {
     }
   }
 
+  /** The probe's answer, except that a network not marked private is always `public_network` (every OS). */
+  private firewallState(): FirewallView {
+    if (this.enabled && this.allLanPublic()) {
+      return {
+        state: 'public_network',
+        message: this.platform === 'win32'
+          ? 'Windows treats this network as Public, so ADF does not listen on it. Set it to Private in Windows Settings → Network if you trust it.'
+          : 'This network is not marked private, so ADF does not listen on it. Mark it private (Allow on This Network, or adf daemon remote trust) if you trust it.',
+        commands: this.firewallView?.commands ?? [],
+      }
+    }
+    return this.firewallView ?? { state: 'unknown', message: 'Not checked yet.', commands: [] }
+  }
+
   private allLanPublic(): boolean {
     const lan = this.candidates.filter(c => c.kind === 'lan')
     return lan.length > 0 && lan.every(c => c.network === 'public')
@@ -469,7 +483,7 @@ export class RemoteAccessService {
         serveCommand: this.tailscaleSelf.state === 'running' ? `tailscale ${this.tailscale.serveCommand(this.port, true).join(' ')}` : null,
       },
       mdns: { announcing: this.announcer.announcing, problem: this.announcer.problem },
-      firewall: this.firewallView ?? { state: 'unknown', message: 'Not checked yet.', commands: [] },
+      firewall: this.firewallState(),
       devices: this.store.list().map(d => this.deviceView(d)),
       pairing: this.pairing.view(),
     }
@@ -633,7 +647,7 @@ export class RemoteAccessService {
   }
 
   closePairing(): void {
-    this.pairing.close('closed')
+    this.pairing.close('cancelled')
   }
 
   decideClaim(claimId: string, allow: boolean, decidedBy: 'studio' | 'cli'): { state: 'approved'; device: RemoteDevice } | { state: 'denied' } {

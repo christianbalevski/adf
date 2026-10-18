@@ -325,7 +325,7 @@ describe('no listener on a network that is not private (owner decision O2)', () 
     const h = await harness({ category: 'public' })
     await turnOn(h)
     const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
-    expect(status).toMatchObject({ enabled: true, state: 'no_address', message: 'Not reachable on this network (Public).' })
+    expect(status).toMatchObject({ enabled: true, state: 'no_address', message: 'Not reachable on this network (Public).', firewall: { state: 'public_network' } })
     expect(status.addresses).toEqual([{ address: LAN, family: 'IPv4', kind: 'lan', iface: 'eth0', network: 'public', listening: false, problem: 'Not reachable on this network (Public).' }])
     expect(status.urls).toEqual([])
     await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
@@ -350,6 +350,7 @@ describe('pairing over the remote listener (§5)', () => {
     const opened = await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })
     expect(opened.statusCode).toBe(201)
     expect(validate('PairingWindowView', opened.json())).toEqual([])
+    expect(opened.json()).toMatchObject({ name: 'host-1', fingerprint: expect.stringMatching(/^[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$/) })
     const code = opened.json().code as string
     expect(h.announcer.announced.at(-1)?.txt.pair).toBe('1')
     expect((await remote(h, 'GET', '/remote/hello')).json.pairingOpen).toBe(true)
@@ -390,7 +391,7 @@ describe('pairing over the remote listener (§5)', () => {
     }
     svc.pairing.perAddress.clear()
     expect((await claim(h, code)).json.code).toBe('pairing_closed')
-    expect(h.events.some(e => e.type === 'pairing_closed' && e.reason === 'attempts')).toBe(true)
+    expect(h.events.some(e => e.type === 'pairing_closed' && e.reason === 'wrong_codes')).toBe(true)
     expect(h.logs.some(l => /after 5 wrong codes/.test(l))).toBe(true)
   })
 
