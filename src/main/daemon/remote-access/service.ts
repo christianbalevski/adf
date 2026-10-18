@@ -442,6 +442,7 @@ export class RemoteAccessService {
     }
     await this.announcer.announce({
       name: this.computerName,
+      alias: cleanDisplayName(this.opts.runtimeAlias?.get(), 63),
       port: this.port,
       iface: lan.address,
       txt: { v: '1', fp: fingerprintOf(this.config.daemonId), pair: this.pairing.isOpen ? '1' : '0', api: String(this.opts.clientApiVersion) },

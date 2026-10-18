@@ -330,11 +330,11 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
     expect(mocks.publishMock).toHaveBeenCalledTimes(2)
     expect((mocks.publishMock.mock.calls[1][0] as { txt: Record<string, string> }).txt.pair).toBe('0')
     expect(mocks.findMock).toHaveBeenCalledTimes(2)
-    // Remote access only (the mesh is not LAN-visible): mesh=0, the daemon's port.
+    // Remote access only (the mesh is not LAN-visible): only the remote-access fields, on the daemon's port.
     await svc.updateAnnouncement({ announce: true, mesh: false, remote })
     const third = mocks.publishMock.mock.calls[2][0] as { port: number; txt: Record<string, string> }
     expect(third.port).toBe(7385)
-    expect(third.txt.mesh).toBe('0')
+    expect(Object.keys(third.txt).sort()).toEqual(['daemon_port', 'fp', 'pair', 'v'])
     // Remote access off and the mesh not visible: nothing announced.
     await svc.updateAnnouncement({ announce: false })
     expect(svc.isAnnouncing()).toBe(false)
@@ -379,15 +379,44 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
     await svc.stop()
   })
 
-  it('a runtime announcing remote access only (mesh=0) is in the feed but not in the mesh list', async () => {
+  it('discovery review 2: a hidden mesh (remote access only) never carries the runtime id, DID or directory; its instance name is the alias or a per-network token', async () => {
+    const hidden = new MdnsService()
+    await hidden.start({ announce: true, mesh: false, remote: { ...remote, alias: null }, browse: false, port: 7295, runtimeId: 'runtime-secret', runtimeDid: 'did:key:zSecret' })
+    const first = mocks.publishMock.mock.calls[0][0] as { name: string; port: number; txt: Record<string, string> }
+    expect(first.txt).toEqual({ v: '1', fp: 'ABCD-EFGH', pair: '1', daemon_port: '7385' })
+    expect(first.name).not.toContain('runtime-secret')
+    expect(first.name).toMatch(/^adf-[0-9a-f]{12}$/)
+    expect(JSON.stringify(first)).not.toMatch(/runtime-secret|zSecret|\/agents/)
+    await hidden.stop()
+    // Another network (a new service): another token, so nothing links the two.
+    const again = new MdnsService()
+    await again.start({ announce: true, mesh: false, remote: { ...remote, alias: null }, browse: false, port: 7295, runtimeId: 'runtime-secret' })
+    expect((mocks.publishMock.mock.calls[1][0] as { name: string }).name).not.toBe(first.name)
+    await again.stop()
+    // The alias the user set is what people see anyway.
+    const named = new MdnsService()
+    await named.start({ announce: true, mesh: false, remote: { ...remote, alias: 'agent-1 desk' }, browse: false, port: 7295, runtimeId: 'runtime-secret' })
+    expect((mocks.publishMock.mock.calls[2][0] as { name: string }).name).toBe('agent-1 desk')
+    await named.stop()
+  })
+
+  it('a computer announcing remote access only is in the feed (by fingerprint) but not in the mesh list', async () => {
     const svc = new MdnsService()
     await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
     browsers['adf-runtime'].emit('up', {
-      name: 'adf-peer-2', host: 'host-2.local', port: 7385, addresses: ['192.168.1.30'], referer: { address: '192.168.1.30' },
-      txt: { runtime_id: 'peer-2', mesh: '0', v: '1', fp: 'WXYZ-2345', pair: '0', daemon_port: '7385', api: '2', name: 'host-2' },
+      name: 'agent-2 laptop', host: 'host-2.local', port: 7385, addresses: ['192.168.1.30'], referer: { address: '192.168.1.30' },
+      txt: { v: '1', fp: 'WXYZ-2345', pair: '0', daemon_port: '7385' },
     })
     expect(svc.getDiscoveredRuntimes()).toEqual([])
-    expect(svc.peers()).toEqual([{ key: 'peer-2', name: 'host-2', source: 'mdns', mesh: null, remote: expect.objectContaining({ fingerprint: 'WXYZ-2345', url: 'http://192.168.1.30:7385' }) }])
+    expect(svc.peers()).toEqual([{ key: 'fp:WXYZ-2345', name: 'agent-2 laptop', source: 'mdns', mesh: null, remote: expect.objectContaining({ fingerprint: 'WXYZ-2345', url: 'http://192.168.1.30:7385' }) }])
+    // A per-network token is not a name: the host name is shown instead.
+    browsers['adf-runtime'].emit('up', {
+      name: 'adf-0123456789ab', host: 'host-3.local', port: 7385, addresses: ['192.168.1.31'], referer: { address: '192.168.1.31' },
+      txt: { v: '1', fp: 'QRST-2345', pair: '0', daemon_port: '7385' },
+    })
+    expect(svc.peers().find((p) => p.key === 'fp:QRST-2345')?.name).toBe('host-3')
+    browsers['adf-runtime'].emit('down', { name: 'agent-2 laptop', txt: { v: '1', fp: 'WXYZ-2345' } })
+    expect(svc.peers().map((p) => p.key)).toEqual(['fp:QRST-2345'])
     await svc.stop()
   })
 

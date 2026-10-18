@@ -252,7 +252,7 @@ export class RuntimeDiscovery {
       announcement: {
         announce,
         mesh: meshVisible,
-        remote: remote ? { name: remote.name, port: remote.port, fingerprint: remote.txt.fp, pairingOpen: remote.txt.pair === '1', api: remote.txt.api } : null,
+        remote: remote ? { name: remote.name, alias: remote.alias ?? null, port: remote.port, fingerprint: remote.txt.fp, pairingOpen: remote.txt.pair === '1', api: remote.txt.api } : null,
       },
       iface,
     }

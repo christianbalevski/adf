@@ -13,6 +13,8 @@
 export interface Announcement {
   /** The computer name (the runtime alias, else the host name). */
   name: string
+  /** The runtime alias, when the user set one (the instance name when the mesh is hidden). */
+  alias?: string | null
   /** The daemon's port. */
   port: number
   /** The LAN address to announce from: one that listens, so on an allowed network. */

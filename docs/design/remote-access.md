@@ -215,18 +215,18 @@ A device is connected while it has an open client session, an open SSE stream, o
 
 Each process has one mDNS announcement and one browser (`mdns-service.ts`), and each computer one discovery feed: the daemon's discovery service (`runtime-discovery.ts`) in local mode, Studio main's own in embedded and remote mode, `adf pair`'s own only when no daemon runs here. The mesh's `_adf-runtime._tcp` record carries remote access too; there is no separate service type.
 
-**Announcement.** `_adf-runtime._tcp`, instance `adf-<runtime_id>`, host `<host name>.local`. It is published while the mesh is LAN-visible (an agent with `lan` or `public` visibility, mesh LAN mode on an allowed network) or remote access is on and a LAN address of an allowed network listens (§3.3.1), and only from such an address. On a network not allowed nothing is announced. A change (pairing window, remote access on or off) re-publishes the record; the browser is untouched.
+**Announcement.** `_adf-runtime._tcp`, host `<host name>.local`; instance `adf-<runtime_id>` while the mesh is visible. It is published while the mesh is LAN-visible (an agent with `lan` or `public` visibility, mesh LAN mode on an allowed network) or remote access is on and a LAN address of an allowed network listens (§3.3.1), and only from such an address. On a network not allowed nothing is announced. A change (pairing window, remote access on or off) re-publishes the record; the browser is untouched.
 
 | TXT | When | Value |
 |---|---|---|
-| `runtime_id`, `proto`, `directory`, `runtime_did` | always | The mesh's fields, as before (`runtime_did` only when known) |
-| `mesh` | the mesh is not LAN-visible | `0`: browsers leave it out of the mesh list; the SRV port is then the daemon port |
+| `runtime_id`, `proto`, `directory`, `runtime_did` | the mesh visible | The mesh's fields, as before (`runtime_did` only when known) |
 | `v` | remote access on | `1` |
 | `fp` | remote access on | Fingerprint: first 40 bits of `sha256(daemonId)`, base32, as `XXXX-XXXX` |
 | `pair` | remote access on | `1` while a pairing window is open, else `0` |
 | `daemon_port` | remote access on | The ADF daemon's port |
-| `api` | remote access on | `CLIENT_API_VERSION` |
-| `name` | remote access on | The computer name (§3.1) |
+| `api`, `name` | remote access on and the mesh visible | `CLIENT_API_VERSION`; the computer name (§3.1) |
+
+The mesh hidden and remote access on (discovery review 2): the record carries only `v`, `fp`, `pair` and `daemon_port`, on the daemon's port, under the runtime alias when the user set one, else `adf-<12 random hex>`, new on every network. No runtime id, runtime DID or directory, so a hidden runtime cannot be followed from network to network by them. A browser keys such a record by fingerprint and shows the alias, else the host name.
 
 The record MUST NOT carry a token, a code, a claim id, the owner DID, a path or a user name. The fingerprint is a label that tells the owner's computers apart and dedups LAN and tailnet entries; it is not authenticated (anyone can copy it, §10).
 

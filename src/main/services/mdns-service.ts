@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto'
 import { EventEmitter } from 'events'
 import { hostname, networkInterfaces, type NetworkInterfaceInfo } from 'os'
 import { Bonjour, type Service } from 'bonjour-service'
@@ -36,6 +37,8 @@ export interface RemoteAnnouncement {
   pairingOpen: boolean
   /** The daemon's client API version. */
   api: string
+  /** The runtime alias, when the user set one: the instance name of a record without the mesh. */
+  alias?: string | null
 }
 
 export interface MdnsAnnouncement {
@@ -114,6 +117,12 @@ export class MdnsService extends EventEmitter {
   private base: { port: number; runtimeId: string; runtimeDid?: string } | null = null
   private announced: string | null = null
   private announcedRemote = false
+  /**
+   * The instance name of a record without the mesh when no alias is set: random
+   * per service, so per network (a network change restarts the service). Nothing
+   * in such a record links it to this runtime on another network.
+   */
+  private readonly hiddenToken = randomBytes(6).toString('hex')
 
   /** True iff we've successfully published our own service record. */
   isAnnouncing(): boolean { return this.published !== null }
@@ -193,27 +202,31 @@ export class MdnsService extends EventEmitter {
     if (!next.announce) return
     try {
       const host = ensureLocalSuffix(hostname())
-      const txt: Record<string, string> = {
+      // The mesh hidden (discovery review 2): only the remote-access fields, and an instance name that
+      // is not the runtime id, so a hidden runtime's id and DID cannot be followed from network to network.
+      const hidden = !mesh && !!remote
+      const txt: Record<string, string> = hidden ? {} : {
         runtime_id: base.runtimeId,
         proto: PROTO_VERSION,
         directory: DIRECTORY_PATH
       }
-      if (base.runtimeDid) txt.runtime_did = base.runtimeDid
-      if (!mesh) txt.mesh = '0'
+      if (!hidden && base.runtimeDid) txt.runtime_did = base.runtimeDid
       if (remote) {
         txt.v = '1'
         txt.fp = remote.fingerprint
         txt.pair = remote.pairingOpen ? '1' : '0'
         txt.daemon_port = String(remote.port)
-        txt.api = remote.api
-        txt.name = remote.name
+        if (!hidden) {
+          txt.api = remote.api
+          txt.name = remote.name
+        }
       }
       this.published = bonjour.publish({
-        name: `adf-${base.runtimeId}`,
+        name: hidden ? remote!.alias || `adf-${this.hiddenToken}` : `adf-${base.runtimeId}`,
         type: SERVICE_TYPE,
         protocol: 'tcp',
         // A mesh that is not LAN-visible has nothing to reach on its port: the daemon's then.
-        port: mesh || !remote ? base.port : remote.port,
+        port: hidden ? remote!.port : base.port,
         host,
         txt,
         // The name is runtime_id-unique, so the only record that can hold
@@ -379,7 +392,8 @@ export class MdnsService extends EventEmitter {
   private onServiceUp(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
     const runtimeId = typeof txt.runtime_id === 'string' ? txt.runtime_id : undefined
-    if (!runtimeId) return
+    // A record without the mesh carries remote access only (no runtime id): by fingerprint.
+    if (!runtimeId) { this.onRemoteOnlyUp(service, txt); return }
     if (runtimeId === this.selfRuntimeId) return // self-skip (race-safe via TXT)
 
     const runtimeDid = typeof txt.runtime_did === 'string' ? txt.runtime_did : undefined
@@ -475,10 +489,38 @@ export class MdnsService extends EventEmitter {
     this.emit('peers_changed')
   }
 
+  /** A record with remote access only (the mesh hidden): no runtime id, keyed by fingerprint. */
+  private onRemoteOnlyUp(service: Service, txt: Record<string, unknown>): void {
+    const fp = txtString(txt, 'fp')
+    const daemonPort = Number(txtString(txt, 'daemon_port'))
+    if (!fp || !FINGERPRINT.test(fp) || txtString(txt, 'v') !== '1' || !Number.isInteger(daemonPort) || daemonPort <= 0) return
+    if (fp === this.selfFingerprint) return
+    const referer = (service as unknown as { referer?: { address?: string } }).referer?.address
+    const addresses = (service.addresses ?? []) as string[]
+    const address = referer ?? addresses.find((ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) ?? addresses[0]
+    if (!address) return
+    // The alias, or (a per-network token is not a name) the host name.
+    const host = (service.host || '').replace(/\.local\.?$/, '')
+    const name = /^adf-[0-9a-f]{12}$/.test(service.name ?? '') ? host || fp : service.name || host || fp
+    const record = this.remotes.get(fp) ?? { name, runtimeId: null, lan: null, tailnet: null }
+    record.name = name
+    record.lan = { address, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1' }
+    this.remotes.set(fp, record)
+    this.emit('peers_changed')
+  }
+
   private onServiceDown(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
     const runtimeId = typeof txt.runtime_id === 'string' ? txt.runtime_id : undefined
-    if (!runtimeId) return
+    if (!runtimeId) {
+      const fp = txtString(txt, 'fp')
+      const record = fp ? this.remotes.get(fp) : undefined
+      if (!fp || !record || record.runtimeId) return
+      record.lan = null
+      if (!record.tailnet) this.remotes.delete(fp)
+      this.emit('peers_changed')
+      return
+    }
     for (const [fp, record] of this.remotes) {
       if (record.runtimeId !== runtimeId) continue
       record.lan = null
