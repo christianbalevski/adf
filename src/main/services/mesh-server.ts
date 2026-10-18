@@ -185,6 +185,7 @@ export class MeshServer {
   private lanTimer: ReturnType<typeof setInterval> | null = null
   private lanSnapshot: LanReachSnapshot | null = null
   private lanSyncing: Promise<void> | null = null
+  private lanBindAddress: ((address: string) => string) | null = null
 
   constructor(
     private codeSandboxService: CodeSandboxService,
@@ -204,8 +205,9 @@ export class MeshServer {
   }
 
   /** Where LAN mode reads the networks the owner marked private (remote-access.json's directory). */
-  setLanReach(reach: LanReach): void {
+  setLanReach(reach: LanReach, seams: { bindAddress?: (address: string) => string } = {}): void {
     this.lanReach = reach
+    this.lanBindAddress = seams.bindAddress ?? null
   }
 
   setWsConnectionManager(manager: WsConnectionManager | null): void {
@@ -296,6 +298,7 @@ export class MeshServer {
       // @fastify/websocket upgrades on the main server's 'upgrade' event.
       upgrade: (req, socket, head) => { fastify.server.emit('upgrade', req, socket, head) },
       log: (line) => console.log(`[MeshServer] ${line}`),
+      ...(this.lanBindAddress ? { bindAddress: this.lanBindAddress } : {}),
     })
     await this.syncLan(true)
     this.lanTimer = setInterval(() => { void this.syncLan(false) }, LAN_CHECK_MS)
@@ -309,7 +312,17 @@ export class MeshServer {
         const listeners = this.lanListeners
         if (!listeners) return
         this.lanReach ??= new LanReach({ settingsDir: null })
-        const snapshot = await this.lanReach.snapshot({ force })
+        const snapshot = await this.lanReach.snapshot({
+          force,
+          // A network change closes that interface's listeners before the category re-read (re-review 2).
+          onNetworkChanged: async (ifaces) => {
+            const closing = new Set((this.lanSnapshot?.addresses ?? []).filter((a) => a.kind === 'lan' && ifaces.includes(a.iface)).map((a) => a.address))
+            const keep = listeners.addresses().filter((a) => !closing.has(a))
+            if (keep.length === listeners.addresses().length) return
+            console.log(`[MeshServer] Network changed on ${ifaces.join(', ')}: closing its LAN listeners until the network is confirmed private`)
+            await listeners.sync(keep)
+          },
+        })
         if (this.lanListeners !== listeners) return
         const before = this.lanSnapshot?.listenable.join(',')
         this.lanSnapshot = snapshot

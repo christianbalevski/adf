@@ -22,9 +22,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from 'node:net'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import type { Duplex } from 'node:stream'
-import { addressCandidates, lanInterfaceNames, type AddressCandidate } from '../daemon/remote-access/addresses'
+import { addressCandidates, type AddressCandidate } from '../daemon/remote-access/addresses'
 import { loadRemoteAccessConfig } from '../daemon/remote-access/config'
-import { readNetworkCategories, type NetworkCategories } from '../daemon/remote-access/network-category'
+import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from '../daemon/remote-access/network-category'
+import { NetworkCategoryTracker } from '../daemon/remote-access/network-key'
 import { TailscaleClient, type TailscaleSelf } from '../daemon/remote-access/tailscale'
 
 const SLOW_REFRESH_MS = 60_000
@@ -44,43 +45,50 @@ export interface LanReachOptions {
   settingsDir: string | null
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   categories?: (ifaces: readonly string[]) => Promise<NetworkCategories>
+  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown). Default: readGatewayIdentities. */
+  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   tailscale?: () => Promise<TailscaleSelf>
   now?: () => number
 }
 
 export class LanReach {
-  private categories: NetworkCategories = { categories: new Map(), current: [], problem: null }
-  private categoriesKey = ''
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
-  private slowAt = 0
+  private tailscaleAt = 0
   private readonly tailscaleClient = new TailscaleClient()
+  /** The daemon's rule (network-key.ts): a category holds for the interface's addresses and gateway at the read (re-review 2). */
+  private readonly tracker: NetworkCategoryTracker
 
-  constructor(private readonly opts: LanReachOptions) {}
-
-  async snapshot(opts: { force?: boolean } = {}): Promise<LanReachSnapshot> {
-    const now = (this.opts.now ?? Date.now)()
-    const interfaces = (this.opts.interfaces ?? networkInterfaces)()
-    const slowDue = opts.force || now - this.slowAt >= SLOW_REFRESH_MS
-    if (slowDue) {
-      this.tailscaleSelf = await (this.opts.tailscale ?? (() => this.tailscaleClient.self()))().catch(() => ({ state: 'absent' as const, ips: [], dnsName: null }))
-    }
-    const tailscaleIps = new Set(this.tailscaleSelf.ips.map((ip) => ip.toLowerCase()))
-    const lanIfaces = lanInterfaceNames(interfaces, tailscaleIps)
-    const key = [...lanIfaces].sort().join('|')
-    if (slowDue || key !== this.categoriesKey) {
-      this.categories = await (this.opts.categories ?? ((ifaces) => {
+  constructor(private readonly opts: LanReachOptions) {
+    this.tracker = new NetworkCategoryTracker({
+      readCategories: this.opts.categories ?? ((ifaces) => {
         const trusted = this.opts.settingsDir ? loadRemoteAccessConfig(this.opts.settingsDir).config.privateNetworks : []
         return readNetworkCategories(ifaces, trusted)
-      }))(lanIfaces)
-      this.categoriesKey = key
-      this.slowAt = now
+      }),
+      readGateways: this.opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces)),
+      slowCheckMs: SLOW_REFRESH_MS,
+      ...(this.opts.now ? { now: this.opts.now } : {}),
+    })
+  }
+
+  /**
+   * The addresses now. `onNetworkChanged` gets the LAN interfaces whose
+   * network changed, before the category re-read: close their listeners.
+   */
+  async snapshot(opts: { force?: boolean; onNetworkChanged?: (ifaces: string[]) => Promise<void> } = {}): Promise<LanReachSnapshot> {
+    const now = (this.opts.now ?? Date.now)()
+    const interfaces = (this.opts.interfaces ?? networkInterfaces)()
+    if (opts.force || this.tailscaleAt === 0 || now - this.tailscaleAt >= SLOW_REFRESH_MS) {
+      this.tailscaleSelf = await (this.opts.tailscale ?? (() => this.tailscaleClient.self()))().catch(() => ({ state: 'absent' as const, ips: [], dnsName: null }))
+      this.tailscaleAt = now
     }
-    const addresses = addressCandidates({ interfaces, tailscaleIps, categories: this.categories.categories })
+    const tailscaleIps = new Set(this.tailscaleSelf.ips.map((ip) => ip.toLowerCase()))
+    const categories = await this.tracker.refresh({ interfaces, tailscaleIps, force: opts.force, ...(opts.onNetworkChanged ? { beforeReread: opts.onNetworkChanged } : {}) })
+    const addresses = addressCandidates({ interfaces, tailscaleIps, categories: categories.categories })
     return {
       addresses,
       listenable: addresses.filter((a) => a.refusal === null).map((a) => a.address),
       tailscale: this.tailscaleSelf.state,
-      problem: this.categories.problem,
+      problem: categories.problem,
     }
   }
 }
@@ -88,6 +96,8 @@ export class LanReach {
 export interface LanListenersOptions {
   port: number
   handler: (req: IncomingMessage, res: ServerResponse) => void
+  /** Test seam: the address actually bound for a candidate (tests map a private address to a loopback one). */
+  bindAddress?: (address: string) => string
   /** WebSocket upgrades (the mesh's /ws): handed to the main server's 'upgrade' listeners. */
   upgrade?: (req: IncomingMessage, socket: Duplex, head: Buffer) => void
   log?: (line: string) => void
@@ -130,7 +140,7 @@ export class LanListeners {
     })
     return new Promise((resolve, reject) => {
       server.once('error', reject)
-      server.listen({ host: address, port: this.opts.port }, () => {
+      server.listen({ host: this.opts.bindAddress?.(address) ?? address, port: this.opts.port }, () => {
         server.removeListener('error', reject)
         server.on('error', (err) => this.opts.log?.(`listener ${address}:${this.opts.port} failed: ${err.message}`))
         this.listeners.set(address, { server, sockets })

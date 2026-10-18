@@ -36,7 +36,7 @@ import {
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
-import { mergeGatewayIdentity } from './network-key'
+import { NetworkCategoryTracker } from './network-key'
 import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from './network-category'
 import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
@@ -129,15 +129,12 @@ export class RemoteAccessService {
   private candidates: AddressCandidate[] = []
   private listenerProblems = new Map<string, string>()
   private categories: NetworkCategories = { categories: new Map(), current: [], problem: null }
-  private categoriesAt = 0
   /**
-   * Per LAN interface, `<addresses>|<gateway>` at the last category read. A
-   * category is valid only for that key: any change re-reads it, and the
+   * The LAN interfaces' categories, valid only for each interface's addresses
+   * and gateway at the read (network-key.ts): any change re-reads, and the
    * interface's listeners close until the new read confirms private.
    */
-  private categoryKeys = new Map<string, string>()
-  /** Per LAN interface, the last known gateway identity (mergeGatewayIdentity). */
-  private gatewayIds = new Map<string, string>()
+  private readonly tracker: NetworkCategoryTracker
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleServe: TailscaleServe = { serve: 'unknown', httpsUrl: null }
   private tailscaleAt = 0
@@ -171,6 +168,12 @@ export class RemoteAccessService {
     this.platform = opts.platform ?? process.platform
     this.readCategories = opts.categories ?? ((ifaces, config) => readNetworkCategories(ifaces, config.privateNetworks, { platform: this.platform }))
     this.readGateways = opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces, { platform: this.platform }))
+    this.tracker = new NetworkCategoryTracker({
+      readCategories: (ifaces) => this.readCategories(ifaces, this.config),
+      readGateways: (ifaces, interfaces) => this.readGateways(ifaces, interfaces),
+      slowCheckMs: opts.slowCheckMs ?? SLOW_CHECK_MS,
+      now: () => this.now(),
+    })
     this.tailscale = opts.tailscale ?? new TailscaleClient()
     this.announcer = opts.announcer ?? new BonjourAnnouncer()
     this.probeFirewall = opts.firewall ?? probeFirewall
@@ -337,36 +340,27 @@ export class RemoteAccessService {
       this.tailscaleAt = now
     }
     const tailscaleIps = new Set(this.tailscaleSelf.ips)
-    const lanIfaces = lanInterfaceNames(interfaces, tailscaleIps)
-    // The category of an interface holds for its addresses and gateway at the read (security review item 2).
-    const gateways = await this.readGateways(lanIfaces, interfaces)
-    const keys = new Map<string, string>()
-    for (const c of addressCandidates({ interfaces, tailscaleIps, categories: new Map() })) {
-      if (c.kind === 'lan') keys.set(c.iface, [keys.get(c.iface), c.address].filter(Boolean).join(','))
-    }
-    for (const iface of lanIfaces) {
-      // A MAC or gateway missing for a moment is unknown, not another network (re-review 1).
-      const id = mergeGatewayIdentity(this.gatewayIds.get(iface), gateways.get(iface) ?? '')
-      this.gatewayIds.set(iface, id)
-      keys.set(iface, `${keys.get(iface) ?? ''}|${id}`)
-    }
-    const changed = lanIfaces.filter(iface => this.categoryKeys.get(iface) !== keys.get(iface))
-    if (opts.force || changed.length > 0 || this.categoryKeys.size !== keys.size || now - this.categoriesAt >= this.slowCheckMs) {
-      if (changed.length > 0) {
+    // The category of an interface holds for its addresses and gateway at the read (security review item 2,
+    // network-key.ts, shared with the mesh's LAN mode).
+    const read = this.categories
+    this.categories = await this.tracker.refresh({
+      interfaces,
+      tailscaleIps,
+      force: opts.force,
+      beforeReread: async (changed) => {
         // MUST NOT listen on a network not confirmed private (O2): close the changed interfaces' LAN
         // listeners before the (slow) re-read; they open again only if it says private.
+        const listeners = this.listeners
+        if (!listeners) return
         const closing = new Set(this.candidates.filter(c => c.kind === 'lan' && changed.includes(c.iface)).map(c => c.address))
-        const keep = this.listeners.addresses().filter(a => !closing.has(a))
-        if (keep.length !== this.listeners.addresses().length) {
+        const keep = listeners.addresses().filter(a => !closing.has(a))
+        if (keep.length !== listeners.addresses().length) {
           this.log(`[remote-access] network changed on ${changed.join(', ')}: closing its listeners until the network is confirmed private`)
-          await this.listeners.sync(keep)
+          await listeners.sync(keep)
         }
-      }
-      this.categories = await this.readCategories(lanIfaces, this.config)
-      this.categoriesAt = now
-      this.categoryKeys = keys
-      if (this.categories.problem) this.log(`[remote-access] ${this.categories.problem}`)
-    }
+      },
+    })
+    if (this.categories !== read && this.categories.problem) this.log(`[remote-access] ${this.categories.problem}`)
     if (this.stopped || !this.enabled) return
     const before = this.candidates.map(c => `${c.address}:${c.refusal ? 'off' : 'on'}`).join(',')
     this.candidates = addressCandidates({ interfaces, tailscaleIps, categories: this.categories.categories, only: this.config.addresses })
@@ -692,7 +686,7 @@ export class RemoteAccessService {
     if (networks.length === before && trust) return
     this.config = { ...this.config, privateNetworks: networks }
     this.save()
-    this.categoriesAt = 0
+    this.tracker.invalidate()
     this.log(`[remote-access] ${trust ? 'marked private' : 'no longer private'}: ${read.current.map(n => n.label).join(', ')}`)
     this.emit({ type: 'networks_changed', reason: trust ? 'trusted' : 'untrusted' })
     if (this.enabled) await this.apply({ force: true })

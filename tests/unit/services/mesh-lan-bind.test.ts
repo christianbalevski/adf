@@ -127,3 +127,57 @@ describe('LanReach (the rule both the mesh and remote access use)', () => {
     expect(s.addresses.find((a) => a.address === '192.168.1.20')).toMatchObject({ network: 'public', refusal: 'Not reachable on this network (Public).' })
   })
 })
+
+describe('re-review 2: the mesh closes its LAN listener when the network changes', () => {
+  it.skipIf(process.platform === 'darwin')('a switch to a Public network (same interface and address, another gateway) closes the listener at once, before the category re-read ends', async () => {
+    const port = await freePort()
+    const net = { gateway: '192.168.77.1|aa:bb:cc:dd:ee:01', category: 'private' as 'private' | 'public', gate: null as Promise<void> | null, reads: 0 }
+    const reach = new LanReach({
+      settingsDir: null,
+      interfaces: () => ({ 'Wi-Fi': [{ address: '192.168.77.10', family: 'IPv4', internal: false } as never] }),
+      tailscale: async () => ({ state: 'absent', ips: [], dnsName: null }),
+      gateways: async (ifaces) => new Map(ifaces.map((i) => [i, net.gateway])),
+      categories: async (ifaces) => {
+        net.reads++
+        if (net.gate) await net.gate
+        return { categories: new Map(ifaces.map((i) => [i, net.category])), current: [], problem: null }
+      },
+    })
+    const server = meshServer(port, true)
+    // 192.168.77.10 is bound on 127.0.0.2 (the daemon tests' bindAddress seam).
+    server.setLanReach(reach, { bindAddress: () => '127.0.0.2' })
+    try {
+      await server.start()
+      expect(server.getLanAddresses()).toEqual(['192.168.77.10'])
+      expect(await health('127.0.0.2', port)).toBe(200)
+      // The laptop moves: another router, Public, within the 60 s category cache.
+      let release!: () => void
+      net.gate = new Promise<void>((r) => { release = r })
+      net.gateway = '192.168.77.1|de:ad:be:ef:00:02'
+      net.category = 'public'
+      const reads = net.reads
+      const sync = server.syncLan(false)
+      for (let i = 0; i < 100 && net.reads === reads; i++) await new Promise((r) => setTimeout(r, 10))
+      expect(net.reads).toBe(reads + 1)
+      // The re-read is still running: nothing listens on the unconfirmed network.
+      expect(server.getLanAddresses()).toEqual([])
+      expect(await health('127.0.0.2', port)).toBe(0)
+      release()
+      await sync
+      expect(server.getLanAddresses()).toEqual([])
+      // A MAC missing for a moment changes nothing; back home it listens again.
+      net.gate = null
+      net.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
+      net.category = 'private'
+      await server.syncLan(false)
+      expect(server.getLanAddresses()).toEqual(['192.168.77.10'])
+      net.gateway = '192.168.77.1|'
+      const before = net.reads
+      await server.syncLan(false)
+      expect(net.reads).toBe(before)
+      expect(server.getLanAddresses()).toEqual(['192.168.77.10'])
+    } finally {
+      await server.stop()
+    }
+  })
+})
