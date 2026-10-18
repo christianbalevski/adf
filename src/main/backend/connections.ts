@@ -6,7 +6,8 @@ import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc
 import { deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
-import type { StudioBackendConfig } from './backend-config'
+import type { BootBackend, SecretCodec, StudioBackendConfig } from './backend-config'
+import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { PinMismatchError } from './daemon-mode/connection'
 
 /**
@@ -139,6 +140,38 @@ export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnecti
     return name
   })
   return { name, store }
+}
+
+/**
+ * The paired remote URL of studio-backend.json (a pairing saved before the
+ * shared list) moves into cli-remotes.json and the keychain on its first use
+ * (settings-scopes.md §9), so it is pinned like every saved connection. The
+ * remote URL slot is then empty; remote mode uses the saved name. Keychain
+ * only: when it does not take the token the slot stays, and its pin is
+ * still checked (remote/connector.ts). Returns the saved name, or null.
+ */
+export async function migratePairedSlot(boot: Pick<BootBackend, 'config' | 'configPath' | 'writeBlocked'>, codec: SecretCodec, env: NodeJS.ProcessEnv, log: Pick<Console, 'log' | 'warn'> = console): Promise<string | null> {
+  const slot = boot.config.remote
+  if (boot.writeBlocked || !slot.url || !slot.token || !slot.paired) return null
+  const token = codec.decrypt(slot.token)
+  if (!token) return null
+  let name: string
+  try {
+    name = (await saveConnection(env, { url: slot.url, token, fingerprint: slot.paired.fingerprint, hostName: slot.paired.name, deviceId: slot.paired.deviceId, label: slot.paired.label })).name
+  } catch (err) {
+    log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+  const origin = remoteUrlOrigin(slot.url)
+  const next: StudioBackendConfig = {
+    ...boot.config,
+    remote: { url: null, token: null, allowInsecureHttp: false, ...(boot.config.mode === 'remote' && !slot.name ? { name } : slot.name ? { name: slot.name } : {}) },
+    ...(slot.allowInsecureHttp && origin ? { insecureHttpOrigins: [...new Set([...(boot.config.insecureHttpOrigins ?? []), origin])] } : {}),
+  }
+  await writeJsonAtomicAsync(boot.configPath, next)
+  boot.config = next
+  log.log(`[Connection] Moved the paired remote URL ${slot.url} to the saved connection "${name}" (pinned to ${slot.paired.fingerprint})`)
+  return name
 }
 
 /** Forget a saved connection and its token (`adf remotes forget`). The host still lists the device. */

@@ -240,6 +240,9 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       if ('error' in checked) throw checked.error
       url = checked.url
       token = checked.token
+      // A paired remote URL that could not move to the shared list is pinned all the same.
+      const paired = config.remote.paired
+      if (paired) saved = { name: paired.name, remote: { url, fingerprint: paired.fingerprint, deviceId: paired.deviceId, label: paired.label, pairedAt: '' } }
     }
     progress(`Connecting to the remote ADF daemon at ${url}…`)
     // An unreachable daemon at launch is retried with backoff (W4-B review);
@@ -269,6 +272,6 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
     }
   }, { logFile: null })
   // A pinned connection is checked again before every new connection, not only at launch.
-  if (!config.remote.name) return connector
+  if (!config.remote.name && !config.remote.paired) return connector
   return Object.assign(connector, { pinCheck: () => pin ? pin() : Promise.resolve() })
 }

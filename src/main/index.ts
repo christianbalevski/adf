@@ -23,7 +23,7 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
-import { remotesEnv, savedConnections } from './backend/connections'
+import { migratePairedSlot, remotesEnv, savedConnections } from './backend/connections'
 import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
@@ -607,6 +607,8 @@ app.whenReady().then(async () => {
   let backendStore: BackendSettingsStore | null = null
   // Saved connections: cli-remotes.json next to Studio's settings file, shared with adf (settings-scopes.md §5.2).
   const connectionsEnv = remotesEnv(getUserDataPath())
+  // A remote paired before the shared list moves into it, pinned like the others.
+  await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
   const savedRemote = (name: string): { url: string } | null => {
     try { return savedConnections(connectionsEnv)[name] ?? null } catch { return null }
   }
