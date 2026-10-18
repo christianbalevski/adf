@@ -397,3 +397,19 @@ describe('bounded per-source counters (security review item 3)', () => {
     expect([b.get('a'), b.get('b'), b.get('c')]).toEqual([3, undefined, 4])
   })
 })
+
+describe('display names (security review item 4)', () => {
+  const ch = (code: number) => String.fromCharCode(code)
+  it('refuses every bidi control, line/paragraph separators, zero-width characters and U+FEFF', () => {
+    for (const code of [0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2028, 0x2029, 0x202a, 0x202e, 0x2060, 0x2066, 0x2069, 0xfeff, 0x0007, 0x0085]) {
+      expect(cleanDisplayName(`agent${ch(code)}-2`, 64), code.toString(16)).toBeNull()
+    }
+  })
+  it('collapses whitespace and caps the length before and after', () => {
+    expect(cleanDisplayName(`  agent-2${ch(0xa0)}${ch(0xa0)} laptop\t`, 64)).toBeNull() // tab is a control character
+    expect(cleanDisplayName(`  agent-2${ch(0xa0)}${ch(0x3000)}  laptop `, 64)).toBe('agent-2 laptop')
+    expect(cleanDisplayName('a'.repeat(64), 64)).toBe('a'.repeat(64))
+    expect(cleanDisplayName('a'.repeat(65), 64)).toBeNull()
+    expect(cleanDisplayName(' '.repeat(1000) + 'a', 64)).toBeNull()
+  })
+})

@@ -242,7 +242,7 @@ client                                   host daemon                         hos
   ◀── {state: approved, token, device, daemon}   (delivered once, then the claim is deleted)
 ```
 
-- `deviceName`: 1-64 characters, control and bidi characters refused (400), trimmed. It becomes the device label.
+- `deviceName`: 1-64 characters after whitespace runs are collapsed to one space and the ends trimmed. Refused (400): C0/C1 controls, every bidi control (U+061C, U+200E/F, U+202A-E, U+2066-9), U+2028/9, zero-width characters (U+200B-D, U+2060), U+FEFF, and input over 256 characters. It becomes the device label. Labels and the computer name follow the same rule (`cleanDisplayName`, security review item 4).
 - `claimId`: 128-bit random. The owner's clients see it (`GET /remote-access` → `pairing.claim`) and answer with it; it does not collect anything.
 - `collectSecret`: 256-bit random, only in the 202 answer, never in the status, an event or the log. Collecting the result needs it as `X-ADF-Pair-Secret`, compared in constant time; a missing or wrong one answers 404 `claim_not_found`, as an unknown claim does. So a paired device, or anything that learns the claim id, cannot collect a new device's token (security review 2026-10-18, item 1).
 - `claim_pending` means "pending claims changed" and carries nothing; Studio and `adf daemon pair` read the claim through the local-only `GET /remote-access`.
