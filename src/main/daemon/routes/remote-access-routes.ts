@@ -152,7 +152,7 @@ export function registerRemoteAccessRoutes(server: FastifyInstance, ctx: DaemonR
     const s = service()
     if (!s) return off(reply)
     void reply.header('Cache-Control', 'no-store')
-    try { return s.hello(request.raw) } catch (err) { return sendError(reply, err) }
+    try { return await s.hello(request.raw) } catch (err) { return sendError(reply, err) }
   })
 
   server.post<{ Body: unknown }>('/pair/claim', async (request, reply) => {

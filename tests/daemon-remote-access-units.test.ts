@@ -17,6 +17,7 @@ import {
 import { DeviceStore, DEVICES_FILENAME, parseDeviceToken } from '../src/main/daemon/remote-access/device-store'
 import { cleanDisplayName, fingerprintOf, loadRemoteAccessConfig, newDaemonId, saveRemoteAccessConfig, defaultRemoteAccessConfig } from '../src/main/daemon/remote-access/config'
 import { PairingError, PairingManager, PAIRING_MAX_WRONG } from '../src/main/daemon/remote-access/pairing'
+import { BoundedMap, SOURCE_TRACKING_CAP } from '../src/main/daemon/remote-access/bounded-map'
 import { parseServeStatus, parseTailscaleStatus } from '../src/main/daemon/remote-access/tailscale'
 import { probeFirewall } from '../src/main/daemon/remote-access/firewall'
 import { DaemonRequestGuard, isUnauthenticatedRoute, type DeviceTokenAuthority } from '../src/main/daemon/request-guard'
@@ -380,5 +381,19 @@ describe('request guard token matrix (§4.4, §4.5)', () => {
     expect(isUnauthenticatedRoute('GET', '/remote-access')).toBe(false)
     expect(guard().authenticate('POST', '/pair/claim', {}, remote)).toEqual({ rejection: null, auth: { kind: 'none' } })
     expect(guard().authenticate('GET', '/agents', {}, remote).rejection).toMatchObject({ status: 401 })
+  })
+})
+
+describe('bounded per-source counters (security review item 3)', () => {
+  it('the pairing limiter keeps at most SOURCE_TRACKING_CAP sources, dropping the oldest', () => {
+    const m = new PairingManager({ opened: () => {}, closed: () => {}, claimPending: () => {} })
+    m.open()
+    for (let i = 0; i < SOURCE_TRACKING_CAP + 500; i++) {
+      try { m.claim({ code: 'xxxxxx', deviceName: 'agent-2', clientKind: 'cli', source: `src-${i}`, address: '192.168.1.2', via: 'lan', tailnetLogin: null }) } catch { /* wrong code or closed */ }
+    }
+    expect((m as unknown as { perAddress: BoundedMap<string, number[]> }).perAddress.size).toBe(SOURCE_TRACKING_CAP)
+    const b = new BoundedMap<string, number>(2)
+    b.set('a', 1); b.set('b', 2); b.set('a', 3); b.set('c', 4)
+    expect([b.get('a'), b.get('b'), b.get('c')]).toEqual([3, undefined, 4])
   })
 })

@@ -13,6 +13,7 @@
 
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import type { PairClaimResult, PairingClaimView, PairingWindowView, RemoteUrl } from '../../../shared/types/remote-access.types'
+import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
 
 export const PAIRING_WINDOW_MS = 120_000
 export const PAIRING_MAX_WRONG = 5
@@ -73,7 +74,8 @@ function secretsEqual(presented: string, expected: string): boolean {
 export class PairingManager {
   private window: PairingWindow | null = null
   private readonly claims = new Map<string, Claim>()
-  private readonly perAddress = new Map<string, number[]>()
+  /** Claim times per source (socket address, or tailnet user behind serve); bounded. */
+  private readonly perAddress = new BoundedMap<string, number[]>(SOURCE_TRACKING_CAP)
   private readonly now: () => number
 
   constructor(private readonly events: PairingEvents, opts: { now?: () => number; host?: () => { name: string; fingerprint: string } } = {}) {
@@ -146,8 +148,13 @@ export class PairingManager {
    * PairingError for every refusal; `wrongCode` is true for a wrong code
    * (the route delays that answer).
    */
-  claim(input: { code: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null }): { claimId: string; expiresAt: string; collectSecret: string; claim: PairingClaimView } {
-    this.rateLimit(input.address)
+  claim(input: {
+    code: string; deviceName: string; clientKind: 'studio' | 'cli'
+    /** Rate-limit key: the socket address, or `tailscale:<login>` behind serve. Default: `address`. */
+    source?: string
+    address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null
+  }): { claimId: string; expiresAt: string; collectSecret: string; claim: PairingClaimView } {
+    this.rateLimit(input.source ?? input.address)
     const w = this.window
     if (!w || w.expiresAt <= this.now()) throw new PairingError('No pairing window is open on this computer. Open one on the host (Pair a computer, or adf daemon pair) and try again.', 404, 'pairing_closed')
     if (w.claimId) throw new PairingError('Another computer is waiting for the host to allow it. Try again when the host has answered.', 409, 'pairing_busy')

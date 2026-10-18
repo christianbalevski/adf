@@ -257,6 +257,8 @@ client                                   host daemon                         hos
 |---|---|
 | Code space | 10^6; 5 guesses per window, so 5 × 10^-6 per window an owner opens |
 | Per source address | 1 claim per 2 s, 10 per 10 minutes; over that: 429 `rate_limited` with `Retry-After` |
+| What a source is | The socket's peer address. `X-Forwarded-For` and other forwarded headers are never read (any process on this machine can send them to the loopback listener). Behind `tailscale serve` only (`ADF_DAEMON_BEHIND_PROXY` set, loopback peer), the `Tailscale-User-Login` / `Tailscale-User-Name` headers serve sets name the tailnet user: the prompt shows it and the limits count per user. `tailscale whois` runs only on the socket address of a tailnet listener, never on a header value (security review item 3) |
+| Memory | The per-source counters (`/remote/hello`, `/pair/claim`) keep at most 1024 sources, dropping the least recently seen |
 | Wrong code | 403 `wrong_code` with `attemptsLeft`, answered after a fixed 1 s delay |
 | Window closed / never opened | 404 `pairing_closed`, same body whether a window existed or not |
 | Remote access off | `/remote/hello`, `/pair/*` answer 404 `remote_access_off` on loopback; remote listeners do not exist |

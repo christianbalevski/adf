@@ -25,9 +25,10 @@ import type {
 } from '../../../shared/types/remote-access.types'
 import type { DeviceTokenAuthority } from '../request-guard'
 import type { ClientSessionRegistry } from '../client-sessions'
-import { hasProxyHeaders, isLoopbackAddress } from '../local-access'
+import { isLoopbackAddress } from '../local-access'
 import { addressCandidates, lanInterfaceNames, urlHost, type AddressCandidate } from './addresses'
 import { BonjourAnnouncer, type Announcer } from './announcer'
+import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
 import {
   cleanDisplayName, defaultComputerName, fingerprintOf, loadRemoteAccessConfig, newDaemonId,
   saveRemoteAccessConfig, type RemoteAccessConfig,
@@ -87,6 +88,12 @@ export interface RemoteAccessServiceOptions {
   slowCheckMs?: number
   wrongCodeDelayMs?: number
   now?: () => number
+  /**
+   * ADF_DAEMON_BEHIND_PROXY: `tailscale serve` (or another proxy on this host)
+   * forwards to the loopback listener. Only then, and only from a loopback
+   * peer, are the Tailscale-User-Login / -Name headers trusted.
+   */
+  behindProxy?: boolean
   /** Test seam: the address a candidate is actually bound to (tests map a private address to loopback). */
   bindAddress?: (address: string) => string
 }
@@ -127,7 +134,7 @@ export class RemoteAccessService {
   private tailscaleAt = 0
   private firewallView: FirewallView | null = null
   private readonly connections = new Map<string, DeviceConnection>()
-  private readonly helloHits = new Map<string, number[]>()
+  private readonly helloHits = new BoundedMap<string, number[]>(SOURCE_TRACKING_CAP)
   private timer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private applying: Promise<void> = Promise.resolve()
@@ -456,20 +463,36 @@ export class RemoteAccessService {
     }
   }
 
-  /** The caller's address: the peer, or the first X-Forwarded-For entry through a proxy on this host. */
+  /**
+   * The caller's address: always the socket's peer. X-Forwarded-For is never
+   * read: any process on this machine can send it to the loopback listener
+   * (security review item 3).
+   */
   sourceAddress(raw: IncomingMessage): string {
-    const peer = plainAddress(raw.socket?.remoteAddress)
-    if (isLoopbackAddress(peer) && hasProxyHeaders(raw.headers)) {
-      const forwarded = single(raw.headers['x-forwarded-for'])?.split(',')[0]?.trim()
-      if (forwarded) return plainAddress(forwarded)
-    }
-    return peer
+    return plainAddress(raw.socket?.remoteAddress)
   }
 
-  private via(raw: IncomingMessage): 'lan' | 'tailnet' | 'proxy' {
+  /**
+   * Who is calling, for rate limits, lockouts and the Allow prompt. On a
+   * remote listener: the socket address (whois only for a tailnet socket
+   * address, never a header). On the loopback listener: the socket address,
+   * except behind `tailscale serve` (ADF_DAEMON_BEHIND_PROXY, loopback peer),
+   * where the Tailscale-User-Login / -Name headers serve sets name the tailnet
+   * user and key the limits per user.
+   */
+  private async caller(raw: IncomingMessage, opts: { whois: boolean }): Promise<{ key: string; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null }> {
+    const address = this.sourceAddress(raw)
     const listener = remoteListenerOf(raw.socket)
-    if (!listener) return 'proxy'
-    return this.candidates.find(c => c.address === listener)?.kind === 'tailnet' ? 'tailnet' : 'lan'
+    if (listener) {
+      const via = this.candidates.find(c => c.address === listener)?.kind === 'tailnet' ? 'tailnet' : 'lan'
+      const tailnetLogin = via === 'tailnet' && opts.whois ? await this.tailscale.whois(address) : null
+      return { key: address, address, via, tailnetLogin }
+    }
+    if (this.opts.behindProxy && isLoopbackAddress(address)) {
+      const login = cleanDisplayName(single(raw.headers['tailscale-user-login']) ?? single(raw.headers['tailscale-user-name']), 128)
+      if (login) return { key: `tailscale:${login.toLowerCase()}`, address, via: 'proxy', tailnetLogin: login }
+    }
+    return { key: address, address, via: 'proxy', tailnetLogin: null }
   }
 
   // --- status ----------------------------------------------------------------------
@@ -726,24 +749,22 @@ export class RemoteAccessService {
     if (!this.enabled || !this.config.daemonId) throw new RemoteAccessError('Remote access is off on this computer.', 404, 'remote_access_off')
   }
 
-  hello(raw: IncomingMessage): RemoteHello {
+  async hello(raw: IncomingMessage): Promise<RemoteHello> {
     this.requireOn()
-    const address = this.sourceAddress(raw)
+    const { key } = await this.caller(raw, { whois: false })
     const now = this.now()
-    const hits = (this.helloHits.get(address) ?? []).filter(t => now - t < 60_000)
+    const hits = (this.helloHits.get(key) ?? []).filter(t => now - t < 60_000)
     if (hits.length >= HELLO_PER_MINUTE) throw new RemoteAccessError('Too many requests from this address. Wait a minute.', 429, 'rate_limited', { retryAfter: Math.ceil((60_000 - (now - hits[0])) / 1000) })
     hits.push(now)
-    this.helloHits.set(address, hits)
+    this.helloHits.set(key, hits)
     return { v: 1, name: this.config.name, fingerprint: this.fingerprint as string, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion }
   }
 
   async claim(raw: IncomingMessage, body: { code: string; deviceName: string; clientKind: 'studio' | 'cli' }): Promise<PairClaimAccepted> {
     this.requireOn()
-    const address = this.sourceAddress(raw)
-    const via = this.via(raw)
-    const tailnetLogin = via === 'tailnet' || (via === 'proxy' && /^100\./.test(address)) ? await this.tailscale.whois(address) : null
+    const { key, address, via, tailnetLogin } = await this.caller(raw, { whois: true })
     try {
-      const accepted = this.pairing.claim({ ...body, address, via, tailnetLogin })
+      const accepted = this.pairing.claim({ ...body, source: key, address, via, tailnetLogin })
       return { claimId: accepted.claimId, expiresAt: accepted.expiresAt, collectSecret: accepted.collectSecret }
     } catch (err) {
       if (err instanceof PairingError) {

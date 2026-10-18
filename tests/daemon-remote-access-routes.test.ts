@@ -86,6 +86,7 @@ interface Harness {
   /** The fake network: eth0's address, its gateway identity, the category the next read answers (after `gate`, if set). */
   network: { category: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number }
   sessions(): ClientSessionRegistry
+  whoisCalls: string[]
 }
 
 const harnesses: Harness[] = []
@@ -103,6 +104,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
   const announcer = new FakeAnnouncer()
   const events: RemoteAccessEvent[] = []
   const logs: string[] = []
+  const whoisCalls: string[] = []
   const network: Harness['network'] = { category: opts.category ?? 'private', addr: LAN, gateway: '192.168.77.1|aa:bb:cc:dd:ee:01', gate: null, reads: 0 }
   let server: FastifyInstance | null = null
   const sessions = () => (server as unknown as { adfClientSessions: ClientSessionRegistry }).adfClientSessions
@@ -128,9 +130,10 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
       serveStatus: async () => ({ serve: 'unknown', httpsUrl: null }),
       setServe: async () => { throw new Error('Tailscale is not installed on this computer.') },
       serveCommand: (p, on) => (on ? ['serve', '--bg', String(p)] : ['serve', '--https=443', 'off']),
-      whois: async () => null,
+      whois: async (address: string) => { whoisCalls.push(address); return null },
       command: null,
     },
+    behindProxy: opts.behindProxy ?? false,
     announcer,
     firewall: async () => ({ state: 'unknown', message: 'test', commands: [] }),
     bindAddress: () => '127.0.0.1',
@@ -150,7 +153,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
   await server.listen({ host: '127.0.0.1', port: 0 })
   const s = server
   await service.attach((req, res) => s.routing(req, res))
-  const h: Harness = { server: s, service, port, announcer, events, logs, requestShutdown, network, sessions }
+  const h: Harness = { server: s, service, port, announcer, events, logs, requestShutdown, network, sessions, whoisCalls }
   harnesses.push(h)
   return h
 }
@@ -559,5 +562,43 @@ describe('security review item 2: a network change is never assumed private', ()
     h.network.category = 'private'
     await h.service.apply({})
     expect(listening(h)).toEqual([LAN])
+  })
+})
+
+describe('security review item 3: forwarded headers name nobody', () => {
+  it('X-Forwarded-For changes neither the claim\'s address nor the rate limits, and never reaches whois', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const spoofed = { 'x-forwarded-for': '100.101.102.103, 203.0.113.5' }
+    const claim = await h.server.inject({ method: 'POST', url: '/pair/claim', headers: spoofed, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })
+    expect(claim.statusCode).toBe(202)
+    const view = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim
+    expect(view).toMatchObject({ address: '127.0.0.1', via: 'proxy', tailnetLogin: null })
+    expect(h.whoisCalls).toEqual([])
+    expect(h.logs.join('\n')).not.toContain('100.101.102.103')
+    // Rotating X-Forwarded-For does not reset the per-source hello limit (30 per minute).
+    const codes: number[] = []
+    for (let i = 0; i < 40; i++) codes.push((await h.server.inject({ method: 'GET', url: '/remote/hello', headers: { 'x-forwarded-for': `10.0.0.${i}` } })).statusCode)
+    expect(codes.filter(c => c === 429).length).toBe(10)
+  })
+
+  it('behind tailscale serve (ADF_DAEMON_BEHIND_PROXY, loopback peer) the Tailscale-User-Login header names the tailnet user; whois is never run on it', async () => {
+    const h = await harness({ behindProxy: true })
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const viaServe = { 'tailscale-user-login': 'agent-2@example.test', 'x-forwarded-for': '100.101.102.103' }
+    expect((await h.server.inject({ method: 'POST', url: '/pair/claim', headers: viaServe, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'cli' } })).statusCode).toBe(202)
+    const view = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim
+    expect(view).toMatchObject({ address: '127.0.0.1', via: 'proxy', tailnetLogin: 'agent-2@example.test' })
+    expect(h.whoisCalls).toEqual([])
+  })
+
+  it('without proxy mode the Tailscale-User-Login header is ignored', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    await h.server.inject({ method: 'POST', url: '/pair/claim', headers: { 'tailscale-user-login': 'owner@example.test' }, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'cli' } })
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim.tailnetLogin).toBeNull()
   })
 })

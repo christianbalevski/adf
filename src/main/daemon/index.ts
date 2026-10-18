@@ -388,6 +388,8 @@ const remoteAccess = new RemoteAccessService({
   port,
   clientApiVersion: CLIENT_API_VERSION,
   envBindHost: isLoopbackName(host) ? null : host,
+  // tailscale serve's Tailscale-User-* headers are trusted only in proxy mode, from a loopback peer.
+  behindProxy,
   sessions: () => client.sessions,
   // This machine's own clients only (LOCAL_ONLY_PUSH_TOPICS): never the
   // umbilical bus, which GET /events serves to device tokens and agent taps read.
