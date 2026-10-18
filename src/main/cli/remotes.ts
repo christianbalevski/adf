@@ -20,7 +20,8 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { open, readFile, stat, unlink } from 'node:fs/promises'
+import { link, open, readFile, rename, stat, unlink } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { daemonSettingsDir } from '../daemon/daemon-token'
 import { openDaemonSecrets } from '../backend/daemon-secrets'
@@ -132,6 +133,13 @@ export function remotesFilePath(env: NodeJS.ProcessEnv = process.env): string {
  * REMOTES_LOCK_STALE_MS is a crashed holder's and is taken over), read the
  * file, let `mutate` change it, and write it back when it changed. Neither
  * program loses the other's change. `mutate` may throw: nothing is written.
+ *
+ * Takeover is atomic: only the waiter that creates `cli-remotes.json.lock.claim`
+ * removes a stale lock, and it checks the staleness again under the claim, on
+ * the file it renamed to a tombstone of its own; so two waiters that both saw
+ * the stale lock never delete a new holder's lock. The lock holds the
+ * holder's pid and a nonce, and a holder removes it only while it is still
+ * its own.
  */
 export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: {
   staleMs?: number
@@ -139,6 +147,8 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
   /** Tests: the platform whose busy-file errors are retried, and the lock's open. */
   platform?: NodeJS.Platform
   openLock?: typeof open
+  /** Tests: a waiter saw a stale lock, before it tries the takeover. */
+  onStaleSeen?: () => Promise<void>
 } = {}): Promise<T> {
   const path = remotesPath(env)
   const lock = `${path}.lock`
@@ -150,11 +160,41 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
     const code = (err as NodeJS.ErrnoException)?.code
     return code === 'EEXIST' || ((opts.platform ?? process.platform) === 'win32' && code === 'EPERM')
   }
+  const mine = `${process.pid} ${randomBytes(8).toString('hex')}`
+  const ageOf = (file: string): Promise<number | null> => stat(file).then((s) => Date.now() - s.mtimeMs, () => null)
+  // Only the claim's creator removes a stale lock; the claim is held for a few ms.
+  const takeOver = async (): Promise<void> => {
+    const claim = `${lock}.claim`
+    try {
+      await (await openLock(claim, 'wx')).close()
+    } catch (err) {
+      if (!busy(err)) throw err
+      const age = await ageOf(claim)
+      if (age !== null && age > staleMs) await unlink(claim).catch(() => {})
+      return
+    }
+    try {
+      const age = await ageOf(lock)
+      if (age === null || age <= staleMs) return
+      const tomb = `${lock}.${process.pid}.${randomBytes(4).toString('hex')}.stale`
+      try {
+        await rename(lock, tomb)
+      } catch {
+        return
+      }
+      const tombAge = await ageOf(tomb)
+      // Not stale after all (it changed between the two looks): put it back unless a lock exists again.
+      if (tombAge !== null && tombAge <= staleMs) await link(tomb, lock).catch(() => {})
+      await unlink(tomb).catch(() => {})
+    } finally {
+      await unlink(claim).catch(() => {})
+    }
+  }
   await import('node:fs/promises').then((fs) => fs.mkdir(daemonSettingsDir(env), { recursive: true }))
   for (;;) {
     try {
       const handle = await openLock(lock, 'wx')
-      await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`)
+      await handle.writeFile(`${mine}\n`)
       await handle.close()
       break
     } catch (err) {
@@ -164,9 +204,10 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
         await new Promise((r) => setTimeout(r, 25))
         continue
       }
-      const age = await stat(lock).then((s) => Date.now() - s.mtimeMs, () => 0)
-      if (age > staleMs) {
-        await unlink(lock).catch(() => {})
+      const age = await ageOf(lock)
+      if (age !== null && age > staleMs) {
+        await opts.onStaleSeen?.()
+        await takeOver()
         continue
       }
       if (Date.now() > deadline) throw new RemotesLockedError(path)
@@ -192,7 +233,9 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
     }
     return result
   } finally {
-    await unlink(lock).catch(() => {})
+    // Only while the lock is still this holder's (pid and nonce).
+    const held = await readFile(lock, 'utf8').catch(() => null)
+    if (held?.trim() === mine) await unlink(lock).catch(() => {})
   }
 }
 
