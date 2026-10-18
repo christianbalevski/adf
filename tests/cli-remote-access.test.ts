@@ -360,15 +360,37 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     const everyone = { [HOST]: FP_A, 'https://evil.example.com': FP_A, 'http://192.168.99.99:7385': FP_A, 'http://100.70.1.2:7385': FP_A, 'https://host-1.tail1234.ts.net': FP_A }
     // 100.70.1.2 is not one of this computer's Tailscale peers: skipped; evil.example.com and the LAN address are never followed.
     const host = fakeHost({ helloFp: everyone, approvalFp: FP_A, urls })
-    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save that address': 'n' }, { tailnetPeers: async () => new Set<string>() })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save that address': 'n' }, { tailnetView: async () => ({ running: true, suffix: 'tail1234.ts.net', peerIps: new Set<string>([]), peerNames: new Set<string>() }) })
     expect(await runPair([HOST], c.io)).toBe(0)
     expect(c.asked.filter(q => /Save that address/.test(q))).toEqual([expect.stringContaining('https://host-1.tail1234.ts.net')])
     expect(loadRemotes(c.env).remotes['host-1'].url).toBe(HOST)
     // Said yes: the ts.net address is saved.
-    const c2 = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save that address': 'y' }, { tailnetPeers: async () => new Set(['100.70.1.2']) })
+    const c2 = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save that address': 'y' }, { tailnetView: async () => ({ running: true, suffix: 'tail1234.ts.net', peerIps: new Set<string>(["100.70.1.2"]), peerNames: new Set<string>() }) })
     expect(await runPair([HOST], c2.io)).toBe(0)
     expect(c2.asked.find(q => /Save that address/.test(q))).toContain('http://100.70.1.2:7385')
     expect(loadRemotes(c2.env).remotes['host-1'].url).toBe('http://100.70.1.2:7385')
+  })
+
+  it('re-review 3: a ts.net name must be this tailnet\'s or a peer\'s; --yes does not skip that; without Tailscale nothing switches', async () => {
+    const urls = [
+      { url: 'https://evil.ts.net', kind: 'tailscale-https', encrypted: true },
+      { url: 'https://host-1.other9999.ts.net', kind: 'tailscale-https', encrypted: true },
+      { url: 'http://100.70.1.2:7385', kind: 'tailnet', encrypted: true },
+    ]
+    const everyone = { [HOST]: FP_A, 'https://evil.ts.net': FP_A, 'https://host-1.other9999.ts.net': FP_A, 'http://100.70.1.2:7385': FP_A, 'https://host-1.tail1234.ts.net': FP_A }
+    const host = fakeHost({ helloFp: everyone, approvalFp: FP_A, urls })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' }, { tailnetView: async () => ({ running: true, suffix: 'tail1234.ts.net', peerIps: new Set<string>([]), peerNames: new Set<string>() }) })
+    expect(await runPair([HOST, '--yes'], c.io)).toBe(0)
+    expect(loadRemotes(c.env).remotes['host-1'].url).toBe(HOST)
+    // Without Tailscale: not even this tailnet's name or a listed peer address.
+    const own = fakeHost({ helloFp: everyone, approvalFp: FP_A, urls: [{ url: 'https://host-1.tail1234.ts.net', kind: 'tailscale-https', encrypted: true }, ...urls] })
+    const c2 = client(own.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' }, { tailnetView: async () => ({ running: false, suffix: 'tail1234.ts.net', peerIps: new Set<string>(["100.70.1.2"]), peerNames: new Set<string>() }) })
+    expect(await runPair([HOST, '--yes'], c2.io)).toBe(0)
+    expect(loadRemotes(c2.env).remotes['host-1'].url).toBe(HOST)
+    // This tailnet's own name qualifies (asked; --yes answers).
+    const c3 = client(own.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' }, { tailnetView: async () => ({ running: true, suffix: 'tail1234.ts.net', peerIps: new Set<string>([]), peerNames: new Set<string>() }) })
+    expect(await runPair([HOST, '--yes'], c3.io)).toBe(0)
+    expect(loadRemotes(c3.env).remotes['host-1'].url).toBe('https://host-1.tail1234.ts.net')
   })
 
   it('later commands refuse to send the saved token to a daemon with another fingerprint', async () => {

@@ -56,6 +56,61 @@ export function parseServeStatus(json: string, port: number): TailscaleServe {
   return { serve: 'off', httpsUrl: null }
 }
 
+/**
+ * This computer's own view of its tailnet (re-review 3): whether Tailscale
+ * runs, the tailnet's MagicDNS suffix, and its peers' addresses and names.
+ * The only basis for trusting an address a paired host lists.
+ */
+export interface TailnetView {
+  running: boolean
+  /** MagicDNS suffix, e.g. `tail1234.ts.net`, lower case; null when unknown. */
+  suffix: string | null
+  peerIps: Set<string>
+  /** Peers' MagicDNS names, lower case, without the trailing dot. */
+  peerNames: Set<string>
+}
+
+export const NO_TAILNET: TailnetView = { running: false, suffix: null, peerIps: new Set(), peerNames: new Set() }
+
+/** `tailscale status --json` → the view. */
+export function parseTailnetView(json: string): TailnetView {
+  const status = JSON.parse(json) as {
+    BackendState?: unknown
+    MagicDNSSuffix?: unknown
+    CurrentTailnet?: { MagicDNSSuffix?: unknown }
+    Self?: { DNSName?: unknown }
+    Peer?: Record<string, { TailscaleIPs?: unknown; DNSName?: unknown }>
+  }
+  if (status.BackendState !== 'Running') return NO_TAILNET
+  const clean = (v: unknown) => (typeof v === 'string' && v ? v.replace(/\.$/, '').toLowerCase() : null)
+  const selfName = clean(status.Self?.DNSName)
+  const suffix = clean(status.MagicDNSSuffix) ?? clean(status.CurrentTailnet?.MagicDNSSuffix) ?? (selfName && selfName.includes('.') ? selfName.slice(selfName.indexOf('.') + 1) : null)
+  const peerIps = new Set<string>()
+  const peerNames = new Set<string>()
+  for (const p of Object.values(status.Peer ?? {})) {
+    for (const ip of Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs : []) if (typeof ip === 'string') peerIps.add(ip.toLowerCase())
+    const name = clean(p.DNSName)
+    if (name) peerNames.add(name)
+  }
+  return { running: true, suffix, peerIps, peerNames }
+}
+
+/**
+ * A URL a paired host listed that this computer may switch to (re-review 3):
+ * http to one of its Tailscale peers' addresses, or https to a name in its
+ * own tailnet (MagicDNS suffix) or a peer's name. Never without Tailscale.
+ */
+export function tailnetUrlAllowed(raw: string, view: TailnetView): boolean {
+  if (!view.running) return false
+  let u: URL
+  try { u = new URL(raw) } catch { return false }
+  if (u.username || u.password) return false
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (u.protocol === 'http:') return view.peerIps.has(host)
+  if (u.protocol !== 'https:') return false
+  return view.peerNames.has(host) || (!!view.suffix && /\.ts\.net$/.test(view.suffix) && host.endsWith(`.${view.suffix}`))
+}
+
 export class TailscaleClient {
   private bin: string | null | undefined
   private absentUntil = 0
@@ -122,6 +177,16 @@ export class TailscaleClient {
     const out = await this.run(this.serveCommand(port, enabled), 20_000)
     if (out === null) throw new Error('Tailscale is not installed on this computer.')
     return out.trim()
+  }
+
+  /** This computer's tailnet: suffix and peers (NO_TAILNET without a running Tailscale). */
+  async tailnetView(): Promise<TailnetView> {
+    try {
+      const out = await this.run(['status', '--json'])
+      return out === null ? NO_TAILNET : parseTailnetView(out)
+    } catch {
+      return NO_TAILNET
+    }
   }
 
   /** The Tailscale login of a tailnet peer, or null. */

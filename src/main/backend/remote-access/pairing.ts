@@ -2,6 +2,7 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import type { RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { PairingClient, RemoteAccessApiError } from './client'
+import { TailscaleClient, tailnetUrlAllowed, type TailnetView } from '../../daemon/remote-access/tailscale'
 
 /**
  * Pairing from Settings → Backend → Remote computer
@@ -43,6 +44,8 @@ export interface PairingFlowDeps {
    * instead of the one paired with? Absent: never switch.
    */
   confirmSwitch?: (prompt: { hostName: string; from: string; to: string }) => Promise<boolean>
+  /** This computer's tailnet (`tailscale status --json`); default: the Tailscale CLI. */
+  tailnetView?: () => Promise<TailnetView>
   /** The saved remote computer: its URL, whether a token is saved, the fingerprint pinned at pairing (null: pasted). */
   savedRemote?: () => { url: string | null; tokenSaved: boolean; fingerprint: string | null }
   /** A saved remote computer would be replaced: ask first. Absent: refuse to replace. */
@@ -55,17 +58,17 @@ function originOf(url: string | null): string | null {
 }
 
 /**
- * An address Studio may switch to after approval (security review 2):
- * nothing in the claim answer is authenticated, so only a tailnet address
- * (WireGuard checks the peer) or an https name under ts.net (a Tailscale
- * certificate) qualifies, never any other "encrypted" URL the host lists.
+ * An address Studio may switch to after approval (security review 2,
+ * re-review 3): nothing in the claim answer is authenticated, so only an
+ * address this computer's own Tailscale vouches for qualifies: http to one
+ * of its peers' tailnet addresses, or https to a name in its own tailnet or
+ * a peer's name. Without Tailscale, none.
  */
-export function switchableUrl(raw: string): string | null {
+export function switchableUrl(raw: string, view: TailnetView): string | null {
   const check = checkRemoteDaemonUrl(raw)
   if (!check.url) return null
-  if (check.kind === 'tailnet') return check.url
-  if (check.kind === 'https' && /\.ts\.net$/i.test(new URL(check.url).hostname)) return check.url
-  return null
+  if (check.kind !== 'tailnet' && check.kind !== 'https') return null
+  return tailnetUrlAllowed(check.url, view) ? check.url : null
 }
 
 /** C0/C1 controls and bidirectional overrides, refused in a device name (§5.4). */
@@ -241,11 +244,13 @@ export class PairingFlow {
   private async saveApproved(host: NonNullable<RemotePairState['host']>, result: Extract<Awaited<ReturnType<PairingClient['poll']>>, { state: 'approved' }>): Promise<void> {
     let url = host.url
     const hostKind = checkRemoteDaemonUrl(host.url).kind
-    const candidates = hostKind === 'tailnet' || hostKind === 'https' || !this.deps.confirmSwitch ? [] : (result.daemon?.urls ?? [])
-      .filter((u) => u.encrypted && typeof u.url === 'string' && u.url !== host.url && switchableUrl(u.url) !== null)
+    const offered = hostKind === 'tailnet' || hostKind === 'https' || !this.deps.confirmSwitch ? [] : (result.daemon?.urls ?? []).filter((u) => u.encrypted && typeof u.url === 'string' && u.url !== host.url)
+    const view = offered.length > 0 ? await (this.deps.tailnetView ?? (() => new TailscaleClient().tailnetView()))().catch(() => null) : null
+    const candidates = !view ? [] : offered
+      .filter((u) => switchableUrl(u.url, view) !== null)
       .sort((a, b) => ENCRYPTED_ORDER[a.kind] - ENCRYPTED_ORDER[b.kind])
     for (const candidate of candidates) {
-      const target = switchableUrl(candidate.url)!
+      const target = switchableUrl(candidate.url, view!)!
       try {
         const hello = await new PairingClient(target, this.deps.fetch).hello({ timeoutMs: 3_000 })
         if (hello?.fingerprint !== host.fingerprint) continue

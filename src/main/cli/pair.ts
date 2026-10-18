@@ -8,6 +8,7 @@
 import { hostname } from 'node:os'
 import type { PairClaimAccepted, PairClaimResult, RemoteHello, RemoteUrl } from '../../shared/types/remote-access.types'
 import { cleanDisplayName } from '../daemon/remote-access/config'
+import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT } from './daemon-url'
 import {
@@ -25,7 +26,8 @@ export interface PairIo {
   sleep?: (ms: number) => Promise<void>
   env?: NodeJS.ProcessEnv
   /** Test seam: this computer's Tailscale peers' addresses. */
-  tailnetPeers?: () => Promise<Set<string>>
+  /** This computer's tailnet (suffix, peers); default: the Tailscale CLI. Tests: a stand-in. */
+  tailnetView?: () => Promise<TailnetView>
 }
 
 const PAIR_USAGE = `Usage: adf pair [<host>[:<port>] | <url>] [--name <this computer's name>] [--as <remote name>] [--yes] [--default | --no-default]
@@ -141,19 +143,14 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
  */
 async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string, yes: boolean): Promise<string> {
   if (transportOf(used) === 'https') return used
-  let peers: Set<string> | null = null
+  // Re-review 3: only what this computer's own Tailscale vouches for (its tailnet's names, its peers),
+  // checked before any question, so --yes never skips it; without Tailscale, nothing.
+  let view: TailnetView | null = null
+  const { NO_TAILNET, TailscaleClient, tailnetUrlAllowed } = await import('../daemon/remote-access/tailscale')
   for (const candidate of urls) {
-    let ok = false
-    try {
-      const u = new URL(candidate.url)
-      const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-      if (candidate.kind === 'tailscale-https') ok = u.protocol === 'https:' && host.endsWith('.ts.net')
-      else if (candidate.kind === 'tailnet' && u.protocol === 'http:' && transportOf(candidate.url) === 'tailnet') {
-        peers ??= await (io.tailnetPeers ?? tailnetPeerAddresses)()
-        ok = peers.has(host)
-      }
-    } catch { /* not a URL */ }
-    if (!ok || candidate.url === used) continue
+    if (candidate.url === used || (candidate.kind !== 'tailscale-https' && candidate.kind !== 'tailnet')) continue
+    view ??= await (io.tailnetView ?? (() => new TailscaleClient().tailnetView()))().catch(() => NO_TAILNET)
+    if (!tailnetUrlAllowed(candidate.url, view)) continue
     const hello = await fetchHello(candidate.url, io.fetch)
     if (hello?.fingerprint !== fingerprint) continue
     const answer = yes ? 'y' : await io.prompt(`"${hello.name}" is also reachable at ${candidate.url}, encrypted by Tailscale. Save that address instead of ${used}? [Y/n] `)
@@ -161,20 +158,6 @@ async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint:
     return used
   }
   return used
-}
-
-/** The tailnet addresses of this computer's online Tailscale peers (empty without Tailscale). */
-async function tailnetPeerAddresses(): Promise<Set<string>> {
-  const { TailscaleClient } = await import('../daemon/remote-access/tailscale')
-  const { defaultExec } = await import('../daemon/remote-access/network-category')
-  const client = new TailscaleClient()
-  if ((await client.self()).state !== 'running') return new Set()
-  try {
-    const status = JSON.parse(await defaultExec(client.command ?? 'tailscale', ['status', '--json'])) as { Peer?: Record<string, { TailscaleIPs?: unknown }> }
-    return new Set(Object.values(status.Peer ?? {}).flatMap(p => (Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs : [])).filter((ip): ip is string => typeof ip === 'string').map(ip => ip.toLowerCase()))
-  } catch {
-    return new Set()
-  }
 }
 
 export async function runPair(args: string[], io: PairIo): Promise<number> {

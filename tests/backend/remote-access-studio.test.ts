@@ -291,7 +291,7 @@ class PairingClientShim {
 
 // --- Client: pairing ----------------------------------------------------------------
 
-function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean; savedRemote?: { url: string | null; tokenSaved: boolean; fingerprint: string | null }; replace?: boolean } = {}) {
+function pairSetup(opts: { tailnet?: { running: boolean; suffix: string | null; peerIps: Set<string>; peerNames: Set<string> }; saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean; savedRemote?: { url: string | null; tokenSaved: boolean; fingerprint: string | null }; replace?: boolean } = {}) {
   const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
   daemon.state.enabled = true
   daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
@@ -304,6 +304,7 @@ function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; use
     savedRemote: () => opts.savedRemote ?? { url: null, tokenSaved: false, fingerprint: null },
     confirmReplace: async (prompt) => { replaces.push(prompt.current); return opts.replace ?? true },
     confirmSwitch: async (prompt) => { switches.push({ from: prompt.from, to: prompt.to }); return opts.useEncrypted ?? true },
+    tailnetView: async () => opts.tailnet ?? { running: true, suffix: 'tail1234.ts.net', peerIps: new Set(['100.101.102.103']), peerNames: new Set<string>() },
     onState: (s) => states.push(s),
     save: async (input) => { saved.push(input); return opts.saveFails ? { ok: false, error: 'Could not save studio-backend.json.' } : { ok: true } },
     saveBlocked: () => opts.saveBlocked ?? null,
@@ -396,6 +397,40 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     await until(() => replaced.last().step === 'paired')
     expect(replaced.replaces).toEqual(['https://adf.example.com'])
     expect(replaced.saved).toHaveLength(1)
+  })
+
+  it('re-review 3: only this tailnet\'s ts.net names and Tailscale peers qualify; without Tailscale nothing switches', async () => {
+    const offered = [
+      { url: 'https://evil.ts.net', kind: 'tailscale-https' as const, encrypted: true },
+      { url: 'https://agent-1-pc.other9999.ts.net', kind: 'tailscale-https' as const, encrypted: true },
+      { url: 'http://100.64.9.9:7385', kind: 'tailnet' as const, encrypted: true },
+    ]
+    const p = pairSetup()
+    p.daemon.state.urls = offered
+    await p.flow.start({ url: LAN, allowInsecureHttp: true })
+    await p.flow.submitCode('654321')
+    p.daemon.decide(true)
+    await until(() => p.last().step === 'paired')
+    expect(p.switches).toEqual([])
+    expect(p.saved[0].url).toBe(LAN)
+
+    // This tailnet's own name qualifies.
+    const own = pairSetup()
+    own.daemon.state.urls = [...offered, { url: 'https://agent-1-pc.tail1234.ts.net', kind: 'tailscale-https', encrypted: true }]
+    await own.flow.start({ url: LAN, allowInsecureHttp: true })
+    await own.flow.submitCode('654321')
+    own.daemon.decide(true)
+    await until(() => own.last().step === 'paired')
+    expect(own.saved[0].url).toBe('https://agent-1-pc.tail1234.ts.net')
+
+    // Without Tailscale: not even a tailnet address the host lists.
+    const none = pairSetup({ tailnet: { running: false, suffix: null, peerIps: new Set(['100.101.102.103']), peerNames: new Set() } })
+    await none.flow.start({ url: LAN, allowInsecureHttp: true })
+    await none.flow.submitCode('654321')
+    none.daemon.decide(true)
+    await until(() => none.last().step === 'paired')
+    expect(none.switches).toEqual([])
+    expect(none.saved[0].url).toBe(LAN)
   })
 
   it('keeps plain LAN http, with its confirmation, when no encrypted address answers', async () => {
