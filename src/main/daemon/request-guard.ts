@@ -16,17 +16,33 @@
  *      allowed hosts, or `Sec-Fetch-Site: cross-site|same-site`, is refused.
  *      Browsers always attach these to cross-site fetches and form posts;
  *      the CLI and terminal app send neither. No CORS headers are ever sent.
- *   3. Bearer token (daemon-token.ts) on everything but GET/HEAD /health.
+ *   3. Bearer token (daemon-token.ts) on everything but GET/HEAD /health
+ *      and the pairing routes (/remote/hello, /pair/*, remote-access.md §5).
+ *      Two kinds of token (remote-access.md §4.4): the install's own token,
+ *      never accepted on a remote listener, and device tokens (`adfd_…`),
+ *      accepted only while remote access is on and never on a local-only
+ *      route (isDeviceRefusedRoute, which includes /remote-access).
  */
 
 import { isIP } from 'node:net'
 import { tokensEqual } from './daemon-token'
+import { isDeviceRefusedRoute } from './local-access'
+import { isDeviceTokenShape } from './remote-access/device-store'
+import { DEVICE_TOKEN_REFUSED_MESSAGE, type RequestAuth } from './remote-access/request-auth'
 
 export interface HostRule {
   /** Lowercase hostname, IPv6 without brackets. */
   host: string
   /** Required port; undefined = any port. */
   port?: number
+}
+
+/** Device tokens (remote-access.md §4): the store, and whether remote access is on. */
+export interface DeviceTokenAuthority {
+  check(token: string): { kind: 'device'; id: string; label: string } | { kind: 'revoked'; label: string; revokedAt: string } | { kind: 'unknown' }
+  enabled(): boolean
+  /** This computer's name, for the refusal sentences. */
+  computerName(): string
 }
 
 export interface DaemonRequestGuardOptions {
@@ -42,11 +58,29 @@ export interface DaemonRequestGuardOptions {
    * accepted too — DNS rebinding always carries a hostname, never an IP.
    */
   ipLiteralPort?: number | null | (() => number | null)
+  /** Device tokens; absent = only the install's token is accepted. */
+  deviceTokens?: DeviceTokenAuthority | null
+}
+
+/** Where the request came in: a remote listener (remote-access.md §3.2) or the loopback one. */
+export interface GuardConnection {
+  remoteListener: boolean
 }
 
 export interface GuardRejection {
   status: 401 | 403
   body: { error: string; code: string }
+}
+
+export const MASTER_TOKEN_REMOTE_MESSAGE =
+  'This computer\'s own token is not accepted from other computers. Pair this computer, or create a token for it on the host: adf daemon devices add <label>.'
+
+/** Routes that need no bearer token: the liveness check and the pairing routes (they answer 404 while remote access is off). */
+export function isUnauthenticatedRoute(method: string, path: string): boolean {
+  if ((method === 'GET' || method === 'HEAD') && path === '/health') return true
+  if (method === 'GET' && path === '/remote/hello') return true
+  if (method === 'POST' && path === '/pair/claim') return true
+  return method === 'GET' && /^\/pair\/claims\/[^/]+$/.test(path)
 }
 
 export const TOKEN_REQUIRED_MESSAGE =
@@ -151,8 +185,47 @@ export class DaemonRequestGuard {
     return this.token !== null
   }
 
-  /** null = allowed. `path` is the URL path without the query string. */
+  /** null = allowed. `path` is the URL path without the query string. A request on the loopback listener. */
   check(method: string, path: string, headers: Record<string, HeaderValue>): GuardRejection | null {
+    return this.authenticate(method, path, headers, { remoteListener: false }).rejection
+  }
+
+  /** The guard's verdict and, when allowed, who the request authenticated as. */
+  authenticate(method: string, path: string, headers: Record<string, HeaderValue>, conn: GuardConnection): { rejection: GuardRejection | null; auth: RequestAuth } {
+    const none: RequestAuth = { kind: 'none' }
+    const rejection = this.crossSite(headers)
+    if (rejection) return { rejection, auth: none }
+    if (isUnauthenticatedRoute(method, path)) return { rejection: null, auth: none }
+    if (!this.token) {
+      // No token configured (bare test servers): a remote listener never runs without one.
+      return conn.remoteListener ? { rejection: unauthorized(), auth: none } : { rejection: null, auth: none }
+    }
+    const auth = single(headers.authorization) ?? ''
+    const match = /^Bearer\s+(.+)$/i.exec(auth.trim())
+    if (!match) return { rejection: unauthorized(), auth: none }
+    const presented = match[1].trim()
+    const devices = this.options.deviceTokens
+    if (devices && isDeviceTokenShape(presented)) {
+      const result = devices.check(presented)
+      if (result.kind === 'revoked') {
+        return { rejection: { status: 401, body: { error: `This computer's access to ${devices.computerName()} was removed on ${result.revokedAt.slice(0, 10)}. Pair it again to reconnect.`, code: 'device_revoked' } }, auth: none }
+      }
+      // 'unknown' falls through: an operator-chosen ADF_DAEMON_TOKEN may start with the prefix too.
+      if (result.kind === 'device') {
+        if (!devices.enabled()) {
+          return { rejection: { status: 401, body: { error: `Remote access is turned off on ${devices.computerName()}. Turn it on there (Settings → Backend → This computer, or adf daemon remote on).`, code: 'remote_access_off' } }, auth: none }
+        }
+        if (isDeviceRefusedRoute(method, path)) return { rejection: forbidden(DEVICE_TOKEN_REFUSED_MESSAGE, 'device_token_refused'), auth: none }
+        return { rejection: null, auth: { kind: 'device', deviceId: result.id, label: result.label } }
+      }
+    }
+    if (!tokensEqual(presented, this.token)) return { rejection: unauthorized(), auth: none }
+    if (conn.remoteListener) return { rejection: { status: 401, body: { error: MASTER_TOKEN_REMOTE_MESSAGE, code: 'master_token_remote' } }, auth: none }
+    return { rejection: null, auth: { kind: 'master' } }
+  }
+
+  /** Checks 1 and 2: Host allow-list, Origin and Sec-Fetch-Site. */
+  private crossSite(headers: Record<string, HeaderValue>): GuardRejection | null {
     const rules = this.rules
     if (rules) {
       const parsed = parseHostHeader(single(headers.host) ?? '')
@@ -169,14 +242,6 @@ export class DaemonRequestGuard {
     if (site === 'cross-site' || site === 'same-site') {
       return forbidden('Cross-site requests are not accepted by the ADF daemon.', 'cross_origin')
     }
-
-    if (this.token && !((method === 'GET' || method === 'HEAD') && path === '/health')) {
-      const auth = single(headers.authorization) ?? ''
-      const match = /^Bearer\s+(.+)$/i.exec(auth.trim())
-      if (!match || !tokensEqual(match[1].trim(), this.token)) {
-        return { status: 401, body: { error: TOKEN_REQUIRED_MESSAGE, code: 'unauthorized' } }
-      }
-    }
     return null
   }
 
@@ -190,6 +255,10 @@ export class DaemonRequestGuard {
     const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
     return hostMatches(host, port, rules, this.ipLiteralPort)
   }
+}
+
+function unauthorized(): GuardRejection {
+  return { status: 401, body: { error: TOKEN_REQUIRED_MESSAGE, code: 'unauthorized' } }
 }
 
 function forbidden(error: string, code: string): GuardRejection {

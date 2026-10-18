@@ -54,6 +54,7 @@ import type { AdapterStatus } from '../../shared/types/channel-adapter.types'
 import type { BrowserSessionEvent, ContainerPhaseEvent } from '../../shared/types/compute.types'
 import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
+import type { RemoteAccessEvent } from '../../shared/types/remote-access.types'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
 import { configRevision, type ResourceWriter, type RevisionedWorkspace } from '../runtime/resource-revisions'
@@ -280,6 +281,8 @@ export interface ClientPushPayloads {
   compute_phase: ContainerPhaseEvent
   /** COMPUTE_BROWSER_SESSION. */
   browser_session: BrowserSessionEvent
+  /** Remote access changed (remote-access.md §8): re-read GET /remote-access. No token, no code. */
+  remote_access: RemoteAccessEvent
 }
 
 export type ClientPushTopic = keyof ClientPushPayloads
@@ -288,6 +291,7 @@ export const CLIENT_PUSH_TOPICS: readonly ClientPushTopic[] = [
   'config_changed', 'inbox', 'workspace_data', 'approvals', 'mesh', 'inter_agent_message', 'templates',
   'tracked_dirs', 'file_renamed', 'agent_path_changed', 'autostart', 'autostart_overflow', 'adf_file_created', 'mcp_install', 'adapter_install',
   'sandbox_install', 'mcp_status', 'adapter_status', 'compute_phase', 'browser_session', 'daemon_orphan_hold',
+  'remote_access',
 ]
 
 export type ClientPushFrame = {
@@ -363,7 +367,8 @@ export interface ClientDocumentHost {
   releaseHolder?(sessionId: string): Promise<unknown> | void
 }
 
-export type ClientSessionEndReason = 'ended' | 'expired' | 'shutdown'
+/** `revoked`: its device token was revoked (remote-access.md §4.7). */
+export type ClientSessionEndReason = 'ended' | 'expired' | 'shutdown' | 'revoked'
 
 export interface ClientSessionEnded {
   sessionId: string
@@ -389,6 +394,8 @@ export interface ClientStreamSink {
   once(event: 'drain', listener: () => void): unknown
   destroy(): void
   readonly destroyed?: boolean
+  /** Write a last chunk and end the stream gracefully (revocation's `session.ended`). */
+  end?(chunk: string, cb: () => void): void
 }
 
 export interface ClientSessionStats {
@@ -478,6 +485,8 @@ class ClientSession {
   umbilical = false
   /** The client's process on this machine, when a local client gave it (POST /client/sessions `pid`). */
   pid: number | null = null
+  /** Opened with a device token (another computer, remote-access.md §4): never holds a Studio-requested stop. */
+  deviceId: string | null = null
 
   constructor(
     readonly id: string,
@@ -574,14 +583,15 @@ export class ClientSessionRegistry {
 
   // --- sessions ---------------------------------------------------------------
 
-  create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean; pid?: number }): { sessionId: string; epoch: string } {
+  create(input: { client: string; version: string; exitDaemonWhenClosed?: boolean; umbilical?: boolean; pid?: number; deviceId?: string | null }): { sessionId: string; epoch: string } {
     if (this.disposed || this.closing) throw new ClientSessionError('The daemon is shutting down.', 503, 'unavailable')
     const session = new ClientSession(randomUUID(), input.client, input.version, input.exitDaemonWhenClosed === true, this.ringFrames, this.ringChars)
     session.umbilical = input.umbilical === true
     session.pid = typeof input.pid === 'number' && Number.isInteger(input.pid) && input.pid > 0 ? input.pid : null
+    session.deviceId = input.deviceId ?? null
     this.sessions.set(session.id, session)
     this.armExpiry(session)
-    this.log(`Client session ${session.id} opened by ${input.client} ${input.version}${session.exitDaemonWhenClosed ? ' (stops the daemon when it expires)' : ''}`)
+    this.log(`Client session ${session.id} opened by ${input.client} ${input.version}${session.deviceId ? ` from device ${session.deviceId}` : ''}${session.exitDaemonWhenClosed ? ' (stops the daemon when it expires)' : ''}`)
     this.endDeadPredecessors(session)
     if (session.exitDaemonWhenClosed && this.orphanPending) {
       // A new owner (Studio came back): its own expiry decides from now on.
@@ -618,6 +628,59 @@ export class ClientSessionRegistry {
     return this.sessions.size
   }
 
+  /**
+   * Sessions of this computer's clients (not opened with a device token).
+   * Only these hold a Studio-requested stop (remote-access.md §3.6, owner
+   * decision O3: Studio asks before it stops a daemon devices use).
+   */
+  get localSize(): number {
+    let n = 0
+    for (const session of this.sessions.values()) if (!session.deviceId) n++
+    return n
+  }
+
+  /** Open sessions opened with this device's token. */
+  sessionsOfDevice(deviceId: string): number {
+    let n = 0
+    for (const session of this.sessions.values()) if (session.deviceId === deviceId) n++
+    return n
+  }
+
+  /** True while the device's session has an open stream. */
+  deviceStreaming(deviceId: string): boolean {
+    for (const session of this.sessions.values()) if (session.deviceId === deviceId && session.connection) return true
+    return false
+  }
+
+  /**
+   * The device's token was revoked (or remote access turned off; `deviceId`
+   * null = every device): each of its sessions gets `session.ended` on its
+   * stream, then ends now (documents released). Returns how many ended.
+   */
+  async endDeviceSessions(deviceId: string | null, reason: string): Promise<number> {
+    const ending = [...this.sessions.values()].filter(s => s.deviceId !== null && (deviceId === null || s.deviceId === deviceId))
+    for (const session of ending) {
+      const sink = session.connection?.sink
+      if (sink && !sink.destroyed) {
+        // Let the frame leave before the stream is destroyed (an HTTP response ends gracefully; at most 1 s).
+        const frame = sseControl('session.ended', { reason })
+        try {
+          if (sink.end) {
+            const end = sink.end.bind(sink)
+            await new Promise<void>(resolve => {
+              const timer = setTimeout(resolve, 1_000)
+              end(frame, () => { clearTimeout(timer); resolve() })
+            })
+          } else {
+            sink.write(frame)
+          }
+        } catch { /* closing anyway */ }
+      }
+      await this.finish(session, 'revoked')
+    }
+    return ending.length
+  }
+
   /** Every open session, for clients deciding whether others are connected (no ids of other sessions). */
   list(): Array<{ client: string; version: string; exitDaemonWhenClosed: boolean }> {
     return [...this.sessions.values()].map((s) => ({ client: s.client, version: s.version, exitDaemonWhenClosed: s.exitDaemonWhenClosed }))
@@ -638,12 +701,12 @@ export class ClientSessionRegistry {
    */
   holdForQuit(why: string): void {
     this.orphanPending = why
-    const clients = [...this.sessions.values()].map((s) => s.client).join(', ')
-    this.log(`Not stopping the daemon yet: ${why}, but ${this.sessions.size} other client session(s) are open (${clients}); it stops when the last one ends`)
+    const clients = [...this.sessions.values()].filter((s) => !s.deviceId).map((s) => s.client).join(', ')
+    this.log(`Not stopping the daemon yet: ${why}, but ${this.localSize} other client session(s) are open (${clients}); it stops when the last one ends`)
     this.publishPush('daemon_orphan_hold', {
       holding: true,
       reason: 'Studio quit; the daemon it started keeps running while you are connected and stops when the last client disconnects',
-      sessions: this.sessions.size,
+      sessions: this.localSize,
     })
   }
 
@@ -1059,7 +1122,7 @@ export class ClientSessionRegistry {
     } else {
       for (const agentId of documents) await this.releaseQuietly(session.id, agentId)
     }
-    this.log(`Client session ${session.id} (${session.client}) ${opts.replacedBy ? `ended: replaced by ${opts.replacedBy}` : reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
+    this.log(`Client session ${session.id} (${session.client}) ${opts.replacedBy ? `ended: replaced by ${opts.replacedBy}` : reason === 'expired' ? `expired ${Math.round(this.expiryMs / 1000)} s after its stream closed` : reason === 'revoked' ? `ended: device ${session.deviceId} lost access` : 'ended'}${documents.length ? `; released ${documents.length} document(s)` : ''}`)
     this.notifyEnded(session, reason, documents)
     if (reason === 'expired' && session.exitDaemonWhenClosed && !opts.replacedBy) this.applyOrphanRule(session)
     else if (this.orphanPending) this.recheckOrphan(reason !== 'expired', `${session.client} session ${session.id} ${reason}`)
@@ -1072,15 +1135,15 @@ export class ClientSessionRegistry {
       this.log(`Not stopping the daemon: ${why}, but this daemon run was started by ${this.options.startedBy ?? 'an unknown launcher'}, not Studio`)
       return
     }
-    if (this.sessions.size > 0) {
-      // Re-checked whenever another session ends (recheckOrphan).
+    if (this.localSize > 0) {
+      // Re-checked whenever another session ends (recheckOrphan). Device sessions do not hold it (remote-access.md §3.6).
       this.orphanPending = why
-      const clients = [...this.sessions.values()].map(s => s.client).join(', ')
-      this.log(`Not stopping the daemon yet: ${why}, but ${this.sessions.size} other client session(s) are open (${clients}); it stops when the last one ends`)
+      const clients = [...this.sessions.values()].filter(s => !s.deviceId).map(s => s.client).join(', ')
+      this.log(`Not stopping the daemon yet: ${why}, but ${this.localSize} other client session(s) are open (${clients}); it stops when the last one ends`)
       this.publishPush('daemon_orphan_hold', {
         holding: true,
         reason: `${session.client} closed; the daemon it started keeps running while you are connected and stops when the last client disconnects`,
-        sessions: this.sessions.size,
+        sessions: this.localSize,
       })
       return
     }
@@ -1089,7 +1152,7 @@ export class ClientSessionRegistry {
 
   /** `deferred`: a request ended the session; it is answered before the shutdown closes the server. */
   private recheckOrphan(deferred: boolean, trigger: string): void {
-    if (!this.orphanPending || this.sessions.size > 0) return
+    if (!this.orphanPending || this.localSize > 0) return
     const why = `${this.orphanPending}; the last other client session ended (${trigger})`
     this.orphanPending = null
     this.shutDown(why, deferred)

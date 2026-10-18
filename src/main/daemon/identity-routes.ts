@@ -9,6 +9,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
+import { DEVICE_TOKEN_REFUSED_MESSAGE, getRequestAuth } from './remote-access/request-auth'
 import { DaemonIdentityError, type DaemonIdentity } from './daemon-identity'
 import { AgentCreateError, type CreateAgentInput, type DaemonAgentFactory } from './daemon-agent-factory'
 import { isLoopbackAddress, localAccessRefusal, type LocalAccessOptions } from './local-access'
@@ -27,6 +28,11 @@ export { isLoopbackAddress }
 
 /** Local-only routes (local-access.ts): false = a 403 `loopback_only` was sent. */
 export function requireLocalCaller(request: FastifyRequest, reply: FastifyReply, opts: LocalAccessOptions, what: string): boolean {
+  // A device token is never "this machine", whatever the peer address (an SSH tunnel to loopback): remote-access.md §4.5.
+  if (getRequestAuth(request.raw)?.kind === 'device') {
+    void reply.code(403).send({ error: DEVICE_TOKEN_REFUSED_MESSAGE, code: 'device_token_refused' })
+    return false
+  }
   const refusal = localAccessRefusal({ remoteAddress: request.socket?.remoteAddress, headers: request.headers }, opts)
   if (!refusal) return true
   void reply.code(403).send({

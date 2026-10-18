@@ -43,6 +43,8 @@ import { registerClientLifecycleRoutes } from './client-lifecycle-routes'
 import { registerOAuthRelayRoutes } from './oauth-relay-routes'
 import { registerFsFolderRoutes } from './fs-folder-routes'
 import { registerIdentityTrustRoutes } from './identity-trust-routes'
+import { registerRemoteAccessRoutes } from './remote-access-routes'
+import type { RemoteAccessService } from '../remote-access/service'
 
 /** Dependencies of route modules that DaemonHttpApiOptions does not carry. Every field is optional. */
 export interface DaemonRouteDeps {
@@ -58,6 +60,8 @@ export interface DaemonRouteDeps {
   importBodyLimit?: number
   /** Client sessions and their event stream (client-sessions.ts). Absent: the one daemon/index.ts registered (registerDaemonClientSessions), else one fed by the runtime, the approvals hub and the event bus. */
   clientSessions?: ClientSessionRegistry
+  /** Remote access (remote-access/service.ts): listeners, device tokens, pairing. Absent: the routes answer 503 / 404. */
+  remoteAccess?: RemoteAccessService
 }
 
 export interface DaemonRouteContext {
@@ -99,6 +103,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerOAuthRelayRoutes,
   registerFsFolderRoutes,
   registerIdentityTrustRoutes,
+  registerRemoteAccessRoutes,
 ]
 
 export function registerDaemonRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {

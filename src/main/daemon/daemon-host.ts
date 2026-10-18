@@ -209,7 +209,8 @@ export class DaemonHost {
       onTrackedDirectoriesChanged: this.onTrackedDirectoriesChanged,
       security: {
         token: this.token,
-        allowedHosts: () => daemonHostAllowList(this.host, this.boundPort(), this.allowedHosts),
+        // Remote access adds this machine's names and its listening addresses (remote-access.md §3.5).
+        allowedHosts: () => daemonHostAllowList(this.host, this.boundPort(), [...this.allowedHosts, ...(this.routes?.remoteAccess?.allowedHostEntries() ?? [])]),
         ipLiteralPort: () => (loopback ? null : this.boundPort()),
         behindProxy: this.behindProxy,
         localProof: this.localProof,
@@ -218,6 +219,9 @@ export class DaemonHost {
     await this.server.listen({ host: this.host, port: this.port })
     this.writePidFile()
     this.installSignalHandlers()
+    // Remote listeners hand their requests to this Fastify instance (remote-access.md §3.2).
+    const server = this.server
+    await this.routes?.remoteAccess?.attach((req, res) => server.routing(req, res))
     return { host: this.host, port: this.port }
   }
 
@@ -352,6 +356,10 @@ export class DaemonHost {
       try { await hook() } catch (err) {
         console.error('[ADF Daemon] Shutdown-start hook failed:', err)
       }
+    }
+    // Remote listeners and the mDNS announcement go first; their sockets are not the server's.
+    try { await this.routes?.remoteAccess?.shutdown() } catch (err) {
+      console.error('[ADF Daemon] Remote access shutdown failed:', err)
     }
     try {
       if (this.server) {

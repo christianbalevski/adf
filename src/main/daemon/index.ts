@@ -19,6 +19,8 @@ import { UvxPackageResolver } from '../services/uvx-package-resolver'
 import { killAllHostExecs } from '../services/host-exec.service'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { DaemonHost } from './daemon-host'
+import { RemoteAccessService } from './remote-access/service'
+import { isLoopbackName } from './request-guard'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { noteAutostartReport } from './tracked-dirs'
@@ -40,7 +42,7 @@ import { killAllTracked } from '../utils/child-registry'
 import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
-import { takeLaunchEnv } from './routes/meta-routes'
+import { CLIENT_API_VERSION, takeLaunchEnv } from './routes/meta-routes'
 import { daemonGapRouteDeps } from './routes/gap-deps'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
 import { applySettingLive } from './live-setting'
@@ -376,6 +378,22 @@ const client = createDaemonClientSessions({
     },
   },
 })
+// --- Remote access (docs/design/remote-access.md) -------------------------------
+// Other computers reach this daemon on its private and Tailscale addresses
+// when remote-access.json says so, whoever started it. Listeners open after
+// the loopback one (DaemonHost.start). A non-loopback ADF_DAEMON_HOST is the
+// older env path and wins.
+const remoteAccess = new RemoteAccessService({
+  settingsDir: dirname(settingsPath),
+  port,
+  clientApiVersion: CLIENT_API_VERSION,
+  envBindHost: isLoopbackName(host) ? null : host,
+  sessions: () => client.sessions,
+  emit: (event) => {
+    client.sessions.publishPush('remote_access', event)
+    withSource('system:daemon', () => emitUmbilicalEvent({ event_type: 'daemon.remote_access', payload: { ...event } }))
+  },
+})
 agentFactory.startTemplatesWatcher()
 // Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.
 void sweepStaleSnapshots().then((removed) => {
@@ -401,7 +419,7 @@ const daemon = new DaemonHost({
   // Services the W1-D gap routes reach (routes/gap-deps.ts): emergency stop
   // stops the mesh server and sandbox workers; MCP admin shares the uv
   // install and the app-level OAuth store (DaemonAppOAuthStore) the builder uses.
-  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher },
+  routes: { startedBy, gaps: daemonGapRouteDeps({ codeSandboxService, meshServer, uvManager, mcpAppOAuthStore: ownerIdentity.mcpOAuth }), trackedDirWatcher, remoteAccess },
   // POST/DELETE /tracked-dirs: the mesh resolves agents by tracked root, so
   // it must see the new list now, not at the next boot (Studio parity).
   onTrackedDirectoriesChanged: (dirs) => meshManager.setTrackedDirectories(dirs),

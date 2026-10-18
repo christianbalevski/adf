@@ -169,7 +169,7 @@ Rationale for refusing the master token remotely: it cannot be revoked without b
 
 A device token MUST be refused (403 `device_token_refused`), on every listener, for:
 
-- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, client lifecycle);
+- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, credential reload, `GET /client/sessions`), except the three client-session routes whose handlers decide per request: `POST /client/sessions`, `POST /client/sessions/:id/quit`, `PUT /client/sessions/:id/exit-when-closed` (a remote Studio opens and quits its session; `exitDaemonWhenClosed` and `stopDaemon` still refuse a device token through `requireLocalCaller`). Code: `isDeviceRefusedRoute` (local-access.ts);
 - every `/remote-access` management route (§11.2): a device cannot mint tokens, list or revoke devices, open pairing or turn remote access on or off.
 
 `isLocalOnlyRoute` gains `/remote-access` and `/remote-access/*`; `requireLocalCaller` gains the token-kind check, so the refusal does not depend on the peer address (an SSH tunnel to loopback with a device token is still refused). The management routes also require the local proof in every mode, as `POST /identity/import` does, because they create credentials.
@@ -323,7 +323,7 @@ Settings → Backend → This computer (Studio in `local` mode; in `embedded` or
 | Device first connection after start, disconnect | Devices list (live); no notice | `devices list` | Line |
 | Refusals (`master_token_remote`, `device_revoked`, rate limit) | — | — | Rate-limited line with count |
 
-Studio gets them through the daemon event bus type `remote_access` (client push topic `remote_access`): `{type, deviceId?, label?, claimId?, reason?}`; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
+Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type` one of the rows above plus `networks_changed` (§3.3.1); it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
 
 ## 9. Client side
 
@@ -461,6 +461,7 @@ Body `{error: string, code: string}` as today; `error` is the sentence clients s
 | 409 | `claim_decided` | Decision on a claim already decided |
 | 409 | `env_bind` | Enable while `ADF_DAEMON_HOST` is non-loopback |
 | 409 | `network_category_os` | `trustNetwork` on Windows, where the OS network category decides (§3.3.1) |
+| 409 | `network_unidentified` | `trustNetwork: true` where no network with a default gateway and a known gateway MAC is found |
 | 429 | `rate_limited` | Per-address limits; `Retry-After` header |
 | 502 | `tailscale_failed` | The `tailscale` command failed; body adds `output` and `command` |
 | 503 | `devices_unreadable` | `daemon-devices.json` cannot be read; no device token is accepted |
@@ -504,4 +505,4 @@ The owner answered the questions of the first draft on 2026-10-18.
 | O3 | Paired devices keep a Studio-started daemon alive after Studio quits? | No. Studio's quit asks every time a device is connected: "*N* computers are connected. Keep the daemon running for them, or stop it?" Nothing is remembered (§3.6). |
 | O4 | Token shown once, or a standing token with Show? | Shown once at creation; only the hash is stored (§4.3, §4.6). |
 
-Contract changes made with these decisions (additive, against 1c2e5441): `RemoteAddress.network`; `PUT /remote-access` body `trustNetwork` and optional `enabled`; error `409 network_category_os`; `remote-access.json` `privateNetworks`.
+Contract changes made with these decisions (additive, against 1c2e5441): `RemoteAddress.network`; `PUT /remote-access` body `trustNetwork` and optional `enabled`; errors `409 network_category_os` and `409 network_unidentified`; `remote-access.json` `privateNetworks`; event type `networks_changed`; the device-token refusal list of §4.5 spelled out per route.
