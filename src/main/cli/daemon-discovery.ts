@@ -1,5 +1,5 @@
 /**
- * Find ADF daemons that allow other computers to connect
+ * Find ADF daemons with remote access on
  * (docs/design/remote-access.md §5.1, §5.2, §9.2): `_adf-daemon._tcp` on
  * the LAN (mDNS), and `GET /remote/hello` on each online tailnet peer
  * (multicast does not cross WireGuard). Entries merge by fingerprint; a

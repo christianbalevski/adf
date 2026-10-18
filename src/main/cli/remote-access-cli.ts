@@ -34,8 +34,8 @@ export const REMOTE_USAGE = `Usage: adf daemon remote on [--name <name>] | off |
        adf daemon devices revoke <id|label>  Disconnect that computer and void its token
        adf daemon pair                       Open a pairing window and show its code
 
-Lets other computers reach this computer's ADF daemon (no restart; agents
-keep running). It listens only on private-network and Tailscale addresses,
+Remote access: devices you pair or add use this computer's ADF daemon (no
+restart; agents keep running). It listens only on private-network and Tailscale addresses,
 never on a network the OS (Windows) or you (macOS, Linux) did not mark
 private. A device token gives full control of this computer's agents: it is
 as powerful as your owner seed phrase.`

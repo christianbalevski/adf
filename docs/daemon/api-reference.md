@@ -17339,7 +17339,7 @@ Operation `updateRemoteAccess` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `enabled` | boolean |  | On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept. |
-| `name` | string |  | The computer name other computers see |
+| `name` | string |  | The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name |
 | `trustNetwork` | boolean |  | macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os` (the OS category decides). Turning remote access on also marks them. |
 
 ```json
@@ -19707,6 +19707,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `running` | boolean | yes |  |
 | `port` | integer | yes |  |
 | `host` | string | yes |  |
+| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility. |
 
 <a id="schema-meshserverstatus"></a>
 
@@ -19717,6 +19718,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `running` | boolean | yes |  |
 | `port` | integer | yes |  |
 | `host` | string | yes |  |
+| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility. |
 
 <a id="schema-meshstatus"></a>
 
@@ -22580,7 +22582,7 @@ The open pairing window. `code` is shown on this computer only.
 |---|---|---|---|
 | `enabled` | boolean | yes |  |
 | `state` | `"off"` \| `"on"` \| `"no_address"` \| `"env_bind"` \| `"error"` | yes |  |
-| `message` | string | yes | The status line, e.g. "Reachable from other computers at 192.168.1.20." or "Not reachable on this network (Public)." |
+| `message` | string | yes | The status line, e.g. "Listening on 192.168.1.20." or "Not reachable on this network (Public)." |
 | `problem` | string \| null | yes |  |
 | `name` | string | yes |  |
 | `fingerprint` | string \| null | yes |  |
@@ -22610,7 +22612,7 @@ The open pairing window. `code` is shown on this computer only.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `enabled` | boolean |  | On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept. |
-| `name` | string |  | The computer name other computers see |
+| `name` | string |  | The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name |
 | `trustNetwork` | boolean |  | macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os` (the OS category decides). Turning remote access on also marks them. |
 
 <a id="schema-remotedeviceinput"></a>

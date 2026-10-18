@@ -81,7 +81,7 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf daemon restart` | Stop, then start in the background |
 | `adf daemon logs [-f] [-n <lines>]` | Show the background daemon's log (-f follows) |
 | `adf daemon token` | Print this machine's daemon access token (this machine only; other computers get a device token: daemon devices add / pair) |
-| `adf daemon remote on\|off\|status` | Allow other computers to connect (live, no restart); also trust\|untrust, serve on\|off |
+| `adf daemon remote on\|off\|status` | Remote access (live, no restart); also trust\|untrust, serve on\|off |
 | `adf daemon devices [list\|add <label>\|revoke <id\|label>]` | Computers with a device token |
 | `adf daemon pair` | Open a pairing window and show its code |
 
@@ -110,7 +110,7 @@ ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity
 secrets and stop then work only from adf on this host, against its loopback port.
 
-remote on lets other computers connect without any of that: the daemon
+remote on (remote access) does this without any of that: the daemon
 listens on this computer's private-network and Tailscale addresses too (no
 restart), and each other computer gets its own device token (pair, or
 devices add). A device token is as powerful as your owner seed phrase.

@@ -87,6 +87,12 @@ export interface RemoteAccessServiceOptions {
   now?: () => number
   /** Test seam: the address a candidate is actually bound to (tests map a private address to loopback). */
   bindAddress?: (address: string) => string
+  /**
+   * The runtime alias (settings `runtimeAlias`): this computer's one name for
+   * other computers (mDNS, hello, pairing). Set: PUT name writes it. Absent or
+   * blank: remote-access.json's `name` (the host name by default).
+   */
+  runtimeAlias?: { get(): unknown; set(name: string): void }
 }
 
 interface DeviceConnection {
@@ -175,7 +181,7 @@ export class RemoteAccessService {
         this.log(`[remote-access] pairing request from "${claim.deviceName}" at ${claim.address} (${claim.via}${claim.tailnetLogin ? `, ${claim.tailnetLogin}` : ''}): waiting for the owner`)
         this.emit({ type: 'claim_pending', claimId: claim.claimId, label: claim.deviceName })
       },
-    }, { now: this.now, host: () => ({ name: this.config.name, fingerprint: this.fingerprint ?? '' }) })
+    }, { now: this.now, host: () => ({ name: this.computerName, fingerprint: this.fingerprint ?? '' }) })
   }
 
   // --- state ---------------------------------------------------------------------
@@ -190,7 +196,7 @@ export class RemoteAccessService {
   }
 
   get computerName(): string {
-    return this.config.name
+    return cleanDisplayName(this.opts.runtimeAlias?.get(), 63) ?? this.config.name
   }
 
   get fingerprint(): string | null {
@@ -211,7 +217,7 @@ export class RemoteAccessService {
         return { kind: 'unknown' }
       },
       enabled: () => this.enabled,
-      computerName: () => this.config.name,
+      computerName: () => this.computerName,
     }
   }
 
@@ -358,7 +364,7 @@ export class RemoteAccessService {
       return
     }
     await this.announcer.announce({
-      name: this.config.name,
+      name: this.computerName,
       port: this.port,
       iface: lan.address,
       txt: { v: '1', fp: fingerprintOf(this.config.daemonId), pair: this.pairing.isOpen ? '1' : '0', api: String(this.opts.clientApiVersion) },
@@ -470,7 +476,7 @@ export class RemoteAccessService {
       state,
       message,
       problem: this.configProblem ?? this.store.problem ?? this.categories.problem,
-      name: this.config.name,
+      name: this.computerName,
       fingerprint: this.fingerprint,
       port: this.port,
       addresses,
@@ -492,11 +498,11 @@ export class RemoteAccessService {
   private stateLine(addresses: RemoteAddress[]): { state: RemoteAccessStatus['state']; message: string } {
     if (this.envBind) return { state: 'env_bind', message: `The daemon is bound to ${this.opts.envBindHost} by ADF_DAEMON_HOST; the remote access setting is not used.` }
     if (this.configProblem) return { state: 'error', message: this.configProblem }
-    if (!this.config.enabled) return { state: 'off', message: 'Not reachable from other computers.' }
+    if (!this.config.enabled) return { state: 'off', message: 'Remote access off.' }
     const on = addresses.filter(a => a.listening).map(a => a.address)
-    if (on.length > 0) return { state: 'on', message: `Reachable from other computers at ${on.join(', ')}.` }
+    if (on.length > 0) return { state: 'on', message: `Listening on ${on.join(', ')}.` }
     if (addresses.some(a => a.network === 'public')) return { state: 'no_address', message: 'Not reachable on this network (Public).' }
-    return { state: 'no_address', message: 'No private network address now; other computers cannot reach this computer.' }
+    return { state: 'no_address', message: 'No private network address now.' }
   }
 
   private urls(addresses: RemoteAddress[]): RemoteUrl[] {
@@ -537,7 +543,13 @@ export class RemoteAccessService {
     if (patch.name !== undefined) {
       const name = cleanDisplayName(patch.name, 63)
       if (!name) throw new RemoteAccessError('name must be 1-63 characters without control or bidi characters', 400, 'bad_request')
-      if (name !== this.config.name) {
+      if (this.opts.runtimeAlias) {
+        // One name: the runtime alias.
+        if (name !== this.computerName) {
+          this.opts.runtimeAlias.set(name)
+          this.log(`[remote-access] computer name set to "${name}" (runtime alias)`)
+        }
+      } else if (name !== this.config.name) {
         this.config = { ...this.config, name }
         this.save()
         this.log(`[remote-access] computer name set to "${name}"`)
@@ -656,7 +668,7 @@ export class RemoteAccessService {
       const result = this.pairing.decide(claimId, allow, (claim) => {
         const { device, token } = this.createDevice(claim.deviceName, decidedBy, 'paired')
         added = device
-        return { token, device: { id: device.id, label: device.label }, daemon: { name: this.config.name, fingerprint: this.fingerprint ?? '', urls: this.urls(this.addressViews()) } }
+        return { token, device: { id: device.id, label: device.label }, daemon: { name: this.computerName, fingerprint: this.fingerprint ?? '', urls: this.urls(this.addressViews()) } }
       })
       if (result.state === 'denied') {
         this.log(`[remote-access] pairing request ${claimId.slice(0, 6)}… denied by the owner`)
@@ -707,7 +719,7 @@ export class RemoteAccessService {
     if (hits.length >= HELLO_PER_MINUTE) throw new RemoteAccessError('Too many requests from this address. Wait a minute.', 429, 'rate_limited', { retryAfter: Math.ceil((60_000 - (now - hits[0])) / 1000) })
     hits.push(now)
     this.helloHits.set(address, hits)
-    return { v: 1, name: this.config.name, fingerprint: this.fingerprint as string, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion }
+    return { v: 1, name: this.computerName, fingerprint: this.fingerprint as string, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion }
   }
 
   async claim(raw: IncomingMessage, body: { code: string; deviceName: string; clientKind: 'studio' | 'cli' }): Promise<PairClaimAccepted> {

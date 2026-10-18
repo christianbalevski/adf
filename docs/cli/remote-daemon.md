@@ -37,21 +37,21 @@ Routes that hand secrets out directly (owner import, stored values, full
 `.adf` exports) additionally need the local proof file, which only the
 server's own user can read; that does not stop the path above.
 
-## Allow other computers to connect
+## Remote access
 
 The simplest way on a home or office network or a tailnet. No environment
 variable, no foreground daemon, no restart (agents keep running).
 
 ```bash
 # on the server (the computer whose agents you want to reach)
-adf daemon remote on          # also Settings → Backend → This computer in ADF Studio
+adf daemon remote on          # also Settings → Networking → Remote access in ADF Studio
 adf daemon pair               # shows a 6-digit code for 2 minutes
 
 # on your laptop
 adf pair                      # lists the ADF computers it finds; or: adf pair <host>
 ```
 
-- `adf pair` asks for the code; the server then asks "Allow *laptop*?".
+- `adf pair` asks for the code; the server then asks (Allow device).
   Only after Allow does the laptop get its own device token, saved in the
   OS keychain (or a file only you can read). `adf` then talks to that
   server by default (`adf remotes use local` switches back; `--remote

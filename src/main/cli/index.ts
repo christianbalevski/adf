@@ -1536,8 +1536,8 @@ Daemon:
   daemon token                   Print this machine's daemon access token
                                   (this machine only; other computers get a
                                   device token: daemon devices add / pair)
-  daemon remote on|off|status    Allow other computers to connect (live, no
-                                  restart); also trust|untrust, serve on|off
+  daemon remote on|off|status    Remote access (live, no restart); also
+                                  trust|untrust, serve on|off
   daemon devices [list|add <label>|revoke <id|label>]
                                   Computers with a device token
   daemon pair                    Open a pairing window and show its code

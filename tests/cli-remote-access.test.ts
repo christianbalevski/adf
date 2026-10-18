@@ -119,7 +119,7 @@ describe('adf daemon remote / devices (host)', () => {
     expect(h.out.join('')).toContain('Remote access: off')
     h.out.length = 0
     expect(await h.run('remote', 'on', '--name', 'agent-1 host')).toBe(0)
-    expect(h.out.join('')).toMatch(/Remote access: on\nReachable from other computers at 192\.168\.77\.10\./)
+    expect(h.out.join('')).toMatch(/Remote access: on\nListening on 192\.168\.77\.10\./)
     expect(h.err.join('')).toContain('same power as your seed phrase')
     h.out.length = 0
     expect(await h.run('devices', 'add', 'agent-2', 'laptop')).toBe(0)

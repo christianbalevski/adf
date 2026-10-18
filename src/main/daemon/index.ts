@@ -392,6 +392,8 @@ const remoteAccess = new RemoteAccessService({
   clientApiVersion: CLIENT_API_VERSION,
   envBindHost: isLoopbackName(host) ? null : host,
   sessions: () => client.sessions,
+  // One name for other computers: the runtime alias (Settings → Identity), else the host name.
+  runtimeAlias: { get: () => settings.get('runtimeAlias'), set: (name) => settings.set('runtimeAlias', name) },
   emit: (event) => {
     client.sessions.publishPush('remote_access', event)
     withSource('system:daemon', () => emitUmbilicalEvent({ event_type: 'daemon.remote_access', payload: { ...event } }))

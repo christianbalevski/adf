@@ -40,7 +40,7 @@ ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity
 secrets and stop then work only from adf on this host, against its loopback port.
 
-remote on lets other computers connect without any of that: the daemon
+remote on (remote access) does this without any of that: the daemon
 listens on this computer's private-network and Tailscale addresses too (no
 restart), and each other computer gets its own device token (pair, or
 devices add). A device token is as powerful as your owner seed phrase.

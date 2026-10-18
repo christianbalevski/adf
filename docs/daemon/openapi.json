@@ -30425,7 +30425,7 @@
           },
           "message": {
             "type": "string",
-            "description": "The status line, e.g. \"Reachable from other computers at 192.168.1.20.\" or \"Not reachable on this network (Public).\""
+            "description": "The status line, e.g. \"Listening on 192.168.1.20.\" or \"Not reachable on this network (Public).\""
           },
           "problem": {
             "type": [
@@ -30583,7 +30583,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 63,
-            "description": "The computer name other computers see"
+            "description": "The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name"
           },
           "trustNetwork": {
             "type": "boolean",

@@ -95,7 +95,7 @@ afterEach(async () => {
   }
 })
 
-async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli' } = {}): Promise<Harness> {
+async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; alias?: { value: unknown } } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-remote-routes-'))
   dirs.push(dir)
   const port = await freePort()
@@ -132,6 +132,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
     log: (line) => logs.push(line),
     emit: (event) => events.push(event),
     sessions,
+    ...(opts.alias ? { runtimeAlias: { get: () => opts.alias!.value, set: (name: string) => { opts.alias!.value = name } } } : {}),
   })
   const requestShutdown = vi.fn()
   server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }), {
@@ -182,12 +183,12 @@ describe('management routes (§11.2)', () => {
   it('turn on: listeners on the private address, status and events; turn off closes them', async () => {
     const h = await harness()
     const off = await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })
-    expect(off.json()).toMatchObject({ enabled: false, state: 'off', message: 'Not reachable from other computers.' })
+    expect(off.json()).toMatchObject({ enabled: false, state: 'off', message: 'Remote access off.' })
     expect(validate('RemoteAccessStatus', off.json())).toEqual([])
     const on = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { enabled: true, name: 'agent-1 host' } })
     const status = on.json()
     expect(validate('RemoteAccessStatus', status)).toEqual([])
-    expect(status).toMatchObject({ enabled: true, state: 'on', name: 'agent-1 host', message: `Reachable from other computers at ${LAN}.` })
+    expect(status).toMatchObject({ enabled: true, state: 'on', name: 'agent-1 host', message: `Listening on ${LAN}.` })
     expect(status.fingerprint).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/)
     expect(status.addresses).toEqual([{ address: LAN, family: 'IPv4', kind: 'lan', iface: 'eth0', network: 'private', listening: true, problem: null }])
     expect(status.urls.map((u: { url: string }) => u.url)).toEqual([`http://${LAN}:${h.port}`, `http://host-1.local:${h.port}`])
@@ -440,5 +441,28 @@ describe('quit with devices connected (§3.6, owner decision O3)', () => {
     expect(quit.json()).toMatchObject({ stopping: true, otherSessions: 0 })
     await new Promise(r => setTimeout(r, 80))
     expect(h.requestShutdown).toHaveBeenCalled()
+  })
+})
+
+describe('one name: the runtime alias (owner, 2026-10-18)', () => {
+  it('hello, the status, the pairing window and mDNS use the runtime alias; PUT name writes it', async () => {
+    const alias = { value: 'agent-1 desk' as unknown }
+    const h = await harness({ alias })
+    await turnOn(h)
+    const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
+    expect(status.name).toBe('agent-1 desk')
+    expect((await h.server.inject({ method: 'GET', url: '/remote/hello' })).json().name).toBe('agent-1 desk')
+    expect(h.announcer.announced.at(-1)?.name).toBe('agent-1 desk')
+    const opened = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed, payload: {} })).json()
+    expect(opened.name).toBe('agent-1 desk')
+    const renamed = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { name: 'agent-1 study' } })
+    expect(renamed.json().name).toBe('agent-1 study')
+    expect(alias.value).toBe('agent-1 study')
+  })
+
+  it('a blank alias falls back to the host name', async () => {
+    const h = await harness({ alias: { value: '  ' } })
+    await turnOn(h)
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().name).toBe('host-1')
   })
 })

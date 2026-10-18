@@ -108,7 +108,7 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
   io.stderr('Looking for ADF computers on this network and your tailnet…\n')
   const found = await (io.discover ?? discoverDaemons)(3_000)
   if (found.length === 0) {
-    io.stderr('No ADF computer found. On the other computer turn on "Allow other computers to connect" (or adf daemon remote on), then run adf pair <its address>.\n')
+    io.stderr('No ADF computer found. On the other computer turn on Remote access (Settings → Networking, or adf daemon remote on), then run adf pair <its address>.\n')
     return null
   }
   found.forEach((d, i) => io.stderr(`  ${i + 1}. ${d.name}  ${d.fingerprint}  ${d.url}  (${d.kind === 'tailnet' ? 'tailnet' : 'this network'}${d.pairingOpen ? ', ready to pair' : ''})\n`))
@@ -164,7 +164,7 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
     url = hostToUrl(parsed.host)
     const h = await fetchHello(url, io.fetch)
     if (!h) {
-      io.stderr(`${url} does not answer as an ADF daemon with remote access on. On that computer turn on "Allow other computers to connect" (or adf daemon remote on); an older ADF version cannot pair.\n`)
+      io.stderr(`${url} does not answer as an ADF daemon with remote access on. On that computer turn on Remote access (Settings → Networking, or adf daemon remote on); an older ADF version cannot pair.\n`)
       return 1
     }
     hello = h
