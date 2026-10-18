@@ -57,6 +57,21 @@ describe('updateRemotes: one lock for Studio and adf', () => {
     expect(Object.keys(loadRemotes(e).remotes)).toEqual(['desk'])
   })
 
+  it('Windows: EPERM while the lock is being recreated is retried with the same deadline, never a raw EPERM (re-review 1)', async () => {
+    const e = env()
+    const real = (await import('node:fs/promises')).open
+    let calls = 0
+    const eperm = () => Object.assign(new Error('EPERM: operation not permitted, open'), { code: 'EPERM' })
+    const flaky = (async (path: string, flags: string) => { if (++calls <= 3) throw eperm(); return real(path, flags) }) as typeof real
+    await updateRemotes(e, (file) => { file.remotes.desk = remote('DESK-2345') }, { platform: 'win32', openLock: flaky })
+    expect(calls).toBe(4)
+    expect(Object.keys(loadRemotes(e).remotes)).toEqual(['desk'])
+    const always = (async () => { throw eperm() }) as unknown as typeof real
+    await expect(updateRemotes(e, (file) => { file.default = null }, { platform: 'win32', openLock: always, waitMs: 150 })).rejects.toBeInstanceOf(RemotesLockedError)
+    // Elsewhere EPERM is a real permission problem: said as it is.
+    await expect(updateRemotes(e, (file) => { file.default = null }, { platform: 'linux', openLock: always, waitMs: 150 })).rejects.toMatchObject({ code: 'EPERM' })
+  })
+
   it('a change that throws writes nothing and releases the lock', async () => {
     const e = env()
     await expect(updateRemotes(e, (file) => { file.remotes.x = remote('X'); throw new Error('no') })).rejects.toThrow('no')

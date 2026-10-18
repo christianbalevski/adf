@@ -133,20 +133,37 @@ export function remotesFilePath(env: NodeJS.ProcessEnv = process.env): string {
  * file, let `mutate` change it, and write it back when it changed. Neither
  * program loses the other's change. `mutate` may throw: nothing is written.
  */
-export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: { staleMs?: number; waitMs?: number } = {}): Promise<T> {
+export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: {
+  staleMs?: number
+  waitMs?: number
+  /** Tests: the platform whose busy-file errors are retried, and the lock's open. */
+  platform?: NodeJS.Platform
+  openLock?: typeof open
+} = {}): Promise<T> {
   const path = remotesPath(env)
   const lock = `${path}.lock`
   const staleMs = opts.staleMs ?? REMOTES_LOCK_STALE_MS
   const deadline = Date.now() + (opts.waitMs ?? REMOTES_LOCK_WAIT_MS)
+  const openLock = opts.openLock ?? open
+  // Windows refuses to create a file another process is still deleting (EPERM): busy, as EEXIST is.
+  const busy = (err: unknown): boolean => {
+    const code = (err as NodeJS.ErrnoException)?.code
+    return code === 'EEXIST' || ((opts.platform ?? process.platform) === 'win32' && code === 'EPERM')
+  }
   await import('node:fs/promises').then((fs) => fs.mkdir(daemonSettingsDir(env), { recursive: true }))
   for (;;) {
     try {
-      const handle = await open(lock, 'wx')
+      const handle = await openLock(lock, 'wx')
       await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`)
       await handle.close()
       break
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      if (!busy(err)) throw err
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        if (Date.now() > deadline) throw new RemotesLockedError(path)
+        await new Promise((r) => setTimeout(r, 25))
+        continue
+      }
       const age = await stat(lock).then((s) => Date.now() - s.mtimeMs, () => 0)
       if (age > staleMs) {
         await unlink(lock).catch(() => {})
@@ -160,7 +177,19 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
     const file = await loadRemotesAsync(env)
     const before = JSON.stringify(file)
     const result = await mutate(file)
-    if (JSON.stringify(file) !== before) writeJson(path, file)
+    if (JSON.stringify(file) !== before) {
+      // Windows: the rename over the file fails while a reader has it open (EPERM, EBUSY): retried until the deadline.
+      for (;;) {
+        try {
+          writeJson(path, file)
+          break
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code
+          if ((opts.platform ?? process.platform) !== 'win32' || (code !== 'EPERM' && code !== 'EBUSY') || Date.now() > deadline) throw err
+          await new Promise((r) => setTimeout(r, 25))
+        }
+      }
+    }
     return result
   } finally {
     await unlink(lock).catch(() => {})
