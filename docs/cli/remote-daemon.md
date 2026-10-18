@@ -228,10 +228,12 @@ http needs the confirmation; use `serve` instead.
 
 ## ADF Studio
 
-Settings → Backend → Remote computer takes the same URL and token. Test
-connection checks the address, the token and the client API version;
-Switch to This Daemon shows what moves (client settings only) and restarts
-Studio connected to it. Details and every message:
+Settings → Connection → Add connection takes the same URL and token (or
+pairs with a code). Studio checks the address, the token and the client API
+version before it saves the connection; **Connect** shows what moves (client
+settings only) and restarts Studio connected to it. A computer paired with
+`adf pair` is already in Studio's list: Studio and `adf` share
+`cli-remotes.json` and the keychain. Details and every message:
 [Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).
 
 - Open agent…, New agent, Track folder and folder fields pick paths on

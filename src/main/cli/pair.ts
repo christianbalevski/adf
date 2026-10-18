@@ -34,8 +34,8 @@ export interface PairIo {
 const PAIR_USAGE = `Usage: adf pair [<host>[:<port>] | <url>] [--name <this computer's name>] [--as <remote name>] [--yes] [--default | --no-default]
 
 Pairs this computer with another computer's ADF daemon. On that computer,
-open a pairing window first: ADF Studio → Settings → Backend → This computer
-→ Pair a computer, or adf daemon pair. Type the 6-digit code it shows; it
+open a pairing window first: ADF Studio → Settings → Networking → Remote access
+→ Add device, or adf daemon pair. Type the 6-digit code it shows; it
 then asks whether to allow this computer.
 
 Without a host, adf lists the ADF computers it finds on this network and on

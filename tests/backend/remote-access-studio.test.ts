@@ -88,7 +88,7 @@ function hostSetup(over: Partial<RemoteAccessHostDeps> = {}) {
   }
 }
 
-describe('host panel (Settings → Backend → This computer)', () => {
+describe('host panel (Settings → Networking → Remote access)', () => {
   let h: ReturnType<typeof hostSetup>
   beforeEach(() => { h = hostSetup() })
   afterEach(() => h.host.dispose())

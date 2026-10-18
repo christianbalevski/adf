@@ -1,5 +1,5 @@
 /**
- * Settings → Backend: which backend Studio's IPC handlers use (design D9,
+ * Settings → Connection: which backend Studio's IPC handlers use (design D9,
  * docs/design/daemon-backend.md). The choice lives in `studio-backend.json`
  * in Studio's userData and takes effect at the next launch.
  *
@@ -57,7 +57,7 @@ export interface BackendSettingsView {
   daemon?: BackendDaemonStatus | null
   /**
    * A switch saved but waiting for turns in flight to finish ("Wait for Them
-   * to Finish"); `gaveUp` once the wait limit passed. Settings → Backend
+   * to Finish"); `gaveUp` once the wait limit passed. Settings → Connection
    * offers Finish Switch Now and Cancel Switch.
    */
   pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
@@ -85,7 +85,7 @@ export interface BackendDefaultSwitch {
   notDone: string[]
 }
 
-/** Settings → Backend's daemon line (MODE-02): what Studio is connected to. */
+/** Settings → Connection's daemon line (MODE-02): what Studio is connected to. */
 export interface BackendDaemonStatus {
   connection: 'connecting' | 'connected' | 'disconnected' | 'failed'
   /** While connecting: "Waiting for the ADF daemon (pid N)…" and the like. */
@@ -151,7 +151,7 @@ export type BackendSettingsSaveResult =
 
 // --- Remote mode (design §9, tracker W4-B) ---------------------------------
 
-/** Settings → Backend "Test connection": a draft URL and token, or the saved ones. */
+/** Settings → Connection "Test connection": a draft URL and token, or the saved ones. */
 export interface RemoteCheckRequest {
   /** Default: the saved URL. */
   url?: string

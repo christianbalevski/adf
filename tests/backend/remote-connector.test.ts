@@ -273,7 +273,7 @@ describe('version handshake and its failures', () => {
   })
 })
 
-describe('Settings → Backend "Test connection" (BACKEND_REMOTE_CHECK)', () => {
+describe('Settings → Connection "Test connection" (BACKEND_REMOTE_CHECK)', () => {
   it('uses the saved token only for the saved origin, and refuses unconfirmed plain http before any request', async () => {
     const seen: Seen[] = []
     const port = await listen(createHttpServer(daemonHandler(seen)))

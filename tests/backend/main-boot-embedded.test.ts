@@ -66,7 +66,7 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'registerAllIpcHandlers(openFile,showMainWindow)',
     'ipcMain.handle(adf:backend:settings-get)',
     'ipcMain.handle(adf:backend:settings-set)',
-    // W4-B: Settings → Backend's remote check and restart; the picker channels answer "daemon mode only".
+    // W4-B: Settings → Connection's remote check and restart; the picker channels answer "daemon mode only".
     'ipcMain.handle(adf:backend:remote-check)',
     'ipcMain.handle(adf:backend:restart-studio)',
     'ipcMain.handle(adf:remote:picker-respond)',

@@ -722,7 +722,7 @@ export interface AdfApi {
   // Emergency stop
   emergencyStop: () => Promise<{ success: boolean; error?: string }>
 
-  // Settings → Backend (studio-backend.json; applies at next launch)
+  // Settings → Connection (studio-backend.json; applies at next launch)
   /** The view never contains the remote token, only whether one is saved. */
   getBackendSettings: () => Promise<BackendSettingsView>
   setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>

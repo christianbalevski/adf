@@ -127,9 +127,9 @@ let fileToOpen: string | null = null
 let daemonMode: DaemonModeHandle | null = null
 // Set at boot in embedded mode only.
 let embeddedIpc: EmbeddedIpc | null = null
-// Set when Settings → Backend confirmed a switch: the quit that follows is a restart into it.
+// Set when Settings → Connection confirmed a switch: the quit that follows is a restart into it.
 let switchingTo: StudioBackendMode | null = null
-// Settings → Backend → This computer, discovery, pairing and the quit question (remote-access.md).
+// Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
 let remoteAccess: RemoteAccessIpc | null = null
 // A quit from a signal is not held for the question about connected computers.
 let quitUnasked = false
@@ -643,7 +643,7 @@ app.whenReady().then(async () => {
       hooks: { showMainWindow, openFile: requestOpenFile },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
-      // Read at quit: a change in Settings → Backend applies to the next quit.
+      // Read at quit: a change in Settings → Connection applies to the next quit.
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,
       onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
@@ -673,7 +673,7 @@ app.whenReady().then(async () => {
     },
     relaunch: (target) => {
       switchingTo = target
-      relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)
+      relaunchStudio(`the backend was switched to ${target} in Settings → Connection`)
     },
   })
   backendStore = registerBackendSettingsHandlers(backend, {

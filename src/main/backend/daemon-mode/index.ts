@@ -101,7 +101,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.NETWORK_NOTICE_DISMISS,
 ]
 
-export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
+export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Connection (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
 
 /**
  * The one notification while Studio waits for an unreachable remote daemon,
@@ -114,8 +114,8 @@ export function remoteWaitingNotice(progress: string): string {
   return `${at > 0 ? progress.slice(0, at) : REMOTE_WAITING_PREFIX}. Studio keeps trying.`
 }
 
-/** Remote mode: Settings → Backend works without a daemon, so the URL, the token or the mode can be fixed there. */
-export const REMOTE_RECOVERY_HINT = `Settings → Backend works without the daemon: fix the remote daemon's URL or token there and use Test connection, or choose Inside Studio (legacy). ${RECOVERY_HINT}`
+/** Remote mode: Settings → Connection works without a daemon, so the URL, the token or the mode can be fixed there. */
+export const REMOTE_RECOVERY_HINT = `Settings → Connection works without the daemon: add the connection again, or choose another one. ${RECOVERY_HINT}`
 
 /** COMPUTE_BROWSER_SESSION in remote mode (§9.3): the viewer is on the server's loopback, never opened here. */
 export const REMOTE_BROWSER_SESSION_SENTENCE = 'opened a browser in its container on the daemon host. Its viewer is on that host\'s loopback, so Studio cannot show it here; use a tunnel to the container\'s noVNC port, or Studio on that host.'
@@ -147,7 +147,7 @@ export interface DaemonModeDeps {
   createSession?: (client: DaemonClient) => ClientSession
   /**
    * studio-backend.json `keepDaemonRunning` (§8.3), read at quit (a getter:
-   * Settings → Backend changes it for the next quit). Off in local mode, the
+   * Settings → Connection changes it for the next quit). Off in local mode, the
    * session is opened with `exitDaemonWhenClosed` (the value at launch), so
    * a crashed Studio's daemon stops once its session expires and no other
    * client is open; a quit stops a daemon Studio started when no other
@@ -182,7 +182,7 @@ export interface DaemonModeDeps {
   relaunch?: { reconnect(reason: string): void; embeddedForSession(reason: string): void }
   /** How long a restart waits for the window to keep its unsaved editors and restart itself. Default 15 s. */
   stashWaitMs?: number
-  /** The daemon's `remote_access` push (remote-access.md §8), for Settings → Backend → This computer. */
+  /** The daemon's `remote_access` push (remote-access.md §8), for Settings → Networking → Remote access. */
   onRemoteAccessEvent?: (payload: unknown) => void
 }
 
@@ -201,7 +201,7 @@ export interface DaemonModeHandle {
   adfFile(request: Request): Promise<Response>
   /** Drop the client stream connection and reconnect now (Help > Reconnect). */
   reconnect(): void
-  /** Settings → Backend: the daemon this session uses and the connection state. */
+  /** Settings → Connection: the daemon this session uses and the connection state. */
   status(): BackendDaemonStatus
   /** The daemon's client once connected (remote-access management routes); rejects when there is no daemon. */
   client(): Promise<DaemonClient>
@@ -287,7 +287,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     unauthorized = true
     const url = connection.baseUrl ?? 'the remote daemon'
     log.error(`[Backend] The ADF daemon at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
-    connection.markFailed(`The ADF daemon at ${url} refused the token. Run adf daemon token on the server and save the result in Settings → Backend.`)
+    connection.markFailed(`The ADF daemon at ${url} refused the token. Run adf daemon token on the server and add it in Settings → Connection → Add connection.`)
     bridge.failTurns('disconnected')
     void clientSession?.end().catch(() => {})
   }
@@ -543,9 +543,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       restartKeepingEdits('embedded-session', clientSession ? 'the ADF daemon connection failed during the session' : 'no ADF daemon could be reached at launch')
     })
   } : undefined
-  /** Remote mode, after a failed launch: Settings → Backend, where the URL and token are fixed and tested. */
+  /** Remote mode, after a failed launch: Settings → Connection, where the URL and token are fixed and tested. */
   const openBackendSettings = deps.mode === 'remote' ? (): void => {
-    log.log('[Backend] Opening Settings → Backend after a failed connection to the remote ADF daemon')
+    log.log('[Backend] Opening Settings → Connection after a failed connection to the remote ADF daemon')
     const win = hooks.showMainWindow?.() ?? BrowserWindow.getAllWindows()[0] ?? null
     if (win && !win.isDestroyed()) win.webContents.send(IPC.MENU_ACTION, 'open-settings-backend')
   } : undefined
@@ -631,7 +631,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       },
       onReattached: (info) => {
         log.log(`[Backend] Client stream reattached${info.epochChanged ? ' (new session)' : ''}: re-sending the focus and the held documents`)
-        // The daemon may have restarted (another pid, version or launcher): Settings → Backend and the switch dialog read this.
+        // The daemon may have restarted (another pid, version or launcher): Settings → Connection and the switch dialog read this.
         refreshVersion(client)
         return session.reattach()
       },

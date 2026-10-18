@@ -91,7 +91,7 @@ export function validRemoteName(value: unknown): value is string {
 /** At most this many confirmed plain-HTTP origins are kept. */
 const MAX_INSECURE_ORIGINS = 32
 
-/** A remote computer paired from Settings → Backend (remote-access.md §9.3). */
+/** A remote computer paired from Settings → Connection (remote-access.md §9.3). */
 export interface RemotePairedComputer {
   fingerprint: string
   name: string
@@ -134,7 +134,7 @@ export interface BootBackend {
   /**
    * What the user should know about this launch's backend, token-free: the
    * configured mode could not be used, or fields of the file were ignored.
-   * Shown in Settings → Backend.
+   * Shown in Settings → Connection.
    */
   notices?: string[]
   /** File fields normalization ignored; the next save writes the file without them (that save says so). */
@@ -146,11 +146,11 @@ export interface BootBackend {
    * (first-launch.ts guardBoot); never a silent fallback.
    */
   fileProblem?: string | null
-  /** A one-launch mode (source `session`): why, in words for Settings → Backend. */
+  /** A one-launch mode (source `session`): why, in words for Settings → Connection. */
   sessionReason?: string | null
   /**
    * Set at boot (first-launch.ts) when an earlier launch switched this
-   * install from Embedded to the new default; Settings → Backend shows it.
+   * install from Embedded to the new default; Settings → Connection shows it.
    */
   defaultSwitch?: BackendDefaultSwitch | null
 }
@@ -182,7 +182,7 @@ export function remoteTransportRefusal(config: StudioBackendConfig): string | nu
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return `The remote daemon URL is not valid: ${check.reason ?? url}`
   if (check.kind === 'insecure-http' && !config.remote.allowInsecureHttp) {
-    return `${check.url} is plain http to an address that is not loopback or a tailnet address, and sending the token over it is not confirmed. Confirm it in Settings → Backend, or use https:// or an SSH tunnel.`
+    return `${check.url} is plain http to an address that is not loopback or a tailnet address, and sending the token over it is not confirmed. Add the connection again in Settings → Connection and confirm it, or use https:// or an SSH tunnel.`
   }
   return null
 }
@@ -256,7 +256,7 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
     if (origins.length > 0) config.insecureHttpOrigins = origins
   }
   // Mode remote without a usable URL stays remote: the connector refuses it
-  // with a dialog that points at Settings → Backend. Falling back to embedded
+  // with a dialog that points at Settings → Connection. Falling back to embedded
   // here would autostart this computer's agents without a word (W4-B review).
   if (config.mode === 'remote' && !config.remote.url && !config.remote.name) warnings.push('mode is remote but there is no usable remote.url; Studio will say so at launch')
   return { config, warnings, dropped, modeProblem }
@@ -277,7 +277,7 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
     return {
       found: true,
       data: null,
-      problem: `the file could not be read (${code}); using ${DEFAULT_LABEL}, and Settings → Backend will not overwrite it`,
+      problem: `the file could not be read (${code}); using ${DEFAULT_LABEL}, and Settings → Connection will not overwrite it`,
       writeBlocked: `${configPath} could not be read (${code}). Fix its permissions or delete it, then restart Studio.`,
     }
   }
@@ -292,7 +292,7 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
       return {
         found: true,
         data: null,
-        problem: `the file could not be parsed or moved aside; using ${DEFAULT_LABEL}, and Settings → Backend will not overwrite it`,
+        problem: `the file could not be parsed or moved aside; using ${DEFAULT_LABEL}, and Settings → Connection will not overwrite it`,
         writeBlocked: `${configPath} is corrupt and could not be moved aside. Fix or delete it, then restart Studio.`,
       }
     }
@@ -320,7 +320,7 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   // The file asks for remote, but its URL may not be used. Studio still boots
   // remote, runs no agents, and the remote connector refuses with a dialog
   // naming the reason (W4-B review: no silent embedded boot, which would
-  // autostart this computer's agents). Settings → Backend shows it too.
+  // autostart this computer's agents). Settings → Connection shows it too.
   const refusal = config.mode === 'remote' && !config.remote.name ? remoteTransportRefusal(config) : null
   if (refusal) {
     log.warn(`[Backend] ${configPath}: mode is remote, but ${refusal} Studio will not connect until it is fixed.`)
@@ -408,7 +408,7 @@ function fail(code: BackendSettingsErrorCode, error: string): ApplyPatchResult {
 }
 
 /**
- * Apply a Settings → Backend patch. Pure: returns the next config, or an
+ * Apply a Settings → Connection patch. Pure: returns the next config, or an
  * error the renderer shows as is. `changes` is a token-free summary for the
  * log; `notices` tell the user about side effects of their save.
  *
@@ -594,7 +594,7 @@ export interface BackendSettingsStore {
 }
 
 /**
- * Settings → Backend state for one Studio process. Studio main is the only
+ * Settings → Connection state for one Studio process. Studio main is the only
  * writer of `studio-backend.json` (§4.2), so the boot read stays the source
  * of truth and saves go straight to disk. Saves are serialized.
  */
@@ -644,7 +644,7 @@ export function createBackendSettingsStore(deps: {
     // Studio is restarting into a switch already: a mode change or a switch action now would not apply (nor be undone).
     const restarting = deps.restarting?.() ?? null
     if (restarting && (switchAction !== undefined || (rest.mode !== undefined && rest.mode !== current.mode))) {
-      log.warn(`[Backend] Settings → Backend change refused: ${restarting}`)
+      log.warn(`[Backend] Settings → Connection change refused: ${restarting}`)
       return { ok: false, code: 'restarting', error: restarting }
     }
     let patch: BackendSettingsPatch = rest
@@ -689,7 +689,7 @@ export function createBackendSettingsStore(deps: {
       else if (switchAction === 'cancel' || result.config.mode !== previous.mode) modeBeforeSwitch = null
       current = result.config
       droppedUnwritten = []
-      log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
+      log.log(`[Backend] Settings → Connection saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
     }
     const notices = [...result.notices]
     // Choosing the running mode while a switch waits for its turns is the latest choice: that switch is cancelled (as Cancel Switch).

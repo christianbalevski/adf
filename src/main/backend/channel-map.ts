@@ -511,7 +511,7 @@ export const CHANNEL_MAP = {
   [IPC.ORBITAL_CACHE_GET]: local('invoke', 'Registered in ipc/orbital-cache.ts; cache under Studio userData.'),
   [IPC.ORBITAL_CACHE_PUT]: local('invoke', 'Registered in ipc/orbital-cache.ts; cache under Studio userData.'),
 
-  // --- Settings → Backend (W0-E) --------------------------------------------
+  // --- Settings → Connection (W0-E) --------------------------------------------
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
   [IPC.BACKEND_REMOTE_CHECK]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: the remote handshake (remote/connector.ts) against a draft URL, with the saved token only for the saved origin. Never returns the token.'),

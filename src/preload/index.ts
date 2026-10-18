@@ -709,7 +709,7 @@ const api: AdfApi = {
   // Emergency stop
   emergencyStop: () => ipcRenderer.invoke(IPC.EMERGENCY_STOP),
 
-  // Settings → Backend
+  // Settings → Connection
   getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
   setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
   checkRemoteBackend: (request: RemoteCheckRequest) => ipcRenderer.invoke(IPC.BACKEND_REMOTE_CHECK, request),

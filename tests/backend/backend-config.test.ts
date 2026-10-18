@@ -187,7 +187,7 @@ describe('normalizeBackendConfig', () => {
   })
 })
 
-describe('Settings → Backend store', () => {
+describe('Settings → Connection store', () => {
   function store(opts: {
     codec?: SecretCodec
     path?: string
@@ -461,7 +461,7 @@ describe('review fixes', () => {
     expect(readRemoteToken(boot.config, fakeCodec())).toBeNull()
     expect(lines.some((l) => l.includes('not used until confirmed'))).toBe(true)
     expect(lines.some((l) => l.includes('mode is remote'))).toBe(true)
-    // W0-E follow-up: the refusal is visible in Settings → Backend (and the connector's dialog).
+    // W0-E follow-up: the refusal is visible in Settings → Connection (and the connector's dialog).
     const view = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log }).get()
     expect(view.active.notices.join(' ')).toMatch(/remote daemon cannot be used.*192\.168\.1\.5/)
     expect(view.remoteUrlProblem).toMatch(/not confirmed/)

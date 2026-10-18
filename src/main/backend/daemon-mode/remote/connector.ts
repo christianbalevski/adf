@@ -105,14 +105,14 @@ function describeAnswer(url: string, res: Response, step: 'health' | 'version', 
   if (res.status >= 300 && res.status < 400) {
     void res.body?.cancel().catch(() => {})
     const location = res.headers.get('location')
-    return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Backend.`)
+    return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Connection.`)
   }
   if (res.status === 403 && body?.code === 'host_not_allowed') {
     const host = (() => { try { return new URL(url).hostname } catch { return url } })()
     return new RemoteConnectError('host_not_allowed', `The ADF daemon at ${url} does not accept the host name ${host}. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon).`)
   }
   if (step === 'version' && res.status === 401) {
-    return new RemoteConnectError('unauthorized', `The ADF daemon at ${url} refused the token. Run adf daemon token on the server and save the result in Settings → Backend.`)
+    return new RemoteConnectError('unauthorized', `The ADF daemon at ${url} refused the token. Run adf daemon token on the server and add it in Settings → Connection → Add connection.`)
   }
   if (res.status === 502 || res.status === 503 || res.status === 504) {
     return new RemoteConnectError('proxy', `${url} answered HTTP ${res.status}: a proxy answers there, but the ADF daemon behind it does not. Start it on the server (adf daemon start) and check the proxy's target.`)
@@ -202,14 +202,14 @@ export async function remoteHandshake(url: string, token: string, opts: Handshak
 /** Why `config` cannot be used to connect, before any request; null when it can. */
 export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCodec): { error: RemoteConnectError } | { url: string; token: string } {
   const url = config.remote.url
-  if (!url) return { error: new RemoteConnectError('not_configured', 'Remote mode has no daemon URL. Enter it in Settings → Backend.') }
+  if (!url) return { error: new RemoteConnectError('not_configured', 'Remote mode has no daemon URL. Enter it in Settings → Connection.') }
   const refusal = remoteTransportRefusal(config)
   if (refusal) return { error: new RemoteConnectError('transport', refusal) }
   // Defence in depth: the file could have been edited after the boot read.
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return { error: new RemoteConnectError('transport', `The remote daemon URL is not valid: ${check.reason ?? url}`) }
   const token = readRemoteToken(config, codec)
-  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Save it in Settings → Backend (adf daemon token on the server prints it).`) }
+  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connection → Add connection (adf daemon token on the server prints it).`) }
   return { url: check.url, token }
 }
 

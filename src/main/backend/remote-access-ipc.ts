@@ -116,8 +116,8 @@ export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapsho
 
 export function unavailableReason(mode: StudioBackendMode): string {
   return mode === 'remote'
-    ? 'Remote access is set on the remote computer.'
-    : 'Remote access needs Run agents in: This computer.'
+    ? 'Remote access is changed on the remote computer.'
+    : 'Remote access needs This computer as the connection (Settings → Connection).'
 }
 
 const VIA: Record<PairingClaimView['via'], string> = { lan: 'this network', tailnet: 'your tailnet', proxy: 'through a proxy' }
