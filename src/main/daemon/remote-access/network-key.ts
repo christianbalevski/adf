@@ -6,9 +6,9 @@
  *
  * - LAN network: identified by its default gateway's MAC address and the
  *   subnet, plus the Wi-Fi name where it is readable without a permission
- *   prompt. A MAC missing for a moment keeps the last one only on the same
- *   link: the interface stayed up with the same address and subnet
- *   (consent review 1). Otherwise the network is unidentified, and an
+ *   prompt. The MAC is never carried from a previous check (final check):
+ *   every check probes ARP first (readGatewayIdentities); a gateway that
+ *   gives no MAC after the probe leaves the network unidentified, and an
  *   unidentified network never matches consent.
  * - Tailnet: identified by the tailnet's name.
  * - A changed network on an interface closes its listeners at once
@@ -21,23 +21,6 @@ import type { NetworkInterfaceInfo } from 'node:os'
 import type { AllowedNetwork, NetworkView } from '../../../shared/types/remote-access.types'
 import { addressCandidates, NOT_ALLOWED_SENTENCE, type AddressCandidate } from './addresses'
 
-/**
- * The gateway identity (`<gateway IP>|<gateway MAC>`) read now, merged with
- * the last one (re-review 1): a MAC that is missing for a moment (ARP aging,
- * a stale table) or a gateway not read at all is unknown, not a change, so
- * the last identity stays. Only a known gateway IP that differs, or a known
- * MAC that differs, is another network. The caller passes `previous` only
- * while the link is the same (NetworkWatcher): a rogue access point with the
- * same subnet and gateway IP that never answers ARP must not inherit it.
- */
-export function mergeGatewayIdentity(previous: string | undefined, read: string): string {
-  const [ip = '', mac = ''] = read.split('|')
-  const [prevIp = '', prevMac = ''] = (previous ?? '').split('|')
-  if (!ip) return previous ?? ''
-  if (ip !== prevIp) return `${ip}|${mac}`
-  if (!mac) return `${ip}|${prevMac}`
-  return `${ip}|${mac}`
-}
 
 /** `192.168.1.20/24` → `192.168.1.0/24`; IPv6: the /64 prefix. Null without a usable cidr. */
 export function subnetOf(info: Pick<NetworkInterfaceInfo, 'address' | 'netmask' | 'cidr'>): string | null {
@@ -69,7 +52,7 @@ export const UNIDENTIFIED_NETWORK = 'Unidentified network'
 export const NETWORK_ID = /^(lan|tailnet)-[0-9a-f]{16}$/
 
 export interface NetworkWatcherDeps {
-  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown). Cheap: read every check. */
+  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown), read after an ARP probe. Read every check; never merged with an earlier read. */
   readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   /** Per LAN interface, the Wi-Fi name where readable without a prompt. */
   readWifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
@@ -87,9 +70,6 @@ export interface NetworkReading {
 
 export class NetworkWatcher {
   private keys = new Map<string, string>()
-  private gatewayIds = new Map<string, string>()
-  /** Per LAN interface at the last read: `<addresses>|<subnet>`. Absent = the interface was down (or had no LAN address). */
-  private links = new Map<string, string>()
   private osCategories = new Map<string, 'private' | 'public'>()
   private osAt = 0
 
@@ -118,25 +98,17 @@ export class NetworkWatcher {
     ])
     const ids = new Map<string, string | null>()
     const keys = new Map<string, string>()
-    const links = new Map<string, string>()
-    const gatewayIds = new Map<string, string>()
     for (const iface of lanIfaces) {
       const info = (input.interfaces[iface] ?? []).find(i => !i.internal && isIP(i.address) === 4) ?? (input.interfaces[iface] ?? []).find(i => !i.internal)
       const subnet = info ? subnetOf(info) : null
       const addresses = candidates.filter(c => c.iface === iface).map(c => c.address).join(',')
-      const link = `${addresses}|${subnet ?? ''}`
-      links.set(iface, link)
-      // The last MAC is carried only on the same link: up at the last read, same addresses and subnet.
-      const sameLink = this.links.get(iface) === link
-      const gateway = mergeGatewayIdentity(sameLink ? this.gatewayIds.get(iface) : undefined, gateways.get(iface) ?? '')
-      gatewayIds.set(iface, gateway)
-      const mac = gateway.split('|')[1] ?? ''
+      // Fail closed (final check): only this check's MAC, read after the probe, identifies the network.
+      // A switch between two checks, or sleep and wake, cannot be seen, so nothing is carried over.
+      const mac = (gateways.get(iface) ?? '').split('|')[1] ?? ''
       const id = mac && subnet ? lanNetworkId(mac, subnet, ssids.get(iface) ?? null) : null
       ids.set(iface, id)
       keys.set(iface, `${addresses}|${id ?? ''}`)
     }
-    this.links = links
-    this.gatewayIds = gatewayIds
     const changed = lanIfaces.filter(iface => this.keys.has(iface) && this.keys.get(iface) !== keys.get(iface))
     if (changed.length > 0) await input.beforeChange?.(changed)
     this.keys = keys

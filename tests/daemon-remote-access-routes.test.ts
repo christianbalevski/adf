@@ -844,27 +844,27 @@ describe('consent review 1: consent never carries over to an unidentified networ
   })
 })
 
-describe('re-review 1: a gateway MAC missing for a moment is not a network change', () => {
+describe('final check: no MAC after the ARP probe closes the listener; a fresh MAC keeps it', () => {
   const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
 
-  it('an empty or missing MAC keeps the listeners and the network; a known different MAC or a new address closes them', async () => {
+  it('sleep and wake (or a switch between polls) onto an AP with the same lease whose .1 never answers: no listener until the home MAC answers again', async () => {
     const h = await harness()
     await turnOn(h)
     expect(listening(h)).toEqual([LAN])
-    const reads = h.network.reads
-    // ARP aged out: the gateway answers without a MAC, then not at all.
+    // Every check probes first; the home router answers each time: the listener stays, no change.
+    for (let i = 0; i < 3; i++) await h.service.apply({})
+    expect(listening(h)).toEqual([LAN])
+    expect(h.logs.some(l => /network changed/.test(l))).toBe(false)
+    // Woke on the café AP: same address, gateway .1, no ARP answer after the probe.
     for (const gateway of ['192.168.77.1|', '192.168.77.1', '']) {
+      h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
+      await h.service.apply({})
+      expect(listening(h), gateway).toEqual([LAN])
       h.network.gateway = gateway
       await h.service.apply({})
-      expect(listening(h)).toEqual([LAN])
+      expect(listening(h), gateway).toEqual([])
     }
-    expect(h.network.reads).toBe(reads)
-    expect(h.logs.some(l => /network changed/.test(l))).toBe(false)
-    // The MAC is back and the same: still nothing to do.
-    h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
-    await h.service.apply({})
-    expect(h.network.reads).toBe(reads)
-    // A known, different MAC is another network.
+    // A known, different MAC is another network too.
     h.network.gateway = '192.168.77.1|de:ad:be:ef:00:09'
     await h.service.apply({})
     expect(listening(h)).toEqual([])

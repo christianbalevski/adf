@@ -215,16 +215,14 @@ describe('re-review 2: the mesh closes its LAN listener when the network changes
       release()
       await sync
       expect(server.getLanAddresses()).toEqual([])
-      // A MAC missing for a moment changes nothing; back home it listens again.
+      // Back home it listens again; no MAC after the probe (final check) closes it.
       net.gate = null
       net.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
       await server.syncLan(false)
       expect(server.getLanAddresses()).toEqual(['192.168.77.10'])
       net.gateway = '192.168.77.1|'
-      const before = net.reads
       await server.syncLan(false)
-      expect(net.reads).toBe(before)
-      expect(server.getLanAddresses()).toEqual(['192.168.77.10'])
+      expect(server.getLanAddresses()).toEqual([])
     } finally {
       await server.stop()
     }

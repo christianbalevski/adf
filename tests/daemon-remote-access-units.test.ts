@@ -14,7 +14,7 @@ import {
   parseDarwinArp, parseDarwinDefaultRoutes, parseLinuxArp, parseLinuxRoutes,
   parseWindowsArp, parseWindowsProfiles, parseWindowsRoutes, readGatewayIdentities, readOsCategories, readWifiNames,
 } from '../src/main/daemon/remote-access/network-category'
-import { lanNetworkId, mergeGatewayIdentity, NetworkWatcher, subnetOf, tailnetNetworkId } from '../src/main/daemon/remote-access/network-key'
+import { lanNetworkId, NetworkWatcher, subnetOf, tailnetNetworkId } from '../src/main/daemon/remote-access/network-key'
 import { DeviceStore, DEVICES_FILENAME, parseDeviceToken } from '../src/main/daemon/remote-access/device-store'
 import { cleanDisplayName, fingerprintOf, loadRemoteAccessConfig, newDaemonId, saveRemoteAccessConfig, defaultRemoteAccessConfig } from '../src/main/daemon/remote-access/config'
 import { PairingError, PairingManager, PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL } from '../src/main/daemon/remote-access/pairing'
@@ -125,11 +125,11 @@ describe('address candidates (§3.3) and what the OS tells about a network (§3.
     expect(Object.fromEntries(parseWindowsRoutes(route))).toEqual({ '192.168.1.23': '192.168.1.1' })
     expect(parseWindowsArp(arp).get('192.168.1.23|192.168.1.1')).toBe('a4:2b:b0:01:02:03')
     const interfaces = { 'Wi-Fi': [nic('192.168.1.23')], Ethernet: [nic('10.0.0.4')] }
-    const win = await readGatewayIdentities(['Wi-Fi', 'Ethernet'], interfaces, { platform: 'win32', exec: async (file) => (file === 'route' ? route : arp) })
+    const win = await readGatewayIdentities(['Wi-Fi', 'Ethernet'], interfaces, { platform: 'win32', exec: async (file) => (file === 'route' ? route : arp), probe: async () => {}, sleep: async () => {} })
     expect(Object.fromEntries(win)).toEqual({ 'Wi-Fi': '192.168.1.1|a4:2b:b0:01:02:03', Ethernet: '' })
     const linuxRoute = 'Iface\tDestination\tGateway\nwlan0\t00000000\t0101A8C0\t0003\n'
     const linuxArp = 'IP address       HW type     Flags       HW address            Mask     Device\n192.168.1.1      0x1         0x2         a4:2b:b0:01:02:03     *        wlan0\n'
-    expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async (p) => (p.endsWith('route') ? linuxRoute : linuxArp) })))
+    expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async (p) => (p.endsWith('route') ? linuxRoute : linuxArp), probe: async () => {}, sleep: async () => {} })))
       .toEqual({ wlan0: '192.168.1.1|a4:2b:b0:01:02:03' })
     expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async () => { throw new Error('no /proc') } }))).toEqual({ wlan0: '' })
   })
@@ -162,11 +162,38 @@ describe('network identity and consent (owner decision 2026-10-18 b)', () => {
     expect(parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', MagicDNSSuffix: 'tail1234.ts.net.', Self: { TailscaleIPs: ['100.1.1.1'] } })).tailnet).toBe('tail1234.ts.net')
   })
 
-  it('the shared change key: an unknown MAC keeps the previous identity; a known other MAC or gateway does not', () => {
-    expect(mergeGatewayIdentity('192.168.1.1|aa', '192.168.1.1|')).toBe('192.168.1.1|aa')
-    expect(mergeGatewayIdentity('192.168.1.1|aa', '')).toBe('192.168.1.1|aa')
-    expect(mergeGatewayIdentity('192.168.1.1|aa', '192.168.1.1|bb')).toBe('192.168.1.1|bb')
-    expect(mergeGatewayIdentity('192.168.1.1|aa', '10.0.0.1|')).toBe('10.0.0.1|')
+  it('final check: a MAC is never carried from a previous check; the café case (same lease, gateway .1 never answers ARP, switch between polls) and sleep/wake are unidentified', async () => {
+    for (const what of ['switch between two polls', 'sleep and wake']) {
+      let gateway = '192.168.1.1|a4:2b:b0:01:02:03'
+      const w = watcher(() => gateway)
+      const read = () => w.read({ interfaces: wifi('192.168.1.20'), tailscaleIps: new Set(), tailnet: null, allowed: allowedHome })
+      expect((await read()).candidates[0].refusal, what).toBeNull()
+      // Nothing seen between the checks; the access point granted the same lease and its .1 never answers the ARP probe.
+      gateway = '192.168.1.1|'
+      const r = await read()
+      expect(r.candidates[0], what).toMatchObject({ networkId: null, refusal: NOT_ALLOWED_SENTENCE })
+      expect(r.networks[0], what).toMatchObject({ id: null, label: 'Unidentified network', allowed: false })
+    }
+  })
+
+  it('final check: every check probes ARP before reading the table; an aged-out home entry that answers keeps the identity; a definite miss after 3 tries is no MAC', async () => {
+    const route = 'Iface\tDestination\tGateway\nwlan0\t00000000\t0101A8C0\t0003\n'
+    const header = 'IP address       HW type     Flags       HW address            Mask     Device\n'
+    const entry = '192.168.1.1      0x1         0x2         a4:2b:b0:01:02:03     *        wlan0\n'
+    const probes: string[] = []
+    const run = (answers: boolean) => readGatewayIdentities(['wlan0'], { wlan0: [nic('192.168.1.20')] }, {
+      platform: 'linux',
+      readText: async (p) => (p.endsWith('route') ? route : header + (answers && probes.length > 0 ? entry : '')),
+      probe: async (gateway, from) => { probes.push(`${from}>${gateway}`) },
+      sleep: async () => {},
+    })
+    // The entry aged out; the probe makes the gateway answer: same identity, one probe.
+    expect(Object.fromEntries(await run(true))).toEqual({ wlan0: '192.168.1.1|a4:2b:b0:01:02:03' })
+    expect(probes).toEqual(['192.168.1.20>192.168.1.1'])
+    // A gateway that never answers: three probes, then no MAC.
+    probes.length = 0
+    expect(Object.fromEntries(await run(false))).toEqual({ wlan0: '192.168.1.1|' })
+    expect(probes.length).toBe(3)
   })
 
   it('first visit: nothing allowed, nothing listens, whatever the OS says (Windows Private too)', async () => {
@@ -184,13 +211,12 @@ describe('network identity and consent (owner decision 2026-10-18 b)', () => {
     expect(unknown.networks[0]).toMatchObject({ id: null, allowed: false })
   })
 
-  it('a changed network on an interface is reported before anything else is read; a missing MAC is no change', async () => {
+  it('a changed network on an interface is reported before anything else is read', async () => {
     let gateway = '192.168.1.1|a4:2b:b0:01:02:03'
     const w = watcher(() => gateway)
     const changes: string[][] = []
     const read = () => w.read({ interfaces: wifi('192.168.1.20'), tailscaleIps: new Set(), tailnet: null, allowed: allowedHome, beforeChange: async (c) => { changes.push(c) } })
     await read()
-    gateway = '192.168.1.1|'
     expect((await read()).candidates[0].refusal).toBeNull()
     gateway = '192.168.1.1|de:ad:be:ef:00:01'
     expect((await read()).candidates[0].refusal).toBe(NOT_ALLOWED_SENTENCE)

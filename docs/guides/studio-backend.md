@@ -643,9 +643,9 @@ every OS. A Windows Private network and the tailnet need it too. A network
 is its router (the gateway's MAC address) and its subnet. The Wi-Fi name
 counts too where ADF can read it without asking for a permission: on Linux,
 and on macOS before 14.4. Windows does not count it. The tailnet is its
-name. A network whose router does not give its MAC address after the
-Wi-Fi reconnects is an "Unidentified network": nothing listens there and
-it cannot be allowed.
+name. ADF asks the router for its MAC address at every check (every 10
+seconds). A router that does not answer is an "Unidentified network":
+nothing listens there and it cannot be allowed.
 
 Limit: anyone who knows your router's MAC address, a former guest for
 example, can copy it onto their own router with the same subnet. ADF then

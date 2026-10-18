@@ -9,6 +9,7 @@
  */
 
 import { execFile } from 'node:child_process'
+import { createSocket } from 'node:dgram'
 import { readFile } from 'node:fs/promises'
 
 export type Exec = (file: string, args: string[], opts?: { timeoutMs?: number }) => Promise<string>
@@ -146,38 +147,54 @@ export async function readGatewayIdentities(
   const platform = deps.platform ?? process.platform
   const exec = deps.exec ?? defaultExec
   const readText = deps.readText ?? ((path: string) => readFile(path, 'utf-8'))
+  const probe = deps.probe ?? udpProbe
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const out = new Map<string, string>()
   for (const iface of ifaces) out.set(iface, '')
   if (ifaces.length === 0) return out
   try {
+    // 1. Each interface's default gateway, and the address the probe leaves from.
+    const targets: Array<{ iface: string; gateway: string; from: string | null; arpKey: string }> = []
+    const ipv4 = (iface: string) => (interfaces[iface] ?? []).find((i) => !i.internal && (i.family === 'IPv4' || i.family === 4))?.address ?? null
     if (platform === 'win32') {
       const routes = parseWindowsRoutes(await exec('route', ['print', '-4', '0.0.0.0']))
-      const arp = parseWindowsArp(await exec('arp', ['-a']))
       for (const iface of ifaces) {
         for (const info of interfaces[iface] ?? []) {
           const gateway = routes.get(info.address)
           if (!gateway) continue
-          out.set(iface, `${gateway}|${arp.get(`${info.address}|${gateway}`) ?? ''}`)
+          targets.push({ iface, gateway, from: info.address, arpKey: `${info.address}|${gateway}` })
           break
         }
       }
-      return out
-    }
-    let routes: Map<string, string>
-    let arp: Map<string, string>
-    if (platform === 'darwin') {
-      routes = parseDarwinDefaultRoutes(await exec('netstat', ['-rn', '-f', 'inet']))
-      arp = parseDarwinArp(await exec('arp', ['-an']))
     } else {
-      routes = parseLinuxRoutes(await readText('/proc/net/route'))
-      arp = parseLinuxArp(await readText('/proc/net/arp'))
+      const routes = platform === 'darwin'
+        ? parseDarwinDefaultRoutes(await exec('netstat', ['-rn', '-f', 'inet']))
+        : parseLinuxRoutes(await readText('/proc/net/route'))
+      for (const iface of ifaces) {
+        const gateway = routes.get(iface)
+        if (gateway) targets.push({ iface, gateway, from: ipv4(iface), arpKey: `${iface}|${gateway}` })
+      }
     }
-    for (const iface of ifaces) {
-      const gateway = routes.get(iface)
-      if (gateway) out.set(iface, `${gateway}|${arp.get(`${iface}|${gateway}`) ?? ''}`)
+    const readArp = async () => platform === 'win32'
+      ? parseWindowsArp(await exec('arp', ['-a']))
+      : platform === 'darwin' ? parseDarwinArp(await exec('arp', ['-an'])) : parseLinuxArp(await readText('/proc/net/arp'))
+    // 2. Probe before every read of the table (final check): the MAC must come from this check, never an
+    //    earlier one. A gateway that answers is identified; one that gives no MAC after the tries is not.
+    let pending = targets
+    for (let attempt = 0; attempt < ARP_PROBE_TRIES && pending.length > 0; attempt++) {
+      if (attempt > 0) await sleep(ARP_PROBE_WAIT_MS)
+      await Promise.all(pending.map((t) => probe(t.gateway, t.from).catch(() => {})))
+      const arp = await readArp()
+      const missing: typeof targets = []
+      for (const t of pending) {
+        const mac = arp.get(t.arpKey)
+        out.set(t.iface, `${t.gateway}|${mac ?? ''}`)
+        if (!mac) missing.push(t)
+      }
+      pending = missing
     }
   } catch {
-    // Unknown gateways: the key still changes with the addresses, and an unknown network is never private.
+    // Unknown gateways: the network is unidentified, and an unidentified network never matches consent.
   }
   return out
 }
@@ -186,6 +203,41 @@ export interface CategoryReaderDeps {
   platform?: NodeJS.Platform
   exec?: Exec
   readText?: (path: string) => Promise<string>
+  /** Make the OS resolve the gateway's MAC (default: one UDP datagram from `from` to the gateway's discard port 9). */
+  probe?: (gateway: string, from: string | null) => Promise<void>
+  sleep?: (ms: number) => Promise<void>
+}
+
+/** ARP probe tries per check, and the wait after each (final check: fail closed, but not on a slow answer). */
+export const ARP_PROBE_TRIES = 3
+export const ARP_PROBE_WAIT_MS = 200
+
+/**
+ * One UDP datagram to the gateway's discard port (9): the OS must resolve
+ * the gateway's MAC to send it, so a live gateway answers ARP and its entry
+ * is fresh when the table is read. Nothing listens for a reply; errors are
+ * ignored (no route, or the address just went away).
+ */
+export function udpProbe(gateway: string, from: string | null): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false
+    const socket = createSocket('udp4')
+    const finish = () => {
+      if (done) return
+      done = true
+      try { socket.close() } catch { /* closed */ }
+      resolve()
+    }
+    socket.on('error', finish)
+    const send = () => socket.send(Buffer.from([0]), 9, gateway, () => finish())
+    try {
+      if (from) socket.bind({ address: from, port: 0, exclusive: true }, send)
+      else send()
+    } catch {
+      finish()
+    }
+    setTimeout(finish, 500).unref?.()
+  })
 }
 
 /**
