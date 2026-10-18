@@ -12,11 +12,12 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { addressCandidates, PUBLIC_NETWORK_SENTENCE } from '../src/main/daemon/remote-access/addresses'
 import {
   currentNetworks, networkId, parseDarwinArp, parseDarwinDefaultRoutes, parseLinuxArp, parseLinuxRoutes,
-  parseWindowsProfiles, readNetworkCategories,
+  parseWindowsArp, parseWindowsProfiles, parseWindowsRoutes, readGatewayIdentities, readNetworkCategories,
 } from '../src/main/daemon/remote-access/network-category'
 import { DeviceStore, DEVICES_FILENAME, parseDeviceToken } from '../src/main/daemon/remote-access/device-store'
 import { cleanDisplayName, fingerprintOf, loadRemoteAccessConfig, newDaemonId, saveRemoteAccessConfig, defaultRemoteAccessConfig } from '../src/main/daemon/remote-access/config'
-import { PairingError, PairingManager, PAIRING_MAX_WRONG } from '../src/main/daemon/remote-access/pairing'
+import { PairingError, PairingManager, PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL } from '../src/main/daemon/remote-access/pairing'
+import { BoundedMap, SOURCE_TRACKING_CAP } from '../src/main/daemon/remote-access/bounded-map'
 import { parseServeStatus, parseTailscaleStatus } from '../src/main/daemon/remote-access/tailscale'
 import { probeFirewall } from '../src/main/daemon/remote-access/firewall'
 import { DaemonRequestGuard, isUnauthenticatedRoute, type DeviceTokenAuthority } from '../src/main/daemon/request-guard'
@@ -124,6 +125,21 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
     const read = await readNetworkCategories(['wlan0', 'eth1'], [], { platform: 'linux', readText: async (p) => (p.endsWith('route') ? route : arp) })
     expect(Object.fromEntries(read.categories)).toEqual({ wlan0: 'public', eth1: 'public' })
   })
+
+  it('gateway identities per interface (security review item 2): Windows route + arp, Linux /proc; failures = unknown', async () => {
+    const route = '===========================================================================\r\nActive Routes:\r\nNetwork Destination        Netmask          Gateway       Interface  Metric\r\n          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.23     35\r\n'
+    const arp = '\r\nInterface: 192.168.1.23 --- 0x7\r\n  Internet Address      Physical Address      Type\r\n  192.168.1.1           a4-2b-b0-01-02-03     dynamic\r\n'
+    expect(Object.fromEntries(parseWindowsRoutes(route))).toEqual({ '192.168.1.23': '192.168.1.1' })
+    expect(parseWindowsArp(arp).get('192.168.1.23|192.168.1.1')).toBe('a4:2b:b0:01:02:03')
+    const interfaces = { 'Wi-Fi': [nic('192.168.1.23')], Ethernet: [nic('10.0.0.4')] }
+    const win = await readGatewayIdentities(['Wi-Fi', 'Ethernet'], interfaces, { platform: 'win32', exec: async (file) => (file === 'route' ? route : arp) })
+    expect(Object.fromEntries(win)).toEqual({ 'Wi-Fi': '192.168.1.1|a4:2b:b0:01:02:03', Ethernet: '' })
+    const linuxRoute = 'Iface\tDestination\tGateway\nwlan0\t00000000\t0101A8C0\t0003\n'
+    const linuxArp = 'IP address       HW type     Flags       HW address            Mask     Device\n192.168.1.1      0x1         0x2         a4:2b:b0:01:02:03     *        wlan0\n'
+    expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async (p) => (p.endsWith('route') ? linuxRoute : linuxArp) })))
+      .toEqual({ wlan0: '192.168.1.1|a4:2b:b0:01:02:03' })
+    expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async () => { throw new Error('no /proc') } }))).toEqual({ wlan0: '' })
+  })
 })
 
 describe('remote-access.json (§3.1)', () => {
@@ -213,29 +229,46 @@ describe('pairing window (§5.3-§5.5)', () => {
       opened: () => events.push('opened'),
       closed: (reason) => events.push(`closed:${reason}`),
       claimPending: (claim) => events.push(`pending:${claim.deviceName}`),
+      sourceLocked: (address) => events.push(`locked:${address}`),
     }, { now: () => now.t })
     return { m, events, now }
   }
   const claimInput = (code: string, address: string) => ({ code, deviceName: 'agent-2 laptop', clientKind: 'cli' as const, address, via: 'lan' as const, tailnetLogin: null })
   const wrongOf = (code: string) => String((Number(code) + 1) % 1_000_000).padStart(6, '0')
 
-  it('locks out after 5 wrong codes, across addresses, and then answers as if never opened', () => {
+  it('locks one source out after 5 wrong codes, tells the owner, and keeps the window open for others (security review item 8)', () => {
     const { m, events, now } = manager()
     const view = m.open()
     expect(view.code).toMatch(/^\d{6}$/)
+    expect(view).toMatchObject({ attemptsLeft: PAIRING_MAX_WRONG_TOTAL, lockedSources: 0 })
     for (let i = 0; i < PAIRING_MAX_WRONG; i++) {
       now.t += 2_500
       let err: unknown
-      try { m.claim(claimInput(wrongOf(view.code), `192.168.1.${30 + i}`)) } catch (e) { err = e }
+      try { m.claim(claimInput(wrongOf(view.code), '192.168.1.66')) } catch (e) { err = e }
       expect(err).toBeInstanceOf(PairingError)
       expect((err as PairingError).code).toBe('wrong_code')
       expect((err as PairingError).extra.attemptsLeft).toBe(PAIRING_MAX_WRONG - 1 - i)
     }
+    expect(m.isOpen).toBe(true)
+    expect(events).toContain('locked:192.168.1.66')
+    expect(m.view()).toMatchObject({ attemptsLeft: PAIRING_MAX_WRONG_TOTAL - PAIRING_MAX_WRONG, lockedSources: 1 })
+    now.t += 2_500
+    // The locked source is refused even with the right code; another computer still pairs.
+    expect(() => m.claim(claimInput(view.code, '192.168.1.66'))).toThrow(expect.objectContaining({ code: 'rate_limited', status: 429 }))
+    expect(m.claim(claimInput(view.code, '192.168.1.31')).claimId).toMatch(/^[A-Za-z0-9_-]{22}$/)
+  })
+
+  it('closes the window after 20 wrong codes in total, and then answers as if never opened', () => {
+    const { m, events, now } = manager()
+    const view = m.open()
+    for (let i = 0; i < PAIRING_MAX_WRONG_TOTAL; i++) {
+      now.t += 2_500
+      try { m.claim(claimInput(wrongOf(view.code), `192.168.1.${30 + i}`)) } catch { /* wrong */ }
+    }
     expect(m.isOpen).toBe(false)
     expect(events).toContain('closed:wrong_codes')
     now.t += 2_500
-    // Even the right code is refused now: the window is closed.
-    expect(() => m.claim(claimInput(view.code, '192.168.1.40'))).toThrow(expect.objectContaining({ code: 'pairing_closed', status: 404 }))
+    expect(() => m.claim(claimInput(view.code, '192.168.1.99'))).toThrow(expect.objectContaining({ code: 'pairing_closed', status: 404 }))
   })
 
   it('rate-limits each address (1 per 2 s, 10 per 10 minutes) with Retry-After', () => {
@@ -251,15 +284,15 @@ describe('pairing window (§5.3-§5.5)', () => {
   it('a correct code waits for the owner; busy for others; approval delivers the token once', async () => {
     const { m, events, now } = manager()
     const view = m.open()
-    const { claimId } = m.claim(claimInput(view.code, '192.168.1.31'))
+    const { claimId, collectSecret } = m.claim(claimInput(view.code, '192.168.1.31'))
     expect(events).toContain('pending:agent-2 laptop')
     now.t += 2_100
     expect(() => m.claim(claimInput(view.code, '192.168.1.32'))).toThrow(expect.objectContaining({ code: 'pairing_busy', status: 409 }))
-    expect(await m.poll(claimId, 0)).toEqual({ state: 'pending' })
-    const waiting = m.poll(claimId, 5_000)
+    expect(await m.poll(claimId, collectSecret, 0)).toEqual({ state: 'pending' })
+    const waiting = m.poll(claimId, collectSecret, 5_000)
     m.decide(claimId, true, () => ({ token: 'adfd_x', device: { id: 'abcdefghij', label: 'agent-2 laptop' }, daemon: { name: 'host', fingerprint: 'AAAA-BBBB', urls: [] } }))
     expect(await waiting).toMatchObject({ state: 'approved', token: 'adfd_x' })
-    expect(await m.poll(claimId, 0)).toBeNull()
+    expect(await m.poll(claimId, collectSecret, 0)).toBeNull()
     expect(events).toContain('closed:paired')
     expect(() => m.decide(claimId, true, () => { throw new Error('never') })).toThrow(expect.objectContaining({ code: 'claim_not_found' }))
   })
@@ -267,9 +300,9 @@ describe('pairing window (§5.3-§5.5)', () => {
   it('deny answers denied and closes; the code alone never yields a token', async () => {
     const { m } = manager()
     const view = m.open()
-    const { claimId } = m.claim(claimInput(view.code, '192.168.1.31'))
+    const { claimId, collectSecret } = m.claim(claimInput(view.code, '192.168.1.31'))
     m.decide(claimId, false, () => { throw new Error('a denied claim mints nothing') })
-    expect(await m.poll(claimId, 0)).toEqual({ state: 'denied' })
+    expect(await m.poll(claimId, collectSecret, 0)).toEqual({ state: 'denied' })
     expect(() => m.decide(claimId, true, () => { throw new Error('never') })).toThrow(expect.objectContaining({ code: 'claim_decided' }))
     expect(m.isOpen).toBe(false)
   })
@@ -277,11 +310,11 @@ describe('pairing window (§5.3-§5.5)', () => {
   it('expires after 120 s, dropping a pending claim', async () => {
     const { m, now } = manager()
     const view = m.open()
-    const { claimId } = m.claim(claimInput(view.code, '192.168.1.31'))
+    const { claimId, collectSecret } = m.claim(claimInput(view.code, '192.168.1.31'))
     now.t += 121_000
     expect(m.view()).toBeNull()
     m.close('expired')
-    expect(await m.poll(claimId, 0)).toBeNull()
+    expect(await m.poll(claimId, collectSecret, 0)).toBeNull()
   })
 })
 
@@ -365,5 +398,35 @@ describe('request guard token matrix (§4.4, §4.5)', () => {
     expect(isUnauthenticatedRoute('GET', '/remote-access')).toBe(false)
     expect(guard().authenticate('POST', '/pair/claim', {}, remote)).toEqual({ rejection: null, auth: { kind: 'none' } })
     expect(guard().authenticate('GET', '/agents', {}, remote).rejection).toMatchObject({ status: 401 })
+  })
+})
+
+describe('bounded per-source counters (security review item 3)', () => {
+  it('the pairing limiter keeps at most SOURCE_TRACKING_CAP sources, dropping the oldest', () => {
+    const m = new PairingManager({ opened: () => {}, closed: () => {}, claimPending: () => {}, sourceLocked: () => {} })
+    m.open()
+    for (let i = 0; i < SOURCE_TRACKING_CAP + 500; i++) {
+      try { m.claim({ code: 'xxxxxx', deviceName: 'agent-2', clientKind: 'cli', source: `src-${i}`, address: '192.168.1.2', via: 'lan', tailnetLogin: null }) } catch { /* wrong code or closed */ }
+    }
+    expect((m as unknown as { perAddress: BoundedMap<string, number[]> }).perAddress.size).toBe(SOURCE_TRACKING_CAP)
+    const b = new BoundedMap<string, number>(2)
+    b.set('a', 1); b.set('b', 2); b.set('a', 3); b.set('c', 4)
+    expect([b.get('a'), b.get('b'), b.get('c')]).toEqual([3, undefined, 4])
+  })
+})
+
+describe('display names (security review item 4)', () => {
+  const ch = (code: number) => String.fromCharCode(code)
+  it('refuses every bidi control, line/paragraph separators, zero-width characters and U+FEFF', () => {
+    for (const code of [0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2028, 0x2029, 0x202a, 0x202e, 0x2060, 0x2066, 0x2069, 0xfeff, 0x0007, 0x0085]) {
+      expect(cleanDisplayName(`agent${ch(code)}-2`, 64), code.toString(16)).toBeNull()
+    }
+  })
+  it('collapses whitespace and caps the length before and after', () => {
+    expect(cleanDisplayName(`  agent-2${ch(0xa0)}${ch(0xa0)} laptop\t`, 64)).toBeNull() // tab is a control character
+    expect(cleanDisplayName(`  agent-2${ch(0xa0)}${ch(0x3000)}  laptop `, 64)).toBe('agent-2 laptop')
+    expect(cleanDisplayName('a'.repeat(64), 64)).toBe('a'.repeat(64))
+    expect(cleanDisplayName('a'.repeat(65), 64)).toBeNull()
+    expect(cleanDisplayName(' '.repeat(1000) + 'a', 64)).toBeNull()
   })
 })

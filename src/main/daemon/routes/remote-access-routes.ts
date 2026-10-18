@@ -152,7 +152,7 @@ export function registerRemoteAccessRoutes(server: FastifyInstance, ctx: DaemonR
     const s = service()
     if (!s) return off(reply)
     void reply.header('Cache-Control', 'no-store')
-    try { return s.hello(request.raw) } catch (err) { return sendError(reply, err) }
+    try { return await s.hello(request.raw) } catch (err) { return sendError(reply, err) }
   })
 
   server.post<{ Body: unknown }>('/pair/claim', async (request, reply) => {
@@ -185,6 +185,9 @@ export function registerRemoteAccessRoutes(server: FastifyInstance, ctx: DaemonR
     const waitText = request.query.wait
     const wait = waitText === undefined ? 0 : Number(waitText)
     if (!Number.isInteger(wait) || wait < 0 || wait > 25) return badRequest(reply, 'wait must be an integer from 0 to 25 (seconds)')
-    try { return await s.poll(request.params.claimId, wait * 1000) } catch (err) { return sendError(reply, err) }
+    // The 202's collectSecret, which only the claimant has; without it the answer is 404 claim_not_found.
+    const raw = request.headers['x-adf-pair-secret']
+    const secret = (Array.isArray(raw) ? raw[0] : raw)?.trim() ?? ''
+    try { return await s.poll(request.params.claimId, secret, wait * 1000) } catch (err) { return sendError(reply, err) }
   })
 }

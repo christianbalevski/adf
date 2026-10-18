@@ -139,6 +139,88 @@ export function currentNetworks(ifaces: readonly string[], routes: Map<string, s
   return out
 }
 
+// --- Windows: default gateways (cheap; the category itself needs PowerShell) -----
+
+/**
+ * `route print -4 0.0.0.0`: `0.0.0.0  0.0.0.0  <gateway>  <interface IP>  <metric>`
+ * rows → interface IP → gateway (the first per interface IP).
+ */
+export function parseWindowsRoutes(text: string): Map<string, string> {
+  const out = new Map<string, string>()
+  const ipv4 = /^\d{1,3}(\.\d{1,3}){3}$/
+  for (const line of text.split(/\r?\n/)) {
+    const cols = line.trim().split(/\s+/)
+    if (cols.length < 5 || cols[0] !== '0.0.0.0' || cols[1] !== '0.0.0.0') continue
+    if (!ipv4.test(cols[2]) || !ipv4.test(cols[3])) continue
+    if (!out.has(cols[3])) out.set(cols[3], cols[2])
+  }
+  return out
+}
+
+/** `arp -a`: `Interface: <ip> --- 0x7` blocks of `<ip>  aa-bb-cc-dd-ee-ff  dynamic` → `<interface IP>|<ip>` → MAC. */
+export function parseWindowsArp(text: string): Map<string, string> {
+  const out = new Map<string, string>()
+  let iface: string | null = null
+  for (const line of text.split(/\r?\n/)) {
+    const head = /^Interface:\s+(\d{1,3}(?:\.\d{1,3}){3})\b/.exec(line.trim())
+    if (head) { iface = head[1]; continue }
+    const row = /^(\d{1,3}(?:\.\d{1,3}){3})\s+([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\s/i.exec(line.trim() + ' ')
+    if (row && iface) out.set(`${iface}|${row[1]}`, row[2].toLowerCase().replace(/-/g, ':'))
+  }
+  return out
+}
+
+/**
+ * The network each of `ifaces` is on, as `<gateway IP>|<gateway MAC>` ('' when
+ * unknown), read every address check (security review item 2): a network can
+ * change while the interface name and even its address stay the same (another
+ * router on the same subnet). Cheap reads only: /proc on Linux, netstat and arp
+ * on macOS, route and arp on Windows. Never throws.
+ */
+export async function readGatewayIdentities(
+  ifaces: readonly string[],
+  interfaces: NodeJS.Dict<{ address: string; family: string | number; internal: boolean }[]>,
+  deps: CategoryReaderDeps = {},
+): Promise<Map<string, string>> {
+  const platform = deps.platform ?? process.platform
+  const exec = deps.exec ?? defaultExec
+  const readText = deps.readText ?? ((path: string) => readFile(path, 'utf-8'))
+  const out = new Map<string, string>()
+  for (const iface of ifaces) out.set(iface, '')
+  if (ifaces.length === 0) return out
+  try {
+    if (platform === 'win32') {
+      const routes = parseWindowsRoutes(await exec('route', ['print', '-4', '0.0.0.0']))
+      const arp = parseWindowsArp(await exec('arp', ['-a']))
+      for (const iface of ifaces) {
+        for (const info of interfaces[iface] ?? []) {
+          const gateway = routes.get(info.address)
+          if (!gateway) continue
+          out.set(iface, `${gateway}|${arp.get(`${info.address}|${gateway}`) ?? ''}`)
+          break
+        }
+      }
+      return out
+    }
+    let routes: Map<string, string>
+    let arp: Map<string, string>
+    if (platform === 'darwin') {
+      routes = parseDarwinDefaultRoutes(await exec('netstat', ['-rn', '-f', 'inet']))
+      arp = parseDarwinArp(await exec('arp', ['-an']))
+    } else {
+      routes = parseLinuxRoutes(await readText('/proc/net/route'))
+      arp = parseLinuxArp(await readText('/proc/net/arp'))
+    }
+    for (const iface of ifaces) {
+      const gateway = routes.get(iface)
+      if (gateway) out.set(iface, `${gateway}|${arp.get(`${iface}|${gateway}`) ?? ''}`)
+    }
+  } catch {
+    // Unknown gateways: the key still changes with the addresses, and an unknown network is never private.
+  }
+  return out
+}
+
 export interface CategoryReaderDeps {
   platform?: NodeJS.Platform
   exec?: Exec

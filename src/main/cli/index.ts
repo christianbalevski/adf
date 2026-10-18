@@ -3,6 +3,7 @@
 
 import { createInterface } from 'readline'
 import { runPair, runRemotes, type PairIo } from './pair'
+import { pinnedRemoteRefusal } from './remotes'
 import { stdinPrompt, type LinePrompt } from './prompt'
 import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
@@ -128,10 +129,23 @@ async function daemonReady(io: CliIo, url: string): Promise<{ ok: boolean; start
   }
 }
 
+/**
+ * A saved remote's device token goes only to the computer it was paired with
+ * (remotes.ts pinnedRemoteRefusal). False = refused, and the reason printed.
+ */
+async function pinnedRemoteOk(io: CliIo, url: string, explicitToken: boolean): Promise<boolean> {
+  const env = io.env ?? process.env
+  if (explicitToken || env.ADF_DAEMON_TOKEN) return true
+  const refusal = await pinnedRemoteRefusal(url, env, io.fetch)
+  if (refusal) io.stderr(`${refusal}\n`)
+  return refusal === null
+}
+
 export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo): Promise<number> {
   const tuiArgv = tuiInvocation(argv)
   if (tuiArgv) {
     const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
+    if (!wantsHelp && !(await pinnedRemoteOk(io, urlFromArgv(tuiArgv), tuiArgv.some(a => a === '--token' || a.startsWith('--token='))))) return 1
     const ready = wantsHelp ? { ok: true, started: null } : await daemonReady(io, urlFromArgv(tuiArgv))
     if (!ready.ok) return 1
     try {
@@ -153,6 +167,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   }
 
   const { command, args, options } = parsed
+  if (!['help', '--help', '-h', 'pair', 'remotes'].includes(command) && !(await pinnedRemoteOk(io, options.daemonUrl, !!options.token))) return 1
   // pair / remotes talk to other computers or read local files: they never start this machine's daemon.
   if (!['help', '--help', '-h', 'pair', 'remotes'].includes(command) && !(await daemonReady(io, options.daemonUrl)).ok) return 1
 

@@ -17311,6 +17311,7 @@ Example 200 (`application/json`):
     "openedAt": "2026-01-01T00:00:00.000Z",
     "expiresAt": "2026-01-01T00:00:00.000Z",
     "attemptsLeft": 0,
+    "lockedSources": 0,
     "claim": {
       "claimId": "string",
       "deviceName": "string",
@@ -17431,6 +17432,7 @@ Example 200 (`application/json`):
     "openedAt": "2026-01-01T00:00:00.000Z",
     "expiresAt": "2026-01-01T00:00:00.000Z",
     "attemptsLeft": 0,
+    "lockedSources": 0,
     "claim": {
       "claimId": "string",
       "deviceName": "string",
@@ -17573,6 +17575,7 @@ Example 201 (`application/json`):
   "openedAt": "2026-01-01T00:00:00.000Z",
   "expiresAt": "2026-01-01T00:00:00.000Z",
   "attemptsLeft": 0,
+  "lockedSources": 0,
   "claim": {
     "claimId": "string",
     "deviceName": "string",
@@ -17748,7 +17751,7 @@ Example 200 (`application/json`):
 
 **Claim pairing with the host's code (no token)**
 
-A correct code puts the claim before the owner (202); the token comes only after the owner allows it (GET /pair/claims/{claimId}). Wrong codes are answered after 1 s; 5 in total close the window. Per source address: one claim per 2 s, 10 per 10 minutes.
+A correct code puts the claim before the owner (202); the token comes only after the owner allows it (GET /pair/claims/{claimId}, with the collect secret). Wrong codes are answered after 1 s; 5 from one source lock that source out of the window (429 until it closes, the owner is told), 20 in total close it. Per source: one claim per 2 s, 10 per 10 minutes. A source is the socket address (forwarded headers are never read), or the tailnet user behind tailscale serve.
 
 Operation `claimPairing` · no authentication
 
@@ -17774,17 +17777,18 @@ Operation `claimPairing` · no authentication
 |---|---|---|
 | 202 | [PairClaimAccepted](#schema-pairclaimaccepted) | Waiting for the owner |
 | 400 | [ErrorResponse](#schema-errorresponse) | Bad code, device name or client kind (`bad_request`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | Wrong code (`wrong_code`, with `attemptsLeft`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Wrong code (`wrong_code`, with `attemptsLeft`: for this source and the window together), or the request guard (`host_not_allowed`, `cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | No open window (`pairing_closed`) or remote access is off (`remote_access_off`) |
 | 409 | [ErrorResponse](#schema-errorresponse) | Another claim waits for the owner (`pairing_busy`) |
-| 429 | [ErrorResponse](#schema-errorresponse) | Rate limited (`rate_limited`, Retry-After) |
+| 429 | [ErrorResponse](#schema-errorresponse) | Rate limited, or this source is locked out of the window after 5 wrong codes (`rate_limited`, Retry-After) |
 
 Example 202 (`application/json`):
 
 ```json
 {
   "claimId": "string",
-  "expiresAt": "2026-01-01T00:00:00.000Z"
+  "expiresAt": "2026-01-01T00:00:00.000Z",
+  "collectSecret": "string"
 }
 ```
 
@@ -17794,7 +17798,7 @@ Example 202 (`application/json`):
 
 **Collect the result of a claim (no token)**
 
-Long poll: waits up to `wait` seconds while pending. An approved result (with the device token) is delivered once, then the claim is gone (404). `Cache-Control: no-store`.
+Long poll: waits up to `wait` seconds while pending. Needs the claim's collect secret (`X-ADF-Pair-Secret`); the claim id alone collects nothing. An approved result (with the device token) is delivered once, then the claim is gone (404). `Cache-Control: no-store`.
 
 Operation `pollPairingClaim` · no authentication
 
@@ -17804,6 +17808,7 @@ Operation `pollPairingClaim` · no authentication
 |---|---|---|---|---|
 | `claimId` | path | string | yes | Claim id (POST /pair/claim) |
 | `wait` | query | integer |  |  |
+| `X-ADF-Pair-Secret` | header | string | yes | The claim's collectSecret (POST /pair/claim). Compared in constant time; a missing or wrong one answers 404 `claim_not_found`, as an unknown claim does |
 
 **Responses**
 
@@ -17812,7 +17817,7 @@ Operation `pollPairingClaim` · no authentication
 | 200 | [PairClaimResult](#schema-pairclaimresult) | pending, denied, or approved with the token |
 | 400 | [ErrorResponse](#schema-errorresponse) | `wait` out of range |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-| 404 | [ErrorResponse](#schema-errorresponse) | Unknown, expired or collected claim (`claim_not_found`), or remote access is off (`remote_access_off`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown, expired or collected claim, or a missing or wrong collect secret (`claim_not_found`), or remote access is off (`remote_access_off`) |
 
 Example 200 (`application/json`):
 
@@ -22571,7 +22576,8 @@ The open pairing window. `code` is shown on this computer only.
 | `fingerprint` | string | yes |  |
 | `openedAt` | string | yes |  |
 | `expiresAt` | string | yes |  |
-| `attemptsLeft` | integer | yes |  |
+| `attemptsLeft` | integer | yes | Wrong codes left in this window, all sources together; 0 closes it |
+| `lockedSources` | integer | yes | Sources locked out of this window after 5 wrong codes each (the window stays open) |
 | `claim` | [PairingClaimView](#schema-pairingclaimview) \| null | yes | A correct claim waiting for the owner's Allow / Deny |
 
 <a id="schema-remoteaccessstatus"></a>
@@ -22705,8 +22711,9 @@ Type: object \| object
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `claimId` | string | yes | 128-bit random; the capability to collect the token |
+| `claimId` | string | yes | The claim's id. The owner's clients see it (GET /remote-access); it does not collect the token |
 | `expiresAt` | string | yes |  |
+| `collectSecret` | string | yes | 256-bit random, only in this answer: send it as `X-ADF-Pair-Secret` to collect the result (GET /pair/claims/{claimId}) |
 
 <a id="schema-pairclaimresult"></a>
 

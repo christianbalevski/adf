@@ -760,7 +760,9 @@ export function createDaemonHttpApi(
   server.addHook('onRequest', (request, reply, done) => {
     // A socket of a remote listener (remote-access.md §3.2) never takes the install's own token.
     const conn = { remoteListener: remoteListenerOf(request.raw.socket) !== null }
-    const { rejection, auth } = guard.authenticate(request.method, request.url.split('?')[0], request.headers, conn)
+    // The route Fastify matched (its pattern), not the raw URL: `/client/session%73` routes to
+    // /client/sessions and must be judged as it (security review item 5).
+    const { rejection, auth } = guard.authenticate(request.method, request.routeOptions?.url ?? normalizedRequestPath(request.url), request.headers, conn)
     if (rejection) {
       void reply.code(rejection.status).header('Cache-Control', 'no-store').send(rejection.body)
       return
@@ -3383,6 +3385,18 @@ export const DEFAULT_ERROR_CODES: Record<number, string> = {
   500: 'internal_error',
   502: 'upstream_error',
   503: 'unavailable',
+}
+
+/**
+ * A request path as the guard judges it when no route matched: the query
+ * dropped, percent-decoding applied, repeated slashes collapsed, a trailing
+ * slash and `;` parameters removed.
+ */
+export function normalizedRequestPath(url: string): string {
+  let path = url.split('?')[0]
+  try { path = decodeURIComponent(path) } catch { /* malformed escape: judge it as sent */ }
+  path = path.split(';')[0].replace(/\/{2,}/g, '/')
+  return path.length > 1 ? path.replace(/\/+$/, '') : path
 }
 
 function withDefaultErrorCode(status: number, contentType: unknown, payload: unknown): unknown {

@@ -83,8 +83,10 @@ interface Harness {
   events: RemoteAccessEvent[]
   logs: string[]
   requestShutdown: ReturnType<typeof vi.fn>
-  network: { category: 'private' | 'public' }
+  /** The fake network: eth0's address, its gateway identity, the category the next read answers (after `gate`, if set). */
+  network: { category: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number; onBind?: () => void }
   sessions(): ClientSessionRegistry
+  whoisCalls: string[]
 }
 
 const harnesses: Harness[] = []
@@ -95,14 +97,15 @@ afterEach(async () => {
   }
 })
 
-async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; alias?: { value: unknown } } = {}): Promise<Harness> {
+async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown } } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-remote-routes-'))
   dirs.push(dir)
   const port = await freePort()
   const announcer = new FakeAnnouncer()
   const events: RemoteAccessEvent[] = []
   const logs: string[] = []
-  const network = { category: opts.category ?? 'private' as 'private' | 'public' }
+  const whoisCalls: string[] = []
+  const network: Harness['network'] = { category: opts.category ?? 'private', addr: LAN, gateway: '192.168.77.1|aa:bb:cc:dd:ee:01', gate: null, reads: 0 }
   let server: FastifyInstance | null = null
   const sessions = () => (server as unknown as { adfClientSessions: ClientSessionRegistry }).adfClientSessions
   const service = new RemoteAccessService({
@@ -111,26 +114,33 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
     clientApiVersion: 2,
     platform: 'linux',
     hostName: () => 'host-1',
-    interfaces: () => ({ eth0: [{ address: LAN, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${LAN}/24` } as NetworkInterfaceInfo] }),
-    categories: async (ifaces) => ({
-      categories: new Map(ifaces.map(i => [i, network.category])),
-      current: [{ iface: 'eth0', id: 'net-home', label: 'eth0 via 192.168.77.1' }],
-      problem: null,
-    }),
+    interfaces: () => ({ eth0: [{ address: network.addr, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${network.addr}/24` } as NetworkInterfaceInfo] }),
+    categories: async (ifaces) => {
+      network.reads++
+      if (network.gate) await network.gate
+      return {
+        categories: new Map(ifaces.map(i => [i, network.category])),
+        current: [{ iface: 'eth0', id: 'net-home', label: 'eth0 via 192.168.77.1' }],
+        problem: null,
+      }
+    },
+    gateways: async (ifaces) => new Map(ifaces.map(i => [i, network.gateway])),
     tailscale: {
       self: async () => ({ state: 'absent', ips: [], dnsName: null }),
       serveStatus: async () => ({ serve: 'unknown', httpsUrl: null }),
       setServe: async () => { throw new Error('Tailscale is not installed on this computer.') },
       serveCommand: (p, on) => (on ? ['serve', '--bg', String(p)] : ['serve', '--https=443', 'off']),
-      whois: async () => null,
+      whois: async (address: string) => { whoisCalls.push(address); return null },
       command: null,
     },
+    behindProxy: opts.behindProxy ?? false,
     announcer,
     firewall: async () => ({ state: 'unknown', message: 'test', commands: [] }),
-    bindAddress: () => '127.0.0.1',
+    bindAddress: () => { network.onBind?.(); return '127.0.0.1' },
     wrongCodeDelayMs: 0,
     log: (line) => logs.push(line),
-    emit: (event) => events.push(event),
+    // As daemon/index.ts wires it: the client push topic.
+    emit: (event) => { events.push(event); sessions().publishPush('remote_access', event) },
     sessions,
     ...(opts.alias ? { runtimeAlias: { get: () => opts.alias!.value, set: (name: string) => { opts.alias!.value = name } } } : {}),
   })
@@ -144,7 +154,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
   await server.listen({ host: '127.0.0.1', port: 0 })
   const s = server
   await service.attach((req, res) => s.routing(req, res))
-  const h: Harness = { server: s, service, port, announcer, events, logs, requestShutdown, network, sessions }
+  const h: Harness = { server: s, service, port, announcer, events, logs, requestShutdown, network, sessions, whoisCalls }
   harnesses.push(h)
   return h
 }
@@ -358,19 +368,20 @@ describe('pairing over the remote listener (§5)', () => {
 
     const accepted = await claim(h, code)
     expect(accepted.status).toBe(202)
-    const { claimId } = accepted.json
-    expect((await remote(h, 'GET', `/pair/claims/${claimId}`)).json).toEqual({ state: 'pending' })
+    const { claimId, collectSecret } = accepted.json
+    const collect = { 'x-adf-pair-secret': collectSecret as string }
+    expect((await remote(h, 'GET', `/pair/claims/${claimId}`, collect)).json).toEqual({ state: 'pending' })
     const view = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing
     expect(view.claim).toMatchObject({ claimId, deviceName: 'agent-2 laptop', clientKind: 'cli', address: '127.0.0.1', via: 'lan' })
 
-    const waiting = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`)
+    const waiting = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`, collect)
     const decided = await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: true } })
     expect(decided.json()).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop', origin: 'paired' } })
     const result = await waiting
     expect(result.headers['cache-control']).toBe('no-store')
     expect(result.json).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop' }, daemon: { name: 'host-1' } })
     expect(validate('PairClaimResult', result.json)).toEqual([])
-    expect((await remote(h, 'GET', `/pair/claims/${claimId}`)).json.code).toBe('claim_not_found')
+    expect((await remote(h, 'GET', `/pair/claims/${claimId}`, collect)).json.code).toBe('claim_not_found')
     expect((await remote(h, 'GET', '/version', { authorization: `Bearer ${result.json.token}` })).status).toBe(200)
 
     const transcript = JSON.stringify(h.events) + h.logs.join('\n')
@@ -379,21 +390,26 @@ describe('pairing over the remote listener (§5)', () => {
     expect(h.events.map(e => e.type)).toEqual(expect.arrayContaining(['pairing_opened', 'claim_pending', 'device_added', 'pairing_closed']))
   })
 
-  it('brute force: 5 wrong codes close the window; the right code is then refused', async () => {
+  it('brute force: 5 wrong codes lock that source out; the window stays open and the owner is told', async () => {
     const h = await harness()
     await turnOn(h)
     const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
     const svc = h.service as unknown as { pairing: { perAddress: Map<string, number[]> } }
     for (let i = 4; i >= 0; i--) {
-      svc.pairing.perAddress.clear() // one source address here; the per-address limit has its own test
+      svc.pairing.perAddress.clear() // the per-address rate limit has its own test
       const res = await claim(h, wrongOf(code))
       expect(res.status).toBe(403)
       expect(res.json).toMatchObject({ code: 'wrong_code', attemptsLeft: i })
     }
     svc.pairing.perAddress.clear()
-    expect((await claim(h, code)).json.code).toBe('pairing_closed')
-    expect(h.events.some(e => e.type === 'pairing_closed' && e.reason === 'wrong_codes')).toBe(true)
-    expect(h.logs.some(l => /after 5 wrong codes/.test(l))).toBe(true)
+    const locked = await claim(h, code)
+    expect(locked.status).toBe(429)
+    expect(locked.json.code).toBe('rate_limited')
+    const pairing = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing
+    expect(pairing).toMatchObject({ attemptsLeft: 15, lockedSources: 1 })
+    expect(h.events.some(e => e.type === 'pairing_lockout')).toBe(true)
+    expect(h.events.some(e => e.type === 'pairing_closed')).toBe(false)
+    expect(h.logs.some(l => /locked out of this window after 5 wrong codes/.test(l))).toBe(true)
   })
 
   it('rate limit answers 429 with Retry-After; bad bodies 400; deny answers denied', async () => {
@@ -408,9 +424,10 @@ describe('pairing over the remote listener (§5)', () => {
     expect((await remote(h, 'POST', '/pair/claim', {}, { code: '123456', deviceName: 'a\nb', clientKind: 'cli' })).status).toBe(400)
     const svc = h.service as unknown as { pairing: { perAddress: Map<string, number[]> } }
     svc.pairing.perAddress.clear()
-    const { claimId } = (await claim(h, code)).json
+    const { claimId, collectSecret } = (await claim(h, code)).json
+    const collect = { 'x-adf-pair-secret': collectSecret as string }
     await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: false } })
-    expect((await remote(h, 'GET', `/pair/claims/${claimId}`)).json).toEqual({ state: 'denied' })
+    expect((await remote(h, 'GET', `/pair/claims/${claimId}`, collect)).json).toEqual({ state: 'denied' })
     const again = await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: true } })
     expect(again.statusCode).toBe(409)
     expect(again.json().code).toBe('claim_decided')
@@ -464,5 +481,258 @@ describe('one name: the runtime alias (owner, 2026-10-18)', () => {
     const h = await harness({ alias: { value: '  ' } })
     await turnOn(h)
     expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().name).toBe('host-1')
+  })
+})
+
+describe('security review item 1: claims stay with this machine', () => {
+  /** An SSE stream over a real socket: `port` (the loopback listener, or the remote one), Host as given. */
+  function stream(port: number, host: string, path: string, token: string): Promise<{ text: () => string; close: () => void }> {
+    return new Promise((resolve, reject) => {
+      let text = ''
+      const req = httpRequest({ host: '127.0.0.1', port, path, headers: { host, authorization: `Bearer ${token}` } }, (res) => {
+        res.setEncoding('utf-8')
+        res.on('data', (c) => { text += c })
+        resolve({ text: () => text, close: () => res.destroy() })
+      })
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
+  it('a device session never sees claim data, and the claim id alone collects nothing', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const hostile = await addDevice(h, 'agent-3 hostile')
+    const deviceAuth = { authorization: `Bearer ${hostile.token}` }
+    const deviceSession = await remote(h, 'POST', '/client/sessions', deviceAuth, { client: 'studio', version: '1' })
+    expect(deviceSession.status).toBe(201)
+    const deviceStream = await stream(h.port, `${LAN}:${h.port}`, `/client/sessions/${deviceSession.json.sessionId}/events`, hostile.token)
+    const deviceBus = await stream(h.port, `${LAN}:${h.port}`, '/events', hostile.token)
+    const mainPort = (h.server.server.address() as { port: number }).port
+    const local = await h.server.inject({ method: 'POST', url: '/client/sessions', headers: master, payload: { client: 'studio', version: '1' } })
+    const localStream = await stream(mainPort, `127.0.0.1:${mainPort}`, `/client/sessions/${local.json().sessionId}/events`, TOKEN)
+    await new Promise(r => setTimeout(r, 100))
+
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const accepted = await h.server.inject({ method: 'POST', url: '/pair/claim', payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })
+    expect(accepted.statusCode).toBe(202)
+    const { claimId, collectSecret } = accepted.json() as { claimId: string; collectSecret: string }
+    expect(collectSecret).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(collectSecret).not.toBe(claimId)
+    await new Promise(r => setTimeout(r, 200))
+
+    // This machine's own client gets "pending claims changed", without the claim.
+    expect(localStream.text()).toContain('"topic":"remote_access"')
+    expect(localStream.text()).toContain('claim_pending')
+    expect(localStream.text()).not.toContain(claimId)
+    // Another computer gets nothing of remote access, on either stream.
+    for (const seen of [deviceStream.text(), deviceBus.text()]) {
+      expect(seen).not.toContain(claimId)
+      expect(seen).not.toContain('remote_access')
+      expect(seen).not.toContain('agent-2 laptop')
+    }
+    expect(JSON.stringify(h.events)).not.toContain(claimId)
+    // The owner's own client reads the claim through the local-only status.
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim.claimId).toBe(claimId)
+
+    // A device that learned the claim id cannot collect the token: no secret, a wrong one, or its own token.
+    const stolen = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`, deviceAuth)
+    const guessed = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`, { 'x-adf-pair-secret': 'A'.repeat(43) })
+    await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: true } })
+    for (const r of [await stolen, await guessed]) {
+      expect(r.status).toBe(404)
+      expect(r.json.code).toBe('claim_not_found')
+      expect(JSON.stringify(r.json)).not.toContain('adfd_')
+    }
+    const legit = await remote(h, 'GET', `/pair/claims/${claimId}`, { 'x-adf-pair-secret': collectSecret })
+    expect(legit.json).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop' } })
+    for (const s of [deviceStream, deviceBus, localStream]) s.close()
+  })
+})
+
+describe('security review item 2: a network change is never assumed private', () => {
+  const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
+
+  it('a new address on the same interface name is re-read before it gets a listener', async () => {
+    const h = await harness()
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+    // The laptop moves to a hotel network: new address, Public, within the 60 s category cache.
+    h.network.addr = '10.9.9.9'
+    h.network.gateway = '10.9.9.1|de:ad:be:ef:00:01'
+    h.network.category = 'public'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([])
+    const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
+    expect(status.addresses).toEqual([expect.objectContaining({ address: '10.9.9.9', network: 'public', listening: false })])
+  })
+
+  it('the same address behind another gateway closes the listener at once and keeps it closed until the re-read says private', async () => {
+    const h = await harness()
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+    let release!: () => void
+    h.network.gate = new Promise<void>(r => { release = r })
+    h.network.gateway = '192.168.77.1|de:ad:be:ef:00:02' // another router, same subnet and address
+    h.network.category = 'public'
+    const readsBefore = h.network.reads
+    const applying = h.service.apply({})
+    for (let i = 0; i < 50 && h.network.reads <= readsBefore; i++) await new Promise(r => setTimeout(r, 10))
+    // The category read is still running: nothing listens on the unconfirmed network.
+    expect(listening(h)).toEqual([])
+    await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
+    release()
+    await applying
+    h.network.gate = null
+    expect(listening(h)).toEqual([])
+    expect(h.logs.some(l => /network changed on eth0: closing its listeners/.test(l))).toBe(true)
+    // Back home: confirmed private again, the listener returns.
+    h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
+    h.network.category = 'private'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([LAN])
+  })
+})
+
+describe('security review item 3: forwarded headers name nobody', () => {
+  it('X-Forwarded-For changes neither the claim\'s address nor the rate limits, and never reaches whois', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const spoofed = { 'x-forwarded-for': '100.101.102.103, 203.0.113.5' }
+    const claim = await h.server.inject({ method: 'POST', url: '/pair/claim', headers: spoofed, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })
+    expect(claim.statusCode).toBe(202)
+    const view = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim
+    expect(view).toMatchObject({ address: '127.0.0.1', via: 'proxy', tailnetLogin: null })
+    expect(h.whoisCalls).toEqual([])
+    expect(h.logs.join('\n')).not.toContain('100.101.102.103')
+    // Rotating X-Forwarded-For does not reset the per-source hello limit (30 per minute).
+    const codes: number[] = []
+    for (let i = 0; i < 40; i++) codes.push((await h.server.inject({ method: 'GET', url: '/remote/hello', headers: { 'x-forwarded-for': `10.0.0.${i}` } })).statusCode)
+    expect(codes.filter(c => c === 429).length).toBe(10)
+  })
+
+  it('behind tailscale serve (ADF_DAEMON_BEHIND_PROXY, loopback peer) the Tailscale-User-Login header names the tailnet user; whois is never run on it', async () => {
+    const h = await harness({ behindProxy: true })
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const viaServe = { 'tailscale-user-login': 'agent-2@example.test', 'x-forwarded-for': '100.101.102.103' }
+    expect((await h.server.inject({ method: 'POST', url: '/pair/claim', headers: viaServe, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'cli' } })).statusCode).toBe(202)
+    const view = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim
+    expect(view).toMatchObject({ address: '127.0.0.1', via: 'proxy', tailnetLogin: 'agent-2@example.test' })
+    expect(h.whoisCalls).toEqual([])
+  })
+
+  it('without proxy mode the Tailscale-User-Login header is ignored', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    await h.server.inject({ method: 'POST', url: '/pair/claim', headers: { 'tailscale-user-login': 'owner@example.test' }, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'cli' } })
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim.tailnetLogin).toBeNull()
+  })
+})
+
+describe('security review item 5: URL spellings do not get past the device refusal', () => {
+  /** Every device-refused route (isDeviceRefusedRoute), with the method it is registered for. */
+  const ROUTES: Array<[string, string]> = [
+    ['GET', '/client/sessions'],
+    ['POST', '/daemon/shutdown'],
+    ['POST', '/client/reload-credentials'],
+    ...['create', 'restore', 'import', 'unlock', 'lock', 'confirm-backup', 'trust-daemon', 'untrust-daemon'].map((a): [string, string] => ['POST', `/identity/${a}`]),
+    ['POST', '/agents/agent-1/identity/reveal'],
+    ['POST', '/files/agent/identity/reveal'],
+    ['POST', '/settings/providers/keys/reveal'],
+    ['GET', '/remote-access'],
+    ['PUT', '/remote-access'],
+    ['POST', '/remote-access/devices'],
+    ['DELETE', '/remote-access/devices/abcdefghij'],
+    ['POST', '/remote-access/pairing'],
+    ['DELETE', '/remote-access/pairing'],
+    ['POST', '/remote-access/pairing/claims/c1'],
+    ['POST', '/remote-access/tailscale-serve'],
+  ]
+  const hex = (c: string) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`
+  /** Spellings Fastify may route to the same handler. */
+  function variants(path: string): string[] {
+    const last = path.length - 1
+    const dash = path.indexOf('-')
+    const second = path.indexOf('/', 1)
+    return [
+      path,
+      path.slice(0, last) + hex(path[last]),
+      path.slice(0, last) + hex(path[last]).toLowerCase(),
+      ...(dash > 0 ? [path.slice(0, dash) + '%2D' + path.slice(dash + 1)] : []),
+      path.slice(0, 1) + hex(path[1]) + path.slice(2),
+      ...(second > 0 ? [path.slice(0, second) + '%2F' + path.slice(second + 1)] : []),
+      `${path}/`,
+      `/${path}`,
+      `${path};x`,
+      `${path}?x=1`,
+    ]
+  }
+
+  it('every local-only route, every spelling: 403 device_token_refused or no route at all, from both listeners', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const auth = { authorization: `Bearer ${device.token}` }
+    const leaks: string[] = []
+    let refusedPlain = 0
+    for (const [method, path] of ROUTES) {
+      for (const url of variants(path)) {
+        const body = method === 'GET' || method === 'DELETE' ? undefined : {}
+        const viaRemote = await remote(h, method, url, auth, body)
+        const viaLoopback = await h.server.inject({ method: method as 'GET', url, headers: { ...auth, 'x-adf-local-proof': PROOF }, ...(body ? { payload: body } : {}) })
+        for (const [where, status, code] of [['remote', viaRemote.status, viaRemote.json?.code], ['loopback', viaLoopback.statusCode, viaLoopback.json()?.code]] as const) {
+          const refused = status === 403 && code === 'device_token_refused'
+          if (url === path && refused) refusedPlain++
+          if (!refused && status !== 404) leaks.push(`${where} ${method} ${url} → ${status} ${code ?? ''}`)
+        }
+      }
+    }
+    expect(leaks).toEqual([])
+    expect(refusedPlain).toBe(ROUTES.length * 2)
+  })
+})
+
+describe('security review item 6: turning off wins over an address check in flight', () => {
+  it('no listener survives "off", wherever the check was when it came', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const svc = h.service as unknown as { listeners: { addresses(): string[]; closeAll(): Promise<number> } }
+    const survivors: string[] = []
+    for (let k = 0; k < 12; k++) {
+      await svc.listeners.closeAll()
+      const check = h.service.apply({ force: true })
+      const off = (async () => {
+        for (let i = 0; i < k; i++) await new Promise(r => setImmediate(r))
+        return h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { enabled: false } })
+      })()
+      await Promise.all([check, off])
+      await new Promise(r => setTimeout(r, 30))
+      if (svc.listeners.addresses().length) survivors.push(`k=${k}: ${svc.listeners.addresses().join(',')}`)
+      await turnOn(h)
+    }
+    expect(survivors).toEqual([])
+  })
+})
+
+describe('security review item 6: "off" during a listener opening', () => {
+  it('a listener that was opening when remote access turned off does not stay', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const svc = h.service as unknown as { listeners: { addresses(): string[]; closeAll(): Promise<number> } }
+    await svc.listeners.closeAll()
+    let off: Promise<unknown> | null = null
+    // The owner turns it off at the moment the address check binds its listener.
+    h.network.onBind = () => {
+      h.network.onBind = undefined
+      off = h.service.update({ enabled: false })
+    }
+    await h.service.apply({ force: true })
+    await off
+    await new Promise(r => setTimeout(r, 50))
+    expect(svc.listeners.addresses()).toEqual([])
+    await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
   })
 })

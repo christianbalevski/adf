@@ -287,6 +287,13 @@ export interface ClientPushPayloads {
 
 export type ClientPushTopic = keyof ClientPushPayloads
 
+/**
+ * Topics only this computer's own clients get: never a session opened with a
+ * device token (another computer, remote-access.md §10). Remote access is
+ * managed from this machine only, and its events name devices and pairing.
+ */
+export const LOCAL_ONLY_PUSH_TOPICS: ReadonlySet<ClientPushTopic> = new Set<ClientPushTopic>(['remote_access'])
+
 export const CLIENT_PUSH_TOPICS: readonly ClientPushTopic[] = [
   'config_changed', 'inbox', 'workspace_data', 'approvals', 'mesh', 'inter_agent_message', 'templates',
   'tracked_dirs', 'file_renamed', 'agent_path_changed', 'autostart', 'autostart_overflow', 'adf_file_created', 'mcp_install', 'adapter_install',
@@ -962,7 +969,7 @@ export class ClientSessionRegistry {
       name: 'push',
       full: () => frameJson({ kind: 'push', topic, agentId, filePath, payload }, 'payload'),
       ...(stub ? { unfocused: () => frameJson({ kind: 'push', topic, agentId, filePath, payload: stub(), stripped: 'stub' }, 'payload') } : {}),
-    }, echoFrom)
+    }, echoFrom, LOCAL_ONLY_PUSH_TOPICS.has(topic))
   }
 
   // --- agent index ------------------------------------------------------------
@@ -991,11 +998,12 @@ export class ClientSessionRegistry {
   // --- internals --------------------------------------------------------------
 
   /** Serialize lazily, once per variant, and append to every session that takes the frame. */
-  private fanOut(agentId: string | null, bodies: FrameBodies, skipSession: string | null = null): void {
+  private fanOut(agentId: string | null, bodies: FrameBodies, skipSession: string | null = null, localOnly = false): void {
     let full: string | undefined
     let unfocused: string | null | undefined
     for (const session of this.sessions.values()) {
       if (skipSession !== null && session.id === skipSession) continue
+      if (localOnly && session.deviceId !== null) continue
       const focused = agentId !== null && session.focus === agentId
       let body: string | null
       if (focused || !bodies.unfocused) body = full ??= bodies.full()

@@ -28,7 +28,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 | R4 | Per-device tokens, SHA-256 hashed at rest, with label, created, last seen. Revoking one closes that device's sessions and streams. | §4 |
 | R5 | The install's file token (the master token) is never accepted on a remote listener. Device tokens are never accepted on local-only routes or on the remote-access management routes, from anywhere. | §4.4, §4.5 |
 | R6 | "New token" creates a device token and shows it once. "Show" works only while that dialog is open. | §4.6 |
-| R7 | Pairing: 6-digit code, window 120 s, 5 wrong codes close it, AND the host MUST confirm "Allow *name*?". Code alone never suffices. | §5 |
+| R7 | Pairing: 6-digit code, window 120 s, 5 wrong codes lock that source out, 20 in total close it, AND the host MUST confirm "Allow *name*?". Code alone never suffices. | §5 |
 | R8 | No PAKE, no X25519 in v1. Every later request carries the bearer token in clear over http, so protecting only the claim buys nothing against a sniffer. The transport answer is Tailscale (WireGuard) and `tailscale serve` (https). | §5.6, §5.7 |
 | R9 | Firewall: rely on the OS prompts (Windows, macOS); never add a rule ourselves; detect a block where it can be read without elevation and say how to fix it. Linux: documented commands. | §6 |
 | R10 | Every state change is visible: a status line, the devices list, notices, the daemon log, `adf daemon remote status`. | §8 |
@@ -37,7 +37,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 
 ### 3.1 Setting
 
-File `<settings dir>/remote-access.json` (next to `daemon-token`), written with mode 0600 and `protectSecretFile`. Only the daemon writes it, through the management routes (§11.2).
+File `<settings dir>/remote-access.json` (next to `daemon-token`), written with `writeSecretFileAtomic` (§10.1). Only the daemon writes it, through the management routes (§11.2).
 
 | Field | Type | Content |
 |---|---|---|
@@ -56,6 +56,7 @@ Device records are a separate file (§4.3) so a corrupt device file never turns 
 - With remote access on, the daemon opens one extra `http.Server` per eligible address, on the same port (`192.168.1.20:7385`, `100.101.102.103:7385`). Binding specific addresses on the same port does not conflict with the loopback bind on Windows, macOS or Linux; a wildcard bind next to it does on Linux (EADDRINUSE) and depends on socket options elsewhere. A wildcard bind would also expose public interfaces.
 - Each extra server hands its requests to the same Fastify instance through `fastify.routing(req, res)` (the public router entry used by `serverFactory`), so every hook, guard and route is shared. Each accepted socket is tagged `remoteListener = true` at `connection`; the guard reads the tag (§4.4).
 - Disable, daemon stop, or an address going away: the server stops listening and destroys its sockets (`closeAllConnections`), including hijacked SSE responses, which the main server's SSE sweep does not see.
+- Turning off takes effect at once (device tokens refused, no listener may open) and closes the listeners in the same serialized chain as the address checks, after any check in flight. Each listener asks "still on?" before it opens and again once it listens, closing at once otherwise, so no listener outlives "off" (security review item 6).
 - A listener that fails to bind (EADDRINUSE, EADDRNOTAVAIL) is reported per address (`addresses[].problem`) and retried at the next check; the others keep running.
 - `DaemonHost.start`'s check (non-loopback `host` needs `ADF_DAEMON_TOKEN`) stays as it is for the env path (§3.7). The extra listeners do not go through it: they accept device tokens only (§4.4), so no operator-chosen token is needed.
 
@@ -97,6 +98,8 @@ Node has no portable interface-change event. While remote access is on, the daem
 3. re-announce mDNS on the current interface (§5.1);
 4. log one line naming added and removed addresses, and emit `remote_access` event `addresses_changed`.
 
+A network category (§3.3.1) holds only for the interface's addresses and default gateway (`<gateway IP>|<gateway MAC>`) at the moment it was read. The gateway is read at every check (cheap: `/proc/net/route` and `/proc/net/arp` on Linux, `netstat -rn` and `arp -an` on macOS, `route print -4 0.0.0.0` and `arp -a` on Windows). When an interface's addresses or gateway differ from the last read, the daemon MUST close that interface's LAN listeners first, then re-read the category, and open them again only when the new read says private (security review 2026-10-18, item 2: the 60 s cache keyed by interface name alone let a new hotel address inherit the home network's "private"). A gateway that cannot be read counts as unknown; the address part of the key still changes, and an unknown network is never private on macOS and Linux.
+
 With no eligible address the state is `no_address` ("No private network address now; other computers cannot reach this computer."). The setting stays on and listeners return with the network.
 
 ### 3.5 Host names
@@ -135,7 +138,7 @@ Remote access works only while this daemon runs.
 
 ### 4.3 Store
 
-`<settings dir>/daemon-devices.json`, mode 0600, `protectSecretFile` on every write, written atomically (temp + rename).
+`<settings dir>/daemon-devices.json`, written with `writeSecretFileAtomic` on every write (§10.1).
 
 ```json
 { "v": 1,
@@ -169,7 +172,7 @@ Rationale for refusing the master token remotely: it cannot be revoked without b
 
 A device token MUST be refused (403 `device_token_refused`), on every listener, for:
 
-- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, credential reload, `GET /client/sessions`), except the three client-session routes whose handlers decide per request: `POST /client/sessions`, `POST /client/sessions/:id/quit`, `PUT /client/sessions/:id/exit-when-closed` (a remote Studio opens and quits its session; `exitDaemonWhenClosed` and `stopDaemon` still refuse a device token through `requireLocalCaller`). Code: `isDeviceRefusedRoute` (local-access.ts);
+- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, credential reload, `GET /client/sessions`), except the three client-session routes whose handlers decide per request: `POST /client/sessions`, `POST /client/sessions/:id/quit`, `PUT /client/sessions/:id/exit-when-closed` (a remote Studio opens and quits its session; `exitDaemonWhenClosed` and `stopDaemon` still refuse a device token through `requireLocalCaller`). Code: `isDeviceRefusedRoute` (local-access.ts). The guard judges the route Fastify matched (`request.routeOptions.url`, the pattern), or, with no match, the percent-decoded path with repeated and trailing slashes and `;` parameters removed: never the raw URL, which `GET /client/session%73` used to slip past (security review item 5). Handlers of local-only routes refuse a device token again themselves (`requireLocalCaller`, `requireLocalProof`, `GET /client/sessions`);
 - every `/remote-access` management route (§11.2): a device cannot mint tokens, list or revoke devices, open pairing or turn remote access on or off.
 
 `isLocalOnlyRoute` gains `/remote-access` and `/remote-access/*`; `requireLocalCaller` gains the token-kind check, so the refusal does not depend on the peer address (an SSH tunnel to loopback with a device token is still refused). The management routes also require the local proof in every mode, as `POST /identity/import` does, because they create credentials.
@@ -224,7 +227,7 @@ Opened by **Pair a computer** in Studio or `adf daemon pair` (`POST /remote-acce
 
 - Code: `crypto.randomInt(0, 1_000_000)`, six digits zero-padded, shown on the host only (panel, CLI). Never logged, never in an event payload, never announced.
 - Lifetime 120 s from opening. Opening again replaces the window with a new code.
-- 5 wrong codes in total (across all source addresses) close the window ("Pairing closed after 5 wrong codes."). The owner opens a new one by hand; nothing reopens by itself.
+- 5 wrong codes from one source lock that source out of the window: its later claims, the right code included, answer 429 `rate_limited` until the window closes. The owner is told each time (event `pairing_lockout`, `PairingWindowView.lockedSources`, a log line naming the address) and the window stays open for everyone else, so one stranger on the LAN cannot close it (security review item 8). 20 wrong codes in total close the window ("Pairing closed after 20 wrong codes."). The owner opens a new one by hand; nothing reopens by itself.
 - One correct claim moves the window to `claim_pending`; further claims get 409 `pairing_busy`. The window closes when the host decides or when it expires, whichever is first.
 - Closing (**Cancel**, Ctrl+C in `adf daemon pair`, expiry, remote access off, daemon stop) discards the code and any pending claim.
 
@@ -233,15 +236,17 @@ Opened by **Pair a computer** in Studio or `adf daemon pair` (`POST /remote-acce
 ```text
 client                                   host daemon                         host UI (Studio / adf daemon pair)
   POST /pair/claim {code, deviceName, clientKind}
-                      ── code ok ──▶ claim pending ── event claim_pending ──▶ "Allow agent-2 laptop?"
-  ◀── 202 {claimId, expiresAt}
-  GET /pair/claims/:claimId?wait=25  (long poll, repeated)
+                      ── code ok ──▶ claim pending ── event claim_pending ──▶ GET /remote-access → "Allow agent-2 laptop?"
+  ◀── 202 {claimId, expiresAt, collectSecret}
+  GET /pair/claims/:claimId?wait=25, X-ADF-Pair-Secret: collectSecret  (long poll, repeated)
                                                     ◀── POST /remote-access/pairing/claims/:claimId {allow}
   ◀── {state: approved, token, device, daemon}   (delivered once, then the claim is deleted)
 ```
 
-- `deviceName`: 1-64 characters, control and bidi characters refused (400), trimmed. It becomes the device label.
-- `claimId`: 128-bit random, known only to the claimant; it is the capability to collect the token.
+- `deviceName`: 1-64 characters after whitespace runs are collapsed to one space and the ends trimmed. Refused (400): C0/C1 controls, every bidi control (U+061C, U+200E/F, U+202A-E, U+2066-9), U+2028/9, zero-width characters (U+200B-D, U+2060), U+FEFF, and input over 256 characters. It becomes the device label. Labels and the computer name follow the same rule (`cleanDisplayName`, security review item 4).
+- `claimId`: 128-bit random. The owner's clients see it (`GET /remote-access` → `pairing.claim`) and answer with it; it does not collect anything.
+- `collectSecret`: 256-bit random, only in the 202 answer, never in the status, an event or the log. Collecting the result needs it as `X-ADF-Pair-Secret`, compared in constant time; a missing or wrong one answers 404 `claim_not_found`, as an unknown claim does. So a paired device, or anything that learns the claim id, cannot collect a new device's token (security review 2026-10-18, item 1).
+- `claim_pending` means "pending claims changed" and carries nothing; Studio and `adf daemon pair` read the claim through the local-only `GET /remote-access`.
 - Host confirmation is REQUIRED in addition to the code. The prompt shows: device name, source address, how it arrived (`lan`, `tailnet`, `proxy`), the client kind, and, on a tailnet, the peer's Tailscale login from `tailscale whois <addr>` when available. Text: "Allow *agent-2 laptop* (192.168.1.31, this network) to control this computer's ADF daemon? It gets the same power as your seed phrase." Buttons **Allow** / **Deny**. Studio shows it as a modal in the window and, when the window is not focused, an OS notification that opens it. `adf daemon pair` prompts `Allow …? [y/N]`. The first decision from any local client wins.
 - Why both: the code proves the person at the client sees the host's screen, so a stranger on the LAN cannot spam "Allow?" prompts under a plausible name; the confirmation proves the owner consents and lets them check the address, which is the only defence against a relayed code (§10).
 - Approval creates the device record (`origin: 'paired'`) before the token is released. The token is returned once, to the first poll after approval, with `Cache-Control: no-store`; the claim is then deleted. A token never collected (client gone) leaves a device the owner sees in the list with "Never connected" and can revoke.
@@ -251,9 +256,11 @@ client                                   host daemon                         hos
 
 | Control | Value |
 |---|---|
-| Code space | 10^6; 5 guesses per window, so 5 × 10^-6 per window an owner opens |
+| Code space | 10^6; at most 20 guesses per window (5 per source), so at most 2 × 10^-5 per window an owner opens, and a correct guess still needs the owner's Allow |
 | Per source address | 1 claim per 2 s, 10 per 10 minutes; over that: 429 `rate_limited` with `Retry-After` |
-| Wrong code | 403 `wrong_code` with `attemptsLeft`, answered after a fixed 1 s delay |
+| What a source is | The socket's peer address. `X-Forwarded-For` and other forwarded headers are never read (any process on this machine can send them to the loopback listener). Behind `tailscale serve` only (`ADF_DAEMON_BEHIND_PROXY` set, loopback peer), the `Tailscale-User-Login` / `Tailscale-User-Name` headers serve sets name the tailnet user: the prompt shows it and the limits count per user. `tailscale whois` runs only on the socket address of a tailnet listener, never on a header value (security review item 3) |
+| Memory | The per-source counters (`/remote/hello`, `/pair/claim`) keep at most 1024 sources, dropping the least recently seen |
+| Wrong code | 403 `wrong_code` with `attemptsLeft` (the smaller of this source's and the window's), answered after a fixed 1 s delay |
 | Window closed / never opened | 404 `pairing_closed`, same body whether a window existed or not |
 | Remote access off | `/remote/hello`, `/pair/*` answer 404 `remote_access_off` on loopback; remote listeners do not exist |
 | Bearer guessing | 256-bit secrets, no lockout needed; 401s from one source are logged at most once a minute with a count |
@@ -324,7 +331,7 @@ Settings → Networking (Studio in `local` mode; in `embedded` or `remote` the t
 | Device first connection after start, disconnect | Devices list (live); no notice | `devices list` | Line |
 | Refusals (`master_token_remote`, `device_revoked`, rate limit) | — | — | Rate-limited line with count |
 
-Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (`claimId`, `label` = the device name; Studio shows the **Allow device** dialog and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
+Studio gets them through the client push topic `remote_access`, which goes to this computer's own client sessions only: never to a session opened with a device token, and never onto the umbilical bus (`GET /events` serves device tokens, and agents' taps read it). `{type, deviceId?, label?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (no fields: Studio reads `GET /remote-access` → `pairing.claim`, shows the **Allow device** dialog for it and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
 
 ## 9. Client side
 
@@ -357,9 +364,16 @@ adf remotes forget <name>         delete the saved URL and token (the host still
 | Client | URL and metadata | Token |
 |---|---|---|
 | Studio | `studio-backend.json` `remote.url`, `remote.allowInsecureHttp`, new `remote.paired: {fingerprint, name, deviceId, label} \| null` | `remote.token` as `safe:` (safeStorage), unchanged; sent only to that origin |
-| CLI | `<data dir>/cli-remotes.json` `{v: 1, default, remotes: {<name>: {url, fingerprint, deviceId, label, pairedAt}}}` | OS keychain, service `ADF`, account `remote-token:<fingerprint>` (`@napi-rs/keyring`, already a CLI dependency); without a keychain `<data dir>/cli-remote-tokens.json`, 0600 / own ACL, and `adf pair` says so |
+| CLI | `<data dir>/cli-remotes.json` `{v: 1, default, remotes: {<name>: {url, fingerprint, deviceId, label, pairedAt}}}` | OS keychain, service `ADF`, account `remote-token:<fingerprint>` (`@napi-rs/keyring`, already a CLI dependency); without a keychain `<data dir>/cli-remote-tokens.json`, written with `writeSecretFileAtomic` (§10.1), and `adf pair` says so; both CLI files are written that way |
 
 When a saved remote stops answering at its IP, Studio and the CLI SHOULD look the fingerprint up in mDNS and offer the new address ("*host* is now at 192.168.1.44. Use it?"); they MUST NOT switch silently.
+
+Host pinning in the CLI (security review item 7, trust on first use):
+
+- `adf pair` refuses an approval whose `daemon.fingerprint` differs from the fingerprint `/remote/hello` showed before the code was typed; nothing is saved, and the output names the device to remove on the host.
+- A saved remote is pinned to the fingerprint it was paired with. Pairing another fingerprint under its name is refused ("forget it first"); re-pairing the same computer replaces its address or token only after the user says yes (`--yes` accepts).
+- The saved URL is the one the user typed or chose. A URL the host lists replaces it only when it is `https://*.ts.net` or a 100.64/10 / `fd7a:115c:a1e0::/48` address that this computer's own Tailscale lists as a peer, answers with the same fingerprint, and the user agrees.
+- Before any command sends a saved device token, `adf` asks `/remote/hello` at that URL; another fingerprint, or no answer as that computer, refuses the command and the token is not sent. A token given with `--token` / `ADF_DAEMON_TOKEN` is not checked.
 
 ## 10. Security review
 
@@ -370,15 +384,33 @@ Assets: device tokens (each = the owner phrase, §4.5), the pairing code during 
 | Passive sniffer on the LAN | Read every plain-http request, including the bearer token, and chat and file content | Tailnet listener (WireGuard) and `tailscale serve` (TLS) are offered first and labelled; plain LAN http needs an explicit "I trust this network" on the client | Yes, for plain LAN http the owner confirmed. Same as copy-paste today. |
 | Sniffer during pairing | Read the code (single use, consumed by the legitimate claim) and the token in the poll answer | As above | Yes (the token leaks on the next request anyway, §5.6) |
 | Active attacker on the LAN (ARP spoof, rogue AP) | Everything a sniffer can, plus modify traffic, impersonate host or client | Host confirmation shows source address; encrypted transports | Yes on plain http. Not defended without TLS or WireGuard. |
-| Rogue mDNS responder | Announce a fake "*owner*'s PC" with `pair=1` and the real fingerprint; learn the code the user types; relay it to the real host within the window | Host prompt names the source address and arrival path; the client's dialog shows the address it is talking to; one claim per window; the window is short and owner-opened | Partly: an owner who allows without reading the address is fooled. SPAKE2 would close this; deferred (§5.6, Q3). |
-| LAN guesser | Guess codes | 5 guesses per owner-opened window, per-address rate limit, host confirmation | Residual 5 × 10^-6 per window, and still needs Allow |
+| Rogue mDNS responder | Announce a fake "*owner*'s PC" with `pair=1` and the real fingerprint; learn the code the user types; relay it to the real host within the window | Host prompt names the source (socket) address and arrival path, never a forwarded header; `adf` pins the fingerprint and refuses an approval from another one; the client's dialog shows the address it is talking to; one claim per window; the window is short and owner-opened | Partly: an owner who allows without reading the address is fooled. SPAKE2 would close this; deferred (§5.6, Q3). |
+| LAN guesser | Guess codes; or enter wrong codes to close the owner's window | 5 wrong codes per source (then locked out), 20 per window, per-source rate limit, host confirmation | Residual 2 × 10^-5 per window, and still needs Allow; one source cannot close the window |
 | LAN stranger without a code | Spam claims, probe hello | 404 without a window; rate limits; hello carries no secret | Learns name and fingerprint (also in mDNS) |
 | Web page in the user's browser | CSRF / DNS rebinding to the daemon | Existing Host, Origin, `Sec-Fetch-Site` checks on every listener and route | — |
-| Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens |
+| Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens. It cannot see or collect other devices' pairing claims (no remote_access events, collect secret), nor reach local-only routes by any URL spelling |
 | Device token holder | Mint more tokens, lock the owner out | §4.5: management and local-only routes refuse device tokens | — |
 | Public / hostile Wi-Fi with private addresses (hotel 10.x) | Reach the listeners, attempt pairing | Token required; pairing only in an owner-opened window; Windows' Public profile usually blocks; the status line names the addresses | Yes; see Q4 |
 | Carrier-grade NAT peers | Reach a 100.64/10 listener | Bound only when Tailscale confirms the address | — |
 | Process of the same OS user on the host | Read `daemon-token`, `daemon-devices.json`, mint via the proof | Out of scope, as in daemon-backend.md §5.4.1 | Yes |
+
+### 10.0 Security review 2026-10-18 (FIX), daemon and CLI
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | `claim_pending` carried the claim id to every session and the umbilical bus; a paired device could collect the next device's token | Collecting needs the 202's `collectSecret` (`X-ADF-Pair-Secret`, constant time); events carry no claim; `remote_access` goes to this computer's own sessions only, never to device sessions or `/events` (§5.4, §8) |
+| 2 | Network categories cached 60 s by interface name: a new network inherited "private" | Category keyed on the interface's addresses and gateway, re-read on any change with that interface's listeners closed meanwhile (§3.4) |
+| 3 | `X-Forwarded-For` from any local process set the prompt's address, reset the limits and reached `tailscale whois` | Socket address only; Tailscale-User-* headers only behind serve in proxy mode; whois on socket addresses only; bounded counters (§5.5) |
+| 4 | Device-name filter missed U+061C, U+2028/9, zero-width characters, U+FEFF | Full set refused, whitespace collapsed, length capped (§5.4) |
+| 5 | Percent-encoded paths (`/client/session%73`) slipped past the device refusal | The guard judges the matched route pattern or the decoded, normalised path (§4.5) |
+| 6 | "Off" raced an address check: a listener opened after `closeAll` | Off is serialized with the checks; each listener re-checks before and after it opens (§3.2) |
+| 7 | The CLI trusted the approval's fingerprint and URLs | Fingerprint must match the hello; saved remotes pinned (TOFU); URL switch only to tailnet addresses after asking; token never sent to another fingerprint (§9.3) |
+| 8 | 5 wrong codes from anyone closed the owner's window | 5 per source lock that source out (owner told), 20 in total close it (§5.3) |
+| 9 | Secret files written before they were restricted; failures only logged | Restricted temp file, then rename; failure fails the write visibly (§10.1) |
+
+### 10.1 Secret files
+
+`remote-access.json`, `daemon-devices.json`, `cli-remotes.json` and `cli-remote-tokens.json` are written by `writeSecretFileAtomic` (`src/main/utils/secret-write.ts`): the content goes into a temp file that is already readable by the current user only, then the temp file is renamed over the target. On POSIX the temp file is created exclusively with mode 0600; on Windows it is created empty, given its own ACL (`icacls /inheritance:r /grant:r <user>:F`), and only then filled. A restriction that fails MUST fail the write: nothing is written, the caller gets `SecretFileError`, the daemon answers the error (no device token is issued), and `adf pair` says the token was not saved and which device to remove on the host. Nothing reports "readable by you only" for a file that is not (security review item 9).
 
 ## 11. API (the fixed contract)
 
@@ -392,7 +424,7 @@ interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' 
 interface RemoteUrl { url: string; kind: 'tailscale-https' | 'tailnet' | 'lan' | 'mdns-name'; encrypted: boolean }
 interface RemoteDevice { id: string; label: string; origin: 'paired' | 'token'; createdAt: string; createdBy: 'studio' | 'cli'; lastSeenAt: string | null; lastSeenAddress: string | null; connected: boolean; connections: number; sessions: number }
 interface PairingClaimView { claimId: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null; at: string }
-interface PairingWindowView { code: string; name: string; fingerprint: string; openedAt: string; expiresAt: string; attemptsLeft: number; claim: PairingClaimView | null }
+interface PairingWindowView { code: string; name: string; fingerprint: string; openedAt: string; expiresAt: string; attemptsLeft: number; lockedSources: number; claim: PairingClaimView | null }
 interface RemoteAccessStatus {
   enabled: boolean; state: RemoteAccessState; message: string; problem: string | null
   name: string; fingerprint: string | null; port: number
@@ -405,7 +437,7 @@ interface RemoteAccessStatus {
 }
 interface RemoteHello { v: 1; name: string; fingerprint: string; pairingOpen: boolean; clientApiVersion: number }
 interface PairClaimRequest { code: string; deviceName: string; clientKind: 'studio' | 'cli' }
-interface PairClaimAccepted { claimId: string; expiresAt: string }
+interface PairClaimAccepted { claimId: string; expiresAt: string; collectSecret: string }
 type PairClaimResult =
   | { state: 'pending' }
   | { state: 'denied' }
@@ -437,7 +469,7 @@ Host / Origin checks apply; no bearer token; all answers `Cache-Control: no-stor
 |---|---|---|
 | `GET /remote/hello` | — | 200 `RemoteHello` |
 | `POST /pair/claim` | `PairClaimRequest` | 202 `PairClaimAccepted` |
-| `GET /pair/claims/:claimId?wait=<0-25>` | — | 200 `PairClaimResult` (holds up to `wait` s while pending) |
+| `GET /pair/claims/:claimId?wait=<0-25>` | header `X-ADF-Pair-Secret` = the 202's `collectSecret` | 200 `PairClaimResult` (holds up to `wait` s while pending) |
 
 ### 11.4 Error codes
 

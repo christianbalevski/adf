@@ -15,11 +15,11 @@
  * machine.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { daemonSettingsDir } from '../daemon/daemon-token'
 import { openDaemonSecrets } from '../backend/daemon-secrets'
-import { protectSecretFile } from '../utils/secret-file'
+import { writeSecretFileAtomic } from '../utils/secret-write'
 
 export const REMOTES_FILENAME = 'cli-remotes.json'
 export const REMOTE_TOKENS_FILENAME = 'cli-remote-tokens.json'
@@ -78,16 +78,13 @@ export function loadRemotes(env: NodeJS.ProcessEnv = process.env): RemotesFile {
   }
 }
 
-function writeJson(path: string, value: unknown, secret: boolean): void {
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
-  if (secret) protectSecretFile(tmp)
-  renameSync(tmp, path)
+/** Both files: readable by the current user only from the first byte (the remotes list names hosts and device ids); throws SecretFileError otherwise. */
+function writeJson(path: string, value: unknown): void {
+  writeSecretFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`)
 }
 
 export function saveRemotes(file: RemotesFile, env: NodeJS.ProcessEnv = process.env): void {
-  writeJson(remotesPath(env), file, false)
+  writeJson(remotesPath(env), file)
 }
 
 // --- tokens ---------------------------------------------------------------------
@@ -126,7 +123,7 @@ export function storeRemoteToken(fingerprint: string, token: string, env: NodeJS
 
 function storeInFile(fingerprint: string, token: string, env: NodeJS.ProcessEnv, why: string): TokenStoreChoice {
   const path = tokensPath(env)
-  writeJson(path, { ...readTokenFile(env), [account(fingerprint)]: token }, true)
+  writeJson(path, { ...readTokenFile(env), [account(fingerprint)]: token })
   return { where: 'file', why, path }
 }
 
@@ -147,7 +144,7 @@ export function deleteRemoteToken(fingerprint: string, env: NodeJS.ProcessEnv = 
   const tokens = readTokenFile(env)
   if (account(fingerprint) in tokens) {
     delete tokens[account(fingerprint)]
-    writeJson(tokensPath(env), tokens, true)
+    writeJson(tokensPath(env), tokens)
   }
 }
 
@@ -179,6 +176,37 @@ export function savedRemoteToken(url: string, env: NodeJS.ProcessEnv = process.e
     if (sameOrigin(remote.url, url)) return readRemoteToken(remote.fingerprint, env) ?? undefined
   }
   return undefined
+}
+
+/** The saved remote whose origin `url` is, or null. */
+export function savedRemoteFor(url: string, env: NodeJS.ProcessEnv = process.env): { name: string; remote: SavedRemote } | null {
+  if (!existsSync(remotesPath(env))) return null
+  for (const [name, remote] of Object.entries(loadRemotes(env).remotes)) {
+    if (sameOrigin(remote.url, url)) return { name, remote }
+  }
+  return null
+}
+
+/**
+ * Before a saved device token goes to `url` (security review item 7): the
+ * daemon there MUST answer /remote/hello with the fingerprint pinned when it
+ * was paired. Null = go ahead (no saved remote for that origin); otherwise the
+ * sentence to show, and the token is not sent. A token given with --token or
+ * ADF_DAEMON_TOKEN is the user's own choice and is not checked.
+ */
+export async function pinnedRemoteRefusal(url: string, env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): Promise<string | null> {
+  const saved = savedRemoteFor(url, env)
+  if (!saved) return null
+  const { fetchHello } = await import('./daemon-discovery')
+  const hello = await fetchHello(url, fetchImpl)
+  const host = `"${saved.name}" (${saved.remote.hostName ?? saved.remote.url})`
+  if (!hello) {
+    return `${url} did not answer as ${host}: it is down, its remote access is off, or another program answers there. The saved token was not sent.`
+  }
+  if (hello.fingerprint !== saved.remote.fingerprint) {
+    return `The ADF daemon at ${url} is not ${host}: it shows fingerprint ${hello.fingerprint}, and ${saved.remote.fingerprint} was saved when you paired. The saved token was not sent. If that computer was set up again, pair it again: adf remotes forget ${saved.name}, then adf pair ${url}.`
+  }
+  return null
 }
 
 /** A remote name from the host's name: lower case, letters, digits and dashes. */

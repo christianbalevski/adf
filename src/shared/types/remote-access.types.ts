@@ -58,7 +58,10 @@ export interface PairingWindowView {
   fingerprint: string
   openedAt: string
   expiresAt: string
+  /** Wrong codes left in this window, all sources together (20 at the start); 0 closes it. */
   attemptsLeft: number
+  /** Sources locked out of this window after 5 wrong codes each. */
+  lockedSources: number
   claim: PairingClaimView | null
 }
 
@@ -98,6 +101,8 @@ export interface PairClaimRequest {
 export interface PairClaimAccepted {
   claimId: string
   expiresAt: string
+  /** Send it as X-ADF-Pair-Secret to collect the result (GET /pair/claims/:claimId). Only the claimant has it. */
+  collectSecret: string
 }
 
 export type PairClaimResult =
@@ -113,16 +118,22 @@ export interface RemoteAccessPatch {
   trustNetwork?: boolean
 }
 
-/** Daemon event bus / client push topic `remote_access`. Never carries a token or a code. */
+/**
+ * Client push topic `remote_access`, to this computer's own sessions only
+ * (never a device session, never the umbilical bus). Never carries a token,
+ * a code or a claim: `claim_pending` means "pending claims changed", read
+ * them through GET /remote-access.
+ */
 export interface RemoteAccessEvent {
   type:
     | 'enabled' | 'disabled' | 'addresses_changed'
     | 'pairing_opened' | 'pairing_closed' | 'claim_pending'
+    /** A source was locked out of the pairing window after 5 wrong codes (the window stays open). */
+    | 'pairing_lockout'
     | 'device_added' | 'device_revoked' | 'device_connected' | 'device_disconnected'
     | 'networks_changed'
   deviceId?: string
   label?: string
-  claimId?: string
   /** `pairing_closed`: 'wrong_codes' | 'expired' | 'cancelled' | 'paired' | 'denied' | 'disabled'. */
   reason?: string
 }

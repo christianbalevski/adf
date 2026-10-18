@@ -8,10 +8,10 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { dirname, join } from 'node:path'
-import { protectSecretFile } from '../../utils/secret-file'
+import { join } from 'node:path'
+import { writeSecretFileAtomic } from '../../utils/secret-write'
 
 export const REMOTE_ACCESS_FILENAME = 'remote-access.json'
 
@@ -62,14 +62,23 @@ export function fingerprintOf(daemonId: string): string {
   return `${fp.slice(0, 4)}-${fp.slice(4, 8)}`
 }
 
-/** Control and bidi characters are refused in names shown to people (spoofing in prompts). */
-const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/
+/**
+ * Refused in names shown to people (spoofing in the Allow prompt and the
+ * devices list, security review item 4): C0/C1 controls, every bidi control
+ * (U+061C, U+200E/F, U+202A-E, U+2066-9), line and paragraph separators
+ * (U+2028/9), zero-width characters (U+200B-D, U+2060) and U+FEFF.
+ */
+const UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/
 
-/** A display name (computer name, device label): trimmed, 1..max characters, no control or bidi characters; null when invalid. */
+/**
+ * A display name (computer name, device label): no unsafe character (above),
+ * runs of whitespace collapsed to one space, trimmed, 1..max characters;
+ * null when invalid. Input longer than 4 x max is refused before any work.
+ */
 export function cleanDisplayName(raw: unknown, max: number): string | null {
-  if (typeof raw !== 'string') return null
-  const name = raw.trim()
-  if (!name || [...name].length > max || UNSAFE_CHARS.test(name)) return null
+  if (typeof raw !== 'string' || raw.length > max * 4 || UNSAFE_CHARS.test(raw)) return null
+  const name = raw.replace(/\s+/g, ' ').trim()
+  if (!name || [...name].length > max) return null
   return name
 }
 
@@ -120,14 +129,9 @@ export function loadRemoteAccessConfig(settingsDir: string, defaultName?: string
   }
 }
 
-/** Atomic write (temp + rename), restricted to the current user before the rename. */
+/** Atomic write, readable by the current user only from the first byte; throws SecretFileError when it cannot be restricted. */
 export function saveRemoteAccessConfig(settingsDir: string, config: RemoteAccessConfig): void {
-  const path = remoteAccessConfigPath(settingsDir)
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  protectSecretFile(tmp)
-  renameSync(tmp, path)
+  writeSecretFileAtomic(remoteAccessConfigPath(settingsDir), `${JSON.stringify(config, null, 2)}\n`)
 }
 
 export function newDaemonId(): string {

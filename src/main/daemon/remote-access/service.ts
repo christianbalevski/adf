@@ -25,9 +25,10 @@ import type {
 } from '../../../shared/types/remote-access.types'
 import type { DeviceTokenAuthority } from '../request-guard'
 import type { ClientSessionRegistry } from '../client-sessions'
-import { hasProxyHeaders, isLoopbackAddress } from '../local-access'
+import { isLoopbackAddress } from '../local-access'
 import { addressCandidates, lanInterfaceNames, urlHost, type AddressCandidate } from './addresses'
 import { BonjourAnnouncer, type Announcer } from './announcer'
+import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
 import {
   cleanDisplayName, defaultComputerName, fingerprintOf, loadRemoteAccessConfig, newDaemonId,
   saveRemoteAccessConfig, type RemoteAccessConfig,
@@ -35,8 +36,8 @@ import {
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
-import { readNetworkCategories, type NetworkCategories } from './network-category'
-import { PairingError, PairingManager } from './pairing'
+import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from './network-category'
+import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
 import { TailscaleClient, type TailscaleSelf, type TailscaleServe } from './tailscale'
 
@@ -76,6 +77,8 @@ export interface RemoteAccessServiceOptions {
   // Seams (tests).
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   categories?: (ifaces: readonly string[], config: RemoteAccessConfig) => Promise<NetworkCategories>
+  /** Per LAN interface, the network it is on (`<gateway IP>|<gateway MAC>`, '' unknown); read every check. */
+  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   tailscale?: TailscaleLike
   announcer?: Announcer
   firewall?: (input: FirewallProbeInput) => Promise<FirewallView>
@@ -85,6 +88,12 @@ export interface RemoteAccessServiceOptions {
   slowCheckMs?: number
   wrongCodeDelayMs?: number
   now?: () => number
+  /**
+   * ADF_DAEMON_BEHIND_PROXY: `tailscale serve` (or another proxy on this host)
+   * forwards to the loopback listener. Only then, and only from a loopback
+   * peer, are the Tailscale-User-Login / -Name headers trusted.
+   */
+  behindProxy?: boolean
   /** Test seam: the address a candidate is actually bound to (tests map a private address to loopback). */
   bindAddress?: (address: string) => string
   /**
@@ -120,13 +129,18 @@ export class RemoteAccessService {
   private listenerProblems = new Map<string, string>()
   private categories: NetworkCategories = { categories: new Map(), current: [], problem: null }
   private categoriesAt = 0
-  private categoriesKey = ''
+  /**
+   * Per LAN interface, `<addresses>|<gateway>` at the last category read. A
+   * category is valid only for that key: any change re-reads it, and the
+   * interface's listeners close until the new read confirms private.
+   */
+  private categoryKeys = new Map<string, string>()
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleServe: TailscaleServe = { serve: 'unknown', httpsUrl: null }
   private tailscaleAt = 0
   private firewallView: FirewallView | null = null
   private readonly connections = new Map<string, DeviceConnection>()
-  private readonly helloHits = new Map<string, number[]>()
+  private readonly helloHits = new BoundedMap<string, number[]>(SOURCE_TRACKING_CAP)
   private timer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private applying: Promise<void> = Promise.resolve()
@@ -135,6 +149,7 @@ export class RemoteAccessService {
   private readonly emitEvent: (event: RemoteAccessEvent) => void
   private readonly interfaces: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   private readonly readCategories: (ifaces: readonly string[], config: RemoteAccessConfig) => Promise<NetworkCategories>
+  private readonly readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   private readonly tailscale: TailscaleLike
   private readonly announcer: Announcer
   private readonly probeFirewall: (input: FirewallProbeInput) => Promise<FirewallView>
@@ -152,6 +167,7 @@ export class RemoteAccessService {
     this.interfaces = opts.interfaces ?? networkInterfaces
     this.platform = opts.platform ?? process.platform
     this.readCategories = opts.categories ?? ((ifaces, config) => readNetworkCategories(ifaces, config.privateNetworks, { platform: this.platform }))
+    this.readGateways = opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces, { platform: this.platform }))
     this.tailscale = opts.tailscale ?? new TailscaleClient()
     this.announcer = opts.announcer ?? new BonjourAnnouncer()
     this.probeFirewall = opts.firewall ?? probeFirewall
@@ -173,13 +189,18 @@ export class RemoteAccessService {
         void this.reannounce()
       },
       closed: (reason) => {
-        this.log(`[remote-access] pairing window closed: ${reason === 'wrong_codes' ? 'after 5 wrong codes' : reason}`)
+        this.log(`[remote-access] pairing window closed: ${reason === 'wrong_codes' ? `after ${PAIRING_MAX_WRONG_TOTAL} wrong codes` : reason}`)
         this.emit({ type: 'pairing_closed', reason })
         void this.reannounce()
       },
       claimPending: (claim) => {
         this.log(`[remote-access] pairing request from "${claim.deviceName}" at ${claim.address} (${claim.via}${claim.tailnetLogin ? `, ${claim.tailnetLogin}` : ''}): waiting for the owner`)
-        this.emit({ type: 'claim_pending', claimId: claim.claimId, label: claim.deviceName })
+        // "Pending claims changed" only: the claim (its id included) is read through GET /remote-access, this machine only.
+        this.emit({ type: 'claim_pending' })
+      },
+      sourceLocked: (address, lockedSources) => {
+        this.log(`[remote-access] pairing: ${address} locked out of this window after ${PAIRING_MAX_WRONG} wrong codes (${lockedSources} source(s) locked; the window stays open)`)
+        this.emit({ type: 'pairing_lockout' })
       },
     }, { now: this.now, host: () => ({ name: this.computerName, fingerprint: this.fingerprint ?? '' }) })
   }
@@ -314,11 +335,28 @@ export class RemoteAccessService {
     }
     const tailscaleIps = new Set(this.tailscaleSelf.ips)
     const lanIfaces = lanInterfaceNames(interfaces, tailscaleIps)
-    const key = lanIfaces.slice().sort().join(',')
-    if (opts.force || key !== this.categoriesKey || now - this.categoriesAt >= this.slowCheckMs) {
+    // The category of an interface holds for its addresses and gateway at the read (security review item 2).
+    const gateways = await this.readGateways(lanIfaces, interfaces)
+    const keys = new Map<string, string>()
+    for (const c of addressCandidates({ interfaces, tailscaleIps, categories: new Map() })) {
+      if (c.kind === 'lan') keys.set(c.iface, [keys.get(c.iface), c.address].filter(Boolean).join(','))
+    }
+    for (const iface of lanIfaces) keys.set(iface, `${keys.get(iface) ?? ''}|${gateways.get(iface) ?? ''}`)
+    const changed = lanIfaces.filter(iface => this.categoryKeys.get(iface) !== keys.get(iface))
+    if (opts.force || changed.length > 0 || this.categoryKeys.size !== keys.size || now - this.categoriesAt >= this.slowCheckMs) {
+      if (changed.length > 0) {
+        // MUST NOT listen on a network not confirmed private (O2): close the changed interfaces' LAN
+        // listeners before the (slow) re-read; they open again only if it says private.
+        const closing = new Set(this.candidates.filter(c => c.kind === 'lan' && changed.includes(c.iface)).map(c => c.address))
+        const keep = this.listeners.addresses().filter(a => !closing.has(a))
+        if (keep.length !== this.listeners.addresses().length) {
+          this.log(`[remote-access] network changed on ${changed.join(', ')}: closing its listeners until the network is confirmed private`)
+          await this.listeners.sync(keep)
+        }
+      }
       this.categories = await this.readCategories(lanIfaces, this.config)
       this.categoriesAt = now
-      this.categoriesKey = key
+      this.categoryKeys = keys
       if (this.categories.problem) this.log(`[remote-access] ${this.categories.problem}`)
     }
     if (this.stopped || !this.enabled) return
@@ -326,7 +364,7 @@ export class RemoteAccessService {
     this.candidates = addressCandidates({ interfaces, tailscaleIps, categories: this.categories.categories, only: this.config.addresses })
     const wanted = this.candidates.filter(c => !c.refusal).map(c => c.address)
     const previous = new Set(this.listeners.addresses())
-    this.listenerProblems = await this.listeners.sync(wanted)
+    this.listenerProblems = await this.listeners.sync(wanted, { shouldOpen: () => this.enabled && !this.stopped })
     for (const [address, problem] of this.listenerProblems) this.log(`[remote-access] ${problem}`)
     const after = this.candidates.map(c => `${c.address}:${c.refusal ? 'off' : 'on'}`).join(',')
     const listening = this.listeners.addresses()
@@ -435,20 +473,36 @@ export class RemoteAccessService {
     }
   }
 
-  /** The caller's address: the peer, or the first X-Forwarded-For entry through a proxy on this host. */
+  /**
+   * The caller's address: always the socket's peer. X-Forwarded-For is never
+   * read: any process on this machine can send it to the loopback listener
+   * (security review item 3).
+   */
   sourceAddress(raw: IncomingMessage): string {
-    const peer = plainAddress(raw.socket?.remoteAddress)
-    if (isLoopbackAddress(peer) && hasProxyHeaders(raw.headers)) {
-      const forwarded = single(raw.headers['x-forwarded-for'])?.split(',')[0]?.trim()
-      if (forwarded) return plainAddress(forwarded)
-    }
-    return peer
+    return plainAddress(raw.socket?.remoteAddress)
   }
 
-  private via(raw: IncomingMessage): 'lan' | 'tailnet' | 'proxy' {
+  /**
+   * Who is calling, for rate limits, lockouts and the Allow prompt. On a
+   * remote listener: the socket address (whois only for a tailnet socket
+   * address, never a header). On the loopback listener: the socket address,
+   * except behind `tailscale serve` (ADF_DAEMON_BEHIND_PROXY, loopback peer),
+   * where the Tailscale-User-Login / -Name headers serve sets name the tailnet
+   * user and key the limits per user.
+   */
+  private async caller(raw: IncomingMessage, opts: { whois: boolean }): Promise<{ key: string; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null }> {
+    const address = this.sourceAddress(raw)
     const listener = remoteListenerOf(raw.socket)
-    if (!listener) return 'proxy'
-    return this.candidates.find(c => c.address === listener)?.kind === 'tailnet' ? 'tailnet' : 'lan'
+    if (listener) {
+      const via = this.candidates.find(c => c.address === listener)?.kind === 'tailnet' ? 'tailnet' : 'lan'
+      const tailnetLogin = via === 'tailnet' && opts.whois ? await this.tailscale.whois(address) : null
+      return { key: address, address, via, tailnetLogin }
+    }
+    if (this.opts.behindProxy && isLoopbackAddress(address)) {
+      const login = cleanDisplayName(single(raw.headers['tailscale-user-login']) ?? single(raw.headers['tailscale-user-name']), 128)
+      if (login) return { key: `tailscale:${login.toLowerCase()}`, address, via: 'proxy', tailnetLogin: login }
+    }
+    return { key: address, address, via: 'proxy', tailnetLogin: null }
   }
 
   // --- status ----------------------------------------------------------------------
@@ -583,12 +637,19 @@ export class RemoteAccessService {
   }
 
   private async turnOff(): Promise<void> {
+    // Off at once (device tokens refused, no new listener opens), then the closing runs in the
+    // address checks' chain, after any check in flight (security review item 6).
     this.config = { ...this.config, enabled: false }
     this.save()
     this.stopTimer()
     this.pairing.dispose()
-    await this.announcer.stop()
-    const closed = (await this.listeners?.closeAll()) ?? 0
+    let closed = 0
+    const closing = this.applying.then(async () => {
+      await this.announcer.stop()
+      closed = (await this.listeners?.closeAll()) ?? 0
+    })
+    this.applying = closing.catch(() => {})
+    await closing
     // Device connections through a proxy on this host (tailscale serve) end too.
     let proxied = 0
     for (const conn of this.connections.values()) {
@@ -711,25 +772,23 @@ export class RemoteAccessService {
     if (!this.enabled || !this.config.daemonId) throw new RemoteAccessError('Remote access is off on this computer.', 404, 'remote_access_off')
   }
 
-  hello(raw: IncomingMessage): RemoteHello {
+  async hello(raw: IncomingMessage): Promise<RemoteHello> {
     this.requireOn()
-    const address = this.sourceAddress(raw)
+    const { key } = await this.caller(raw, { whois: false })
     const now = this.now()
-    const hits = (this.helloHits.get(address) ?? []).filter(t => now - t < 60_000)
+    const hits = (this.helloHits.get(key) ?? []).filter(t => now - t < 60_000)
     if (hits.length >= HELLO_PER_MINUTE) throw new RemoteAccessError('Too many requests from this address. Wait a minute.', 429, 'rate_limited', { retryAfter: Math.ceil((60_000 - (now - hits[0])) / 1000) })
     hits.push(now)
-    this.helloHits.set(address, hits)
+    this.helloHits.set(key, hits)
     return { v: 1, name: this.computerName, fingerprint: this.fingerprint as string, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion }
   }
 
   async claim(raw: IncomingMessage, body: { code: string; deviceName: string; clientKind: 'studio' | 'cli' }): Promise<PairClaimAccepted> {
     this.requireOn()
-    const address = this.sourceAddress(raw)
-    const via = this.via(raw)
-    const tailnetLogin = via === 'tailnet' || (via === 'proxy' && /^100\./.test(address)) ? await this.tailscale.whois(address) : null
+    const { key, address, via, tailnetLogin } = await this.caller(raw, { whois: true })
     try {
-      const accepted = this.pairing.claim({ ...body, address, via, tailnetLogin })
-      return { claimId: accepted.claimId, expiresAt: accepted.expiresAt }
+      const accepted = this.pairing.claim({ ...body, source: key, address, via, tailnetLogin })
+      return { claimId: accepted.claimId, expiresAt: accepted.expiresAt, collectSecret: accepted.collectSecret }
     } catch (err) {
       if (err instanceof PairingError) {
         this.log(`[remote-access] pairing claim from ${address} ("${body.deviceName}") refused: ${err.code}`)
@@ -739,8 +798,8 @@ export class RemoteAccessService {
     }
   }
 
-  async poll(claimId: string, waitMs: number): Promise<PairClaimResult> {
-    const result = await this.pairing.poll(claimId, waitMs)
+  async poll(claimId: string, collectSecret: string, waitMs: number): Promise<PairClaimResult> {
+    const result = await this.pairing.poll(claimId, collectSecret, waitMs)
     if (!result) throw new RemoteAccessError('No such pairing request (it expired, was collected, or the window closed).', 404, 'claim_not_found')
     return result
   }

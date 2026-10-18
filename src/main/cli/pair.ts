@@ -11,7 +11,7 @@ import { cleanDisplayName } from '../daemon/remote-access/config'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT } from './daemon-url'
 import {
-  deleteRemoteToken, loadRemotes, remoteNameFor, saveRemotes, storeRemoteToken,
+  deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, storeRemoteToken,
 } from './remotes'
 
 export interface PairIo {
@@ -24,6 +24,8 @@ export interface PairIo {
   discover?: (ms: number) => Promise<DiscoveredDaemon[]>
   sleep?: (ms: number) => Promise<void>
   env?: NodeJS.ProcessEnv
+  /** Test seam: this computer's Tailscale peers' addresses. */
+  tailnetPeers?: () => Promise<Set<string>>
 }
 
 const PAIR_USAGE = `Usage: adf pair [<host>[:<port>] | <url>] [--name <this computer's name>] [--as <remote name>] [--yes] [--default | --no-default]
@@ -98,8 +100,8 @@ async function postJson<T>(io: PairIo, url: string, body: unknown): Promise<{ st
   return { status: res.status, body: parsed, retryAfter: Number.isFinite(retry) && retry > 0 ? retry : null }
 }
 
-async function getJson<T>(io: PairIo, url: string): Promise<{ status: number; body: T & { error?: string; code?: string } }> {
-  const res = await io.fetch(url, { headers: { Accept: 'application/json' }, redirect: 'manual' })
+async function getJson<T>(io: PairIo, url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: T & { error?: string; code?: string } }> {
+  const res = await io.fetch(url, { headers: { Accept: 'application/json', ...headers }, redirect: 'manual' })
   const text = await res.text()
   return { status: res.status, body: text ? JSON.parse(text) : {} }
 }
@@ -129,15 +131,50 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
 }
 
 /** The URL to save: an encrypted one the host listed that answers with the same fingerprint, else the one used. */
-async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string): Promise<string> {
+/**
+ * The URL to save (security review item 7): the one the user typed or chose,
+ * unless the host lists an encrypted one that is plainly a tailnet address:
+ * `https://*.ts.net`, or a 100.64/10 / fd7a:115c:a1e0::/48 address this
+ * computer's own Tailscale lists as a peer. It must answer with the same
+ * fingerprint, and the user is asked first (`--yes` accepts). Any other URL
+ * the host lists (a LAN or public name) is never followed.
+ */
+async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string, yes: boolean): Promise<string> {
   if (transportOf(used) === 'https') return used
-  for (const kind of ['tailscale-https', 'tailnet'] as const) {
-    for (const candidate of urls.filter(u => u.kind === kind)) {
-      const hello = await fetchHello(candidate.url, io.fetch)
-      if (hello?.fingerprint === fingerprint) return candidate.url
-    }
+  let peers: Set<string> | null = null
+  for (const candidate of urls) {
+    let ok = false
+    try {
+      const u = new URL(candidate.url)
+      const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+      if (candidate.kind === 'tailscale-https') ok = u.protocol === 'https:' && host.endsWith('.ts.net')
+      else if (candidate.kind === 'tailnet' && u.protocol === 'http:' && transportOf(candidate.url) === 'tailnet') {
+        peers ??= await (io.tailnetPeers ?? tailnetPeerAddresses)()
+        ok = peers.has(host)
+      }
+    } catch { /* not a URL */ }
+    if (!ok || candidate.url === used) continue
+    const hello = await fetchHello(candidate.url, io.fetch)
+    if (hello?.fingerprint !== fingerprint) continue
+    const answer = yes ? 'y' : await io.prompt(`"${hello.name}" is also reachable at ${candidate.url}, encrypted by Tailscale. Save that address instead of ${used}? [Y/n] `)
+    if (answer !== null && /^\s*(y|yes)?\s*$/i.test(answer)) return candidate.url
+    return used
   }
   return used
+}
+
+/** The tailnet addresses of this computer's online Tailscale peers (empty without Tailscale). */
+async function tailnetPeerAddresses(): Promise<Set<string>> {
+  const { TailscaleClient } = await import('../daemon/remote-access/tailscale')
+  const { defaultExec } = await import('../daemon/remote-access/network-category')
+  const client = new TailscaleClient()
+  if ((await client.self()).state !== 'running') return new Set()
+  try {
+    const status = JSON.parse(await defaultExec(client.command ?? 'tailscale', ['status', '--json'])) as { Peer?: Record<string, { TailscaleIPs?: unknown }> }
+    return new Set(Object.values(status.Peer ?? {}).flatMap(p => (Array.isArray(p.TailscaleIPs) ? p.TailscaleIPs : [])).filter((ip): ip is string => typeof ip === 'string').map(ip => ip.toLowerCase()))
+  } catch {
+    return new Set()
+  }
 }
 
 export async function runPair(args: string[], io: PairIo): Promise<number> {
@@ -221,7 +258,7 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
   io.stderr(`Waiting for "${hello.name}" to allow this computer…\n`)
   let result: PairClaimResult | null = null
   while (!result || result.state === 'pending') {
-    const res = await getJson<PairClaimResult>(io, `${url}/pair/claims/${encodeURIComponent(accepted.claimId)}?wait=25`)
+    const res = await getJson<PairClaimResult>(io, `${url}/pair/claims/${encodeURIComponent(accepted.claimId)}?wait=25`, { 'X-ADF-Pair-Secret': accepted.collectSecret })
     if (res.status !== 200) {
       io.stderr(`${res.body.error ?? `HTTP ${res.status}`}\n`)
       return 1
@@ -233,11 +270,42 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
     return 1
   }
 
+  // The computer that approved must be the one we checked (security review item 7).
+  const revokeHint = `"${result.daemon.name}" lists this computer as "${result.device.label}": remove it there (adf daemon devices revoke ${result.device.id}).`
+  if (result.daemon.fingerprint !== hello.fingerprint) {
+    io.stderr(`Refused: the approval came from a computer with fingerprint ${result.daemon.fingerprint}, not ${hello.fingerprint} as "${hello.name}" showed. Nothing was saved. ${revokeHint}\n`)
+    return 1
+  }
+
+  // Trust on first use: a saved remote stays pinned to its fingerprint, and its address and token
+  // are never replaced without asking.
   const file = loadRemotes(env)
-  const existing = Object.entries(file.remotes).find(([, r]) => r.fingerprint === result.daemon.fingerprint)
-  const name = parsed.as ?? existing?.[0] ?? remoteNameFor(result.daemon.name, file.remotes)
-  const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint)
-  const stored = storeRemoteToken(result.daemon.fingerprint, result.token, env)
+  const sameHost = Object.entries(file.remotes).find(([, r]) => r.fingerprint === result.daemon.fingerprint)
+  const name = parsed.as ?? sameHost?.[0] ?? remoteNameFor(result.daemon.name, file.remotes)
+  const previous = file.remotes[name]
+  if (previous && previous.fingerprint !== result.daemon.fingerprint) {
+    io.stderr(`Refused: the saved remote "${name}" is ${previous.hostName ?? previous.url} with fingerprint ${previous.fingerprint}, not this computer (${result.daemon.fingerprint}). Nothing was saved. Pair under another name (--as <name>), or forget it first (adf remotes forget ${name}). ${revokeHint}\n`)
+    return 1
+  }
+  const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint, parsed.yes)
+  if (previous) {
+    const changes = [previous.url !== saveUrl ? `its address (${previous.url} → ${saveUrl})` : null, 'its token'].filter(Boolean).join(' and ')
+    const answer = parsed.yes ? 'y' : await io.prompt(`"${name}" (${previous.hostName ?? previous.url}) is already saved. Replace ${changes}? [y/N] `)
+    if (!answer || !/^\s*y(es)?\s*$/i.test(answer)) {
+      io.stderr(`Kept the saved "${name}" as it was. ${revokeHint}\n`)
+      return 1
+    }
+  }
+  const previousToken = previous ? readRemoteToken(previous.fingerprint, env) : null
+  let stored: ReturnType<typeof storeRemoteToken>
+  try {
+    stored = storeRemoteToken(result.daemon.fingerprint, result.token, env)
+  } catch (err) {
+    // Never a token in a file others could read, and never a claim that it is safe when it is not.
+    io.stderr(`The token was not saved: ${err instanceof Error ? err.message : String(err)}\n`)
+    io.stderr(`"${result.daemon.name}" lists this computer as "${result.device.label}": remove it there (adf daemon devices revoke ${result.device.id}) and pair again once this is fixed.\n`)
+    return 1
+  }
   file.remotes[name] = {
     url: saveUrl,
     fingerprint: result.daemon.fingerprint,
@@ -252,7 +320,17 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
     makeDefault = answer !== null && /^\s*(y|yes)?\s*$/i.test(answer)
   }
   if (makeDefault) file.default = name
-  saveRemotes(file, env)
+  try {
+    saveRemotes(file, env)
+  } catch (err) {
+    // Put back what was saved before; a new remote leaves no token behind.
+    try {
+      if (previousToken) storeRemoteToken(result.daemon.fingerprint, previousToken, env)
+      else deleteRemoteToken(result.daemon.fingerprint, env)
+    } catch { /* reported below */ }
+    io.stderr(`The remote was not saved: ${err instanceof Error ? err.message : String(err)}\n${revokeHint}\n`)
+    return 1
+  }
   io.stdout(`Paired with "${result.daemon.name}" as "${result.device.label}". Saved as remote "${name}" (${saveUrl})${makeDefault ? ', the default' : `; use it with --remote ${name}`}.\n`)
   io.stderr(stored.where === 'keychain'
     ? 'The token is in the OS keychain.\n'
