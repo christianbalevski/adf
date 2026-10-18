@@ -265,6 +265,22 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBe('adfd_old')
   })
 
+  it('Add connection at a new address of a saved computer asks "Use new address" first and keeps its device id and label (review item 2)', async () => {
+    const s = setup()
+    await saveConnection(s.env, { url: HUB, token: 'adfd_old', fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'dev1', label: 'agent-2 laptop' })
+    const kept = setup({ confirm: false })
+    await saveConnection(kept.env, { url: HUB, token: 'adfd_old', fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'dev1', label: 'agent-2 laptop' })
+    expect(await kept.connections.add({ url: LAN, token: TOKEN, allowInsecureHttp: true })).toEqual({ ok: false, code: 'kept', error: 'Kept the saved address of rawl-hub.' })
+    expect(kept.confirms).toEqual([{ message: 'Use new address', detail: `rawl-hub is now at ${LAN}.`, ok: 'Use new address' }])
+    expect(kept.daemon.tokenSent()).toBe(false)
+    expect(loadRemotes(kept.env).remotes['rawl-hub']).toMatchObject({ url: HUB, deviceId: 'dev1', label: 'agent-2 laptop' })
+    expect(readRemoteToken('ABCD-EFGH', kept.env)).toBe('adfd_old')
+
+    expect(await s.connections.add({ url: LAN, token: TOKEN, allowInsecureHttp: true })).toMatchObject({ ok: true, id: 'remote:rawl-hub' })
+    expect(s.confirms.map((c) => c.message)).toEqual(['Use new address'])
+    expect(loadRemotes(s.env).remotes['rawl-hub']).toMatchObject({ url: LAN, deviceId: 'dev1', label: 'agent-2 laptop' })
+  })
+
   it('Add connection where nothing answers hello (remote access off): the remote URL of studio-backend.json, after asking before it replaces another', async () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
     const result = await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })

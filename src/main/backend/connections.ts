@@ -127,11 +127,12 @@ export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnecti
   const name = await updateRemotes(env, (file) => {
     const same = Object.entries(file.remotes).find(([, r]) => r.fingerprint === input.fingerprint)
     const name = same?.[0] ?? remoteNameFor(input.hostName, file.remotes)
+    // A token added by hand knows no device id or label: the pairing's stay.
     file.remotes[name] = {
       url: input.url,
       fingerprint: input.fingerprint,
-      deviceId: input.deviceId,
-      label: input.label,
+      deviceId: input.deviceId || same?.[1].deviceId || '',
+      label: input.label || same?.[1].label || '',
       pairedAt: now.toISOString(),
       hostName: input.hostName,
     }
