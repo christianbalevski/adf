@@ -281,6 +281,15 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(loadRemotes(s.env).remotes['rawl-hub']).toMatchObject({ url: LAN, deviceId: 'dev1', label: 'agent-2 laptop' })
   })
 
+  it('Add connection to a pinned address whose hello fails sends no token (review item 5)', async () => {
+    const s = setup({ daemon: fakeDaemon({ fingerprint: null }) })
+    await saveConnection(s.env, { url: HUB, token: 'adfd_old', fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'dev1', label: 'l' })
+    expect(await s.connections.add({ url: HUB, token: TOKEN })).toEqual({ ok: false, code: 'fingerprint_mismatch', error: `${HUB} is where rawl-hub was paired, but it shows no fingerprint now; Studio sent nothing.` })
+    expect(s.daemon.tokenSent()).toBe(false)
+    expect(s.store.config().remote.url).toBeNull()
+    expect(readRemoteToken('ABCD-EFGH', s.env)).toBe('adfd_old')
+  })
+
   it('Add connection where nothing answers hello (remote access off): the remote URL of studio-backend.json, after asking before it replaces another', async () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
     const result = await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })

@@ -115,6 +115,12 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       if (answer?.v === 1 && typeof answer.fingerprint === 'string' && typeof answer.name === 'string') hello = { name: answer.name, fingerprint: answer.fingerprint }
     } catch { /* remote access off there, an older ADF, or a proxy: a connection without a fingerprint */ }
     const all = saved()
+    // An address a saved computer was paired at: no token until it shows that fingerprint (trust on first use).
+    const pinnedHere = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin)
+      ?? (deps.backend.config().remote.paired && remoteUrlOrigin(deps.backend.config().remote.url) === origin
+        ? [deps.backend.config().remote.paired!.name, { fingerprint: deps.backend.config().remote.paired!.fingerprint }] as const
+        : undefined)
+    if (!hello && pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
     if (hello) {
       const pinned = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin && s.fingerprint !== hello!.fingerprint)
       if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired. Studio sent nothing. If that computer was set up again, remove ${pinned[0]} first.`)
