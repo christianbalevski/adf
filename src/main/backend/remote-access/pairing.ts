@@ -37,6 +37,26 @@ export interface PairingFlowDeps {
   log?: Pick<Console, 'log' | 'warn'>
   /** Pause between poll retries after a network error (tests). */
   retryMs?: number
+  /**
+   * The host offered an encrypted address of its own (a tailnet address or a
+   * *.ts.net https name) that answers with the same fingerprint: save it
+   * instead of the one paired with? Absent: never switch.
+   */
+  confirmSwitch?: (prompt: { hostName: string; from: string; to: string }) => Promise<boolean>
+}
+
+/**
+ * An address Studio may switch to after approval (security review 2):
+ * nothing in the claim answer is authenticated, so only a tailnet address
+ * (WireGuard checks the peer) or an https name under ts.net (a Tailscale
+ * certificate) qualifies, never any other "encrypted" URL the host lists.
+ */
+export function switchableUrl(raw: string): string | null {
+  const check = checkRemoteDaemonUrl(raw)
+  if (!check.url) return null
+  if (check.kind === 'tailnet') return check.url
+  if (check.kind === 'https' && /\.ts\.net$/i.test(new URL(check.url).hostname)) return check.url
+  return null
 }
 
 /** C0/C1 controls and bidirectional overrides, refused in a device name (§5.4). */
@@ -188,19 +208,27 @@ export class PairingFlow {
     }
   }
 
-  /** Approved: prefer an encrypted URL that answers with the same fingerprint (§5.7), then save. */
+  /**
+   * Approved: offer an encrypted address of the host's (§5.7) when it is a
+   * tailnet address or a *.ts.net name, answers with the same fingerprint,
+   * and the user agrees; then save.
+   */
   private async saveApproved(host: NonNullable<RemotePairState['host']>, result: Extract<Awaited<ReturnType<PairingClient['poll']>>, { state: 'approved' }>): Promise<void> {
     let url = host.url
-    const candidates = (result.daemon?.urls ?? [])
-      .filter((u) => u.encrypted && typeof u.url === 'string' && u.url !== host.url)
+    const hostKind = checkRemoteDaemonUrl(host.url).kind
+    const candidates = hostKind === 'tailnet' || hostKind === 'https' || !this.deps.confirmSwitch ? [] : (result.daemon?.urls ?? [])
+      .filter((u) => u.encrypted && typeof u.url === 'string' && u.url !== host.url && switchableUrl(u.url) !== null)
       .sort((a, b) => ENCRYPTED_ORDER[a.kind] - ENCRYPTED_ORDER[b.kind])
     for (const candidate of candidates) {
-      const check = checkRemoteDaemonUrl(candidate.url)
-      if (!check.url || check.kind === 'insecure-http') continue
+      const target = switchableUrl(candidate.url)!
       try {
-        const hello = await new PairingClient(check.url, this.deps.fetch).hello({ timeoutMs: 3_000 })
-        if (hello?.fingerprint === host.fingerprint) { url = check.url; break }
-      } catch { /* not reachable from here; try the next */ }
+        const hello = await new PairingClient(target, this.deps.fetch).hello({ timeoutMs: 3_000 })
+        if (hello?.fingerprint !== host.fingerprint) continue
+      } catch { continue /* not reachable from here; try the next */ }
+      const use = await this.deps.confirmSwitch!({ hostName: host.name, from: host.url, to: target }).catch(() => false)
+      this.log.log(`[Remote access] ${host.name} also answers at ${target}: ${use ? 'saving that address' : 'kept ' + host.url}`)
+      if (use) url = target
+      break
     }
     const insecure = checkRemoteDaemonUrl(url).kind === 'insecure-http'
     const saved = await this.deps.save({

@@ -212,6 +212,16 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     onState: (state) => windows.send(IPC.REMOTE_PAIR_STATE, state),
     saveBlocked: () => deps.codec.available() ? null : (deps.codec.unavailableReason?.() ?? 'OS keychain encryption is not available, so the token cannot be saved.'),
     defaultDeviceName: () => runtimeName(deps.settingsDir),
+    confirmSwitch: async ({ hostName, from, to }) => (await box({
+      type: 'question',
+      title: 'Encrypted address',
+      message: 'Encrypted address',
+      detail: `${shownText(hostName)} also answers at ${to}, through Tailscale (encrypted). Save that address instead of ${from}.`,
+      buttons: ['Use encrypted address', 'Keep current address'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    })) === 0,
     save: async (input) => {
       const result = await deps.backend.savePairing({
         remoteUrl: input.url,

@@ -263,14 +263,16 @@ class PairingClientShim {
 
 // --- Client: pairing ----------------------------------------------------------------
 
-function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean } = {}) {
+function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean } = {}) {
   const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
   daemon.state.enabled = true
   daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
   const states: RemotePairState[] = []
   const saved: PairingSaveInput[] = []
   const logs: string[] = []
+  const switches: Array<{ from: string; to: string }> = []
   const flow = new PairingFlow({
+    confirmSwitch: async (prompt) => { switches.push({ from: prompt.from, to: prompt.to }); return opts.useEncrypted ?? true },
     onState: (s) => states.push(s),
     save: async (input) => { saved.push(input); return opts.saveFails ? { ok: false, error: 'Could not save studio-backend.json.' } : { ok: true } },
     saveBlocked: () => opts.saveBlocked ?? null,
@@ -279,7 +281,7 @@ function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean } = 
     log: { log: (m: string) => logs.push(m), warn: (m: string) => logs.push(m) },
     retryMs: 5,
   })
-  return { daemon, flow, states, saved, logs, last: () => states.at(-1)! }
+  return { daemon, flow, states, saved, logs, switches, last: () => states.at(-1)! }
 }
 
 describe('pairing from Settings → Backend → Remote computer', () => {
@@ -302,6 +304,32 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     expect(JSON.stringify(p.states)).not.toContain('654321')
     expect(p.logs.join('\n')).not.toContain(token)
     expect(p.logs.join('\n')).not.toContain('654321')
+  })
+
+  it('switches only to a tailnet address or a *.ts.net https name, and only after asking (security review 2)', async () => {
+    // A host-supplied "encrypted" URL elsewhere is ignored, even when it answers with the same fingerprint.
+    const p = pairSetup()
+    p.daemon.state.urls = [
+      { url: 'https://evil.example.com', kind: 'tailscale-https', encrypted: true },
+      { url: 'http://192.168.1.99:7385', kind: 'tailnet', encrypted: true },
+      { url: TAILNET, kind: 'tailnet', encrypted: true },
+    ]
+    await p.flow.start({ url: LAN, allowInsecureHttp: true })
+    await p.flow.submitCode('654321')
+    p.daemon.decide(true)
+    await until(() => p.last().step === 'paired')
+    expect(p.switches).toEqual([{ from: LAN, to: TAILNET }])
+    expect(p.saved[0].url).toBe(TAILNET)
+    expect(p.daemon.requests.some((r) => r.origin === 'https://evil.example.com' || r.origin === 'http://192.168.1.99:7385')).toBe(false)
+
+    // Declined: the address the user paired with is kept.
+    const q = pairSetup({ useEncrypted: false })
+    await q.flow.start({ url: LAN, allowInsecureHttp: true })
+    await q.flow.submitCode('654321')
+    q.daemon.decide(true)
+    await until(() => q.last().step === 'paired')
+    expect(q.switches).toHaveLength(1)
+    expect(q.saved[0]).toMatchObject({ url: LAN, allowInsecureHttp: true })
   })
 
   it('keeps plain LAN http, with its confirmation, when no encrypted address answers', async () => {
