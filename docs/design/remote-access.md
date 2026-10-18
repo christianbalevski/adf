@@ -97,6 +97,8 @@ Node has no portable interface-change event. While remote access is on, the daem
 3. re-announce mDNS on the current interface (§5.1);
 4. log one line naming added and removed addresses, and emit `remote_access` event `addresses_changed`.
 
+A network category (§3.3.1) holds only for the interface's addresses and default gateway (`<gateway IP>|<gateway MAC>`) at the moment it was read. The gateway is read at every check (cheap: `/proc/net/route` and `/proc/net/arp` on Linux, `netstat -rn` and `arp -an` on macOS, `route print -4 0.0.0.0` and `arp -a` on Windows). When an interface's addresses or gateway differ from the last read, the daemon MUST close that interface's LAN listeners first, then re-read the category, and open them again only when the new read says private (security review 2026-10-18, item 2: the 60 s cache keyed by interface name alone let a new hotel address inherit the home network's "private"). A gateway that cannot be read counts as unknown; the address part of the key still changes, and an unknown network is never private on macOS and Linux.
+
 With no eligible address the state is `no_address` ("No private network address now; other computers cannot reach this computer."). The setting stays on and listeners return with the network.
 
 ### 3.5 Host names

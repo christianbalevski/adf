@@ -35,7 +35,7 @@ import {
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
-import { readNetworkCategories, type NetworkCategories } from './network-category'
+import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from './network-category'
 import { PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
 import { TailscaleClient, type TailscaleSelf, type TailscaleServe } from './tailscale'
@@ -76,6 +76,8 @@ export interface RemoteAccessServiceOptions {
   // Seams (tests).
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   categories?: (ifaces: readonly string[], config: RemoteAccessConfig) => Promise<NetworkCategories>
+  /** Per LAN interface, the network it is on (`<gateway IP>|<gateway MAC>`, '' unknown); read every check. */
+  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   tailscale?: TailscaleLike
   announcer?: Announcer
   firewall?: (input: FirewallProbeInput) => Promise<FirewallView>
@@ -114,7 +116,12 @@ export class RemoteAccessService {
   private listenerProblems = new Map<string, string>()
   private categories: NetworkCategories = { categories: new Map(), current: [], problem: null }
   private categoriesAt = 0
-  private categoriesKey = ''
+  /**
+   * Per LAN interface, `<addresses>|<gateway>` at the last category read. A
+   * category is valid only for that key: any change re-reads it, and the
+   * interface's listeners close until the new read confirms private.
+   */
+  private categoryKeys = new Map<string, string>()
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleServe: TailscaleServe = { serve: 'unknown', httpsUrl: null }
   private tailscaleAt = 0
@@ -129,6 +136,7 @@ export class RemoteAccessService {
   private readonly emitEvent: (event: RemoteAccessEvent) => void
   private readonly interfaces: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   private readonly readCategories: (ifaces: readonly string[], config: RemoteAccessConfig) => Promise<NetworkCategories>
+  private readonly readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   private readonly tailscale: TailscaleLike
   private readonly announcer: Announcer
   private readonly probeFirewall: (input: FirewallProbeInput) => Promise<FirewallView>
@@ -146,6 +154,7 @@ export class RemoteAccessService {
     this.interfaces = opts.interfaces ?? networkInterfaces
     this.platform = opts.platform ?? process.platform
     this.readCategories = opts.categories ?? ((ifaces, config) => readNetworkCategories(ifaces, config.privateNetworks, { platform: this.platform }))
+    this.readGateways = opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces, { platform: this.platform }))
     this.tailscale = opts.tailscale ?? new TailscaleClient()
     this.announcer = opts.announcer ?? new BonjourAnnouncer()
     this.probeFirewall = opts.firewall ?? probeFirewall
@@ -309,11 +318,28 @@ export class RemoteAccessService {
     }
     const tailscaleIps = new Set(this.tailscaleSelf.ips)
     const lanIfaces = lanInterfaceNames(interfaces, tailscaleIps)
-    const key = lanIfaces.slice().sort().join(',')
-    if (opts.force || key !== this.categoriesKey || now - this.categoriesAt >= this.slowCheckMs) {
+    // The category of an interface holds for its addresses and gateway at the read (security review item 2).
+    const gateways = await this.readGateways(lanIfaces, interfaces)
+    const keys = new Map<string, string>()
+    for (const c of addressCandidates({ interfaces, tailscaleIps, categories: new Map() })) {
+      if (c.kind === 'lan') keys.set(c.iface, [keys.get(c.iface), c.address].filter(Boolean).join(','))
+    }
+    for (const iface of lanIfaces) keys.set(iface, `${keys.get(iface) ?? ''}|${gateways.get(iface) ?? ''}`)
+    const changed = lanIfaces.filter(iface => this.categoryKeys.get(iface) !== keys.get(iface))
+    if (opts.force || changed.length > 0 || this.categoryKeys.size !== keys.size || now - this.categoriesAt >= this.slowCheckMs) {
+      if (changed.length > 0) {
+        // MUST NOT listen on a network not confirmed private (O2): close the changed interfaces' LAN
+        // listeners before the (slow) re-read; they open again only if it says private.
+        const closing = new Set(this.candidates.filter(c => c.kind === 'lan' && changed.includes(c.iface)).map(c => c.address))
+        const keep = this.listeners.addresses().filter(a => !closing.has(a))
+        if (keep.length !== this.listeners.addresses().length) {
+          this.log(`[remote-access] network changed on ${changed.join(', ')}: closing its listeners until the network is confirmed private`)
+          await this.listeners.sync(keep)
+        }
+      }
       this.categories = await this.readCategories(lanIfaces, this.config)
       this.categoriesAt = now
-      this.categoriesKey = key
+      this.categoryKeys = keys
       if (this.categories.problem) this.log(`[remote-access] ${this.categories.problem}`)
     }
     if (this.stopped || !this.enabled) return

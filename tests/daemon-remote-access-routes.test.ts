@@ -83,7 +83,8 @@ interface Harness {
   events: RemoteAccessEvent[]
   logs: string[]
   requestShutdown: ReturnType<typeof vi.fn>
-  network: { category: 'private' | 'public' }
+  /** The fake network: eth0's address, its gateway identity, the category the next read answers (after `gate`, if set). */
+  network: { category: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number }
   sessions(): ClientSessionRegistry
 }
 
@@ -102,7 +103,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
   const announcer = new FakeAnnouncer()
   const events: RemoteAccessEvent[] = []
   const logs: string[] = []
-  const network = { category: opts.category ?? 'private' as 'private' | 'public' }
+  const network: Harness['network'] = { category: opts.category ?? 'private', addr: LAN, gateway: '192.168.77.1|aa:bb:cc:dd:ee:01', gate: null, reads: 0 }
   let server: FastifyInstance | null = null
   const sessions = () => (server as unknown as { adfClientSessions: ClientSessionRegistry }).adfClientSessions
   const service = new RemoteAccessService({
@@ -111,12 +112,17 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
     clientApiVersion: 2,
     platform: 'linux',
     hostName: () => 'host-1',
-    interfaces: () => ({ eth0: [{ address: LAN, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${LAN}/24` } as NetworkInterfaceInfo] }),
-    categories: async (ifaces) => ({
-      categories: new Map(ifaces.map(i => [i, network.category])),
-      current: [{ iface: 'eth0', id: 'net-home', label: 'eth0 via 192.168.77.1' }],
-      problem: null,
-    }),
+    interfaces: () => ({ eth0: [{ address: network.addr, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${network.addr}/24` } as NetworkInterfaceInfo] }),
+    categories: async (ifaces) => {
+      network.reads++
+      if (network.gate) await network.gate
+      return {
+        categories: new Map(ifaces.map(i => [i, network.category])),
+        current: [{ iface: 'eth0', id: 'net-home', label: 'eth0 via 192.168.77.1' }],
+        problem: null,
+      }
+    },
+    gateways: async (ifaces) => new Map(ifaces.map(i => [i, network.gateway])),
     tailscale: {
       self: async () => ({ state: 'absent', ips: [], dnsName: null }),
       serveStatus: async () => ({ serve: 'unknown', httpsUrl: null }),
@@ -509,5 +515,49 @@ describe('security review item 1: claims stay with this machine', () => {
     const legit = await remote(h, 'GET', `/pair/claims/${claimId}`, { 'x-adf-pair-secret': collectSecret })
     expect(legit.json).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop' } })
     for (const s of [deviceStream, deviceBus, localStream]) s.close()
+  })
+})
+
+describe('security review item 2: a network change is never assumed private', () => {
+  const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
+
+  it('a new address on the same interface name is re-read before it gets a listener', async () => {
+    const h = await harness()
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+    // The laptop moves to a hotel network: new address, Public, within the 60 s category cache.
+    h.network.addr = '10.9.9.9'
+    h.network.gateway = '10.9.9.1|de:ad:be:ef:00:01'
+    h.network.category = 'public'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([])
+    const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
+    expect(status.addresses).toEqual([expect.objectContaining({ address: '10.9.9.9', network: 'public', listening: false })])
+  })
+
+  it('the same address behind another gateway closes the listener at once and keeps it closed until the re-read says private', async () => {
+    const h = await harness()
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+    let release!: () => void
+    h.network.gate = new Promise<void>(r => { release = r })
+    h.network.gateway = '192.168.77.1|de:ad:be:ef:00:02' // another router, same subnet and address
+    h.network.category = 'public'
+    const readsBefore = h.network.reads
+    const applying = h.service.apply({})
+    for (let i = 0; i < 50 && h.network.reads <= readsBefore; i++) await new Promise(r => setTimeout(r, 10))
+    // The category read is still running: nothing listens on the unconfirmed network.
+    expect(listening(h)).toEqual([])
+    await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
+    release()
+    await applying
+    h.network.gate = null
+    expect(listening(h)).toEqual([])
+    expect(h.logs.some(l => /network changed on eth0: closing its listeners/.test(l))).toBe(true)
+    // Back home: confirmed private again, the listener returns.
+    h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
+    h.network.category = 'private'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([LAN])
   })
 })

@@ -12,7 +12,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { addressCandidates, PUBLIC_NETWORK_SENTENCE } from '../src/main/daemon/remote-access/addresses'
 import {
   currentNetworks, networkId, parseDarwinArp, parseDarwinDefaultRoutes, parseLinuxArp, parseLinuxRoutes,
-  parseWindowsProfiles, readNetworkCategories,
+  parseWindowsArp, parseWindowsProfiles, parseWindowsRoutes, readGatewayIdentities, readNetworkCategories,
 } from '../src/main/daemon/remote-access/network-category'
 import { DeviceStore, DEVICES_FILENAME, parseDeviceToken } from '../src/main/daemon/remote-access/device-store'
 import { cleanDisplayName, fingerprintOf, loadRemoteAccessConfig, newDaemonId, saveRemoteAccessConfig, defaultRemoteAccessConfig } from '../src/main/daemon/remote-access/config'
@@ -123,6 +123,21 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
     expect(currentNetworks(['wlan0', 'eth1'], routes, macs).map(n => n.iface)).toEqual(['wlan0'])
     const read = await readNetworkCategories(['wlan0', 'eth1'], [], { platform: 'linux', readText: async (p) => (p.endsWith('route') ? route : arp) })
     expect(Object.fromEntries(read.categories)).toEqual({ wlan0: 'public', eth1: 'public' })
+  })
+
+  it('gateway identities per interface (security review item 2): Windows route + arp, Linux /proc; failures = unknown', async () => {
+    const route = '===========================================================================\r\nActive Routes:\r\nNetwork Destination        Netmask          Gateway       Interface  Metric\r\n          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.23     35\r\n'
+    const arp = '\r\nInterface: 192.168.1.23 --- 0x7\r\n  Internet Address      Physical Address      Type\r\n  192.168.1.1           a4-2b-b0-01-02-03     dynamic\r\n'
+    expect(Object.fromEntries(parseWindowsRoutes(route))).toEqual({ '192.168.1.23': '192.168.1.1' })
+    expect(parseWindowsArp(arp).get('192.168.1.23|192.168.1.1')).toBe('a4:2b:b0:01:02:03')
+    const interfaces = { 'Wi-Fi': [nic('192.168.1.23')], Ethernet: [nic('10.0.0.4')] }
+    const win = await readGatewayIdentities(['Wi-Fi', 'Ethernet'], interfaces, { platform: 'win32', exec: async (file) => (file === 'route' ? route : arp) })
+    expect(Object.fromEntries(win)).toEqual({ 'Wi-Fi': '192.168.1.1|a4:2b:b0:01:02:03', Ethernet: '' })
+    const linuxRoute = 'Iface\tDestination\tGateway\nwlan0\t00000000\t0101A8C0\t0003\n'
+    const linuxArp = 'IP address       HW type     Flags       HW address            Mask     Device\n192.168.1.1      0x1         0x2         a4:2b:b0:01:02:03     *        wlan0\n'
+    expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async (p) => (p.endsWith('route') ? linuxRoute : linuxArp) })))
+      .toEqual({ wlan0: '192.168.1.1|a4:2b:b0:01:02:03' })
+    expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async () => { throw new Error('no /proc') } }))).toEqual({ wlan0: '' })
   })
 })
 
