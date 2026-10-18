@@ -590,7 +590,10 @@ export class RemoteAccessService {
     if (on.length > 0) return { state: 'on', message: `Listening on ${on.join(', ')}.` }
     const waiting = networks.filter(n => !n.allowed)
     if (waiting.length > 0) return { state: 'paused', message: `Paused on ${waiting.map(n => n.label).join(', ')}.` }
-    return { state: 'no_address', message: 'No private network address now.' }
+    // Allowed, but no listener came up (the port is taken, the address went away): say why, not "no address".
+    const failed = addresses.find(a => a.allowed && !a.listening && a.problem)
+    if (failed) return { state: 'error', message: `Not listening: ${failed.problem!.replace(/\.$/, '')}.` }
+    return { state: 'no_address', message: 'No LAN or tailnet address.' }
   }
 
   private urls(addresses: RemoteAddress[]): RemoteUrl[] {

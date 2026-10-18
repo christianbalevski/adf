@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { NetworkInterfaceInfo } from 'node:os'
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** This computer's host name as node:os reports it; a test sets one a CI runner could have. */
 const os = vi.hoisted(() => ({ hostname: null as string | null }))
@@ -60,12 +60,27 @@ function tempDir(): string {
   return d
 }
 
+/**
+ * A port for the remote listener, which the service binds itself later. Taken
+ * from 20000-29999, below every OS's ephemeral range (Linux 32768+, macOS and
+ * Windows 49152+): a port the OS just handed to a listen(0) elsewhere, and freed
+ * by our probe, is never handed out again in between (CI run 39160482007: "another
+ * program uses port 46867").
+ */
 async function freePort(): Promise<number> {
-  const probe = createServer()
-  await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', () => resolve()))
-  const port = (probe.address() as { port: number }).port
-  await new Promise<void>(resolve => probe.close(() => resolve()))
-  return port
+  for (let i = 0; i < 100; i++) {
+    const port = 20_000 + Math.floor(Math.random() * 10_000)
+    const probe = createServer()
+    const ok = await new Promise<boolean>(resolve => {
+      probe.once('error', () => resolve(false))
+      probe.listen(port, '127.0.0.1', () => resolve(true))
+    })
+    if (ok) {
+      await new Promise<void>(resolve => probe.close(() => resolve()))
+      return port
+    }
+  }
+  throw new Error('no free port in 20000-29999')
 }
 
 const running: Array<{ server: FastifyInstance; service: RemoteAccessService }> = []
@@ -76,8 +91,13 @@ afterEach(async () => {
   }
 })
 
-/** `allowed` (default true): the user already allowed the test LAN. */
-async function host(opts: { allowed?: boolean } = {}) {
+/**
+ * Every network input is a stand-in, never the runner's (CI run 39160482007):
+ * the interfaces, the gateway after its ARP probe, the Wi-Fi name, the OS
+ * category, Tailscale, the firewall. `allowed` (default true): the user already
+ * allowed the test LAN. `gateway`: the probe's answer ('192.168.77.1|': no MAC).
+ */
+async function host(opts: { allowed?: boolean; platform?: NodeJS.Platform; gateway?: string; interfaces?: NodeJS.Dict<NetworkInterfaceInfo[]> } = {}) {
   const dataDir = tempDir()
   if (opts.allowed !== false) {
     writeFileSync(join(dataDir, 'remote-access.json'), JSON.stringify({ v: 1, enabled: false, name: 'host-1', daemonId: null, allowedNetworks: [{ id: HOME, kind: 'lan', label: 'eth0 (192.168.77.0/24)', addedAt: '2026-10-18T00:00:00.000Z' }] }))
@@ -87,10 +107,10 @@ async function host(opts: { allowed?: boolean } = {}) {
     settingsDir: dataDir,
     port: remotePort,
     clientApiVersion: 2,
-    platform: 'linux',
+    platform: opts.platform ?? 'linux',
     hostName: () => 'host-1',
-    interfaces: () => ({ eth0: [{ address: '192.168.77.10', family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: '192.168.77.10/24' } as NetworkInterfaceInfo] }),
-    gateways: async (ifaces) => new Map(ifaces.map(i => [i, '192.168.77.1|00:00:5e:00:01:01'])),
+    interfaces: () => opts.interfaces ?? ({ eth0: [{ address: '192.168.77.10', family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: '192.168.77.10/24' } as NetworkInterfaceInfo] }),
+    gateways: async (ifaces) => new Map(ifaces.map(i => [i, opts.gateway ?? '192.168.77.1|00:00:5e:00:01:01'])),
     wifiNames: async () => new Map(),
     osCategories: async () => new Map(),
     tailscale: {
@@ -129,8 +149,61 @@ async function host(opts: { allowed?: boolean } = {}) {
   }
   const target = { url: `http://127.0.0.1:${port}`, port, dataDir }
   const run = (sub: 'remote' | 'devices' | 'pair', ...args: string[]) => runHostRemoteCommand(sub, args, io, target)
-  return { run, out, err, answers, remoteUrl: `http://127.0.0.1:${remotePort}`, target }
+  return { run, out, err, answers, remoteUrl: `http://127.0.0.1:${remotePort}`, remotePort, target }
 }
+
+describe.each(['linux', 'darwin', 'win32'] as const)('adf daemon remote status text for every state (process.platform %s)', (platform) => {
+  const real = process.platform
+  beforeEach(() => { Object.defineProperty(process, 'platform', { value: platform, configurable: true }) })
+  afterEach(() => { Object.defineProperty(process, 'platform', { value: real, configurable: true }) })
+  const lines = (out: string[]) => out.join('').split('\n')
+
+  it('off: one line, not twice', async () => {
+    const h = await host({ platform })
+    expect(await h.run('remote', 'status')).toBe(0)
+    expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: off', 'Name: host-1   '.trimEnd()])
+  })
+
+  it('on, on an allowed network: listening', async () => {
+    const h = await host({ platform })
+    expect(await h.run('remote', 'on')).toBe(0)
+    expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: on', 'Listening on 192.168.77.10.'])
+    expect(h.out.join('')).toContain('  eth0 (192.168.77.0/24)  allowed')
+  })
+
+  it('on, on a network not allowed: paused, with the command that allows it', async () => {
+    const h = await host({ platform, allowed: false })
+    expect(await h.run('remote', 'on')).toBe(0)
+    expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: on', 'Paused on eth0 (192.168.77.0/24).'])
+    expect(h.out.join('')).toMatch(/  eth0 \(192\.168\.77\.0\/24\)  not allowed \(allow: adf daemon remote allow-network lan-[0-9a-f]{16}\)/)
+  })
+
+  it('on, on an unidentified network (no MAC after the probe): paused, and why', async () => {
+    const h = await host({ platform, gateway: '192.168.77.1|' })
+    expect(await h.run('remote', 'on')).toBe(0)
+    expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: on', 'Paused on Unidentified network.'])
+    expect(h.out.join('')).toContain('  Unidentified network  not allowed (its router did not answer)')
+  })
+
+  it('on, with no network: no address', async () => {
+    const h = await host({ platform, interfaces: {} })
+    expect(await h.run('remote', 'on')).toBe(0)
+    expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: on', 'No LAN or tailnet address.'])
+    expect(h.out.join('')).not.toMatch(/private network/i)
+  })
+
+  it('on, allowed, but another program holds the port: not listening, and why', async () => {
+    const h = await host({ platform })
+    const blocker = createServer()
+    await new Promise<void>(resolve => blocker.listen(h.remotePort, '127.0.0.1', () => resolve()))
+    try {
+      expect(await h.run('remote', 'on')).toBe(0)
+      expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: on', `Not listening: another program uses port ${h.remotePort} on 192.168.77.10.`])
+    } finally {
+      await new Promise<void>(resolve => blocker.close(() => resolve()))
+    }
+  })
+})
 
 describe('adf daemon remote allow-network / forget-network (owner decision 2026-10-18 b)', () => {
   it('status shows the network paused; allow-network opens it, forget-network closes it', async () => {
@@ -138,7 +211,7 @@ describe('adf daemon remote allow-network / forget-network (owner decision 2026-
     expect(await h.run('remote', 'on')).toBe(0)
     const paused = h.out.join('')
     expect(paused).toContain('Remote access: on\nPaused on eth0 (192.168.77.0/24).')
-    expect(paused).toContain(`  eth0 (192.168.77.0/24)  paused (allow: adf daemon remote allow-network ${HOME}) Public network. The token is sent unencrypted.`)
+    expect(paused).toContain(`  eth0 (192.168.77.0/24)  not allowed (allow: adf daemon remote allow-network ${HOME}) Public network. The token is sent unencrypted.`)
     expect(paused).toContain('Allowed networks (0):')
     h.out.length = 0
     expect(await h.run('remote', 'allow-network')).toBe(0)

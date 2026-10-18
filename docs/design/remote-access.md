@@ -110,7 +110,7 @@ Node has no portable interface-change event. While remote access is on, the daem
 
 The network identity (§3.3.1) is read at every check (cheap: `/proc/net/route` and `/proc/net/arp` on Linux, `netstat -rn` and `arp -an` on macOS, `route print -4 0.0.0.0` and `arp -a` on Windows). When an interface's addresses or network differ from the last read, the daemon MUST close that interface's LAN listeners first, before any slower read, and open them again only on an allowed network (security review 2026-10-18, item 2). The MAC comes from this check's ARP probe only (§3.3.1): a known different MAC or gateway is another network, and no MAC after the probe is an unidentified network; both close the interface's listeners.
 
-With no eligible address the state is `no_address` ("No private network address now; other computers cannot reach this computer."). The setting stays on and listeners return with the network.
+With no eligible address the state is `no_address` ("No LAN or tailnet address."). When every address is allowed but none listens (the port is taken), the state is `error` with the first reason ("Not listening: another program uses port 7385 on 192.168.1.20."). The setting stays on and listeners return with the network.
 
 ### 3.5 Host names
 
