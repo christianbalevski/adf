@@ -2,6 +2,8 @@ import { SUPPORTED_CLIENT_API_VERSION, type DaemonVersion } from '../../../../sh
 import { checkRemoteDaemonUrl } from '../../../../shared/utils/remote-backend-url'
 import { readRemoteToken, remoteTransportRefusal, type SecretCodec, type StudioBackendConfig } from '../../backend-config'
 import type { DaemonConnector } from '../connection'
+import { ConnectionError, checkPinnedFingerprint, savedConnectionTarget } from '../../connections'
+import type { SavedRemote } from '../../../cli/remotes'
 
 /**
  * Remote mode's connector (design §9, tracker W4-B): the URL and the `safe:`
@@ -33,6 +35,10 @@ export type RemoteConnectProblem =
   | 'not_a_daemon'
   | 'version'
   | 'http'
+  /** A saved connection answers with another fingerprint than the one pinned when it was paired. */
+  | 'fingerprint'
+  /** The OS keychain did not give the saved connection's token. */
+  | 'keychain'
 
 export class RemoteConnectError extends Error {
   constructor(readonly problem: RemoteConnectProblem, message: string) {
@@ -130,6 +136,21 @@ export interface RemoteConnectorOptions extends HandshakeOptions {
   /** Backoff between attempts while the daemon cannot be reached: from `initialMs`, doubling up to `maxMs`. */
   retry?: { initialMs?: number; maxMs?: number; maxAttempts?: number }
   sleep?: (ms: number) => Promise<void>
+  /** Where `cli-remotes.json` and the keychain fallback are (connections.ts remotesEnv); default process.env. */
+  env?: NodeJS.ProcessEnv
+}
+
+const CONNECTION_PROBLEM: Record<ConnectionError['code'], RemoteConnectProblem> = {
+  not_configured: 'not_configured',
+  transport: 'transport',
+  no_token: 'no_token',
+  keychain: 'keychain',
+  pinned: 'fingerprint',
+  unreachable: 'unreachable',
+}
+
+function asConnectError(err: unknown): unknown {
+  return err instanceof ConnectionError ? new RemoteConnectError(CONNECTION_PROBLEM[err.code], err.message) : err
 }
 
 /** The progress line while Studio waits for an unreachable remote daemon (index.ts notifies once on it). */
@@ -195,9 +216,29 @@ export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCo
 export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec, opts: RemoteConnectorOptions = {}): DaemonConnector {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   return Object.assign(async (progress: (text: string) => void) => {
-    const checked = remoteConfigProblem(config, codec)
-    if ('error' in checked) throw checked.error
-    const { url, token } = checked
+    let url: string
+    let token: string
+    // A saved connection (settings-scopes.md §5.2): cli-remotes.json and the OS keychain, pinned to its fingerprint.
+    let saved: { name: string; remote: SavedRemote } | null = null
+    const name = config.remote.name
+    if (name) {
+      progress(`Reading the token for ${name}…`)
+      try {
+        const target = await savedConnectionTarget(config, name, opts.env ?? process.env, {
+          onSlow: () => progress(`Waiting for the OS keychain: macOS may ask whether ADF Studio may use the token for ${name}. Answer that prompt (it can be behind other windows).`),
+        })
+        url = target.url
+        token = target.token
+        saved = { name, remote: target.remote }
+      } catch (err) {
+        throw asConnectError(err)
+      }
+    } else {
+      const checked = remoteConfigProblem(config, codec)
+      if ('error' in checked) throw checked.error
+      url = checked.url
+      token = checked.token
+    }
     progress(`Connecting to the remote ADF daemon at ${url}…`)
     // An unreachable daemon at launch is retried with backoff (W4-B review);
     // a wrong token, TLS error, version or address problem ends the attempt.
@@ -206,6 +247,7 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
     let info: DaemonVersion
     for (let attempt = 1; ; attempt++) {
       try {
+        if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, opts.fetch).catch((e) => { throw asConnectError(e) })
         info = await remoteHandshake(url, token, opts)
         break
       } catch (err) {

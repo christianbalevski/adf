@@ -6,11 +6,11 @@ import { UNSAFE_DISPLAY_CHARS } from '../../daemon/remote-access/config'
 import { TailscaleClient, tailnetUrlAllowed, type TailnetView } from '../../daemon/remote-access/tailscale'
 
 /**
- * Pairing from Settings → Backend → Remote computer
- * (docs/design/remote-access.md §5.4, §9.1): hello, the 6-digit code, the
- * wait for the host's Allow, then the token is saved like a pasted one
- * (safeStorage, `remote.paired`). One flow at a time; every change is
- * pushed as a `RemotePairState`.
+ * Pair from Settings → Connection (docs/design/remote-access.md §5.4,
+ * §9.1; settings-scopes.md §5.3): hello, the 6-digit code, the wait for the
+ * host's Allow, then the connection is saved where `adf pair` saves it
+ * (`cli-remotes.json` and the OS keychain, connections.ts). One flow at a
+ * time; every change is pushed as a `RemotePairState`.
  *
  * The code and the token are never logged and never returned to the
  * renderer.
@@ -30,7 +30,7 @@ export interface PairingSaveInput {
 export interface PairingFlowDeps {
   onState: (state: RemotePairState) => void
   /** Save URL and token (the backend settings store). */
-  save: (input: PairingSaveInput) => Promise<{ ok: true } | { ok: false; error: string }>
+  save: (input: PairingSaveInput) => Promise<{ ok: true; id?: string } | { ok: false; error: string }>
   /** Why a token cannot be saved here (no OS keychain), or null. Checked before the code is sent. */
   saveBlocked: () => string | null
   /** This computer's name on the host by default (the OS host name). */
@@ -47,10 +47,10 @@ export interface PairingFlowDeps {
   confirmSwitch?: (prompt: { hostName: string; from: string; to: string }) => Promise<boolean>
   /** This computer's tailnet (`tailscale status --json`); default: the Tailscale CLI. */
   tailnetView?: () => Promise<TailnetView>
-  /** The saved remote computer: its URL, whether a token is saved, the fingerprint pinned at pairing (null: pasted). */
-  savedRemote?: () => { url: string | null; tokenSaved: boolean; fingerprint: string | null }
-  /** A saved remote computer would be replaced: ask first. Absent: refuse to replace. */
-  confirmReplace?: (prompt: { current: string; hostName: string; next: string }) => Promise<boolean>
+  /** Every saved connection: its name, address, and the fingerprint pinned when it was paired (null: none). */
+  savedConnections?: () => Array<{ name: string; url: string; fingerprint: string | null }>
+  /** The host's fingerprint is saved under another address: save this one instead? Absent: refuse. */
+  confirmReplace?: (prompt: { name: string; from: string; to: string }) => Promise<boolean>
 }
 
 function originOf(url: string | null): string | null {
@@ -132,22 +132,24 @@ export class PairingFlow {
       const hello = await new PairingClient(check.url, this.deps.fetch).hello({ signal: abort.signal })
       if (abort.signal.aborted) return this.current
       if (hello?.v !== 1 || typeof hello.fingerprint !== 'string') return this.fail('unreachable', `${check.url} does not answer as an ADF computer with remote access on.`)
-      // Security review 4: the fingerprint pinned when the saved remote was paired (trust on first use).
-      const saved = this.deps.savedRemote?.() ?? { url: null, tokenSaved: false, fingerprint: null }
-      if (saved.fingerprint && originOf(saved.url) === originOf(check.url) && saved.fingerprint !== hello.fingerprint) {
-        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${saved.fingerprint} as when it was paired. Studio sent nothing. If that computer was set up again, remove the saved token first (Remove token).`)
+      // Security review 4: the fingerprint pinned when a saved connection at this address was paired (trust on first use).
+      const saved = this.deps.savedConnections?.() ?? []
+      const pinned = saved.find((s) => s.fingerprint && originOf(s.url) === originOf(check.url) && s.fingerprint !== hello.fingerprint)
+      if (pinned) {
+        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${pinned.fingerprint} as when ${pinned.name} was paired. Studio sent nothing. If that computer was set up again, remove ${pinned.name} in Settings → Connection first.`)
       }
-      // Never replace a saved remote computer's address and token without asking.
-      if (saved.tokenSaved && saved.url) {
-        const replace = this.deps.confirmReplace ? await this.deps.confirmReplace({ current: saved.url, hostName: hello.name, next: check.url }).catch(() => false) : false
+      // Never move a saved connection to another address without asking.
+      const moved = saved.find((s) => s.fingerprint === hello.fingerprint && originOf(s.url) !== originOf(check.url))
+      if (moved) {
+        const replace = this.deps.confirmReplace ? await this.deps.confirmReplace({ name: moved.name, from: moved.url, to: check.url }).catch(() => false) : false
         if (abort.signal.aborted) return this.current
-        if (!replace) return this.fail('kept', 'Kept the saved remote computer. Nothing was sent.')
+        if (!replace) return this.fail('kept', `Kept the saved address of ${moved.name}. Nothing was sent.`)
       }
       this.log.log(`[Remote access] Pairing with ${hello.name} (${hello.fingerprint}) at ${check.url} as "${deviceName}"`)
       return this.set({
         step: 'need_code',
         host: { ...host, name: hello.name, fingerprint: hello.fingerprint },
-        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open. Choose Pair device there.`,
+        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open. Choose Add device there.`,
       })
     } catch (err) {
       if (abort.signal.aborted) return this.current
@@ -276,7 +278,7 @@ export class PairingFlow {
       return
     }
     this.log.log(`[Remote access] Paired with ${host.name} (${host.fingerprint}) as "${result.device?.label ?? this.deviceName}"; saved ${url} and its token`)
-    this.set({ step: 'paired', savedUrl: url, message: `Paired with ${host.name}. Its address and token are saved.` })
+    this.set({ step: 'paired', savedUrl: url, savedId: saved.id ?? null, message: `Paired with ${host.name}. Its address and token are saved.` })
   }
 
   private claimFailure(err: unknown, host: NonNullable<RemotePairState['host']>): RemotePairState {
@@ -284,12 +286,12 @@ export class PairingFlow {
     switch (err.code) {
       case 'wrong_code': {
         const left = err.extra.attemptsLeft ?? null
-        if (left === 0) return this.fail('attempts_used', `Wrong code, and no tries are left. Choose Pair device on ${host.name} for a new code.`)
+        if (left === 0) return this.fail('attempts_used', `Wrong code, and no tries are left. Choose Add device on ${host.name} for a new code.`)
         this.log.warn(`[Remote access] Pairing with ${host.name}: wrong code${left !== null ? `, ${left} left` : ''}`)
         return this.set({ step: 'need_code', code: 'wrong_code', attemptsLeft: left, message: `Wrong code.${left !== null ? ` ${left} ${left === 1 ? 'try' : 'tries'} left.` : ''}` })
       }
       case 'pairing_closed':
-        return this.fail('window_closed', `The pairing window on ${host.name} is closed. Choose Pair device there for a new code.`)
+        return this.fail('window_closed', `The pairing window on ${host.name} is closed. Choose Add device there for a new code.`)
       case 'pairing_busy':
         return this.fail('busy', `${host.name} is already asking about another device. Try again in a moment.`, true)
       case 'rate_limited':

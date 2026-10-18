@@ -20,11 +20,12 @@ import { allowNetwork, cleanDisplayName, forgetNetwork, readAllowedNetworks, UNS
 import type { NetworkConsentResult, NetworkNotice, NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
+import { remotesEnv, saveConnection, savedConnections } from './connections'
 
 /**
  * Remote access in Studio main
  * (docs/design/remote-access.md §7, §9.1): the IPC channels of Settings →
- * Networking → Remote access (host) and Settings → Backend → Remote computer (discovery,
+ * Networking → Remote access (host) and Settings → Connection (discovery,
  * pairing), and the quit question. Registered in every backend mode, outside
  * the backend registration; the host channels answer "unavailable" unless
  * Studio runs the ADF daemon on this computer.
@@ -51,6 +52,10 @@ export interface RemoteAccessIpcDeps {
   meshLan?: () => { on: boolean; sync: () => Promise<void> } | null
   /** Embedded mode: the mesh's mDNS service while it runs (the process's one discovery feed). */
   meshPeers?: () => MdnsService | null
+  /** Where cli-remotes.json and the keychain fallback are (connections.ts remotesEnv). Default: next to `settingsDir`. */
+  remotesEnv?: NodeJS.ProcessEnv
+  /** The discovery list or the saved connections changed: Settings → Connection is pushed again. */
+  onConnectionsChanged?: () => void
   /** Tests: replace the Electron dialogs, notifications and network. */
   overrides?: {
     host?: Partial<RemoteAccessHostDeps>
@@ -187,6 +192,10 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     return response
   }
   const localDaemon = (): LocalDaemon | null => deps.mode === 'local' ? deps.daemon() : null
+  const env = deps.remotesEnv ?? (deps.settingsDir ? remotesEnv(deps.settingsDir) : process.env)
+  const saved = () => {
+    try { return savedConnections(env) } catch { return {} }
+  }
 
   const host = new RemoteAccessHost({
     daemon: () => {
@@ -228,8 +237,16 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   const inProcessFeed = new InProcessPeerFeed({ mesh: () => deps.meshPeers?.() ?? null, log })
   const discovery = new RemoteDiscovery({
     feed: () => (deps.mode === 'local' ? (localDaemon() ? daemonFeed : null) : inProcessFeed),
-    onUpdate: (update) => windows.send(IPC.REMOTE_DISCOVERY_UPDATE, update),
-    pairedFingerprint: () => deps.backend.config().remote.paired?.fingerprint ?? null,
+    onUpdate: (update) => {
+      windows.send(IPC.REMOTE_DISCOVERY_UPDATE, update)
+      deps.onConnectionsChanged?.()
+    },
+    pairedFingerprints: () => {
+      const fingerprints = new Set(Object.values(saved()).map((r) => r.fingerprint))
+      const slot = deps.backend.config().remote.paired?.fingerprint
+      if (slot) fingerprints.add(slot)
+      return fingerprints
+    },
     ownFingerprint: () => host.lastStatus?.fingerprint ?? null,
     log,
     ...o.discovery,
@@ -237,18 +254,21 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
 
   const pairing = new PairingFlow({
     onState: (state) => windows.send(IPC.REMOTE_PAIR_STATE, state),
-    saveBlocked: () => deps.codec.available() ? null : (deps.codec.unavailableReason?.() ?? 'OS keychain encryption is not available, so the token cannot be saved.'),
+    // Saved where `adf pair` saves (connections.ts): the keychain, else a file only this user can read. Never blocked.
+    saveBlocked: () => null,
     defaultDeviceName: () => runtimeName(deps.settingsDir),
-    savedRemote: () => {
-      const remote = deps.backend.config().remote
-      return { url: remote.url, tokenSaved: remote.token !== null, fingerprint: remote.paired?.fingerprint ?? null }
+    savedConnections: () => {
+      const list = Object.entries(saved()).map(([name, r]) => ({ name, url: r.url, fingerprint: r.fingerprint as string | null }))
+      const slot = deps.backend.config().remote
+      if (slot.url) list.push({ name: slot.paired?.name ?? slot.url, url: slot.url, fingerprint: slot.paired?.fingerprint ?? null })
+      return list
     },
-    confirmReplace: async ({ current, hostName, next }) => (await box({
+    confirmReplace: async ({ name, to }) => (await box({
       type: 'question',
-      title: 'Replace remote computer',
-      message: 'Replace remote computer',
-      detail: `The saved remote computer is ${current}. Pairing with ${shownText(hostName)} (${next}) replaces its address and token.`,
-      buttons: ['Replace', 'Cancel'],
+      title: 'Use new address',
+      message: 'Use new address',
+      detail: `${shownText(name)} is now at ${to}.`,
+      buttons: ['Use new address', 'Cancel'],
       defaultId: 1,
       cancelId: 1,
       noLink: true,
@@ -264,14 +284,22 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       noLink: true,
     })) === 0,
     save: async (input) => {
-      const result = await deps.backend.savePairing({
-        remoteUrl: input.url,
-        remoteToken: input.token,
-        allowInsecureHttp: input.allowInsecureHttp,
-        ...(input.allowInsecureHttp ? { insecureHttpOrigin: remoteUrlOrigin(input.url) ?? undefined } : {}),
-      }, { fingerprint: input.fingerprint, name: input.name, deviceId: input.deviceId, label: input.label })
+      let name: string
+      try {
+        const saved = saveConnection(env, { url: input.url, token: input.token, fingerprint: input.fingerprint, hostName: input.name, deviceId: input.deviceId, label: input.label })
+        name = saved.name
+        if (saved.store.where === 'file') log.warn(`[Remote access] The token for ${name} is in ${saved.store.path} (${saved.store.why})`)
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+      const origin = remoteUrlOrigin(input.url)
+      if (input.allowInsecureHttp && origin) {
+        const trusted = await deps.backend.set({ trustInsecureOrigin: origin })
+        if (!trusted.ok) log.warn(`[Remote access] Could not record plain http for ${origin}: ${trusted.error}`)
+      }
       discovery.refresh()
-      return result.ok ? { ok: true } : { ok: false, error: result.error }
+      deps.onConnectionsChanged?.()
+      return { ok: true, id: `remote:${name}` }
     },
     log,
     ...o.pairing,
@@ -385,7 +413,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   const consentTimer = consentPollMs > 0 ? setInterval(checkConsent, consentPollMs) : null
   consentTimer?.unref?.()
 
-  // --- Client: Settings → Backend → Remote computer ---
+  // --- Client: Settings → Connection ---
   ipcMain.handle(IPC.REMOTE_DISCOVERY_START, () => { discovery.start(); return true })
   ipcMain.handle(IPC.REMOTE_DISCOVERY_STOP, () => { discovery.stop(); return true })
   ipcMain.handle(IPC.REMOTE_PAIR_START, (_event, request: unknown) => pairing.start((request ?? {}) as { url: string }))

@@ -4,6 +4,7 @@ import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
+import type { ConnectionAddRequest, ConnectionsView } from '../shared/types/connection.types'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch, RemoteCheckRequest, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
 import type { NetworkNotice, RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
@@ -733,6 +734,15 @@ const api: AdfApi = {
     const handler = (_event: Electron.IpcRendererEvent, update: RemoteDiscoveryUpdate) => callback(update)
     ipcRenderer.on(IPC.REMOTE_DISCOVERY_UPDATE, handler)
     return () => ipcRenderer.removeListener(IPC.REMOTE_DISCOVERY_UPDATE, handler)
+  },
+  listConnections: () => ipcRenderer.invoke(IPC.CONNECTION_LIST),
+  useConnection: (id: string) => ipcRenderer.invoke(IPC.CONNECTION_USE, id),
+  addConnection: (request: ConnectionAddRequest) => ipcRenderer.invoke(IPC.CONNECTION_ADD, request),
+  removeConnection: (id: string) => ipcRenderer.invoke(IPC.CONNECTION_REMOVE, id),
+  onConnectionChanged: (callback: (view: ConnectionsView) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, view: ConnectionsView) => callback(view)
+    ipcRenderer.on(IPC.CONNECTION_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.CONNECTION_CHANGED, handler)
   },
   startRemotePairing: (request: RemotePairStartRequest) => ipcRenderer.invoke(IPC.REMOTE_PAIR_START, request),
   submitRemotePairingCode: (code: string) => ipcRenderer.invoke(IPC.REMOTE_PAIR_SUBMIT_CODE, code),

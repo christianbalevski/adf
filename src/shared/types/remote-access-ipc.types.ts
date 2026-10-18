@@ -171,4 +171,6 @@ export interface RemotePairState {
   code: RemotePairErrorCode | null
   /** paired: the URL saved for the remote computer. */
   savedUrl: string | null
+  /** paired: the saved connection's id on the Connection page (`remote:<name>`), for Connect. */
+  savedId?: string | null
 }

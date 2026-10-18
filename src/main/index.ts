@@ -23,6 +23,8 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
+import { remotesEnv, savedConnections } from './backend/connections'
+import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
   askVersionMismatch,
@@ -603,6 +605,11 @@ app.whenReady().then(async () => {
   // First launch without studio-backend.json: save the default, and on an install that ran Embedded prepare the one notice.
   const firstLaunch = await settleDefaultBackend(backend, getUserDataPath(), handover, { version: app.getVersion() })
   let backendStore: BackendSettingsStore | null = null
+  // Saved connections: cli-remotes.json next to Studio's settings file, shared with adf (settings-scopes.md §5.2).
+  const connectionsEnv = remotesEnv(getUserDataPath())
+  const savedRemote = (name: string): { url: string } | null => {
+    try { return savedConnections(connectionsEnv)[name] ?? null } catch { return null }
+  }
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')
@@ -632,7 +639,7 @@ app.whenReady().then(async () => {
           daemonEntry: join(__dirname, 'daemon.js'),
           onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
-        : remoteDaemonConnector(backend.config, safeStorageCodec),
+        : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
       hooks: { showMainWindow, openFile: requestOpenFile },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
@@ -660,7 +667,10 @@ app.whenReady().then(async () => {
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
     daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
     window: () => mainWindow,
-    remoteUrl: () => backendStore?.config().remote.url ?? backend.config.remote.url,
+    remoteUrl: () => {
+      const config = backendStore?.config() ?? backend.config
+      return config.remote.name ? savedRemote(config.remote.name)?.url ?? null : config.remote.url
+    },
     relaunch: (target) => {
       switchingTo = target
       relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)
@@ -675,6 +685,7 @@ app.whenReady().then(async () => {
     cancelSwitch: switcher.cancel,
     restarting: () => { const target = switcher.restartingInto(); return target ? restartingMessage(target) : null },
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
+    savedRemote,
   })
   remoteAccess = registerRemoteAccessHandlers({
     mode: backend.mode,
@@ -686,7 +697,29 @@ app.whenReady().then(async () => {
     settingsDir: getUserDataPath(),
     meshLan: () => embeddedIpc?.meshLanState() ?? null,
     meshPeers: () => embeddedIpc?.meshPeerFeed() ?? null,
+    remotesEnv: connectionsEnv,
+    onConnectionsChanged: () => connections?.changed(),
   })
+  // Settings → Connection and the status bar's runtime indicator (settings-scopes.md §4.1, §5).
+  const store = backendStore
+  const access = remoteAccess
+  let connections: Connections | null = null
+  connections = createConnections({
+    boot: backend,
+    backend: store,
+    env: connectionsEnv,
+    daemonStatus: () => daemonMode?.status() ?? null,
+    discovery: () => access.discovery.snapshot(),
+    confirm: async ({ message, detail, ok }) => {
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+      const options: Electron.MessageBoxOptions = { type: 'question', title: message, message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true }
+      const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+      return response === 0
+    },
+    push: pushConnections,
+  })
+  registerConnectionHandlers(connections)
+  daemonMode?.connection.onState(() => connections?.changed())
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)

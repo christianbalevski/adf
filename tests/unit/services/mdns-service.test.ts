@@ -363,7 +363,7 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
     }])
     // Studio's Discovered list reads the same service (embedded mode: the mesh's own).
     const updates: RemoteDiscoveryUpdate[] = []
-    const discovery = new RemoteDiscovery({ feed: () => feed, onUpdate: (u) => updates.push(u), pairedFingerprint: () => null, log: { log: () => {}, warn: () => {} } })
+    const discovery = new RemoteDiscovery({ feed: () => feed, onUpdate: (u) => updates.push(u), pairedFingerprints: () => new Set<string>(), log: { log: () => {}, warn: () => {} } })
     const feed = new InProcessPeerFeed({ mesh: () => svc })
     discovery.start()
     await vi.waitFor(() => expect(updates.at(-1)?.entries.length).toBe(1))

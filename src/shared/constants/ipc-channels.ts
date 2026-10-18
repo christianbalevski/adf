@@ -440,9 +440,9 @@ export const IPC = {
 
   // Remote access (docs/design/remote-access.md §9.1).
   // Host side: Settings → Networking → Remote access, local mode, proxied to
-  // the daemon's /remote-access routes. Client side: Settings → Backend →
-  // Remote computer, discovery and pairing in Studio main. Registered in
-  // every mode (backend/remote-access-ipc.ts).
+  // the daemon's /remote-access routes. Client side: Settings → Connection,
+  // discovery and pairing in Studio main. Registered in every mode
+  // (backend/remote-access-ipc.ts).
   REMOTE_ACCESS_GET: 'adf:remote-access:get',
   REMOTE_ACCESS_SET: 'adf:remote-access:set',
   REMOTE_ACCESS_DEVICE_ADD: 'adf:remote-access:device-add',
@@ -458,6 +458,14 @@ export const IPC = {
   REMOTE_PAIR_SUBMIT_CODE: 'adf:remote-pair:submit-code',
   REMOTE_PAIR_CANCEL: 'adf:remote-pair:cancel',
   REMOTE_PAIR_STATE: 'adf:remote-pair:state',
+  // Settings → Connection (docs/design/settings-scopes.md §5.4): the runtimes
+  // this window can use, Connect, Add connection with a token, Remove. Every
+  // mode (backend/connections-ipc.ts).
+  CONNECTION_LIST: 'adf:connection:list',
+  CONNECTION_USE: 'adf:connection:use',
+  CONNECTION_ADD: 'adf:connection:add',
+  CONNECTION_REMOVE: 'adf:connection:remove',
+  CONNECTION_CHANGED: 'adf:connection:changed',
   // Settings → Networking's status line: network category, LAN and tailnet address, firewall (lan-reach.ts).
   NETWORK_STATUS_GET: 'adf:network:status',
   NETWORK_ALLOW: 'adf:network:allow',

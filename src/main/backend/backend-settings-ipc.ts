@@ -40,6 +40,7 @@ export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
   finishSwitchNow?: () => string | null
   cancelSwitch?: () => StudioBackendMode | null
   restarting?: () => string | null
+  savedRemote?: (name: string) => { url: string } | null
 } = {}): BackendSettingsStore {
   const store = createBackendSettingsStore({ boot, codec: safeStorageCodec, ...hooks })
   ipcMain.handle(IPC.BACKEND_SETTINGS_GET, () => store.get())

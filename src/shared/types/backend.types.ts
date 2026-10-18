@@ -50,6 +50,8 @@ export interface BackendSettingsView {
     allowInsecureHttp: boolean
     /** The saved token came from pairing with this computer (remote-access.md §9.3); null for a pasted one. */
     remotePaired?: { fingerprint: string; name: string; label: string } | null
+    /** The saved connection (`cli-remotes.json`) remote mode uses; null: the remote URL above. */
+    remoteName?: string | null
   }
   /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
   daemon?: BackendDaemonStatus | null
@@ -119,6 +121,10 @@ export interface BackendSettingsPatch {
    * counts for a new address only when this names that address's origin.
    */
   insecureHttpOrigin?: string
+  /** Remote mode uses this saved connection of `cli-remotes.json`; null: the remote URL (settings-scopes.md §5.2). */
+  remoteName?: string | null
+  /** Main only: the user confirmed plain HTTP to this origin for a saved connection. */
+  trustInsecureOrigin?: string
   /** A switch waiting for turns in flight: restart now (`finish-now`), or stay in this mode (`cancel`). */
   switchAction?: 'finish-now' | 'cancel'
 }

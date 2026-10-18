@@ -24,7 +24,10 @@ vi.mock('electron', async () => (await import('../backend/daemon-mode-electron')
 import { ensureDaemonToken } from '../../src/main/daemon/daemon-token'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from '../../src/main/backend/remote-access-ipc'
-import { createBackendSettingsStore, resolveBootBackend, readRemoteToken, type SecretCodec } from '../../src/main/backend/backend-config'
+import { createBackendSettingsStore, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
+import { createConnections, registerConnectionHandlers } from '../../src/main/backend/connections-ipc'
+import { loadRemotes, readRemoteToken } from '../../src/main/cli/remotes'
+import type { ConnectionsView } from '../../src/shared/types/connection.types'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import { electronStub } from '../backend/daemon-mode-electron'
 import type { RemoteAccessView, RemoteDeviceAddResult, RemotePairState } from '../../src/shared/types/remote-access-ipc.types'
@@ -70,6 +73,8 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
   const asked: string[] = []
   const notices: string[] = []
   let store: ReturnType<typeof createBackendSettingsStore>
+  /** This Studio's saved connections: its own folder and a test keychain, never the real one. */
+  let clientEnv: NodeJS.ProcessEnv
   const invoke = <T>(channel: string, ...args: unknown[]) => electronStub.handlers.get(channel)!({}, ...args) as Promise<T>
 
   beforeAll(async () => {
@@ -112,6 +117,9 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       log: quiet,
     })
     expect(await handle.ready).toBe(true)
+    clientEnv = { ...process.env, ADF_DAEMON_SETTINGS: join(dir, 'client', 'adf-settings.json'), ADF_TEST_KEYCHAIN_FILE: join(dir, 'client-keychain.json'), ADF_TEST_SEAMS: '1' }
+    delete clientEnv.ADF_KEYCHAIN
+    delete clientEnv.ADF_SECRET_STORE
     remote = registerRemoteAccessHandlers({
       mode: 'local',
       daemon: () => handle,
@@ -119,6 +127,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       codec,
       window: () => null,
       keepDaemonRunning: () => false,
+      remotesEnv: clientEnv,
       overrides: {
         host: { confirm: async () => true, askClaim: async ({ claim }) => { asked.push(claim.deviceName); return true }, notify: (t) => notices.push(t), pollMs: 200 },
         discovery: { feed: () => null },
@@ -126,6 +135,14 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       },
       log: quiet,
     })
+    registerConnectionHandlers(createConnections({
+      boot, backend: store, env: clientEnv,
+      daemonStatus: () => handle.status(),
+      discovery: () => remote.discovery.snapshot(),
+      confirm: async () => true,
+      push: () => {},
+      log: quiet,
+    }))
   }, 90_000)
 
   afterAll(() => {
@@ -197,10 +214,17 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     await until(() => remote.pairing.state.step, (s) => s === 'paired' || s === 'failed', 30_000)
     expect(remote.pairing.state).toMatchObject({ step: 'paired' })
     expect(asked).toEqual(['agent-2 laptop'])
-    const config = store.config()
-    expect(config.remote.paired).toMatchObject({ fingerprint, label: 'agent-2 laptop' })
-    const pairedToken = readRemoteToken(config, codec)!
+    // Saved where adf pair saves it (settings-scopes.md §5.2): cli-remotes.json and the keychain, shared with the CLI.
+    const saved = loadRemotes(clientEnv).remotes['agent-1-e2e']
+    expect(saved).toMatchObject({ url: base, fingerprint, label: 'agent-2 laptop', hostName: 'agent-1 e2e' })
+    const pairedToken = readRemoteToken(fingerprint, clientEnv)!
     expect(pairedToken).toMatch(/^adfd_/)
+    expect(remote.pairing.state).toMatchObject({ savedId: 'remote:agent-1-e2e' })
+    // Settings → Connection: This computer in use, the paired computer as Paired with Connect, never a Pair row for it.
+    const list = await invoke<ConnectionsView>(IPC.CONNECTION_LIST)
+    expect(list.current).toMatchObject({ id: 'local', name: 'This computer', state: 'connected' })
+    expect(list.rows.find((r) => r.id === 'remote:agent-1-e2e')).toMatchObject({ state: 'paired', action: 'connect', fingerprint })
+    expect(list.rows.filter((r) => r.action === 'pair' && r.fingerprint === fingerprint)).toEqual([])
     await until(() => notices, (n) => n.includes('Device added: agent-2 laptop.'))
     await until(() => events.map((e) => e.type), (t) => t.includes('claim_pending') && t.includes('device_added'))
     console.log(`[e2e] events: ${events.map((e) => `${e.type}${e.reason ? `(${e.reason})` : ''}`).join(', ')}`)

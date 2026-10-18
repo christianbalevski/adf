@@ -593,3 +593,55 @@ describe('review fixes', () => {
     expect(rec.lines.join('\n')).not.toContain(TOKEN)
   })
 })
+
+describe('the saved connection in use (settings-scopes.md §5.2)', () => {
+  const saved = (name: string) => (name === 'rawl-hub' ? { url: 'http://100.101.102.103:7385' } : null)
+
+  it('remote.name and insecureHttpOrigins are read back; a bad name or origin is dropped and said so', () => {
+    const ok = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'rawl-hub' }, insecureHttpOrigins: ['http://192.168.1.20:7385', 'not a url', 'http://192.168.1.20:7385/path'] })
+    expect(ok.config.remote.name).toBe('rawl-hub')
+    expect(ok.config.insecureHttpOrigins).toEqual(['http://192.168.1.20:7385'])
+    // A saved connection needs no remote URL: no warning about one.
+    expect(ok.warnings.filter((w) => w.includes('no usable remote.url'))).toEqual([])
+    const bad = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'a\nb' } })
+    expect(bad.config.remote.name).toBeUndefined()
+    expect(bad.dropped).toContain('the saved connection name, which was not valid')
+  })
+
+  it('remoteName must name a saved connection; switching to it needs no remote URL; null goes back to the URL', () => {
+    const current = defaultBackendConfig()
+    expect(applyBackendPatch(current, { mode: 'remote', remoteName: 'nobody' }, { codec: fakeCodec(), savedRemote: saved })).toMatchObject({ ok: false, code: 'remote_not_configured', error: 'No saved connection named "nobody".' })
+    const result = applyBackendPatch(current, { mode: 'remote', remoteName: 'rawl-hub' }, { codec: fakeCodec(), savedRemote: saved })
+    expect(result.ok && result.config).toMatchObject({ mode: 'remote', remote: { name: 'rawl-hub', url: null } })
+    const back = applyBackendPatch((result as { config: StudioBackendConfig }).config, { remoteName: null }, { codec: fakeCodec(), savedRemote: saved })
+    expect(back.ok && back.config.remote.name).toBeUndefined()
+    expect(applyBackendPatch(current, { remoteName: 'rawl-hub' }, { codec: fakeCodec() })).toMatchObject({ ok: false, code: 'remote_not_configured' })
+  })
+
+  it('trustInsecureOrigin records an origin once; anything but an origin is refused', () => {
+    const once = applyBackendPatch(defaultBackendConfig(), { trustInsecureOrigin: 'http://192.168.1.20:7385' }, { codec: fakeCodec() })
+    expect(once.ok && once.config.insecureHttpOrigins).toEqual(['http://192.168.1.20:7385'])
+    const twice = applyBackendPatch((once as { config: StudioBackendConfig }).config, { trustInsecureOrigin: 'http://192.168.1.20:7385' }, { codec: fakeCodec() })
+    expect(twice.ok && twice.changes).toEqual([])
+    expect(applyBackendPatch(defaultBackendConfig(), { trustInsecureOrigin: 'http://192.168.1.20:7385/x' }, { codec: fakeCodec() })).toMatchObject({ ok: false, code: 'invalid_patch' })
+  })
+
+  it('remote to another saved connection is a switch (dialog, restart); back to the running one is a plain save', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-backend-'))
+    const path = join(dir, BACKEND_CONFIG_FILE)
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { name: 'rawl-hub' } }))
+    const boot = resolveBootBackend(path, {}, recordingLog().log)
+    const asked: StudioBackendMode[] = []
+    const store = createBackendSettingsStore({
+      boot, codec: fakeCodec(), log: recordingLog().log,
+      savedRemote: (name) => (name === 'rawl-hub' || name === 'desk' ? { url: 'https://x.example.com' } : null),
+      confirmModeSwitch: async (target) => { asked.push(target); return true },
+      applyModeSwitch: () => 'Studio restarts now.',
+    })
+    expect(await store.set({ remoteName: 'desk' })).toMatchObject({ ok: true, notices: ['Studio restarts now.'] })
+    expect(asked).toEqual(['remote'])
+    expect(await store.set({ remoteName: 'rawl-hub' })).toMatchObject({ ok: true })
+    expect(asked).toEqual(['remote'])
+    expect(JSON.parse(readFileSync(path, 'utf8')).remote.name).toBe('rawl-hub')
+  })
+})
