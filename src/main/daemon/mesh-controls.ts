@@ -21,6 +21,8 @@ export interface MeshControlDeps {
     isRunning(): boolean
     getPort(): number
     getHost(): string
+    /** Non-loopback addresses listening now (LAN mode: private networks and Tailscale only). */
+    getLanAddresses?(): string[]
     start(): Promise<void>
     stop(): Promise<void>
   }
@@ -39,7 +41,7 @@ export interface ServerSwitchOptions {
 
 export function createMeshControls(deps: MeshControlDeps) {
   const log = deps.log ?? console
-  const serverState = () => ({ running: deps.server.isRunning(), port: deps.server.getPort(), host: deps.server.getHost() })
+  const serverState = () => ({ running: deps.server.isRunning(), port: deps.server.getPort(), host: deps.server.getHost(), ...(deps.server.getLanAddresses ? { lanAddresses: deps.server.getLanAddresses() } : {}) })
   return {
     enableMesh: () => {
       // Persist so an explicit enable survives restart (boot auto-enables

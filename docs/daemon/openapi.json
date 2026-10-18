@@ -22687,6 +22687,13 @@
           },
           "host": {
             "type": "string"
+          },
+          "lanAddresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility."
           }
         },
         "example": {

@@ -44,6 +44,8 @@ export interface DiscoveryMeshServer {
   isRunning(): boolean
   getHost(): string
   getPort(): number
+  /** LAN mode listens on a private network or the tailnet now (lan-reach.ts); absent: the host decides. */
+  isLanReachable?(): boolean
 }
 
 /** The TailnetDiscovery surface discovery drives (a fake in tests). */
@@ -238,6 +240,7 @@ export class RuntimeDiscovery {
     if (!mesh.isEnabled()) return
     if (!meshServer.isRunning()) return
     if (meshServer.getHost() !== '0.0.0.0') return // only announce/browse when LAN-bound
+    if (meshServer.isLanReachable && !meshServer.isLanReachable()) return // not on a private network now
 
     // LAN-visible spans 'lan' and 'public': a public agent is reachable from
     // the internet, which subsumes the LAN, so it announces over mDNS too.
@@ -323,7 +326,7 @@ export class RuntimeDiscovery {
   private poll(): void {
     if (this.stopped || this.running) return
     const { meshServer, mesh } = this.opts
-    const eligible = mesh.isEnabled() && meshServer.isRunning() && meshServer.getHost() === '0.0.0.0'
+    const eligible = mesh.isEnabled() && meshServer.isRunning() && meshServer.getHost() === '0.0.0.0' && (meshServer.isLanReachable?.() ?? true)
     if (this.mdns && !eligible) {
       console.log('[Discovery] Mesh disabled, or mesh server stopped or no longer LAN-bound — stopping mDNS')
       void this.stopMdns()

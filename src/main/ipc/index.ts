@@ -101,6 +101,7 @@ import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } fro
 import { appendOwnerMessageUnderLease } from '../runtime/owner-message-append'
 import { agentFileBusy, describeEnvelopeSweep } from '../services/owner-identity.service'
 import { getUserDataPath } from '../utils/user-data-path'
+import { LanReach } from '../services/lan-reach'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
@@ -399,6 +400,7 @@ async function startMdnsIfEligibleInner(): Promise<void> {
   if (!meshServer || !meshServer.isRunning()) return
   const host = meshServer.getHost()
   if (host !== '0.0.0.0') return  // only announce/browse when LAN-bound
+  if (!meshServer.isLanReachable()) return  // LAN mode on a network that is not private: nothing to announce
 
   // LAN-visible spans both 'lan' and 'public' tiers: a public agent is
   // reachable from the public internet, which subsumes the LAN, so it must
@@ -1957,6 +1959,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Start MeshServer (always runs, independent of mesh enable/disable)
   meshServer = new MeshServer(codeSandboxService, settings)
+  // LAN mode: private networks and Tailscale only; macOS/Linux read the networks the owner marked private (remote-access.json).
+  meshServer.setLanReach(new LanReach({ settingsDir: getUserDataPath() }))
   meshServer.start()
     .then(() => { void startMdnsIfEligible() })
     .catch(err => console.error('[MeshServer] Failed to start:', err))
@@ -6095,7 +6099,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return {
       running: meshServer?.isRunning() ?? false,
       port: meshServer?.getPort() ?? 7295,
-      host: meshServer?.getHost() ?? '127.0.0.1'
+      host: meshServer?.getHost() ?? '127.0.0.1',
+      lanAddresses: meshServer?.getLanAddresses() ?? []
     }
   })
 

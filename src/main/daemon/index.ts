@@ -12,6 +12,7 @@ import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { MeshServer } from '../services/mesh-server'
+import { LanReach } from '../services/lan-reach'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { PackageResolver } from '../services/mcp-package-resolver'
 import { UvManager } from '../services/uv-manager'
@@ -249,6 +250,8 @@ meshManager.setWsConnectionManager(wsConnectionManager)
 // /ping advertises the runtime DID + delegation the daemon signs with (Studio's
 // only when adopted), not whatever the shared settings file holds.
 const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
+// LAN mode: private networks and Tailscale only, the rule remote access uses (remote-access.md §3.3).
+meshServer.setLanReach(new LanReach({ settingsDir: dirname(settingsPath) }))
 // When the mesh server binds, and a stop on request that holds (mesh-controls.ts).
 const meshServerBinder = createMeshServerBinder({ settings, mesh: meshManager, server: meshServer })
 meshServer.setMeshManager(meshManager)
@@ -437,6 +440,7 @@ const daemon = new DaemonHost({
         running: meshServer.isRunning(),
         port: meshServer.getPort(),
         host: meshServer.getHost(),
+        lanAddresses: meshServer.getLanAddresses(),
       },
       agents: meshManager.getAgentStatuses(),
       debug: meshManager.getDebugInfo(),
@@ -455,6 +459,7 @@ const daemon = new DaemonHost({
       running: meshServer.isRunning(),
       port: meshServer.getPort(),
       host: meshServer.getHost(),
+      lanAddresses: meshServer.getLanAddresses(),
     }),
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
