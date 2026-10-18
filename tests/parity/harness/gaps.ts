@@ -381,17 +381,25 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     ws: 'mode',
     scenarios: [...ALL, ...MESH],
     path: 'local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon")',
-    what: 'Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode\'s own.',
+    what: 'Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode\'s own. So is the pair a client-stream drop makes after the first connect (the status line while reconnecting, then the rebuild on reconnect): a loaded CI runner drops the stream in some runs and not in others (CI run 39157150645, windows template-create).',
     apply(d, e) {
       const menus = (calls: typeof d.local) => calls.filter((c) => c.api === 'Menu.setApplicationMenu').length
       let n = 0
       const out: typeof d.local = []
+      // The first build without the status line stands for embedded's boot build; one that follows a
+      // status build after it is a reconnect's rebuild (StatusUi.onState), the daemon mode's own.
+      let connectedOnce = false
+      let afterStatus = false
       for (const call of d.local) {
         if (call.api !== 'Menu.setApplicationMenu') { out.push(call); continue }
         const stripped = stripDaemonHelp(call.args[0])
         if (!stripped) return 0
         n++
-        if (stripped.status) continue
+        if (stripped.status) { afterStatus = true; continue }
+        const reconnectRebuild = connectedOnce && afterStatus
+        connectedOnce = true
+        afterStatus = false
+        if (reconnectRebuild) continue
         out.push({ ...call, args: [stripped.items, ...call.args.slice(1)] })
       }
       // Every remaining call is one embedded makes too.
