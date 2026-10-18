@@ -303,7 +303,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
     const result = await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })
     expect(s.confirms).toEqual([{ message: 'Replace connection', detail: 'Replaces old.example.com.', ok: 'Replace' }])
-    expect(result).toMatchObject({ ok: true, id: 'remote', notices: ["Saved. No fingerprint: Studio cannot check this computer's identity."] })
+    expect(result).toMatchObject({ ok: true, id: 'remote', notices: ['Saved without a fingerprint; identity not checked.'] })
     expect(s.store.config().remote).toMatchObject({ url: 'https://adf.example.com' })
     expect(loadRemotes(s.env).remotes).toEqual({})
     const declined = setup({ daemon: fakeDaemon({ fingerprint: null }), confirm: false, studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })

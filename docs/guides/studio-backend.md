@@ -112,7 +112,7 @@ fingerprint (a daemon set up by hand, remote access off there) is kept in
    **Use a token instead**.
 3. If the computer does not answer with a fingerprint (remote access off
    there, an older ADF, a proxy), only **Token** is offered, with "No
-   fingerprint. Studio cannot check this computer's identity." A token
+   fingerprint; identity not checked." A token
    connection replaces the previous one without a fingerprint after the
    **Replace connection** dialog.
 4. **Done**, or **Connect**.
@@ -984,7 +984,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Agents run … because ADF_STUDIO_BACKEND is set." / "… for this session only" | [Run agents inside Studio when the daemon does not work](#run-agents-inside-studio-when-the-daemon-does-not-work) |
 | The remote sentences | [Connection problems](#connection-problems) |
 | "Studio could not read the token for *name* from the OS keychain. …" / "In use." / "Pair first." | [Connection](#connection) |
-| "No fingerprint. Studio cannot check this computer's identity." / "Replace connection" | [Add connection](#add-connection) |
+| "No fingerprint; identity not checked." / "Saved without a fingerprint; identity not checked." / "Replace connection" | [Add connection](#add-connection) |
 | "I trust this network; the token is sent unencrypted." | [Remote computer](#remote-computer) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
 | "Turn on remote access" / "Devices lose the connection when Studio quits." / "Change on *name*." | [Remote access](#remote-access) |

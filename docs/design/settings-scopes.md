@@ -183,7 +183,7 @@ Title "Connection". Help: "The runtime this window uses."
 
 1. **Address**, the plain-HTTP confirmation ("I trust this network; the token is sent unencrypted.") when the address needs it, **Next**.
 2. Main calls `GET /remote/hello`. It answers: the dialog shows "rawl-hub · ABCD-EFGH. Check that the host shows the same fingerprint." and **Code** with **Use a token instead**. The code continues as Pair. A token is saved to K like a pairing.
-3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint. Studio cannot check this computer's identity." The token goes to the `remote` slot. If the slot holds a connection, the dialog says "Replaces <name>." first.
+3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint; identity not checked." The token goes to the `remote` slot. If the slot holds a connection, the dialog says "Replaces <name>." first.
 4. On success: **Done** and **Connect**.
 
 **Remove connection.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot. The connection in use cannot be removed.

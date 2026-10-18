@@ -169,7 +169,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (!result.ok) return fail(result.code, result.error)
     log.log(`[Connection] Added ${check.url} with a token, without a fingerprint`)
     changed()
-    return { ok: true, view: view(), notices: ['Saved. No fingerprint: Studio cannot check this computer\'s identity.'], id: 'remote' }
+    return { ok: true, view: view(), notices: ['Saved without a fingerprint; identity not checked.'], id: 'remote' }
   }
 
   const remove = async (id: unknown): Promise<ConnectionResult> => {

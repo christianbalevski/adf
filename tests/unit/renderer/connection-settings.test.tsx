@@ -70,6 +70,9 @@ describe('the Connection page rows', () => {
     expect(source).not.toContain('Use this daemon')
     expect(source).not.toContain('Switch to This Daemon')
     expect(source).not.toContain('Run agents in')
+    // One sentence for a connection without a fingerprint (review item 13).
+    expect(source).toContain('No fingerprint; identity not checked.')
+    expect(source).not.toContain('Studio cannot check')
   })
 })
 

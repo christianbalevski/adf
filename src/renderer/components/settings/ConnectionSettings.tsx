@@ -306,7 +306,7 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
         )}
         {step === 'token' && (
           <>
-            {noFingerprint && <p className="text-[var(--adf-ui-text-muted)]">No fingerprint. Studio cannot check this computer&apos;s identity.</p>}
+            {noFingerprint && <p className="text-[var(--adf-ui-text-muted)]">No fingerprint; identity not checked.</p>}
             <label className="block space-y-1">
               <span className="text-[var(--adf-ui-text)]">Token</span>
               <TextInput type="password" value={token} onChange={(e) => setToken(e.target.value)} spellCheck={false} autoComplete="off" aria-label="Token" autoFocus />
