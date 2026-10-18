@@ -89,7 +89,9 @@ export const DOCS = {
   settingsCompute: guideUrl('compute', 'environments'),
   settingsGuard: guideUrl('settings', 'security-guard--locked-fields'),
 
-  // Settings → Backend (docs/guides/studio-backend.md)
+  // Settings → Connection (docs/guides/studio-backend.md)
+  backendConnection: guideUrl('studio-backend', 'connection'),
+  backendAddConnection: guideUrl('studio-backend', 'add-connection'),
   backendSwitch: guideUrl('studio-backend', 'switch-the-backend'),
   backendTurns: guideUrl('studio-backend', 'running-agents-and-turns-in-flight'),
   backendUpgrade: guideUrl('studio-backend', 'upgrading-from-07x'),
@@ -98,10 +100,9 @@ export const DOCS = {
   backendEmbedded: guideUrl('studio-backend', 'run-agents-inside-studio-when-the-daemon-does-not-work'),
   backendRemote: guideUrl('studio-backend', 'remote-computer'),
 
-  // Remote access (Settings → Networking; client side in Settings → Backend)
+  // Remote access (Runtime → Networking; client side in Studio → Connection)
   remoteAccess: guideUrl('studio-backend', 'remote-access'),
-  remoteAccessPair: guideUrl('studio-backend', 'pair-device'),
-  remoteAccessDiscovered: guideUrl('studio-backend', 'discovered'),
+  remoteAccessPair: guideUrl('studio-backend', 'add-device'),
   networkingStatus: guideUrl('settings', 'network-status')
 } as const
 

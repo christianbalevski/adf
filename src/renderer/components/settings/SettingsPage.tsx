@@ -10,11 +10,13 @@ import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
 import { saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from '../providers/provider-save'
-import { AboutTab } from './AboutTab'
+import { AboutTab, UpdatesGroup } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
-import { BackendSettings } from './BackendSettings'
-import { NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
+import { ConnectionSettings } from './ConnectionSettings'
+import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
+import { HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
+import { runtimeDown, runtimeGroupLabel, useCurrentConnection } from '../../stores/connection.store'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
@@ -28,7 +30,6 @@ import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRo
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
-import { REMOTE_OWNER_BACKUP_SENTENCE, REMOTE_OWNER_IDENTITY_SENTENCE, REMOTE_OWNER_RESTORE_SENTENCE } from '../../../shared/constants/remote-owner-identity'
 
 /**
  * Hover copy for the "Update available" advisory shown on managed containers
@@ -48,64 +49,11 @@ const MESH_STATUS_EVENTS = new Set<MeshEvent['type']>([
   'lan_peer_expired',
 ])
 
-/** Sections plus Settings → Backend, which no dashboard tile deep-links to. */
-type SettingsTab = SettingsSection | 'backend'
-
-type SettingsNavItem = {
-  id: SettingsTab
-  label: string
-  description: string
-  keywords: string
-  /** Guide for this tab — rendered as a "Docs" link beside the page title. */
-  docs: string
-}
-
-type SettingsNavGroup = {
-  label: string
-  items: SettingsNavItem[]
-}
-
-const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
-  {
-    label: 'Personal',
-    items: [
-      { id: 'general', label: 'General', description: 'Appearance, notifications, privacy, files, and usage', keywords: 'theme tokens privacy updates telemetry network catalogs', docs: DOCS.settingsGeneral },
-      { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation', docs: DOCS.settingsIdentity },
-    ],
-  },
-  {
-    label: 'Agent runtime',
-    items: [
-      { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
-      { id: 'template', label: 'Agent templates', description: 'What new agents start from.', keywords: 'defaults template templates model tools limits new agent files readme mind sandboxed full access', docs: DOCS.agentTemplates },
-      { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic claude claude code openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys', docs: DOCS.settingsProviders },
-      { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
-      { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
-      { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse', docs: DOCS.settingsSkills },
-      { id: 'channels', label: 'Channels', description: 'Telegram, Discord, Slack, email, WhatsApp', keywords: 'adapters messages integrations bot token', docs: DOCS.settingsChannels },
-    ],
-  },
-  {
-    label: 'System',
-    items: [
-      { id: 'networking', label: 'Networking', description: 'Mesh, discovery, and endpoints', keywords: 'lan tailscale mdns peers server', docs: DOCS.settingsNetworking },
-      { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation', docs: DOCS.settingsCompute },
-    ],
-  },
-  {
-    label: 'ADF Studio',
-    items: [
-      { id: 'backend', label: 'Backend', description: 'Where agents run: this computer, a remote computer or inside Studio', keywords: 'daemon embedded local remote server url token', docs: guideUrl('settings', 'backend') },
-      { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format', docs: DOCS.index },
-    ],
-  },
-]
-
-const SETTINGS_NAV_ITEMS = SETTINGS_NAV_GROUPS.flatMap((group) => group.items)
+const SETTINGS_NAV_ITEMS = [...STUDIO_NAV_ITEMS, ...RUNTIME_NAV_ITEMS]
 
 function SettingsNavIcon({ section }: { section: SettingsTab }) {
   const paths: Record<SettingsTab, React.ReactNode> = {
-    general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
+    appearance: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
     identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
     agents: <><path d="M4 17V7l4 3 4-3v10" /><path d="M15 8h5M15 12h5M15 16h5" /></>,
     template: <><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" /><path d="M14 3v6h6" /><path d="M12 12v6M9 15h6" /></>,
@@ -116,7 +64,12 @@ function SettingsNavIcon({ section }: { section: SettingsTab }) {
     channels: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
     networking: <><circle cx="12" cy="12" r="2" /><path d="M5.6 8.5a7.5 7.5 0 0 1 12.8 0M2.6 5.5a11.5 11.5 0 0 1 18.8 0M8.6 15.5a4 4 0 0 1 6.8 0" /></>,
     compute: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
-    backend: <><rect x="4" y="4" width="16" height="6" rx="1.5" /><rect x="4" y="14" width="16" height="6" rx="1.5" /><path d="M8 7h.01M8 17h.01" /></>,
+    connection: <><rect x="4" y="4" width="16" height="6" rx="1.5" /><rect x="4" y="14" width="16" height="6" rx="1.5" /><path d="M8 7h.01M8 17h.01" /></>,
+    notifications: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8" /><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0" /></>,
+    updates: <><path d="M12 4v12" /><path d="m6 10 6 6 6-6" /><path d="M4 20h16" /></>,
+    privacy: <><path d="M12 3 4 6v6c0 5 3.4 8.3 8 9 4.6-.7 8-4 8-9V6l-8-3Z" /></>,
+    files: <><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></>,
+    usage: <><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></>,
     about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
   }
 
@@ -269,7 +222,7 @@ function DidRow({ label, value, hint, copied, onCopy }: {
  * imported); the runtime DID identifies this install and is certified by an
  * owner-signed delegation. Includes seed backup + import flows.
  */
-function IdentityTab() {
+function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: string }) {
   const [status, setStatus] = useState<OwnerIdentityStatusView | null>(null)
   const [meshServer, setMeshServer] = useState<{ running: boolean; port: number; host: string } | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
@@ -277,8 +230,6 @@ function IdentityTab() {
   const [mnemonic, setMnemonic] = useState<string | null>(null)
   /** Why no phrase is shown (a remote daemon never sends it). */
   const [mnemonicReason, setMnemonicReason] = useState<string | null>(null)
-  /** Studio runs on a remote ADF daemon: owner actions happen on its machine. */
-  const [remoteBackend, setRemoteBackend] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   // 'restore': only the owner on record is accepted (restoreRequired); 'import' switches owners.
   const [importMode, setImportMode] = useState<'import' | 'restore'>('import')
@@ -291,7 +242,6 @@ function IdentityTab() {
   const [shareOwner, setShareOwner] = useState(false)
 
   const refresh = useCallback(() => {
-    window.adfApi?.getBackendSettings?.().then((b) => setRemoteBackend(b.active.mode === 'remote')).catch(() => {})
     window.adfApi?.getOwnerIdentityStatus().then(setStatus)
     window.adfApi?.getMeshServerStatus().then(setMeshServer)
     window.adfApi?.getSettings?.().then((s: unknown) => {
@@ -362,10 +312,13 @@ function IdentityTab() {
             terminal, but Studio cannot read its seed phrase. Enter the same 12 words to use it here. Studio will not
             create a new owner or restamp your agents.
           </p>
-          <Button variant="primary" disabled={remoteBackend} onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
-            Restore identity
-          </Button>
-          {remoteBackend && <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">{REMOTE_OWNER_RESTORE_SENTENCE}</p>}
+          {remote
+            ? <p className="text-xs text-neutral-500 dark:text-neutral-400">Change on {runtimeName}.</p>
+            : (
+              <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
+                Restore identity
+              </Button>
+            )}
         </SettingsGroup>
         </div>
       )}
@@ -430,25 +383,23 @@ function IdentityTab() {
             <span className="font-mono break-all">{status.legacyOwnerDids.join(', ')}</span>
           </p>
         )}
-        <div className="flex gap-2 mt-3">
-          <Button
-            onClick={openBackup}
-            disabled={!status?.hasMnemonic || remoteBackend}
-            variant="primary"
-          >
-            Back up seed phrase
-          </Button>
-          <Button
-            onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}
-            disabled={remoteBackend}
-          >
-            Import identity
-          </Button>
-        </div>
-        {remoteBackend && (
-          <div className="mt-2 space-y-1 text-xs text-neutral-500 dark:text-neutral-400">
-            <p>{REMOTE_OWNER_BACKUP_SENTENCE}</p>
-            <p>{REMOTE_OWNER_IDENTITY_SENTENCE}</p>
+        {/* Host-only with a remote runtime (settings-scopes.md §7): changed on that computer. */}
+        {remote ? (
+          <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">Change on {runtimeName}.</p>
+        ) : (
+          <div className="flex gap-2 mt-3">
+            <Button
+              onClick={openBackup}
+              disabled={!status?.hasMnemonic}
+              variant="primary"
+            >
+              Back up seed phrase
+            </Button>
+            <Button
+              onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}
+            >
+              Import identity
+            </Button>
           </div>
         )}
       </SettingsGroup>
@@ -506,7 +457,8 @@ function IdentityTab() {
               <span className="font-mono break-all">{status.legacyRuntimeDids.join(', ')}</span>
             </p>
           )}
-          <DidRow
+          {/* A remote runtime's loopback address is not this computer's: hidden (settings-scopes.md §7). */}
+          {!remote && <DidRow
             label="Agent directory URL"
             value={directoryUrl}
             hint={meshServer?.running
@@ -514,7 +466,7 @@ function IdentityTab() {
               : 'Mesh server is not running — start it in Networking to serve agent cards.'}
             copied={copied}
             onCopy={handleCopy}
-          />
+          />}
         </div>
       </SettingsGroup>
 
@@ -1036,7 +988,7 @@ interface LanFirewallState {
  *
  * Rechecks when LAN access turns on and after a mesh restart settles.
  */
-function LanReachabilityStatus({ enabled, restarting }: { enabled: boolean; restarting: boolean }) {
+function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boolean; restarting: boolean; hostName?: string | null }) {
   const [fw, setFw] = useState<LanFirewallState | null>(null)
   const [applying, setApplying] = useState(false)
   const [note, setNote] = useState<string | null>(null)
@@ -1076,6 +1028,8 @@ function LanReachabilityStatus({ enabled, restarting }: { enabled: boolean; rest
   }, [check])
 
   if (!enabled) return null
+  // A remote runtime's firewall is its own computer's (settings-scopes.md §7).
+  if (hostName) return <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-2 ml-5">Firewall: change on {hostName}.</p>
 
   // First check hasn't resolved yet — a bare "checking" beats flashing a scare.
   if (!fw) {
@@ -1350,7 +1304,11 @@ export function SettingsPage() {
   const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('connection')
+  const connection = useCurrentConnection()
+  const remote = connection?.kind === 'remote'
+  const runtimeName = connection?.name ?? 'the runtime'
+  const navGroups = settingsNavGroups(runtimeGroupLabel(connection))
   const [settingsSearch, setSettingsSearch] = useState('')
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
@@ -1431,21 +1389,23 @@ export function SettingsPage() {
   const [providerSaveFailure, setProviderSaveFailure] = useState<ProviderSaveFailure | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
+  const runtimePage = RUNTIME_NAV_ITEMS.some((item) => item.id === activeTab)
+  const runtimeUnreachable = runtimePage && runtimeDown(connection)
   const normalizedSearch = settingsSearch.trim().toLowerCase()
   const visibleNavGroups = normalizedSearch
-    ? SETTINGS_NAV_GROUPS.map((group) => ({
+    ? navGroups.map((group) => ({
         ...group,
         items: group.items.filter((item) =>
           `${item.label} ${item.description} ${item.keywords}`.toLowerCase().includes(normalizedSearch)
         ),
       })).filter((group) => group.items.length > 0)
-    : SETTINGS_NAV_GROUPS
+    : navGroups
 
   // Honor a pending settings section requested by a home dashboard tile.
   // Runs once on mount; the store action also clears the pending value.
   useEffect(() => {
     const pending = consumePendingSettingsSection()
-    if (pending) setActiveTab(pending)
+    if (pending) setActiveTab(settingsTabFor(pending, useAppStore.getState().pendingSettingsAnchor))
   }, [consumePendingSettingsSection])
 
   useEffect(() => {
@@ -1789,8 +1749,8 @@ export function SettingsPage() {
 
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Settings sections">
           {visibleNavGroups.length > 0 ? visibleNavGroups.map((group, groupIndex) => (
-            <div key={group.label} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-[var(--adf-ui-separator)]' : 'mt-1'}>
-              <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">
+            <div key={group.scope} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-[var(--adf-ui-separator)]' : 'mt-1'} data-settings-scope={group.scope}>
+              <div className="mb-1 truncate px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>
                 {group.label}
               </div>
               <div className="space-y-0.5">
@@ -1835,9 +1795,15 @@ export function SettingsPage() {
             </p>
           </header>
 
+          {runtimeUnreachable && connection && (
+            <p role="status" className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+              Not connected to {connection.name}.
+            </p>
+          )}
+          <fieldset disabled={runtimeUnreachable} className="contents">
           <div className="max-w-4xl space-y-5">
-          {/* General tab */}
-          {activeTab === 'general' && <>
+          {/* Studio → Appearance, Notifications, Updates, Privacy (client keys, settings-scopes.md §3) */}
+          {activeTab === 'appearance' && <>
           <SettingsGroup title="Appearance">
             <SettingsRow label="Theme" description="Choose a light, dark, or operating-system appearance.">
               <SegmentedControl
@@ -1936,6 +1902,9 @@ export function SettingsPage() {
             </SettingsRow>
           </SettingsGroup>
 
+          </>}
+
+          {activeTab === 'notifications' && <>
           <SettingsGroup title="Notifications">
             <SettingsRow
               label="System notifications"
@@ -1982,11 +1951,15 @@ export function SettingsPage() {
             )}
           </SettingsGroup>
 
-          <SettingsGroup title="Privacy" description="Studio sends no telemetry. These switches cover the requests it makes on its own; docs/NETWORK.md lists every connection.">
+          </>}
+
+          {activeTab === 'updates' && <>
+          <UpdatesGroup />
+          <SettingsGroup title="Update checks">
             <SettingsRow
-              label="Check for updates"
-              description="Ask GitHub Releases for a newer version shortly after launch and every hour. Nothing downloads until you click the update badge."
-              help="Off = Studio never contacts GitHub for updates. Download new versions manually from the releases page."
+              label="Automatic checks"
+              description="Ask GitHub Releases for a newer version after launch and every hour."
+              help="Nothing downloads until you click the update badge. Off: Studio never contacts GitHub for updates."
             >
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -2004,47 +1977,12 @@ export function SettingsPage() {
                 </span>
               </label>
             </SettingsRow>
-            <SettingsRow
-              label="Check provider connections"
-              description="Test each configured provider (a GET /models with its key) when Home, the provider list, or an agent review opens. Off = providers are only contacted when you click Test or an agent runs."
-            >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={providerChecks}
-                  onChange={async (e) => {
-                    const enabled = e.target.checked
-                    setProviderChecks(enabled)
-                    await writeSetting({ providerChecksEnabled: enabled })
-                  }}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                  {providerChecks ? 'On' : 'Off'}
-                </span>
-              </label>
-            </SettingsRow>
-            <SettingsRow
-              label="Live catalogs"
-              description="Fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, when used). Off = only the copies bundled with this build (and the last fetched copy)."
-              help="Skill catalogs are listed separately under Skills and can be removed there."
-            >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={remoteCatalogs}
-                  onChange={async (e) => {
-                    const enabled = e.target.checked
-                    setRemoteCatalogs(enabled)
-                    await writeSetting({ remoteCatalogsEnabled: enabled })
-                  }}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                  {remoteCatalogs ? 'On' : 'Off'}
-                </span>
-              </label>
-            </SettingsRow>
+          </SettingsGroup>
+          </>}
+
+          {activeTab === 'privacy' && <>
+          <SettingsGroup title="Privacy" description="Studio sends no telemetry." docs={DOCS.settingsGeneral}>
+            <SettingsRow label="Connections" description="docs/NETWORK.md lists every connection Studio and the runtime make." />
             {window.adfApi?.platform === 'linux' && (
               <SettingsRow
                 label="Spell-check dictionaries"
@@ -2080,7 +2018,10 @@ export function SettingsPage() {
               </SettingsRow>
             )}
           </SettingsGroup>
+          </>}
 
+          {/* Runtime → Files and Usage (backend keys) */}
+          {activeTab === 'files' && <>
           <SettingsGroup title="Files">
             <SettingsRow label="Agents folder" description="Where agents you claim are saved.">
               <div className="flex items-center gap-2">
@@ -2102,22 +2043,15 @@ export function SettingsPage() {
             </SettingsRow>
           </SettingsGroup>
 
-          {/* Token Usage */}
-          <div data-settings-anchor="usage" className="scroll-mt-4">
-            <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
-              <div className="px-4 pb-4"><TokenUsageSection /></div>
-            </SettingsGroup>
-          </div>
-
-          <div className="flex justify-center pb-4">
-            <Button
-              onClick={() => setActiveTab('about')}
-              variant="ghost"
-            >
-              How it works
-            </Button>
-          </div>
           </>}
+
+          {activeTab === 'usage' && (
+            <div data-settings-anchor="usage" className="scroll-mt-4">
+              <SettingsGroup title="Usage" description="Token totals on this runtime." docs={DOCS.settingsUsage}>
+                <div className="px-4 pb-4"><TokenUsageSection /></div>
+              </SettingsGroup>
+            </div>
+          )}
 
           {/* Agent defaults tab */}
           {activeTab === 'agents' && <>
@@ -2248,13 +2182,13 @@ export function SettingsPage() {
           )}
 
           {/* Identity tab */}
-          {activeTab === 'identity' && <IdentityTab />}
+          {activeTab === 'identity' && <IdentityTab remote={remote} runtimeName={runtimeName} />}
 
           {/* About tab */}
           {activeTab === 'about' && <AboutTab />}
 
-          {/* Backend tab */}
-          {activeTab === 'backend' && <BackendSettings onOpenNetworking={() => setActiveTab('networking')} />}
+          {/* Connection: the runtime this window uses (settings-scopes.md §5) */}
+          {activeTab === 'connection' && <ConnectionSettings />}
 
           {/* Packages tab */}
           {activeTab === 'packages' && <PackagesTab
@@ -2265,6 +2199,28 @@ export function SettingsPage() {
           />}
 
           {/* Providers tab */}
+          {activeTab === 'providers' && <SettingsGroup title="Provider checks">
+            <SettingsRow
+              label="Check provider connections"
+              description="Test each configured provider (a GET /models with its key) when Home, the provider list, or an agent review opens. Off = providers are only contacted when you click Test or an agent runs."
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={providerChecks}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    setProviderChecks(enabled)
+                    await writeSetting({ providerChecksEnabled: enabled })
+                  }}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                  {providerChecks ? 'On' : 'Off'}
+                </span>
+              </label>
+            </SettingsRow>
+          </SettingsGroup>}
           {activeTab === 'providers' && (
             // No card wrapper: each provider is its own flat block on the canvas.
             <ProvidersPanel
@@ -2280,6 +2236,29 @@ export function SettingsPage() {
           )}
 
           {/* MCPs tab */}
+          {activeTab === 'mcps' && <SettingsGroup title="Catalog">
+            <SettingsRow
+              label="Live catalogs"
+              description="Fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, when used). Off = only the copies bundled with this build (and the last fetched copy)."
+              help="Skill catalogs are listed separately under Skills and can be removed there."
+            >
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={remoteCatalogs}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    setRemoteCatalogs(enabled)
+                    await writeSetting({ remoteCatalogsEnabled: enabled })
+                  }}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+                  {remoteCatalogs ? 'On' : 'Off'}
+                </span>
+              </label>
+            </SettingsRow>
+          </SettingsGroup>}
           {activeTab === 'mcps' && (
             // No card wrapper: each server is its own flat block on the canvas.
             <McpStatusDashboard
@@ -2322,8 +2301,8 @@ export function SettingsPage() {
 
           {/* Networking tab */}
           {activeTab === 'networking' && <>
-          {/* The network the mesh and remote access both follow (lan-reach.ts). */}
-          <NetworkStatusLine />
+          {/* This computer's network, which the mesh and remote access follow (lan-reach.ts); not a remote runtime's. */}
+          {!remote && <NetworkStatusLine />}
           {/* Mesh auto-start */}
           <SettingsGroup title="Mesh" docs={DOCS.lanDiscovery}>
             <SettingsRow
@@ -2493,7 +2472,7 @@ export function SettingsPage() {
 
 
             {/* Verify the runtime is actually reachable (server bound + firewall open). */}
-            <LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} />
+            <LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} hostName={remote ? runtimeName : null} />
 
             {/* Agents by visibility (the LanAgentsList predicate), then the LAN ones. */}
             <p className="mt-3 text-xs text-neutral-600 dark:text-neutral-300">{meshVisibilityLine(meshAgents)}</p>
@@ -2504,8 +2483,8 @@ export function SettingsPage() {
 
           </SettingsGroup>
 
-          {/* Agent Endpoints */}
-          {meshEnabled && (
+          {/* Agent Endpoints: loopback URLs of the runtime's computer, so not with a remote runtime. */}
+          {meshEnabled && !remote && (
           <SettingsGroup className="p-4">
             <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-3">
               Agent Endpoints ({meshAgents.length})
@@ -2568,8 +2547,10 @@ export function SettingsPage() {
           </SettingsGroup>
           )}
 
-          {/* Remote access: other devices use this computer's daemon (remote-access.md §7). */}
-          <RemoteAccessGroup onKeepRunning={async () => { await window.adfApi?.setBackendSettings({ keepDaemonRunning: true }) }} />
+          {/* Remote access: other devices use this computer's daemon (remote-access.md §7); host-only with a remote runtime. */}
+          {remote
+            ? <HostOnlyRemoteAccess name={runtimeName} />
+            : <RemoteAccessGroup onKeepRunning={async () => { await window.adfApi?.setBackendSettings({ keepDaemonRunning: true }) }} />}
           </>}
 
           {/* Compute tab */}
@@ -2594,6 +2575,7 @@ export function SettingsPage() {
           />
           </>}
           </div>
+          </fieldset>
         </div>
       </main>
     </div>

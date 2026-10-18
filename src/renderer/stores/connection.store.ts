@@ -1,0 +1,67 @@
+import { create } from 'zustand'
+import { useEffect } from 'react'
+import { CONNECTION_STATE_LABELS, type ConnectionCurrent, type ConnectionsView } from '../../shared/types/connection.types'
+
+/**
+ * The connection this window uses and the Connection page's list
+ * (docs/design/settings-scopes.md §4, §5). Main answers for the window that
+ * asks (#149: one connection per window), so nothing here assumes there is
+ * one connection for the app.
+ */
+interface ConnectionStoreState {
+  view: ConnectionsView | null
+  setView: (view: ConnectionsView) => void
+}
+
+export const useConnectionStore = create<ConnectionStoreState>((set) => ({
+  view: null,
+  setView: (view) => set({ view }),
+}))
+
+let started = false
+
+/** Load the list once and follow CONNECTION_CHANGED for the life of the window. */
+export function startConnectionFeed(): void {
+  if (started) return
+  const api = window.adfApi
+  if (!api?.listConnections) return
+  started = true
+  api.onConnectionChanged?.((view) => useConnectionStore.getState().setView(view))
+  api.listConnections().then((view) => useConnectionStore.getState().setView(view)).catch(() => { started = false })
+}
+
+/** The connection this window uses (null until main answers). */
+export function useCurrentConnection(): ConnectionCurrent | null {
+  useEffect(() => { startConnectionFeed() }, [])
+  return useConnectionStore((s) => s.view?.current ?? null)
+}
+
+/** The runtime is not reachable now (connecting, retrying, failed). */
+export function runtimeDown(current: ConnectionCurrent | null): boolean {
+  return !!current && current.state !== 'connected'
+}
+
+/** The sidebar group label: "Runtime · rawl-hub", plus the state while it is not connected. */
+export function runtimeGroupLabel(current: ConnectionCurrent | null): string {
+  if (!current) return 'Runtime'
+  const base = `Runtime · ${current.name}`
+  return runtimeDown(current) ? `${base} · ${CONNECTION_STATE_LABELS[current.state]}` : base
+}
+
+/**
+ * The status bar's runtime indicator (settings-scopes.md §4.1): nothing for
+ * This computer or Inside Studio while connected; a remote's name, with the
+ * state while it is not connected; This computer only while it is not.
+ */
+export function runtimeIndicator(current: ConnectionCurrent | null): { text: string; remote: boolean; tooltip: string | null; problem: boolean } | null {
+  if (!current) return null
+  const remote = current.kind === 'remote'
+  const down = runtimeDown(current)
+  if (!remote && !down) return null
+  return {
+    text: down ? `${current.name} · ${CONNECTION_STATE_LABELS[current.state]}` : current.name,
+    remote,
+    tooltip: current.url,
+    problem: down,
+  }
+}
