@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConnectionRows, connectionDetail, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
+import { ConnectionRows, connectionDetail, pendingRestartLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor } from '../../../src/renderer/components/settings/settings-nav'
 import { runtimeGroupLabel } from '../../../src/renderer/stores/connection.store'
 import { DOCS } from '../../../src/shared/constants/docs-links'
@@ -106,6 +106,19 @@ describe('This computer and the switch notices', () => {
     expect(overrideLine(view({ source: 'env' }))).toBe('Inside Studio (legacy) because ADF_STUDIO_BACKEND is set.')
     expect(overrideLine(view({ source: 'session', sessionReason: 'the daemon is older.' }))).toBe('Inside Studio (legacy) for this session only: the daemon is older.')
     expect(overrideLine(view({ source: 'file' }))).toBeNull()
+  })
+
+  it('a saved connection that differs from the running one: "Restart to connect to <name>.", remote to remote too (review item 7)', () => {
+    const backend = (source: BackendSettingsView['active']['source'], pendingSwitch: BackendSettingsView['pendingSwitch'] = null): BackendSettingsView => ({
+      active: { mode: 'remote', source, notices: [] }, remoteUrlProblem: null, pendingSwitch,
+      configured: { mode: 'remote', keepDaemonRunning: false, remoteUrl: null, remoteTokenSaved: false, allowInsecureHttp: false, remoteName: 'desk' },
+      encryptionAvailable: true, encryptionUnavailableReason: null,
+    })
+    const next = { id: 'remote:desk', name: 'desk' }
+    expect(pendingRestartLine(backend('file'), next)).toBe('Restart to connect to desk.')
+    expect(pendingRestartLine(backend('file'), null)).toBeNull()
+    expect(pendingRestartLine(backend('env'), next)).toBeNull()
+    expect(pendingRestartLine(backend('file', { target: 'remote', waitingFor: [], gaveUp: false }), next)).toBeNull()
   })
 
   it('"Default changed": the date and the version in one line; what moved and what was not done are separate', () => {

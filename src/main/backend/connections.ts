@@ -285,8 +285,12 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
       pairingOpen: entry.pairingOpen, clash: entry.clash, removable: false,
     })
   }
+  const configuredName = configuredId === 'local' ? 'This computer'
+    : configuredId === 'embedded' ? 'Inside Studio'
+    : input.configured.remote.name ?? input.configured.remote.paired?.name ?? hostOf(input.configured.remote.url) ?? 'Remote computer'
   return {
     current,
+    next: configuredId !== current.id ? { id: configuredId, name: configuredName } : null,
     rows: [...rows, ...saved, ...found],
     discovery: input.discovery ? { browsing: input.discovery.browsing, problem: input.discovery.problem } : null,
   }

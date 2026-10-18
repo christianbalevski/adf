@@ -102,6 +102,12 @@ export function overrideLine(view: BackendSettingsView): string | null {
   return null
 }
 
+/** The saved connection is not the running one, outside a switch or a one-launch override: "Restart to connect to <name>." */
+export function pendingRestartLine(view: BackendSettingsView, next: ConnectionsView['next']): string | null {
+  if (!next || view.active.source === 'env' || view.active.source === 'session' || view.pendingSwitch) return null
+  return `Restart to connect to ${next.name}.`
+}
+
 /** A row's detail line: the address and fingerprint, and "Pairing open". */
 export function connectionDetail(row: ConnectionRow): string | null {
   const parts = [row.address, row.fingerprint].filter((p): p is string => !!p)
@@ -407,7 +413,7 @@ export function ConnectionSettings() {
 
   const local = view.current.kind === 'local'
   const override = overrideLine(backend)
-  const pendingRestart = backend.active.source !== 'env' && backend.active.source !== 'session' && !backend.pendingSwitch && backend.configured.mode !== backend.active.mode
+  const restartLine = pendingRestartLine(backend, view.next)
 
   return (
     <>
@@ -417,9 +423,9 @@ export function ConnectionSettings() {
           {backend.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
         </div>
       )}
-      {pendingRestart && (
+      {restartLine && (
         <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-          <span>Restart Studio to use {MODE_LABELS[backend.configured.mode]}.</span>
+          <span>{restartLine}</span>
           <Button variant="primary" size="compact" onClick={() => void window.adfApi.restartStudio()}>Restart now</Button>
         </div>
       )}

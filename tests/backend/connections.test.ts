@@ -180,6 +180,15 @@ describe('the rows of the Connection page', () => {
     expect(currentConnection({ active: { mode: 'remote', remoteName: null, config: { ...inUse, remote: { ...inUse.remote, paired: null } } }, daemon: null, saved })).toMatchObject({ name: 'adf.example.com', state: 'connecting' })
   })
 
+  it('a saved connection other than the running one is the next one, remote to remote too (review item 7)', () => {
+    const running: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
+    const desk = { ...saved, desk: { url: 'https://desk.example.com', fingerprint: 'DESK-2345', deviceId: 'd', label: 'l', pairedAt: '' } }
+    const configured: StudioBackendConfig = { ...running, remote: { ...running.remote, name: 'desk' } }
+    expect(buildConnectionsView({ active: { mode: 'remote', remoteName: 'rawl-hub', config: running }, configured, daemon: daemonStatus('connected'), saved: desk, discovery: null }).next).toEqual({ id: 'remote:desk', name: 'desk' })
+    expect(buildConnectionsView({ active: { mode: 'remote', remoteName: 'rawl-hub', config: running }, configured: running, daemon: daemonStatus('connected'), saved: desk, discovery: null }).next).toBeNull()
+    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+  })
+
   it('Inside Studio (legacy) is a row only while it runs or is saved; the saved next connection is not removable', async () => {
     expect(buildConnectionsView({ active: { mode: 'embedded', remoteName: null, config: defaultBackendConfig() }, configured: { ...defaultBackendConfig(), mode: 'embedded' }, daemon: null, saved, discovery: null }).rows.slice(0, 2).map((r) => [r.id, r.state, r.action]))
       .toEqual([['local', null, 'connect'], ['embedded', 'connected', null]])

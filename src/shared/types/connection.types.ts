@@ -58,6 +58,8 @@ export interface ConnectionRow {
 
 export interface ConnectionsView {
   current: ConnectionCurrent
+  /** The saved connection when it is not the one this launch runs (applies at the restart). */
+  next: { id: string; name: string } | null
   rows: ConnectionRow[]
   /** The network search behind the Not paired rows; null when it is not running. */
   discovery: { browsing: boolean; problem: string | null } | null

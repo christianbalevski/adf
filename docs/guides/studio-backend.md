@@ -253,7 +253,7 @@ saved mode; the dialog says so and Settings → Connection shows "Agents run
 | "Saved. Applies at the next launch." / "Saved." | The choice is stored in `studio-backend.json` |
 | "Studio restarts now." | A confirmed switch |
 | "Studio already runs this mode; no restart is needed." | You chose the mode this launch already runs (after a session-only launch) |
-| "Restart Studio to use *B*." with **Restart now** | The saved connection differs from the one this launch runs (for example after "Run Inside Studio for This Session") |
+| "Restart to connect to *name*." with **Restart now** | The saved connection differs from the one this launch runs (another remote included) |
 | "Studio could not read the token for *name* from the OS keychain. …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "In use." | Remove: connect to another row first |
 | "Pair first." | Connect on a computer that is not paired |
