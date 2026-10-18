@@ -154,6 +154,12 @@ describe('the sidebar: Studio and Runtime · <name>', () => {
     }
   })
 
+  it('the Privacy row is named for what it lists, not like the Connection page (review item 14)', () => {
+    const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
+    expect(page).not.toContain('label="Connections"')
+    expect(page).toContain('<SettingsRow label="Network traffic" description="docs/NETWORK.md lists every connection Studio and the runtime make." />')
+  })
+
   it('older ids open their new page: Backend → Connection, General → Appearance, General\'s usage → Usage', () => {
     expect(settingsTabFor('backend')).toBe('connection')
     expect(settingsTabFor('general')).toBe('appearance')

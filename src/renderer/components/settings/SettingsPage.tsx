@@ -1982,7 +1982,7 @@ export function SettingsPage() {
 
           {activeTab === 'privacy' && <>
           <SettingsGroup title="Privacy" description="Studio sends no telemetry." docs={DOCS.settingsGeneral}>
-            <SettingsRow label="Connections" description="docs/NETWORK.md lists every connection Studio and the runtime make." />
+            <SettingsRow label="Network traffic" description="docs/NETWORK.md lists every connection Studio and the runtime make." />
             {window.adfApi?.platform === 'linux' && (
               <SettingsRow
                 label="Spell-check dictionaries"
