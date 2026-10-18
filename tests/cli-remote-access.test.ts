@@ -312,13 +312,14 @@ describe('client helpers', () => {
     expect(transportOf('http://192.168.1.20:7385')).toBe('plain')
   })
 
-  it('discovery merges by fingerprint and prefers the tailnet address', () => {
+  it('discovery never merges two addresses on the fingerprint alone: both listed, flagged', () => {
     const merged = mergeDiscovered([
       [{ name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://192.168.1.20:7385', kind: 'lan', pairingOpen: true }],
       [{ name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: false }, { name: 'host-2', fingerprint: 'CCCC-DDDD', url: 'http://100.1.1.1:7385', kind: 'tailnet', pairingOpen: false }],
     ])
     expect(merged).toEqual([
-      { name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: true, clash: null },
+      { name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://192.168.1.20:7385', kind: 'lan', pairingOpen: true, clash: 2 },
+      { name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: false, clash: 2 },
       { name: 'host-2', fingerprint: 'CCCC-DDDD', url: 'http://100.1.1.1:7385', kind: 'tailnet', pairingOpen: false, clash: null },
     ])
   })

@@ -39,12 +39,14 @@ describe('the tailnet hello: bounded, validated, the name cleaned', () => {
 })
 
 describe('one fingerprint at two addresses: both shown, flagged', () => {
-  it('the CLI list keeps both and flags the clash; LAN and tailnet of one computer stay one entry', () => {
+  it('the CLI list keeps both and flags the clash; a LAN and a tailnet address with one fingerprint are never merged on the fingerprint alone', () => {
     const d = (over: Partial<DiscoveredDaemon>): DiscoveredDaemon => ({ name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', url: 'http://192.168.1.20:7385', kind: 'lan', pairingOpen: false, ...over })
     const clash = mergeDiscovered([[d({}), d({ name: 'impostor', url: 'http://192.168.1.66:7385' })]])
     expect(clash.map((x) => [x.url, x.clash])).toEqual([['http://192.168.1.20:7385', 2], ['http://192.168.1.66:7385', 2]])
-    const one = mergeDiscovered([[d({})], [d({ url: 'http://100.101.102.103:7385', kind: 'tailnet' })]])
-    expect(one.map((x) => [x.url, x.clash ?? null])).toEqual([['http://100.101.102.103:7385', null]])
+    const two = mergeDiscovered([[d({})], [d({ url: 'http://100.64.0.66:7385', kind: 'tailnet' })]])
+    expect(two.map((x) => [x.url, x.clash])).toEqual([['http://100.64.0.66:7385', 2], ['http://192.168.1.20:7385', 2]])
+    // The same address twice is one entry.
+    expect(mergeDiscovered([[d({})], [d({ pairingOpen: true })]])).toEqual([d({ pairingOpen: true, clash: null })])
   })
 })
 

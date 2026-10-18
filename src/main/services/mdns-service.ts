@@ -72,8 +72,10 @@ interface RemoteSighting {
   port: number
   pairingOpen: boolean
   kind: 'lan' | 'tailnet'
-  /** The runtime announcing it (`_adf-runtime._tcp` with its mesh), linking it to that runtime's mesh entry. */
+  /** The runtime announcing it (`_adf-runtime._tcp` with its mesh). */
   runtimeId: string | null
+  /** The addresses the announcement itself lists (its A/AAAA records); empty for a tailnet sighting. */
+  listed: string[]
 }
 
 const SERVICE_TYPE = 'adf-runtime'
@@ -283,41 +285,56 @@ export class MdnsService extends EventEmitter {
    */
   peers(): NetworkPeer[] {
     const out: NetworkPeer[] = []
-    const byRuntime = new Map<string, { name: string; remote: NonNullable<NetworkPeer['remote']> }>()
+    const byAddress = new Map<string, NetworkPeer>()
+    const clashEntry = (fp: string, sighting: RemoteSighting, count: number): NetworkPeer => ({
+      key: `fp:${fp}@${sighting.address}`,
+      name: sighting.name,
+      source: sighting.kind === 'tailnet' ? 'tailnet' : 'mdns',
+      mesh: null,
+      remote: { url: buildBaseUrl(sighting.address, sighting.port), port: sighting.port, fingerprint: fp, pairingOpen: sighting.pairingOpen, kind: sighting.kind, clash: count },
+    })
     for (const [fp, sightings] of this.remotes) {
       const list = [...sightings.values()]
       if (list.length === 0) continue
       const lan = list.filter((s) => s.kind === 'lan')
       const tailnet = list.filter((s) => s.kind === 'tailnet')
-      // One computer is seen at most once on the LAN and once on the tailnet; more is a clash.
-      if (lan.length > 1 || tailnet.length > 1) {
-        for (const s of list) {
-          out.push({
-            key: `fp:${fp}@${s.address}`,
-            name: s.name,
-            source: s.kind === 'tailnet' ? 'tailnet' : 'mdns',
-            mesh: null,
-            remote: { url: buildBaseUrl(s.address, s.port), port: s.port, fingerprint: fp, pairingOpen: s.pairingOpen, kind: s.kind, clash: list.length },
-          })
-        }
+      // A LAN and a tailnet sighting are one computer only on the host's own word: its LAN record lists
+      // that exact tailnet IP. The tailnet address is WireGuard-authenticated, so nobody else can make the
+      // real host's record name theirs (discovery re-check). Otherwise both are listed, flagged, neither preferred.
+      const merged = lan.length === 1 && tailnet.length === 1 && lan[0].listed.includes(tailnet[0].address.toLowerCase())
+      if (!merged && list.length > 1) {
+        for (const s of list) out.push(clashEntry(fp, s, list.length))
         continue
       }
-      // The tailnet address wins (encrypted); the LAN one is the same computer.
-      const best = tailnet[0] ?? lan[0]
-      const remote: NonNullable<NetworkPeer['remote']> = { url: buildBaseUrl(best.address, best.port), port: best.port, fingerprint: fp, pairingOpen: list.some((s) => s.pairingOpen), kind: best.kind, clash: null }
-      const runtimeId = list.find((s) => s.runtimeId)?.runtimeId ?? null
-      const name = lan[0]?.name ?? best.name
-      if (runtimeId && this.discovered.has(runtimeId)) byRuntime.set(runtimeId, { name, remote })
-      else out.push({ key: runtimeId ?? `fp:${fp}`, name, source: tailnet[0] && !lan[0] ? 'tailnet' : 'mdns', mesh: null, remote })
+      const best = merged ? tailnet[0] : list[0]
+      const entry: NetworkPeer = {
+        key: `fp:${fp}`,
+        // Merged: the tailnet host's own name (authenticated address), not the LAN record's.
+        name: best.name,
+        source: best.kind === 'tailnet' ? 'tailnet' : 'mdns',
+        mesh: null,
+        remote: { url: buildBaseUrl(best.address, best.port), port: best.port, fingerprint: fp, pairingOpen: list.some((s) => s.pairingOpen), kind: best.kind, clash: null },
+      }
+      out.push(entry)
+      byAddress.set(best.address.toLowerCase(), entry)
     }
+    // A mesh runtime joins an entry only when it comes from the same source address as that entry.
     for (const runtime of this.discovered.values()) {
-      const linked = byRuntime.get(runtime.runtime_id)
+      let host = ''
+      try { host = new URL(runtime.url).hostname.replace(/^\[|\]$/g, '').toLowerCase() } catch { /* no link */ }
+      const entry = host ? byAddress.get(host) : undefined
+      if (entry && !entry.mesh) {
+        entry.key = runtime.runtime_id
+        entry.mesh = { url: runtime.url, port: runtime.port }
+        if (entry.source === 'mdns') entry.source = runtime.source ?? 'mdns'
+        continue
+      }
       out.push({
         key: runtime.runtime_id,
-        name: linked?.name ?? runtime.host.replace(/\.local\.?$/, ''),
+        name: runtime.host.replace(/\.local\.?$/, ''),
         source: runtime.source ?? 'mdns',
         mesh: { url: runtime.url, port: runtime.port },
-        remote: linked?.remote ?? null,
+        remote: null,
       })
     }
     return out.sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key))
@@ -327,7 +344,7 @@ export class MdnsService extends EventEmitter {
   upsertTailnetDaemon(found: { fingerprint: string; name: string; address: string; port: number; pairingOpen: boolean }): void {
     if (!FINGERPRINT.test(found.fingerprint) || found.fingerprint === this.selfFingerprint) return
     const name = peerName(found.name) ?? found.fingerprint
-    if (this.setSighting(found.fingerprint, `tailnet:${found.address}`, { name, address: found.address, port: found.port, pairingOpen: found.pairingOpen, kind: 'tailnet', runtimeId: null })) {
+    if (this.setSighting(found.fingerprint, `tailnet:${found.address}`, { name, address: found.address, port: found.port, pairingOpen: found.pairingOpen, kind: 'tailnet', runtimeId: null, listed: [] })) {
       this.emit('peers_changed')
     }
   }
@@ -470,7 +487,7 @@ export class MdnsService extends EventEmitter {
     if (fp && FINGERPRINT.test(fp) && txtString(txt, 'v') === '1' && Number.isInteger(daemonPort) && daemonPort > 0 && daemonPort < 65536) {
       const name = peerName(txtString(txt, 'name')) ?? peerName(host.replace(/\.local\.?$/, '')) ?? fp
       this.dropSightings((f, src) => src === source && f !== fp)
-      this.setSighting(fp, source, { name, address: reachHost, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId })
+      this.setSighting(fp, source, { name, address: reachHost, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId, listed: listedAddresses(service) })
     } else {
       // Remote access went off on that runtime.
       this.dropSightings((_f, src, s) => src === source || s.runtimeId === runtimeId)
@@ -513,7 +530,7 @@ export class MdnsService extends EventEmitter {
     const address = sourceAddress(service)
     if (!address) return
     const name = peerName(service.name) ?? fp
-    this.setSighting(fp, `legacy:${service.name}`, { name, address, port: service.port, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null })
+    this.setSighting(fp, `legacy:${service.name}`, { name, address, port: service.port, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null, listed: listedAddresses(service) })
     this.emit('peers_changed')
   }
 
@@ -536,7 +553,7 @@ export class MdnsService extends EventEmitter {
     const name = (/^adf-[0-9a-f]{12}$/.test(service.name ?? '') ? null : peerName(service.name)) ?? peerName(host) ?? fp
     const source = `mdns:${service.name}`
     this.dropSightings((f, src) => src === source && f !== fp)
-    this.setSighting(fp, source, { name, address, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null })
+    this.setSighting(fp, source, { name, address, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null, listed: listedAddresses(service) })
     this.emit('peers_changed')
   }
 
@@ -641,6 +658,14 @@ function txtString(txt: Record<string, unknown>, key: string): string | null {
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8')
   return null
+}
+
+/** The addresses an announcement lists (A/AAAA), lowercased, bounded. */
+function listedAddresses(service: Service): string[] {
+  return ((service.addresses ?? []) as unknown[])
+    .filter((a): a is string => typeof a === 'string' && a.length <= 64)
+    .slice(0, 32)
+    .map((a) => a.toLowerCase())
 }
 
 /** The address an announcement came from (preferred), else a private IPv4 of it, else its first. */

@@ -39,13 +39,23 @@ export function daemonsOf(peers: NetworkPeer[]): DiscoveredDaemon[] {
     : [])
 }
 
-/** This process's own mDNS browse for `ms` (no daemon here): the feed's LAN half. */
-export async function browseMdns(ms: number, createMdns: () => MdnsService = () => new MdnsService()): Promise<DiscoveredDaemon[]> {
+/**
+ * This process's own feed for `ms` (no daemon here): one mDNS browse, and the
+ * tailnet hellos fed into the same service, so a LAN and a tailnet sighting
+ * merge by the same rule as the daemon's (the LAN record lists the tailnet IP).
+ */
+export async function browseMdns(ms: number, createMdns: () => MdnsService = () => new MdnsService(), tailnet: () => Promise<DiscoveredDaemon[]> = async () => []): Promise<DiscoveredDaemon[]> {
   const service = createMdns()
   try {
     // Browse only: nothing is announced from here.
     await service.start({ announce: false, browse: true, port: 0, runtimeId: `cli-browse-${randomBytes(6).toString('hex')}` })
-    await new Promise(resolve => setTimeout(resolve, ms))
+    const [found] = await Promise.all([tailnet().catch(() => []), new Promise(resolve => setTimeout(resolve, ms))])
+    for (const d of found) {
+      try {
+        const url = new URL(d.url)
+        service.upsertTailnetDaemon({ fingerprint: d.fingerprint, name: d.name, address: url.hostname.replace(/^\[|\]$/g, ''), port: Number(url.port) || DEFAULT_DAEMON_PORT, pairingOpen: d.pairingOpen })
+      } catch { /* not a URL */ }
+    }
     return daemonsOf(service.peers())
   } catch {
     // mDNS is best effort; tailnet peers and a typed address still work.
@@ -82,10 +92,11 @@ export async function probeTailnet(opts: { exec?: Exec; fetch?: typeof fetch; po
 }
 
 /**
- * Both sources, by fingerprint and address (discovery review 3): one LAN
- * and one tailnet sighting of a fingerprint are one computer (the tailnet
- * address wins); more than one on either is a clash, and every address is
- * listed, flagged, never one replacing another.
+ * The lists by fingerprint and address: the same address twice is one
+ * entry; two addresses with one fingerprint are never merged on the
+ * fingerprint alone (discovery re-check): both listed, flagged. A LAN and a
+ * tailnet sighting of one host are merged before this, by the feed, only
+ * when the host's LAN record lists that tailnet IP.
  */
 export function mergeDiscovered(lists: DiscoveredDaemon[][]): DiscoveredDaemon[] {
   const byFp = new Map<string, Map<string, DiscoveredDaemon>>()
@@ -98,14 +109,11 @@ export function mergeDiscovered(lists: DiscoveredDaemon[][]): DiscoveredDaemon[]
   const out: DiscoveredDaemon[] = []
   for (const urls of byFp.values()) {
     const all = [...urls.values()]
-    const lan = all.filter(d => d.kind === 'lan')
-    const tailnet = all.filter(d => d.kind === 'tailnet')
-    if (lan.length > 1 || tailnet.length > 1 || all.some(d => (d.clash ?? 0) > 1)) {
-      for (const d of all) out.push({ ...d, clash: all.length })
+    if (all.length > 1 || all.some(d => (d.clash ?? 0) > 1)) {
+      for (const d of all) out.push({ ...d, clash: Math.max(all.length, d.clash ?? 0) })
       continue
     }
-    const best = tailnet[0] ?? lan[0]
-    out.push({ ...best, pairingOpen: all.some(d => d.pairingOpen), clash: null })
+    out.push({ ...all[0], clash: null })
   }
   return out.sort((a, b) => Number(b.pairingOpen) - Number(a.pairingOpen) || a.name.localeCompare(b.name) || a.url.localeCompare(b.url))
 }
@@ -136,6 +144,5 @@ export async function discoverDaemons(ms = 3_000, opts: { localDaemon?: { url: s
     const peers = await peersFromDaemon(opts.localDaemon, ms, opts.fetch, opts.env)
     if (peers) return mergeDiscovered([daemonsOf(peers)])
   }
-  const [lan, tailnet] = await Promise.all([browseMdns(ms), probeTailnet({ ...(opts.fetch ? { fetch: opts.fetch } : {}) })])
-  return mergeDiscovered([lan, tailnet])
+  return mergeDiscovered([await browseMdns(ms, undefined, () => probeTailnet({ ...(opts.fetch ? { fetch: opts.fetch } : {}) }))])
 }
