@@ -328,7 +328,7 @@ describe('the remote connector on a saved connection', () => {
     const error = await remoteDaemonConnector(config('rawl-hub'), codec, { env, fetch: daemon.fetch, retry: { maxAttempts: 1 } })(() => {}).catch((e) => e)
     expect(error).toBeInstanceOf(RemoteConnectError)
     expect(error).toMatchObject({ problem: 'fingerprint' })
-    expect(error.message).toContain('remove rawl-hub in Settings → Connection and pair again')
+    expect(error.message).toBe(`${HUB} is not rawl-hub (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.`)
     expect(daemon.tokenSent()).toBe(false)
   })
 

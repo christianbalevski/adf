@@ -634,7 +634,7 @@ choose another one there:
 | "… speaks client API N; this Studio needs M." | Update the daemon on the server (or Studio) to the same version |
 | "No token is saved for … or it cannot be decrypted on this computer." | Add the connection again |
 | "Studio could not read the token for *name* from the OS keychain. …" | Allow ADF Studio in the keychain prompt, or pair again |
-| "The ADF daemon at … is not *name*: it shows fingerprint …" | Another computer answers at the saved address; the token was not sent. If that computer was set up again, remove *name* and pair again |
+| "*url* is not *name* (fingerprint …, paired as …); the token was not sent." | Another computer answers at the saved address. Studio checks this before every new connection (launch, a dropped connection, wake, Reconnect), sends nothing, and stops. If that computer was set up again, remove *name* and pair again |
 
 ### Files on the server
 

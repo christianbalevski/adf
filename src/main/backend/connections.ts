@@ -7,6 +7,7 @@ import { deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, saveRem
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
 import type { StudioBackendConfig } from './backend-config'
+import { PinMismatchError } from './daemon-mode/connection'
 
 /**
  * Saved connections (docs/design/settings-scopes.md §5.2): one list for
@@ -67,22 +68,39 @@ export async function savedConnectionTarget(config: Pick<StudioBackendConfig, 'i
   return { url: check.url, token, remote }
 }
 
+/** The sentence of a pinned address that answers as another computer: one sentence, the token not sent. */
+export function pinMismatchSentence(name: string, url: string, shown: string | null, pinned: string): string {
+  return `${url} is not ${name} (fingerprint ${shown ?? 'none'}, paired as ${pinned}); the token was not sent.`
+}
+
 /**
  * Before a saved token goes to `url` (trust on first use, as `adf`): the
  * daemon there MUST answer /remote/hello with the fingerprint saved when it
  * was paired. Throws with a sentence; the token is not sent.
  */
-export async function checkPinnedFingerprint(name: string, remote: SavedRemote, url: string, fetchImpl?: typeof fetch): Promise<void> {
+export async function checkPinnedFingerprint(name: string, remote: Pick<SavedRemote, 'fingerprint'>, url: string, fetchImpl?: typeof fetch): Promise<void> {
   let fingerprint: string | null = null
   try {
     const hello = await new PairingClient(url, fetchImpl).hello({ timeoutMs: 5_000 })
     fingerprint = typeof hello?.fingerprint === 'string' ? hello.fingerprint : null
   } catch {
     // Down, or remote access off there: the token is not sent; the connector retries a host that is down.
-    throw new ConnectionError('unreachable', `${url} did not answer as ${name}: it is down, its remote access is off, or another program answers there. The saved token was not sent.`)
+    throw new ConnectionError('unreachable', `${url} does not answer as ${name}; the token was not sent.`)
   }
   if (fingerprint !== remote.fingerprint) {
-    throw new ConnectionError('pinned', `The ADF daemon at ${url} is not ${name}: it shows fingerprint ${fingerprint ?? 'none'}, and ${remote.fingerprint} was saved when you paired. The saved token was not sent. If that computer was set up again, remove ${name} in Settings → Connection and pair again.`)
+    throw new ConnectionError('pinned', pinMismatchSentence(name, url, fingerprint, remote.fingerprint))
+  }
+}
+
+/** The connection's pinCheck (DaemonConnection): PinMismatchError for another computer, any other error while nothing answers. */
+export function pinCheckFor(name: string, fingerprint: string, url: string, fetchImpl?: typeof fetch): () => Promise<void> {
+  return async () => {
+    try {
+      await checkPinnedFingerprint(name, { fingerprint }, url, fetchImpl)
+    } catch (err) {
+      if (err instanceof ConnectionError && err.code === 'pinned') throw new PinMismatchError(err.message)
+      throw err
+    }
   }
 }
 

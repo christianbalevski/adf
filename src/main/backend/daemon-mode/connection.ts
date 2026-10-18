@@ -41,6 +41,23 @@ export type DaemonConnector = ((progress: (text: string) => void) => Promise<Dae
    * before the token goes out (DaemonConnection).
    */
   verifyListener?: () => Promise<number>
+  /**
+   * Remote mode, a pinned connection (settings-scopes.md §5.2): whoever
+   * answers at the URL shows the fingerprint saved when it was paired (GET
+   * /remote/hello, no token sent). Asked before the token goes out on every
+   * new connection: after a drop, on wake, on a requested reconnect.
+   * Rejects with PinMismatchError when another computer answers (the
+   * connection stops), with any other error while nothing answers.
+   */
+  pinCheck?: () => Promise<void>
+}
+
+/** Another computer answers at a pinned connection's address: nothing is sent, and the connection stops. */
+export class PinMismatchError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PinMismatchError'
+  }
 }
 
 /** Local mode: the daemon's process is gone (not a dropped connection). */
@@ -100,11 +117,20 @@ export class DaemonConnection {
   private disposed = false
   private verificationTimer: ReturnType<typeof setTimeout> | null = null
   private wakeVerification: (() => void) | null = null
-  private readonly verifiedListeners = new Set<(pid: number) => void>()
+  private readonly verifiedListeners = new Set<(pid: number | null) => void>()
 
   constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch) {
     this.connector = connector
     this.connectorLogFile = connector.logFile ?? null
+    // A pinned connection sends no request at all until the address shows the pinned fingerprint again (or after it did not).
+    const send = fetchImpl ?? ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => fetch(input, init))
+    const gatedFetch = connector.pinCheck
+      ? ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        if (this.status.state === 'failed') return Promise.reject(new BackendNotConnectedError(`Studio is not connected to an ADF daemon: ${this.status.message}`))
+        if (!this.listenerVerified) return Promise.reject(new BackendNotConnectedError('Studio is checking the remote computer\'s fingerprint.'))
+        return send(input, init)
+      }) as typeof fetch
+      : fetchImpl
     this.ready = (async () => {
       try {
         const endpoint = await connector((progress) => {
@@ -121,7 +147,7 @@ export class DaemonConnection {
             ...(source.refresh ? { refresh: () => this.listenerVerified && ((this.endpoint ?? endpoint).source.refresh?.() ?? false) } : {}),
             ...(source.localProof ? { localProof: (path: string) => this.listenerVerified ? (this.endpoint ?? endpoint).source.localProof?.(path) ?? {} : {} } : {}),
           },
-          fetch: fetchImpl,
+          fetch: gatedFetch,
         })
         this.log.log(`[Backend] Using ${endpoint.description}`)
         return this.daemonClient
@@ -189,12 +215,31 @@ export class DaemonConnection {
 
   markDisconnected(error?: string): void {
     if (this.disposed || this.status.state === 'failed' || this.status.state === 'disconnected') return
-    if (this.connector.verifyListener && this.endpoint) {
-      // The daemon may be gone and another program on its port: no token until the pid file names the listener again.
+    if ((this.connector.verifyListener || this.connector.pinCheck) && this.endpoint) {
+      // The daemon may be gone and another program on its port (local: no token until the pid file names the
+      // listener again), or another computer at a pinned address (remote: no request until the fingerprint matches).
       this.listenerVerified = false
       void this.verifyListenerLoop()
     }
     this.set({ state: 'disconnected', since: Date.now(), ...(error ? { error } : {}) })
+  }
+
+  /**
+   * A pinned connection before a new connection (wake, a requested
+   * reconnect): nothing is sent until the address shows the pinned
+   * fingerprint. Resolves true once it does (the caller re-dials), false
+   * when it did not (the connection failed) or the connection is not pinned.
+   */
+  get pinned(): boolean {
+    return !!this.connector.pinCheck
+  }
+
+  async reverify(reason: string): Promise<boolean> {
+    if (!this.connector.pinCheck || !this.endpoint || this.disposed || this.status.state === 'failed') return false
+    this.log.log(`[Backend] Checking the fingerprint of ${this.baseUrl} before sending the token (${reason})`)
+    this.listenerVerified = false
+    await this.verifyListenerLoop()
+    return this.listenerVerified && (this.status as ConnectionState).state !== 'failed'
   }
 
   /** Local mode: whether requests carry the token now (the listener was verified since the last drop). */
@@ -202,8 +247,8 @@ export class DaemonConnection {
     return this.listenerVerified
   }
 
-  /** Called with the daemon's pid each time the listener is verified after a drop (the stream then re-dials at once). */
-  onListenerVerified(listener: (pid: number) => void): () => void {
+  /** Called with the daemon's pid (null: a pinned remote's fingerprint) each time the listener is verified after a drop (the stream then re-dials at once). */
+  onListenerVerified(listener: (pid: number | null) => void): () => void {
     this.verifiedListeners.add(listener)
     return () => { this.verifiedListeners.delete(listener) }
   }
@@ -214,15 +259,24 @@ export class DaemonConnection {
       let lastRefusal: string | null = null
       while (!this.disposed && !this.listenerVerified && this.status.state !== 'failed') {
         try {
-          const pid = await this.connector.verifyListener!()
+          let pid: number | null = null
+          if (this.connector.pinCheck) await this.connector.pinCheck()
+          else pid = await this.connector.verifyListener!()
           if (this.disposed || (this.status as ConnectionState).state === 'failed') break
           this.listenerVerified = true
-          this.log.log(`[Backend] The ADF daemon on ${this.baseUrl} is pid ${pid}, as its pid file says; sending the token again`)
+          this.log.log(pid === null
+            ? `[Backend] ${this.baseUrl} shows the fingerprint pinned when it was paired; sending the token again`
+            : `[Backend] The ADF daemon on ${this.baseUrl} is pid ${pid}, as its pid file says; sending the token again`)
           for (const listener of this.verifiedListeners) {
             try { listener(pid) } catch (err) { this.log.warn('[Backend] Listener-verified callback failed:', err) }
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
+          if (err instanceof Error && err.name === 'PinMismatchError') {
+            // Another computer answers at the pinned address: nothing was sent, and nothing will be.
+            this.markFailed(message)
+            break
+          }
           if (message !== lastRefusal && !message.startsWith('Nothing answers')) this.log.warn(`[Backend] Not sending the daemon token: ${message}`)
           lastRefusal = message
           if (this.disposed) break

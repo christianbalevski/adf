@@ -2,7 +2,7 @@ import { SUPPORTED_CLIENT_API_VERSION, type DaemonVersion } from '../../../../sh
 import { checkRemoteDaemonUrl } from '../../../../shared/utils/remote-backend-url'
 import { readRemoteToken, remoteTransportRefusal, type SecretCodec, type StudioBackendConfig } from '../../backend-config'
 import type { DaemonConnector } from '../connection'
-import { ConnectionError, checkPinnedFingerprint, savedConnectionTarget } from '../../connections'
+import { ConnectionError, checkPinnedFingerprint, pinCheckFor, savedConnectionTarget } from '../../connections'
 import type { SavedRemote } from '../../../cli/remotes'
 
 /**
@@ -215,7 +215,9 @@ export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCo
 
 export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec, opts: RemoteConnectorOptions = {}): DaemonConnector {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
-  return Object.assign(async (progress: (text: string) => void) => {
+  // Set once connected: the pin to check before every new connection (connection.ts pinCheck).
+  let pin: (() => Promise<void>) | null = null
+  const connector = Object.assign(async (progress: (text: string) => void) => {
     let url: string
     let token: string
     // A saved connection (settings-scopes.md §5.2): cli-remotes.json and the OS keychain, pinned to its fingerprint.
@@ -249,6 +251,7 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       try {
         if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, opts.fetch).catch((e) => { throw asConnectError(e) })
         info = await remoteHandshake(url, token, opts)
+        if (saved) pin = pinCheckFor(saved.name, saved.remote.fingerprint, url, opts.fetch)
         break
       } catch (err) {
         if (!(err instanceof RemoteConnectError) || !RETRIED.has(err.problem) || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw err
@@ -265,4 +268,7 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       source: { token: () => token },
     }
   }, { logFile: null })
+  // A pinned connection is checked again before every new connection, not only at launch.
+  if (!config.remote.name) return connector
+  return Object.assign(connector, { pinCheck: () => pin ? pin() : Promise.resolve() })
 }

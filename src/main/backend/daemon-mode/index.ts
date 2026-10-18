@@ -280,6 +280,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       ...(deps.connect.verifyListener ? { verifyListener: deps.connect.verifyListener } : {}),
     },
   )
+  // Remote, a pinned connection: before every new connection the address must show the pinned fingerprint (connection.ts).
+  const redial = (reason: string): void => {
+    if (!connection.pinned) { clientSession?.reconnect(); return }
+    void connection.reverify(reason).then((ok) => { if (ok) clientSession?.reconnect() })
+  }
   // Remote mode: a 401 after connecting (the server's token changed) is the
   // "refused the token" sentence and ends the connection; retrying could not
   // help (W4-B review). /health carries no token and is not counted.
@@ -529,7 +534,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       return
     }
     log.log('[Backend] Reconnecting to the ADF daemon (requested)')
-    clientSession.reconnect()
+    redial('a requested reconnect')
   }
   /**
    * After a failed launch, local mode only: embedded for this launch only;
@@ -748,9 +753,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     if (!watching()) return
     void reviveDaemon('automatic')
   }
+  // The token goes out again only once the listener is the daemon its pid file names (local), or the address shows the
+  // pinned fingerprint (remote; connection.ts): re-dial then, not at the next backoff.
+  connection.onListenerVerified(() => { if (connection.state.state !== 'connected') clientSession?.reconnect() })
   if (deps.mode === 'local') {
-    // The token goes out again only once the listener is the daemon its pid file names (connection.ts): re-dial then, not at the next backoff.
-    connection.onListenerVerified(() => { if (connection.state.state !== 'connected') clientSession?.reconnect() })
     connection.onState((state) => {
       if (state.state === 'connected' || state.state === 'failed') stopExitWatch()
       if (state.state === 'disconnected' && !state.exited && !shutdownPromise && !reviving && !exitWatch) {
@@ -776,6 +782,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     const state = connection.state.state
     if (shutdownPromise || !clientSession || !client || state === 'failed' || state === 'connecting') return
     log.log('[Backend] The computer resumed: checking the ADF daemon and re-dialing the client stream')
+    // A pinned connection sends nothing to the address before its fingerprint is checked again.
+    if (connection.pinned) { redial('the computer resumed'); return }
     void client.withTimeout(RESUME_HEALTH_TIMEOUT_MS).health().then(
       () => { clientSession?.reconnect() },
       (err: unknown) => {
