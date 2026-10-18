@@ -514,11 +514,16 @@ export function AddDeviceDialog({ pairing, fingerprint, devices, now, onOpenCode
   )
 }
 
+/** The line of every host-only control with a remote runtime (settings-scopes.md §7). */
+export function changeOn(name: string): string {
+  return `Change on ${name}.`
+}
+
 /** Remote access, Allowed networks and Devices of a remote runtime: changed on that computer only (settings-scopes.md §7). */
 export function HostOnlyRemoteAccess({ name }: { name: string }) {
   return (
     <SettingsGroup title="Remote access" docs={DOCS.remoteAccess}>
-      <SettingsRow label="Remote access" description={`Change on ${name}.`} />
+      <SettingsRow label="Remote access" description={changeOn(name)} />
     </SettingsGroup>
   )
 }

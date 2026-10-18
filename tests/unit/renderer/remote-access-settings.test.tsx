@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
+  changeOn,
   AddDeviceDialog,
   addedDeviceLine,
   HostOnlyRemoteAccess,
@@ -155,6 +156,15 @@ describe('Add device (host): one dialog, the code or a token (settings-scopes.md
     expect(html).toContain('>Copy<')
     expect(html).toContain('>Done<')
     expect(html).toContain('On the device: Settings → Connection → Add connection.')
+  })
+})
+
+describe('a remote runtime: one sentence for every host-only control (review item 11)', () => {
+  it('changeOn is the one line; Settings uses it for the firewall, identity and remote access', () => {
+    expect(changeOn('rawl-hub')).toBe('Change on rawl-hub.')
+    const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
+    expect(page).not.toMatch(/Firewall: change on/)
+    expect(page.match(/changeOn\(/g)?.length).toBe(3)
   })
 })
 

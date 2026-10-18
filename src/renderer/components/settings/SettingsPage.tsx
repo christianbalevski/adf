@@ -15,7 +15,7 @@ import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
-import { HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
+import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
 import { runtimeDown, runtimeGroupLabel, useCurrentConnection } from '../../stores/connection.store'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
@@ -313,7 +313,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             create a new owner or restamp your agents.
           </p>
           {remote
-            ? <p className="text-xs text-neutral-500 dark:text-neutral-400">Change on {runtimeName}.</p>
+            ? <p className="text-xs text-neutral-500 dark:text-neutral-400">{changeOn(runtimeName)}</p>
             : (
               <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
                 Restore identity
@@ -385,7 +385,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
         )}
         {/* Host-only with a remote runtime (settings-scopes.md §7): changed on that computer. */}
         {remote ? (
-          <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">Change on {runtimeName}.</p>
+          <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">{changeOn(runtimeName)}</p>
         ) : (
           <div className="flex gap-2 mt-3">
             <Button
@@ -1029,7 +1029,7 @@ function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boo
 
   if (!enabled) return null
   // A remote runtime's firewall is its own computer's (settings-scopes.md §7).
-  if (hostName) return <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-2 ml-5">Firewall: change on {hostName}.</p>
+  if (hostName) return <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-2 ml-5">{changeOn(hostName)}</p>
 
   // First check hasn't resolved yet — a bare "checking" beats flashing a scare.
   if (!fw) {

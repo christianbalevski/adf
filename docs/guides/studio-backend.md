@@ -682,7 +682,7 @@ daemon. …". ChatGPT sign-in relays its callback the same way in every mode.
 | Stored credential values (Identity tab, provider key field, MCP and channel forms) | Never sent. Reveal and the provider key field say "Stored credential values stay on the daemon's machine: a remote daemon never sends them to Studio."; the MCP form and Identity values show a placeholder; the channel form shows the key as stored. Leave a placeholder as it is to keep the stored value, or clear the field and type the whole new value. An edited placeholder is refused ("… was shown as a placeholder …, so an edit of it cannot be saved.") |
 | Locked credentials question | Names "the daemon's machine" instead of "this machine" |
 | Agent browser viewer | Not shown: "The browser viewer needs the daemon on this computer: the container's noVNC port is on the remote server's loopback." When an agent opens a browser, a notification says so |
-| LAN firewall check | "Firewall: change on *name*." No Fix button |
+| LAN firewall check | "Change on *name*." No Fix button |
 | Remote access, Allowed networks, Devices | Settings → Networking shows **Remote access** with "Change on *name*."; the network status line is not shown |
 | Owner identity (back up, import, restore) | "Change on *name*." under Owner Identity; run `adf identity …` on the server |
 | Agent endpoints, Agent directory URL | Not shown: they are the server's loopback addresses |
