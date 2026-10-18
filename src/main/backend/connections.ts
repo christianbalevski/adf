@@ -3,7 +3,7 @@ import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote
 import type { BackendDaemonStatus, StudioBackendMode } from '../../shared/types/backend.types'
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
-import { deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, storeRemoteToken, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
+import { deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
 import type { StudioBackendConfig } from './backend-config'
@@ -119,33 +119,37 @@ export interface SaveConnectionInput {
  * the keychain (or the user-only file). A fingerprint already saved keeps
  * its name; a new one gets the name `adf pair` would give.
  */
-export function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnectionInput, now = new Date()): { name: string; store: TokenStoreChoice } {
-  const file = loadRemotes(env)
-  const same = Object.entries(file.remotes).find(([, r]) => r.fingerprint === input.fingerprint)
-  const name = same?.[0] ?? remoteNameFor(input.hostName, file.remotes)
+export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnectionInput, now = new Date()): Promise<{ name: string; store: TokenStoreChoice }> {
   const store = storeRemoteToken(input.fingerprint, input.token, env)
-  file.remotes[name] = {
-    url: input.url,
-    fingerprint: input.fingerprint,
-    deviceId: input.deviceId,
-    label: input.label,
-    pairedAt: now.toISOString(),
-    hostName: input.hostName,
-  }
-  saveRemotes(file, env)
+  // Under the lock adf takes too (updateRemotes): neither loses the other's change.
+  const name = await updateRemotes(env, (file) => {
+    const same = Object.entries(file.remotes).find(([, r]) => r.fingerprint === input.fingerprint)
+    const name = same?.[0] ?? remoteNameFor(input.hostName, file.remotes)
+    file.remotes[name] = {
+      url: input.url,
+      fingerprint: input.fingerprint,
+      deviceId: input.deviceId,
+      label: input.label,
+      pairedAt: now.toISOString(),
+      hostName: input.hostName,
+    }
+    return name
+  })
   return { name, store }
 }
 
 /** Forget a saved connection and its token (`adf remotes forget`). The host still lists the device. */
-export function forgetConnection(env: NodeJS.ProcessEnv, name: string): boolean {
-  const file = loadRemotes(env)
-  const remote = file.remotes[name]
-  if (!remote) return false
-  delete file.remotes[name]
-  if (file.default === name) file.default = null
-  saveRemotes(file, env)
-  // Another name may hold the same computer; its token stays.
-  if (!Object.values(file.remotes).some((r) => r.fingerprint === remote.fingerprint)) deleteRemoteToken(remote.fingerprint, env)
+export async function forgetConnection(env: NodeJS.ProcessEnv, name: string): Promise<boolean> {
+  const removed = await updateRemotes(env, (file) => {
+    const remote = file.remotes[name]
+    if (!remote) return null
+    delete file.remotes[name]
+    if (file.default === name) file.default = null
+    // Another name may hold the same computer; its token stays.
+    return { remote, shared: Object.values(file.remotes).some((r) => r.fingerprint === remote.fingerprint) }
+  })
+  if (!removed) return false
+  if (!removed.shared) deleteRemoteToken(removed.remote.fingerprint, env)
   return true
 }
 

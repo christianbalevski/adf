@@ -73,9 +73,9 @@ const daemonStatus = (connection: BackendDaemonStatus['connection']): BackendDae
 })
 
 describe('one list for Studio and adf (cli-remotes.json and the keychain)', () => {
-  it('a connection Studio pairs is the CLI\'s saved remote: same file, same keychain account, same name rule', () => {
+  it('a connection Studio pairs is the CLI\'s saved remote: same file, same keychain account, same name rule', async () => {
     const env = sharedEnv()
-    const { name, store } = saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'Rawl Hub', deviceId: 'dev1', label: 'agent-2 laptop' })
+    const { name, store } = await saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'Rawl Hub', deviceId: 'dev1', label: 'agent-2 laptop' })
     expect(name).toBe('rawl-hub')
     expect(store.where).toBe('keychain')
     // The CLI reads it: its list, its token for that origin, `adf remotes use rawl-hub`.
@@ -84,8 +84,8 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
     expect(selectedRemote({ ...env, ADF_REMOTE: 'rawl-hub' })?.remote.url).toBe(HUB)
     expect(JSON.parse(readFileSync(env.ADF_TEST_KEYCHAIN_FILE!, 'utf8'))).toEqual({ 'remote-token:ABCD-EFGH': TOKEN })
     // Pairing the same computer again keeps its name; another computer with that host name gets the next one.
-    expect(saveConnection(env, { url: LAN, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'Other name', deviceId: 'dev2', label: 'x' }).name).toBe('rawl-hub')
-    expect(saveConnection(env, { url: 'https://hub2.example.com', token: TOKEN, fingerprint: 'QQQQ-QQQQ', hostName: 'rawl hub', deviceId: 'dev3', label: 'x' }).name).toBe('rawl-hub-2')
+    expect((await saveConnection(env, { url: LAN, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'Other name', deviceId: 'dev2', label: 'x' })).name).toBe('rawl-hub')
+    expect((await saveConnection(env, { url: 'https://hub2.example.com', token: TOKEN, fingerprint: 'QQQQ-QQQQ', hostName: 'rawl hub', deviceId: 'dev3', label: 'x' })).name).toBe('rawl-hub-2')
     expect(remoteNameFor('rawl hub', loadRemotes(env).remotes)).toBe('rawl-hub-3')
   })
 
@@ -99,19 +99,19 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
     expect((await savedConnectionTarget(defaultBackendConfig(), 'desk', env)).token).toBe(TOKEN)
   })
 
-  it('Remove forgets the entry and its token; a token another name still uses stays; the CLI default is cleared', () => {
+  it('Remove forgets the entry and its token; a token another name still uses stays; the CLI default is cleared', async () => {
     const env = sharedEnv()
-    saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd', label: 'l' })
+    await saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd', label: 'l' })
     const file = loadRemotes(env)
     file.remotes.alias = { ...file.remotes.hub }
     file.default = 'hub'
     saveRemotes(file, env)
-    expect(forgetConnection(env, 'hub')).toBe(true)
+    expect(await forgetConnection(env, 'hub')).toBe(true)
     expect(loadRemotes(env)).toMatchObject({ default: null, remotes: { alias: { fingerprint: 'ABCD-EFGH' } } })
     expect(readRemoteToken('ABCD-EFGH', env)).toBe(TOKEN)
-    expect(forgetConnection(env, 'alias')).toBe(true)
+    expect(await forgetConnection(env, 'alias')).toBe(true)
     expect(readRemoteToken('ABCD-EFGH', env)).toBeNull()
-    expect(forgetConnection(env, 'alias')).toBe(false)
+    expect(await forgetConnection(env, 'alias')).toBe(false)
   })
 
   it('a token the keychain does not give ends the attempt with the sentence; nothing falls back', async () => {
@@ -126,7 +126,7 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
 
   it('plain http to a LAN address needs the confirmation Studio recorded for that origin', async () => {
     const env = sharedEnv()
-    saveConnection(env, { url: LAN, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: '', label: '' })
+    await saveConnection(env, { url: LAN, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: '', label: '' })
     expect(await savedConnectionTarget(defaultBackendConfig(), 'hub', env).catch((e) => e)).toMatchObject({ code: 'transport' })
     expect((await savedConnectionTarget({ insecureHttpOrigins: ['http://192.168.1.20:7385'] }, 'hub', env)).url).toBe(LAN)
   })
@@ -139,13 +139,13 @@ describe('the rows of the Connection page', () => {
     active: { mode: 'local', remoteName: null, config: defaultBackendConfig() }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved, discovery: null, ...over,
   })
 
-  it('This computer in use: Connected, no action; a saved remote: Paired, Connect; no Inside Studio row', () => {
+  it('This computer in use: Connected, no action; a saved remote: Paired, Connect; no Inside Studio row', async () => {
     const view = local()
     expect(view.current).toEqual({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' })
     expect(view.rows.map((r) => [r.id, r.state, r.action])).toEqual([['local', 'connected', null], ['remote:rawl-hub', 'paired', 'connect']])
   })
 
-  it('a paired computer found on the network is its saved row, never a second row with Pair; one not paired is Not paired with Pair', () => {
+  it('a paired computer found on the network is its saved row, never a second row with Pair; one not paired is Not paired with Pair', async () => {
     const view = local({ discovery: { browsing: true, problem: null, entries: [entry({ pairingOpen: true }), entry({ fingerprint: 'NEWW-2345', name: 'desk', url: LAN, address: '192.168.1.20', kind: 'lan', encrypted: false, alreadyPaired: false })] } })
     expect(view.rows.filter((r) => r.fingerprint === 'ABCD-EFGH')).toEqual([expect.objectContaining({ id: 'remote:rawl-hub', state: 'paired', action: 'connect', pairingOpen: true })])
     expect(view.rows.at(-1)).toMatchObject({ id: `found:NEWW-2345@${LAN}`, kind: 'found', name: 'desk', state: 'not-paired', action: 'pair', address: '192.168.1.20' })
@@ -153,7 +153,7 @@ describe('the rows of the Connection page', () => {
     expect(view.rows.some((r) => r.state === 'paired' && r.action === 'pair')).toBe(false)
   })
 
-  it('one fingerprint at two addresses: separate Not paired rows, flagged; when saved, the warning goes on the saved row', () => {
+  it('one fingerprint at two addresses: separate Not paired rows, flagged; when saved, the warning goes on the saved row', async () => {
     const clash = [entry({ clash: 2, alreadyPaired: false, fingerprint: 'NEWW-2345' }), entry({ clash: 2, alreadyPaired: false, fingerprint: 'NEWW-2345', url: LAN, address: '192.168.1.20' })]
     expect(local({ discovery: { browsing: true, problem: null, entries: clash } }).rows.filter((r) => r.kind === 'found').map((r) => [r.address, r.clash])).toEqual([['100.101.102.103', 2], ['192.168.1.20', 2]])
     const savedClash = clash.map((e) => ({ ...e, fingerprint: 'ABCD-EFGH' }))
@@ -162,14 +162,14 @@ describe('the rows of the Connection page', () => {
     expect(view.rows.find((r) => r.id === 'remote:rawl-hub')?.clash).toBe(2)
   })
 
-  it('a remote in use: its row shows the link state and no action, is not removable; This computer offers Connect', () => {
+  it('a remote in use: its row shows the link state and no action, is not removable; This computer offers Connect', async () => {
     const config: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
     const view = buildConnectionsView({ active: { mode: 'remote', remoteName: 'rawl-hub', config }, configured: config, daemon: daemonStatus('disconnected'), saved, discovery: null })
     expect(view.current).toEqual({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub', url: HUB, state: 'retrying' })
     expect(view.rows.map((r) => [r.id, r.state, r.action, r.removable])).toEqual([['local', null, 'connect', false], ['remote:rawl-hub', 'retrying', null, false]])
   })
 
-  it('the remote URL of studio-backend.json is one row; with a saved twin, the saved row shows unless the URL is in use', () => {
+  it('the remote URL of studio-backend.json is one row; with a saved twin, the saved row shows unless the URL is in use', async () => {
     const slot: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: 'https://adf.example.com', token: 'safe:x', allowInsecureHttp: false, paired: { fingerprint: 'SLOT-2345', name: 'office', deviceId: 'd', label: 'l' } } }
     expect(local({ configured: slot }).rows.find((r) => r.id === 'remote')).toMatchObject({ name: 'office', state: 'paired', action: 'connect', address: 'adf.example.com' })
     const twin: StudioBackendConfig = { ...slot, remote: { ...slot.remote, paired: { ...slot.remote.paired!, fingerprint: 'ABCD-EFGH' } } }
@@ -180,7 +180,7 @@ describe('the rows of the Connection page', () => {
     expect(currentConnection({ active: { mode: 'remote', remoteName: null, config: { ...inUse, remote: { ...inUse.remote, paired: null } } }, daemon: null, saved })).toMatchObject({ name: 'adf.example.com', state: 'connecting' })
   })
 
-  it('Inside Studio (legacy) is a row only while it runs or is saved; the saved next connection is not removable', () => {
+  it('Inside Studio (legacy) is a row only while it runs or is saved; the saved next connection is not removable', async () => {
     expect(buildConnectionsView({ active: { mode: 'embedded', remoteName: null, config: defaultBackendConfig() }, configured: { ...defaultBackendConfig(), mode: 'embedded' }, daemon: null, saved, discovery: null }).rows.slice(0, 2).map((r) => [r.id, r.state, r.action]))
       .toEqual([['local', null, 'connect'], ['embedded', 'connected', null]])
     const next: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
@@ -219,7 +219,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
 
   it('Connect to a saved connection reads its token first, then saves it as the connection and restarts (the switch dialog)', async () => {
     const s = setup()
-    saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     const result = await s.connections.use('remote:rawl-hub')
     expect(result).toMatchObject({ ok: true, notices: ['Studio restarts now.'] })
     expect(s.switches).toEqual(['remote'])
@@ -258,7 +258,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
 
   it('Add connection: an address a saved connection was paired at, now answering with another fingerprint, is refused; the token is not sent', async () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: 'EVIL-2345' }) })
-    saveConnection(s.env, { url: HUB, token: 'adfd_old', fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(s.env, { url: HUB, token: 'adfd_old', fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     const result = await s.connections.add({ url: HUB, token: TOKEN })
     expect(result).toMatchObject({ ok: false, code: 'fingerprint_mismatch' })
     expect(s.daemon.tokenSent()).toBe(false)
@@ -287,7 +287,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
 
   it('Remove asks first, then forgets; the connection in use or saved as the next one cannot be removed', async () => {
     const s = setup()
-    saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     expect(await s.connections.remove('local')).toEqual({ ok: false, code: 'in_use', error: 'In use.' })
     const removed = await s.connections.remove('remote:rawl-hub')
     expect(s.confirms).toEqual([{ message: 'Remove rawl-hub', detail: 'Studio and the adf command forget its address and token. rawl-hub still lists this device; revoke it there.', ok: 'Remove' }])
@@ -296,11 +296,11 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBeNull()
 
     const next = setup()
-    saveConnection(next.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(next.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     await next.connections.use('remote:rawl-hub')
     expect(await next.connections.remove('remote:rawl-hub')).toEqual({ ok: false, code: 'in_use', error: 'In use.' })
     const kept = setup({ confirm: false })
-    saveConnection(kept.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(kept.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     expect(await kept.connections.remove('remote:rawl-hub')).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
     expect(Object.keys(loadRemotes(kept.env).remotes)).toEqual(['rawl-hub'])
   })
@@ -311,7 +311,7 @@ describe('the remote connector on a saved connection', () => {
 
   it('reads the token from the keychain, checks the pinned fingerprint, then the handshake', async () => {
     const env = sharedEnv()
-    saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     const daemon = fakeDaemon()
     const progress: string[] = []
     const connected = await remoteDaemonConnector(config('rawl-hub'), codec, { env, fetch: daemon.fetch })((line) => progress.push(line))
@@ -323,7 +323,7 @@ describe('the remote connector on a saved connection', () => {
 
   it('another fingerprint at the saved address: refused before the token is sent', async () => {
     const env = sharedEnv()
-    saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     const daemon = fakeDaemon({ fingerprint: 'EVIL-2345' })
     const error = await remoteDaemonConnector(config('rawl-hub'), codec, { env, fetch: daemon.fetch, retry: { maxAttempts: 1 } })(() => {}).catch((e) => e)
     expect(error).toBeInstanceOf(RemoteConnectError)

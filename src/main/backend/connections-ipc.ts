@@ -127,7 +127,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (hello) {
       let name: string
       try {
-        name = saveConnection(deps.env, { url: check.url, token, fingerprint: hello.fingerprint, hostName: hello.name, deviceId: '', label: '' }).name
+        name = (await saveConnection(deps.env, { url: check.url, token, fingerprint: hello.fingerprint, hostName: hello.name, deviceId: '', label: '' })).name
       } catch (err) {
         return fail('save_failed', `Studio could not save the connection: ${err instanceof Error ? err.message : String(err)}`)
       }
@@ -171,7 +171,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (!saved()[name]) return fail('not_found', 'That connection is not saved.')
     if (!await deps.confirm({ message: `Remove ${name}`, detail: `Studio and the adf command forget its address and token. ${name} still lists this device; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
     try {
-      forgetConnection(deps.env, name)
+      await forgetConnection(deps.env, name)
     } catch (err) {
       return fail('save_failed', `Studio could not remove ${name}: ${err instanceof Error ? err.message : String(err)}`)
     }

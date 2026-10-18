@@ -9,6 +9,10 @@
  *   `remote-token:<fingerprint>`), or, without a usable keychain,
  *   `<data dir>/cli-remote-tokens.json` readable by the current user only.
  *
+ * Studio and adf both change the list: every change is a read-modify-write
+ * under `cli-remotes.json.lock` (updateRemotes), so neither loses the
+ * other's change.
+ *
  * Resolution for every command (daemon-url.ts): `--url`/`--token` >
  * ADF_DAEMON_URL/ADF_DAEMON_TOKEN > `--remote <name>` / ADF_REMOTE > the
  * default remote > this machine's daemon. `ADF_REMOTE=local` forces this
@@ -16,6 +20,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { open, readFile, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { daemonSettingsDir } from '../daemon/daemon-token'
 import { openDaemonSecrets } from '../backend/daemon-secrets'
@@ -55,11 +60,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function loadRemotes(env: NodeJS.ProcessEnv = process.env): RemotesFile {
-  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
   const path = remotesPath(env)
-  if (!existsSync(path)) return empty
+  if (!existsSync(path)) return { v: 1, default: null, remotes: {} }
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown
+    return parseRemotes(readFileSync(path, 'utf-8'))
+  } catch {
+    return { v: 1, default: null, remotes: {} }
+  }
+}
+
+/** loadRemotes without blocking (Studio main): an absent or unreadable file is the empty list. */
+export async function loadRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<RemotesFile> {
+  try {
+    return parseRemotes(await readFile(remotesPath(env), 'utf-8'))
+  } catch {
+    return { v: 1, default: null, remotes: {} }
+  }
+}
+
+/** The file's text as a RemotesFile; anything malformed is left out. */
+export function parseRemotes(text: string): RemotesFile {
+  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
+  try {
+    const raw = JSON.parse(text) as unknown
     if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return empty
     const remotes: Record<string, SavedRemote> = {}
     for (const [name, r] of Object.entries(raw.remotes)) {
@@ -85,6 +108,63 @@ function writeJson(path: string, value: unknown): void {
 
 export function saveRemotes(file: RemotesFile, env: NodeJS.ProcessEnv = process.env): void {
   writeJson(remotesPath(env), file)
+}
+
+/** A lock older than this is left over from a process that died holding it, and is taken over. */
+export const REMOTES_LOCK_STALE_MS = 10_000
+const REMOTES_LOCK_WAIT_MS = 5_000
+
+export class RemotesLockedError extends Error {
+  constructor(readonly path: string) {
+    super(`${path} is locked by another program; try again.`)
+    this.name = 'RemotesLockedError'
+  }
+}
+
+/** The path of cli-remotes.json (Studio watches it). */
+export function remotesFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  return remotesPath(env)
+}
+
+/**
+ * Change the saved remotes, Studio and adf alike: under
+ * `cli-remotes.json.lock` (created exclusively; one older than
+ * REMOTES_LOCK_STALE_MS is a crashed holder's and is taken over), read the
+ * file, let `mutate` change it, and write it back when it changed. Neither
+ * program loses the other's change. `mutate` may throw: nothing is written.
+ */
+export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: { staleMs?: number; waitMs?: number } = {}): Promise<T> {
+  const path = remotesPath(env)
+  const lock = `${path}.lock`
+  const staleMs = opts.staleMs ?? REMOTES_LOCK_STALE_MS
+  const deadline = Date.now() + (opts.waitMs ?? REMOTES_LOCK_WAIT_MS)
+  await import('node:fs/promises').then((fs) => fs.mkdir(daemonSettingsDir(env), { recursive: true }))
+  for (;;) {
+    try {
+      const handle = await open(lock, 'wx')
+      await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`)
+      await handle.close()
+      break
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      const age = await stat(lock).then((s) => Date.now() - s.mtimeMs, () => 0)
+      if (age > staleMs) {
+        await unlink(lock).catch(() => {})
+        continue
+      }
+      if (Date.now() > deadline) throw new RemotesLockedError(path)
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+  try {
+    const file = await loadRemotesAsync(env)
+    const before = JSON.stringify(file)
+    const result = await mutate(file)
+    if (JSON.stringify(file) !== before) writeJson(path, file)
+    return result
+  } finally {
+    await unlink(lock).catch(() => {})
+  }
 }
 
 // --- tokens ---------------------------------------------------------------------

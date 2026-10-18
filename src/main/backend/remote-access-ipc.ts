@@ -286,7 +286,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     save: async (input) => {
       let name: string
       try {
-        const saved = saveConnection(env, { url: input.url, token: input.token, fingerprint: input.fingerprint, hostName: input.name, deviceId: input.deviceId, label: input.label })
+        const saved = await saveConnection(env, { url: input.url, token: input.token, fingerprint: input.fingerprint, hostName: input.name, deviceId: input.deviceId, label: input.label })
         name = saved.name
         if (saved.store.where === 'file') log.warn(`[Remote access] The token for ${name} is in ${saved.store.path} (${saved.store.why})`)
       } catch (err) {

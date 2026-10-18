@@ -13,7 +13,7 @@ import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
-  deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, storeRemoteToken,
+  deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
 } from './remotes'
 
 export interface PairIo {
@@ -327,7 +327,7 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     io.stderr(`"${result.daemon.name}" lists this computer as "${result.device.label}": remove it there (adf daemon devices revoke ${result.device.id}) and pair again once this is fixed.\n`)
     return 1
   }
-  file.remotes[name] = {
+  const entry = {
     url: saveUrl,
     fingerprint: result.daemon.fingerprint,
     deviceId: result.device.id,
@@ -340,9 +340,14 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     const answer = await io.prompt('Use it by default for adf commands and the terminal app? [Y/n] ')
     makeDefault = answer !== null && /^\s*(y|yes)?\s*$/i.test(answer)
   }
-  if (makeDefault) file.default = name
   try {
-    saveRemotes(file, env)
+    // Under the lock Studio takes too: read again, so a change Studio made meanwhile is kept.
+    await updateRemotes(env, (latest) => {
+      const now = latest.remotes[name]
+      if (now && now.fingerprint !== entry.fingerprint) throw new Error(`the saved remote "${name}" changed to another computer (${now.fingerprint}) meanwhile`)
+      latest.remotes[name] = entry
+      if (makeDefault) latest.default = name
+    })
   } catch (err) {
     // Put back what was saved before; a new remote leaves no token behind.
     try {
@@ -378,15 +383,11 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
   }
   if (action === 'use') {
     if (!name) { io.stderr(`${REMOTES_USAGE}\n`); return 2 }
-    if (name === 'local') {
-      file.default = null
-    } else if (!file.remotes[name]) {
+    if (name !== 'local' && !file.remotes[name]) {
       io.stderr(`No saved remote named "${name}". List them with: adf remotes\n`)
       return 1
-    } else {
-      file.default = name
     }
-    saveRemotes(file, env)
+    await updateRemotes(env, (latest) => { latest.default = name === 'local' ? null : name })
     io.stdout(name === 'local' ? 'adf now talks to this computer\'s daemon by default.\n' : `adf now talks to "${name}" (${file.remotes[name].url}) by default.\n`)
     return 0
   }
@@ -397,9 +398,10 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
       return name ? 1 : 2
     }
     deleteRemoteToken(remote.fingerprint, env)
-    delete file.remotes[name]
-    if (file.default === name) file.default = null
-    saveRemotes(file, env)
+    await updateRemotes(env, (latest) => {
+      delete latest.remotes[name]
+      if (latest.default === name) latest.default = null
+    })
     io.stdout(`Forgot "${name}" and its token. "${remote.hostName ?? remote.url}" still lists this computer: remove it there (adf daemon devices revoke ${remote.deviceId}).\n`)
     return 0
   }
