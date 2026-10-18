@@ -68,10 +68,30 @@ export interface StudioBackendConfig {
      * §9.3); null or absent for a pasted token. It belongs to the token.
      */
     paired?: RemotePairedComputer | null
+    /**
+     * The saved connection in use when `mode` is `remote` (settings-scopes.md
+     * §5.2): a name in `cli-remotes.json`, shared with `adf`. Null or absent:
+     * the `url` and `token` above (a connection with no fingerprint).
+     */
+    name?: string | null
   }
+  /**
+   * Origins whose plain HTTP the user confirmed for a saved connection in
+   * `cli-remotes.json` (that file has no such field, and `adf` asks each time).
+   */
+  insecureHttpOrigins?: string[]
 }
 
-/** A remote computer paired from Settings → Backend (remote-access.md §9.3). */
+/** A saved connection name as `adf remotes` shows it: 1-64 characters, no control characters. */
+export function validRemoteName(value: unknown): value is string {
+  // eslint-disable-next-line no-control-regex
+  return typeof value === 'string' && value.length > 0 && value.length <= 64 && !/[\u0000-\u001f\u007f]/.test(value)
+}
+
+/** At most this many confirmed plain-HTTP origins are kept. */
+const MAX_INSECURE_ORIGINS = 32
+
+/** A remote computer paired from Settings → Connection (remote-access.md §9.3). */
 export interface RemotePairedComputer {
   fingerprint: string
   name: string
@@ -114,7 +134,7 @@ export interface BootBackend {
   /**
    * What the user should know about this launch's backend, token-free: the
    * configured mode could not be used, or fields of the file were ignored.
-   * Shown in Settings → Backend.
+   * Shown in Settings → Connection.
    */
   notices?: string[]
   /** File fields normalization ignored; the next save writes the file without them (that save says so). */
@@ -126,11 +146,11 @@ export interface BootBackend {
    * (first-launch.ts guardBoot); never a silent fallback.
    */
   fileProblem?: string | null
-  /** A one-launch mode (source `session`): why, in words for Settings → Backend. */
+  /** A one-launch mode (source `session`): why, in words for Settings → Connection. */
   sessionReason?: string | null
   /**
    * Set at boot (first-launch.ts) when an earlier launch switched this
-   * install from Embedded to the new default; Settings → Backend shows it.
+   * install from Embedded to the new default; Settings → Connection shows it.
    */
   defaultSwitch?: BackendDefaultSwitch | null
 }
@@ -162,7 +182,7 @@ export function remoteTransportRefusal(config: StudioBackendConfig): string | nu
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return `The remote daemon URL is not valid: ${check.reason ?? url}`
   if (check.kind === 'insecure-http' && !config.remote.allowInsecureHttp) {
-    return `${check.url} is plain http to an address that is not loopback or a tailnet address, and sending the token over it is not confirmed. Confirm it in Settings → Backend, or use https:// or an SSH tunnel.`
+    return `${check.url} is plain http to an address that is not loopback or a tailnet address, and sending the token over it is not confirmed. Add the connection again in Settings → Connection and confirm it, or use https:// or an SSH tunnel.`
   }
   return null
 }
@@ -223,10 +243,22 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
       }
     }
   }
+  if (remote && typeof remote === 'object' && !Array.isArray(remote)) {
+    const name = (remote as Record<string, unknown>).name
+    if (validRemoteName(name)) config.remote.name = name
+    else if (name !== undefined && name !== null) {
+      warnings.push('remote.name is not a valid connection name; ignored')
+      dropped.push('the saved connection name, which was not valid')
+    }
+  }
+  if (Array.isArray(obj.insecureHttpOrigins)) {
+    const origins = obj.insecureHttpOrigins.filter((o): o is string => typeof o === 'string' && remoteUrlOrigin(o) === o).slice(0, MAX_INSECURE_ORIGINS)
+    if (origins.length > 0) config.insecureHttpOrigins = origins
+  }
   // Mode remote without a usable URL stays remote: the connector refuses it
-  // with a dialog that points at Settings → Backend. Falling back to embedded
+  // with a dialog that points at Settings → Connection. Falling back to embedded
   // here would autostart this computer's agents without a word (W4-B review).
-  if (config.mode === 'remote' && !config.remote.url) warnings.push('mode is remote but there is no usable remote.url; Studio will say so at launch')
+  if (config.mode === 'remote' && !config.remote.url && !config.remote.name) warnings.push('mode is remote but there is no usable remote.url; Studio will say so at launch')
   return { config, warnings, dropped, modeProblem }
 }
 
@@ -245,7 +277,7 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
     return {
       found: true,
       data: null,
-      problem: `the file could not be read (${code}); using ${DEFAULT_LABEL}, and Settings → Backend will not overwrite it`,
+      problem: `the file could not be read (${code}); using ${DEFAULT_LABEL}, and Settings → Connection will not overwrite it`,
       writeBlocked: `${configPath} could not be read (${code}). Fix its permissions or delete it, then restart Studio.`,
     }
   }
@@ -260,7 +292,7 @@ function readBootFile(configPath: string): { found: boolean; data: unknown; prob
       return {
         found: true,
         data: null,
-        problem: `the file could not be parsed or moved aside; using ${DEFAULT_LABEL}, and Settings → Backend will not overwrite it`,
+        problem: `the file could not be parsed or moved aside; using ${DEFAULT_LABEL}, and Settings → Connection will not overwrite it`,
         writeBlocked: `${configPath} is corrupt and could not be moved aside. Fix or delete it, then restart Studio.`,
       }
     }
@@ -288,8 +320,8 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   // The file asks for remote, but its URL may not be used. Studio still boots
   // remote, runs no agents, and the remote connector refuses with a dialog
   // naming the reason (W4-B review: no silent embedded boot, which would
-  // autostart this computer's agents). Settings → Backend shows it too.
-  const refusal = config.mode === 'remote' ? remoteTransportRefusal(config) : null
+  // autostart this computer's agents). Settings → Connection shows it too.
+  const refusal = config.mode === 'remote' && !config.remote.name ? remoteTransportRefusal(config) : null
   if (refusal) {
     log.warn(`[Backend] ${configPath}: mode is remote, but ${refusal} Studio will not connect until it is fixed.`)
     notices.push(`The remote daemon cannot be used: ${refusal}`)
@@ -357,6 +389,7 @@ export function toBackendSettingsView(
       remoteTokenSaved: config.remote.token !== null,
       allowInsecureHttp: config.remote.allowInsecureHttp,
       remotePaired: config.remote.paired ? { fingerprint: config.remote.paired.fingerprint, name: config.remote.paired.name, label: config.remote.paired.label } : null,
+      remoteName: config.remote.name ?? null,
     },
     daemon,
     pendingSwitch,
@@ -375,7 +408,7 @@ function fail(code: BackendSettingsErrorCode, error: string): ApplyPatchResult {
 }
 
 /**
- * Apply a Settings → Backend patch. Pure: returns the next config, or an
+ * Apply a Settings → Connection patch. Pure: returns the next config, or an
  * error the renderer shows as is. `changes` is a token-free summary for the
  * log; `notices` tell the user about side effects of their save.
  *
@@ -385,10 +418,13 @@ function fail(code: BackendSettingsErrorCode, error: string): ApplyPatchResult {
 export function applyBackendPatch(
   current: StudioBackendConfig,
   patch: BackendSettingsPatch,
-  /** `paired`: main only, when a pairing saves this URL and token (remote-access.md §9.3); never from the renderer's patch. */
-  opts: { codec: SecretCodec; paired?: RemotePairedComputer },
+  /**
+   * `paired`: main only, when a pairing saves this URL and token (remote-access.md §9.3); never from the renderer's patch.
+   * `savedRemote`: the saved connection of that name in `cli-remotes.json`, or null (settings-scopes.md §5.2).
+   */
+  opts: { codec: SecretCodec; paired?: RemotePairedComputer; savedRemote?: (name: string) => { url: string } | null },
 ): ApplyPatchResult {
-  const next: StudioBackendConfig = { ...current, remote: { ...current.remote } }
+  const next: StudioBackendConfig = { ...current, remote: { ...current.remote }, ...(current.insecureHttpOrigins ? { insecureHttpOrigins: [...current.insecureHttpOrigins] } : {}) }
   const notices: string[] = []
   const changes: string[] = []
 
@@ -401,6 +437,8 @@ export function applyBackendPatch(
     ['clearRemoteToken', 'boolean', 'invalid_patch'],
     ['allowInsecureHttp', 'boolean', 'invalid_patch'],
     ['insecureHttpOrigin', 'string', 'invalid_patch'],
+    ['remoteName', 'string|null', 'invalid_patch'],
+    ['trustInsecureOrigin', 'string', 'invalid_patch'],
   ]
   for (const [field, type, code] of fieldTypes) {
     const value: unknown = patch[field]
@@ -416,6 +454,26 @@ export function applyBackendPatch(
       // URL and token are saved (checked below).
       next.mode = patch.mode
       changes.push(`mode=${patch.mode}`)
+    }
+  }
+
+  if (patch.remoteName !== undefined && (patch.remoteName ?? null) !== (current.remote.name ?? null)) {
+    if (patch.remoteName !== null) {
+      if (!validRemoteName(patch.remoteName) || !opts.savedRemote?.(patch.remoteName)) return fail('remote_not_configured', `No saved connection named "${String(patch.remoteName)}".`)
+      next.remote.name = patch.remoteName
+    } else {
+      delete next.remote.name
+    }
+    changes.push(`connection=${patch.remoteName ?? 'the remote URL'}`)
+  }
+
+  if (patch.trustInsecureOrigin !== undefined) {
+    const origin = remoteUrlOrigin(patch.trustInsecureOrigin)
+    if (!origin || origin !== patch.trustInsecureOrigin) return fail('invalid_patch', 'trustInsecureOrigin is not an origin.')
+    const origins = next.insecureHttpOrigins ?? []
+    if (!origins.includes(origin)) {
+      next.insecureHttpOrigins = [...origins, origin].slice(-MAX_INSECURE_ORIGINS)
+      changes.push(`plain http confirmed for ${origin}`)
     }
   }
 
@@ -507,7 +565,11 @@ export function applyBackendPatch(
     return fail('insecure_url_unconfirmed', 'This http:// address is not loopback or a tailnet address. Confirm that you trust this network, or use https://.')
   }
   // A switch to remote needs a daemon Studio may talk to.
-  if (patch.mode === 'remote' && patch.mode !== current.mode) {
+  const toSaved = next.mode === 'remote' && !!next.remote.name
+  if (toSaved && (patch.mode === 'remote' || patch.remoteName !== undefined)) {
+    // The saved connection's address and token are checked where they are read (connections.ts).
+    if (!opts.savedRemote?.(next.remote.name!)) return fail('remote_not_configured', `No saved connection named "${next.remote.name}".`)
+  } else if (patch.mode === 'remote' && patch.mode !== current.mode) {
     if (!next.remote.url) return fail('remote_not_configured', 'Save the remote daemon URL and token before switching to it.')
     const refusal = remoteTransportRefusal(next)
     if (refusal) return fail('insecure_url_unconfirmed', refusal)
@@ -515,6 +577,11 @@ export function applyBackendPatch(
   }
 
   return { ok: true, config: next, notices, changes }
+}
+
+/** One key per connection: the mode, and for remote the saved connection's name (empty: the remote URL). */
+export function connectionKey(mode: StudioBackendMode, remoteName: string | null | undefined): string {
+  return mode === 'remote' ? `remote:${remoteName ?? ''}` : mode
 }
 
 export interface BackendSettingsStore {
@@ -527,7 +594,7 @@ export interface BackendSettingsStore {
 }
 
 /**
- * Settings → Backend state for one Studio process. Studio main is the only
+ * Settings → Connection state for one Studio process. Studio main is the only
  * writer of `studio-backend.json` (§4.2), so the boot read stays the source
  * of truth and saves go straight to disk. Saves are serialized.
  */
@@ -554,6 +621,8 @@ export function createBackendSettingsStore(deps: {
   cancelSwitch?: () => StudioBackendMode | null
   /** Once a switch's restart has started: the refusal for any later mode change or switch action. */
   restarting?: () => string | null
+  /** A saved connection of `cli-remotes.json` by name (settings-scopes.md §5.2). */
+  savedRemote?: (name: string) => { url: string } | null
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
@@ -575,7 +644,7 @@ export function createBackendSettingsStore(deps: {
     // Studio is restarting into a switch already: a mode change or a switch action now would not apply (nor be undone).
     const restarting = deps.restarting?.() ?? null
     if (restarting && (switchAction !== undefined || (rest.mode !== undefined && rest.mode !== current.mode))) {
-      log.warn(`[Backend] Settings → Backend change refused: ${restarting}`)
+      log.warn(`[Backend] Settings → Connection change refused: ${restarting}`)
       return { ok: false, code: 'restarting', error: restarting }
     }
     let patch: BackendSettingsPatch = rest
@@ -593,10 +662,13 @@ export function createBackendSettingsStore(deps: {
       patch = { ...rest, mode: restore }
     }
     const previous = current
-    const result = applyBackendPatch(current, patch, { codec: deps.codec, ...(paired ? { paired } : {}) })
+    const result = applyBackendPatch(current, patch, { codec: deps.codec, ...(paired ? { paired } : {}), ...(deps.savedRemote ? { savedRemote: deps.savedRemote } : {}) })
     if (!result.ok) return result
     // A switch away from the running backend restarts Studio (D9); back to it is a plain save.
-    const switching = result.config.mode !== current.mode && result.config.mode !== deps.boot.mode
+    // Remote to another saved connection is a switch too (settings-scopes.md §5.3).
+    const nextKey = connectionKey(result.config.mode, result.config.remote.name)
+    const switching = nextKey !== connectionKey(current.mode, current.remote.name)
+      && nextKey !== connectionKey(deps.boot.mode, deps.boot.config.remote.name)
     if (switching && deps.confirmModeSwitch && !await deps.confirmModeSwitch(result.config.mode)) {
       log.log(`[Backend] Switch to ${result.config.mode} cancelled in the switch dialog`)
       return { ok: false, code: 'switch_cancelled', error: 'Switch cancelled. Nothing changed.' }
@@ -617,15 +689,16 @@ export function createBackendSettingsStore(deps: {
       else if (switchAction === 'cancel' || result.config.mode !== previous.mode) modeBeforeSwitch = null
       current = result.config
       droppedUnwritten = []
-      log.log(`[Backend] Settings → Backend saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
+      log.log(`[Backend] Settings → Connection saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
     }
     const notices = [...result.notices]
     // Choosing the running mode while a switch waits for its turns is the latest choice: that switch is cancelled (as Cancel Switch).
-    const replaced = !switching && result.config.mode !== previous.mode && switchAction === undefined ? deps.cancelSwitch?.() ?? null : null
+    const changedConnection = nextKey !== connectionKey(previous.mode, previous.remote.name)
+    const replaced = !switching && changedConnection && switchAction === undefined ? deps.cancelSwitch?.() ?? null : null
     if (replaced) log.log(`[Backend] Switch to ${replaced} cancelled: ${result.config.mode} was chosen again`)
     if (switching) notices.push((deps.applyModeSwitch?.(result.config.mode)) || 'Studio restarts now.')
     else if (replaced) notices.push('Switch cancelled; Studio stays in this mode.')
-    else if (result.config.mode !== previous.mode) notices.push('Studio already runs this mode; no restart is needed.')
+    else if (changedConnection) notices.push('Studio already runs this mode; no restart is needed.')
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
     if (switchAction === 'cancel') notices.splice(0, notices.length, 'Switch cancelled; Studio stays in this mode.')
     return { ok: true, view: view(), notices }

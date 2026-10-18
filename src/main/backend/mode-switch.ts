@@ -35,11 +35,11 @@ import {
  * handover.ts (Electron-free, tested there).
  *
  * Every step is logged, and shown where the user started it: the switch
- * dialog in Settings → Backend, the summary and the resumed agents when the
+ * dialog in Settings → Connection, the summary and the resumed agents when the
  * window opens after the restart.
  */
 
-/** The modes as Settings → Backend names them (owner decision 2026-10-17); internal ids stay embedded/local/remote. */
+/** The modes as Settings → Connection names them (owner decision 2026-10-17); internal ids stay embedded/local/remote. */
 const MODE_LABELS: Record<StudioBackendMode, string> = {
   embedded: 'Inside Studio (legacy)',
   local: 'This computer',
@@ -256,7 +256,7 @@ export function agentNames(paths: readonly string[]): string[] {
 interface ResumeRecord { v: 1; from: StudioBackendMode; to: StudioBackendMode; agents: string[]; at: string }
 
 /**
- * Settings → Backend's switch (§11, §11.1): `confirm` shows the dialog,
+ * Settings → Connection's switch (§11, §11.1): `confirm` shows the dialog,
  * `apply` (after the mode is saved) records the running agents for the
  * other side and restarts, now or once the turns in flight finished.
  */
@@ -383,11 +383,11 @@ export function createModeSwitcher(ctx: SwitchContext) {
         console.log(`[Backend] Switch to ${target}: the turns finished; restarting`)
         finish()
       } else if (pending && !pending.gaveUp && Date.now() > deadline) {
-        // Waiting stops here; Settings → Backend offers "Finish Switch Now" and "Cancel Switch" (the mode is already saved).
+        // Waiting stops here; Settings → Connection offers "Finish Switch Now" and "Cancel Switch" (the mode is already saved).
         clearInterval(poll)
         pending.gaveUp = true
         console.warn(`[Backend] Switch to ${target}: ${still.join(', ')} still busy after ${WAIT_FOR_TURNS_MAX_MS / 60_000} min; not restarting until the user finishes or cancels the switch`)
-        notify(`The switch to "${MODE_LABELS[target]}" is waiting: ${still.join(', ')} still has a turn in flight. Settings → Backend: Finish Switch Now (stops the turns) or Cancel Switch.`)
+        notify(`The switch to "${MODE_LABELS[target]}" is waiting: ${still.join(', ')} still has a turn in flight. Settings → Connection: Finish Switch Now (stops the turns) or Cancel Switch.`)
       }
     }, 1000)
     const finish = (): void => {
@@ -402,7 +402,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
   /** The mode Studio is restarting into, once a restart has started; null before. */
   const restartingInto = (): StudioBackendMode | null => restarting
 
-  /** A switch waiting for turns in flight (Settings → Backend shows it with its two buttons). */
+  /** A switch waiting for turns in flight (Settings → Connection shows it with its two buttons). */
   const pendingSwitch = (): { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null =>
     pending ? { target: pending.target, waitingFor: pending.waitingFor(), gaveUp: pending.gaveUp } : null
 
@@ -430,7 +430,7 @@ export function createModeSwitcher(ctx: SwitchContext) {
   return { confirm, apply, pendingSwitch, finishNow, cancel, restartingInto }
 }
 
-/** Settings → Backend's refusal of a switch, a cancel or a mode save once the restart has started. */
+/** Settings → Connection's refusal of a switch, a cancel or a mode save once the restart has started. */
 export function restartingMessage(target: StudioBackendMode): string {
   return `Studio is already restarting for the switch to "${MODE_LABELS[target]}". Nothing changed.`
 }

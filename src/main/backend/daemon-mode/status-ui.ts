@@ -8,7 +8,7 @@ import { daemonExitSentence, type ConnectionState, type DaemonConnection, type D
  *
  * - every transition is logged, and the menu is rebuilt on every one;
  * - while Studio waits for the daemon at boot (§8.2 step 5) the Help menu
- *   and Settings → Backend name what it waits for and, past a moment, the
+ *   and Settings → Connection name what it waits for and, past a moment, the
  *   taskbar shows an indeterminate progress bar; waiting on another
  *   daemon process ("Waiting for the ADF daemon (pid N)…") also raises one
  *   OS notification;
@@ -234,12 +234,12 @@ Daemon log: ${logFile}` : ''}`,
     }
   }
 
-  /** A failed launch: Reconnect (Studio restarts and tries again), embedded for this session (local) or Settings → Backend (remote), the log. */
+  /** A failed launch: Reconnect (Studio restarts and tries again), embedded for this session (local) or Settings → Connection (remote), the log. */
   private async showFailedDialog(message: string): Promise<void> {
     const logFile = this.connection.logFile
     const embedded = this.actions.useEmbeddedForSession
     const settings = this.actions.openBackendSettings
-    const buttons = ['Reconnect', ...(embedded ? ['Run Inside Studio for This Session'] : []), ...(settings ? ['Open Settings → Backend'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
+    const buttons = ['Reconnect', ...(embedded ? ['Run Inside Studio for This Session'] : []), ...(settings ? ['Open Settings → Connection'] : []), ...(logFile ? ['Open Daemon Log'] : []), 'OK']
     try {
       const { response } = await dialog.showMessageBox({
         type: 'error',
@@ -253,7 +253,7 @@ Daemon log: ${logFile}` : ''}`,
       })
       if (buttons[response] === 'Reconnect') this.actions.reconnect()
       else if (buttons[response] === 'Run Inside Studio for This Session') embedded?.()
-      else if (buttons[response] === 'Open Settings → Backend') settings?.()
+      else if (buttons[response] === 'Open Settings → Connection') settings?.()
       else if (buttons[response] === 'Open Daemon Log') this.actions.openLog()
     } catch (err) {
       this.log.warn('[Backend] Could not show the connection failure dialog:', err)

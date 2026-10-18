@@ -8,6 +8,8 @@ import { Tooltip } from '../common/Tooltip'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
+import type { ConnectionCurrent } from '../../../shared/types/connection.types'
+import { runtimeIndicator, useCurrentConnection } from '../../stores/connection.store'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -53,6 +55,8 @@ export function StatusBar() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const meshAgents = useMeshStore((s) => s.agents)
   const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
+  // This window's connection (settings-scopes.md §4.1); main answers per window (#149).
+  const connection = useCurrentConnection()
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)
   const toggleLogsPanel = useAppStore((s) => s.toggleLogsPanel)
   const bottomPanelTab = useAppStore((s) => s.bottomPanelTab)
@@ -163,6 +167,7 @@ export function StatusBar() {
         </>
       )}
       <span className="ml-auto" />
+      <RuntimeIndicator current={connection} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       <UpdateBadge />
       <span
         className="flex items-center gap-1 tabular-nums"
@@ -204,6 +209,38 @@ export function StatusBar() {
         Kill
       </button>
     </div>
+  )
+}
+
+function RemoteIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4" />
+      <path d="m15 8-3 3-3-3" />
+    </svg>
+  )
+}
+
+/**
+ * The runtime this window uses (settings-scopes.md §4.1), left of the update
+ * badge so the version never shifts. Nothing for This computer while it is
+ * connected; a remote's name with the remote icon; the state while not
+ * connected. The tooltip is the address. A click opens Settings → Connection.
+ */
+export function RuntimeIndicator({ current, onOpen }: { current: ConnectionCurrent | null; onOpen: () => void }) {
+  const shown = runtimeIndicator(current)
+  if (!shown) return null
+  return (
+    <button
+      onClick={onOpen}
+      title={shown.tooltip ?? undefined}
+      aria-label={`Runtime: ${shown.text}`}
+      className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${shown.problem ? 'text-[var(--adf-ui-danger)]' : ''}`}
+    >
+      {shown.remote && <RemoteIcon />}
+      <span className="max-w-[220px] truncate">{shown.text}</span>
+    </button>
   )
 }
 

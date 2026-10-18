@@ -22,8 +22,19 @@ import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context
  * and relays the ChatGPT callback.
  */
 
-/** Stored values in remote mode (channel map: remote-unsupported): the daemon's reveal routes answer its own machine only. */
-export const REMOTE_VALUES_UNSUPPORTED = 'Stored credential values stay on the daemon\'s machine: a remote daemon never sends them to Studio.'
+/**
+ * Stored values in remote mode (channel map: remote-unsupported): the
+ * daemon's reveal routes answer its own machine only, so the value is shown
+ * there (settings-scopes.md §7).
+ */
+export function remoteValuesSentence(name: string): string {
+  return `Stored on ${name}.`
+}
+
+/** The remote connection's name in a handler context ("the remote computer" when there is none). */
+export function remoteName(ctx: { remote?: { name(): string } | null }): string {
+  return ctx.remote?.name() || 'the remote computer'
+}
 
 /** GET /settings answers provider keys as this (daemon/http-api.ts). */
 export const REDACTED_API_KEY = '__redacted__'
@@ -201,7 +212,7 @@ export const PROVIDER_HANDLERS: DaemonHandlerTable = {
   [IPC.PROVIDER_CREDENTIAL_GET]: async (ctx, _event, rawArgs: unknown) => {
     const args = credentialGetArgs.parse(rawArgs)
     const prefix = `provider:${args.providerId}:`
-    if (ctx.mode === 'remote') return { credentials: {}, error: REMOTE_VALUES_UNSUPPORTED }
+    if (ctx.mode === 'remote') return { credentials: {}, error: remoteValuesSentence(remoteName(ctx)) }
     try {
       const client = await ctx.ready()
       const query = { path: args.filePath }

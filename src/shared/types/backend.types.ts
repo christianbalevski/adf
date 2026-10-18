@@ -1,5 +1,5 @@
 /**
- * Settings → Backend: which backend Studio's IPC handlers use (design D9,
+ * Settings → Connection: which backend Studio's IPC handlers use (design D9,
  * docs/design/daemon-backend.md). The choice lives in `studio-backend.json`
  * in Studio's userData and takes effect at the next launch.
  *
@@ -50,12 +50,14 @@ export interface BackendSettingsView {
     allowInsecureHttp: boolean
     /** The saved token came from pairing with this computer (remote-access.md §9.3); null for a pasted one. */
     remotePaired?: { fingerprint: string; name: string; label: string } | null
+    /** The saved connection (`cli-remotes.json`) remote mode uses; null: the remote URL above. */
+    remoteName?: string | null
   }
   /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
   daemon?: BackendDaemonStatus | null
   /**
    * A switch saved but waiting for turns in flight to finish ("Wait for Them
-   * to Finish"); `gaveUp` once the wait limit passed. Settings → Backend
+   * to Finish"); `gaveUp` once the wait limit passed. Settings → Connection
    * offers Finish Switch Now and Cancel Switch.
    */
   pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
@@ -83,7 +85,7 @@ export interface BackendDefaultSwitch {
   notDone: string[]
 }
 
-/** Settings → Backend's daemon line (MODE-02): what Studio is connected to. */
+/** Settings → Connection's daemon line (MODE-02): what Studio is connected to. */
 export interface BackendDaemonStatus {
   connection: 'connecting' | 'connected' | 'disconnected' | 'failed'
   /** While connecting: "Waiting for the ADF daemon (pid N)…" and the like. */
@@ -119,6 +121,10 @@ export interface BackendSettingsPatch {
    * counts for a new address only when this names that address's origin.
    */
   insecureHttpOrigin?: string
+  /** Remote mode uses this saved connection of `cli-remotes.json`; null: the remote URL (settings-scopes.md §5.2). */
+  remoteName?: string | null
+  /** Main only: the user confirmed plain HTTP to this origin for a saved connection. */
+  trustInsecureOrigin?: string
   /** A switch waiting for turns in flight: restart now (`finish-now`), or stay in this mode (`cancel`). */
   switchAction?: 'finish-now' | 'cancel'
 }
@@ -144,20 +150,6 @@ export type BackendSettingsSaveResult =
   | { ok: false; code: BackendSettingsErrorCode; error: string }
 
 // --- Remote mode (design §9, tracker W4-B) ---------------------------------
-
-/** Settings → Backend "Test connection": a draft URL and token, or the saved ones. */
-export interface RemoteCheckRequest {
-  /** Default: the saved URL. */
-  url?: string
-  /** Default: the saved token, and only while `url` has the saved URL's origin. */
-  token?: string
-  /** The user ticked the plain-http confirmation for `url`'s origin. */
-  allowInsecureHttp?: boolean
-}
-
-export type RemoteCheckResult =
-  | { ok: true; url: string; version: string; startedBy: string }
-  | { ok: false; problem: string; error: string }
 
 /** What the daemon-side picker picks (§9.3): an agent file, a folder, or a folder plus a new file name. */
 export type RemotePickKind = 'open-adf' | 'folder' | 'save-adf'

@@ -1,5 +1,5 @@
 /**
- * Remote access in the renderer (Settings → Networking, Settings → Backend)
+ * Remote access in the renderer (Runtime → Networking, Studio → Connection)
  * (docs/design/remote-access.md §7, §9.1; owner decisions 2026-10-18): the
  * status line (consent per network), the address order and labels, the devices
  * list, the pairing code, the token shown once, the computers found and the
@@ -9,13 +9,15 @@ import { describe, expect, it } from 'vitest'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  DiscoveredList,
+  changeOn,
+  AddDeviceDialog,
+  addedDeviceLine,
+  HostOnlyRemoteAccess,
   meshServerHosts,
   meshVisibilityLine,
   networkStatusText,
   NetworkConsentPanel,
   PUBLIC_NETWORK_WARNING,
-  remoteSummary,
   NewTokenPanel,
   NOT_ENCRYPTED_WARNING,
   PairingCodePanel,
@@ -29,7 +31,7 @@ import {
   remoteStatusLine,
 } from '../../../src/renderer/components/settings/RemoteAccessSettings'
 import type { RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../src/shared/types/remote-access.types'
-import type { NetworkStatusView, RemoteAccessView, RemotePairState } from '../../../src/shared/types/remote-access-ipc.types'
+import type { NetworkStatusView, RemotePairState } from '../../../src/shared/types/remote-access-ipc.types'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DOCS } from '../../../src/shared/constants/docs-links'
@@ -106,7 +108,7 @@ describe('computers list', () => {
   })
 })
 
-describe('Pair device (host)', () => {
+describe('Add device (host): the code view', () => {
   it('the 6-digit code in large digits, the countdown and the tries left', () => {
     const now = Date.parse('2026-10-18T12:00:00Z')
     expect(pairingCountdown('2026-10-18T12:01:45Z', now)).toBe('1:45')
@@ -120,33 +122,59 @@ describe('Pair device (host)', () => {
   })
 })
 
-describe('Add device (host)', () => {
-  it('the token once, with Copy and Done', () => {
+describe('Add device (host): one dialog, the code or a token (settings-scopes.md §6)', () => {
+  const pairing = { code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 20, lockedSources: 0, claim: null }
+  const noop = async () => true
+  const create = async () => ({ ok: true as const, label: 'x', token: 't' })
+
+  it('opens on the code, with Use a token instead', () => {
+    const html = renderToStaticMarkup(<AddDeviceDialog pairing={pairing} fingerprint="ABCD-EFGH" devices={[]} now={Date.parse('2026-10-18T12:00:00Z')} onOpenCode={noop} onCloseCode={noop} onCreateToken={create} onClose={() => {}} />)
+    expect(html).toContain('Add device')
+    expect(html).toContain('012 345')
+    expect(html).toContain('Use a token instead')
+    expect(html).toContain('>Cancel<')
+    expect(html).not.toContain('Pair device')
+  })
+
+  it('the token view: Device name, Create token, Use a code instead', () => {
+    const html = renderToStaticMarkup(<AddDeviceDialog initialView="token" pairing={null} fingerprint="ABCD-EFGH" devices={[]} onOpenCode={noop} onCloseCode={noop} onCreateToken={create} onClose={() => {}} />)
+    expect(html).toContain('Device name')
+    expect(html).toContain('Create token')
+    expect(html).toContain('Use a code instead')
+  })
+
+  it('"Added <label>." once a device that entered the code is allowed', () => {
+    expect(addedDeviceLine(new Set(['a']), [device({ id: 'a' })])).toBeNull()
+    expect(addedDeviceLine(new Set(['a']), [device({ id: 'a' }), device({ id: 'b', label: 'agent-2 phone' })])).toBe('Added agent-2 phone.')
+    expect(addedDeviceLine(new Set(), [device({ id: 'c', origin: 'token' })])).toBeNull()
+  })
+
+  it('the token once, with Copy and Done, and where to use it', () => {
     const html = renderToStaticMarkup(<NewTokenPanel label="agent-2 laptop" token="adfd_k3j9q2m7xa_secret" onDone={() => {}} />)
     expect(html).toContain('adfd_k3j9q2m7xa_secret')
     expect(html).toContain('shown once')
     expect(html).toContain('>Copy<')
     expect(html).toContain('>Done<')
+    expect(html).toContain('On the device: Settings → Connection → Add connection.')
   })
 })
 
-describe('Discovered (client)', () => {
-  it('name, address and Encrypted / Not encrypted, with Pair', () => {
-    const html = renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [
-      { fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: 'http://100.101.102.103:7385', address: '100.101.102.103', kind: 'tailnet', encrypted: true, pairingOpen: true, alreadyPaired: false },
-      { fingerprint: 'WXYZ-2345', name: 'agent-3-mac', url: 'http://192.168.1.44:7385', address: '192.168.1.44', kind: 'lan', encrypted: false, pairingOpen: false, alreadyPaired: true },
-    ] }} />)
-    expect(html).toContain('agent-1-pc')
-    expect(html).toContain('100.101.102.103 · ABCD-EFGH')
-    expect(html).toContain('>Pairing open<')
-    expect(html).toContain('>Paired<')
-    expect(html).toContain('>Encrypted<')
-    expect(html).toContain('>Not encrypted<')
-    expect(html.match(/>Pair</g)).toHaveLength(2)
+describe('a remote runtime: one sentence for every host-only control (review item 11)', () => {
+  it('changeOn is the one line; Settings uses it for the firewall, identity and remote access', () => {
+    expect(changeOn('rawl-hub')).toBe('Change on rawl-hub.')
+    const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
+    expect(page).not.toMatch(/Firewall: change on/)
+    expect(page.match(/changeOn\(/g)?.length).toBe(3)
   })
+})
 
-  it('says how to make one appear when none is found', () => {
-    expect(renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [] }} />)).toContain('None yet. Turn on Remote access on the other computer.')
+describe('a remote runtime: host-only (settings-scopes.md §7)', () => {
+  it('Remote access says where it is changed, with no control', () => {
+    const html = renderToStaticMarkup(<HostOnlyRemoteAccess name="rawl-hub" />)
+    expect(html).toContain('Remote access')
+    expect(html).toContain('Change on rawl-hub.')
+    expect(html).not.toContain('<input')
+    expect(html).not.toContain('<button')
   })
 })
 
@@ -213,25 +241,17 @@ describe('Settings → Networking', () => {
     expect(meshServerHosts({ host: '0.0.0.0', lanAddresses: ['0.0.0.0'] })).toBe('all interfaces')
   })
 
-  it('Settings → Backend: one line for remote access', () => {
-    const view = (over: Partial<RemoteAccessView>): RemoteAccessView => ({ available: true, unavailableReason: null, status: status({ devices: [device(), device({ id: 'b' })] }), error: null, stopsWithStudio: false, ...over })
-    expect(remoteSummary(view({}))).toBe('On · 2 devices')
-    expect(remoteSummary(view({ status: status({ enabled: false }) }))).toBe('Off')
-    expect(remoteSummary(view({ status: status({ devices: [device()] }) }))).toBe('On · 1 device')
-  })
-
   it('every remote-access docs link is a heading of its guide', () => {
     const slug = (heading: string) => heading.toLowerCase().replace(/[^\p{L}\p{N} -]/gu, '').replace(/ /g, '-')
     const anchors = (file: string) => new Set(readFileSync(join(__dirname, '../../../docs/guides', file), 'utf-8').split(/\r?\n/).filter((l) => /^#{2,3} /.test(l)).map((l) => slug(l.replace(/^#+ /, ''))))
-    for (const url of [DOCS.remoteAccess, DOCS.remoteAccessPair, DOCS.remoteAccessDiscovered, DOCS.networkingStatus]) {
+    for (const url of [DOCS.remoteAccess, DOCS.remoteAccessPair, DOCS.networkingStatus]) {
       const [, file, anchor] = /\/docs\/guides\/([^#]+)#(.+)$/.exec(url)!
       expect(anchors(file).has(anchor), url).toBe(true)
     }
   })
 
   it('no question-style or banned phrasing in what the UI renders', () => {
-    const html = renderToStaticMarkup(<DiscoveredList onPair={() => {}} update={{ browsing: true, problem: null, entries: [] }} />)
-      + renderToStaticMarkup(<RemoteDeviceList devices={[]} busy={false} onRemove={() => {}} />)
+    const html = renderToStaticMarkup(<RemoteDeviceList devices={[]} busy={false} onRemove={() => {}} />)
       + renderToStaticMarkup(<NewTokenPanel label="x" token="t" onDone={() => {}} />)
     for (const banned of ['Allow other computers to connect', 'Found on your network', 'Who can reach this computer?', 'Your other computers']) expect(html).not.toContain(banned)
   })
@@ -254,14 +274,5 @@ describe('consent review 3: the network notice is a strip in the window, not a d
     expect(html).toContain('Remote access paused on Unidentified network.')
     expect(html).toContain('Open Networking')
     expect(renderToStaticMarkup(<NetworkNoticeList busy={null} error={null} onAllow={noop} onDismiss={noop} onOpenNetworking={noop} notices={[]} />)).toBe('')
-  })
-})
-
-describe('discovery review 3: one fingerprint at two addresses', () => {
-  it('both rows show, each flagged', () => {
-    const entry = { fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: 'http://192.168.1.20:7385', address: '192.168.1.20', kind: 'lan' as const, encrypted: false, pairingOpen: false, alreadyPaired: false, clash: 2 }
-    const html = renderToStaticMarkup(<DiscoveredList update={{ browsing: true, problem: null, entries: [entry, { ...entry, name: 'impostor', url: 'http://192.168.1.66:7385', address: '192.168.1.66' }] }} onPair={() => {}} />)
-    expect(html.match(/Same fingerprint at 2 addresses/g)?.length).toBe(2)
-    expect(html).toContain('impostor')
   })
 })

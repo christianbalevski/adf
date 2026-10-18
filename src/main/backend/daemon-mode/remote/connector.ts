@@ -2,6 +2,8 @@ import { SUPPORTED_CLIENT_API_VERSION, type DaemonVersion } from '../../../../sh
 import { checkRemoteDaemonUrl } from '../../../../shared/utils/remote-backend-url'
 import { readRemoteToken, remoteTransportRefusal, type SecretCodec, type StudioBackendConfig } from '../../backend-config'
 import type { DaemonConnector } from '../connection'
+import { ConnectionError, checkPinnedFingerprint, pinCheckFor, savedConnectionTarget } from '../../connections'
+import type { SavedRemote } from '../../../cli/remotes'
 
 /**
  * Remote mode's connector (design §9, tracker W4-B): the URL and the `safe:`
@@ -33,6 +35,10 @@ export type RemoteConnectProblem =
   | 'not_a_daemon'
   | 'version'
   | 'http'
+  /** A saved connection answers with another fingerprint than the one pinned when it was paired. */
+  | 'fingerprint'
+  /** The OS keychain did not give the saved connection's token. */
+  | 'keychain'
 
 export class RemoteConnectError extends Error {
   constructor(readonly problem: RemoteConnectProblem, message: string) {
@@ -99,14 +105,14 @@ function describeAnswer(url: string, res: Response, step: 'health' | 'version', 
   if (res.status >= 300 && res.status < 400) {
     void res.body?.cancel().catch(() => {})
     const location = res.headers.get('location')
-    return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Backend.`)
+    return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Connection.`)
   }
   if (res.status === 403 && body?.code === 'host_not_allowed') {
     const host = (() => { try { return new URL(url).hostname } catch { return url } })()
     return new RemoteConnectError('host_not_allowed', `The ADF daemon at ${url} does not accept the host name ${host}. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon).`)
   }
   if (step === 'version' && res.status === 401) {
-    return new RemoteConnectError('unauthorized', `The ADF daemon at ${url} refused the token. Run adf daemon token on the server and save the result in Settings → Backend.`)
+    return new RemoteConnectError('unauthorized', `The ADF daemon at ${url} refused the token. Run adf daemon token on the server and add it in Settings → Connection → Add connection.`)
   }
   if (res.status === 502 || res.status === 503 || res.status === 504) {
     return new RemoteConnectError('proxy', `${url} answered HTTP ${res.status}: a proxy answers there, but the ADF daemon behind it does not. Start it on the server (adf daemon start) and check the proxy's target.`)
@@ -130,6 +136,21 @@ export interface RemoteConnectorOptions extends HandshakeOptions {
   /** Backoff between attempts while the daemon cannot be reached: from `initialMs`, doubling up to `maxMs`. */
   retry?: { initialMs?: number; maxMs?: number; maxAttempts?: number }
   sleep?: (ms: number) => Promise<void>
+  /** Where `cli-remotes.json` and the keychain fallback are (connections.ts remotesEnv); default process.env. */
+  env?: NodeJS.ProcessEnv
+}
+
+const CONNECTION_PROBLEM: Record<ConnectionError['code'], RemoteConnectProblem> = {
+  not_configured: 'not_configured',
+  transport: 'transport',
+  no_token: 'no_token',
+  keychain: 'keychain',
+  pinned: 'fingerprint',
+  unreachable: 'unreachable',
+}
+
+function asConnectError(err: unknown): unknown {
+  return err instanceof ConnectionError ? new RemoteConnectError(CONNECTION_PROBLEM[err.code], err.message) : err
 }
 
 /** The progress line while Studio waits for an unreachable remote daemon (index.ts notifies once on it). */
@@ -181,23 +202,48 @@ export async function remoteHandshake(url: string, token: string, opts: Handshak
 /** Why `config` cannot be used to connect, before any request; null when it can. */
 export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCodec): { error: RemoteConnectError } | { url: string; token: string } {
   const url = config.remote.url
-  if (!url) return { error: new RemoteConnectError('not_configured', 'Remote mode has no daemon URL. Enter it in Settings → Backend.') }
+  if (!url) return { error: new RemoteConnectError('not_configured', 'Remote mode has no daemon URL. Enter it in Settings → Connection.') }
   const refusal = remoteTransportRefusal(config)
   if (refusal) return { error: new RemoteConnectError('transport', refusal) }
   // Defence in depth: the file could have been edited after the boot read.
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return { error: new RemoteConnectError('transport', `The remote daemon URL is not valid: ${check.reason ?? url}`) }
   const token = readRemoteToken(config, codec)
-  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Save it in Settings → Backend (adf daemon token on the server prints it).`) }
+  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connection → Add connection (adf daemon token on the server prints it).`) }
   return { url: check.url, token }
 }
 
 export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec, opts: RemoteConnectorOptions = {}): DaemonConnector {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
-  return Object.assign(async (progress: (text: string) => void) => {
-    const checked = remoteConfigProblem(config, codec)
-    if ('error' in checked) throw checked.error
-    const { url, token } = checked
+  // Set once connected: the pin to check before every new connection (connection.ts pinCheck).
+  let pin: (() => Promise<void>) | null = null
+  const connector = Object.assign(async (progress: (text: string) => void) => {
+    let url: string
+    let token: string
+    // A saved connection (settings-scopes.md §5.2): cli-remotes.json and the OS keychain, pinned to its fingerprint.
+    let saved: { name: string; remote: SavedRemote } | null = null
+    const name = config.remote.name
+    if (name) {
+      progress(`Reading the token for ${name}…`)
+      try {
+        const target = await savedConnectionTarget(config, name, opts.env ?? process.env, {
+          onSlow: () => progress(`Waiting for the OS keychain: answer its prompt for ${name} (it can be behind other windows).`),
+        })
+        url = target.url
+        token = target.token
+        saved = { name, remote: target.remote }
+      } catch (err) {
+        throw asConnectError(err)
+      }
+    } else {
+      const checked = remoteConfigProblem(config, codec)
+      if ('error' in checked) throw checked.error
+      url = checked.url
+      token = checked.token
+      // A paired remote URL that could not move to the shared list is pinned all the same.
+      const paired = config.remote.paired
+      if (paired) saved = { name: paired.name, remote: { url, fingerprint: paired.fingerprint, deviceId: paired.deviceId, label: paired.label, pairedAt: '' } }
+    }
     progress(`Connecting to the remote ADF daemon at ${url}…`)
     // An unreachable daemon at launch is retried with backoff (W4-B review);
     // a wrong token, TLS error, version or address problem ends the attempt.
@@ -206,7 +252,9 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
     let info: DaemonVersion
     for (let attempt = 1; ; attempt++) {
       try {
+        if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, opts.fetch).catch((e) => { throw asConnectError(e) })
         info = await remoteHandshake(url, token, opts)
+        if (saved) pin = pinCheckFor(saved.name, saved.remote.fingerprint, url, opts.fetch)
         break
       } catch (err) {
         if (!(err instanceof RemoteConnectError) || !RETRIED.has(err.problem) || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw err
@@ -223,4 +271,7 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       source: { token: () => token },
     }
   }, { logFile: null })
+  // A pinned connection is checked again before every new connection, not only at launch.
+  if (!config.remote.name && !config.remote.paired) return connector
+  return Object.assign(connector, { pinCheck: () => pin ? pin() : Promise.resolve() })
 }

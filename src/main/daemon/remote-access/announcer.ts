@@ -19,6 +19,8 @@ export interface Announcement {
   port: number
   /** The LAN address to announce from: one that listens, so on an allowed network. */
   iface: string
+  /** The tailnet addresses the daemon listens on (TXT `ts`): clients merge this LAN record with the tailnet hello. */
+  tailnet?: string[]
   txt: { v: string; fp: string; pair: '0' | '1'; api: string }
 }
 

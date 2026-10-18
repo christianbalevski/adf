@@ -23,6 +23,8 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
+import { migratePairedSlot, remotesEnv, SavedConnectionsCache } from './backend/connections'
+import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
   askVersionMismatch,
@@ -125,9 +127,9 @@ let fileToOpen: string | null = null
 let daemonMode: DaemonModeHandle | null = null
 // Set at boot in embedded mode only.
 let embeddedIpc: EmbeddedIpc | null = null
-// Set when Settings → Backend confirmed a switch: the quit that follows is a restart into it.
+// Set when Settings → Connection confirmed a switch: the quit that follows is a restart into it.
 let switchingTo: StudioBackendMode | null = null
-// Settings → Backend → This computer, discovery, pairing and the quit question (remote-access.md).
+// Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
 let remoteAccess: RemoteAccessIpc | null = null
 // A quit from a signal is not held for the question about connected computers.
 let quitUnasked = false
@@ -603,6 +605,17 @@ app.whenReady().then(async () => {
   // First launch without studio-backend.json: save the default, and on an install that ran Embedded prepare the one notice.
   const firstLaunch = await settleDefaultBackend(backend, getUserDataPath(), handover, { version: app.getVersion() })
   let backendStore: BackendSettingsStore | null = null
+  // Saved connections: cli-remotes.json next to Studio's settings file, shared with adf (settings-scopes.md §5.2).
+  const connectionsEnv = remotesEnv(getUserDataPath())
+  // A remote paired before the shared list moves into it, pinned like the others.
+  await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
+  // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
+  let connections: Connections | null = null
+  const savedCache = new SavedConnectionsCache(connectionsEnv, () => connections?.changed())
+  await savedCache.refresh().catch(() => {})
+  savedCache.watch()
+  app.once('before-quit', () => savedCache.dispose())
+  const savedRemote = (name: string): { url: string } | null => savedCache.get()[name] ?? null
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')
@@ -632,14 +645,15 @@ app.whenReady().then(async () => {
           daemonEntry: join(__dirname, 'daemon.js'),
           onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
-        : remoteDaemonConnector(backend.config, safeStorageCodec),
+        : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
       hooks: { showMainWindow, openFile: requestOpenFile },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
-      // Read at quit: a change in Settings → Backend applies to the next quit.
+      // Read at quit: a change in Settings → Connection applies to the next quit.
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,
       onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
+      runtimeName: () => backend.config.remote.name ?? backend.config.remote.paired?.name ?? null,
       ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
     })
     const handle = daemonMode
@@ -660,10 +674,13 @@ app.whenReady().then(async () => {
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
     daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
     window: () => mainWindow,
-    remoteUrl: () => backendStore?.config().remote.url ?? backend.config.remote.url,
+    remoteUrl: () => {
+      const config = backendStore?.config() ?? backend.config
+      return config.remote.name ? savedRemote(config.remote.name)?.url ?? null : config.remote.url
+    },
     relaunch: (target) => {
       switchingTo = target
-      relaunchStudio(`the backend was switched to ${target} in Settings → Backend`)
+      relaunchStudio(`the backend was switched to ${target} in Settings → Connection`)
     },
   })
   backendStore = registerBackendSettingsHandlers(backend, {
@@ -675,6 +692,7 @@ app.whenReady().then(async () => {
     cancelSwitch: switcher.cancel,
     restarting: () => { const target = switcher.restartingInto(); return target ? restartingMessage(target) : null },
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
+    savedRemote,
   })
   remoteAccess = registerRemoteAccessHandlers({
     mode: backend.mode,
@@ -686,7 +704,30 @@ app.whenReady().then(async () => {
     settingsDir: getUserDataPath(),
     meshLan: () => embeddedIpc?.meshLanState() ?? null,
     meshPeers: () => embeddedIpc?.meshPeerFeed() ?? null,
+    remotesEnv: connectionsEnv,
+    savedCache,
+    onConnectionsChanged: () => connections?.changed(),
   })
+  // Settings → Connection and the status bar's runtime indicator (settings-scopes.md §4.1, §5).
+  const store = backendStore
+  const access = remoteAccess
+  connections = createConnections({
+    boot: backend,
+    backend: store,
+    env: connectionsEnv,
+    saved: savedCache,
+    daemonStatus: () => daemonMode?.status() ?? null,
+    discovery: () => access.discovery.snapshot(),
+    confirm: async ({ title, message, detail, ok }) => {
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+      const options: Electron.MessageBoxOptions = { type: 'question', title: title ?? message, message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true }
+      const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
+      return response === 0
+    },
+    push: pushConnections,
+  })
+  registerConnectionHandlers(connections)
+  daemonMode?.connection.onState(() => connections?.changed())
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)

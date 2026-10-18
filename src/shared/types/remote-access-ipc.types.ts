@@ -7,7 +7,7 @@
 
 import type { AllowedNetwork, NetworkView, RemoteAccessStatus, RemoteDevice } from './remote-access.types'
 
-/** Settings → Backend → This computer: the host panel. */
+/** Settings → Networking → Remote access: the host panel. */
 export interface RemoteAccessView {
   /** Studio runs the ADF daemon on this computer (local mode); otherwise the panel is read-only. */
   available: boolean
@@ -84,7 +84,7 @@ export interface NetworkNotice {
 /** NETWORK_ALLOW / NETWORK_FORGET. */
 export type NetworkConsentResult = { ok: true } | { ok: false; error: string }
 
-// --- Client side: Settings → Backend → Remote computer ---------------------
+// --- Client side: Settings → Connection ---------------------
 
 /** One ADF computer found on the LAN (mDNS) or the tailnet (hello probe), merged by fingerprint. */
 export interface RemoteDiscoveryEntry {
@@ -171,4 +171,6 @@ export interface RemotePairState {
   code: RemotePairErrorCode | null
   /** paired: the URL saved for the remote computer. */
   savedUrl: string | null
+  /** paired: the saved connection's id on the Connection page (`remote:<name>`), for Connect. */
+  savedId?: string | null
 }

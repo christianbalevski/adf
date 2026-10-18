@@ -63,14 +63,14 @@ describe('writeSecretFileAtomic', () => {
 })
 
 describe.runIf(process.platform === 'win32')('callers fail visibly (Windows)', () => {
-  it('the CLI does not save a token it cannot restrict, and does not claim it did', () => {
+  it('the CLI does not save a token it cannot restrict, and does not claim it did', async () => {
     const dir = tempDir()
     const env = { ADF_DAEMON_SETTINGS: join(dir, 'adf-settings.json'), ADF_KEYCHAIN: '0' }
     acl.fail = true
-    expect(() => storeRemoteToken('ABCD-EFGH', `adfd_aaaaaaaaaa_${'b'.repeat(43)}`, env)).toThrow(SecretFileError)
+    await expect(storeRemoteToken('ABCD-EFGH', `adfd_aaaaaaaaaa_${'b'.repeat(43)}`, env, async () => true)).rejects.toThrow(SecretFileError)
     expect(readdirSync(dir)).toEqual([])
     acl.fail = false
-    expect(storeRemoteToken('ABCD-EFGH', `adfd_aaaaaaaaaa_${'b'.repeat(43)}`, env)).toMatchObject({ where: 'file' })
+    expect(await storeRemoteToken('ABCD-EFGH', `adfd_aaaaaaaaaa_${'b'.repeat(43)}`, env, async () => true)).toMatchObject({ where: 'file' })
     expect(acl.seenSizes.at(-1)).toBe(0)
   })
 

@@ -7,8 +7,8 @@ import type { NetworkPeer } from '../../../shared/types/remote-access.types'
 import type { RemoteDiscoveryEntry, RemoteDiscoveryUpdate } from '../../../shared/types/remote-access-ipc.types'
 
 /**
- * Settings → Backend → Remote computer, "Discovered"
- * (docs/design/remote-access.md §5.1, §9.1): the ADF computers with remote
+ * Settings → Connection, the Not paired rows
+ * (docs/design/remote-access.md §5.1, §9.1; settings-scopes.md §5.1): the ADF computers with remote
  * access on, read from the one discovery feed of this computer, the same
  * feed the mesh peer list reads:
  *
@@ -39,8 +39,8 @@ export interface PeerFeed {
 
 export interface DiscoveryDeps {
   onUpdate: (update: RemoteDiscoveryUpdate) => void
-  /** The saved remote computer's fingerprint ("Already paired"). */
-  pairedFingerprint: () => string | null
+  /** The fingerprints of every saved connection ("Paired"): cli-remotes.json and the remote URL of studio-backend.json. */
+  pairedFingerprints: () => ReadonlySet<string>
   /** This computer's own daemon fingerprint, left out of the list. */
   ownFingerprint?: () => string | null
   /** This computer's discovery feed now; null while it cannot be read (no daemon yet). */
@@ -61,6 +61,7 @@ export class RemoteDiscovery {
   private feed: PeerFeed | null = null
   private unsubscribe: (() => void) | null = null
   private generation = 0
+  private last: RemoteDiscoveryUpdate | null = null
   private readonly log: Pick<Console, 'log' | 'warn'>
 
   constructor(private readonly deps: DiscoveryDeps) {
@@ -69,6 +70,11 @@ export class RemoteDiscovery {
 
   get isRunning(): boolean {
     return this.running
+  }
+
+  /** The list last sent while running; null when stopped (the Connection page reads it). */
+  snapshot(): RemoteDiscoveryUpdate | null {
+    return this.running ? this.last : null
   }
 
   start(): void {
@@ -102,7 +108,7 @@ export class RemoteDiscovery {
 
   /** The list: tailnet before LAN, then by name. */
   entries(): RemoteDiscoveryEntry[] {
-    const paired = this.deps.pairedFingerprint()
+    const paired = this.deps.pairedFingerprints()
     const own = this.deps.ownFingerprint?.() ?? null
     const out: RemoteDiscoveryEntry[] = []
     for (const peer of this.peers) {
@@ -119,7 +125,7 @@ export class RemoteDiscovery {
         kind: remote.kind,
         encrypted: kind === 'tailnet' || kind === 'https',
         pairingOpen: remote.pairingOpen,
-        alreadyPaired: paired === remote.fingerprint,
+        alreadyPaired: paired.has(remote.fingerprint),
         clash: remote.clash ?? null,
       })
     }
@@ -133,11 +139,12 @@ export class RemoteDiscovery {
 
   private emit(): void {
     const feed = this.feed
-    this.deps.onUpdate({
+    this.last = {
       entries: this.entries(),
       browsing: !!feed && feed.problem() === null,
       problem: feed ? feed.problem() : this.running ? 'Studio is not connected to the ADF daemon yet.' : null,
-    })
+    }
+    this.deps.onUpdate(this.last)
   }
 
   private async read(generation: number, waitMs: number): Promise<void> {

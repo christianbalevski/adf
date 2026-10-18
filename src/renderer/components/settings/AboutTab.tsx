@@ -31,7 +31,15 @@ function updateLine(update: AppUpdateState, result: AppUpdateCheckResult | null)
   }
 }
 
-export function AboutTab() {
+function openExternal(url: string): void {
+  // Electron renderer has no `shell.openExternal` directly — fall back
+  // to anchor click behaviour; the main process intercepts and routes
+  // to the OS handler via the default window.open behaviour.
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/** Studio → Updates (settings-scopes.md §4): the running version, Check for updates, Download and restart. */
+export function UpdatesGroup() {
   const [appVersion, setAppVersion] = useState<string | null>(null)
   const [update, setUpdate] = useState<AppUpdateState>({ status: 'idle' })
   const [checking, setChecking] = useState(false)
@@ -75,16 +83,7 @@ export function AboutTab() {
     }
   }, [])
 
-  const openExternal = (url: string) => {
-    // Electron renderer has no `shell.openExternal` directly — fall back
-    // to anchor click behaviour; the main process intercepts and routes
-    // to the OS handler via the default window.open behaviour.
-    window.open(url, '_blank', 'noopener,noreferrer')
-  }
-
   return (
-    <div className="space-y-6 text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
-      {/* Running version + updates */}
       <SettingsGroup>
         <SettingsRow
           label="ADF Studio"
@@ -112,7 +111,12 @@ export function AboutTab() {
           </div>
         </SettingsRow>
       </SettingsGroup>
+  )
+}
 
+export function AboutTab() {
+  return (
+    <div className="space-y-6 text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
       {/* Hero */}
       <div className="text-center pb-2">
         <Wordmark height={40} className="mb-1" />

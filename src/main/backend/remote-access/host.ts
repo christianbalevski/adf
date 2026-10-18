@@ -164,7 +164,7 @@ export class RemoteAccessHost {
     const result = await this.run(enabled ? 'Turning on' : 'Turning off', (m) => m.set({ enabled, ...(name ? { name } : {}) }))
     if (result.ok) {
       const s = result.view.status
-      this.log.log(`[Remote access] ${enabled ? 'On' : 'Off'} (Settings → Backend): ${s?.state ?? '?'}${s?.message ? `: ${s.message}` : ''}`)
+      this.log.log(`[Remote access] ${enabled ? 'On' : 'Off'} (Settings → Connection): ${s?.state ?? '?'}${s?.message ? `: ${s.message}` : ''}`)
     }
     return result
   }
@@ -187,7 +187,7 @@ export class RemoteAccessHost {
     const text = typeof label === 'string' && label.trim() ? label.trim() : `Computer added ${new Date().toISOString().slice(0, 10)}`
     try {
       const { device, token } = await mgmt.addDevice(text)
-      this.log.log(`[Remote access] Token created for "${device.label}" (${device.id}); shown once in Settings → Backend`)
+      this.log.log(`[Remote access] Token created for "${device.label}" (${device.id}); shown once in Settings → Connection`)
       this.notice(`added:${device.id}`, deviceAddedNotice(device.label))
       const view = await this.get()
       this.publish(view)
@@ -216,7 +216,7 @@ export class RemoteAccessHost {
   async openPairing(): Promise<RemoteAccessResult> {
     return this.run('Opening pairing', async (m) => {
       await m.openPairing()
-      this.log.log('[Remote access] Pairing window opened (Settings → Backend)')
+      this.log.log('[Remote access] Pairing window opened (Settings → Connection)')
       return m.status()
     })
   }
@@ -224,7 +224,7 @@ export class RemoteAccessHost {
   async closePairing(): Promise<RemoteAccessResult> {
     return this.run('Closing pairing', async (m) => {
       await m.closePairing()
-      this.log.log('[Remote access] Pairing window closed (Settings → Backend)')
+      this.log.log('[Remote access] Pairing window closed (Settings → Connection)')
       return m.status()
     })
   }

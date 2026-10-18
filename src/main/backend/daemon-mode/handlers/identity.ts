@@ -6,7 +6,7 @@ import { deriveOwnerIdentity, validateMnemonic } from '../../../crypto/mnemonic-
 import { verifyAttestation } from '../../../services/attestation.service'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
-import { REMOTE_VALUES_UNSUPPORTED, writeWithLockedChoice } from './providers'
+import { remoteName, remoteValuesSentence, writeWithLockedChoice } from './providers'
 import { editedPlaceholderRefusal, isEditedPlaceholder, REDACTED_VALUE } from '../mcp/common'
 import { REMOTE_OWNER_BACKUP_SENTENCE } from '../../../../shared/constants/remote-owner-identity'
 
@@ -153,7 +153,7 @@ export const IDENTITY_HANDLERS: DaemonHandlerTable = {
   [IPC.IDENTITY_REVEAL]: (ctx, _event, args: { purpose: string }) =>
     onOpenAgent(ctx, 'Revealing a value of the open agent', () => ({ value: null }), async (client, agentId) => {
       if (isKeyMaterialPurpose(args.purpose)) return { value: null, reason: REVEAL_REFUSED_REASON }
-      if (ctx.mode === 'remote') return { value: null, reason: REMOTE_VALUES_UNSUPPORTED }
+      if (ctx.mode === 'remote') return { value: null, reason: remoteValuesSentence(remoteName(ctx)) }
       return { value: await reveal(client, agentId, args.purpose) }
     }),
 

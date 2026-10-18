@@ -129,8 +129,15 @@ function saveChatWidth(width: ChatWidth): void {
     localStorage.setItem(CHAT_WIDTH_KEY, width)
   } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
 }
-/** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
-export type SettingsSection = 'general' | 'identity' | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'backend' | 'about'
+/**
+ * Settings page key (settings-scopes.md §4): Studio pages, then the runtime's.
+ * `general` and `backend` are older ids; SettingsPage opens Appearance (or
+ * Usage, with the `usage` anchor) and Connection for them.
+ */
+export type SettingsSection =
+  | 'connection' | 'appearance' | 'notifications' | 'updates' | 'privacy' | 'about'
+  | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'files' | 'identity' | 'networking' | 'compute' | 'usage'
+  | 'general' | 'backend'
 
 export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured'
 

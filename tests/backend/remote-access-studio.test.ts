@@ -88,7 +88,7 @@ function hostSetup(over: Partial<RemoteAccessHostDeps> = {}) {
   }
 }
 
-describe('host panel (Settings → Backend → This computer)', () => {
+describe('host panel (Settings → Networking → Remote access)', () => {
   let h: ReturnType<typeof hostSetup>
   beforeEach(() => { h = hostSetup() })
   afterEach(() => h.host.dispose())
@@ -297,7 +297,7 @@ class PairingClientShim {
 
 // --- Client: pairing ----------------------------------------------------------------
 
-function pairSetup(opts: { tailnet?: { running: boolean; suffix: string | null; peerIps: Set<string>; peerNames: Set<string> }; saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean; savedRemote?: { url: string | null; tokenSaved: boolean; fingerprint: string | null }; replace?: boolean } = {}) {
+function pairSetup(opts: { tailnet?: { running: boolean; suffix: string | null; peerIps: Set<string>; peerNames: Set<string> }; saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean; savedConnections?: Array<{ name: string; url: string; fingerprint: string | null }>; replace?: boolean } = {}) {
   const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
   daemon.state.enabled = true
   daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
@@ -307,12 +307,12 @@ function pairSetup(opts: { tailnet?: { running: boolean; suffix: string | null; 
   const switches: Array<{ from: string; to: string }> = []
   const replaces: string[] = []
   const flow = new PairingFlow({
-    savedRemote: () => opts.savedRemote ?? { url: null, tokenSaved: false, fingerprint: null },
-    confirmReplace: async (prompt) => { replaces.push(prompt.current); return opts.replace ?? true },
+    savedConnections: () => opts.savedConnections ?? [],
+    confirmReplace: async (prompt) => { replaces.push(`${prompt.name}: ${prompt.from} → ${prompt.to}`); return opts.replace ?? true },
     confirmSwitch: async (prompt) => { switches.push({ from: prompt.from, to: prompt.to }); return opts.useEncrypted ?? true },
     tailnetView: async () => opts.tailnet ?? { running: true, suffix: 'tail1234.ts.net', peerIps: new Set(['100.101.102.103']), peerNames: new Set<string>() },
     onState: (s) => states.push(s),
-    save: async (input) => { saved.push(input); return opts.saveFails ? { ok: false, error: 'Could not save studio-backend.json.' } : { ok: true } },
+    save: async (input) => { saved.push(input); return opts.saveFails ? { ok: false, error: 'Could not save studio-backend.json.' } : { ok: true, id: 'remote:agent-1-pc' } },
     saveBlocked: () => opts.saveBlocked ?? null,
     defaultDeviceName: () => 'agent-2-laptop',
     fetch: daemon.fetch,
@@ -322,7 +322,7 @@ function pairSetup(opts: { tailnet?: { running: boolean; suffix: string | null; 
   return { daemon, flow, states, saved, logs, switches, replaces, last: () => states.at(-1)! }
 }
 
-describe('pairing from Settings → Backend → Remote computer', () => {
+describe('pairing from Settings → Connection', () => {
   it('hello, the code, the host\'s Allow, then the token is saved for the encrypted address; never returned or logged', async () => {
     const p = pairSetup()
     const started = await p.flow.start({ url: LAN, allowInsecureHttp: true })
@@ -336,7 +336,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     expect(p.saved).toHaveLength(1)
     expect(p.saved[0]).toMatchObject({ url: TAILNET, allowInsecureHttp: false, fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', label: 'agent-2-laptop' })
     expect(p.saved[0].token).toMatch(/^adfd_/)
-    expect(p.last()).toMatchObject({ savedUrl: TAILNET, message: 'Paired with agent-1-pc. Its address and token are saved.' })
+    expect(p.last()).toMatchObject({ savedUrl: TAILNET, savedId: 'remote:agent-1-pc', message: 'Paired with agent-1-pc. Its address and token are saved.' })
     const token = p.saved[0].token
     expect(JSON.stringify(p.states)).not.toContain(token)
     expect(JSON.stringify(p.states)).not.toContain('654321')
@@ -382,27 +382,33 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     expect(p.saved).toEqual([])
   })
 
-  it('a saved remote\'s pinned fingerprint (trust on first use): another one at its address is refused (security review 4)', async () => {
-    const p = pairSetup({ savedRemote: { url: TAILNET, tokenSaved: true, fingerprint: 'QQQQ-QQQQ' } })
+  it('a saved connection\'s pinned fingerprint (trust on first use): another one at its address is refused (security review 4)', async () => {
+    const p = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: TAILNET, fingerprint: 'QQQQ-QQQQ' }] })
     expect(await p.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'fingerprint_mismatch' })
-    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when it was paired. Studio sent nothing. If that computer was set up again, remove the saved token first (Remove token).')
+    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when rawl-hub was paired; Studio sent nothing.')
     expect(p.replaces).toEqual([])
     expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
   })
 
-  it('a saved remote is never replaced without asking (security review 4)', async () => {
-    const kept = pairSetup({ savedRemote: { url: 'https://adf.example.com', tokenSaved: true, fingerprint: null }, replace: false })
-    expect(await kept.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'kept', message: 'Kept the saved remote computer. Nothing was sent.' })
-    expect(kept.replaces).toEqual(['https://adf.example.com'])
+  it('a saved connection is never moved to another address without asking (security review 4); other saved connections are not touched', async () => {
+    const saved = [{ name: 'agent-1-pc', url: 'https://adf.example.com', fingerprint: 'ABCD-EFGH' }]
+    const kept = pairSetup({ savedConnections: saved, replace: false })
+    expect(await kept.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'kept', message: 'Kept the saved address of agent-1-pc; nothing was sent.' })
+    expect(kept.replaces).toEqual([`agent-1-pc: https://adf.example.com → ${TAILNET}`])
     expect(kept.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
 
-    const replaced = pairSetup({ savedRemote: { url: 'https://adf.example.com', tokenSaved: true, fingerprint: null }, replace: true })
+    const replaced = pairSetup({ savedConnections: saved, replace: true })
     await replaced.flow.start({ url: TAILNET })
     await replaced.flow.submitCode('654321')
     replaced.daemon.decide(true)
     await until(() => replaced.last().step === 'paired')
-    expect(replaced.replaces).toEqual(['https://adf.example.com'])
+    expect(replaced.replaces).toHaveLength(1)
     expect(replaced.saved).toHaveLength(1)
+
+    // Another computer saved (another fingerprint, another address): a new connection, no question.
+    const other = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: 'https://hub.example.com', fingerprint: 'QQQQ-QQQQ' }, { name: 'legacy', url: 'https://old.example.com', fingerprint: null }] })
+    expect(await other.flow.start({ url: TAILNET })).toMatchObject({ step: 'need_code' })
+    expect(other.replaces).toEqual([])
   })
 
   it('re-review 3: only this tailnet\'s ts.net names and Tailscale peers qualify; without Tailscale nothing switches', async () => {
@@ -460,7 +466,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     await p.flow.start({ url: TAILNET })
     expect(await p.flow.submitCode('111111')).toMatchObject({ step: 'need_code', code: 'wrong_code', attemptsLeft: 4, message: 'Wrong code. 4 tries left.' })
     p.daemon.state.pairing!.attemptsLeft = 1
-    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code, and no tries are left. Choose Pair device on agent-1-pc for a new code.' })
+    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code and no tries left; choose Add device on agent-1-pc for a new code.' })
   })
 
   it('collects the token with the collect secret from the 202; the claim id alone gets nothing, and the secret is never pushed or logged', async () => {
@@ -502,7 +508,7 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     const p = pairSetup()
     await p.flow.start({ url: TAILNET })
     p.daemon.state.pairing = null
-    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed. Choose Pair device there for a new code.' })
+    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed; choose Add device there for a new code.' })
   })
 
   it('host refused', async () => {
@@ -598,17 +604,17 @@ describe('Discovered (discovery): a view of the one discovery feed', () => {
   })
   function setup(feed: FakeFeed | null = new FakeFeed()) {
     const updates: RemoteDiscoveryUpdate[] = []
-    let paired: string | null = null
+    const paired = new Set<string>()
     let own: string | null = null
     const discovery = new RemoteDiscovery({
       feed: () => feed,
       onUpdate: (u) => updates.push(u),
-      pairedFingerprint: () => paired,
+      pairedFingerprints: () => paired,
       ownFingerprint: () => own,
       pollMs: 60_000,
       log: quiet,
     })
-    return { feed, discovery, updates, setPaired: (fp: string) => { paired = fp }, setOwn: (fp: string) => { own = fp } }
+    return { feed, discovery, updates, setPaired: (fp: string) => { paired.add(fp) }, setOwn: (fp: string) => { own = fp } }
   }
 
   it('lists the feed\'s entries with remote access; pairing open is "ready to pair"; a peers_changed re-reads; stop releases the feed', async () => {
@@ -644,15 +650,19 @@ describe('Discovered (discovery): a view of the one discovery feed', () => {
     d.discovery.stop()
   })
 
-  it('marks the saved remote "already paired" and leaves out this computer\'s own daemon', async () => {
+  it('marks every saved connection "paired" and leaves out this computer\'s own daemon; snapshot() is the last list while running', async () => {
     const d = setup()
     d.setPaired('ABCD-EFGH')
+    d.setPaired('BBBB-BBBB')
     d.setOwn('SELF-2345')
-    d.feed!.list = [peer(), peer({ key: 'self', name: 'self' }, { fingerprint: 'SELF-2345', url: 'http://192.168.1.5:7385' })]
+    d.feed!.list = [peer(), peer({ key: 'b', name: 'b' }, { fingerprint: 'BBBB-BBBB', url: 'http://192.168.1.6:7385' }), peer({ key: 'c', name: 'c' }, { fingerprint: 'CCCC-CCCC', url: 'http://192.168.1.7:7385' }), peer({ key: 'self', name: 'self' }, { fingerprint: 'SELF-2345', url: 'http://192.168.1.5:7385' })]
+    expect(d.discovery.snapshot()).toBeNull()
     d.discovery.start()
-    await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 1)
-    expect(d.updates.at(-1)?.entries.map((e) => [e.fingerprint, e.alreadyPaired])).toEqual([['ABCD-EFGH', true]])
+    await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 3)
+    expect(d.updates.at(-1)?.entries.map((e) => [e.fingerprint, e.alreadyPaired])).toEqual([['ABCD-EFGH', true], ['BBBB-BBBB', true], ['CCCC-CCCC', false]])
+    expect(d.discovery.snapshot()).toEqual(d.updates.at(-1))
     d.discovery.stop()
+    expect(d.discovery.snapshot()).toBeNull()
   })
 
   it('without a feed (the daemon not connected yet) or without mDNS it says so', async () => {
@@ -786,15 +796,20 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     return { path, store: createBackendSettingsStore({ boot: resolveBootBackend(path, {}, quiet), codec, log: quiet }) }
   }
 
-  it('registers every remote-access channel; the host answers "unavailable" in embedded mode; pairing saves URL, safe: token and remote.paired', async () => {
+  it('registers every remote-access channel; the host answers "unavailable" in embedded mode; pairing saves the connection where adf pair does (cli-remotes.json, the keychain)', async () => {
     electronStub.handlers.clear()
     electronStub.pushes.length = 0
     const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
     daemon.state.enabled = true
     daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
     const s = store()
+    const settingsDir = mkdtempSync(join(tmpdir(), 'adf-remotes-'))
+    dirs.push(settingsDir)
+    const env = { ...process.env, ADF_DAEMON_SETTINGS: join(settingsDir, 'adf-settings.json'), ADF_TEST_KEYCHAIN_FILE: join(settingsDir, 'keychain.json'), ADF_TEST_SEAMS: '1' }
+    let changes = 0
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: s.store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false,
+      remotesEnv: env, onConnectionsChanged: () => { changes++ },
       overrides: { discovery: { feed: () => null }, pairing: { fetch: daemon.fetch, retryMs: 5 } },
       log: quiet,
     })
@@ -811,11 +826,13 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     expect(await invoke(IPC.REMOTE_PAIR_SUBMIT_CODE, '654321')).toMatchObject({ step: 'waiting' })
     daemon.decide(true)
     await until(() => ipc.pairing.state.step === 'paired')
-    const file = JSON.parse(readFileSync(s.path, 'utf8'))
-    expect(file.remote.url).toBe(TAILNET)
-    expect(file.remote.token).toMatch(/^safe:/)
-    expect(file.remote.paired).toEqual({ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', deviceId: expect.stringMatching(/^dev/), label: 'agent-2 laptop' })
-    expect(s.store.get().configured).toMatchObject({ remoteUrl: TAILNET, remoteTokenSaved: true, remotePaired: { fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', label: 'agent-2 laptop' } })
+    // Saved where adf pair saves it: one list for Studio and the CLI; studio-backend.json keeps no token.
+    const remotes = JSON.parse(readFileSync(join(settingsDir, 'cli-remotes.json'), 'utf8'))
+    expect(remotes.remotes['agent-1-pc']).toMatchObject({ url: TAILNET, fingerprint: 'ABCD-EFGH', deviceId: expect.stringMatching(/^dev/), label: 'agent-2 laptop', hostName: 'agent-1-pc' })
+    expect(JSON.parse(readFileSync(join(settingsDir, 'keychain.json'), 'utf8'))['remote-token:ABCD-EFGH']).toMatch(/^adfd_/)
+    expect(JSON.parse(readFileSync(s.path, 'utf8')).remote?.token ?? null).toBeNull()
+    expect(ipc.pairing.state).toMatchObject({ savedId: 'remote:agent-1-pc' })
+    expect(changes).toBeGreaterThan(0)
     // The renderer got states, never the token.
     const pushed = JSON.stringify(electronStub.pushes)
     expect(pushed).toContain(IPC.REMOTE_PAIR_STATE)

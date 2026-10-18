@@ -511,10 +511,9 @@ export const CHANNEL_MAP = {
   [IPC.ORBITAL_CACHE_GET]: local('invoke', 'Registered in ipc/orbital-cache.ts; cache under Studio userData.'),
   [IPC.ORBITAL_CACHE_PUT]: local('invoke', 'Registered in ipc/orbital-cache.ts; cache under Studio userData.'),
 
-  // --- Settings → Backend (W0-E) --------------------------------------------
+  // --- Settings → Connection (W0-E) --------------------------------------------
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
-  [IPC.BACKEND_REMOTE_CHECK]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: the remote handshake (remote/connector.ts) against a draft URL, with the saved token only for the saved origin. Never returns the token.'),
   [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: relaunchStudio (mode-switch.ts), then the normal quit path.'),
 
   // --- Remote access (remote-access.md §9.1) --------------------------------
@@ -538,6 +537,11 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_PAIR_SUBMIT_CODE]: local('invoke', 'POST /pair/claim, then the GET /pair/claims/:claimId long poll on the other computer; the token is saved in studio-backend.json as safe: and never returned.'),
   [IPC.REMOTE_PAIR_CANCEL]: local('invoke', 'Stops the pairing flow here.'),
   [IPC.REMOTE_PAIR_STATE]: local('push', 'Pairing progress and errors; never the code or the token.'),
+  [IPC.CONNECTION_LIST]: local('invoke', 'Settings → Connection (settings-scopes.md §5): This computer, the saved connections (cli-remotes.json, studio-backend.json) and the computers found; for the window that asks. No token.'),
+  [IPC.CONNECTION_USE]: local('invoke', 'Connect: reads a saved token from the OS keychain (off the main thread first), then saves the choice in studio-backend.json; the switch dialog and the restart follow.'),
+  [IPC.CONNECTION_ADD]: local('invoke', 'Add connection with a token: /remote/hello on the other computer, the pinned-fingerprint check, then the version handshake; saved to cli-remotes.json and the keychain, or without a fingerprint to studio-backend.json. Never returns the token.'),
+  [IPC.CONNECTION_REMOVE]: local('invoke', 'Remove after a native confirmation: forgets the address and token (adf remotes forget), or the remote URL of studio-backend.json.'),
+  [IPC.CONNECTION_CHANGED]: local('push', 'The list and the connection state, pushed on a change (discovery, pairing, Connect, the daemon connection).'),
   [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
   [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
   [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),

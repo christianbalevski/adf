@@ -13,8 +13,9 @@ import type { BrowserSessionEvent, BrowserSessionInfo, ComputeSetupResult, Conta
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
-import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
+import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
 import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
+import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '../shared/types/connection.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -721,12 +722,10 @@ export interface AdfApi {
   // Emergency stop
   emergencyStop: () => Promise<{ success: boolean; error?: string }>
 
-  // Settings → Backend (studio-backend.json; applies at next launch)
+  // Settings → Connection (studio-backend.json; applies at next launch)
   /** The view never contains the remote token, only whether one is saved. */
   getBackendSettings: () => Promise<BackendSettingsView>
   setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
-  /** Remote daemon: the handshake only (reachable, token accepted, client API version). Never returns the token. */
-  checkRemoteBackend: (request: RemoteCheckRequest) => Promise<RemoteCheckResult>
   /**
    * Quit and start Studio again, so a saved backend applies (design D9).
    * `kind`: the restart main asked for after the daemon connection failed
@@ -749,8 +748,17 @@ export interface AdfApi {
   /** `tailscale serve` for the daemon port, confirmed first with the exact command. */
   setRemoteTailscaleServe: (enabled: boolean) => Promise<RemoteAccessResult & { output?: string }>
   onRemoteAccessChanged: (callback: (change: RemoteAccessChange) => void) => () => void
-  // Client: Settings → Backend → Remote computer. No token reaches the renderer.
-  /** Look for ADF computers (mDNS, tailnet) while the section is open. */
+  // Settings → Connection (settings-scopes.md §5). No token reaches the renderer.
+  /** The runtimes this window can use, and the one it uses. */
+  listConnections: () => Promise<ConnectionsView>
+  /** Connect: the switch dialog, then Studio restarts on that connection. */
+  useConnection: (id: string) => Promise<ConnectionResult>
+  /** Add connection with a token; the code path is startRemotePairing. */
+  addConnection: (request: ConnectionAddRequest) => Promise<ConnectionResult>
+  /** Remove a saved connection (confirmed first in a native dialog). */
+  removeConnection: (id: string) => Promise<ConnectionResult>
+  onConnectionChanged: (callback: (view: ConnectionsView) => void) => () => void
+  /** Look for ADF computers (mDNS, tailnet) while the Connection page is open. */
   startRemoteDiscovery: () => Promise<boolean>
   stopRemoteDiscovery: () => Promise<boolean>
   onRemoteDiscoveryUpdate: (callback: (update: RemoteDiscoveryUpdate) => void) => () => void

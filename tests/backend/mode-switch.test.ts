@@ -304,7 +304,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(start).toHaveBeenCalledWith(agent1)
   })
 
-  it('a waiting switch can be finished now or cancelled from Settings → Backend', async () => {
+  it('a waiting switch can be finished now or cancelled from Settings → Connection', async () => {
     const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: true }])
     h.responses.push(0)
     await s.confirm('local')

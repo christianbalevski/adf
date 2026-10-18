@@ -9,16 +9,21 @@ see_also:
 
 ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl + ,`. Settings are global and apply across all agents.
 
+The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
+
+- **Studio**, the app on this computer: Connection, Appearance, Notifications, Updates, Privacy, About. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
+- **Runtime · *name***, the runtime this window uses ("This computer", or a saved connection such as `rawl-hub`): Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings; with a remote connection they are that computer's. Controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*."
+
 ![The Settings window on its General page: a section rail on the left (General, Identity, Providers, Packages, MCP servers, Channels, Networking, Compute, About) with theme selection, token usage, and the editable global system prompt on the right.](../assets/screenshots/settings-general.png)
 
 ## Privacy
 
-Studio sends no telemetry. **General → Privacy** has an off switch for each request it makes on its own:
+Studio sends no telemetry. Each request it or the runtime makes on its own has an off switch:
 
-- **Check for updates** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every hour. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates.
-- **Check provider connections** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
-- **Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
-- **Spell-check dictionaries** (Linux only, `spellcheckDownloadsEnabled`) — a **Download** button. Linux spell check uses Hunspell dictionaries from Google's CDN; nothing is fetched until you click it. After that, a newly added spell-check language downloads the same way. Windows and macOS use the OS spell checker and never download.
+- **Studio → Updates → Automatic checks** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every hour. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates. **Check for updates** checks now.
+- **Runtime → Providers → Check provider connections** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
+- **Runtime → MCP servers → Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
+- **Studio → Privacy → Spell-check dictionaries** (Linux only, `spellcheckDownloadsEnabled`) — a **Download** button. Linux spell check uses Hunspell dictionaries from Google's CDN; nothing is fetched until you click it. After that, a newly added spell-check language downloads the same way. Windows and macOS use the OS spell checker and never download.
 
 The first-party skill catalog is a default entry in **Settings → Skills**, fetched when you open the skill browser; remove it there to stop that request. [Network traffic](../NETWORK.md) lists every connection.
 
@@ -372,7 +377,7 @@ Before this release LAN mode bound `0.0.0.0`, every interface, also on a Public 
 
 ### Remote access
 
-Other devices use this computer's daemon: the toggle, the addresses, **Pair device** and **Add device**, and **Devices** with **Revoke**. See [Studio backend › Remote access](studio-backend.md#remote-access).
+Other devices use this computer's daemon: the toggle, the addresses, **Add device** (a code, or a token), and **Devices** with **Revoke**. With a remote runtime this group says "Change on *name*." See [Studio backend › Remote access](studio-backend.md#remote-access).
 
 ### Agent Endpoints
 
@@ -523,31 +528,31 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 - **Auto-refresh** — Toggle auto-refresh to poll for task status changes
 - **Per-ADF** — Tasks reload automatically when navigating between ADF files
 
-## Backend
+## Connection
 
-**Settings → Backend → Run agents in** chooses where agents run. A change shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend](studio-backend.md).
+**Studio → Connection** lists the runtimes this window can use: This computer, each saved connection (shared with `adf`), and the computers found on this network or the tailnet that are not paired. Each row has a state (Connected, Paired, Not paired) and one action: **Connect**, or **Pair**. **Add connection** takes an address, then the code or a token. **Connect** shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend › Connection](studio-backend.md#connection).
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
 | This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. |
-| Remote computer | `remote` | The ADF daemon on another computer, reached by URL and token. See [Remote daemon](../cli/remote-daemon.md). |
+| A saved connection | `remote` | The ADF daemon on another computer. See [Remote daemon](../cli/remote-daemon.md). |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
 
 Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
-The page also shows the daemon Studio uses (state, pid, who started it; URL and version under **Details**).
+While This computer is in use, the page also shows **This computer**: the daemon (state, pid, who started it; URL and version under **Details**) and **Keep running after quit** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. With a remote connection neither shows.
 
-- **Keep the daemon running when Studio quits** (`keepDaemonRunning`, default off) applies to This computer. Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it.
-- **Daemon URL** (Remote computer) must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` URL needs the confirmation that the token is sent unencrypted. **Test connection** checks the URL and token.
-- **Token** is encrypted with the OS keychain (stored as `safe:…`), sent only to the URL's origin, and not shown again after you save it. Changing the URL to another origin removes the saved token.
+- An address must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` address needs the confirmation that the token is sent unencrypted.
+- Tokens are in the OS keychain (shared with `adf`), sent only to their connection's address, and never shown again.
+- The status bar shows a remote connection's name, and a connection that is not connected, left of the version.
 
 ### Go back to running agents inside Studio
 
-Choose **Settings → Backend → Inside Studio (legacy)**. This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+Choose **Settings → Connection → Inside Studio (legacy)**. This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 
-If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Backend shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Backend as above.
+If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connection shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connection as above.
 
 ```powershell
 # Windows (PowerShell)

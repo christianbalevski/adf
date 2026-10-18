@@ -196,7 +196,7 @@ async function devicesCommand(args: string[], io: HostCliIo, target: HostTarget)
     const status = await call<RemoteAccessStatus>(io, target, 'GET', '/remote-access')
     const url = status.urls.find(u => u.encrypted)?.url ?? status.urls[0]?.url ?? '<this computer\'s address>'
     io.stderr(`Device token for "${created.device.label}" (id ${created.device.id}). It is shown once and is as powerful as your seed phrase.\n`)
-    io.stderr(`On the other computer: adf --url ${url} --token <token>, or paste both in ADF Studio → Settings → Backend → Remote computer.\n`)
+    io.stderr(`On the other computer: adf --url ${url} --token <token>, or paste both in ADF Studio → Settings → Connection → Add connection.\n`)
     if (!status.enabled) io.stderr('Remote access is off: turn it on with adf daemon remote on.\n')
     return 0
   }
@@ -232,7 +232,7 @@ async function pairCommand(io: HostCliIo, target: HostTarget): Promise<number> {
   const status = await call<RemoteAccessStatus>(io, target, 'GET', '/remote-access')
   const host = status.urls.find(u => u.kind === 'tailnet' || u.kind === 'lan')?.url.replace(/^http:\/\//, '').replace(new RegExp(`:${DEFAULT_DAEMON_PORT}$`), '')
   io.stdout(`Pairing with "${window.name}" (fingerprint ${window.fingerprint}) is open for 2 minutes.\n`)
-  io.stdout(`On the other computer: adf pair${host ? ` ${host}` : ''}, or choose this computer in ADF Studio → Settings → Backend → Remote computer.\n`)
+  io.stdout(`On the other computer: adf pair${host ? ` ${host}` : ''}, or pair with this computer in ADF Studio → Settings → Connection.\n`)
   io.stdout(`Code: ${window.code.slice(0, 3)} ${window.code.slice(3)}\n`)
   io.stderr('Waiting for the other computer… (Ctrl+C closes the window)\n')
   let interrupted = false

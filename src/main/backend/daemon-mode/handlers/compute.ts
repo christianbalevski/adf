@@ -3,6 +3,7 @@ import { DaemonError } from '../../../../shared/daemon-client'
 import type { BrowserSessionInfo, ContainerSummary } from '../../../../shared/types/compute.types'
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { fleetState } from './poll'
+import { remoteName } from './providers'
 
 /**
  * Daemon-mode handlers for compute (Settings → Compute, the dashboard's
@@ -21,8 +22,10 @@ import { fleetState } from './poll'
 /** Podman install, machine init/start and image pulls take minutes. */
 const LONG_MS = 15 * 60_000
 
-export const REMOTE_BROWSER_SENTENCE =
-  'The browser viewer needs the daemon on this computer: the container\'s noVNC port is on the remote server\'s loopback.'
+/** The browser viewer of a remote runtime: its noVNC port is on that computer's loopback (settings-scopes.md §7). */
+export function remoteBrowserSentence(name: string): string {
+  return `Open on ${name}.`
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -137,7 +140,7 @@ export const COMPUTE_HANDLERS: DaemonHandlerTable = {
       query: { agentName: args?.agentName, agentId: args?.agentId },
       timeoutMs: 120_000,
     })
-    if (ctx.mode === 'remote') return { ...info, hostPort: null, detail: REMOTE_BROWSER_SENTENCE }
+    if (ctx.mode === 'remote') return { ...info, hostPort: null, detail: remoteBrowserSentence(remoteName(ctx)) }
     return info
   },
 

@@ -9,6 +9,10 @@
  *   `remote-token:<fingerprint>`), or, without a usable keychain,
  *   `<data dir>/cli-remote-tokens.json` readable by the current user only.
  *
+ * Studio and adf both change the list: every change is a read-modify-write
+ * under `cli-remotes.json.lock` (updateRemotes), so neither loses the
+ * other's change.
+ *
  * Resolution for every command (daemon-url.ts): `--url`/`--token` >
  * ADF_DAEMON_URL/ADF_DAEMON_TOKEN > `--remote <name>` / ADF_REMOTE > the
  * default remote > this machine's daemon. `ADF_REMOTE=local` forces this
@@ -16,6 +20,8 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { link, open, readFile, rename, stat, unlink } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { daemonSettingsDir } from '../daemon/daemon-token'
 import { openDaemonSecrets } from '../backend/daemon-secrets'
@@ -55,11 +61,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function loadRemotes(env: NodeJS.ProcessEnv = process.env): RemotesFile {
-  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
   const path = remotesPath(env)
-  if (!existsSync(path)) return empty
+  if (!existsSync(path)) return { v: 1, default: null, remotes: {} }
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8')) as unknown
+    return parseRemotes(readFileSync(path, 'utf-8'))
+  } catch {
+    return { v: 1, default: null, remotes: {} }
+  }
+}
+
+/** loadRemotes without blocking (Studio main): an absent or unreadable file is the empty list. */
+export async function loadRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<RemotesFile> {
+  try {
+    return parseRemotes(await readFile(remotesPath(env), 'utf-8'))
+  } catch {
+    return { v: 1, default: null, remotes: {} }
+  }
+}
+
+/** The file's text as a RemotesFile; anything malformed is left out. */
+export function parseRemotes(text: string): RemotesFile {
+  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
+  try {
+    const raw = JSON.parse(text) as unknown
     if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return empty
     const remotes: Record<string, SavedRemote> = {}
     for (const [name, r] of Object.entries(raw.remotes)) {
@@ -87,6 +111,134 @@ export function saveRemotes(file: RemotesFile, env: NodeJS.ProcessEnv = process.
   writeJson(remotesPath(env), file)
 }
 
+/** A lock older than this is left over from a process that died holding it, and is taken over. */
+export const REMOTES_LOCK_STALE_MS = 10_000
+const REMOTES_LOCK_WAIT_MS = 5_000
+
+export class RemotesLockedError extends Error {
+  constructor(readonly path: string) {
+    super(`${path} is locked by another program; try again.`)
+    this.name = 'RemotesLockedError'
+  }
+}
+
+/** The path of cli-remotes.json (Studio watches it). */
+export function remotesFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  return remotesPath(env)
+}
+
+/**
+ * Change the saved remotes, Studio and adf alike: under
+ * `cli-remotes.json.lock` (created exclusively; one older than
+ * REMOTES_LOCK_STALE_MS is a crashed holder's and is taken over), read the
+ * file, let `mutate` change it, and write it back when it changed. Neither
+ * program loses the other's change. `mutate` may throw: nothing is written.
+ *
+ * Takeover is atomic: only the waiter that creates `cli-remotes.json.lock.claim`
+ * removes a stale lock, and it checks the staleness again under the claim, on
+ * the file it renamed to a tombstone of its own; so two waiters that both saw
+ * the stale lock never delete a new holder's lock. The lock holds the
+ * holder's pid and a nonce, and a holder removes it only while it is still
+ * its own.
+ */
+export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: {
+  staleMs?: number
+  waitMs?: number
+  /** Tests: the platform whose busy-file errors are retried, and the lock's open. */
+  platform?: NodeJS.Platform
+  openLock?: typeof open
+  /** Tests: a waiter saw a stale lock, before it tries the takeover. */
+  onStaleSeen?: () => Promise<void>
+} = {}): Promise<T> {
+  const path = remotesPath(env)
+  const lock = `${path}.lock`
+  const staleMs = opts.staleMs ?? REMOTES_LOCK_STALE_MS
+  const deadline = Date.now() + (opts.waitMs ?? REMOTES_LOCK_WAIT_MS)
+  const openLock = opts.openLock ?? open
+  // Windows refuses to create a file another process is still deleting (EPERM): busy, as EEXIST is.
+  const busy = (err: unknown): boolean => {
+    const code = (err as NodeJS.ErrnoException)?.code
+    return code === 'EEXIST' || ((opts.platform ?? process.platform) === 'win32' && code === 'EPERM')
+  }
+  const mine = `${process.pid} ${randomBytes(8).toString('hex')}`
+  const ageOf = (file: string): Promise<number | null> => stat(file).then((s) => Date.now() - s.mtimeMs, () => null)
+  // Only the claim's creator removes a stale lock; the claim is held for a few ms.
+  const takeOver = async (): Promise<void> => {
+    const claim = `${lock}.claim`
+    try {
+      await (await openLock(claim, 'wx')).close()
+    } catch (err) {
+      if (!busy(err)) throw err
+      const age = await ageOf(claim)
+      if (age !== null && age > staleMs) await unlink(claim).catch(() => {})
+      return
+    }
+    try {
+      const age = await ageOf(lock)
+      if (age === null || age <= staleMs) return
+      const tomb = `${lock}.${process.pid}.${randomBytes(4).toString('hex')}.stale`
+      try {
+        await rename(lock, tomb)
+      } catch {
+        return
+      }
+      const tombAge = await ageOf(tomb)
+      // Not stale after all (it changed between the two looks): put it back unless a lock exists again.
+      if (tombAge !== null && tombAge <= staleMs) await link(tomb, lock).catch(() => {})
+      await unlink(tomb).catch(() => {})
+    } finally {
+      await unlink(claim).catch(() => {})
+    }
+  }
+  await import('node:fs/promises').then((fs) => fs.mkdir(daemonSettingsDir(env), { recursive: true }))
+  for (;;) {
+    try {
+      const handle = await openLock(lock, 'wx')
+      await handle.writeFile(`${mine}\n`)
+      await handle.close()
+      break
+    } catch (err) {
+      if (!busy(err)) throw err
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') {
+        if (Date.now() > deadline) throw new RemotesLockedError(path)
+        await new Promise((r) => setTimeout(r, 25))
+        continue
+      }
+      const age = await ageOf(lock)
+      if (age !== null && age > staleMs) {
+        await opts.onStaleSeen?.()
+        await takeOver()
+        continue
+      }
+      if (Date.now() > deadline) throw new RemotesLockedError(path)
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+  try {
+    const file = await loadRemotesAsync(env)
+    const before = JSON.stringify(file)
+    const result = await mutate(file)
+    if (JSON.stringify(file) !== before) {
+      // Windows: the rename over the file fails while a reader has it open (EPERM, EBUSY): retried until the deadline.
+      for (;;) {
+        try {
+          writeJson(path, file)
+          break
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code
+          if ((opts.platform ?? process.platform) !== 'win32' || (code !== 'EPERM' && code !== 'EBUSY') || Date.now() > deadline) throw err
+          await new Promise((r) => setTimeout(r, 25))
+        }
+      }
+    }
+    return result
+  } finally {
+    // Only while the lock is still this holder's (pid and nonce).
+    const held = await readFile(lock, 'utf8').catch(() => null)
+    if (held?.trim() === mine) await unlink(lock).catch(() => {})
+  }
+}
+
 // --- tokens ---------------------------------------------------------------------
 
 const account = (fingerprint: string) => `remote-token:${fingerprint}`
@@ -107,18 +259,43 @@ function readTokenFile(env: NodeJS.ProcessEnv): Record<string, string> {
   }
 }
 
-/** Save a device token: the keychain, else the user-only file (and say which). */
-export function storeRemoteToken(fingerprint: string, token: string, env: NodeJS.ProcessEnv = process.env): TokenStoreChoice {
+/** Before a token goes to the user-only file: Studio's dialog and adf's lines (plain heading, one sentence, a short verb). */
+export const KEYCHAIN_FILE_COPY = {
+  title: 'Keychain unavailable',
+  message: 'The token can be saved in a file only you can read.',
+  ok: 'Save to file',
+  cancel: 'Cancel',
+  prompt: 'Save to file? [y/N] ',
+} as const
+
+/** The keychain did not take the token and the user did not choose the file: nothing was saved. */
+export class TokenNotStoredError extends Error {
+  constructor(readonly why: string) {
+    super(`The token was not saved (${why}).`)
+    this.name = 'TokenNotStoredError'
+  }
+}
+
+/**
+ * Save a device token in the OS keychain. When the keychain refuses it or
+ * there is none, the token goes to the user-only file only after
+ * `confirmFile` says yes (Studio's dialog, adf's prompt; `why` is the
+ * reason); otherwise nothing is saved (TokenNotStoredError). Never a silent
+ * fallback.
+ */
+export async function storeRemoteToken(fingerprint: string, token: string, env: NodeJS.ProcessEnv, confirmFile?: (why: string) => Promise<boolean>): Promise<TokenStoreChoice> {
   const secrets = openDaemonSecrets(env)
+  let why = secrets.unavailable ?? 'no OS keychain'
   if (secrets.backend) {
     try {
       secrets.backend.set(account(fingerprint), token)
       return { where: 'keychain', why: null, path: null }
     } catch (err) {
-      return storeInFile(fingerprint, token, env, `the OS keychain refused it (${err instanceof Error ? err.message : String(err)})`)
+      why = `the OS keychain refused it: ${err instanceof Error ? err.message : String(err)}`
     }
   }
-  return storeInFile(fingerprint, token, env, secrets.unavailable ?? 'no OS keychain')
+  if (!confirmFile || !await confirmFile(why).catch(() => false)) throw new TokenNotStoredError(why)
+  return storeInFile(fingerprint, token, env, why)
 }
 
 function storeInFile(fingerprint: string, token: string, env: NodeJS.ProcessEnv, why: string): TokenStoreChoice {

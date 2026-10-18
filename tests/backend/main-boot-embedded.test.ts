@@ -66,8 +66,7 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'registerAllIpcHandlers(openFile,showMainWindow)',
     'ipcMain.handle(adf:backend:settings-get)',
     'ipcMain.handle(adf:backend:settings-set)',
-    // W4-B: Settings → Backend's remote check and restart; the picker channels answer "daemon mode only".
-    'ipcMain.handle(adf:backend:remote-check)',
+    // W4-B: Settings → Connection's remote check and restart; the picker channels answer "daemon mode only".
     'ipcMain.handle(adf:backend:restart-studio)',
     'ipcMain.handle(adf:remote:picker-respond)',
     'ipcMain.handle(adf:remote:fs-browse)',
@@ -90,6 +89,10 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'ipcMain.handle(adf:remote-pair:start)',
     'ipcMain.handle(adf:remote-pair:submit-code)',
     'ipcMain.handle(adf:remote-pair:cancel)',
+    'ipcMain.handle(adf:connection:list)',
+    'ipcMain.handle(adf:connection:use)',
+    'ipcMain.handle(adf:connection:add)',
+    'ipcMain.handle(adf:connection:remove)',
     'registerOrbitalCacheHandlers',
     // W3-F (919b9a7c): the recovery channels, local in both modes.
     'registerEditRecoveryHandlers',

@@ -3,7 +3,7 @@
  * off asks the daemon to stop (it decides: started by Studio, no other
  * client), on only ends the session, remote never stops anything; the value
  * is read at quit. After a handover the daemon is asked to reload its
- * credential stores; Settings → Backend gets the daemon line.
+ * credential stores; Settings → Connection gets the daemon line.
  */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -119,7 +119,7 @@ describe('daemon-mode quit (§8.3)', () => {
   })
 })
 
-describe('after a handover, and Settings → Backend', () => {
+describe('after a handover, and Settings → Connection', () => {
   it('asks the daemon to reload the moved credentials once connected', async () => {
     const { daemon, logs } = await boot({ keep: false, reloadCredentials: true })
     await vi.waitFor(() => expect(daemon.requests.some((r) => r.method === 'POST' && r.path === '/client/reload-credentials')).toBe(true))
