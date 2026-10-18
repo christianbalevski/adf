@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 329 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 331 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -52,7 +52,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Jobs](#tag-jobs) (2)
 - [Agent files](#tag-agent-files) (28)
 - [Client (internal)](#tag-client-internal) (13)
-- [Remote access](#tag-remote-access) (11)
+- [Remote access](#tag-remote-access) (13)
 - [Schemas](#schemas)
 
 <a id="tag-health"></a>
@@ -17205,7 +17205,9 @@ Other computers reach this daemon (docs/design/remote-access.md): the toggle, de
 | Method | Path | Summary |
 |---|---|---|
 | GET | [`/remote-access`](#op-getremoteaccess) | Remote access status |
-| PUT | [`/remote-access`](#op-updateremoteaccess) | Turn remote access on or off, rename, mark the network |
+| PUT | [`/remote-access`](#op-updateremoteaccess) | Turn remote access on or off, rename |
+| POST | [`/remote-access/networks`](#op-allowremotenetwork) | Allow on this network |
+| DELETE | [`/remote-access/networks/{id}`](#op-forgetremotenetwork) | Remove an allowed network |
 | POST | [`/remote-access/devices`](#op-createremotedevice) | Create a device token (copy-paste) |
 | DELETE | [`/remote-access/devices/{id}`](#op-revokeremotedevice) | Revoke a device |
 | POST | [`/remote-access/pairing`](#op-openpairing) | Open the pairing window |
@@ -17258,7 +17260,8 @@ Example 200 (`application/json`):
       "family": "IPv4",
       "kind": "lan",
       "iface": "string",
-      "network": "private",
+      "networkId": "string",
+      "allowed": true,
       "listening": true,
       "problem": "string"
     }
@@ -17321,7 +17324,31 @@ Example 200 (`application/json`):
       "tailnetLogin": "string",
       "at": "2026-01-01T00:00:00.000Z"
     }
-  }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
 }
 ```
 
@@ -17329,9 +17356,9 @@ Example 200 (`application/json`):
 
 ### PUT `/remote-access`
 
-**Turn remote access on or off, rename, mark the network**
+**Turn remote access on or off, rename**
 
-Live: no daemon restart. Turning on mints the daemon id (fingerprint), and on macOS and Linux marks the current networks private. Turning off closes every remote listener, ends device sessions and connections, keeps the devices.
+Live: no daemon restart. Turning on mints the daemon id (fingerprint); it listens only on networks the user allowed (POST /remote-access/networks). Turning off closes every remote listener, ends device sessions and connections, keeps the devices.
 
 Operation `updateRemoteAccess` · bearer token
 
@@ -17341,13 +17368,11 @@ Operation `updateRemoteAccess` · bearer token
 |---|---|---|---|
 | `enabled` | boolean |  | On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept. |
 | `name` | string |  | The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name |
-| `trustNetwork` | boolean |  | macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os` (the OS category decides). Turning remote access on also marks them. |
 
 ```json
 {
   "enabled": true,
-  "name": "string",
-  "trustNetwork": true
+  "name": "string"
 }
 ```
 
@@ -17359,7 +17384,7 @@ Operation `updateRemoteAccess` · bearer token
 | 400 | [ErrorResponse](#schema-errorresponse) | Empty body, wrong types or a bad name (`bad_request`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
-| 409 | [ErrorResponse](#schema-errorresponse) | `env_bind`: ADF_DAEMON_HOST binds the daemon to the network itself; `network_category_os`: trustNetwork on Windows; `network_unidentified`: trustNetwork where no network with a default gateway is found |
+| 409 | [ErrorResponse](#schema-errorresponse) | `env_bind`: ADF_DAEMON_HOST binds the daemon to the network itself |
 | 503 | [ErrorResponse](#schema-errorresponse) | Remote access is not configured on this daemon (`unavailable`), or daemon-devices.json cannot be read (`devices_unreadable`) |
 
 Example 200 (`application/json`):
@@ -17379,7 +17404,8 @@ Example 200 (`application/json`):
       "family": "IPv4",
       "kind": "lan",
       "iface": "string",
-      "network": "private",
+      "networkId": "string",
+      "allowed": true,
       "listening": true,
       "problem": "string"
     }
@@ -17442,7 +17468,307 @@ Example 200 (`application/json`):
       "tailnetLogin": "string",
       "at": "2026-01-01T00:00:00.000Z"
     }
-  }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
+}
+```
+
+<a id="op-allowremotenetwork"></a>
+
+### POST `/remote-access/networks`
+
+**Allow on this network**
+
+The user's consent for a network this computer is on now (owner decision 2026-10-18 b): remote access and the mesh's LAN mode listen there from now on. Works while remote access is off. Local-only: a device token cannot allow a network.
+
+Operation `allowRemoteNetwork` · bearer token
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | A `networks[].id` from GET /remote-access |
+
+```json
+{
+  "id": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteAccessStatus](#schema-remoteaccessstatus) | Status after the change |
+| 400 | [ErrorResponse](#schema-errorresponse) | No or malformed id (`bad_request`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Not a network this computer is on now (`network_not_found`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "enabled": true,
+  "state": "off",
+  "message": "string",
+  "problem": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "port": 0,
+  "addresses": [
+    {
+      "address": "string",
+      "family": "IPv4",
+      "kind": "lan",
+      "iface": "string",
+      "networkId": "string",
+      "allowed": true,
+      "listening": true,
+      "problem": "string"
+    }
+  ],
+  "urls": [
+    {
+      "url": "string",
+      "kind": "tailscale-https",
+      "encrypted": true
+    }
+  ],
+  "hostNames": [
+    "string"
+  ],
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "mdns": {
+    "announcing": true,
+    "problem": "string"
+  },
+  "firewall": {
+    "state": "ok",
+    "message": "string",
+    "commands": [
+      "string"
+    ]
+  },
+  "devices": [
+    {
+      "id": "string",
+      "label": "string",
+      "origin": "paired",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "studio",
+      "lastSeenAt": "2026-01-01T00:00:00.000Z",
+      "lastSeenAddress": "string",
+      "connected": true,
+      "connections": 0,
+      "sessions": 0
+    }
+  ],
+  "pairing": {
+    "code": "string",
+    "name": "string",
+    "fingerprint": "string",
+    "openedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:00.000Z",
+    "attemptsLeft": 0,
+    "lockedSources": 0,
+    "claim": {
+      "claimId": "string",
+      "deviceName": "string",
+      "clientKind": "studio",
+      "address": "string",
+      "via": "lan",
+      "tailnetLogin": "string",
+      "at": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
+}
+```
+
+<a id="op-forgetremotenetwork"></a>
+
+### DELETE `/remote-access/networks/{id}`
+
+**Remove an allowed network**
+
+Removes the consent; the listeners on that network (remote access and the mesh's LAN mode) close now. Local-only.
+
+Operation `forgetRemoteNetwork` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Allowed network id |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [RemoteAccessStatus](#schema-remoteaccessstatus) | Status after the change |
+| 400 | [ErrorResponse](#schema-errorresponse) | Not a network id (`bad_request`) |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Not an allowed network (`network_not_found`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "enabled": true,
+  "state": "off",
+  "message": "string",
+  "problem": "string",
+  "name": "string",
+  "fingerprint": "string",
+  "port": 0,
+  "addresses": [
+    {
+      "address": "string",
+      "family": "IPv4",
+      "kind": "lan",
+      "iface": "string",
+      "networkId": "string",
+      "allowed": true,
+      "listening": true,
+      "problem": "string"
+    }
+  ],
+  "urls": [
+    {
+      "url": "string",
+      "kind": "tailscale-https",
+      "encrypted": true
+    }
+  ],
+  "hostNames": [
+    "string"
+  ],
+  "tailscale": {
+    "state": "absent",
+    "serve": "on",
+    "httpsUrl": "string",
+    "serveCommand": "string"
+  },
+  "mdns": {
+    "announcing": true,
+    "problem": "string"
+  },
+  "firewall": {
+    "state": "ok",
+    "message": "string",
+    "commands": [
+      "string"
+    ]
+  },
+  "devices": [
+    {
+      "id": "string",
+      "label": "string",
+      "origin": "paired",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "createdBy": "studio",
+      "lastSeenAt": "2026-01-01T00:00:00.000Z",
+      "lastSeenAddress": "string",
+      "connected": true,
+      "connections": 0,
+      "sessions": 0
+    }
+  ],
+  "pairing": {
+    "code": "string",
+    "name": "string",
+    "fingerprint": "string",
+    "openedAt": "2026-01-01T00:00:00.000Z",
+    "expiresAt": "2026-01-01T00:00:00.000Z",
+    "attemptsLeft": 0,
+    "lockedSources": 0,
+    "claim": {
+      "claimId": "string",
+      "deviceName": "string",
+      "clientKind": "studio",
+      "address": "string",
+      "via": "lan",
+      "tailnetLogin": "string",
+      "at": "2026-01-01T00:00:00.000Z"
+    }
+  },
+  "networks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "allowed": true,
+      "osCategory": "private",
+      "ifaces": [
+        "string"
+      ],
+      "addresses": [
+        "string"
+      ]
+    }
+  ],
+  "allowedNetworks": [
+    {
+      "id": "string",
+      "kind": "lan",
+      "label": "string",
+      "addedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "meshLan": true
 }
 ```
 
@@ -22508,7 +22834,7 @@ W3-F: who made a change. `agent`: the agent's own runtime, or a change no client
 
 ### RemoteAddress
 
-An address other computers may reach. `network: public`: the OS (Windows) or the owner's list (macOS, Linux) does not mark the network private, so nothing listens on it.
+An address other computers may reach. It listens only when the user allowed its network (`allowed`; owner decision 2026-10-18 b).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -22516,9 +22842,37 @@ An address other computers may reach. `network: public`: the OS (Windows) or the
 | `family` | `"IPv4"` \| `"IPv6"` | yes |  |
 | `kind` | `"lan"` \| `"tailnet"` | yes |  |
 | `iface` | string | yes |  |
-| `network` | `"private"` \| `"public"` \| `"tailnet"` | yes |  |
+| `networkId` | string \| null | yes | The network it is on (`NetworkView.id`); null when it cannot be identified yet |
+| `allowed` | boolean | yes | The user allowed that network |
 | `listening` | boolean | yes |  |
 | `problem` | string \| null | yes |  |
+
+<a id="schema-networkview"></a>
+
+### NetworkView
+
+A network this computer is on now. LAN: identified by the default gateway's MAC address and the subnet (and the Wi-Fi name where readable without a permission prompt); tailnet: by the tailnet name.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | yes | Null: cannot be identified yet (no gateway MAC); it cannot be allowed |
+| `kind` | `"lan"` \| `"tailnet"` | yes |  |
+| `label` | string | yes |  |
+| `allowed` | boolean | yes |  |
+| `osCategory` | `"private"` \| `"public"` \| `"unknown"` | yes | Windows' category (shown as a warning only; never consent); unknown elsewhere |
+| `ifaces` | string[] | yes |  |
+| `addresses` | string[] | yes |  |
+
+<a id="schema-allowednetwork"></a>
+
+### AllowedNetwork
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `kind` | `"lan"` \| `"tailnet"` | yes |  |
+| `label` | string | yes |  |
+| `addedAt` | string | yes |  |
 
 <a id="schema-remoteurl"></a>
 
@@ -22587,8 +22941,8 @@ The open pairing window. `code` is shown on this computer only.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `enabled` | boolean | yes |  |
-| `state` | `"off"` \| `"on"` \| `"no_address"` \| `"env_bind"` \| `"error"` | yes |  |
-| `message` | string | yes | The status line, e.g. "Listening on 192.168.1.20." or "Not reachable on this network (Public)." |
+| `state` | `"off"` \| `"on"` \| `"paused"` \| `"no_address"` \| `"env_bind"` \| `"error"` | yes | `paused`: on, but this computer's networks are not allowed, so nothing listens |
+| `message` | string | yes | The status line, e.g. "Listening on 192.168.1.20." or "Paused on Wi-Fi (192.168.1.0/24)." |
 | `problem` | string \| null | yes |  |
 | `name` | string | yes |  |
 | `fingerprint` | string \| null | yes |  |
@@ -22605,11 +22959,14 @@ The open pairing window. `code` is shown on this computer only.
 | `mdns.announcing` | boolean | yes |  |
 | `mdns.problem` | string \| null | yes |  |
 | `firewall` | object | yes |  |
-| `firewall.state` | `"ok"` \| `"blocked"` \| `"public_network"` \| `"unknown"` | yes |  |
+| `firewall.state` | `"ok"` \| `"blocked"` \| `"unknown"` | yes |  |
 | `firewall.message` | string | yes |  |
 | `firewall.commands` | string[] | yes |  |
 | `devices` | [RemoteDevice](#schema-remotedevice)[] | yes |  |
 | `pairing` | [PairingWindowView](#schema-pairingwindowview) \| null | yes |  |
+| `networks` | [NetworkView](#schema-networkview)[] | yes | The networks this computer is on now (also while off) |
+| `allowedNetworks` | [AllowedNetwork](#schema-allowednetwork)[] | yes | The networks the user allowed (remote-access.json; the mesh's LAN mode uses the same list) |
+| `meshLan` | boolean | yes | The daemon's mesh listens on the LAN (it needs the same consent) |
 
 <a id="schema-remoteaccesspatch"></a>
 
@@ -22619,7 +22976,6 @@ The open pairing window. `code` is shown on this computer only.
 |---|---|---|---|
 | `enabled` | boolean |  | On: opens listeners on private and Tailscale addresses (no daemon restart); off: closes them, ends device sessions and connections. Devices are kept. |
 | `name` | string |  | The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name |
-| `trustNetwork` | boolean |  | macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os` (the OS category decides). Turning remote access on also marks them. |
 
 <a id="schema-remotedeviceinput"></a>
 

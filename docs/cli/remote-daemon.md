@@ -61,10 +61,11 @@ adf pair                      # lists the ADF computers it finds; or: adf pair <
 - `adf daemon devices` lists the computers (connected now, last seen);
   `adf daemon devices revoke <id|label>` disconnects one at once and voids
   its token. `adf daemon remote off` disconnects them all and keeps the list.
-- The daemon listens only on private-network and Tailscale addresses, and
-  never on a network Windows calls Public. On macOS and Linux it listens on
-  a network only once you marked it private: turning remote access on marks
-  the current one; elsewhere run `adf daemon remote trust`.
+- The daemon listens only on private and Tailscale addresses, and only on a
+  network you allowed, once per network (the tailnet too).
+  `adf daemon remote status` shows the networks; `adf daemon remote
+  allow-network` allows the current one, `adf daemon remote forget-network
+  <id|name>` removes one and closes its listeners at once.
 - This computer's own token (`adf daemon token`) is refused from other
   computers. A device token cannot reach the owner identity, stored
   values, shutdown or remote-access management; it can still run agents

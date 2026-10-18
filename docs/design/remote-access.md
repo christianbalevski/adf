@@ -23,7 +23,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 | # | Decision | Section |
 |---|---|---|
 | R1 | Turning remote access on or off does not restart the daemon. The daemon opens extra listeners live; agents keep running. (The request said "Studio restarts its own daemon"; see Q1.) | §3.2 |
-| R2 | Extra listeners bind each private LAN address (RFC 1918, IPv6 ULA) and each Tailscale address, never `0.0.0.0`, never a public address. Re-evaluated every 10 s. | §3.3, §3.4 |
+| R2 | Extra listeners bind each private LAN address (RFC 1918, IPv6 ULA) and each Tailscale address on a network the user allowed, never `0.0.0.0`, never a public address. Re-evaluated every 10 s. | §3.3, §3.3.1, §3.4 |
 | R3 | The setting lives in the daemon's settings directory (`remote-access.json`), so Studio, `adf daemon start`, auto-start and a service all apply it. No env var. | §3.1 |
 | R4 | Per-device tokens, SHA-256 hashed at rest, with label, created, last seen. Revoking one closes that device's sessions and streams. | §4 |
 | R5 | The install's file token (the master token) is never accepted on a remote listener. Device tokens are never accepted on local-only routes or on the remote-access management routes, from anywhere. | §4.4, §4.5 |
@@ -37,7 +37,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 
 ### 3.1 Setting
 
-File `<settings dir>/remote-access.json` (next to `daemon-token`), written with `writeSecretFileAtomic` (§10.1). Only the daemon writes it, through the management routes (§11.2).
+File `<settings dir>/remote-access.json` (next to `daemon-token`), written with `writeSecretFileAtomic` (§10.1). The daemon writes it through the management routes (§11.2). Studio without a daemon (embedded mode) changes only `allowedNetworks`, for the mesh's LAN mode.
 
 | Field | Type | Content |
 |---|---|---|
@@ -45,7 +45,7 @@ File `<settings dir>/remote-access.json` (next to `daemon-token`), written with 
 | `enabled` | boolean | Remote access on. |
 | `name` | string | Computer name shown to other computers. Default: OS host name. 1-63 characters, no control or bidi characters. |
 | `daemonId` | string | 128-bit random, base32, minted on first enable, never changed. Its display form is the fingerprint (§5.1). |
-| `privateNetworks` | `{id, label, addedAt}[]` | macOS and Linux only: networks the owner marked private (§3.3.1). |
+| `allowedNetworks` | `{id, kind, label, addedAt}[]` | Networks the user allowed (§3.3.1). Remote access and the mesh's LAN mode read the same list. |
 | `addresses` | string[] \| absent | Advanced (CLI only, `--address`): bind exactly these addresses instead of the automatic set. Each MUST be a private or Tailscale address (§3.3). |
 
 Device records are a separate file (§4.3) so a corrupt device file never turns remote access on or off.
@@ -74,20 +74,30 @@ From `os.networkInterfaces()` (same API on Windows, macOS and Linux), skipping `
 | Any other address (public IPv4, IPv6 global unicast) | No | Would be reachable from the internet where no NAT or router firewall stands in front |
 | Any address on a virtual interface | No | Docker, WSL, Hyper-V, VMware, VirtualBox, VPN taps: the regexes of `mdns-service.ts` (`VIRTUAL_IFACE_RE`, `VIRTUAL_IFACE_WIN_RE`), minus the Tailscale names, which are matched by address above |
 
-A LAN address (the first and fourth rows) gets a listener only when its network is private (§3.3.1). Tailscale addresses are never subject to that check: the tailnet authenticates its peers.
+Any of these gets a listener only on a network the user allowed (§3.3.1), the tailnet included.
 
 The Tailscale check reuses `TailnetDiscovery`'s binary lookup (`tailscale` on PATH, `C:\Program Files\Tailscale\tailscale.exe`, `/opt/homebrew/bin/tailscale`, `/usr/local/bin/tailscale`; on macOS also `/Applications/Tailscale.app/Contents/MacOS/Tailscale`). Interface names differ per OS (`en0`/`eth0`/`wlan0`, `Wi-Fi`/`Ethernet`, `utun4`/`tailscale0`/`Tailscale`); the decision is by address, the names only exclude virtual adapters.
 
-#### 3.3.1 Private or public network (owner decision O2)
+#### 3.3.1 Consent per network (owner decision 2026-10-18 b)
 
-The daemon MUST NOT listen on a network the OS, or the rule below, does not mark private. Remote access stays on; the address is listed with `listening: false`, `network: 'public'` and the problem "Not reachable on this network (Public)." When no address listens for that reason the status is `no_address` with the same sentence.
+The daemon MUST NOT listen without the user's consent, given once per network, the same on every OS. On the first visit to a network nothing listens. Remote access stays on; each address is listed with `allowed: false`, `listening: false` and the problem "Not allowed on this network." When nothing listens for that reason the state is `paused` with "Paused on <network label>." The mesh's LAN mode follows the same rule and the same list (`allowedNetworks` in `remote-access.json`).
 
-| OS | Rule |
+Consent applies on every network, the tailnet and a Windows Private network included. None of these count as consent: Windows' Private/Public category, any macOS or Linux heuristic, being on the tailnet.
+
+| Network | Identity (`NetworkView.id`) |
 |---|---|
-| Windows | `Get-NetConnectionProfile` (no elevation): `NetworkCategory` `Private` or `DomainAuthenticated` → private; `Public`, an interface without a profile, or a failed or timed-out query → public. Matched by `InterfaceAlias` = the `os.networkInterfaces()` name. Re-read every 60 s and on every address change. |
-| macOS, Linux | No OS category exists, so the daemon keeps its own list of private networks (`privateNetworks` in `remote-access.json`). A network is identified by the interface's default gateway: `sha256("<gateway IP>\|<gateway MAC>")`, first 16 hex characters, label `<interface> via <gateway IP>`. Gateway: macOS `netstat -rn -f inet` (`default` rows), Linux `/proc/net/route`. MAC: macOS `arp -an`, Linux `/proc/net/arp`. The networks of the current LAN interfaces are added when remote access is turned on (off → on) and by `PUT /remote-access {trustNetwork: true}` (Studio **Allow on This Network**, `adf daemon remote trust`); `trustNetwork: false` removes them (`adf daemon remote untrust`). Each change is logged and shown. No default gateway on the interface, no MAC for it, a failed command, or a network not in the list → public. |
+| LAN | `lan-` + the first 16 hex characters of `sha256("<gateway MAC>\|<subnet>\|<Wi-Fi name>")`. Gateway and MAC: Windows `route print -4 0.0.0.0` and `arp -a`, macOS `netstat -rn -f inet` and `arp -an`, Linux `/proc/net/route` and `/proc/net/arp`. Subnet: the interface's IPv4 network (`192.168.1.0/24`), else its IPv6 /64. Wi-Fi name: only where reading it needs no permission prompt (Linux `iwgetid <iface> -r`); empty on Windows and macOS, which ask for location access. Label: `<Wi-Fi name or interface> (<subnet>)`. A gateway with no MAC yet cannot be identified (`id: null`) and cannot be allowed. |
+| Tailnet | `tailnet-` + the first 16 hex characters of `sha256(<tailnet name>)`; the name is `tailscale status --json` `CurrentTailnet.Name`, else the MagicDNS suffix. Label: `Tailnet <name>`. |
 
-Rationale for macOS and Linux: neither OS records whether a network is trusted, and nothing in the network itself tells a home from a hotel. The only signal that is not a guess is the owner's own choice on that network; a gateway's MAC address changes with the network, so a hotel never matches home. A spoofed gateway MAC only gets an attacker a listener that still requires a device token.
+Consent:
+
+- `POST /remote-access/networks {id}` allows a network this computer is on now; `DELETE /remote-access/networks/:id` removes one and its listeners close at once. Both are management routes (§11.2): local caller, local proof, never a device token. They work while remote access is off. Each change is logged, emits `networks_changed`, and the daemon's mesh re-syncs its LAN listeners at once.
+- Studio, when remote access or the mesh's LAN mode is on and this computer is on a network not allowed, asks once per visit to that network: "Remote access paused on <network label>." with **Allow on this network** and **Not now**. On a LAN the OS reports Public, or does not report (macOS, Linux), one more line: "Public network. The token is sent unencrypted." Leaving the network and coming back asks again. Settings → Networking lists **Allowed networks** with **Remove**.
+- The CLI shows the networks in `adf daemon remote status` and changes consent with `adf daemon remote allow-network [<id|label>]` and `forget-network <id|label>`.
+
+Windows' category (`Get-NetConnectionProfile`, no elevation, re-read every 60 s and on a network change) is read only for the warning line (`NetworkView.osCategory`).
+
+Rationale: no OS tells a home from a hotel reliably, and the same rule on every OS is simpler to explain and to test. The gateway's MAC address and the subnet change with the network, so a hotel never matches home. A spoofed gateway MAC only gets an attacker a listener that still requires a device token.
 
 ### 3.4 Network changes
 
@@ -98,7 +108,7 @@ Node has no portable interface-change event. While remote access is on, the daem
 3. re-announce mDNS on the current interface (§5.1);
 4. log one line naming added and removed addresses, and emit `remote_access` event `addresses_changed`.
 
-A network category (§3.3.1) holds only for the interface's addresses and default gateway (`<gateway IP>|<gateway MAC>`) at the moment it was read. The gateway is read at every check (cheap: `/proc/net/route` and `/proc/net/arp` on Linux, `netstat -rn` and `arp -an` on macOS, `route print -4 0.0.0.0` and `arp -a` on Windows). When an interface's addresses or gateway differ from the last read, the daemon MUST close that interface's LAN listeners first, then re-read the category, and open them again only when the new read says private (security review 2026-10-18, item 2: the 60 s cache keyed by interface name alone let a new hotel address inherit the home network's "private"). A gateway that cannot be read counts as unknown; the address part of the key still changes, and an unknown network is never private on macOS and Linux.
+The network identity (§3.3.1) is read at every check (cheap: `/proc/net/route` and `/proc/net/arp` on Linux, `netstat -rn` and `arp -an` on macOS, `route print -4 0.0.0.0` and `arp -a` on Windows). When an interface's addresses or network differ from the last read, the daemon MUST close that interface's LAN listeners first, before any slower read, and open them again only on an allowed network (security review 2026-10-18, item 2). A gateway MAC missing for a moment keeps the last one (re-review 1); a known different MAC or gateway is another network.
 
 With no eligible address the state is `no_address` ("No private network address now; other computers cannot reach this computer."). The setting stays on and listeners return with the network.
 
@@ -296,7 +306,7 @@ Each claim (address, device name, result) is logged; the code is not.
 
 Detection, no elevation, refreshed at enable and with `GET /remote-access?refresh=1`, result in `firewall`:
 
-- Windows: `Get-NetFirewallApplicationFilter -Program <exe> | Get-NetFirewallRule` for an enabled inbound Block rule (`blocked`: "Windows Firewall blocks ADF Studio. Open Windows Security → Firewall → Allow an app, and allow ADF Studio on Private networks."), and `Get-NetConnectionProfile` for a Public profile on a bound interface ("Windows treats this network as Public; the firewall blocks other computers unless you allowed Public networks.").
+- Windows: `Get-NetFirewallApplicationFilter -Program <exe> | Get-NetFirewallRule` for an enabled inbound Block rule (`blocked`: "Windows Firewall blocks ADF Studio. Open Windows Security → Firewall → Allow an app, and allow ADF Studio on Private networks.").
 - macOS: `socketfilterfw --getglobalstate`, `--getblockall`, `--getappblocked <exe>`.
 - Linux and anything unreadable: `unknown` with the documented commands.
 
@@ -306,9 +316,9 @@ A host cannot test its own firewall by connecting to its own LAN address (that t
 
 Settings → Networking (Studio in `local` mode; in `embedded` or `remote` the toggle is disabled with the reason). Copy rule (owner, 2026-10-18): headings, labels, buttons and dialog titles are plain nouns or short verb phrases; at most one short sentence under a heading.
 
-0. The tab's status line, shared with the mesh: network category (Private / Public), LAN address, Tailscale, firewall; **Mark private** on macOS and Linux (`trustNetwork`).
+0. The tab's status line, shared with the mesh: the networks (each allowed or not), LAN address, Tailscale, firewall; "Remote access paused on <network>." with **Allow on this network** (and the Public warning, §3.3.1) for each network not allowed; then **Allowed networks**, each with **Remove**.
 1. Section and toggle **Remote access**, with "A device token is as powerful as your seed phrase." and the **On quit** row (§3.6).
-2. Status line under the toggle (§8): "Listening on …", "Off.", "Not reachable on this network (Public).".
+2. Status line under the toggle (§8): "Listening on …", "Off.", "Paused on <network>.".
 3. Name: the runtime alias (settings `runtimeAlias`), else the host name; one name in mDNS, hello, pairing and device lists. **Fingerprint** `XXXX-XXXX` in the Pair device window.
 4. **Addresses**: each URL with Copy and its encryption label (§5.7): Tailscale https, tailnet IP, each LAN IP, `<host>.local`; **Enable Tailscale https**.
 5. **Pair device**: opens the **Pair device** window; shows the code in large digits, a countdown, attempts left; then the **Allow device** dialog.
@@ -390,7 +400,7 @@ Assets: device tokens (each = the owner phrase, §4.5), the pairing code during 
 | Web page in the user's browser | CSRF / DNS rebinding to the daemon | Existing Host, Origin, `Sec-Fetch-Site` checks on every listener and route | — |
 | Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens. It cannot see or collect other devices' pairing claims (no remote_access events, collect secret), nor reach local-only routes by any URL spelling |
 | Device token holder | Mint more tokens, lock the owner out | §4.5: management and local-only routes refuse device tokens | — |
-| Public / hostile Wi-Fi with private addresses (hotel 10.x) | Reach the listeners, attempt pairing | Token required; pairing only in an owner-opened window; Windows' Public profile usually blocks; the status line names the addresses | Yes; see Q4 |
+| Public / hostile Wi-Fi with private addresses (hotel 10.x) | Reach the listeners, attempt pairing | Nothing listens until the user allows that network (§3.3.1); then a token is required; pairing only in an owner-opened window; the status line names the addresses | Yes; see Q4 |
 | Carrier-grade NAT peers | Reach a 100.64/10 listener | Bound only when Tailscale confirms the address | — |
 | Process of the same OS user on the host | Read `daemon-token`, `daemon-devices.json`, mint via the proof | Out of scope, as in daemon-backend.md §5.4.1 | Yes |
 
@@ -419,8 +429,10 @@ Step 0 commits `src/shared/types/remote-access.types.ts` with the shapes below a
 ### 11.1 Types
 
 ```ts
-type RemoteAccessState = 'off' | 'on' | 'no_address' | 'env_bind' | 'error'
-interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' | 'tailnet'; iface: string; network: 'private' | 'public' | 'tailnet'; listening: boolean; problem: string | null }
+type RemoteAccessState = 'off' | 'on' | 'paused' | 'no_address' | 'env_bind' | 'error'
+interface RemoteAddress { address: string; family: 'IPv4' | 'IPv6'; kind: 'lan' | 'tailnet'; iface: string; networkId: string | null; allowed: boolean; listening: boolean; problem: string | null }
+interface NetworkView { id: string | null; kind: 'lan' | 'tailnet'; label: string; allowed: boolean; osCategory: 'private' | 'public' | 'unknown'; ifaces: string[]; addresses: string[] }
+interface AllowedNetwork { id: string; kind: 'lan' | 'tailnet'; label: string; addedAt: string }
 interface RemoteUrl { url: string; kind: 'tailscale-https' | 'tailnet' | 'lan' | 'mdns-name'; encrypted: boolean }
 interface RemoteDevice { id: string; label: string; origin: 'paired' | 'token'; createdAt: string; createdBy: 'studio' | 'cli'; lastSeenAt: string | null; lastSeenAddress: string | null; connected: boolean; connections: number; sessions: number }
 interface PairingClaimView { claimId: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null; at: string }
@@ -431,9 +443,10 @@ interface RemoteAccessStatus {
   addresses: RemoteAddress[]; urls: RemoteUrl[]; hostNames: string[]
   tailscale: { state: 'absent' | 'stopped' | 'running'; serve: 'on' | 'off' | 'unknown'; httpsUrl: string | null; serveCommand: string | null }
   mdns: { announcing: boolean; problem: string | null }
-  firewall: { state: 'ok' | 'blocked' | 'public_network' | 'unknown'; message: string; commands: string[] }
+  firewall: { state: 'ok' | 'blocked' | 'unknown'; message: string; commands: string[] }
   devices: RemoteDevice[]
   pairing: PairingWindowView | null
+  networks: NetworkView[]; allowedNetworks: AllowedNetwork[]; meshLan: boolean
 }
 interface RemoteHello { v: 1; name: string; fingerprint: string; pairingOpen: boolean; clientApiVersion: number }
 interface PairClaimRequest { code: string; deviceName: string; clientKind: 'studio' | 'cli' }
@@ -453,7 +466,9 @@ Master token, local caller (`requireLocalCaller`), local proof in every mode (`r
 | Method, path | Body | 2xx answer |
 |---|---|---|
 | `GET /remote-access[?refresh=1]` | — | 200 `RemoteAccessStatus` (`refresh` re-runs the firewall and Tailscale probes) |
-| `PUT /remote-access` | `{enabled?: boolean, name?: string, trustNetwork?: boolean}` (at least one) | 200 `RemoteAccessStatus` |
+| `PUT /remote-access` | `{enabled?: boolean, name?: string}` (at least one) | 200 `RemoteAccessStatus` |
+| `POST /remote-access/networks` | `{id: string}` (a current `networks[].id`) | 200 `RemoteAccessStatus` |
+| `DELETE /remote-access/networks/:id` | — | 200 `RemoteAccessStatus` |
 | `POST /remote-access/devices` | `{label: string}` | 201 `{device: RemoteDevice, token: string}` |
 | `DELETE /remote-access/devices/:id` | — | 200 `{device: RemoteDevice, closedSessions: number, closedConnections: number}` |
 | `POST /remote-access/pairing` | `{}` | 201 `PairingWindowView` (replaces an open window) |
@@ -490,11 +505,10 @@ Body `{error: string, code: string}` as today; `error` is the sentence clients s
 | 404 | `pairing_closed` | No open window (expired, closed, never opened, locked by wrong codes) |
 | 404 | `claim_not_found` | Unknown, expired or already collected claim |
 | 404 | `device_not_found` | Unknown device id |
+| 404 | `network_not_found` | Allowing a network this computer is not on now, or removing one that is not allowed |
 | 409 | `pairing_busy` | A correct claim is already waiting for the host |
 | 409 | `claim_decided` | Decision on a claim already decided |
 | 409 | `env_bind` | Enable while `ADF_DAEMON_HOST` is non-loopback |
-| 409 | `network_category_os` | `trustNetwork` on Windows, where the OS network category decides (§3.3.1) |
-| 409 | `network_unidentified` | `trustNetwork: true` where no network with a default gateway and a known gateway MAC is found |
 | 429 | `rate_limited` | Per-address limits; `Retry-After` header |
 | 502 | `tailscale_failed` | The `tailscale` command failed; body adds `output` and `command` |
 | 503 | `devices_unreadable` | `daemon-devices.json` cannot be read; no device token is accepted |
@@ -534,8 +548,9 @@ The owner answered the questions of the first draft on 2026-10-18.
 | # | Question | Decision |
 |---|---|---|
 | O1 | Restart the daemon to apply the toggle, or open listeners live? Refuse the master token from other computers? SPAKE2 for pairing? | As recommended: live listeners only, no restart (§3.2); the master token is refused on remote listeners (§4.4); SPAKE2 is deferred, `tailscale serve` (https) is the encrypted option (§5.6, §5.7). |
-| O2 | Turn remote access off on networks not seen before? | No listener on a network the OS marks Public; remote access stays on and only private and Tailscale addresses listen. Status: "Not reachable on this network (Public)." Windows uses the NetConnectionProfile category; macOS and Linux use the documented conservative rule, unsure = not private (§3.3.1). |
+| O2 | Turn remote access off on networks not seen before? | (Replaced by O2 b below.) No listener on a network the OS marks Public; remote access stays on and only private and Tailscale addresses listen. Status: "Not reachable on this network (Public)." Windows uses the NetConnectionProfile category; macOS and Linux use the documented conservative rule, unsure = not private (§3.3.1). |
 | O3 | Paired devices keep a Studio-started daemon alive after Studio quits? | No. Studio's quit asks every time a device is connected: "*N* computers are connected. Keep the daemon running for them, or stop it?" Nothing is remembered (§3.6). |
 | O4 | Token shown once, or a standing token with Show? | Shown once at creation; only the hash is stored (§4.3, §4.6). |
+| O2 b (2026-10-18) | The network rule, redefined | Never listen without the user's consent, given once per network, the same on every OS; it replaces "never on Public" (O2). The OS category, macOS/Linux heuristics and the tailnet are not consent. LAN identity: gateway MAC + subnet (+ Wi-Fi name where readable without a prompt); tailnet: its name. Consent lives in `remote-access.json` `allowedNetworks`, shared with the mesh; consent routes are local-only (§3.3.1). |
 
-Contract changes made with these decisions (additive, against 1c2e5441): `RemoteAddress.network`; `PUT /remote-access` body `trustNetwork` and optional `enabled`; errors `409 network_category_os` and `409 network_unidentified`; `remote-access.json` `privateNetworks`; event type `networks_changed`; the device-token refusal list of §4.5 spelled out per route.
+Contract changes made with these decisions (additive, against 1c2e5441): optional `enabled` in `PUT /remote-access`; event type `networks_changed`; the device-token refusal list of §4.5 spelled out per route. O2 b replaced O2's `RemoteAddress.network`, `trustNetwork`, `409 network_category_os`, `409 network_unidentified`, `firewall.state: 'public_network'` and `privateNetworks` with `RemoteAddress.networkId`/`allowed`, state `paused`, `networks`, `allowedNetworks`, `meshLan`, `POST`/`DELETE /remote-access/networks` and `404 network_not_found`.

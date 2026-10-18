@@ -349,12 +349,12 @@ The tab has, in this order: the network status line, **Mesh** (the controls belo
 
 ### Network status
 
-One line at the top of the tab: the network's category (Private or Public), the LAN address, Tailscale, and the firewall, for example "Network: Private (Wi-Fi) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok". The mesh's LAN mode and remote access both follow it: they listen on private networks and Tailscale only, never on a Public network. On macOS and Linux a network is private once you mark it (**Mark private**, or turning remote access on there). Details: [Studio backend › Network status](studio-backend.md#network-status). Not shown in Remote computer mode.
+One line at the top of the tab: the networks, the LAN address, Tailscale, and the firewall, for example "Network: Wi-Fi (192.168.1.0/24) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok". The mesh's LAN mode and remote access both follow it: they listen only on a network you allowed, once per network, the same on every OS. A network not allowed shows "Remote access paused on *network*." with **Allow on this network**. **Allowed networks** lists them, each with **Remove**. Details: [Studio backend › Network status](studio-backend.md#network-status). Not shown in Remote computer mode.
 
 ### Server Status
 
 - **Running indicator** — Green dot when the server is listening, red when stopped
-- **Host and port** — The addresses it listens on (e.g., `127.0.0.1, 192.168.1.20, port 7295`), or `127.0.0.1 only (no private network)` in LAN mode on a Public network
+- **Host and port** — The addresses it listens on (e.g., `127.0.0.1, 192.168.1.20, port 7295`), or `127.0.0.1 only (no private network)` in LAN mode on a network not allowed
 - **Server URL** — Clickable link to the server root
 - **Agent visibility** — "N agents visible on LAN · N public · N private": agents by `messaging.visibility` (`lan`; `public`; the rest)
 
@@ -364,7 +364,7 @@ Enable or disable the mesh network. When enabled, agents with configured serving
 
 ### LAN Access
 
-Toggle **Allow LAN access** to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It never listens on a Public network (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
+Toggle **Allow LAN access** to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It listens only on networks you allowed (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
 
 A server restart is required after changing this setting. The `MESH_HOST` environment variable overrides this setting.
 

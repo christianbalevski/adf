@@ -636,14 +636,28 @@ access: On · 2 devices", with **Open Networking**.
 The line at the top of Settings → Networking is the network both the mesh's
 LAN mode and remote access follow:
 
-> Network: Private (Wi-Fi) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok
+> Network: Wi-Fi (192.168.1.0/24) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok
+
+Nothing listens on a network until you allow it, once per network, on
+every OS. A Windows Private network and the tailnet need it too. A network
+is its router (the gateway's MAC address) and its subnet; on Linux also the
+Wi-Fi name. The tailnet is its name.
 
 | Part | Meaning |
 |---|---|
-| Network: Private / Public | Windows: the network's category in Settings → Network. macOS and Linux: Private only for a network you marked: turning remote access on marks the current one; **Mark private** (or `adf daemon remote trust`) marks another |
-| LAN … , not listening | The LAN address is on a Public network: nothing listens on it, for the mesh or remote access |
-| Tailscale | Tailscale addresses always listen; the tailnet authenticates its peers |
+| Network: *name* (not allowed) | Nothing listens on it, for the mesh or remote access |
+| "Remote access paused on *network*." / **Allow on this network** | Allow it: the mesh's LAN mode and remote access listen there from now on |
+| "Public network. The token is sent unencrypted." | Under the button when Windows calls the network Public, or on macOS and Linux, which do not say |
+| LAN … , not listening | The network is not allowed |
 | Firewall | Blocked: the sentence under the line says how to allow ADF Studio |
+
+**Allowed networks** lists every network you allowed. **Remove** closes its
+listeners at once. When remote access or **Allow LAN access** is on and you
+join a network you have not allowed, Studio asks once with the same
+"Remote access paused on *network*." and **Allow on this network** or
+**Not now**. In the terminal: `adf daemon remote status` shows the networks,
+`adf daemon remote allow-network` and `forget-network <id|name>` change
+them. A device can never allow a network.
 
 Remote access's own line, under its toggle:
 
@@ -651,7 +665,7 @@ Remote access's own line, under its toggle:
 |---|---|
 | "Listening on *addresses*." | Other devices reach this computer there |
 | "Off." | Remote access is off |
-| "Not reachable on this network (Public)." | No LAN address listens; join a private network or mark this one |
+| "Paused on *network*." | No address listens: allow the network (above) |
 | "No private network address now." | No LAN or Tailscale address; listening starts again when one appears |
 
 With **Keep the daemon running when Studio quits** off, the **On quit** row
@@ -863,7 +877,7 @@ Every message the backend features show, and where it is explained. Text in
 | "I trust this network; the token is sent unencrypted." | [Remote computer](#remote-computer) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
 | "Turn on remote access" / "Devices lose the connection when Studio quits." / "Remote access: On · *N* devices" | [Remote access](#remote-access) |
-| "Network: Private / Public …" / "Not reachable on this network (Public)." / "Listening on …" / Mark private | [Network status](#network-status) |
+| "Network: …" / "Remote access paused on …" / Allow on this network / "Public network. The token is sent unencrypted." / Allowed networks / Remove / "Paused on …" / "Listening on …" | [Network status](#network-status) |
 | "Anyone on this network can read the token." / Encrypted / Not encrypted | [Addresses](#addresses) |
 | "Allow device" / "Pairing: a device was locked out after 5 wrong codes." / "Pairing closed after too many wrong codes." / "Device added: …" | [Pair device](#pair-device) |
 | "Revoke device" / "Device revoked: …" | [Devices](#devices) |

@@ -15964,8 +15964,8 @@
         "tags": [
           "Remote access"
         ],
-        "summary": "Turn remote access on or off, rename, mark the network",
-        "description": "Live: no daemon restart. Turning on mints the daemon id (fingerprint), and on macOS and Linux marks the current networks private. Turning off closes every remote listener, ends device sessions and connections, keeps the devices.",
+        "summary": "Turn remote access on or off, rename",
+        "description": "Live: no daemon restart. Turning on mints the daemon id (fingerprint); it listens only on networks the user allowed (POST /remote-access/networks). Turning off closes every remote listener, ends device sessions and connections, keeps the devices.",
         "operationId": "updateRemoteAccess",
         "x-adf-stability": "experimental",
         "responses": {
@@ -15990,7 +15990,7 @@
             }
           },
           "409": {
-            "description": "`env_bind`: ADF_DAEMON_HOST binds the daemon to the network itself; `network_category_os`: trustNetwork on Windows; `network_unidentified`: trustNetwork where no network with a default gateway is found",
+            "description": "`env_bind`: ADF_DAEMON_HOST binds the daemon to the network itself",
             "content": {
               "application/json": {
                 "schema": {
@@ -16037,6 +16037,166 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RemoteAccessPatch"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/networks": {
+      "post": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Allow on this network",
+        "description": "The user's consent for a network this computer is on now (owner decision 2026-10-18 b): remote access and the mesh's LAN mode listen there from now on. Works while remote access is off. Local-only: a device token cannot allow a network.",
+        "operationId": "allowRemoteNetwork",
+        "x-adf-stability": "experimental",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^(lan|tailnet)-[0-9a-f]{16}$",
+                    "description": "A `networks[].id` from GET /remote-access"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAccessStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No or malformed id (`bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a network this computer is on now (`network_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/remote-access/networks/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Allowed network id",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Remote access"
+        ],
+        "summary": "Remove an allowed network",
+        "description": "Removes the consent; the listeners on that network (remote access and the mesh's LAN mode) close now. Local-only.",
+        "operationId": "forgetRemoteNetwork",
+        "x-adf-stability": "experimental",
+        "responses": {
+          "200": {
+            "description": "Status after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteAccessStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a network id (`bad_request`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Not this machine: a non-local caller or no local proof (`loopback_only`), a device token (`device_token_refused`), or the request guard (`host_not_allowed`, `cross_origin`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "device_token_refused": {
+                    "value": {
+                      "error": "A device token cannot do this: only this computer's own clients (ADF Studio and adf on the host) can. Run it on the host.",
+                      "code": "device_token_refused"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not an allowed network (`network_not_found`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
@@ -30150,13 +30310,14 @@
       },
       "RemoteAddress": {
         "type": "object",
-        "description": "An address other computers may reach. `network: public`: the OS (Windows) or the owner's list (macOS, Linux) does not mark the network private, so nothing listens on it.",
+        "description": "An address other computers may reach. It listens only when the user allowed its network (`allowed`; owner decision 2026-10-18 b).",
         "required": [
           "address",
           "family",
           "kind",
           "iface",
-          "network",
+          "networkId",
+          "allowed",
           "listening",
           "problem"
         ],
@@ -30182,13 +30343,16 @@
           "iface": {
             "type": "string"
           },
-          "network": {
-            "type": "string",
-            "enum": [
-              "private",
-              "public",
-              "tailnet"
-            ]
+          "networkId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The network it is on (`NetworkView.id`); null when it cannot be identified yet"
+          },
+          "allowed": {
+            "type": "boolean",
+            "description": "The user allowed that network"
           },
           "listening": {
             "type": "boolean"
@@ -30198,6 +30362,94 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "NetworkView": {
+        "type": "object",
+        "description": "A network this computer is on now. LAN: identified by the default gateway's MAC address and the subnet (and the Wi-Fi name where readable without a permission prompt); tailnet: by the tailnet name.",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "allowed",
+          "osCategory",
+          "ifaces",
+          "addresses"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(lan|tailnet)-[0-9a-f]{16}$",
+            "description": "Null: cannot be identified yet (no gateway MAC); it cannot be allowed"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "lan",
+              "tailnet"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "osCategory": {
+            "type": "string",
+            "enum": [
+              "private",
+              "public",
+              "unknown"
+            ],
+            "description": "Windows' category (shown as a warning only; never consent); unknown elsewhere"
+          },
+          "ifaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AllowedNetwork": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "addedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(lan|tailnet)-[0-9a-f]{16}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "lan",
+              "tailnet"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "addedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -30422,7 +30674,10 @@
           "mdns",
           "firewall",
           "devices",
-          "pairing"
+          "pairing",
+          "networks",
+          "allowedNetworks",
+          "meshLan"
         ],
         "additionalProperties": false,
         "properties": {
@@ -30434,14 +30689,16 @@
             "enum": [
               "off",
               "on",
+              "paused",
               "no_address",
               "env_bind",
               "error"
-            ]
+            ],
+            "description": "`paused`: on, but this computer's networks are not allowed, so nothing listens"
           },
           "message": {
             "type": "string",
-            "description": "The status line, e.g. \"Listening on 192.168.1.20.\" or \"Not reachable on this network (Public).\""
+            "description": "The status line, e.g. \"Listening on 192.168.1.20.\" or \"Paused on Wi-Fi (192.168.1.0/24).\""
           },
           "problem": {
             "type": [
@@ -30553,7 +30810,6 @@
                 "enum": [
                   "ok",
                   "blocked",
-                  "public_network",
                   "unknown"
                 ]
               },
@@ -30583,6 +30839,24 @@
                 "type": "null"
               }
             ]
+          },
+          "networks": {
+            "type": "array",
+            "description": "The networks this computer is on now (also while off)",
+            "items": {
+              "$ref": "#/components/schemas/NetworkView"
+            }
+          },
+          "allowedNetworks": {
+            "type": "array",
+            "description": "The networks the user allowed (remote-access.json; the mesh's LAN mode uses the same list)",
+            "items": {
+              "$ref": "#/components/schemas/AllowedNetwork"
+            }
+          },
+          "meshLan": {
+            "type": "boolean",
+            "description": "The daemon's mesh listens on the LAN (it needs the same consent)"
           }
         }
       },
@@ -30600,10 +30874,6 @@
             "minLength": 1,
             "maxLength": 63,
             "description": "The computer name other computers see: the runtime alias (settings runtimeAlias), else the host name"
-          },
-          "trustNetwork": {
-            "type": "boolean",
-            "description": "macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os` (the OS category decides). Turning remote access on also marks them."
           }
         }
       },
