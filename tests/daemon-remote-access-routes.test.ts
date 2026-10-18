@@ -97,7 +97,7 @@ afterEach(async () => {
   }
 })
 
-async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown } } = {}): Promise<Harness> {
+async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown }; serve?: boolean } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-remote-routes-'))
   dirs.push(dir)
   const port = await freePort()
@@ -126,8 +126,8 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
     },
     gateways: async (ifaces) => new Map(ifaces.map(i => [i, network.gateway])),
     tailscale: {
-      self: async () => ({ state: 'absent', ips: [], dnsName: null }),
-      serveStatus: async () => ({ serve: 'unknown', httpsUrl: null }),
+      self: async () => (opts.serve ? { state: 'running', ips: [], dnsName: 'host-1.tail1234.ts.net' } : { state: 'absent', ips: [], dnsName: null }),
+      serveStatus: async () => (opts.serve ? { serve: 'on', httpsUrl: 'https://host-1.tail1234.ts.net' } : { serve: 'unknown', httpsUrl: null }),
       setServe: async () => { throw new Error('Tailscale is not installed on this computer.') },
       serveCommand: (p, on) => (on ? ['serve', '--bg', String(p)] : ['serve', '--https=443', 'off']),
       whois: async (address: string) => { whoisCalls.push(address); return null },
@@ -763,5 +763,31 @@ describe('re-review 1: a gateway MAC missing for a moment is not a network chang
     await h.service.apply({})
     expect(listening(h)).toEqual([])
     expect(h.logs.some(l => /network changed on eth0/.test(l))).toBe(true)
+  })
+})
+
+describe('re-review 5: tailscale serve without ADF_DAEMON_BEHIND_PROXY', () => {
+  it('when serve fronts the daemon, each tailnet user has its own lockout (not one shared 127.0.0.1 key)', async () => {
+    const h = await harness({ serve: true })
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const wrong = code === '000000' ? '111111' : '000000'
+    const as = (login: string) => ({ 'tailscale-user-login': login, 'x-forwarded-for': '100.101.102.103' })
+    for (let i = 0; i < 5; i++) {
+      await h.server.inject({ method: 'POST', url: '/pair/claim', headers: as('mallory@example.test'), payload: { code: wrong, deviceName: 'm', clientKind: 'cli' } })
+    }
+    expect((await h.server.inject({ method: 'POST', url: '/pair/claim', headers: as('mallory@example.test'), payload: { code, deviceName: 'm', clientKind: 'cli' } })).statusCode).toBe(429)
+    const owner = await h.server.inject({ method: 'POST', url: '/pair/claim', headers: as('agent-2@example.test'), payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })
+    expect(owner.statusCode).toBe(202)
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim).toMatchObject({ via: 'proxy', tailnetLogin: 'agent-2@example.test' })
+    expect(h.logs.some(l => /tailscale serve fronts this daemon/.test(l))).toBe(true)
+  })
+
+  it('without serve and without proxy mode, the login header is still ignored', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    await h.server.inject({ method: 'POST', url: '/pair/claim', headers: { 'tailscale-user-login': 'owner@example.test' }, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'cli' } })
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim.tailnetLogin).toBeNull()
   })
 })

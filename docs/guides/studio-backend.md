@@ -693,7 +693,11 @@ The code alone never pairs a device: you must also allow it. Five wrong
 codes from one device lock that device out of the window ("Pairing: a device
 was locked out after 5 wrong codes."); the window shows how many are locked
 out and stays open for others. Twenty wrong codes in all close it ("Pairing
-closed after too many wrong codes."); open a new one. After **Allow**: "Device added: *name*."
+closed after too many wrong codes."); open a new one. Both limits are
+accepted as they are: a window you open allows at most 20 guesses out of a
+million codes, and a device that guesses wrong 5 times is shut out of that
+window without blocking the others. Behind `tailscale serve` each
+Tailscale user counts as one device. After **Allow**: "Device added: *name*."
 
 ### Add device
 

@@ -138,6 +138,7 @@ export class RemoteAccessService {
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleServe: TailscaleServe = { serve: 'unknown', httpsUrl: null }
   private tailscaleAt = 0
+  private serveNoted = false
   private firewallView: FirewallView | null = null
   private readonly connections = new Map<string, DeviceConnection>()
   private readonly helloHits = new BoundedMap<string, number[]>(SOURCE_TRACKING_CAP)
@@ -338,6 +339,10 @@ export class RemoteAccessService {
       this.tailscaleSelf = await this.tailscale.self()
       this.tailscaleServe = this.tailscaleSelf.state === 'running' ? await this.tailscale.serveStatus(this.port) : { serve: 'unknown', httpsUrl: null }
       this.tailscaleAt = now
+      if (this.tailscaleServe.serve === 'on' && !this.opts.behindProxy && !this.serveNoted) {
+        this.serveNoted = true
+        this.log('[remote-access] tailscale serve fronts this daemon: pairing keys its limits and the Allow prompt by the Tailscale user serve names (proxy mode for pairing; ADF_DAEMON_BEHIND_PROXY is not set)')
+      }
     }
     const tailscaleIps = new Set(this.tailscaleSelf.ips)
     // The category of an interface holds for its addresses and gateway at the read (security review item 2,
@@ -500,7 +505,9 @@ export class RemoteAccessService {
       const tailnetLogin = via === 'tailnet' && opts.whois ? await this.tailscale.whois(address) : null
       return { key: address, address, via, tailnetLogin }
     }
-    if (this.opts.behindProxy && isLoopbackAddress(address)) {
+    // tailscale serve fronting this daemon is proxy mode for pairing even without
+    // ADF_DAEMON_BEHIND_PROXY (re-review 5): otherwise every tailnet user shares one 127.0.0.1 key.
+    if ((this.opts.behindProxy || this.tailscaleServe.serve === 'on') && isLoopbackAddress(address)) {
       const login = cleanDisplayName(single(raw.headers['tailscale-user-login']) ?? single(raw.headers['tailscale-user-name']), 128)
       if (login) return { key: `tailscale:${login.toLowerCase()}`, address, via: 'proxy', tailnetLogin: login }
     }
