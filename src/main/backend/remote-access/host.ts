@@ -1,5 +1,5 @@
 import type { DaemonClient } from '../../../shared/daemon-client'
-import type { PairingClaimView, RemoteAccessStatus } from '../../../shared/types/remote-access.types'
+import type { PairingClaimView, RemoteAccessEvent, RemoteAccessStatus } from '../../../shared/types/remote-access.types'
 import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult } from '../../../shared/types/remote-access-ipc.types'
 import { RemoteAccessApiError, RemoteAccessManagement } from './client'
 
@@ -42,14 +42,11 @@ export interface RemoteAccessHostDeps {
   log?: Pick<Console, 'log' | 'warn'>
 }
 
-/** The `remote_access` event (§8): `{type, deviceId?, label?, claimId?, reason?}`. Never a token or a code. */
-export interface RemoteAccessEvent {
-  type?: unknown
-  deviceId?: unknown
-  label?: unknown
-  claimId?: unknown
-  reason?: unknown
-}
+/**
+ * The `remote_access` push as it arrives (shape: RemoteAccessEvent in
+ * remote-access.types.ts), unchecked. Never a token or a code.
+ */
+export type RemoteAccessEventPayload = { [K in keyof RemoteAccessEvent]?: unknown }
 
 export const ENABLE_DETAIL = 'A computer you pair or give a token can do anything you can on this computer\'s agents. Its token is as powerful as your seed phrase.'
 export const WINDOWS_FIREWALL_DETAIL = 'Windows may ask whether ADF Studio may accept connections. Choose Allow on private networks.'
@@ -66,7 +63,8 @@ export const WRONG_CODES_NOTICE = 'Pairing closed after 5 wrong codes.'
 
 function errorText(err: unknown): string {
   if (err instanceof RemoteAccessApiError) {
-    if (err.status === 404 && err.code === 'http_404') return 'This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.'
+    // An older daemon has no /remote-access route: 404 with code not_found, or no code at all.
+    if (err.status === 404 && (err.code === 'not_found' || err.code === 'http_404')) return 'This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.'
     return err.message
   }
   return err instanceof Error ? err.message : String(err)
@@ -135,12 +133,23 @@ export class RemoteAccessHost {
     }
   }
 
-  /** The toggle. Turning it on is confirmed once, plainly. */
-  async set(request: { enabled?: unknown; name?: unknown }): Promise<RemoteAccessResult> {
-    if (typeof request?.enabled !== 'boolean') return { ok: false, code: 'daemon', error: 'enabled must be true or false.' }
-    const enabled = request.enabled
-    const name = typeof request.name === 'string' && request.name.trim() ? request.name.trim() : undefined
+  /**
+   * The toggle (turning it on is confirmed once, plainly), the computer's
+   * name, and macOS/Linux "Allow on This Network" (`trustNetwork`, §3.3.1).
+   */
+  async set(request: { enabled?: unknown; name?: unknown; trustNetwork?: unknown }): Promise<RemoteAccessResult> {
+    const enabled = typeof request?.enabled === 'boolean' ? request.enabled : undefined
+    const trustNetwork = typeof request?.trustNetwork === 'boolean' ? request.trustNetwork : undefined
+    const name = typeof request?.name === 'string' && request.name.trim() ? request.name.trim() : undefined
+    if (enabled === undefined && trustNetwork === undefined && name === undefined) return { ok: false, code: 'daemon', error: 'Nothing to change.' }
     if (typeof this.management() === 'string') return { ok: false, code: 'unavailable', error: this.management() as string }
+    if (enabled === undefined) {
+      return this.run(trustNetwork === undefined ? 'Renaming' : trustNetwork ? 'Allowing on this network' : 'Forgetting this network', async (m) => {
+        const s = await m.set({ ...(name ? { name } : {}), ...(trustNetwork !== undefined ? { trustNetwork } : {}) })
+        this.log.log(`[Remote access] ${trustNetwork === undefined ? `Name: ${s.name}` : trustNetwork ? 'This network is private now' : 'This network is no longer private'} (Settings → Backend): ${s.message}`)
+        return s
+      })
+    }
     if (enabled && !this.last?.enabled) {
       const ok = await this.deps.confirm({
         message: 'Allow other computers to connect?',
@@ -152,7 +161,7 @@ export class RemoteAccessHost {
         return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
       }
     }
-    const result = await this.run(enabled ? 'Turning on' : 'Turning off', (m) => m.set({ enabled, ...(name ? { name } : {}) }))
+    const result = await this.run(enabled ? 'Turning on' : 'Turning off', (m) => m.set({ enabled, ...(name ? { name } : {}), ...(trustNetwork !== undefined ? { trustNetwork } : {}) }))
     if (result.ok) {
       const s = result.view.status
       this.log.log(`[Remote access] ${enabled ? 'On' : 'Off'} (Settings → Backend): ${s?.state ?? '?'}${s?.message ? `: ${s.message}` : ''}`)
@@ -233,8 +242,13 @@ export class RemoteAccessHost {
     return result.ok ? { ...result, ...(output !== undefined ? { output } : {}) } : result
   }
 
-  /** A `remote_access` event from the daemon's client stream. */
-  onDaemonEvent(event: RemoteAccessEvent): void {
+  /**
+   * A `remote_access` event from the daemon's client stream. Every event
+   * re-reads the status and pushes it: `claim_pending` then raises "Allow
+   * <label>?" (watchPairing), `networks_changed` and `addresses_changed`
+   * refresh the addresses and the status line, device_* the list.
+   */
+  onDaemonEvent(event: RemoteAccessEventPayload): void {
     const type = typeof event?.type === 'string' ? event.type : ''
     const label = typeof event?.label === 'string' ? event.label : null
     const deviceId = typeof event?.deviceId === 'string' ? event.deviceId : null

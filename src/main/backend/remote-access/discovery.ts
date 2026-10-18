@@ -1,9 +1,9 @@
-import { execFile } from 'node:child_process'
 import { Bonjour, type Service } from 'bonjour-service'
 import { pickMdnsInterface } from '../../services/mdns-service'
+import { DAEMON_SERVICE_TYPE } from '../../daemon/remote-access/announcer'
+import { probeTailnet, type DiscoveredDaemon } from '../../cli/daemon-discovery'
 import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import type { RemoteDiscoveryEntry, RemoteDiscoveryUpdate } from '../../../shared/types/remote-access-ipc.types'
-import { PairingClient } from './client'
 
 /**
  * Settings → Backend → Remote computer, "Found on your network"
@@ -13,16 +13,14 @@ import { PairingClient } from './client'
  * - LAN: mDNS browse of `_adf-daemon._tcp` (§5.1). The address is the one the
  *   announcement came from, as the mesh's browser does (mdns-service.ts).
  * - Tailnet: multicast does not cross WireGuard, so each online tailnet peer
- *   is asked `GET /remote/hello` on the daemon port (§5.2), every 30 s.
+ *   is asked `GET /remote/hello` on the daemon port (§5.2), every 30 s
+ *   (the CLI's probeTailnet, cli/daemon-discovery.ts).
  *
  * Runs only while the section is open (start/stop). Nothing here sees or
  * sends a token.
  */
 
-export const DEFAULT_DAEMON_PORT = 7385
-const SERVICE_TYPE = 'adf-daemon'
 const SWEEP_MS = 30_000
-const HELLO_TIMEOUT_MS = 2_500
 
 /** One `_adf-daemon._tcp` announcement, as the browser reports it. */
 export interface DaemonAnnouncement {
@@ -46,10 +44,8 @@ export interface DiscoveryDeps {
   ownFingerprint?: () => string | null
   /** mDNS browse; throws when mDNS cannot start. Default: bonjour-service on the interface pickMdnsInterface chooses. */
   browse?: (handlers: { up: (a: DaemonAnnouncement) => void; down: (a: DaemonAnnouncement) => void }) => MdnsBrowser
-  /** Online tailnet peers (addresses). Default: `tailscale status --json`. */
-  tailnetPeers?: () => Promise<string[]>
-  fetch?: typeof fetch
-  port?: number
+  /** ADF daemons on online tailnet peers. Default: probeTailnet (`tailscale status --json`, then GET /remote/hello). */
+  tailnet?: () => Promise<DiscoveredDaemon[]>
   sweepMs?: number
   log?: Pick<Console, 'log' | 'warn'>
 }
@@ -80,8 +76,8 @@ function txtString(txt: Record<string, unknown>, key: string): string | null {
   return null
 }
 
-/** Fingerprint as the daemon shows it: `XXXX-XXXX`, base32 (§5.1; the alphabet is not pinned, so any letters and digits). */
-const FINGERPRINT = /^[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$/
+/** Fingerprint as the daemon shows it: `XXXX-XXXX`, RFC 4648 base32 (§5.1). */
+const FINGERPRINT = /^[A-Z2-7]{4}-[A-Z2-7]{4}$/
 
 export class RemoteDiscovery {
   private records = new Map<string, Record_>()
@@ -195,21 +191,20 @@ export class RemoteDiscovery {
   }
 
   private async sweep(generation: number): Promise<void> {
-    let peers: string[]
+    let daemons: DiscoveredDaemon[]
     try {
-      peers = await (this.deps.tailnetPeers ?? defaultTailnetPeers)()
+      daemons = await (this.deps.tailnet ?? (() => probeTailnet()))()
     } catch {
-      peers = []
+      daemons = []
     }
-    const port = this.deps.port ?? DEFAULT_DAEMON_PORT
     const found = new Map<string, { name: string; sighting: Sighting }>()
-    await Promise.all(peers.map(async (address) => {
-      try {
-        const hello = await new PairingClient(hostUrl(address, port), this.deps.fetch).hello({ timeoutMs: HELLO_TIMEOUT_MS })
-        if (hello?.v !== 1 || typeof hello.fingerprint !== 'string' || !FINGERPRINT.test(hello.fingerprint)) return
-        found.set(hello.fingerprint, { name: String(hello.name || address), sighting: { address, port, pairingOpen: hello.pairingOpen === true } })
-      } catch { /* no ADF daemon there, or remote access off */ }
-    }))
+    for (const d of daemons) {
+      if (!FINGERPRINT.test(d.fingerprint)) continue
+      let url: URL
+      try { url = new URL(d.url) } catch { continue }
+      const address = url.hostname.replace(/^\[|\]$/g, '')
+      found.set(d.fingerprint, { name: d.name || address, sighting: { address, port: Number(url.port) || 80, pairingOpen: d.pairingOpen } })
+    }
     if (generation !== this.generation || !this.running) return
     for (const [fingerprint, record] of this.records) {
       if (found.has(fingerprint)) continue
@@ -237,7 +232,7 @@ function defaultBrowse(handlers: { up: (a: DaemonAnnouncement) => void; down: (a
     addresses: (service.addresses ?? []) as string[],
     txt: (service.txt ?? {}) as Record<string, unknown>,
   })
-  const browser = bonjour.find({ type: SERVICE_TYPE, protocol: 'tcp' })
+  const browser = bonjour.find({ type: DAEMON_SERVICE_TYPE, protocol: 'tcp' })
   browser.on('up', (service: Service) => handlers.up(toAnnouncement(service)))
   browser.on('down', (service: Service) => handlers.down(toAnnouncement(service)))
   return {
@@ -246,36 +241,4 @@ function defaultBrowse(handlers: { up: (a: DaemonAnnouncement) => void; down: (a
       try { bonjour.destroy() } catch { /* best effort */ }
     },
   }
-}
-
-const TAILSCALE_CANDIDATES = process.platform === 'win32'
-  ? ['tailscale', 'C:\\Program Files\\Tailscale\\tailscale.exe']
-  : ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
-
-function execOut(bin: string, args: string[], timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout) => err ? reject(err) : resolve(stdout))
-  })
-}
-
-/** Online tailnet peers' first address (IPv4 preferred), from `tailscale status --json`; [] without Tailscale. */
-export async function defaultTailnetPeers(): Promise<string[]> {
-  for (const bin of TAILSCALE_CANDIDATES) {
-    let out: string
-    try {
-      out = await execOut(bin, ['status', '--json'], 5_000)
-    } catch {
-      continue
-    }
-    try {
-      const status = JSON.parse(out) as { Peer?: Record<string, { TailscaleIPs?: string[]; Online?: boolean }> }
-      return Object.values(status.Peer ?? {})
-        .filter((p) => p.Online !== false)
-        .map((p) => (p.TailscaleIPs ?? []).find((ip) => ip.includes('.')) ?? p.TailscaleIPs?.[0] ?? '')
-        .filter((ip) => ip.length > 0)
-    } catch {
-      return []
-    }
-  }
-  return []
 }

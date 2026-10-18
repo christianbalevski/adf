@@ -737,8 +737,8 @@ export interface AdfApi {
   // Allow other computers to connect (remote-access.md §7, §9.1). Host: Settings → Backend → This computer.
   /** The host panel: the daemon's remote-access status, in local mode only. */
   getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
-  /** The toggle; turning it on is confirmed in a native dialog first. */
-  setRemoteAccess: (request: { enabled: boolean; name?: string }) => Promise<RemoteAccessResult>
+  /** The toggle (turning it on is confirmed in a native dialog first), the name, and macOS/Linux "Allow on This Network" (`trustNetwork`). */
+  setRemoteAccess: (request: { enabled?: boolean; name?: string; trustNetwork?: boolean }) => Promise<RemoteAccessResult>
   /** "Add a computer": a device token, returned this once. */
   addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
   /** Remove a computer (confirmed first): disconnected now, its token stops working. */

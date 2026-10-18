@@ -31,8 +31,8 @@ import type { RemotePairState } from '../../../src/shared/types/remote-access-ip
 const status = (over: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus => ({
   enabled: true, state: 'on', message: '', problem: null, name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', port: 7385,
   addresses: [
-    { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', listening: true, problem: null },
-    { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', listening: true, problem: null },
+    { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', network: 'private', listening: true, problem: null },
+    { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', network: 'tailnet', listening: true, problem: null },
   ],
   urls: [], hostNames: [],
   tailscale: { state: 'running', serve: 'off', httpsUrl: null, serveCommand: null },
@@ -102,7 +102,7 @@ describe('Pair a computer (host)', () => {
     expect(pairingCountdown('2026-10-18T12:01:45Z', now)).toBe('1:45')
     expect(pairingCountdown('2026-10-18T11:00:00Z', now)).toBe('0:00')
     expect(formatCode('012345')).toBe('012 345')
-    const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 5, claim: null }} name="agent-1-pc" fingerprint="ABCD-EFGH" now={now} />)
+    const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 5, claim: null }} name="agent-1-pc" fingerprint="ABCD-EFGH" now={now} />)
     expect(html).toContain('012 345')
     expect(html).toContain('Expires in 2:00 · 5 tries left · Fingerprint ABCD-EFGH')
   })

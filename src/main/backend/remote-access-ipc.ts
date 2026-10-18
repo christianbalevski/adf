@@ -175,7 +175,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
 
   // --- Host: Settings → Backend → This computer ---
   ipcMain.handle(IPC.REMOTE_ACCESS_GET, (_event, opts?: { refresh?: unknown }) => host.get({ refresh: opts?.refresh === true }))
-  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown }) => host.set(request ?? {}))
+  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown; trustNetwork?: unknown }) => host.set(request ?? {}))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, (_event, label: unknown) => host.addDevice(label))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_REMOVE, (_event, id: unknown) => host.removeDevice(id))
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, () => host.openPairing())

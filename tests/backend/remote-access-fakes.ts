@@ -24,6 +24,10 @@ export interface FakeRemoteDaemon {
     claims: Map<string, { state: 'pending' | 'approved' | 'denied' | 'collected'; deviceName: string; token?: string; device?: RemoteDevice }>
     /** Origins that time out (a firewall dropping packets). */
     unreachable: Set<string>
+    /** An ADF from before remote access: no /remote-access routes, a token asked on /remote/hello and /pair/*. */
+    old: boolean
+    /** The last PUT /remote-access body's trustNetwork. */
+    trusted: boolean | null
   }
   requests: Array<{ origin: string; method: string; path: string; body: unknown; headers: Record<string, string> }>
   /** Answer the pending claim as the host's owner would. */
@@ -60,6 +64,8 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     tailscale: { state: 'running', serve: 'off', httpsUrl: null, serveCommand: 'tailscale serve --bg 7385' },
     claims: new Map(),
     unreachable: new Set(),
+    old: false,
+    trusted: null,
   }
   const status = (): RemoteAccessStatus => ({
     enabled: state.enabled,
@@ -70,8 +76,8 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     fingerprint: state.enabled ? state.fingerprint : null,
     port: 7385,
     addresses: state.enabled ? [
-      { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', listening: true, problem: null },
-      { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', listening: true, problem: null },
+      { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', network: 'private', listening: true, problem: null },
+      { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', network: 'tailnet', listening: true, problem: null },
     ] : [],
     urls: state.enabled ? state.urls : [],
     hostNames: [],
@@ -79,7 +85,7 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     mdns: { announcing: state.enabled, problem: null },
     firewall: state.firewall,
     devices: state.devices,
-    pairing: state.pairing ? { code: state.pairing.code, openedAt: state.pairing.openedAt, expiresAt: state.pairing.expiresAt, attemptsLeft: state.pairing.attemptsLeft, claim: state.pairing.claim } : null,
+    pairing: state.pairing ? { code: state.pairing.code, name: state.name, fingerprint: state.fingerprint, openedAt: state.pairing.openedAt, expiresAt: state.pairing.expiresAt, attemptsLeft: state.pairing.attemptsLeft, claim: state.pairing.claim } : null,
   })
 
   const fake: FakeRemoteDaemon = {
@@ -113,10 +119,16 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
       }
       const path = url.pathname
       const management = url.origin === loopback
+      if (state.old) {
+        if (path === '/remote/hello' || path.startsWith('/pair/')) return err(401, 'unauthorized', 'Missing or invalid token.')
+        return err(404, 'not_found', `Route ${method}:${path} not found`)
+      }
       if (path === '/remote-access' || path.startsWith('/remote-access/')) {
         if (!management) return err(403, 'loopback_only', 'Only this computer may change remote access.')
         if (method === 'GET' && path === '/remote-access') return json(200, status())
         if (method === 'PUT' && path === '/remote-access') {
+          if (typeof body.trustNetwork === 'boolean') state.trusted = body.trustNetwork
+          if (typeof body.enabled !== 'boolean') return json(200, status())
           state.enabled = body.enabled
           if (typeof body.name === 'string') state.name = body.name
           if (!state.enabled) state.pairing = null
@@ -135,7 +147,7 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
           return json(200, { device: d, closedSessions: 1, closedConnections: 2 })
         }
         if (method === 'POST' && path === '/remote-access/pairing') {
-          state.pairing = { code: '123456', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
+          state.pairing = { code: '123456', name: state.name, fingerprint: state.fingerprint, openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
           return json(201, status().pairing)
         }
         if (method === 'DELETE' && path === '/remote-access/pairing') {

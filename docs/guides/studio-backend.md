@@ -636,7 +636,7 @@ The **Status** line says where other computers reach this one:
 |---|---|
 | "Reachable from other computers at *addresses*." | Listening on those addresses |
 | "Not reachable from other computers." | Access is off |
-| "Not reachable on this network (Public)." | The OS marks this network Public (a hotel or café Wi-Fi); nothing listens until you join a private network |
+| "Not reachable on this network (Public)." | The network is not marked private (a hotel or café Wi-Fi); nothing listens on it. Windows: the network's category in Settings → Network. macOS and Linux: the networks you are on when you turn access on count as private; add the current one with `adf daemon remote trust` |
 | "No private network address now; …" | No LAN or Tailscale address; listening starts again when one appears |
 
 Under it, the computer's name and its fingerprint (`XXXX-XXXX`). The other
@@ -718,6 +718,7 @@ host allows it, Studio saves the address and token as for a pasted token
 | "Studio could not reach *host* at *url*. The host's firewall may block port 7385." | See [Firewall](#firewall) |
 | "*host* is already asking about another computer. …" | Wait, then try again |
 | "*url* does not allow other computers to connect. …" | Turn access on, on the host |
+| "*host* runs an older ADF. Update ADF there, then pair again." | The host's ADF predates this feature |
 
 Entering an address and token by hand still works.
 

@@ -716,7 +716,7 @@ const api: AdfApi = {
 
   // Allow other computers to connect (remote-access.md)
   getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
-  setRemoteAccess: (request: { enabled: boolean; name?: string }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  setRemoteAccess: (request: { enabled?: boolean; name?: string; trustNetwork?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
   addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
   removeRemoteDevice: (id: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_REMOVE, id),
   openRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_OPEN),

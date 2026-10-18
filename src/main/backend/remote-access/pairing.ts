@@ -221,7 +221,7 @@ export class PairingFlow {
   }
 
   private claimFailure(err: unknown, host: NonNullable<RemotePairState['host']>): RemotePairState {
-    if (!(err instanceof RemoteAccessApiError) || err.status === null) return this.networkFailure(err, host)
+    if (!(err instanceof RemoteAccessApiError) || err.status === null || err.status === 401) return this.networkFailure(err, host)
     switch (err.code) {
       case 'wrong_code': {
         const left = err.extra.attemptsLeft ?? null
@@ -246,6 +246,8 @@ export class PairingFlow {
 
   private networkFailure(err: unknown, host: NonNullable<RemotePairState['host']>): RemotePairState {
     if (err instanceof RemoteAccessApiError && err.status !== null) {
+      // An ADF daemon from before remote access asks for a token on /remote/hello and /pair/*.
+      if (err.status === 401) return this.fail('old_daemon', `${host.name} runs an older ADF. Update ADF there, then pair again.`)
       if (err.code === 'remote_access_off') return this.fail('remote_access_off', `${host.url} does not allow other computers to connect. Turn it on there: Settings → Backend → This computer.`)
       return this.fail('unreachable', `${host.url} does not answer as an ADF computer that allows pairing (${err.message}).`)
     }

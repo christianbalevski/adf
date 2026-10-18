@@ -4,6 +4,7 @@ import type {
   PairClaimRequest,
   PairClaimResult,
   PairingWindowView,
+  RemoteAccessPatch,
   RemoteAccessStatus,
   RemoteDevice,
   RemoteHello,
@@ -66,7 +67,7 @@ export class RemoteAccessManagement {
     return this.call('GET', '/remote-access', undefined, opts.refresh ? { refresh: '1' } : undefined, opts.timeoutMs)
   }
 
-  set(body: { enabled: boolean; name?: string }): Promise<RemoteAccessStatus> {
+  set(body: RemoteAccessPatch): Promise<RemoteAccessStatus> {
     return this.call('PUT', '/remote-access', body)
   }
 

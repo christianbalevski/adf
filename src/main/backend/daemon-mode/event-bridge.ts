@@ -44,7 +44,7 @@ export interface PushTopicRoute {
   /** Sent on AGENT_EVENT for the focused agent, as an executor event of the topic's name (inter_agent_message, §7). */
   focusedAgentEvent?: boolean
   /** Bridge actions instead of a channel. */
-  action?: 'adf_file_created' | 'notice' | 'rekey'
+  action?: 'adf_file_created' | 'notice' | 'rekey' | 'remote_access'
   /** No Studio push and no action: why. */
   none?: string
   /** The channel carries no payload in embedded Studio (TEMPLATES_CHANGED): the frame's `{}` is not passed on. */
@@ -74,7 +74,8 @@ export const PUSH_TOPICS: Readonly<Record<PushTopic, PushTopicRoute>> = {
   agent_path_changed: { channel: null, action: 'rekey' },
   autostart: { channel: null, none: 'the tracked-folder watcher\'s autostart; embedded Studio pushes nothing for it' },
   autostart_overflow: { channel: null, none: 'logged by the daemon; embedded Studio pushes nothing for it' },
-  remote_access: { channel: null, none: 'remote access changed (remote-access.md §8); Settings → Backend reads GET /remote-access (the Studio UI part maps it)' },
+  // remote-access.md §8: Studio main re-reads GET /remote-access, pushes REMOTE_ACCESS_CHANGED, asks "Allow <label>?" on claim_pending.
+  remote_access: { channel: null, action: 'remote_access' },
 }
 
 /** The channels fed by executor and host frames rather than a push topic. */
@@ -715,15 +716,13 @@ export class EventBridge {
   }
 
   private onPush(frame: PushFrame): void {
-    // remote-access.md §8: not in the daemon's ClientPushTopic on this branch
-    // yet; once it is, this becomes a PUSH_TOPICS route with its own action.
-    if ((frame.topic as string) === 'remote_access') {
-      this.deps.onRemoteAccess?.(frame.payload)
-      return
-    }
     const route = PUSH_TOPICS[frame.topic]
     if (!route) {
       this.log.warn(`[Backend] Unknown push topic ${String(frame.topic)}; not shown`)
+      return
+    }
+    if (route.action === 'remote_access') {
+      this.deps.onRemoteAccess?.(frame.payload)
       return
     }
     if (route.action === 'adf_file_created') {

@@ -27,6 +27,7 @@ import { PairingFlow, type PairingSaveInput } from '../../src/main/backend/remot
 import { RemoteDiscovery, type DaemonAnnouncement } from '../../src/main/backend/remote-access/discovery'
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
 import { claimQuestion, registerRemoteAccessHandlers, unavailableReason } from '../../src/main/backend/remote-access-ipc'
+import { probeTailnet } from '../../src/main/cli/daemon-discovery'
 import { applyBackendPatch, createBackendSettingsStore, defaultBackendConfig, normalizeBackendConfig, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
 import type { RemoteAccessChange, RemotePairState, RemoteDiscoveryUpdate } from '../../src/shared/types/remote-access-ipc.types'
 
@@ -228,6 +229,20 @@ describe('host panel (Settings → Backend → This computer)', () => {
     expect(unavailableReason('embedded')).toContain('This computer')
   })
 
+  it('Allow on This Network (macOS, Linux) sends trustNetwork only', async () => {
+    h.daemon.state.enabled = true
+    const result = await h.host.set({ trustNetwork: true })
+    expect(result.ok).toBe(true)
+    expect(h.daemon.state.trusted).toBe(true)
+    expect(h.daemon.requests.find((r) => r.method === 'PUT')?.body).toEqual({ trustNetwork: true })
+    expect(h.confirms).toEqual([])
+  })
+
+  it('an older daemon (404 not_found): one sentence', async () => {
+    h.daemon.state.old = true
+    expect((await h.host.get()).error).toBe('This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.')
+  })
+
   it('an older daemon without the routes: one sentence, no crash', async () => {
     const old = hostSetup({
       daemon: () => ({ client: async () => new DaemonClient({ baseUrl: LOOPBACK, fetch: (async () => new Response(JSON.stringify({ message: 'Route GET:/remote-access not found', error: 'Not Found', statusCode: 404 }), { status: 404 })) as typeof fetch }) }),
@@ -344,6 +359,12 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     })
   })
 
+  it('an older ADF on the host (hello answers 401) says to update it', async () => {
+    const p = pairSetup()
+    p.daemon.state.old = true
+    expect(await p.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'old_daemon', message: '100.101.102.103 runs an older ADF. Update ADF there, then pair again.' })
+  })
+
   it('remote access off on the host', async () => {
     const p = pairSetup()
     p.daemon.state.enabled = false
@@ -398,12 +419,15 @@ describe('Found on your network (discovery)', () => {
       pairedFingerprint: () => paired,
       ownFingerprint: () => own,
       browse: (h) => { handlers = h; return { stop: () => { stopped = true } } },
-      tailnetPeers: async () => peers,
-      fetch: daemon.fetch,
+      tailnet: () => probeTailnet({ exec: tailscaleExec(peers), fetch: daemon.fetch }),
       sweepMs: 60_000,
       log: quiet,
     })
     return { daemon, discovery, updates, up: (a: DaemonAnnouncement) => handlers!.up(a), down: (a: DaemonAnnouncement) => handlers!.down(a), stopped: () => stopped, setPaired: (fp: string) => { paired = fp }, setOwn: (fp: string) => { own = fp } }
+  }
+  /** `tailscale status --json` with these online peers. */
+  function tailscaleExec(peers: string[]) {
+    return async () => JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['100.64.0.1'] }, Peer: Object.fromEntries(peers.map((ip, i) => [`p${i}`, { TailscaleIPs: [ip], Online: true }])) })
   }
   const announcement = (over: Partial<DaemonAnnouncement> = {}): DaemonAnnouncement => ({
     name: 'agent-1-pc', port: 7385, referer: '192.168.1.20', addresses: ['192.168.1.20', '172.20.0.1'], txt: { v: '1', fp: 'ABCD-EFGH', pair: '0', api: '1' }, ...over,
@@ -434,8 +458,8 @@ describe('Found on your network (discovery)', () => {
     d.setPaired('ABCD-EFGH')
     d.discovery.start()
     d.up(announcement())
-    d.up(announcement({ name: 'self', referer: '192.168.1.5', txt: { v: '1', fp: 'SELF-0001', pair: '0' } }))
-    d.setOwn('SELF-0001')
+    d.up(announcement({ name: 'self', referer: '192.168.1.5', txt: { v: '1', fp: 'SELF-2345', pair: '0' } }))
+    d.setOwn('SELF-2345')
     d.discovery.refresh()
     expect(d.updates.at(-1)?.entries.map((e) => [e.fingerprint, e.alreadyPaired])).toEqual([['ABCD-EFGH', true]])
     d.discovery.stop()
@@ -457,7 +481,7 @@ describe('Found on your network (discovery)', () => {
     const discovery = new RemoteDiscovery({
       onUpdate: (u) => updates.push(u), pairedFingerprint: () => null,
       browse: () => { throw new Error('EADDRINUSE 5353') },
-      tailnetPeers: async () => ['100.101.102.103'], fetch: daemon.fetch, log: quiet,
+      tailnet: () => probeTailnet({ exec: tailscaleExec(['100.101.102.103']), fetch: daemon.fetch }), log: quiet,
     })
     discovery.start()
     expect(updates[0]).toMatchObject({ browsing: false })
@@ -554,7 +578,7 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     const s = store()
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: s.store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false,
-      overrides: { discovery: { browse: () => ({ stop: () => {} }), tailnetPeers: async () => [] }, pairing: { fetch: daemon.fetch, retryMs: 5 } },
+      overrides: { discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] }, pairing: { fetch: daemon.fetch, retryMs: 5 } },
       log: quiet,
     })
     for (const channel of [IPC.REMOTE_ACCESS_GET, IPC.REMOTE_ACCESS_SET, IPC.REMOTE_ACCESS_DEVICE_ADD, IPC.REMOTE_ACCESS_DEVICE_REMOVE, IPC.REMOTE_ACCESS_PAIRING_OPEN, IPC.REMOTE_ACCESS_PAIRING_CLOSE, IPC.REMOTE_ACCESS_TAILSCALE_SERVE, IPC.REMOTE_DISCOVERY_START, IPC.REMOTE_DISCOVERY_STOP, IPC.REMOTE_PAIR_START, IPC.REMOTE_PAIR_SUBMIT_CODE, IPC.REMOTE_PAIR_CANCEL]) {

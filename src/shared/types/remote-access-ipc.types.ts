@@ -105,6 +105,8 @@ export type RemotePairErrorCode =
   | 'expired'
   | 'insecure_unconfirmed'
   | 'remote_access_off'
+  /** The host's ADF predates remote access (its /remote/hello answers 401). */
+  | 'old_daemon'
   | 'encryption_unavailable'
   | 'save_failed'
   | 'bad_request'
