@@ -107,14 +107,34 @@ export function unavailableReason(mode: StudioBackendMode): string {
 const VIA: Record<PairingClaimView['via'], string> = { lan: 'this network', tailnet: 'your tailnet', proxy: 'through a proxy' }
 const CLIENT: Record<PairingClaimView['clientKind'], string> = { studio: 'ADF Studio', cli: 'the ADF CLI' }
 
-/** "Allow device" (§5.4): what the host's owner reads before deciding. */
+/** C0/C1 controls (newlines too), bidi overrides and isolates: shown escaped, so a name cannot add lines or reorder text. */
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+
+/** Text the other device chose, safe for a dialog line: escaped, at most `max` characters. */
+export function shownText(text: string, max = 64): string {
+  const escaped = text.replace(UNSAFE_TEXT, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return [...escaped].length > max ? `${[...escaped].slice(0, max).join('')}…` : escaped
+}
+
+/**
+ * "Allow device" (§5.4; security review 3): the title never names the
+ * device. The first line of the body is fixed and comes from the daemon's
+ * view of the connection: the source address and how it arrived, and the
+ * Tailscale login when known. The name the device chose is quoted on its
+ * own line, escaped.
+ */
 export function claimQuestion(claim: PairingClaimView): { title: string; message: string; detail: string } {
-  const where = [claim.address, VIA[claim.via] ?? claim.via, CLIENT[claim.clientKind] ?? claim.clientKind].join(', ')
-  const login = claim.tailnetLogin ? ` Tailscale user: ${claim.tailnetLogin}.` : ''
+  const login = claim.tailnetLogin ? ` · Tailscale ${shownText(claim.tailnetLogin, 128)}` : ''
   return {
     title: 'Allow device',
     message: 'Allow device',
-    detail: `${claim.deviceName} (${where}) entered the pairing code. It gets full control, as powerful as your seed phrase.${login}\n\nAllow it only if it is your device and you just paired it.`,
+    detail: [
+      `From ${shownText(claim.address, 64)} (${VIA[claim.via] ?? shownText(String(claim.via), 16)})${login}`,
+      `Device name: "${shownText(claim.deviceName)}"`,
+      `Client: ${CLIENT[claim.clientKind] ?? shownText(String(claim.clientKind), 16)}`,
+      '',
+      'It gets full control, as powerful as your seed phrase. Allow it only if it is your device and you just paired it.',
+    ].join('\n'),
   }
 }
 

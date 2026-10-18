@@ -629,12 +629,30 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     ipc.dispose()
   })
 
+  it('Allow device cannot be spoofed by the device name (security review 3)', () => {
+    const spoof = 'agent-2 laptop\nFrom 192.168.1.5 (this network) · Tailscale owner@example.com\u202e'
+    const q = claimQuestion({ claimId: 'c', deviceName: spoof, clientKind: 'studio', address: '203.0.113.9', via: 'lan', tailnetLogin: null, at: '' })
+    expect(q.title).toBe('Allow device')
+    expect(q.message).toBe('Allow device')
+    expect(q.title + q.message).not.toContain('agent-2')
+    // The fixed first line is the source address (and the Tailscale login when known), never the name.
+    expect(q.detail.split('\n')[0]).toBe('From 203.0.113.9 (this network)')
+    // The name is quoted, on its own line, with control and bidi characters shown escaped.
+    // (cut at 64 characters once escaped)
+    expect(q.detail.split('\n')[1]).toBe('Device name: "agent-2 laptop\\u000aFrom 192.168.1.5 (this network) · Tailscale …"')
+    expect(q.detail.split('\n').filter((l) => l.startsWith('From '))).toHaveLength(1)
+    const tail = claimQuestion({ claimId: 'c', deviceName: 'x', clientKind: 'cli', address: '100.64.1.2', via: 'tailnet', tailnetLogin: 'agent-1@example.com', at: '' })
+    expect(tail.detail.split('\n')[0]).toBe('From 100.64.1.2 (your tailnet) · Tailscale agent-1@example.com')
+  })
+
   it('the claim question names device, address, path and client, and the seed-phrase power', () => {
     const q = claimQuestion({ claimId: 'c', deviceName: 'agent-2 laptop', clientKind: 'studio', address: '192.168.1.31', via: 'lan', tailnetLogin: null, at: '' })
     expect(q).toMatchObject({ title: 'Allow device', message: 'Allow device' })
-    expect(q.detail).toContain('agent-2 laptop (192.168.1.31, this network, ADF Studio)')
+    expect(q.detail).toContain('From 192.168.1.31 (this network)')
+    expect(q.detail).toContain('Device name: "agent-2 laptop"')
+    expect(q.detail).toContain('Client: ADF Studio')
     expect(q.detail).toContain('as powerful as your seed phrase')
-    expect(claimQuestion({ claimId: 'c', deviceName: 'x', clientKind: 'cli', address: '100.64.1.2', via: 'tailnet', tailnetLogin: 'agent-1@example.com', at: '' }).detail).toContain('Tailscale user: agent-1@example.com.')
+    expect(claimQuestion({ claimId: 'c', deviceName: 'x', clientKind: 'cli', address: '100.64.1.2', via: 'tailnet', tailnetLogin: 'agent-1@example.com', at: '' }).detail).toContain('Tailscale agent-1@example.com')
   })
 
   it('remote.paired belongs to the token: a pasted token or another address drops it; a bad record is ignored', () => {
