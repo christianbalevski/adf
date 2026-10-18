@@ -119,8 +119,10 @@ export interface SaveConnectionInput {
  * the keychain (or the user-only file). A fingerprint already saved keeps
  * its name; a new one gets the name `adf pair` would give.
  */
-export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnectionInput, now = new Date()): Promise<{ name: string; store: TokenStoreChoice }> {
-  const store = storeRemoteToken(input.fingerprint, input.token, env)
+export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnectionInput, opts: { confirmFile?: (why: string) => Promise<boolean>; now?: Date } = {}): Promise<{ name: string; store: TokenStoreChoice }> {
+  const now = opts.now ?? new Date()
+  // The keychain, or the user-only file only after the user chose it (KEYCHAIN_FILE_QUESTION).
+  const store = await storeRemoteToken(input.fingerprint, input.token, env, opts.confirmFile)
   // Under the lock adf takes too (updateRemotes): neither loses the other's change.
   const name = await updateRemotes(env, (file) => {
     const same = Object.entries(file.remotes).find(([, r]) => r.fingerprint === input.fingerprint)

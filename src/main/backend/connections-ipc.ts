@@ -6,6 +6,7 @@ import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '..
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
 import { buildConnectionsView, ConnectionError, forgetConnection, saveConnection, savedConnections, savedConnectionTarget } from './connections'
+import { KEYCHAIN_FILE_QUESTION } from '../cli/remotes'
 import { remoteHandshake } from './daemon-mode/remote/connector'
 import { PairingClient } from './remote-access/client'
 
@@ -127,9 +128,11 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (hello) {
       let name: string
       try {
-        name = (await saveConnection(deps.env, { url: check.url, token, fingerprint: hello.fingerprint, hostName: hello.name, deviceId: '', label: '' })).name
+        name = (await saveConnection(deps.env, { url: check.url, token, fingerprint: hello.fingerprint, hostName: hello.name, deviceId: '', label: '' }, {
+          confirmFile: (why) => deps.confirm({ message: KEYCHAIN_FILE_QUESTION, detail: why, ok: 'Save in file' }),
+        })).name
       } catch (err) {
-        return fail('save_failed', `Studio could not save the connection: ${err instanceof Error ? err.message : String(err)}`)
+        return fail(err instanceof Error && err.name === 'TokenNotStoredError' ? 'not_saved' : 'save_failed', err instanceof Error ? err.message : String(err))
       }
       if (insecure) await deps.backend.set({ trustInsecureOrigin: origin })
       log.log(`[Connection] Added ${name} (${hello.fingerprint}) at ${check.url} with a token`)

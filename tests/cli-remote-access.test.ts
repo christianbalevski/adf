@@ -5,7 +5,7 @@
  * listener (the private address bound on 127.0.0.1 through the test seam).
  * The client keeps its token in the user-only file (ADF_KEYCHAIN=0).
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -223,6 +223,7 @@ describe('adf pair (client) + adf daemon pair (host)', () => {
         prompts.push(q)
         if (/^Code shown/.test(q)) return await code()
         if (/by default/.test(q)) return 'y'
+        if (/file only you can read/.test(q)) return 'y'
         return null
       },
       sleep: async () => {},
@@ -357,7 +358,7 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     const asked: string[] = []
     const io = {
       fetch: fetchImpl, env, stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t), sleep: async () => {},
-      prompt: async (q: string) => { asked.push(q); const key = Object.keys(answers).find(k => q.includes(k)); return key ? answers[key] : null },
+      prompt: async (q: string) => { asked.push(q); const all: Record<string, string> = { 'file only you can read': 'y', ...answers }; const key = Object.keys(all).find(k => q.includes(k)); return key ? all[key] : null },
       ...extra,
     }
     return { io, env, out, err, asked }
@@ -385,6 +386,20 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     expect(await runPair([HOST], c.io)).toBe(1)
     expect(c.err.join('')).toMatch(/Refused: the approval came from a computer with fingerprint CCCC-DDDD, not AAAA-BBBB/)
     expect(loadRemotes(c.env).remotes).toEqual({})
+  })
+
+  it('without a keychain the token goes to the user-only file only after a yes (review item 3); no saves nothing', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const no = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'file only you can read': 'n' })
+    expect(await runPair([HOST], no.io)).toBe(1)
+    expect(no.asked.some((q) => q.startsWith('The keychain refused the token. Save it in a file only you can read?'))).toBe(true)
+    expect(no.err.join('')).toMatch(/The token was not saved/)
+    expect(no.err.join('')).toMatch(/adf daemon devices revoke abcdefghij/)
+    expect(loadRemotes(no.env).remotes).toEqual({})
+    expect(existsSync(join(no.env.ADF_DAEMON_SETTINGS, '..', REMOTE_TOKENS_FILENAME))).toBe(false)
+    const yes = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'file only you can read': 'y' })
+    expect(await runPair([HOST], yes.io)).toBe(0)
+    expect(yes.err.join('')).toContain(REMOTE_TOKENS_FILENAME)
   })
 
   it('a saved remote stays pinned: another fingerprint under its name is refused, its address and token are replaced only after asking', async () => {

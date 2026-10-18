@@ -21,6 +21,7 @@ import type { NetworkConsentResult, NetworkNotice, NetworkStatusView } from '../
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
 import { remotesEnv, saveConnection, savedConnections } from './connections'
+import { KEYCHAIN_FILE_QUESTION } from '../cli/remotes'
 
 /**
  * Remote access in Studio main
@@ -286,7 +287,10 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     save: async (input) => {
       let name: string
       try {
-        const saved = await saveConnection(env, { url: input.url, token: input.token, fingerprint: input.fingerprint, hostName: input.name, deviceId: input.deviceId, label: input.label })
+        const saved = await saveConnection(env, { url: input.url, token: input.token, fingerprint: input.fingerprint, hostName: input.name, deviceId: input.deviceId, label: input.label }, {
+          // Never a silent fallback: the user chooses the file.
+          confirmFile: async (why) => (await box({ type: 'question', title: 'Keychain', message: KEYCHAIN_FILE_QUESTION, detail: why, buttons: ['Save in file', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true })) === 0,
+        })
         name = saved.name
         if (saved.store.where === 'file') log.warn(`[Remote access] The token for ${name} is in ${saved.store.path} (${saved.store.why})`)
       } catch (err) {

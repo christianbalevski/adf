@@ -187,18 +187,37 @@ function readTokenFile(env: NodeJS.ProcessEnv): Record<string, string> {
   }
 }
 
-/** Save a device token: the keychain, else the user-only file (and say which). */
-export function storeRemoteToken(fingerprint: string, token: string, env: NodeJS.ProcessEnv = process.env): TokenStoreChoice {
+/** The question before a token goes to the user-only file (Studio's dialog, adf's prompt). */
+export const KEYCHAIN_FILE_QUESTION = 'The keychain refused the token. Save it in a file only you can read?'
+
+/** The keychain did not take the token and the user did not choose the file: nothing was saved. */
+export class TokenNotStoredError extends Error {
+  constructor(readonly why: string) {
+    super(`The token was not saved (${why}).`)
+    this.name = 'TokenNotStoredError'
+  }
+}
+
+/**
+ * Save a device token in the OS keychain. When the keychain refuses it or
+ * there is none, the token goes to the user-only file only after
+ * `confirmFile` says yes (Studio's dialog, adf's prompt; `why` is the
+ * reason); otherwise nothing is saved (TokenNotStoredError). Never a silent
+ * fallback.
+ */
+export async function storeRemoteToken(fingerprint: string, token: string, env: NodeJS.ProcessEnv, confirmFile?: (why: string) => Promise<boolean>): Promise<TokenStoreChoice> {
   const secrets = openDaemonSecrets(env)
+  let why = secrets.unavailable ?? 'no OS keychain'
   if (secrets.backend) {
     try {
       secrets.backend.set(account(fingerprint), token)
       return { where: 'keychain', why: null, path: null }
     } catch (err) {
-      return storeInFile(fingerprint, token, env, `the OS keychain refused it (${err instanceof Error ? err.message : String(err)})`)
+      why = `the OS keychain refused it: ${err instanceof Error ? err.message : String(err)}`
     }
   }
-  return storeInFile(fingerprint, token, env, secrets.unavailable ?? 'no OS keychain')
+  if (!confirmFile || !await confirmFile(why).catch(() => false)) throw new TokenNotStoredError(why)
+  return storeInFile(fingerprint, token, env, why)
 }
 
 function storeInFile(fingerprint: string, token: string, env: NodeJS.ProcessEnv, why: string): TokenStoreChoice {

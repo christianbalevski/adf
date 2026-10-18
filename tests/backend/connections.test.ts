@@ -93,7 +93,7 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
     const env = sharedEnv()
     // What adf pair writes (pair.ts): the list entry and the keychain account.
     saveRemotes({ v: 1, default: 'desk', remotes: { desk: { url: HUB, fingerprint: 'DESK-2345', deviceId: 'dev9', label: 'laptop', pairedAt: '2026-10-18T10:00:00Z', hostName: 'desk' } } }, env)
-    storeRemoteToken('DESK-2345', TOKEN, env)
+    await storeRemoteToken('DESK-2345', TOKEN, env)
     const view = buildConnectionsView({ active: { mode: 'local', remoteName: null, config: defaultBackendConfig() }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved: savedConnections(env), discovery: null })
     expect(view.rows.find((r) => r.id === 'remote:desk')).toMatchObject({ name: 'desk', state: 'paired', action: 'connect', fingerprint: 'DESK-2345', encrypted: true, removable: true })
     expect((await savedConnectionTarget(defaultBackendConfig(), 'desk', env)).token).toBe(TOKEN)

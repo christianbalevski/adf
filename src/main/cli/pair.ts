@@ -13,7 +13,7 @@ import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
-  deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
+  deleteRemoteToken, KEYCHAIN_FILE_QUESTION, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
 } from './remotes'
 
 export interface PairIo {
@@ -318,9 +318,14 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     }
   }
   const previousToken = previous ? readRemoteToken(previous.fingerprint, env) : null
-  let stored: ReturnType<typeof storeRemoteToken>
+  let stored: Awaited<ReturnType<typeof storeRemoteToken>>
   try {
-    stored = storeRemoteToken(result.daemon.fingerprint, result.token, env)
+    // The keychain; the user-only file only when the user says so (--yes says so).
+    stored = await storeRemoteToken(result.daemon.fingerprint, result.token, env, async (why) => {
+      if (parsed.yes) return true
+      const answer = await io.prompt(`${KEYCHAIN_FILE_QUESTION} (${why}) [y/N] `)
+      return !!answer && /^\s*y(es)?\s*$/i.test(answer)
+    })
   } catch (err) {
     // Never a token in a file others could read, and never a claim that it is safe when it is not.
     io.stderr(`The token was not saved: ${err instanceof Error ? err.message : String(err)}\n`)
@@ -351,7 +356,8 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
   } catch (err) {
     // Put back what was saved before; a new remote leaves no token behind.
     try {
-      if (previousToken) storeRemoteToken(result.daemon.fingerprint, previousToken, env)
+      // Put the previous token back where it may go (it was saved before).
+      if (previousToken) await storeRemoteToken(result.daemon.fingerprint, previousToken, env, async () => true)
       else deleteRemoteToken(result.daemon.fingerprint, env)
     } catch { /* reported below */ }
     io.stderr(`The remote was not saved: ${err instanceof Error ? err.message : String(err)}\n${revokeHint}\n`)
