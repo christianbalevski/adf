@@ -347,7 +347,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       title: q.title,
       message: q.message,
       ...(q.warning ? { detail: q.warning } : {}),
-      buttons: [q.allowLabel, q.laterLabel],
+      buttons: q.canAllow ? [q.allowLabel, q.laterLabel] : ['OK'],
       defaultId: 1,
       cancelId: 1,
       noLink: true,

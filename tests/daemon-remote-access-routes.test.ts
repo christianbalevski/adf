@@ -89,7 +89,7 @@ interface Harness {
   logs: string[]
   requestShutdown: ReturnType<typeof vi.fn>
   /** The fake network: eth0's address, its gateway identity, what the OS says (shown only), and the slow OS read (after `gate`, if set). */
-  network: { osCategory?: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number; onBind?: () => void }
+  network: { osCategory?: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number; down?: boolean; onBind?: () => void }
   dir: string
   sessions(): ClientSessionRegistry
   whoisCalls: string[]
@@ -128,7 +128,7 @@ async function harness(opts: { allowed?: boolean; osCategory?: 'private' | 'publ
     clientApiVersion: 2,
     platform: opts.platform ?? 'linux',
     hostName: () => 'host-1',
-    interfaces: () => ({
+    interfaces: () => network.down ? {} : ({
       eth0: [{ address: network.addr, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${network.addr}/24` } as NetworkInterfaceInfo],
       ...(opts.tailnet ? { Tailscale: [{ address: tailnetIp, family: 'IPv4', internal: false, netmask: '255.255.255.255', mac: '00:00:00:00:00:00', cidr: `${tailnetIp}/32` } as NetworkInterfaceInfo] } : {}),
     }),
@@ -817,6 +817,30 @@ describe('security review item 6: "off" during a listener opening', () => {
     await new Promise(r => setTimeout(r, 50))
     expect(svc.listeners.addresses()).toEqual([])
     await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
+  })
+})
+
+describe('consent review 1: consent never carries over to an unidentified network', () => {
+  const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
+
+  it('the interface goes down and comes back on the same subnet and gateway IP with no MAC (a rogue AP): nothing listens', async () => {
+    const h = await harness()
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+    h.network.down = true
+    await h.service.apply({})
+    expect(listening(h)).toEqual([])
+    h.network.down = false
+    h.network.gateway = '192.168.77.1|'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([])
+    const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
+    expect(status).toMatchObject({ state: 'paused', message: 'Paused on Unidentified network.' })
+    expect(status.networks).toEqual([expect.objectContaining({ id: null, label: 'Unidentified network', allowed: false })])
+    // The real home router answers ARP again: home, allowed, listening.
+    h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([LAN])
   })
 })
 

@@ -203,7 +203,7 @@ export function NewTokenPanel({ label, token, onDone }: { label: string; token: 
 export const PUBLIC_NETWORK_WARNING = 'Public network. The token is sent unencrypted.'
 
 export function networkWarning(network: NetworkView): string | null {
-  return network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
+  return network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
 }
 
 /**
@@ -249,15 +249,15 @@ export function NetworkConsentPanel({ view, busy, note, onAllow, onRemove }: {
   onAllow: (id: string) => void
   onRemove: (id: string) => void
 }) {
-  const waiting = view.networks.filter((n) => !n.allowed && n.id)
+  const waiting = view.networks.filter((n) => !n.allowed)
   return (
     <>
       <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
         <span>{networkStatusText(view)}<LearnMore href={DOCS.networkingStatus} /></span>
         {waiting.map((n) => (
-          <div key={n.id} className="flex w-full flex-wrap items-center justify-between gap-2">
+          <div key={n.id ?? `unidentified-${n.ifaces.join(',')}`} className="flex w-full flex-wrap items-center justify-between gap-2">
             <span>Remote access paused on {n.label}.</span>
-            <Button size="compact" disabled={busy} onClick={() => onAllow(n.id!)}>Allow on this network</Button>
+            {n.id && <Button size="compact" disabled={busy} onClick={() => onAllow(n.id!)}>Allow on this network</Button>}
             {networkWarning(n) && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{networkWarning(n)}</span>}
           </div>
         ))}

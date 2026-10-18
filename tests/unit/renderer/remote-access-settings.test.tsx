@@ -194,6 +194,10 @@ describe('Settings → Networking', () => {
     expect(privateCafe).toContain('Allow on this network')
     expect(privateCafe).not.toContain(PUBLIC_NETWORK_WARNING)
     expect(renderToStaticMarkup(<NetworkConsentPanel view={net({ allowedNetworks: [] })} busy={false} note={null} onAllow={() => {}} onRemove={() => {}} />)).toContain('None')
+    // Consent review 1: an unidentified network is named, paused, and cannot be allowed.
+    const unidentified = renderToStaticMarkup(<NetworkConsentPanel view={net({ networks: [{ ...cafe, id: null, label: 'Unidentified network' }] })} busy={false} note={null} onAllow={() => {}} onRemove={() => {}} />)
+    expect(unidentified).toContain('Remote access paused on Unidentified network.')
+    expect(unidentified).not.toContain('Allow on this network')
   })
 
   it('agent visibility on the mesh: the LanAgentsList predicate, then public, then the rest', () => {

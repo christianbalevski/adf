@@ -946,13 +946,23 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     await prompt.check()
     expect(asked.length).toBe(2)
     expect(allowed).toEqual(['lan-0123456789abcdef'])
-    // Off: no question. An allowed or unidentified network: no question.
+    // Off: no question. An allowed network: no question.
     const quiet2: NetworkQuestion[] = []
     const off = new NetworkConsentPrompt({ read: async () => ({ active: false, networks: [net()] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
     await off.check()
-    const none = new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [net({ allowed: true }), net({ id: null })] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
+    const none = new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [net({ allowed: true })] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
     await none.check()
     expect(quiet2).toEqual([])
+  })
+
+  it('consent review 1: an unidentified network gets the notice, labelled "Unidentified network", with nothing to allow', async () => {
+    const asked: NetworkQuestion[] = []
+    const allowed: string[] = []
+    const unidentified = net({ id: null, label: 'Unidentified network' })
+    const prompt = new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [unidentified] }), ask: async (q) => { asked.push(q); return true }, allow: async (id) => { allowed.push(id); return { ok: true } } })
+    await prompt.check()
+    expect(asked).toEqual([expect.objectContaining({ message: 'Remote access paused on Unidentified network.', canAllow: false, warning: null })])
+    expect(allowed).toEqual([])
   })
 
   it('without a daemon: Allow writes remote-access.json and re-syncs the mesh; Remove too; the prompt asks while mesh LAN is on', async () => {

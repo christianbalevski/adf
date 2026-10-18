@@ -186,6 +186,27 @@ describe('network identity and consent (owner decision 2026-10-18 b)', () => {
     expect((await read()).candidates[0].refusal).toBe(NOT_ALLOWED_SENTENCE)
     expect(changes).toEqual([['Wi-Fi']])
   })
+
+  it('consent review 1: an unreadable MAC is carried only on the same link; after the interface went down, Wi-Fi off/on or a new address the network is unidentified and never allowed', async () => {
+    const offline = {} as Record<string, NetworkInterfaceInfo[]>
+    const wifiOff = { 'Wi-Fi': [nic('fe80::5')] }
+    for (const [what, between, after] of [
+      ['interface went down', offline, '192.168.1.20'],
+      ['Wi-Fi off and on', wifiOff, '192.168.1.20'],
+      ['another address, same subnet', null, '192.168.1.30'],
+    ] as const) {
+      let gateway = '192.168.1.1|a4:2b:b0:01:02:03'
+      const w = watcher(() => gateway)
+      const read = (interfaces: Record<string, NetworkInterfaceInfo[]>) => w.read({ interfaces, tailscaleIps: new Set(), tailnet: null, allowed: allowedHome })
+      expect((await read(wifi('192.168.1.20'))).candidates[0].refusal, what).toBeNull()
+      if (between) await read(between)
+      // A rogue access point: same subnet, gateway .1, never answers ARP.
+      gateway = '192.168.1.1|'
+      const r = await read(wifi(after))
+      expect(r.candidates[0], what).toMatchObject({ networkId: null, refusal: NOT_ALLOWED_SENTENCE })
+      expect(r.networks[0], what).toMatchObject({ id: null, label: 'Unidentified network', allowed: false })
+    }
+  })
 })
 
 describe('remote-access.json (§3.1)', () => {

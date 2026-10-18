@@ -6,7 +6,10 @@
  *
  * - LAN network: identified by its default gateway's MAC address and the
  *   subnet, plus the Wi-Fi name where it is readable without a permission
- *   prompt. A MAC missing for a moment keeps the last one (re-review 1).
+ *   prompt. A MAC missing for a moment keeps the last one only on the same
+ *   link: the interface stayed up with the same address and subnet
+ *   (consent review 1). Otherwise the network is unidentified, and an
+ *   unidentified network never matches consent.
  * - Tailnet: identified by the tailnet's name.
  * - A changed network on an interface closes its listeners at once
  *   (`beforeChange`), before anything else is read.
@@ -23,7 +26,9 @@ import { addressCandidates, NOT_ALLOWED_SENTENCE, type AddressCandidate } from '
  * the last one (re-review 1): a MAC that is missing for a moment (ARP aging,
  * a stale table) or a gateway not read at all is unknown, not a change, so
  * the last identity stays. Only a known gateway IP that differs, or a known
- * MAC that differs, is another network.
+ * MAC that differs, is another network. The caller passes `previous` only
+ * while the link is the same (NetworkWatcher): a rogue access point with the
+ * same subnet and gateway IP that never answers ARP must not inherit it.
  */
 export function mergeGatewayIdentity(previous: string | undefined, read: string): string {
   const [ip = '', mac = ''] = read.split('|')
@@ -57,6 +62,9 @@ export function tailnetNetworkId(tailnet: string): string {
   return `tailnet-${hash(tailnet.toLowerCase())}`
 }
 
+/** The label of a network that cannot be identified (no gateway MAC on this link yet). */
+export const UNIDENTIFIED_NETWORK = 'Unidentified network'
+
 /** A network id as routes take it. */
 export const NETWORK_ID = /^(lan|tailnet)-[0-9a-f]{16}$/
 
@@ -80,6 +88,8 @@ export interface NetworkReading {
 export class NetworkWatcher {
   private keys = new Map<string, string>()
   private gatewayIds = new Map<string, string>()
+  /** Per LAN interface at the last read: `<addresses>|<subnet>`. Absent = the interface was down (or had no LAN address). */
+  private links = new Map<string, string>()
   private osCategories = new Map<string, 'private' | 'public'>()
   private osAt = 0
 
@@ -108,17 +118,25 @@ export class NetworkWatcher {
     ])
     const ids = new Map<string, string | null>()
     const keys = new Map<string, string>()
+    const links = new Map<string, string>()
+    const gatewayIds = new Map<string, string>()
     for (const iface of lanIfaces) {
-      const gateway = mergeGatewayIdentity(this.gatewayIds.get(iface), gateways.get(iface) ?? '')
-      this.gatewayIds.set(iface, gateway)
-      const mac = gateway.split('|')[1] ?? ''
       const info = (input.interfaces[iface] ?? []).find(i => !i.internal && isIP(i.address) === 4) ?? (input.interfaces[iface] ?? []).find(i => !i.internal)
       const subnet = info ? subnetOf(info) : null
+      const addresses = candidates.filter(c => c.iface === iface).map(c => c.address).join(',')
+      const link = `${addresses}|${subnet ?? ''}`
+      links.set(iface, link)
+      // The last MAC is carried only on the same link: up at the last read, same addresses and subnet.
+      const sameLink = this.links.get(iface) === link
+      const gateway = mergeGatewayIdentity(sameLink ? this.gatewayIds.get(iface) : undefined, gateways.get(iface) ?? '')
+      gatewayIds.set(iface, gateway)
+      const mac = gateway.split('|')[1] ?? ''
       const id = mac && subnet ? lanNetworkId(mac, subnet, ssids.get(iface) ?? null) : null
       ids.set(iface, id)
-      const addresses = candidates.filter(c => c.iface === iface).map(c => c.address).join(',')
       keys.set(iface, `${addresses}|${id ?? ''}`)
     }
+    this.links = links
+    this.gatewayIds = gatewayIds
     const changed = lanIfaces.filter(iface => this.keys.has(iface) && this.keys.get(iface) !== keys.get(iface))
     if (changed.length > 0) await input.beforeChange?.(changed)
     this.keys = keys
@@ -143,7 +161,7 @@ export class NetworkWatcher {
         view = {
           id: c.networkId,
           kind: c.kind,
-          label: c.kind === 'tailnet' ? `Tailnet ${input.tailnet ?? '(unknown)'}` : `${ssid ?? c.iface}${subnet ? ` (${subnet})` : ''}`,
+          label: !c.networkId ? UNIDENTIFIED_NETWORK : c.kind === 'tailnet' ? `Tailnet ${input.tailnet}` : `${ssid ?? c.iface}${subnet ? ` (${subnet})` : ''}`,
           allowed: !!c.networkId && allowed.has(c.networkId),
           osCategory: c.kind === 'tailnet' ? 'private' : this.osCategories.get(c.iface) ?? 'unknown',
           ifaces: [],

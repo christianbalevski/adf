@@ -25,8 +25,15 @@ export interface NetworkQuestion {
   message: string
   /** "Public network. The token is sent unencrypted." on a LAN the OS reports Public or does not report; else null. */
   warning: string | null
+  /** False for an unidentified network: it cannot be allowed, the notice only says why nothing listens. */
+  canAllow: boolean
   allowLabel: string
   laterLabel: string
+}
+
+/** One key per network: its id, or per interface for an unidentified one. */
+export function networkKey(network: NetworkView): string {
+  return network.id ?? `unidentified:${network.kind}:${network.ifaces.join(',')}`
 }
 
 export const PUBLIC_WARNING = 'Public network. The token is sent unencrypted.'
@@ -36,7 +43,8 @@ export function networkQuestion(network: NetworkView): NetworkQuestion {
     network,
     title: 'Remote access paused',
     message: `Remote access paused on ${network.label}.`,
-    warning: network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_WARNING : null,
+    warning: network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_WARNING : null,
+    canAllow: !!network.id,
     allowLabel: 'Allow on this network',
     laterLabel: 'Not now',
   }
@@ -56,15 +64,15 @@ export class NetworkConsentPrompt {
     try {
       const read = await this.deps.read().catch(() => null)
       if (!read) return
-      const current = new Set(read.networks.map((n) => n.id).filter((id): id is string => !!id))
-      for (const id of [...this.asked]) if (!current.has(id)) this.asked.delete(id)
+      const current = new Set(read.networks.map(networkKey))
+      for (const key of [...this.asked]) if (!current.has(key)) this.asked.delete(key)
       if (!read.active) return
       for (const network of read.networks) {
-        if (network.allowed || !network.id || this.asked.has(network.id)) continue
-        this.asked.add(network.id)
+        if (network.allowed || this.asked.has(networkKey(network))) continue
+        this.asked.add(networkKey(network))
         const question = networkQuestion(network)
         this.deps.log?.log(`[Remote access] ${question.message}${question.warning ? ` ${question.warning}` : ''}`)
-        if (!(await this.deps.ask(question))) {
+        if (!(await this.deps.ask(question)) || !network.id) {
           this.deps.log?.log(`[Remote access] Not allowed on ${network.label} (Not now)`)
           continue
         }
