@@ -683,8 +683,10 @@ pairing dialog and other devices' lists.
    6-digit code, the time left (2 minutes) and the tries left (5).
 2. On the other device, choose this computer under **Discovered** and enter
    the code ([Discovered](#discovered)).
-3. This computer shows the **Allow device** dialog with the device's name,
-   address and how it connected. **Allow** or **Deny**. When Studio is in the
+3. This computer shows the **Allow device** dialog. Its first line is where
+   the request came from ("From *address* (this network)", and the Tailscale
+   user when known); the name the device chose is quoted below it. Check the
+   address. **Allow** or **Deny**. When Studio is in the
    background, an OS notification opens it.
 
 The code alone never pairs a device: you must also allow it. Five wrong
@@ -721,8 +723,12 @@ the saved remote computer.
 alias, else its host name), the code, and, for a plain-http address, "I
 trust this network; the token is sent unencrypted." Then "Waiting for *host*
 to allow this device…". When the host allows it, Studio saves the address
-and token as for a pasted token (encrypted with safeStorage), preferring an
-encrypted address of the host. **Switch to This Daemon** switches to it.
+and token as for a pasted token (encrypted with safeStorage), with the
+host's fingerprint. When the host also answers at a Tailscale address (a
+tailnet IP or a `*.ts.net` name) with the same fingerprint, the
+**Encrypted address** dialog offers to save that one instead. A saved remote
+computer is never replaced without the **Replace remote computer** dialog.
+**Switch to This Daemon** switches to it.
 
 | Message | What to do |
 |---|---|
@@ -734,6 +740,9 @@ encrypted address of the host. **Switch to This Daemon** switches to it.
 | "*host* is already asking about another device. …" | Wait, then try again |
 | "*url* has remote access off. …" | Turn remote access on, on the host |
 | "*host* runs an older ADF. Update ADF there, then pair again." | The host's ADF predates this feature |
+| "*address* now answers with fingerprint *X*, not *Y* as when it was paired. …" | Another computer answers at the saved address. If that computer was set up again, remove the saved token first |
+| "The approval came with fingerprint *X*, but *host* showed *Y*. …" | Nothing was saved; revoke the device on the host and pair again |
+| "Kept the saved remote computer. Nothing was sent." | You chose Cancel in Replace remote computer |
 
 Entering an address and token by hand still works.
 
@@ -750,7 +759,8 @@ rule itself. On Linux, open port 7385 for your LAN, for example
 When Studio would stop the daemon (Studio started it and **Keep the daemon
 running** is off) and a device is connected, quitting Studio asks first,
 every time, in a **Quit** dialog: "*N* devices connected", "Keep the daemon
-running for them, or stop it."
+running for them, or stop it." When Studio cannot read whether devices are
+connected, it asks the same with "Devices may be connected".
 
 **Keep running** leaves the daemon running after Studio quits, this time
 only; the setting does not change. **Stop daemon** stops it and disconnects

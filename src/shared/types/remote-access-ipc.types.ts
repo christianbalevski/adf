@@ -130,6 +130,10 @@ export type RemotePairErrorCode =
   | 'remote_access_off'
   /** The host's ADF predates remote access (its /remote/hello answers 401). */
   | 'old_daemon'
+  /** The host's fingerprint is not the one pinned for this address, or the approval came with another. */
+  | 'fingerprint_mismatch'
+  /** The user kept the saved remote computer. */
+  | 'kept'
   | 'encryption_unavailable'
   | 'save_failed'
   | 'bad_request'

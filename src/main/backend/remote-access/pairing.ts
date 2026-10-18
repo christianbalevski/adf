@@ -43,6 +43,15 @@ export interface PairingFlowDeps {
    * instead of the one paired with? Absent: never switch.
    */
   confirmSwitch?: (prompt: { hostName: string; from: string; to: string }) => Promise<boolean>
+  /** The saved remote computer: its URL, whether a token is saved, the fingerprint pinned at pairing (null: pasted). */
+  savedRemote?: () => { url: string | null; tokenSaved: boolean; fingerprint: string | null }
+  /** A saved remote computer would be replaced: ask first. Absent: refuse to replace. */
+  confirmReplace?: (prompt: { current: string; hostName: string; next: string }) => Promise<boolean>
+}
+
+function originOf(url: string | null): string | null {
+  if (!url) return null
+  try { return new URL(url).origin } catch { return null }
 }
 
 /**
@@ -119,6 +128,17 @@ export class PairingFlow {
       const hello = await new PairingClient(check.url, this.deps.fetch).hello({ signal: abort.signal })
       if (abort.signal.aborted) return this.current
       if (hello?.v !== 1 || typeof hello.fingerprint !== 'string') return this.fail('unreachable', `${check.url} does not answer as an ADF computer with remote access on.`)
+      // Security review 4: the fingerprint pinned when the saved remote was paired (trust on first use).
+      const saved = this.deps.savedRemote?.() ?? { url: null, tokenSaved: false, fingerprint: null }
+      if (saved.fingerprint && originOf(saved.url) === originOf(check.url) && saved.fingerprint !== hello.fingerprint) {
+        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${saved.fingerprint} as when it was paired. Studio sent nothing. If that computer was set up again, remove the saved token first (Remove token).`)
+      }
+      // Never replace a saved remote computer's address and token without asking.
+      if (saved.tokenSaved && saved.url) {
+        const replace = this.deps.confirmReplace ? await this.deps.confirmReplace({ current: saved.url, hostName: hello.name, next: check.url }).catch(() => false) : false
+        if (abort.signal.aborted) return this.current
+        if (!replace) return this.fail('kept', 'Kept the saved remote computer. Nothing was sent.')
+      }
       this.log.log(`[Remote access] Pairing with ${hello.name} (${hello.fingerprint}) at ${check.url} as "${deviceName}"`)
       return this.set({
         step: 'need_code',
@@ -200,6 +220,11 @@ export class PairingFlow {
         return
       }
       if (result?.state === 'approved' && typeof result.token === 'string' && result.token) {
+        // Security review 4: the computer that approved is the one hello showed.
+        if (result.daemon?.fingerprint !== host.fingerprint) {
+          this.fail('fingerprint_mismatch', `The approval came with fingerprint ${String(result.daemon?.fingerprint)}, but ${host.name} showed ${host.fingerprint}. Studio saved nothing. Revoke "${result.device?.label ?? this.deviceName}" on ${host.name}.`)
+          return
+        }
         await this.saveApproved(host, result)
         return
       }

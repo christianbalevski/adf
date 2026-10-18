@@ -212,6 +212,20 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     onState: (state) => windows.send(IPC.REMOTE_PAIR_STATE, state),
     saveBlocked: () => deps.codec.available() ? null : (deps.codec.unavailableReason?.() ?? 'OS keychain encryption is not available, so the token cannot be saved.'),
     defaultDeviceName: () => runtimeName(deps.settingsDir),
+    savedRemote: () => {
+      const remote = deps.backend.config().remote
+      return { url: remote.url, tokenSaved: remote.token !== null, fingerprint: remote.paired?.fingerprint ?? null }
+    },
+    confirmReplace: async ({ current, hostName, next }) => (await box({
+      type: 'question',
+      title: 'Replace remote computer',
+      message: 'Replace remote computer',
+      detail: `The saved remote computer is ${current}. Pairing with ${shownText(hostName)} (${next}) replaces its address and token.`,
+      buttons: ['Replace', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    })) === 0,
     confirmSwitch: async ({ hostName, from, to }) => (await box({
       type: 'question',
       title: 'Encrypted address',

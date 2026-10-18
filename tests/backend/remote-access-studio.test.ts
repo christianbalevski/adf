@@ -263,7 +263,7 @@ class PairingClientShim {
 
 // --- Client: pairing ----------------------------------------------------------------
 
-function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean } = {}) {
+function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; useEncrypted?: boolean; savedRemote?: { url: string | null; tokenSaved: boolean; fingerprint: string | null }; replace?: boolean } = {}) {
   const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
   daemon.state.enabled = true
   daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
@@ -271,7 +271,10 @@ function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; use
   const saved: PairingSaveInput[] = []
   const logs: string[] = []
   const switches: Array<{ from: string; to: string }> = []
+  const replaces: string[] = []
   const flow = new PairingFlow({
+    savedRemote: () => opts.savedRemote ?? { url: null, tokenSaved: false, fingerprint: null },
+    confirmReplace: async (prompt) => { replaces.push(prompt.current); return opts.replace ?? true },
     confirmSwitch: async (prompt) => { switches.push({ from: prompt.from, to: prompt.to }); return opts.useEncrypted ?? true },
     onState: (s) => states.push(s),
     save: async (input) => { saved.push(input); return opts.saveFails ? { ok: false, error: 'Could not save studio-backend.json.' } : { ok: true } },
@@ -281,7 +284,7 @@ function pairSetup(opts: { saveBlocked?: string | null; saveFails?: boolean; use
     log: { log: (m: string) => logs.push(m), warn: (m: string) => logs.push(m) },
     retryMs: 5,
   })
-  return { daemon, flow, states, saved, logs, switches, last: () => states.at(-1)! }
+  return { daemon, flow, states, saved, logs, switches, replaces, last: () => states.at(-1)! }
 }
 
 describe('pairing from Settings → Backend → Remote computer', () => {
@@ -330,6 +333,41 @@ describe('pairing from Settings → Backend → Remote computer', () => {
     await until(() => q.last().step === 'paired')
     expect(q.switches).toHaveLength(1)
     expect(q.saved[0]).toMatchObject({ url: LAN, allowInsecureHttp: true })
+  })
+
+  it('the fingerprint the host approves with must be the one hello showed (security review 4)', async () => {
+    const p = pairSetup()
+    await p.flow.start({ url: TAILNET })
+    await p.flow.submitCode('654321')
+    p.daemon.state.fingerprint = 'ZZZZ-ZZZZ'
+    p.daemon.decide(true)
+    await until(() => p.last().step === 'failed')
+    expect(p.last()).toMatchObject({ code: 'fingerprint_mismatch' })
+    expect(p.last().message).toContain('ZZZZ-ZZZZ')
+    expect(p.saved).toEqual([])
+  })
+
+  it('a saved remote\'s pinned fingerprint (trust on first use): another one at its address is refused (security review 4)', async () => {
+    const p = pairSetup({ savedRemote: { url: TAILNET, tokenSaved: true, fingerprint: 'QQQQ-QQQQ' } })
+    expect(await p.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'fingerprint_mismatch' })
+    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when it was paired. Studio sent nothing. If that computer was set up again, remove the saved token first (Remove token).')
+    expect(p.replaces).toEqual([])
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+  })
+
+  it('a saved remote is never replaced without asking (security review 4)', async () => {
+    const kept = pairSetup({ savedRemote: { url: 'https://adf.example.com', tokenSaved: true, fingerprint: null }, replace: false })
+    expect(await kept.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'kept', message: 'Kept the saved remote computer. Nothing was sent.' })
+    expect(kept.replaces).toEqual(['https://adf.example.com'])
+    expect(kept.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+
+    const replaced = pairSetup({ savedRemote: { url: 'https://adf.example.com', tokenSaved: true, fingerprint: null }, replace: true })
+    await replaced.flow.start({ url: TAILNET })
+    await replaced.flow.submitCode('654321')
+    replaced.daemon.decide(true)
+    await until(() => replaced.last().step === 'paired')
+    expect(replaced.replaces).toEqual(['https://adf.example.com'])
+    expect(replaced.saved).toHaveLength(1)
   })
 
   it('keeps plain LAN http, with its confirmation, when no encrypted address answers', async () => {
