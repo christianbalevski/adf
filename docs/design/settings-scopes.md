@@ -168,7 +168,7 @@ Title "Connection". Help: "The runtime this window uses."
 ### 5.2 Where saved connections live
 
 - **List:** `cli-remotes.json` in the folder of the settings file Studio's daemon uses (`ADF_DAEMON_SETTINGS`, which is `daemonSettingsDir()` for `adf` in a default install), through `src/main/cli/remotes.ts` (`loadRemotes`, `saveRemotes`, `remoteNameFor`), so Studio reads the file `adf` reads. Studio adds no field: an older `adf` rewrites the file without losing anything.
-- **Tokens:** `storeRemoteToken`, `readRemoteToken`, `deleteRemoteToken`: the OS keychain. When it refuses or there is none, Studio and `adf` ask "The keychain refused the token. Save it in a file only you can read?" and only a yes writes `cli-remote-tokens.json` (user-only).
+- **Tokens:** `storeRemoteToken`, `readRemoteToken`, `deleteRemoteToken`: the OS keychain. When it refuses or there is none, Studio shows "Keychain unavailable" ("The token can be saved in a file only you can read.", Save to file / Cancel), `adf` the same line and `Save to file? [y/N]`, and only Save to file writes `cli-remote-tokens.json` (user-only).
 - **Pinning:** before a saved token is sent, `pinnedRemoteRefusal` checks the fingerprint from `/remote/hello`, as `adf` does.
 - **Studio-only fields in `studio-backend.json`:** `remote.name` (new: the saved remote in use, null for the `remote` slot) and `insecureHttpOrigins` (new: origins whose plain HTTP the user confirmed). `mode` stays `embedded | local | remote`.
 - **The existing `remote` slot** (`url`, `token` as `safe:`, `allowInsecureHttp`, `paired`) stays where it is. It is shown as one row, named `paired.name` or the URL's host. It holds connections that have no fingerprint (§5.3, Add connection with a token to a host with remote access off).

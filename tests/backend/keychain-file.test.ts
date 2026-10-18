@@ -1,8 +1,9 @@
 /**
  * A keychain that refuses a token, or none at all, never sends it silently
- * to the plaintext user-only file (review item 3): Studio asks "The keychain
- * refused the token. Save it in a file only you can read?" first, and saves
- * nothing on No. adf asks the same (tests/cli-remote-access.test.ts).
+ * to the plaintext user-only file (review item 3): Studio shows "Keychain
+ * unavailable" ("The token can be saved in a file only you can read.", Save
+ * to file / Cancel) first, and saves nothing on Cancel. adf asks the same
+ * (tests/cli-remote-access.test.ts).
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
 
-import { KEYCHAIN_FILE_QUESTION, loadRemotes, readRemoteToken, REMOTE_TOKENS_FILENAME, TokenNotStoredError } from '../../src/main/cli/remotes'
+import { KEYCHAIN_FILE_COPY, loadRemotes, readRemoteToken, REMOTE_TOKENS_FILENAME, TokenNotStoredError } from '../../src/main/cli/remotes'
 import { remotesEnv, saveConnection } from '../../src/main/backend/connections'
 
 const dirs: string[] = []
@@ -25,8 +26,8 @@ function noKeychain(): { env: NodeJS.ProcessEnv; dir: string } {
 }
 
 describe('the user-only token file only after the user says so', () => {
-  it('the question is the plain one', () => {
-    expect(KEYCHAIN_FILE_QUESTION).toBe('The keychain refused the token. Save it in a file only you can read?')
+  it('plain copy: a heading, one sentence, a short verb (re-review 3)', () => {
+    expect(KEYCHAIN_FILE_COPY).toEqual({ title: 'Keychain unavailable', message: 'The token can be saved in a file only you can read.', ok: 'Save to file', cancel: 'Cancel', prompt: 'Save to file? [y/N] ' })
   })
 
   it('no keychain and nobody to ask: nothing is saved', async () => {

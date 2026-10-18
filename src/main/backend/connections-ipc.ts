@@ -6,7 +6,7 @@ import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '..
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
 import { buildConnectionsView, ConnectionError, forgetConnection, SavedConnectionsCache, saveConnection, savedConnectionTarget } from './connections'
-import { KEYCHAIN_FILE_QUESTION } from '../cli/remotes'
+import { KEYCHAIN_FILE_COPY } from '../cli/remotes'
 import { remoteHandshake } from './daemon-mode/remote/connector'
 import { PairingClient } from './remote-access/client'
 
@@ -34,7 +34,7 @@ export interface ConnectionsDeps {
   /** The network search while the Connection page is open (RemoteDiscovery.snapshot). */
   discovery: () => RemoteDiscoveryUpdate | null
   /** A native question; true for the first (OK) button. */
-  confirm: (prompt: { message: string; detail: string; ok: string }) => Promise<boolean>
+  confirm: (prompt: { title?: string; message: string; detail: string; ok: string }) => Promise<boolean>
   /** Push the list to the windows (CONNECTION_CHANGED). */
   push: (view: ConnectionsView) => void
   fetch?: typeof fetch
@@ -146,7 +146,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       let name: string
       try {
         name = (await saveConnection(deps.env, { url: check.url, token, fingerprint: hello.fingerprint, hostName: hello.name, deviceId: '', label: '' }, {
-          confirmFile: (why) => deps.confirm({ message: KEYCHAIN_FILE_QUESTION, detail: why, ok: 'Save in file' }),
+          confirmFile: (why) => deps.confirm({ title: KEYCHAIN_FILE_COPY.title, message: KEYCHAIN_FILE_COPY.message, detail: why, ok: KEYCHAIN_FILE_COPY.ok }),
         })).name
       } catch (err) {
         return fail(err instanceof Error && err.name === 'TokenNotStoredError' ? 'not_saved' : 'save_failed', err instanceof Error ? err.message : String(err))

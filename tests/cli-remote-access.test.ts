@@ -223,7 +223,7 @@ describe('adf pair (client) + adf daemon pair (host)', () => {
         prompts.push(q)
         if (/^Code shown/.test(q)) return await code()
         if (/by default/.test(q)) return 'y'
-        if (/file only you can read/.test(q)) return 'y'
+        if (/^Save to file\?/.test(q)) return 'y'
         return null
       },
       sleep: async () => {},
@@ -358,7 +358,7 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     const asked: string[] = []
     const io = {
       fetch: fetchImpl, env, stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t), sleep: async () => {},
-      prompt: async (q: string) => { asked.push(q); const all: Record<string, string> = { 'file only you can read': 'y', ...answers }; const key = Object.keys(all).find(k => q.includes(k)); return key ? all[key] : null },
+      prompt: async (q: string) => { asked.push(q); const all: Record<string, string> = { 'Save to file?': 'y', ...answers }; const key = Object.keys(all).find(k => q.includes(k)); return key ? all[key] : null },
       ...extra,
     }
     return { io, env, out, err, asked }
@@ -390,14 +390,15 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
 
   it('without a keychain the token goes to the user-only file only after a yes (review item 3); no saves nothing', async () => {
     const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
-    const no = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'file only you can read': 'n' })
+    const no = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save to file?': 'n' })
     expect(await runPair([HOST], no.io)).toBe(1)
-    expect(no.asked.some((q) => q.startsWith('The keychain refused the token. Save it in a file only you can read?'))).toBe(true)
+    expect(no.asked).toContain('Save to file? [y/N] ')
+    expect(no.err.join('')).toContain('Keychain unavailable: The token can be saved in a file only you can read. (the OS keychain is turned off (ADF_KEYCHAIN=0))')
     expect(no.err.join('')).toMatch(/The token was not saved/)
     expect(no.err.join('')).toMatch(/adf daemon devices revoke abcdefghij/)
     expect(loadRemotes(no.env).remotes).toEqual({})
     expect(existsSync(join(no.env.ADF_DAEMON_SETTINGS, '..', REMOTE_TOKENS_FILENAME))).toBe(false)
-    const yes = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'file only you can read': 'y' })
+    const yes = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y', 'Save to file?': 'y' })
     expect(await runPair([HOST], yes.io)).toBe(0)
     expect(yes.err.join('')).toContain(REMOTE_TOKENS_FILENAME)
   })

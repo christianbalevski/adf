@@ -90,9 +90,10 @@ computer · Connecting"). A click opens Studio → Connection.
 Studio, `adf` and the terminal app keep one list: `cli-remotes.json` next to
 Studio's settings file, with each token in the OS keychain (service `ADF`,
 account `remote-token:<fingerprint>`). When the keychain refuses a token or
-there is none, Studio and `adf pair` ask "The keychain refused the token.
-Save it in a file only you can read?"; yes saves it in
-`cli-remote-tokens.json` (readable by your user only), no saves nothing. A computer paired
+there is none, Studio shows **Keychain unavailable** ("The token can be
+saved in a file only you can read.", **Save to file** / **Cancel**) and
+`adf pair` the same line with `Save to file? [y/N]`; Save to file saves it in
+`cli-remote-tokens.json` (readable by your user only), Cancel saves nothing. A computer paired
 in Studio is in `adf remotes`; one paired with `adf pair` is a Paired row in
 Studio. Remove in Studio is `adf remotes forget`. A connection without a
 fingerprint (a daemon set up by hand, remote access off there) is kept in

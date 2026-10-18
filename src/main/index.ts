@@ -718,9 +718,9 @@ app.whenReady().then(async () => {
     saved: savedCache,
     daemonStatus: () => daemonMode?.status() ?? null,
     discovery: () => access.discovery.snapshot(),
-    confirm: async ({ message, detail, ok }) => {
+    confirm: async ({ title, message, detail, ok }) => {
       const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
-      const options: Electron.MessageBoxOptions = { type: 'question', title: message, message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true }
+      const options: Electron.MessageBoxOptions = { type: 'question', title: title ?? message, message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true }
       const { response } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options)
       return response === 0
     },

@@ -13,7 +13,7 @@ import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
-  deleteRemoteToken, KEYCHAIN_FILE_QUESTION, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
+  deleteRemoteToken, KEYCHAIN_FILE_COPY, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
 } from './remotes'
 
 export interface PairIo {
@@ -323,7 +323,8 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     // The keychain; the user-only file only when the user says so (--yes says so).
     stored = await storeRemoteToken(result.daemon.fingerprint, result.token, env, async (why) => {
       if (parsed.yes) return true
-      const answer = await io.prompt(`${KEYCHAIN_FILE_QUESTION} (${why}) [y/N] `)
+      io.stderr(`${KEYCHAIN_FILE_COPY.title}: ${KEYCHAIN_FILE_COPY.message} (${why})\n`)
+      const answer = await io.prompt(KEYCHAIN_FILE_COPY.prompt)
       return !!answer && /^\s*y(es)?\s*$/i.test(answer)
     })
   } catch (err) {

@@ -178,7 +178,7 @@ export interface SaveConnectionInput {
  */
 export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnectionInput, opts: { confirmFile?: (why: string) => Promise<boolean>; now?: Date } = {}): Promise<{ name: string; store: TokenStoreChoice }> {
   const now = opts.now ?? new Date()
-  // The keychain, or the user-only file only after the user chose it (KEYCHAIN_FILE_QUESTION).
+  // The keychain, or the user-only file only after the user chose it (KEYCHAIN_FILE_COPY).
   const store = await storeRemoteToken(input.fingerprint, input.token, env, opts.confirmFile)
   // Under the lock adf takes too (updateRemotes): neither loses the other's change.
   const name = await updateRemotes(env, (file) => {

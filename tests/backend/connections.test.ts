@@ -299,6 +299,18 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBe('adfd_old')
   })
 
+  it('without a keychain Add connection shows "Keychain unavailable" before it saves to the file (re-review 3)', async () => {
+    const s = setup()
+    const env = { ...s.env, ADF_KEYCHAIN: '0' }
+    delete env.ADF_TEST_KEYCHAIN_FILE
+    const prompts: Array<{ title?: string; message: string; detail: string; ok: string }> = []
+    const boot = resolveBootBackend(s.path, {}, quiet)
+    const store = createBackendSettingsStore({ boot, codec, log: quiet })
+    const connections = createConnections({ boot, backend: store, env, daemonStatus: () => null, discovery: () => null, confirm: async (p) => { prompts.push(p); return false }, push: () => {}, fetch: s.daemon.fetch, log: quiet })
+    expect(await connections.add({ url: HUB, token: TOKEN })).toMatchObject({ ok: false, code: 'not_saved' })
+    expect(prompts).toEqual([{ title: 'Keychain unavailable', message: 'The token can be saved in a file only you can read.', detail: 'the OS keychain is turned off (ADF_KEYCHAIN=0)', ok: 'Save to file' }])
+  })
+
   it('Add connection where nothing answers hello (remote access off): the remote URL of studio-backend.json, after asking before it replaces another', async () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
     const result = await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })

@@ -259,8 +259,14 @@ function readTokenFile(env: NodeJS.ProcessEnv): Record<string, string> {
   }
 }
 
-/** The question before a token goes to the user-only file (Studio's dialog, adf's prompt). */
-export const KEYCHAIN_FILE_QUESTION = 'The keychain refused the token. Save it in a file only you can read?'
+/** Before a token goes to the user-only file: Studio's dialog and adf's lines (plain heading, one sentence, a short verb). */
+export const KEYCHAIN_FILE_COPY = {
+  title: 'Keychain unavailable',
+  message: 'The token can be saved in a file only you can read.',
+  ok: 'Save to file',
+  cancel: 'Cancel',
+  prompt: 'Save to file? [y/N] ',
+} as const
 
 /** The keychain did not take the token and the user did not choose the file: nothing was saved. */
 export class TokenNotStoredError extends Error {
