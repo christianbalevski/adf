@@ -23,6 +23,8 @@ export interface ClaimPrompt {
   claim: PairingClaimView
   /** Aborted when the claim is gone (decided elsewhere, expired). */
   signal: AbortSignal
+  /** tailscale serve fronts the daemon: a proxied claim came through it. */
+  serve?: boolean
 }
 
 export interface RemoteAccessHostDeps {
@@ -342,7 +344,7 @@ export class RemoteAccessHost {
     this.log.log(`[Remote access] ${claim.deviceName} (${claim.address}, ${claim.via}) entered the right code; asking whether to allow it`)
     let allow: boolean | null
     try {
-      allow = await this.deps.askClaim({ claim, signal: abort.signal })
+      allow = await this.deps.askClaim({ claim, signal: abort.signal, serve: this.last?.tailscale.serve === 'on' })
     } catch {
       allow = null
     }

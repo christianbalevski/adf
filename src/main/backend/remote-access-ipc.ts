@@ -126,13 +126,17 @@ export function shownText(text: string, max = 64): string {
  * Tailscale login when known. The name the device chose is quoted on its
  * own line, escaped.
  */
-export function claimQuestion(claim: PairingClaimView): { title: string; message: string; detail: string } {
+export function claimQuestion(claim: PairingClaimView, opts: { serve?: boolean } = {}): { title: string; message: string; detail: string } {
+  // Behind tailscale serve: the login is verified only when the daemon runs in proxy mode (it then names one).
+  const via = opts.serve && claim.via === 'proxy'
+    ? `through tailscale serve${claim.tailnetLogin ? '' : ' (user unverified)'}`
+    : VIA[claim.via] ?? shownText(String(claim.via), 16)
   const login = claim.tailnetLogin ? ` · Tailscale ${shownText(claim.tailnetLogin, 128)}` : ''
   return {
     title: 'Allow device',
     message: 'Allow device',
     detail: [
-      `From ${shownText(claim.address, 64)} (${VIA[claim.via] ?? shownText(String(claim.via), 16)})${login}`,
+      `From ${shownText(claim.address, 64)} (${via})${login}`,
       `Device name: "${shownText(claim.deviceName)}"`,
       `Client: ${CLIENT[claim.clientKind] ?? shownText(String(claim.clientKind), 16)}`,
       '',
@@ -184,9 +188,9 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     push: (change) => windows.send(IPC.REMOTE_ACCESS_CHANGED, change),
     notify,
     confirm: async ({ message, detail, ok }) => (await box({ type: 'question', title: message, message, detail, buttons: [ok, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true })) === 0,
-    askClaim: async ({ claim, signal }: ClaimPrompt) => {
+    askClaim: async ({ claim, signal, serve }: ClaimPrompt) => {
       const win = deps.window()
-      const question = claimQuestion(claim)
+      const question = claimQuestion(claim, { serve })
       if (win && !win.isDestroyed() && !win.isFocused()) {
         try {
           if (Notification.isSupported()) {

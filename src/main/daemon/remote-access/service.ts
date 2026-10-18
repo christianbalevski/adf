@@ -341,7 +341,7 @@ export class RemoteAccessService {
       this.tailscaleAt = now
       if (this.tailscaleServe.serve === 'on' && !this.opts.behindProxy && !this.serveNoted) {
         this.serveNoted = true
-        this.log('[remote-access] tailscale serve fronts this daemon: pairing keys its limits and the Allow prompt by the Tailscale user serve names (proxy mode for pairing; ADF_DAEMON_BEHIND_PROXY is not set)')
+        this.log('[remote-access] tailscale serve fronts this daemon without ADF_DAEMON_BEHIND_PROXY: pairing counts every tailnet user as one (127.0.0.1) and shows the user as unverified; set ADF_DAEMON_BEHIND_PROXY=1 for per-user limits and verified logins (it trusts every process on this computer)')
       }
     }
     const tailscaleIps = new Set(this.tailscaleSelf.ips)
@@ -505,9 +505,10 @@ export class RemoteAccessService {
       const tailnetLogin = via === 'tailnet' && opts.whois ? await this.tailscale.whois(address) : null
       return { key: address, address, via, tailnetLogin }
     }
-    // tailscale serve fronting this daemon is proxy mode for pairing even without
-    // ADF_DAEMON_BEHIND_PROXY (re-review 5): otherwise every tailnet user shares one 127.0.0.1 key.
-    if ((this.opts.behindProxy || this.tailscaleServe.serve === 'on') && isLoopbackAddress(address)) {
+    // Tailscale-User-* headers only in proxy mode (ADF_DAEMON_BEHIND_PROXY) and from loopback: without it
+    // any local process, another OS user's too, could forge them (re-review 5 follow-up). Behind serve
+    // without proxy mode every tailnet user shares the one 127.0.0.1 key, and no login is shown.
+    if (this.opts.behindProxy && isLoopbackAddress(address)) {
       const login = cleanDisplayName(single(raw.headers['tailscale-user-login']) ?? single(raw.headers['tailscale-user-name']), 128)
       if (login) return { key: `tailscale:${login.toLowerCase()}`, address, via: 'proxy', tailnetLogin: login }
     }

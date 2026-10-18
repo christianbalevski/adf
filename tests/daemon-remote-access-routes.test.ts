@@ -767,20 +767,28 @@ describe('re-review 1: a gateway MAC missing for a moment is not a network chang
 })
 
 describe('re-review 5: tailscale serve without ADF_DAEMON_BEHIND_PROXY', () => {
-  it('when serve fronts the daemon, each tailnet user has its own lockout (not one shared 127.0.0.1 key)', async () => {
+  it('a forged Tailscale-User-Login from a local process is never trusted: one 127.0.0.1-wide lockout, no login shown', async () => {
     const h = await harness({ serve: true })
     await turnOn(h)
     const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
     const wrong = code === '000000' ? '111111' : '000000'
-    const as = (login: string) => ({ 'tailscale-user-login': login, 'x-forwarded-for': '100.101.102.103' })
-    for (let i = 0; i < 5; i++) {
-      await h.server.inject({ method: 'POST', url: '/pair/claim', headers: as('mallory@example.test'), payload: { code: wrong, deviceName: 'm', clientKind: 'cli' } })
+    // A rotating forged login: the lockout still counts every guess against loopback.
+    const statuses: number[] = []
+    for (let i = 0; i < 12; i++) {
+      statuses.push((await h.server.inject({ method: 'POST', url: '/pair/claim', headers: { 'tailscale-user-login': `forged-${i}@example.test` }, payload: { code: wrong, deviceName: 'm', clientKind: 'cli' } })).statusCode)
     }
-    expect((await h.server.inject({ method: 'POST', url: '/pair/claim', headers: as('mallory@example.test'), payload: { code, deviceName: 'm', clientKind: 'cli' } })).statusCode).toBe(429)
-    const owner = await h.server.inject({ method: 'POST', url: '/pair/claim', headers: as('agent-2@example.test'), payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })
-    expect(owner.statusCode).toBe(202)
-    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim).toMatchObject({ via: 'proxy', tailnetLogin: 'agent-2@example.test' })
-    expect(h.logs.some(l => /tailscale serve fronts this daemon/.test(l))).toBe(true)
+    // (the per-source claim limit, 1 per 2 s, also applies to the one key)
+    expect(statuses.filter(st => st === 403).length).toBeLessThanOrEqual(5)
+    expect(statuses.slice(5).every(st => st === 429)).toBe(true)
+    expect(h.logs.some(l => /tailscale serve fronts this daemon/.test(l) && /unverified/.test(l))).toBe(true)
+  })
+
+  it('a claim through serve without proxy mode carries no login', async () => {
+    const h = await harness({ serve: true })
+    await turnOn(h)
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    expect((await h.server.inject({ method: 'POST', url: '/pair/claim', headers: { 'tailscale-user-login': 'owner@example.com' }, payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })).statusCode).toBe(202)
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim).toMatchObject({ via: 'proxy', tailnetLogin: null })
   })
 
   it('without serve and without proxy mode, the login header is still ignored', async () => {

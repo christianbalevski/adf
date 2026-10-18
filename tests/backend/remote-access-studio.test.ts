@@ -810,6 +810,14 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     expect(tail.detail.split('\n')[0]).toBe('From 100.64.1.2 (your tailnet) · Tailscale agent-1@example.com')
   })
 
+  it('through tailscale serve without verified login: "through tailscale serve (user unverified)", never a login', () => {
+    const q = claimQuestion({ claimId: 'c', deviceName: 'agent-2 laptop', clientKind: 'studio', address: '127.0.0.1', via: 'proxy', tailnetLogin: null, at: '' }, { serve: true })
+    expect(q.detail.split('\n')[0]).toBe('From 127.0.0.1 (through tailscale serve (user unverified))')
+    expect(q.detail).not.toContain('Tailscale ')
+    const verified = claimQuestion({ claimId: 'c', deviceName: 'x', clientKind: 'cli', address: '127.0.0.1', via: 'proxy', tailnetLogin: 'agent-2@example.test', at: '' }, { serve: true })
+    expect(verified.detail.split('\n')[0]).toBe('From 127.0.0.1 (through tailscale serve) · Tailscale agent-2@example.test')
+  })
+
   it('the claim question names device, address, path and client, and the seed-phrase power', () => {
     const q = claimQuestion({ claimId: 'c', deviceName: 'agent-2 laptop', clientKind: 'studio', address: '192.168.1.31', via: 'lan', tailnetLogin: null, at: '' })
     expect(q).toMatchObject({ title: 'Allow device', message: 'Allow device' })

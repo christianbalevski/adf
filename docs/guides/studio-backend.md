@@ -696,8 +696,14 @@ out and stays open for others. Twenty wrong codes in all close it ("Pairing
 closed after too many wrong codes."); open a new one. Both limits are
 accepted as they are: a window you open allows at most 20 guesses out of a
 million codes, and a device that guesses wrong 5 times is shut out of that
-window without blocking the others. Behind `tailscale serve` each
-Tailscale user counts as one device. After **Allow**: "Device added: *name*."
+window without blocking the others.
+
+Behind `tailscale serve`, every tailnet user arrives from this computer's
+own address, so all of them count as one device, and **Allow device** says
+"through tailscale serve (user unverified)". Setting
+`ADF_DAEMON_BEHIND_PROXY=1` for the daemon gives per-user limits and the
+verified Tailscale login in **Allow device**; it trusts every process on
+this computer to tell the truth about the user (see remote-access.md §9). After **Allow**: "Device added: *name*."
 
 ### Add device
 
