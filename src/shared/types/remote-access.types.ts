@@ -165,8 +165,27 @@ export interface RemoteAccessEvent {
     | 'pairing_lockout'
     | 'device_added' | 'device_revoked' | 'device_connected' | 'device_disconnected'
     | 'networks_changed'
+    /** The discovery feed changed (GET /network/peers): the ADF computers found on the LAN and the tailnet. */
+    | 'peers_changed'
   deviceId?: string
   label?: string
   /** `pairing_closed`: 'wrong_codes' | 'expired' | 'cancelled' | 'paired' | 'denied' | 'disabled'. */
   reason?: string
+}
+
+/**
+ * One ADF computer the discovery feed found (docs/design/remote-access.md
+ * §5.1): one `_adf-runtime._tcp` announcement, a legacy `_adf-daemon._tcp`
+ * one, or the tailnet sweep. Each entry carries both capabilities. The mesh
+ * peer list, Studio's Discovered list and `adf pair` read the same feed.
+ */
+export interface NetworkPeer {
+  /** The runtime id, or `fp:<fingerprint>` for a computer known only through remote access. */
+  key: string
+  name: string
+  source: 'mdns' | 'tailnet' | 'manual'
+  /** Its mesh, when visible to other computers: base URL (agents under /agents). */
+  mesh: { url: string; port: number } | null
+  /** Its remote access, when on: the tailnet address wins over the LAN one (encrypted). */
+  remote: { url: string; port: number; fingerprint: string; pairingOpen: boolean; kind: 'lan' | 'tailnet' } | null
 }

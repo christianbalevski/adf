@@ -1,4 +1,5 @@
 import { execFile } from 'child_process'
+import { fetchHello } from './remote-hello'
 
 /**
  * Peer discovery beyond the broadcast domain. mDNS is multicast and multicast
@@ -12,6 +13,9 @@ import { execFile } from 'child_process'
  *    `GET /ping`.
  *  - Manual peers: a Settings list of host:port entries — the universal
  *    fallback for static IPs, port-forwards, or tailnets without the CLI.
+ *  - Remote access (docs/design/remote-access.md §5.2): the same sweep asks
+ *    each online tailnet peer's daemon port for `GET /remote/hello`, so one
+ *    sweep feeds the mesh list, Studio's Discovered list and `adf pair`.
  *
  * Probes are cheap (one small GET), deduped per sweep, and refused addresses
  * back off for 5 minutes. Sweeps run every 45s while started, plus an
@@ -52,6 +56,14 @@ export interface ExternalPeer {
   port: number
   url: string
   source: 'tailnet' | 'manual'
+}
+
+export interface TailnetDaemon {
+  fingerprint: string
+  name: string
+  address: string
+  port: number
+  pairingOpen: boolean
 }
 
 interface ProbeTarget {
@@ -110,6 +122,13 @@ export class TailnetDiscovery {
       /** `force` = replace even an mDNS-sourced route (it was probed dead). */
       onPeer: (peer: ExternalPeer, opts: { force: boolean }) => void
       onExpire: (runtimeId: string) => void
+      /** The ADF daemon port to ask for `/remote/hello` (remote access); null/absent: not asked. */
+      getDaemonPort?: () => number | null
+      /** An ADF daemon with remote access on, found on the tailnet. */
+      onDaemon?: (found: TailnetDaemon) => void
+      /** The fingerprints this sweep found (the others lose their tailnet sighting). */
+      onDaemonSweep?: (seen: ReadonlySet<string>) => void
+      fetchFn?: typeof fetch
     }
   ) {}
 
@@ -156,8 +175,20 @@ export class TailnetDiscovery {
         })
       }
 
+      const peersOnTailnet = this.opts.isTailnetEnabled() ? await this.tailnetPeers() : []
+      const daemonPort = this.opts.getDaemonPort?.() ?? null
+      const daemonSweep = daemonPort !== null && this.opts.onDaemon
+        ? Promise.all(peersOnTailnet.map(async (peer) => {
+            const hello = await fetchHello(`http://${wrap6(peer.address)}:${daemonPort}`, this.opts.fetchFn)
+            if (!hello) return null
+            const found: TailnetDaemon = { fingerprint: hello.fingerprint, name: hello.name, address: peer.address, port: daemonPort, pairingOpen: hello.pairingOpen }
+            this.opts.onDaemon?.(found)
+            return found.fingerprint
+          }))
+        : null
+
       if (this.opts.isTailnetEnabled()) {
-        for (const peer of await this.tailnetPeers()) {
+        for (const peer of peersOnTailnet) {
           for (const port of ports) {
             const key = `${peer.address}:${port}`
             if (!targets.has(key)) {
@@ -208,6 +239,11 @@ export class TailnetDiscovery {
           }, { force })
         })
       )
+
+      if (daemonSweep) {
+        const seenDaemons = new Set((await daemonSweep).filter((fp): fp is string => fp !== null))
+        this.opts.onDaemonSweep?.(seenDaemons)
+      }
 
       // Expire peers we've stopped seeing — two consecutive quiet sweeps so a
       // single slow probe doesn't blink a healthy peer off the map

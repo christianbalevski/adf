@@ -211,21 +211,36 @@ A device is connected while it has an open client session, an open SSE stream, o
 
 ## 5. Discovery and pairing
 
-### 5.1 mDNS announcement
+### 5.1 One announcement, one discovery feed
 
-While remote access is on, the daemon announces `_adf-daemon._tcp` with `bonjour-service`, on the interface `pickMdnsInterface` chooses (`ADF_MDNS_INTERFACE` overrides), separate from the mesh's `_adf-runtime._tcp`.
+Each process has one mDNS announcement and one browser (`mdns-service.ts`), and each computer one discovery feed: the daemon's discovery service (`runtime-discovery.ts`) in local mode, Studio main's own in embedded and remote mode, `adf pair`'s own only when no daemon runs here. The mesh's `_adf-runtime._tcp` record carries remote access too; there is no separate service type.
 
-| Item | Value |
+**Announcement.** `_adf-runtime._tcp`, instance `adf-<runtime_id>`, host `<host name>.local`. It is published while the mesh is LAN-visible (an agent with `lan` or `public` visibility, mesh LAN mode on an allowed network) or remote access is on and a LAN address of an allowed network listens (§3.3.1), and only from such an address. On a network not allowed nothing is announced. A change (pairing window, remote access on or off) re-publishes the record; the browser is untouched.
+
+| TXT | When | Value |
+|---|---|---|
+| `runtime_id`, `proto`, `directory`, `runtime_did` | always | The mesh's fields, as before (`runtime_did` only when known) |
+| `mesh` | the mesh is not LAN-visible | `0`: browsers leave it out of the mesh list; the SRV port is then the daemon port |
+| `v` | remote access on | `1` |
+| `fp` | remote access on | Fingerprint: first 40 bits of `sha256(daemonId)`, base32, as `XXXX-XXXX` |
+| `pair` | remote access on | `1` while a pairing window is open, else `0` |
+| `daemon_port` | remote access on | The ADF daemon's port |
+| `api` | remote access on | `CLIENT_API_VERSION` |
+| `name` | remote access on | The computer name (§3.1) |
+
+The record MUST NOT carry a token, a code, a claim id, the owner DID, a path or a user name. The fingerprint is a label that tells the owner's computers apart and dedups LAN and tailnet entries; it is not authenticated (anyone can copy it, §10).
+
+**Legacy.** This PR's intermediate commits announced remote access as `_adf-daemon._tcp` (TXT `v`, `fp`, `pair`, `api`; instance name = computer name). The browser still reads it for one release, so such a daemon is found; nothing announces it. To be removed after the next release (`LEGACY_DAEMON_SERVICE_TYPE`).
+
+**Feed.** One cache of entries (`NetworkPeer`), each with both capabilities: `mesh` (base URL and port, when visible) and `remote` (URL, port, fingerprint, pairing open, `lan` or `tailnet`). Sources: the browser, and the one tailnet sweep (`TailnetDiscovery`): every 45 s it asks each online tailnet peer for `GET /ping` on the mesh ports and `GET /remote/hello` on the daemon port (§5.2); a tailnet sighting wins over a LAN one (encrypted). One event stream, `peers_changed`.
+
+| Reader | How |
 |---|---|
-| Instance name | `name` (§3.1). A collision gets bonjour's ` (2)` suffix; clients identify by `fp`, not by name. |
-| Port | The daemon port |
-| Host | `<host name>.local` (`ensureLocalSuffix`) |
-| TXT `v` | `1` |
-| TXT `fp` | Fingerprint: first 40 bits of `sha256(daemonId)`, base32, as `XXXX-XXXX` |
-| TXT `pair` | `1` while a pairing window is open, else `0` (`Service.updateTxt`) |
-| TXT `api` | `CLIENT_API_VERSION` |
+| Mesh peer list (Settings → Networking, the fleet map, `agent_discover`) | `getDiscoveredRuntimes`: the entries with a mesh, decorated |
+| Studio's Discovered list (Settings → Backend → Remote computer) | Local mode: `GET /network/peers`, re-read on the daemon's `remote_access` push `{type: 'peers_changed'}`. Embedded mode: Studio's mesh service while it runs, else its own browse-only one. Remote mode: its own browse-only one |
+| `adf pair` | `GET /network/peers?wait=3000` from this computer's daemon; without one, its own browse-only service and hello sweep for 3 s |
 
-The announcement MUST NOT carry a token, a code, a claim id, the runtime DID, the owner DID, a path or a user name. The fingerprint is a label that tells the owner's computers apart and dedups LAN and tailnet entries; it is not authenticated (anyone can copy it, §10).
+`GET /network/peers` keeps the daemon's discovery running for a minute (a client that only pairs needs no mesh and no remote access of its own); `wait` (0-5000 ms) lets a browser that just started hear answers.
 
 ### 5.2 Hello
 
@@ -349,7 +364,7 @@ Studio gets them through the client push topic `remote_access`, which goes to th
 
 Settings → Backend → Remote computer gains, above the URL and token fields:
 
-- **Discovered**: Studio main browses `_adf-daemon._tcp` while the section is open, and, when Tailscale runs, probes `GET /remote/hello` on each online tailnet peer on port 7385 (the `TailnetDiscovery` sweep, 2.5 s timeout). Entries merge by fingerprint; each shows name, fingerprint, address kind (tailnet / LAN), "Pairing open" when `pairingOpen`, and "Paired" when the saved remote has that fingerprint. Browsing stops when the section closes. The renderer never sees a token.
+- **Discovered**: the entries with remote access of this computer's one discovery feed (§5.1), read while the section is open: the daemon's in local mode, Studio main's own otherwise. LAN (`_adf-runtime._tcp`, legacy `_adf-daemon._tcp`) and tailnet (`GET /remote/hello` in the one `TailnetDiscovery` sweep) sightings merge by fingerprint; each shows name, fingerprint, address kind (tailnet / LAN), "Pairing open" when `pairingOpen`, and "Paired" when the saved remote has that fingerprint. Studio's own browser stops when the section closes; the daemon's runs on for the mesh, remote access or a minute. The renderer never sees a token.
 - **Pair** opens the **Pair** dialog: name and fingerprint of the host ("Check that the host shows the same fingerprint."), **Device name** (default: the runtime alias, else the OS host name), the plain-http confirmation when the address needs it (§5.7), **Code**, then "Waiting for *host* to allow this device…" with Cancel. On approval main saves URL and token (§9.3) and offers **Switch to This Daemon** (the existing switch dialog).
 - Paste stays as it is; a pasted `adfd_` token is stored the same way.
 
@@ -531,7 +546,7 @@ Parts A and B run in parallel against §11 after step 0.
 | 0 | Lead | `remote-access.types.ts`, openapi additions, IPC channel names (§9.1) in the channel map with stub handlers | 2/10 |
 | A1 | Daemon | `daemon-devices.json` store, `TokenVerifier` (master / device), guard decoration, `master_token_remote`, `device_token_refused` in `requireLocalCaller`, per-device socket and session tracking, revocation, tombstones, lastSeen throttle | 6/10 |
 | A2 | Daemon | `remote-access.json`, `RemoteListeners` (per-address `http.Server` → `fastify.routing`), eligible-address filter, 10 s watcher, Tailscale self lookup, host names, `env_bind`, shutdown hooks, device sessions excluded from `daemon_orphan_hold` | 6/10 |
-| A3 | Daemon | `_adf-daemon._tcp` announcer, `/remote/hello`, pairing window, claim, long poll, rate limits, `remote_access` events, log lines | 5/10 |
+| A3 | Daemon | announcer (first `_adf-daemon._tcp`, now in `_adf-runtime._tcp`, §5.1), `/remote/hello`, pairing window, claim, long poll, rate limits, `remote_access` events, log lines | 5/10 |
 | A4 | Daemon | Firewall probes (Windows PowerShell, macOS `socketfilterfw`), `tailscale serve` on/off and status, `tailscale whois` | 4/10 |
 | A5 | CLI | `adf daemon remote on/off/status`, `adf daemon devices [list/add/revoke]`, `adf daemon pair`; `adf pair`, `adf remotes`, `cli-remotes.json`, keychain storage, resolution order, help text | 5/10 |
 | A6 | Daemon | Tests: listener binding and address filter (fake interfaces), token matrix of §4.4 on real sockets, revocation closes SSE, pairing (expiry, 5 wrong codes, busy, deny, single delivery), rate limits, CLI flows against a spawned daemon | 5/10 |

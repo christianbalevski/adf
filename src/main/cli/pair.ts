@@ -10,7 +10,7 @@ import type { PairClaimAccepted, PairClaimResult, RemoteHello, RemoteUrl } from 
 import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
 import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
-import { DEFAULT_DAEMON_PORT } from './daemon-url'
+import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
   deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, storeRemoteToken,
 } from './remotes'
@@ -108,9 +108,17 @@ async function getJson<T>(io: PairIo, url: string, headers: Record<string, strin
   return { status: res.status, body: text ? JSON.parse(text) : {} }
 }
 
+/** This computer's ADF daemon and its token, if one is set up here. */
+function localDaemonOf(env: NodeJS.ProcessEnv): { url: string; token: string } | null {
+  const url = `http://127.0.0.1:${Number(env.ADF_DAEMON_PORT) || DEFAULT_DAEMON_PORT}`
+  const token = localDaemonToken(url, env)
+  return token ? { url, token } : null
+}
+
 async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHello } | null> {
   io.stderr('Looking for ADF computers on this network and your tailnet…\n')
-  const found = await (io.discover ?? discoverDaemons)(3_000)
+  // The one discovery feed (remote-access.md §5.1): this computer's daemon's when it runs, else this process's.
+  const found = await (io.discover ?? ((ms: number) => discoverDaemons(ms, { localDaemon: localDaemonOf(io.env ?? process.env), fetch: io.fetch })))(3_000)
   if (found.length === 0) {
     io.stderr('No ADF computer found. On the other computer turn on Remote access (Settings → Networking, or adf daemon remote on), then run adf pair <its address>.\n')
     return null

@@ -1,17 +1,22 @@
 /**
- * Find ADF daemons with remote access on
- * (docs/design/remote-access.md §5.1, §5.2, §9.2): `_adf-daemon._tcp` on
- * the LAN (mDNS), and `GET /remote/hello` on each online tailnet peer
- * (multicast does not cross WireGuard). Entries merge by fingerprint; a
- * tailnet address wins over a LAN one (WireGuard encrypts it).
+ * Find ADF daemons with remote access on, for `adf pair`
+ * (docs/design/remote-access.md §5.1, §5.2, §9.2). The one discovery feed:
+ * this computer's ADF daemon's (GET /network/peers) when it runs, the same
+ * feed its mesh and Studio read; else this process's own (one mDNS browse of
+ * `_adf-runtime._tcp` and the legacy `_adf-daemon._tcp`, and one tailnet
+ * hello sweep). Entries merge by fingerprint; a tailnet address wins over a
+ * LAN one (WireGuard encrypts it).
  */
 
-import { Bonjour, type Service } from 'bonjour-service'
-import type { RemoteHello } from '../../shared/types/remote-access.types'
-import { DAEMON_SERVICE_TYPE } from '../daemon/remote-access/announcer'
+import { randomBytes } from 'node:crypto'
+import type { NetworkPeer } from '../../shared/types/remote-access.types'
+import { MdnsService } from '../services/mdns-service'
+import { fetchHello } from '../services/remote-hello'
 import { defaultExec, type Exec } from '../daemon/remote-access/network-category'
 import { TailscaleClient } from '../daemon/remote-access/tailscale'
 import { DEFAULT_DAEMON_PORT } from './daemon-url'
+
+export { fetchHello }
 
 export interface DiscoveredDaemon {
   name: string
@@ -25,49 +30,30 @@ function hostPart(address: string): string {
   return address.includes(':') ? `[${address}]` : address
 }
 
-/** GET <url>/remote/hello with a timeout; null when it is not an ADF daemon with remote access on. */
-export async function fetchHello(url: string, fetchImpl: typeof fetch = fetch, timeoutMs = 2_500): Promise<RemoteHello | null> {
-  try {
-    const res = await fetchImpl(`${url.replace(/\/+$/, '')}/remote/hello`, { signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' })
-    if (!res.ok) return null
-    const body = await res.json() as Partial<RemoteHello>
-    return body && body.v === 1 && typeof body.name === 'string' && typeof body.fingerprint === 'string' ? body as RemoteHello : null
-  } catch {
-    return null
-  }
+/** The remote-access half of the feed. */
+export function daemonsOf(peers: NetworkPeer[]): DiscoveredDaemon[] {
+  return peers.flatMap((p) => p.remote
+    ? [{ name: p.name, fingerprint: p.remote.fingerprint, url: p.remote.url, kind: p.remote.kind, pairingOpen: p.remote.pairingOpen }]
+    : [])
 }
 
-/** mDNS: browse `_adf-daemon._tcp` for `ms`. */
-export async function browseMdns(ms: number): Promise<DiscoveredDaemon[]> {
-  const found = new Map<string, DiscoveredDaemon>()
-  let bonjour: Bonjour | null = null
+/** This process's own mDNS browse for `ms` (no daemon here): the feed's LAN half. */
+export async function browseMdns(ms: number, createMdns: () => MdnsService = () => new MdnsService()): Promise<DiscoveredDaemon[]> {
+  const service = createMdns()
   try {
-    bonjour = new Bonjour()
-    const browser = bonjour.find({ type: DAEMON_SERVICE_TYPE, protocol: 'tcp' })
-    browser.on('up', (service: Service) => {
-      const txt = (service.txt ?? {}) as Record<string, unknown>
-      const fp = typeof txt.fp === 'string' ? txt.fp : null
-      const v4 = (service.addresses ?? []).find(a => !a.includes(':'))
-      const address = v4 ?? service.addresses?.[0] ?? service.host
-      if (!fp || !address) return
-      found.set(fp, {
-        name: service.name,
-        fingerprint: fp,
-        url: `http://${hostPart(address)}:${service.port}`,
-        kind: 'lan',
-        pairingOpen: txt.pair === '1' || txt.pair === 1 || txt.pair === true,
-      })
-    })
+    // Browse only: nothing is announced from here.
+    await service.start({ announce: false, browse: true, port: 0, runtimeId: `cli-browse-${randomBytes(6).toString('hex')}` })
     await new Promise(resolve => setTimeout(resolve, ms))
+    return daemonsOf(service.peers())
   } catch {
     // mDNS is best effort; tailnet peers and a typed address still work.
+    return []
   } finally {
-    try { bonjour?.destroy() } catch { /* gone */ }
+    await service.stop().catch(() => {})
   }
-  return [...found.values()]
 }
 
-/** Tailnet: online peers of `tailscale status --json`, probed on the daemon port. */
+/** Tailnet: online peers of `tailscale status --json`, probed on the daemon port (GET /remote/hello). */
 export async function probeTailnet(opts: { exec?: Exec; fetch?: typeof fetch; port?: number } = {}): Promise<DiscoveredDaemon[]> {
   const exec = opts.exec ?? defaultExec
   const client = new TailscaleClient(exec)
@@ -107,7 +93,31 @@ export function mergeDiscovered(lists: DiscoveredDaemon[][]): DiscoveredDaemon[]
   return [...byFp.values()].sort((a, b) => Number(b.pairingOpen) - Number(a.pairingOpen) || a.name.localeCompare(b.name))
 }
 
-export async function discoverDaemons(ms = 3_000): Promise<DiscoveredDaemon[]> {
-  const [lan, tailnet] = await Promise.all([browseMdns(ms), probeTailnet()])
+/** This computer's ADF daemon's feed, or null when none answers (GET /network/peers). */
+export async function peersFromDaemon(daemon: { url: string; token: string }, ms: number, fetchImpl: typeof fetch = fetch): Promise<NetworkPeer[] | null> {
+  try {
+    const wait = Math.min(Math.max(ms, 0), 5_000)
+    const res = await fetchImpl(`${daemon.url.replace(/\/+$/, '')}/network/peers?wait=${wait}`, {
+      headers: { Authorization: `Bearer ${daemon.token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(wait + 5_000),
+    })
+    if (!res.ok) return null
+    const body = await res.json() as { peers?: unknown }
+    return Array.isArray(body.peers) ? body.peers as NetworkPeer[] : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The daemons `adf pair` offers: this computer's ADF daemon's feed when it
+ * runs (one browser, one sweep per computer), else this process's own.
+ */
+export async function discoverDaemons(ms = 3_000, opts: { localDaemon?: { url: string; token: string } | null; fetch?: typeof fetch } = {}): Promise<DiscoveredDaemon[]> {
+  if (opts.localDaemon) {
+    const peers = await peersFromDaemon(opts.localDaemon, ms, opts.fetch)
+    if (peers) return mergeDiscovered([daemonsOf(peers)])
+  }
+  const [lan, tailnet] = await Promise.all([browseMdns(ms), probeTailnet({ ...(opts.fetch ? { fetch: opts.fetch } : {}) })])
   return mergeDiscovered([lan, tailnet])
 }

@@ -8,7 +8,9 @@ import type { DaemonClient } from '../../shared/daemon-client'
 import type { StudioBackendMode } from '../../shared/types/backend.types'
 import type { PairingClaimView } from '../../shared/types/remote-access.types'
 import type { BackendSettingsStore, SecretCodec } from './backend-config'
-import { RemoteDiscovery, type DiscoveryDeps } from './remote-access/discovery'
+import { DaemonPeerFeed, InProcessPeerFeed, RemoteDiscovery, type DiscoveryDeps } from './remote-access/discovery'
+import type { MdnsService } from '../services/mdns-service'
+import type { NetworkPeer } from '../../shared/types/remote-access.types'
 import { RemoteAccessHost, type ClaimPrompt, type RemoteAccessHostDeps } from './remote-access/host'
 import { PairingFlow, type PairingFlowDeps } from './remote-access/pairing'
 import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/quit-gate'
@@ -47,6 +49,8 @@ export interface RemoteAccessIpcDeps {
   settingsDir?: string
   /** Embedded mode: the mesh listens on the LAN (it needs consent too), and re-syncs it after an allow or a remove. */
   meshLan?: () => { on: boolean; sync: () => Promise<void> } | null
+  /** Embedded mode: the mesh's mDNS service while it runs (the process's one discovery feed). */
+  meshPeers?: () => MdnsService | null
   /** Tests: replace the Electron dialogs, notifications and network. */
   overrides?: {
     host?: Partial<RemoteAccessHostDeps>
@@ -214,7 +218,16 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     ...o.host,
   })
 
+  // One discovery feed per computer (remote-access.md §5.1): the daemon's in local mode, else this process's.
+  const daemonFeed = new DaemonPeerFeed(async (path) => {
+    const daemon = localDaemon()
+    if (!daemon) throw new Error('Studio is not connected to the ADF daemon yet.')
+    const client = await withTimeout(daemon.client(), 8_000, 'Studio is not connected to the ADF daemon yet.')
+    return client.request<{ peers: NetworkPeer[] }>('GET', path, { timeoutMs: 10_000 })
+  })
+  const inProcessFeed = new InProcessPeerFeed({ mesh: () => deps.meshPeers?.() ?? null, log })
   const discovery = new RemoteDiscovery({
+    feed: () => (deps.mode === 'local' ? (localDaemon() ? daemonFeed : null) : inProcessFeed),
     onUpdate: (update) => windows.send(IPC.REMOTE_DISCOVERY_UPDATE, update),
     pairedFingerprint: () => deps.backend.config().remote.paired?.fingerprint ?? null,
     ownFingerprint: () => host.lastStatus?.fingerprint ?? null,
@@ -386,8 +399,11 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     quitGate,
     consent: consentPrompt,
     onDaemonEvent: (payload) => {
+      const type = (payload as { type?: unknown } | null)?.type
+      // peers_changed: the daemon's discovery feed changed (remote-access.md §5.1).
+      if (type === 'peers_changed') { daemonFeed.changed(); return }
       host.onDaemonEvent((payload ?? {}) as Record<string, unknown>)
-      if ((payload as { type?: unknown } | null)?.type === 'networks_changed') checkConsent()
+      if (type === 'networks_changed') checkConsent()
     },
     dispose: () => {
       if (consentTimer) clearInterval(consentTimer)

@@ -39,6 +39,8 @@ vi.mock('bonjour-service', () => {
 })
 
 import { MdnsService, ensureLocalSuffix, buildBaseUrl, pickMdnsInterface } from '../../../src/main/services/mdns-service'
+import { InProcessPeerFeed, RemoteDiscovery } from '../../../src/main/backend/remote-access/discovery'
+import type { RemoteDiscoveryUpdate } from '../../../src/shared/types/remote-access-ipc.types'
 import type { NetworkInterfaceInfo } from 'os'
 
 const mocks = globalThis.__bonjourMocks
@@ -201,7 +203,8 @@ describe('MdnsService', () => {
     await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'runtime-a' })
 
     expect(mocks.publishMock).not.toHaveBeenCalled()
-    expect(mocks.findMock).toHaveBeenCalledTimes(1)
+    // One browser for _adf-runtime._tcp, plus the legacy _adf-daemon._tcp one for a release.
+    expect(mocks.findMock.mock.calls.map((c) => (c[0] as { type: string }).type)).toEqual(['adf-runtime', 'adf-daemon'])
     await svc.stop()
   })
 
@@ -292,5 +295,131 @@ describe('MdnsService', () => {
     expect(events).toHaveLength(1)
     expect((events[0] as { reason: string }).reason).toContain('5353')
     expect(mocks.publishMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('one discovery feed (remote-access.md §5.1)', () => {
+  const remote = { name: 'agent-1-pc', port: 7385, fingerprint: 'ABCD-EFGH', pairingOpen: true, api: '2' }
+  let browsers: Record<string, ReturnType<typeof makeBrowser>>
+  beforeEach(() => {
+    mocks.publishMock.mockReset()
+    mocks.findMock.mockReset()
+    mocks.unpublishAllMock.mockReset()
+    mocks.destroyMock.mockReset()
+    mocks.ctorThrows = null
+    browsers = { 'adf-runtime': makeBrowser(), 'adf-daemon': makeBrowser() }
+    mocks.findMock.mockImplementation((opts: { type: string }) => browsers[opts.type])
+    mocks.publishMock.mockImplementation(() => ({ stop: (cb?: () => void) => cb?.() }))
+  })
+
+  it('one announcement carries both capabilities: the mesh and remote access; no secret or owner DID in TXT', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: true, mesh: true, remote, browse: true, port: 7295, runtimeId: 'runtime-a', runtimeDid: 'did:key:zRuntime' })
+    expect(mocks.publishMock).toHaveBeenCalledTimes(1)
+    const opts = mocks.publishMock.mock.calls[0][0] as { type: string; port: number; txt: Record<string, string> }
+    expect(opts.type).toBe('adf-runtime')
+    expect(opts.port).toBe(7295)
+    expect(opts.txt).toEqual({
+      runtime_id: 'runtime-a', proto: 'alf/0.2', directory: '/agents', runtime_did: 'did:key:zRuntime',
+      v: '1', fp: 'ABCD-EFGH', pair: '1', daemon_port: '7385', api: '2', name: 'agent-1-pc',
+    })
+    expect(Object.keys(opts.txt).some((k) => /owner|token|code|secret/i.test(k))).toBe(false)
+    expect(svc.isAnnouncingRemote()).toBe(true)
+    // The pairing window closes: the same record is re-published (no second service type), the browser stays.
+    await svc.updateAnnouncement({ announce: true, mesh: true, remote: { ...remote, pairingOpen: false } })
+    expect(mocks.publishMock).toHaveBeenCalledTimes(2)
+    expect((mocks.publishMock.mock.calls[1][0] as { txt: Record<string, string> }).txt.pair).toBe('0')
+    expect(mocks.findMock).toHaveBeenCalledTimes(2)
+    // Remote access only (the mesh is not LAN-visible): mesh=0, the daemon's port.
+    await svc.updateAnnouncement({ announce: true, mesh: false, remote })
+    const third = mocks.publishMock.mock.calls[2][0] as { port: number; txt: Record<string, string> }
+    expect(third.port).toBe(7385)
+    expect(third.txt.mesh).toBe('0')
+    // Remote access off and the mesh not visible: nothing announced.
+    await svc.updateAnnouncement({ announce: false })
+    expect(svc.isAnnouncing()).toBe(false)
+    expect(mocks.publishMock).toHaveBeenCalledTimes(3)
+    expect(mocks.publishMock.mock.calls.every((c) => (c[0] as { type: string }).type === 'adf-runtime')).toBe(true)
+    await svc.stop()
+  })
+
+  it('the client list and the mesh list come from the same feed', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    const changes: number[] = []
+    svc.on('peers_changed', () => changes.push(1))
+    browsers['adf-runtime'].emit('up', {
+      name: 'adf-peer-1', host: 'agent-1-pc.local', port: 7295, addresses: ['192.168.1.20'], referer: { address: '192.168.1.20' },
+      txt: { runtime_id: 'peer-1', proto: 'alf/0.2', directory: '/agents', v: '1', fp: 'ABCD-EFGH', pair: '1', daemon_port: '7385', api: '2', name: 'agent-1-pc' },
+    })
+    expect(changes.length).toBeGreaterThan(0)
+    // The mesh list.
+    expect(svc.getDiscoveredRuntimes().map((r) => [r.runtime_id, r.url])).toEqual([['peer-1', 'http://192.168.1.20:7295']])
+    // The feed: one entry, both capabilities.
+    expect(svc.peers()).toEqual([{
+      key: 'peer-1', name: 'agent-1-pc', source: 'mdns',
+      mesh: { url: 'http://192.168.1.20:7295', port: 7295 },
+      remote: { url: 'http://192.168.1.20:7385', port: 7385, fingerprint: 'ABCD-EFGH', pairingOpen: true, kind: 'lan' },
+    }])
+    // Studio's Discovered list reads the same service (embedded mode: the mesh's own).
+    const updates: RemoteDiscoveryUpdate[] = []
+    const discovery = new RemoteDiscovery({ feed: () => feed, onUpdate: (u) => updates.push(u), pairedFingerprint: () => null, log: { log: () => {}, warn: () => {} } })
+    const feed = new InProcessPeerFeed({ mesh: () => svc })
+    discovery.start()
+    await vi.waitFor(() => expect(updates.at(-1)?.entries.length).toBe(1))
+    expect(updates.at(-1)?.entries[0]).toMatchObject({ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: 'http://192.168.1.20:7385', kind: 'lan', pairingOpen: true })
+    // The mesh browser was the only one: no second service was started for the list.
+    expect(mocks.findMock).toHaveBeenCalledTimes(2)
+    // Goodbye: gone from both lists.
+    browsers['adf-runtime'].emit('down', { txt: { runtime_id: 'peer-1' } })
+    expect(svc.getDiscoveredRuntimes()).toEqual([])
+    discovery.refresh()
+    await vi.waitFor(() => expect(updates.at(-1)?.entries).toEqual([]))
+    discovery.stop()
+    await svc.stop()
+  })
+
+  it('a runtime announcing remote access only (mesh=0) is in the feed but not in the mesh list', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    browsers['adf-runtime'].emit('up', {
+      name: 'adf-peer-2', host: 'host-2.local', port: 7385, addresses: ['192.168.1.30'], referer: { address: '192.168.1.30' },
+      txt: { runtime_id: 'peer-2', mesh: '0', v: '1', fp: 'WXYZ-2345', pair: '0', daemon_port: '7385', api: '2', name: 'host-2' },
+    })
+    expect(svc.getDiscoveredRuntimes()).toEqual([])
+    expect(svc.peers()).toEqual([{ key: 'peer-2', name: 'host-2', source: 'mdns', mesh: null, remote: expect.objectContaining({ fingerprint: 'WXYZ-2345', url: 'http://192.168.1.30:7385' }) }])
+    await svc.stop()
+  })
+
+  it('the legacy _adf-daemon._tcp is still discovered (one release), never announced', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: true, mesh: true, remote, browse: true, port: 7295, runtimeId: 'self' })
+    browsers['adf-daemon'].emit('up', {
+      name: 'old-host', port: 7385, addresses: ['192.168.1.40', '172.20.0.1'], referer: { address: '192.168.1.40' },
+      txt: { v: '1', fp: 'OLDH-2345', pair: '1', api: '1' },
+    })
+    expect(svc.peers()).toEqual([{ key: 'fp:OLDH-2345', name: 'old-host', source: 'mdns', mesh: null, remote: { url: 'http://192.168.1.40:7385', port: 7385, fingerprint: 'OLDH-2345', pairingOpen: true, kind: 'lan' } }])
+    expect(svc.getDiscoveredRuntimes()).toEqual([])
+    // Its own announcement on the legacy type is skipped by fingerprint.
+    browsers['adf-daemon'].emit('up', { name: 'self', port: 7385, addresses: ['192.168.1.5'], txt: { v: '1', fp: 'ABCD-EFGH', pair: '0' } })
+    expect(svc.peers().map((p) => p.key)).toEqual(['fp:OLDH-2345'])
+    browsers['adf-daemon'].emit('down', { txt: { fp: 'OLDH-2345' } })
+    expect(svc.peers()).toEqual([])
+    expect(mocks.publishMock.mock.calls.map((c) => (c[0] as { type: string }).type)).toEqual(['adf-runtime'])
+    await svc.stop()
+  })
+
+  it('the tailnet sweep feeds the same entries: a hello merges with the LAN sighting and wins', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    browsers['adf-runtime'].emit('up', {
+      name: 'adf-peer-1', host: 'agent-1-pc.local', port: 7295, addresses: ['192.168.1.20'], referer: { address: '192.168.1.20' },
+      txt: { runtime_id: 'peer-1', v: '1', fp: 'ABCD-EFGH', pair: '0', daemon_port: '7385', api: '2', name: 'agent-1-pc' },
+    })
+    svc.upsertTailnetDaemon({ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', address: '100.101.102.103', port: 7385, pairingOpen: false })
+    expect(svc.peers()).toEqual([expect.objectContaining({ key: 'peer-1', mesh: expect.objectContaining({ port: 7295 }), remote: expect.objectContaining({ url: 'http://100.101.102.103:7385', kind: 'tailnet' }) })])
+    svc.expireTailnetDaemons(new Set())
+    expect(svc.peers()[0].remote).toMatchObject({ url: 'http://192.168.1.20:7385', kind: 'lan' })
+    await svc.stop()
   })
 })

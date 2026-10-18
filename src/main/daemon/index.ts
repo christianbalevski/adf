@@ -268,6 +268,8 @@ const runtimeDiscovery = new RuntimeDiscovery({
   mesh: meshManager,
   getRuntimeDid: discoveryRuntimeDid,
   getOwnerDid: () => (settings.get('ownerDid') as string | undefined) || undefined,
+  // The one tailnet sweep also asks each peer's daemon port for /remote/hello (remote-access.md §5.2).
+  daemonPort: port,
 })
 runtimeDiscovery.start()
 // The mDNS TXT record carries the runtime DID: re-announce when the daemon
@@ -399,10 +401,14 @@ const remoteAccess = new RemoteAccessService({
   // This machine's own clients only (LOCAL_ONLY_PUSH_TOPICS): never the
   // umbilical bus, which GET /events serves to device tokens and agent taps read.
   emit: (event) => client.sessions.publishPush('remote_access', event),
+  // One announcement (remote-access.md §5.1): remote access's fields join the discovery service's _adf-runtime._tcp record.
+  announcer: runtimeDiscovery.remoteAnnouncer(),
   // One consent list: the mesh's LAN listeners follow an allow or a remove at once.
   onNetworksChanged: () => { void meshServer.syncLan(true) },
   meshLan: () => meshServer.isLanMode(),
 })
+// The feed changed: this machine's own clients re-read GET /network/peers (one event stream, peers_changed).
+runtimeDiscovery.onPeersChanged(() => client.sessions.publishPush('remote_access', { type: 'peers_changed' }))
 agentFactory.startTemplatesWatcher()
 // Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.
 void sweepStaleSnapshots().then((removed) => {
@@ -469,6 +475,7 @@ const daemon = new DaemonHost({
     }),
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
+    getPeers: (args: { waitMs?: number }) => runtimeDiscovery.peers(args),
   },
   // The admin install routes report progress on the client stream, as
   // Studio's install handlers push *_INSTALL_PROGRESS (client-wiring.ts).

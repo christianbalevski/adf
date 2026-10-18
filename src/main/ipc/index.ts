@@ -476,7 +476,11 @@ async function startMdnsIfEligibleInner(): Promise<void> {
       getManualPeers: () => (settings.get('meshManualPeers') as string[]) ?? [],
       getExistingRoute: (runtimeId) => mdnsService?.getDiscovered(runtimeId),
       onPeer: (peer, opts) => mdnsService?.upsertExternalPeer(peer, opts),
-      onExpire: (runtimeId) => mdnsService?.removeExternalPeer(runtimeId)
+      onExpire: (runtimeId) => mdnsService?.removeExternalPeer(runtimeId),
+      // The same sweep asks each peer's daemon port for /remote/hello: Studio's Discovered list reads this feed too.
+      getDaemonPort: () => 7385,
+      onDaemon: (found) => mdnsService?.upsertTailnetDaemon(found),
+      onDaemonSweep: (seen) => mdnsService?.expireTailnetDaemons(seen)
     })
     svc.start()
     tailnetDiscovery = svc
@@ -8429,6 +8433,11 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
 }
 
 /** Expose the active workspace for the adf-file:// protocol handler. */
+/** Embedded mode: the mesh's mDNS service while it runs, the process's one discovery feed (remote-access-ipc.ts). */
+export function meshPeerFeed(): MdnsService | null {
+  return mdnsService
+}
+
 /** Embedded mode: the mesh's LAN mode, for the consent prompt and an allow or remove (remote-access-ipc.ts). */
 export function meshLanState(): { on: boolean; sync: () => Promise<void> } | null {
   const server = meshServer

@@ -158,6 +158,8 @@ export interface DaemonNetworkService {
   getLanAddresses?(): unknown
   /** `force` (the refresh button) waits for a full scan. */
   getDiscoveredRuntimes?(args?: { force?: boolean }): Promise<unknown[]> | unknown[]
+  /** The discovery feed (remote-access.md §5.1): every ADF computer found, with its mesh and remote access. */
+  getPeers?(args: { waitMs?: number }): Promise<unknown[]>
 }
 
 export interface DaemonPackageService {
@@ -1293,6 +1295,16 @@ export function createDaemonHttpApi(
     const force = request.query.force
     if (force !== undefined && !['1', '0', 'true', 'false'].includes(force)) return badRequest(reply, 'force must be 1, 0, true or false')
     return { runtimes: await opts.networkService.getDiscoveredRuntimes?.({ force: force === '1' || force === 'true' }) ?? [] }
+  })
+
+  // One discovery feed (remote-access.md §5.1): Studio's Discovered list and adf pair read it; the mesh list is its mesh half.
+  server.get<{ Querystring: { wait?: string } }>('/network/peers', async (request, reply) => {
+    if (!opts.networkService?.getPeers) return unavailable(reply, 'Peer discovery is not configured.')
+    const wait = request.query.wait
+    const waitMs = wait === undefined ? 0 : Number(wait)
+    if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 5_000) return badRequest(reply, 'wait must be an integer from 0 to 5000 (milliseconds)')
+    void reply.header('Cache-Control', 'no-store')
+    return { peers: await opts.networkService.getPeers({ waitMs }) }
   })
 
   server.get('/network/server', async (request, reply) => {

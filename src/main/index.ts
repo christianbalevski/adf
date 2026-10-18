@@ -685,6 +685,7 @@ app.whenReady().then(async () => {
     keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
     settingsDir: getUserDataPath(),
     meshLan: () => embeddedIpc?.meshLanState() ?? null,
+    meshPeers: () => embeddedIpc?.meshPeerFeed() ?? null,
   })
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))

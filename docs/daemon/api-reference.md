@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 331 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 332 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -42,7 +42,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Templates](#tag-templates) (14)
 - [Tracked folders](#tag-tracked-folders) (6)
 - [Runtime](#tag-runtime) (14)
-- [Network](#tag-network) (14)
+- [Network](#tag-network) (15)
 - [Compute](#tag-compute) (16)
 - [Admin](#tag-admin) (16)
 - [Settings](#tag-settings) (4)
@@ -11564,6 +11564,7 @@ Mesh registration, the mesh HTTP server and WebSocket diagnostics.
 | GET | [`/network/mesh/recent-tools`](#op-getrecentmeshtools) | Recent tool calls per mesh agent |
 | GET | [`/network/mesh/lan-addresses`](#op-getlanaddresses) | This host's name and LAN addresses |
 | GET | [`/network/mesh/discovered-runtimes`](#op-getdiscoveredruntimes) | Remote mesh runtimes discovered on the LAN |
+| GET | [`/network/peers`](#op-getnetworkpeers) | The discovery feed: ADF computers on this network and the tailnet |
 | GET | [`/network/server`](#op-getmeshserverstatus) | Mesh HTTP server status |
 | POST | [`/network/server/start`](#op-startmeshserver) | Start the mesh HTTP server (persisted) |
 | POST | [`/network/server/stop`](#op-stopmeshserver) | Stop the mesh HTTP server (persisted) |
@@ -11957,6 +11958,57 @@ Example 200 (`application/json`):
 {
   "runtimes": [
     {}
+  ]
+}
+```
+
+<a id="op-getnetworkpeers"></a>
+
+### GET `/network/peers`
+
+**The discovery feed: ADF computers on this network and the tailnet**
+
+One feed per computer (remote-access.md §5.1): the one `_adf-runtime._tcp` browser (plus the legacy `_adf-daemon._tcp` one for a release) and the one tailnet sweep. Each entry carries both capabilities: its mesh (when visible to other computers) and its remote access (when on). Studio's Discovered list and `adf pair` read it; the mesh peer list is its mesh half. Keeps discovery running for a minute after the call. Changes are pushed to this computer's own sessions as `remote_access` `{type: "peers_changed"}`.
+
+Operation `getNetworkPeers` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `wait` | query | integer |  | Milliseconds to listen first, 0-5000 (a browser that just started hears answers) |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The peers |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "peers": [
+    {
+      "key": "string",
+      "name": "string",
+      "source": "mdns",
+      "mesh": {
+        "url": "string",
+        "port": 0
+      },
+      "remote": {
+        "url": "string",
+        "port": 0,
+        "fingerprint": "string",
+        "pairingOpen": true,
+        "kind": "lan"
+      }
+    }
   ]
 }
 ```
@@ -22873,6 +22925,20 @@ A network this computer is on now. LAN: identified by the default gateway's MAC 
 | `kind` | `"lan"` \| `"tailnet"` | yes |  |
 | `label` | string | yes |  |
 | `addedAt` | string | yes |  |
+
+<a id="schema-networkpeer"></a>
+
+### NetworkPeer
+
+One ADF computer the discovery feed found. No token, code or owner DID.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | yes | The runtime id, or `fp:<fingerprint>` for a computer known only through remote access |
+| `name` | string | yes |  |
+| `source` | `"mdns"` \| `"tailnet"` \| `"manual"` | yes |  |
+| `mesh` | object \| null | yes | Its mesh, when visible to other computers |
+| `remote` | object \| null | yes | Its remote access, when on: the tailnet address wins over the LAN one |
 
 <a id="schema-remoteurl"></a>
 

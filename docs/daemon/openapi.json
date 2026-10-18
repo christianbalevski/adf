@@ -8880,6 +8880,66 @@
         ]
       }
     },
+    "/network/peers": {
+      "get": {
+        "tags": [
+          "Network"
+        ],
+        "summary": "The discovery feed: ADF computers on this network and the tailnet",
+        "description": "One feed per computer (remote-access.md §5.1): the one `_adf-runtime._tcp` browser (plus the legacy `_adf-daemon._tcp` one for a release) and the one tailnet sweep. Each entry carries both capabilities: its mesh (when visible to other computers) and its remote access (when on). Studio's Discovered list and `adf pair` read it; the mesh peer list is its mesh half. Keeps discovery running for a minute after the call. Changes are pushed to this computer's own sessions as `remote_access` `{type: \"peers_changed\"}`.",
+        "operationId": "getNetworkPeers",
+        "x-adf-stability": "experimental",
+        "parameters": [
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "description": "Milliseconds to listen first, 0-5000 (a browser that just started hears answers)",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 5000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The peers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "peers"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "peers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/NetworkPeer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/network/server": {
       "get": {
         "tags": [
@@ -30450,6 +30510,100 @@
           "addedAt": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "NetworkPeer": {
+        "type": "object",
+        "description": "One ADF computer the discovery feed found. No token, code or owner DID.",
+        "required": [
+          "key",
+          "name",
+          "source",
+          "mesh",
+          "remote"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The runtime id, or `fp:<fingerprint>` for a computer known only through remote access"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mdns",
+              "tailnet",
+              "manual"
+            ]
+          },
+          "mesh": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "url",
+                  "port"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "integer"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its mesh, when visible to other computers"
+          },
+          "remote": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "url",
+                  "port",
+                  "fingerprint",
+                  "pairingOpen",
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "integer"
+                  },
+                  "fingerprint": {
+                    "type": "string",
+                    "pattern": "^[A-Z2-7]{4}-[A-Z2-7]{4}$"
+                  },
+                  "pairingOpen": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "lan",
+                      "tailnet"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its remote access, when on: the tailnet address wins over the LAN one"
           }
         }
       },

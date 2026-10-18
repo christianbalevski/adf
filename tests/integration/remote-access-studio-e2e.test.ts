@@ -121,7 +121,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       keepDaemonRunning: () => false,
       overrides: {
         host: { confirm: async () => true, askClaim: async ({ claim }) => { asked.push(claim.deviceName); return true }, notify: (t) => notices.push(t), pollMs: 200 },
-        discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] },
+        discovery: { feed: () => null },
         consentPollMs: 1_000,
       },
       log: quiet,

@@ -28,7 +28,7 @@ import type { DeviceTokenAuthority } from '../request-guard'
 import type { ClientSessionRegistry } from '../client-sessions'
 import { isLoopbackAddress } from '../local-access'
 import { urlHost, type AddressCandidate } from './addresses'
-import { BonjourAnnouncer, type Announcer } from './announcer'
+import { NO_ANNOUNCER, type Announcer } from './announcer'
 import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
 import {
   cleanDisplayName, defaultComputerName, fingerprintOf, loadRemoteAccessConfig, newDaemonId,
@@ -184,7 +184,7 @@ export class RemoteAccessService {
       now: () => this.now(),
     })
     this.tailscale = opts.tailscale ?? new TailscaleClient()
-    this.announcer = opts.announcer ?? new BonjourAnnouncer()
+    this.announcer = opts.announcer ?? NO_ANNOUNCER
     this.probeFirewall = opts.firewall ?? probeFirewall
     this.hostName = opts.hostName ?? osHostname
     this.checkIntervalMs = opts.checkIntervalMs ?? ADDRESS_CHECK_MS

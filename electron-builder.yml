@@ -76,6 +76,7 @@ mac:
     # without these keys the prompt cannot show and discovery fails silently
     # (docs/design/remote-access.md §6).
     NSLocalNetworkUsageDescription: ADF Studio finds and connects to your other computers running ADF on this network.
+    # _adf-daemon._tcp: still browsed for one release (legacy remote-access announcement); remove with it.
     NSBonjourServices:
       - _adf-daemon._tcp
       - _adf-runtime._tcp

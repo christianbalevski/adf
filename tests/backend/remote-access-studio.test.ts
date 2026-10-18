@@ -24,14 +24,13 @@ import { DaemonClient, staticCredentials } from '../../src/shared/daemon-client'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import { RemoteAccessHost, deviceAddedNotice, deviceRemovedNotice, type RemoteAccessHostDeps } from '../../src/main/backend/remote-access/host'
 import { PairingFlow, type PairingSaveInput } from '../../src/main/backend/remote-access/pairing'
-import { RemoteDiscovery, type DaemonAnnouncement } from '../../src/main/backend/remote-access/discovery'
+import { DaemonPeerFeed, RemoteDiscovery, type PeerFeed } from '../../src/main/backend/remote-access/discovery'
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
 import { claimQuestion, networkStatusView, registerRemoteAccessHandlers, runtimeName, unavailableReason } from '../../src/main/backend/remote-access-ipc'
 import type { LanReach } from '../../src/main/services/lan-reach'
 import { NetworkConsentPrompt, networkQuestion, PUBLIC_WARNING, type NetworkQuestion } from '../../src/main/backend/remote-access/network-consent'
-import type { NetworkView } from '../../src/shared/types/remote-access.types'
+import type { NetworkPeer, NetworkView } from '../../src/shared/types/remote-access.types'
 import { hostname } from 'node:os'
-import { probeTailnet } from '../../src/main/cli/daemon-discovery'
 import { applyBackendPatch, createBackendSettingsStore, defaultBackendConfig, normalizeBackendConfig, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
 import type { RemoteAccessChange, RemotePairState, RemoteDiscoveryUpdate } from '../../src/shared/types/remote-access-ipc.types'
 
@@ -579,89 +578,103 @@ describe('pairing from Settings → Backend → Remote computer', () => {
 
 // --- Client: discovery ------------------------------------------------------------
 
-describe('Discovered (discovery)', () => {
-  function setup(peers: string[] = []) {
-    const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
-    daemon.state.enabled = true
+describe('Discovered (discovery): a view of the one discovery feed', () => {
+  class FakeFeed implements PeerFeed {
+    list: NetworkPeer[] = []
+    waits: number[] = []
+    trouble: string | null = null
+    released = 0
+    private listeners = new Set<() => void>()
+    async peers(opts: { waitMs?: number } = {}): Promise<NetworkPeer[]> { this.waits.push(opts.waitMs ?? 0); return this.list }
+    subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
+    problem(): string | null { return this.trouble }
+    release(): void { this.released++ }
+    changed(): void { for (const l of this.listeners) l() }
+  }
+  const peer = (over: Partial<NetworkPeer> = {}, remote: Partial<NonNullable<NetworkPeer['remote']>> | null = {}): NetworkPeer => ({
+    key: 'peer-1', name: 'agent-1-pc', source: 'mdns', mesh: null,
+    remote: remote === null ? null : { url: LAN, port: 7385, fingerprint: 'ABCD-EFGH', pairingOpen: false, kind: 'lan', ...remote },
+    ...over,
+  })
+  function setup(feed: FakeFeed | null = new FakeFeed()) {
     const updates: RemoteDiscoveryUpdate[] = []
-    let handlers: { up: (a: DaemonAnnouncement) => void; down: (a: DaemonAnnouncement) => void } | null = null
-    let stopped = false
     let paired: string | null = null
     let own: string | null = null
     const discovery = new RemoteDiscovery({
+      feed: () => feed,
       onUpdate: (u) => updates.push(u),
       pairedFingerprint: () => paired,
       ownFingerprint: () => own,
-      browse: (h) => { handlers = h; return { stop: () => { stopped = true } } },
-      tailnet: () => probeTailnet({ exec: tailscaleExec(peers), fetch: daemon.fetch }),
-      sweepMs: 60_000,
+      pollMs: 60_000,
       log: quiet,
     })
-    return { daemon, discovery, updates, up: (a: DaemonAnnouncement) => handlers!.up(a), down: (a: DaemonAnnouncement) => handlers!.down(a), stopped: () => stopped, setPaired: (fp: string) => { paired = fp }, setOwn: (fp: string) => { own = fp } }
+    return { feed, discovery, updates, setPaired: (fp: string) => { paired = fp }, setOwn: (fp: string) => { own = fp } }
   }
-  /** `tailscale status --json` with these online peers. */
-  function tailscaleExec(peers: string[]) {
-    return async () => JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['100.64.0.1'] }, Peer: Object.fromEntries(peers.map((ip, i) => [`p${i}`, { TailscaleIPs: [ip], Online: true }])) })
-  }
-  const announcement = (over: Partial<DaemonAnnouncement> = {}): DaemonAnnouncement => ({
-    name: 'agent-1-pc', port: 7385, referer: '192.168.1.20', addresses: ['192.168.1.20', '172.20.0.1'], txt: { v: '1', fp: 'ABCD-EFGH', pair: '0', api: '1' }, ...over,
-  })
 
-  it('lists an mDNS announcement as LAN, not encrypted; pair=1 is "ready to pair"; goodbye removes it', async () => {
+  it('lists the feed\'s entries with remote access; pairing open is "ready to pair"; a peers_changed re-reads; stop releases the feed', async () => {
     const d = setup()
+    d.feed!.list = [peer({}, { pairingOpen: true }), peer({ key: 'mesh-only', name: 'mesh-only', mesh: { url: 'http://192.168.1.9:7295', port: 7295 } }, null)]
     d.discovery.start()
-    d.up(announcement({ txt: { v: '1', fp: 'ABCD-EFGH', pair: '1', api: '1' } }))
-    expect(d.updates.at(-1)?.entries).toEqual([{ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: LAN, address: '192.168.1.20', kind: 'lan', encrypted: false, pairingOpen: true, alreadyPaired: false }])
-    d.down(announcement())
-    expect(d.updates.at(-1)?.entries).toEqual([])
+    await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 1)
+    expect(d.updates.at(-1)).toEqual({ browsing: true, problem: null, entries: [{ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: LAN, address: '192.168.1.20', kind: 'lan', encrypted: false, pairingOpen: true, alreadyPaired: false }] })
+    // The first read waits a moment for a fresh browser's answers.
+    expect(d.feed!.waits[0]).toBeGreaterThan(0)
+    d.feed!.list = []
+    d.feed!.changed()
+    await until(() => d.updates.at(-1)?.entries.length === 0)
     d.discovery.stop()
-    expect(d.stopped()).toBe(true)
+    expect(d.feed!.released).toBe(1)
   })
 
-  it('merges LAN and tailnet sightings by fingerprint; the tailnet address wins and is encrypted', async () => {
-    const d = setup(['100.101.102.103'])
+  it('a tailnet sighting is encrypted and listed before LAN ones', async () => {
+    const d = setup()
+    d.feed!.list = [peer({ key: 'b', name: 'b-lan' }, { fingerprint: 'BBBB-BBBB' }), peer({ key: 'a', name: 'z-tailnet' }, { url: TAILNET, kind: 'tailnet' })]
     d.discovery.start()
-    d.up(announcement())
-    await until(() => d.updates.some((u) => u.entries.some((e) => e.kind === 'tailnet')))
-    expect(d.updates.at(-1)?.entries).toEqual([{ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: TAILNET, address: '100.101.102.103', kind: 'tailnet', encrypted: true, pairingOpen: false, alreadyPaired: false }])
+    await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 2)
+    expect(d.updates.at(-1)?.entries.map((e) => [e.name, e.kind, e.encrypted])).toEqual([['z-tailnet', 'tailnet', true], ['b-lan', 'lan', false]])
     d.discovery.stop()
   })
 
-  it('marks the saved remote "already paired" and leaves out this computer\'s own daemon', () => {
+  it('marks the saved remote "already paired" and leaves out this computer\'s own daemon', async () => {
     const d = setup()
     d.setPaired('ABCD-EFGH')
-    d.discovery.start()
-    d.up(announcement())
-    d.up(announcement({ name: 'self', referer: '192.168.1.5', txt: { v: '1', fp: 'SELF-2345', pair: '0' } }))
     d.setOwn('SELF-2345')
-    d.discovery.refresh()
+    d.feed!.list = [peer(), peer({ key: 'self', name: 'self' }, { fingerprint: 'SELF-2345', url: 'http://192.168.1.5:7385' })]
+    d.discovery.start()
+    await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 1)
     expect(d.updates.at(-1)?.entries.map((e) => [e.fingerprint, e.alreadyPaired])).toEqual([['ABCD-EFGH', true]])
     d.discovery.stop()
   })
 
-  it('ignores announcements without a fingerprint or of another version', () => {
-    const d = setup()
+  it('without a feed (the daemon not connected yet) or without mDNS it says so', async () => {
+    const none = setup(null)
+    none.discovery.start()
+    expect(none.updates[0]).toMatchObject({ browsing: false, entries: [], problem: 'Studio is not connected to the ADF daemon yet.' })
+    none.discovery.stop()
+    const feed = new FakeFeed()
+    feed.trouble = 'mDNS is not available here. Tailnet computers are still listed; or enter an address.'
+    feed.list = [peer({}, { url: TAILNET, kind: 'tailnet' })]
+    const d = setup(feed)
     d.discovery.start()
-    d.up(announcement({ txt: { v: '1' } }))
-    d.up(announcement({ txt: { v: '2', fp: 'ABCD-EFGH' } }))
-    expect(d.updates.at(-1)?.entries).toEqual([])
+    await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 1)
+    expect(d.updates.at(-1)).toMatchObject({ browsing: false, problem: expect.stringContaining('mDNS') })
     d.discovery.stop()
   })
 
-  it('without mDNS it says so and still probes the tailnet', async () => {
-    const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
-    daemon.state.enabled = true
-    const updates: RemoteDiscoveryUpdate[] = []
-    const discovery = new RemoteDiscovery({
-      onUpdate: (u) => updates.push(u), pairedFingerprint: () => null,
-      browse: () => { throw new Error('EADDRINUSE 5353') },
-      tailnet: () => probeTailnet({ exec: tailscaleExec(['100.101.102.103']), fetch: daemon.fetch }), log: quiet,
-    })
-    discovery.start()
-    expect(updates[0]).toMatchObject({ browsing: false })
-    expect(updates[0].problem).toContain('mDNS')
-    await until(() => updates.at(-1)!.entries.length === 1)
-    discovery.stop()
+  it('local mode reads the daemon\'s feed (GET /network/peers) and re-reads on its peers_changed push', async () => {
+    const requests: string[] = []
+    let peers: NetworkPeer[] = [peer()]
+    const feed = new DaemonPeerFeed(async (path) => { requests.push(path); return { peers } })
+    expect(await feed.peers({ waitMs: 2_000 })).toEqual(peers)
+    expect(requests).toEqual(['/network/peers?wait=2000'])
+    const seen: number[] = []
+    const off = feed.subscribe(() => seen.push(1))
+    peers = []
+    feed.changed()
+    expect(seen).toEqual([1])
+    off()
+    expect(await feed.peers()).toEqual([])
+    expect(requests.at(-1)).toBe('/network/peers')
   })
 })
 
@@ -773,7 +786,7 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     const s = store()
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: s.store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false,
-      overrides: { discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] }, pairing: { fetch: daemon.fetch, retryMs: 5 } },
+      overrides: { discovery: { feed: () => null }, pairing: { fetch: daemon.fetch, retryMs: 5 } },
       log: quiet,
     })
     for (const channel of [IPC.REMOTE_ACCESS_GET, IPC.REMOTE_ACCESS_SET, IPC.REMOTE_ACCESS_DEVICE_ADD, IPC.REMOTE_ACCESS_DEVICE_REMOVE, IPC.REMOTE_ACCESS_PAIRING_OPEN, IPC.REMOTE_ACCESS_PAIRING_CLOSE, IPC.REMOTE_ACCESS_TAILSCALE_SERVE, IPC.REMOTE_DISCOVERY_START, IPC.REMOTE_DISCOVERY_STOP, IPC.REMOTE_PAIR_START, IPC.REMOTE_PAIR_SUBMIT_CODE, IPC.REMOTE_PAIR_CANCEL]) {
@@ -899,7 +912,7 @@ describe('one name and the Networking status line', () => {
     const reach = { snapshot: async () => ({ addresses: [{ address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', networkId: home.id, refusal: null }], listenable: ['192.168.1.20'], networks: [home], tailscale: 'absent' }) } as unknown as LanReach
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
-      overrides: { reach, firewall: async () => ({ state: 'ok', message: 'fine', commands: [] }), platform: 'win32', discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      overrides: { reach, firewall: async () => ({ state: 'ok', message: 'fine', commands: [] }), platform: 'win32', discovery: { feed: () => null } },
       log: quiet,
     })
     const view = await electronStub.handlers.get(IPC.NETWORK_STATUS_GET)!({})
@@ -973,7 +986,7 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
       meshLan: () => ({ on: true, sync: async () => {} }),
-      overrides: { reach, consentPollMs: 0, discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      overrides: { reach, consentPollMs: 0, discovery: { feed: () => null } },
       log: quiet,
     })
     await ipc.consent.check()
@@ -1010,7 +1023,7 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
       meshLan: () => ({ on: true, sync: async () => { syncs++ } }),
-      overrides: { reach, consentPollMs: 0, discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      overrides: { reach, consentPollMs: 0, discovery: { feed: () => null } },
       log: quiet,
     })
     expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toEqual({ ok: true })

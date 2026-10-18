@@ -1,39 +1,40 @@
-import { Bonjour, type Service } from 'bonjour-service'
-import { pickMdnsInterface } from '../../services/mdns-service'
-import { DAEMON_SERVICE_TYPE } from '../../daemon/remote-access/announcer'
-import { probeTailnet, type DiscoveredDaemon } from '../../cli/daemon-discovery'
+import { randomBytes } from 'node:crypto'
+import { MdnsService } from '../../services/mdns-service'
+import { TailnetDiscovery } from '../../services/tailnet-discovery'
+import { DEFAULT_DAEMON_PORT } from '../../cli/daemon-url'
 import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
+import type { NetworkPeer } from '../../../shared/types/remote-access.types'
 import type { RemoteDiscoveryEntry, RemoteDiscoveryUpdate } from '../../../shared/types/remote-access-ipc.types'
 
 /**
  * Settings → Backend → Remote computer, "Discovered"
- * (docs/design/remote-access.md §9.1): ADF daemons that allow other
- * computers, found two ways and merged by fingerprint.
+ * (docs/design/remote-access.md §5.1, §9.1): the ADF computers with remote
+ * access on, read from the one discovery feed of this computer, the same
+ * feed the mesh peer list reads:
  *
- * - LAN: mDNS browse of `_adf-daemon._tcp` (§5.1). The address is the one the
- *   announcement came from, as the mesh's browser does (mdns-service.ts).
- * - Tailnet: multicast does not cross WireGuard, so each online tailnet peer
- *   is asked `GET /remote/hello` on the daemon port (§5.2), every 30 s
- *   (the CLI's probeTailnet, cli/daemon-discovery.ts).
+ * - local mode: the ADF daemon's (GET /network/peers, re-read on its
+ *   `peers_changed` push);
+ * - embedded mode: Studio's own mesh mDNS service while it runs, else
+ *   InProcessPeerFeed;
+ * - remote mode: InProcessPeerFeed (the remote daemon's network is not
+ *   this computer's).
  *
  * Runs only while the section is open (start/stop). Nothing here sees or
  * sends a token.
  */
 
-const SWEEP_MS = 30_000
+const POLL_MS = 5_000
 
-/** One `_adf-daemon._tcp` announcement, as the browser reports it. */
-export interface DaemonAnnouncement {
-  name: string
-  port: number
-  /** The address the announcement came from (preferred), else its A/AAAA records. */
-  referer: string | null
-  addresses: string[]
-  txt: Record<string, unknown>
-}
-
-export interface MdnsBrowser {
-  stop(): void
+/** One discovery feed: the entries with both capabilities, and its `peers_changed` stream. */
+export interface PeerFeed {
+  /** The peers now; `waitMs` lets a browser that just started hear answers. */
+  peers(opts?: { waitMs?: number }): Promise<NetworkPeer[]>
+  /** `peers_changed`. */
+  subscribe(listener: () => void): () => void
+  /** Why the feed is limited (mDNS not available), or null. */
+  problem(): string | null
+  /** The Discovered list closed: an in-process feed may stop its browser. */
+  release?(): void
 }
 
 export interface DiscoveryDeps {
@@ -42,50 +43,23 @@ export interface DiscoveryDeps {
   pairedFingerprint: () => string | null
   /** This computer's own daemon fingerprint, left out of the list. */
   ownFingerprint?: () => string | null
-  /** mDNS browse; throws when mDNS cannot start. Default: bonjour-service on the interface pickMdnsInterface chooses. */
-  browse?: (handlers: { up: (a: DaemonAnnouncement) => void; down: (a: DaemonAnnouncement) => void }) => MdnsBrowser
-  /** ADF daemons on online tailnet peers. Default: probeTailnet (`tailscale status --json`, then GET /remote/hello). */
-  tailnet?: () => Promise<DiscoveredDaemon[]>
-  sweepMs?: number
+  /** This computer's discovery feed now; null while it cannot be read (no daemon yet). */
+  feed: () => PeerFeed | null
+  pollMs?: number
   log?: Pick<Console, 'log' | 'warn'>
 }
-
-interface Sighting {
-  address: string
-  port: number
-  pairingOpen: boolean
-}
-
-interface Record_ {
-  name: string
-  lan: Sighting | null
-  tailnet: Sighting | null
-}
-
-const PRIVATE_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/
 
 /** `http://host:port` with an IPv6 literal bracketed. */
 export function hostUrl(address: string, port: number): string {
   return `http://${address.includes(':') ? `[${address}]` : address}:${port}`
 }
 
-function txtString(txt: Record<string, unknown>, key: string): string | null {
-  const value = txt[key]
-  if (typeof value === 'string') return value
-  if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8')
-  return null
-}
-
-/** Fingerprint as the daemon shows it: `XXXX-XXXX`, RFC 4648 base32 (§5.1). */
-const FINGERPRINT = /^[A-Z2-7]{4}-[A-Z2-7]{4}$/
-
 export class RemoteDiscovery {
-  private records = new Map<string, Record_>()
-  private browser: MdnsBrowser | null = null
+  private peers: NetworkPeer[] = []
   private timer: ReturnType<typeof setInterval> | null = null
   private running = false
-  private browsing = false
-  private problem: string | null = null
+  private feed: PeerFeed | null = null
+  private unsubscribe: (() => void) | null = null
   private generation = 0
   private readonly log: Pick<Console, 'log' | 'warn'>
 
@@ -104,20 +78,11 @@ export class RemoteDiscovery {
     }
     this.running = true
     this.generation++
-    this.records.clear()
-    this.problem = null
-    try {
-      this.browser = (this.deps.browse ?? defaultBrowse)({ up: (a) => this.onUp(a), down: (a) => this.onDown(a) })
-      this.browsing = true
-      this.log.log('[Remote access] Looking for ADF computers on this network (mDNS _adf-daemon._tcp, tailnet hello)')
-    } catch (err) {
-      this.browsing = false
-      this.problem = 'mDNS is not available here. Tailnet computers are still listed; or enter an address.'
-      this.log.warn(`[Remote access] mDNS browse failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
+    this.peers = []
+    this.log.log('[Remote access] Looking for ADF computers (the discovery feed: this network and the tailnet)')
     this.emit()
-    void this.sweep(this.generation)
-    this.timer = setInterval(() => void this.sweep(this.generation), this.deps.sweepMs ?? SWEEP_MS)
+    void this.read(this.generation, 2_000)
+    this.timer = setInterval(() => void this.read(this.generation, 0), this.deps.pollMs ?? POLL_MS)
     this.timer.unref?.()
   }
 
@@ -127,118 +92,187 @@ export class RemoteDiscovery {
     this.generation++
     if (this.timer) clearInterval(this.timer)
     this.timer = null
-    try { this.browser?.stop() } catch { /* best effort */ }
-    this.browser = null
-    this.browsing = false
-    this.records.clear()
+    this.unsubscribe?.()
+    this.unsubscribe = null
+    this.feed?.release?.()
+    this.feed = null
+    this.peers = []
     this.log.log('[Remote access] Stopped looking for ADF computers')
   }
 
-  /** The merged list, tailnet before LAN, then by name. */
+  /** The list: tailnet before LAN, then by name. */
   entries(): RemoteDiscoveryEntry[] {
     const paired = this.deps.pairedFingerprint()
     const own = this.deps.ownFingerprint?.() ?? null
     const out: RemoteDiscoveryEntry[] = []
-    for (const [fingerprint, record] of this.records) {
-      if (fingerprint === own) continue
-      const best = record.tailnet ?? record.lan
-      if (!best) continue
-      const url = hostUrl(best.address, best.port)
-      const kind = checkRemoteDaemonUrl(url).kind
+    for (const peer of this.peers) {
+      const remote = peer.remote
+      if (!remote || remote.fingerprint === own) continue
+      let address: string
+      try { address = new URL(remote.url).hostname.replace(/^\[|\]$/g, '') } catch { continue }
+      const kind = checkRemoteDaemonUrl(remote.url).kind
       out.push({
-        fingerprint,
-        name: record.name,
-        url,
-        address: best.address,
-        kind: record.tailnet ? 'tailnet' : 'lan',
+        fingerprint: remote.fingerprint,
+        name: peer.name,
+        url: remote.url,
+        address,
+        kind: remote.kind,
         encrypted: kind === 'tailnet' || kind === 'https',
-        pairingOpen: (record.tailnet?.pairingOpen ?? false) || (record.lan?.pairingOpen ?? false),
-        alreadyPaired: paired === fingerprint,
+        pairingOpen: remote.pairingOpen,
+        alreadyPaired: paired === remote.fingerprint,
       })
     }
     return out.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'tailnet' ? -1 : 1))
   }
 
-  /** Re-send the list (the saved remote changed: "Already paired"). */
+  /** Re-read the feed (its `peers_changed`), or re-send the list (the saved remote changed: "Already paired"). */
   refresh(): void {
-    if (this.running) this.emit()
+    if (this.running) void this.read(this.generation, 0)
   }
 
   private emit(): void {
-    this.deps.onUpdate({ entries: this.entries(), browsing: this.browsing, problem: this.problem })
+    const feed = this.feed
+    this.deps.onUpdate({
+      entries: this.entries(),
+      browsing: !!feed && feed.problem() === null,
+      problem: feed ? feed.problem() : this.running ? 'Studio is not connected to the ADF daemon yet.' : null,
+    })
   }
 
-  private onUp(a: DaemonAnnouncement): void {
-    if (!this.running) return
-    const fingerprint = txtString(a.txt, 'fp')
-    if (!fingerprint || !FINGERPRINT.test(fingerprint) || txtString(a.txt, 'v') !== '1' || !a.port) return
-    const address = a.referer ?? a.addresses.find((ip) => PRIVATE_V4.test(ip)) ?? a.addresses[0]
-    if (!address) return
-    const record = this.records.get(fingerprint) ?? { name: a.name, lan: null, tailnet: null }
-    record.name = record.tailnet ? record.name : a.name
-    record.lan = { address, port: a.port, pairingOpen: txtString(a.txt, 'pair') === '1' }
-    this.records.set(fingerprint, record)
-    this.emit()
-  }
-
-  private onDown(a: DaemonAnnouncement): void {
-    const fingerprint = txtString(a.txt, 'fp')
-    const record = fingerprint ? this.records.get(fingerprint) : undefined
-    if (!fingerprint || !record) return
-    record.lan = null
-    if (!record.tailnet) this.records.delete(fingerprint)
-    this.emit()
-  }
-
-  private async sweep(generation: number): Promise<void> {
-    let daemons: DiscoveredDaemon[]
-    try {
-      daemons = await (this.deps.tailnet ?? (() => probeTailnet()))()
-    } catch {
-      daemons = []
+  private async read(generation: number, waitMs: number): Promise<void> {
+    const feed = this.deps.feed()
+    if (feed !== this.feed) {
+      this.unsubscribe?.()
+      this.feed?.release?.()
+      this.feed = feed
+      this.unsubscribe = feed ? feed.subscribe(() => this.refresh()) : null
     }
-    const found = new Map<string, { name: string; sighting: Sighting }>()
-    for (const d of daemons) {
-      if (!FINGERPRINT.test(d.fingerprint)) continue
-      let url: URL
-      try { url = new URL(d.url) } catch { continue }
-      const address = url.hostname.replace(/^\[|\]$/g, '')
-      found.set(d.fingerprint, { name: d.name || address, sighting: { address, port: Number(url.port) || 80, pairingOpen: d.pairingOpen } })
+    let peers: NetworkPeer[] = []
+    try {
+      peers = feed ? await feed.peers({ waitMs }) : []
+    } catch (err) {
+      this.log.warn(`[Remote access] Could not read the discovery feed: ${err instanceof Error ? err.message : String(err)}`)
+      peers = this.peers
     }
     if (generation !== this.generation || !this.running) return
-    for (const [fingerprint, record] of this.records) {
-      if (found.has(fingerprint)) continue
-      record.tailnet = null
-      if (!record.lan) this.records.delete(fingerprint)
-    }
-    for (const [fingerprint, { name, sighting }] of found) {
-      const record = this.records.get(fingerprint) ?? { name, lan: null, tailnet: null }
-      record.name = name
-      record.tailnet = sighting
-      this.records.set(fingerprint, record)
-    }
+    this.peers = peers
     this.emit()
   }
 }
 
-function defaultBrowse(handlers: { up: (a: DaemonAnnouncement) => void; down: (a: DaemonAnnouncement) => void }): MdnsBrowser {
-  const iface = pickMdnsInterface()
-  // As MdnsService: membership on the picked interface, reception on all addresses.
-  const bonjour = new Bonjour((iface ? { interface: iface, bind: '0.0.0.0' } : undefined) as never)
-  const toAnnouncement = (service: Service): DaemonAnnouncement => ({
-    name: service.name,
-    port: service.port,
-    referer: (service as unknown as { referer?: { address?: string } }).referer?.address ?? null,
-    addresses: (service.addresses ?? []) as string[],
-    txt: (service.txt ?? {}) as Record<string, unknown>,
-  })
-  const browser = bonjour.find({ type: DAEMON_SERVICE_TYPE, protocol: 'tcp' })
-  browser.on('up', (service: Service) => handlers.up(toAnnouncement(service)))
-  browser.on('down', (service: Service) => handlers.down(toAnnouncement(service)))
-  return {
-    stop: () => {
-      try { browser.stop() } catch { /* best effort */ }
-      try { bonjour.destroy() } catch { /* best effort */ }
-    },
+/** The ADF daemon's feed (local mode): GET /network/peers, re-read on its `peers_changed` push. */
+export class DaemonPeerFeed implements PeerFeed {
+  private readonly listeners = new Set<() => void>()
+
+  constructor(private readonly request: (path: string) => Promise<{ peers: NetworkPeer[] }>) {}
+
+  async peers(opts: { waitMs?: number } = {}): Promise<NetworkPeer[]> {
+    const wait = Math.min(Math.max(Math.round(opts.waitMs ?? 0), 0), 5_000)
+    return (await this.request(`/network/peers${wait ? `?wait=${wait}` : ''}`)).peers ?? []
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  problem(): string | null {
+    return null
+  }
+
+  /** The daemon pushed `peers_changed` (remote_access topic). */
+  changed(): void {
+    for (const listener of this.listeners) listener()
+  }
+}
+
+/**
+ * This process's feed when no ADF daemon serves one (embedded and remote
+ * mode): the process's mesh mDNS service when it runs (one browser per
+ * process), else its own browse-only service and tailnet hello sweep,
+ * stopped when the list closes or the mesh's service appears.
+ */
+export class InProcessPeerFeed implements PeerFeed {
+  private own: MdnsService | null = null
+  private tailnet: TailnetDiscovery | null = null
+  private unavailable: string | null = null
+  private attached: MdnsService | null = null
+  private readonly listeners = new Set<() => void>()
+  private readonly onChange = (): void => { for (const listener of this.listeners) listener() }
+
+  constructor(private readonly opts: {
+    /** The process's mesh mDNS service, when it runs (embedded mode). */
+    mesh?: () => MdnsService | null
+    createMdns?: () => MdnsService
+    daemonPort?: number
+    log?: Pick<Console, 'log' | 'warn'>
+  } = {}) {}
+
+  async peers(opts: { waitMs?: number } = {}): Promise<NetworkPeer[]> {
+    const mesh = this.opts.mesh?.() ?? null
+    if (mesh) {
+      if (this.own) await this.stopOwn()
+      this.attach(mesh)
+      return mesh.peers()
+    }
+    if (!this.own) await this.startOwn()
+    this.attach(this.own)
+    const wait = Math.min(Math.max(opts.waitMs ?? 0, 0), 5_000)
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    return this.own?.peers() ?? []
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  problem(): string | null {
+    return this.unavailable
+  }
+
+  release(): void {
+    void this.stopOwn()
+    this.attach(null)
+  }
+
+  private attach(service: MdnsService | null): void {
+    if (this.attached === service) return
+    this.attached?.off('peers_changed', this.onChange)
+    this.attached = service
+    service?.on('peers_changed', this.onChange)
+  }
+
+  private async startOwn(): Promise<void> {
+    const service = this.opts.createMdns?.() ?? new MdnsService()
+    service.on('unavailable', ({ reason }: { reason: string }) => {
+      this.unavailable = 'mDNS is not available here. Tailnet computers are still listed; or enter an address.'
+      this.opts.log?.warn(`[Remote access] mDNS browse failed: ${reason}`)
+    })
+    // Browse only: nothing is announced from here.
+    await service.start({ announce: false, browse: true, port: 0, runtimeId: `studio-browse-${randomBytes(6).toString('hex')}` })
+    this.own = service
+    const port = this.opts.daemonPort ?? DEFAULT_DAEMON_PORT
+    this.tailnet = new TailnetDiscovery({
+      getPorts: () => [],
+      isTailnetEnabled: () => true,
+      getManualPeers: () => [],
+      getExistingRoute: () => undefined,
+      onPeer: () => {},
+      onExpire: () => {},
+      getDaemonPort: () => port,
+      onDaemon: (found) => service.upsertTailnetDaemon(found),
+      onDaemonSweep: (seen) => service.expireTailnetDaemons(seen),
+    })
+    this.tailnet.start()
+  }
+
+  private async stopOwn(): Promise<void> {
+    this.tailnet?.stop()
+    this.tailnet = null
+    const own = this.own
+    this.own = null
+    if (this.attached === own) this.attach(null)
+    if (own) await own.stop().catch(() => {})
   }
 }

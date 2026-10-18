@@ -755,6 +755,12 @@ your tailnet. Each shows its name, address, fingerprint and Encrypted or Not
 encrypted; "Pairing open" when a pairing window is open, "Paired" when it is
 the saved remote computer.
 
+The list, the mesh's list in Settings → Networking and `adf pair` read one
+discovery feed: one announcement per computer carries both the mesh and
+remote access, and one search covers this network and the tailnet. A
+computer announces remote access only while it is on and its network is
+allowed.
+
 **Pair** opens the **Pair** dialog: this device's name (default: its runtime
 alias, else its host name), the code, and, for a plain-http address, "I
 trust this network; the token is sent unencrypted." Then "Waiting for *host*

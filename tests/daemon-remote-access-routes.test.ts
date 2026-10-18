@@ -358,6 +358,18 @@ describe('consent per network (owner decision 2026-10-18 b)', () => {
   const allow = (h: Harness, id: string) => h.server.inject({ method: 'POST', url: '/remote-access/networks', headers: managed, payload: { id } })
   const forget = (h: Harness, id: string) => h.server.inject({ method: 'DELETE', url: `/remote-access/networks/${id}`, headers: managed })
 
+  it('one discovery feed: nothing is announced on a network not allowed; allowing announces, removing withdraws', async () => {
+    const h = await harness({ allowed: false })
+    await turnOn(h)
+    expect(h.announcer.announced).toEqual([])
+    expect(h.announcer.announcing).toBe(false)
+    await allow(h, HOME)
+    expect(h.announcer.announced.at(-1)).toMatchObject({ iface: LAN, port: h.port, txt: { v: '1', pair: '0' } })
+    expect(h.announcer.announcing).toBe(true)
+    await forget(h, HOME)
+    expect(h.announcer.announcing).toBe(false)
+  })
+
   it('a new network gets no listener until it is allowed; allowing opens it, removing closes it at once', async () => {
     const h = await harness({ allowed: false })
     await turnOn(h)
