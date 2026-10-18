@@ -88,14 +88,24 @@ describe('address candidates (§3.3) and what the OS tells about a network (§3.
     expect((await readOsCategories(['en0'], { platform: 'darwin', exec })).size).toBe(0)
   })
 
-  it('the Wi-Fi name only where no permission prompt is needed (Linux iwgetid); never on Windows or macOS', async () => {
+  it('the Wi-Fi name only where no permission prompt is needed: Linux iwgetid, macOS ipconfig getsummary (unless redacted); never on Windows', async () => {
     const calls: string[] = []
     const exec = async (file: string, args: string[]) => { calls.push(`${file} ${args.join(' ')}`); if (args[0] === 'eth0') throw new Error('not wireless'); return 'Home WiFi\n' }
     expect(Object.fromEntries(await readWifiNames(['wlan0', 'eth0'], { platform: 'linux', exec }))).toEqual({ wlan0: 'Home WiFi' })
     expect(calls).toEqual(['iwgetid wlan0 -r', 'iwgetid eth0 -r'])
+    // Windows: the WLAN API needs location access (24H2 may prompt), so it is never called.
     expect((await readWifiNames(['Wi-Fi'], { platform: 'win32', exec })).size).toBe(0)
-    expect((await readWifiNames(['en0'], { platform: 'darwin', exec })).size).toBe(0)
     expect(calls.length).toBe(2)
+    // macOS: `ipconfig getsummary <iface>` never prompts; macOS 14.4+ redacts the name without location access.
+    const summary = (ssid: string) => `<dictionary> {\n  BSSID : <redacted>\n  InterfaceType : WiFi\n  SSID : ${ssid}\n  Security : WPA2_PSK\n}\n`
+    const mac = async (file: string, args: string[]) => {
+      calls.push(`${file} ${args.join(' ')}`)
+      if (args[1] === 'en1') return summary('<redacted>')
+      if (args[1] === 'en2') return '<dictionary> {\n  InterfaceType : Ethernet\n}\n'
+      return summary('Home WiFi')
+    }
+    expect(Object.fromEntries(await readWifiNames(['en0', 'en1', 'en2'], { platform: 'darwin', exec: mac }))).toEqual({ en0: 'Home WiFi' })
+    expect(calls.slice(2)).toEqual(['ipconfig getsummary en0', 'ipconfig getsummary en1', 'ipconfig getsummary en2'])
   })
 
   it('macOS and Linux gateway parsers: netstat/arp, /proc/net/route (little-endian) and /proc/net/arp', () => {

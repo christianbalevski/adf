@@ -206,20 +206,35 @@ export async function readOsCategories(ifaces: readonly string[], deps: Category
 }
 
 /**
- * The Wi-Fi name (SSID) of each of `ifaces` where reading it needs no
- * permission: Linux (`iwgetid <iface> -r`). Windows (netsh, since 24H2) and
- * macOS (since 14.4) require location access for it, so none there.
+ * The Wi-Fi name (SSID) of each of `ifaces` where reading it never asks for
+ * a permission:
+ * - Linux: `iwgetid <iface> -r`.
+ * - macOS: `ipconfig getsummary <iface>` (`SSID : <name>`). It never prompts;
+ *   macOS 14.4 and later answer `<redacted>` without location access, which
+ *   counts as no name.
+ * - Windows: none. The WLAN API (netsh, WlanQueryInterface) needs location
+ *   access and Windows 11 24H2 may ask for it; the connection profile's name
+ *   needs PowerShell (too slow for every check) and the user can rename it.
  */
 export async function readWifiNames(ifaces: readonly string[], deps: CategoryReaderDeps = {}): Promise<Map<string, string>> {
   const platform = deps.platform ?? process.platform
   const exec = deps.exec ?? defaultExec
   const out = new Map<string, string>()
-  if (platform !== 'linux') return out
+  if (platform !== 'linux' && platform !== 'darwin') return out
   for (const iface of ifaces) {
     try {
-      const ssid = (await exec('iwgetid', [iface, '-r'], { timeoutMs: 2_000 })).trim()
+      const ssid = platform === 'linux'
+        ? (await exec('iwgetid', [iface, '-r'], { timeoutMs: 2_000 })).trim()
+        : parseDarwinSummarySsid(await exec('ipconfig', ['getsummary', iface], { timeoutMs: 2_000 }))
       if (ssid) out.set(iface, ssid)
-    } catch { /* wired, or no iwgetid: no name */ }
+    } catch { /* wired, or no tool: no name */ }
   }
   return out
+}
+
+/** `ipconfig getsummary` (macOS): the `SSID : <name>` line; `<redacted>` or none → null. */
+export function parseDarwinSummarySsid(text: string): string | null {
+  const match = /^\s*SSID\s*:\s*(.+?)\s*$/m.exec(text)
+  if (!match || match[1] === '<redacted>') return null
+  return match[1]
 }

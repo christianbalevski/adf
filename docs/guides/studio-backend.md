@@ -640,8 +640,17 @@ LAN mode and remote access follow:
 
 Nothing listens on a network until you allow it, once per network, on
 every OS. A Windows Private network and the tailnet need it too. A network
-is its router (the gateway's MAC address) and its subnet; on Linux also the
-Wi-Fi name. The tailnet is its name.
+is its router (the gateway's MAC address) and its subnet. The Wi-Fi name
+counts too where ADF can read it without asking for a permission: on Linux,
+and on macOS before 14.4. Windows does not count it. The tailnet is its
+name. A network whose router does not give its MAC address after the
+Wi-Fi reconnects is an "Unidentified network": nothing listens there and
+it cannot be allowed.
+
+Limit: anyone who knows your router's MAC address, a former guest for
+example, can copy it onto their own router with the same subnet. ADF then
+takes it for your home network and listens there. They still need a device
+token, or your Allow during a pairing window, to do anything.
 
 | Part | Meaning |
 |---|---|
