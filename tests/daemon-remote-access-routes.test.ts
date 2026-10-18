@@ -64,12 +64,21 @@ function validate(schema: string, body: unknown): string[] {
 const dirs: string[] = []
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }) })
 
+/** The remote listener's port: below every OS's ephemeral range, so no listen(0) elsewhere takes it before the service binds it (cli-remote-access.test.ts). */
 async function freePort(): Promise<number> {
-  const probe = createServer()
-  await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', () => resolve()))
-  const port = (probe.address() as { port: number }).port
-  await new Promise<void>(resolve => probe.close(() => resolve()))
-  return port
+  for (let i = 0; i < 100; i++) {
+    const port = 20_000 + Math.floor(Math.random() * 10_000)
+    const probe = createServer()
+    const ok = await new Promise<boolean>(resolve => {
+      probe.once('error', () => resolve(false))
+      probe.listen(port, '127.0.0.1', () => resolve(true))
+    })
+    if (ok) {
+      await new Promise<void>(resolve => probe.close(() => resolve()))
+      return port
+    }
+  }
+  throw new Error('no free port in 20000-29999')
 }
 
 class FakeAnnouncer implements Announcer {

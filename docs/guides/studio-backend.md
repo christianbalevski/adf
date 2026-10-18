@@ -676,7 +676,8 @@ Remote access's own line, under its toggle:
 | "Listening on *addresses*." | Other devices reach this computer there |
 | "Off." | Remote access is off |
 | "Paused on *network*." | No address listens: allow the network (above) |
-| "No private network address now." | No LAN or Tailscale address; listening starts again when one appears |
+| "No LAN or tailnet address." | No LAN or Tailscale address; listening starts again when one appears |
+| "Not listening: *reason*." | The network is allowed but nothing listens, for example another program uses the port |
 
 With **Keep the daemon running when Studio quits** off, the **On quit** row
 says "Devices lose the connection when Studio quits." **Keep running** turns

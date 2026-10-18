@@ -64,7 +64,7 @@ describe('status line', () => {
   })
 
   it('no address, the env bind and errors show the daemon\'s sentence', () => {
-    expect(remoteStatusLine(status({ state: 'no_address', message: 'No private network address now.' }))).toBe('No private network address now.')
+    expect(remoteStatusLine(status({ state: 'no_address', message: 'No LAN or tailnet address.' }))).toBe('No LAN or tailnet address.')
     expect(remoteStatusLine(status({ state: 'error', message: '', problem: 'daemon-devices.json cannot be read.' }))).toBe('daemon-devices.json cannot be read.')
   })
 })

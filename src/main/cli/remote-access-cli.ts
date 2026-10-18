@@ -90,7 +90,8 @@ export function formatDevices(devices: RemoteDevice[]): string {
 export function formatRemoteStatus(s: RemoteAccessStatus): string {
   const lines: string[] = []
   lines.push(`Remote access: ${s.enabled ? 'on' : 'off'}`)
-  lines.push(s.message)
+  // Off says it once; every other state has its own line (listening, paused, no address, not listening).
+  if (s.state !== 'off') lines.push(s.message)
   if (s.problem) lines.push(`Problem: ${s.problem}`)
   lines.push(`Name: ${s.name}${s.fingerprint ? `   Fingerprint: ${s.fingerprint}` : ''}`)
   if (s.urls.length) {
@@ -102,7 +103,7 @@ export function formatRemoteStatus(s: RemoteAccessStatus): string {
     lines.push('Networks now:')
     for (const n of s.networks) {
       const warn = n.kind === 'lan' && !n.allowed && n.osCategory !== 'private' ? ' Public network. The token is sent unencrypted.' : ''
-      lines.push(`  ${n.label}  ${n.allowed ? 'allowed' : n.id ? `paused (allow: adf daemon remote allow-network ${n.id})${warn}` : 'paused (cannot be identified yet)'}`)
+      lines.push(`  ${n.label}  ${n.allowed ? 'allowed' : n.id ? `not allowed (allow: adf daemon remote allow-network ${n.id})${warn}` : 'not allowed (its router did not answer)'}`)
     }
   }
   lines.push(`Allowed networks (${s.allowedNetworks.length}):`)
