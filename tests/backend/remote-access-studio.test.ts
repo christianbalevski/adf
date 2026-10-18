@@ -496,12 +496,12 @@ describe('Discovered (discovery)', () => {
 // --- Quit question -----------------------------------------------------------------
 
 describe('quit while computers are connected (owner decision 5)', () => {
-  function gate(opts: { wouldStop?: boolean; count?: number | null; answers?: Array<'keep' | 'stop' | 'cancel'> }) {
-    const asked: number[] = []
+  function gate(opts: { wouldStop?: boolean; count?: number | null; answers?: Array<'keep' | 'stop' | 'cancel'>; countFails?: boolean }) {
+    const asked: Array<number | null> = []
     const answers = [...(opts.answers ?? [])]
     const g = new RemoteQuitGate({
       daemonWouldStop: () => opts.wouldStop ?? true,
-      connectedCount: async () => (opts.count === undefined ? 2 : opts.count),
+      connectedCount: async () => { if (opts.countFails) throw new Error('no answer'); return opts.count === undefined ? 2 : opts.count },
       ask: async (n) => { asked.push(n); return answers.shift() ?? 'stop' },
       log: { log: () => {} },
     })
@@ -521,8 +521,28 @@ describe('quit while computers are connected (owner decision 5)', () => {
     expect(asked).toEqual([])
   })
 
-  it('no question when nobody is connected (or the count is unknown)', async () => {
-    for (const count of [0, null]) {
+  it('a count that cannot be read still asks, with a generic question (security review 5)', async () => {
+    for (const opts of [{ count: null }, { countFails: true }]) {
+      const { g, asked } = gate({ ...opts, answers: ['keep'] })
+      let resumed = false
+      expect(g.hold(() => { resumed = true })).toBe(false)
+      await until(() => resumed)
+      expect(asked).toEqual([null])
+      expect(g.keepDaemonForThisQuit).toBe(true)
+    }
+    expect(quitQuestion(null)).toMatchObject({ title: 'Quit', message: 'Devices may be connected' })
+    expect(quitQuestion(null).buttons).toEqual(['Keep running', 'Stop daemon', 'Cancel'])
+  })
+
+  it('an older daemon without remote access counts as nobody connected', async () => {
+    const h = hostSetup()
+    h.daemon.state.old = true
+    expect(await h.host.connectedCount()).toBe(0)
+    h.host.dispose()
+  })
+
+  it('no question when nobody is connected', async () => {
+    for (const count of [0]) {
       const { g, asked } = gate({ count })
       let resumed = false
       expect(g.hold(() => { resumed = true })).toBe(false)

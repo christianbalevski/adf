@@ -268,8 +268,10 @@ export class RemoteAccessHost {
     try {
       this.last = await mgmt.status({ timeoutMs })
     } catch (err) {
-      this.log.warn(`[Remote access] Could not read the connected computers at quit: ${errorText(err)}`)
-      if (!this.last) return null
+      // An older daemon has no remote access: nobody can be connected.
+      if (err instanceof RemoteAccessApiError && err.status === 404 && (err.code === 'not_found' || err.code === 'http_404')) return 0
+      this.log.warn(`[Remote access] Could not read the connected devices at quit: ${errorText(err)}`)
+      return null
     }
     return this.last.enabled ? this.last.devices.filter((d) => d.connected).length : 0
   }

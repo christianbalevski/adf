@@ -48,7 +48,7 @@ export interface RemoteAccessIpcDeps {
     host?: Partial<RemoteAccessHostDeps>
     discovery?: Partial<DiscoveryDeps>
     pairing?: Partial<PairingFlowDeps>
-    askQuit?: (count: number) => Promise<QuitAnswer>
+    askQuit?: (count: number | null) => Promise<QuitAnswer>
     reach?: LanReach
     firewall?: () => Promise<FirewallView>
     platform?: NodeJS.Platform
@@ -208,7 +208,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
 
   const quitGate = new RemoteQuitGate({
     daemonWouldStop: () => deps.mode === 'local' && !deps.keepDaemonRunning() && localDaemon()?.status().startedBy === 'studio',
-    connectedCount: () => withTimeout(host.connectedCount(1_500), 2_000, 'no answer').catch(() => null),
+    connectedCount: () => withTimeout(host.connectedCount(1_500), 2_000, 'no answer'),
     ask: o.askQuit ?? (async (count) => {
       const q = quitQuestion(count)
       const response = await box({ type: 'question', title: q.title, message: q.message, detail: q.detail, buttons: q.buttons, defaultId: 0, cancelId: 2, noLink: true })

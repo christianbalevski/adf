@@ -16,14 +16,23 @@ export type QuitAnswer = 'keep' | 'stop' | 'cancel'
 export interface QuitGateDeps {
   /** The daemon stops when Studio quits (local mode, Studio started it, keep-running off). */
   daemonWouldStop: () => boolean
-  /** Computers connected now; null when unknown (counts as none). */
+  /** Devices connected now; null when it cannot be read (then Studio asks anyway). */
   connectedCount: () => Promise<number | null>
-  /** The question; one answer per quit attempt. */
-  ask: (count: number) => Promise<QuitAnswer>
+  /** The question; one answer per quit attempt. `null`: the count is unknown. */
+  ask: (count: number | null) => Promise<QuitAnswer>
   log?: Pick<Console, 'log'>
 }
 
-export function quitQuestion(count: number): { title: string; message: string; detail: string; buttons: [string, string, string] } {
+export function quitQuestion(count: number | null): { title: string; message: string; detail: string; buttons: [string, string, string] } {
+  if (count === null) {
+    // Security review 5: an unreadable count never quits without asking.
+    return {
+      title: 'Quit',
+      message: 'Devices may be connected',
+      detail: 'Studio could not read whether devices are connected. Keep the daemon running for them, or stop it. Stopping disconnects any and stops your agents. Keep running applies to this quit only.',
+      buttons: ['Keep running', 'Stop daemon', 'Cancel'],
+    }
+  }
   return {
     title: 'Quit',
     message: `${count} ${count === 1 ? 'device' : 'devices'} connected`,
@@ -59,13 +68,21 @@ export class RemoteQuitGate {
     this.asking = (async () => {
       let decided: 'keep' | 'stop' | 'cancel' = 'stop'
       try {
-        const count = (await this.deps.connectedCount()) ?? 0
-        if (count > 0) {
+        let count: number | null
+        try {
+          count = await this.deps.connectedCount()
+        } catch (err) {
+          this.log.log(`[Remote access] Could not read the connected devices at quit (${err instanceof Error ? err.message : String(err)}); asking anyway`)
+          count = null
+        }
+        if (count === null || count > 0) {
           decided = await this.deps.ask(count)
-          this.log.log(`[Remote access] Quit with ${count} device(s) connected: ${decided === 'keep' ? 'Keep running (this quit only)' : decided === 'stop' ? 'Stop daemon' : 'Cancel'}`)
+          this.log.log(`[Remote access] Quit with ${count ?? 'an unknown number of'} device(s) connected: ${decided === 'keep' ? 'Keep running (this quit only)' : decided === 'stop' ? 'Stop daemon' : 'Cancel'}`)
         }
       } catch (err) {
-        this.log.log(`[Remote access] The quit check failed (${err instanceof Error ? err.message : String(err)}); quitting as configured`)
+        // The question itself failed (no window): the safe answer keeps the devices connected.
+        this.log.log(`[Remote access] The quit question failed (${err instanceof Error ? err.message : String(err)}); the daemon keeps running for this quit`)
+        decided = 'keep'
       } finally {
         this.asking = null
       }
