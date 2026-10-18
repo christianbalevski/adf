@@ -17,7 +17,7 @@ import { IPC } from '../../src/shared/constants/ipc-channels'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { PollCoalescer } from '../../src/main/backend/daemon-mode/handlers/poll'
 import { REMOTE_FIREWALL_SENTENCE } from '../../src/main/backend/daemon-mode/handlers/mesh'
-import { REMOTE_BROWSER_SENTENCE } from '../../src/main/backend/daemon-mode/handlers/compute'
+import { remoteBrowserSentence } from '../../src/main/backend/daemon-mode/handlers/compute'
 
 const BASE = 'http://127.0.0.1:47386'
 const TOKEN = 'b'.repeat(43)
@@ -374,7 +374,7 @@ describe('remote mode', () => {
   it('the browser viewer gets no port and says why', async () => {
     daemon.routes.set('GET /compute/browser-info', () => ({ containerName: 'adf-agent-1', hostPort: 6080, phase: 'ready' }))
     expect(await remoteHandlers.get(IPC.COMPUTE_BROWSER_INFO)!({}, { agentName: 'agent-1', agentId: AGENT })).toEqual({
-      containerName: 'adf-agent-1', hostPort: null, phase: 'ready', detail: REMOTE_BROWSER_SENTENCE,
+      containerName: 'adf-agent-1', hostPort: null, phase: 'ready', detail: remoteBrowserSentence(new URL(BASE).host),
     })
   })
 })

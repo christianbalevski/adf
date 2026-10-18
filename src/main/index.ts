@@ -647,6 +647,7 @@ app.whenReady().then(async () => {
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,
       onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
+      runtimeName: () => backend.config.remote.name ?? backend.config.remote.paired?.name ?? null,
       ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
     })
     const handle = daemonMode

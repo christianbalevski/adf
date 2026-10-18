@@ -16,7 +16,7 @@ import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import { CHANNEL_MAP } from '../../src/main/backend/channel-map'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
-import { REMOTE_VALUES_UNSUPPORTED } from '../../src/main/backend/daemon-mode/handlers/providers'
+import { remoteValuesSentence } from '../../src/main/backend/daemon-mode/handlers/providers'
 
 const BASE = 'http://10.0.0.5:7385'
 const AGENT = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
@@ -39,6 +39,7 @@ beforeAll(async () => {
     leases: { registerClient: async () => {} },
     fetch: daemon.fetch,
     createSession: () => createFakeClientSession(),
+    runtimeName: () => 'rawl-hub',
     log: quiet,
   })
   expect(await handle.ready).toBe(true)
@@ -60,11 +61,11 @@ describe('stored values with a remote daemon', () => {
     await handle.session.openFile(FILE, async () => AGENT)
     daemon.requests.length = 0
     daemon.routes.set(`GET /agents/${AGENT}/identity`, ({ query }) => ({ purposes: query.prefix === 'app:token' ? ['app:token'] : [] }))
-    expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })).toEqual({ value: null, reason: REMOTE_VALUES_UNSUPPORTED })
+    expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })).toEqual({ value: null, reason: 'Stored on rawl-hub.' })
     // IDENTITY_GET: the placeholder for a stored value, null for none (W4-B review: a form that saves what it read keeps the value).
     expect(await invoke(IPC.IDENTITY_GET, { purpose: 'app:token' })).toBe('__redacted__')
     expect(await invoke(IPC.IDENTITY_GET, { purpose: 'app:other' })).toBeNull()
-    expect(await invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath: FILE, providerId: 'p1' })).toEqual({ credentials: {}, error: REMOTE_VALUES_UNSUPPORTED })
+    expect(await invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath: FILE, providerId: 'p1' })).toEqual({ credentials: {}, error: remoteValuesSentence('rawl-hub') })
     expect(daemon.requests.map((r) => r.path)).toEqual([`/agents/${AGENT}/identity`, `/agents/${AGENT}/identity`])
   })
 

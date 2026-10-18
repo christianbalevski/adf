@@ -46,8 +46,8 @@ export interface GapEntry {
   apply(daemon: ComparableRecording, embedded: ComparableRecording, raw?: { daemon: RawRecording }, backend?: ParityBackendKind): number
 }
 
-/** daemon-mode/handlers/providers.ts REMOTE_VALUES_UNSUPPORTED (not imported: that module pulls in Studio main). A change fails the entry as unmatched. */
-const REMOTE_VALUES_UNSUPPORTED = "Stored credential values stay on the daemon's machine: a remote daemon never sends them to Studio."
+/** daemon-mode/handlers/providers.ts remoteValuesSentence (not imported: that module pulls in Studio main): "Stored on <name>.". A change fails the entry as unmatched. */
+const storedOn = (v: unknown): boolean => typeof v === 'string' && /^Stored on .+\.$/.test(v)
 
 const CORE = ['open-agent', 'start-agent', 'chat-tool-call'] as const
 /** W3-B scenarios (tests/parity/settings, tests/parity/identity) that run no agent. */
@@ -745,13 +745,13 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
         let redacted = false
         switch (step.channel) {
           case IPC.IDENTITY_REVEAL:
-            redacted = same(r, { value: null, reason: REMOTE_VALUES_UNSUPPORTED }) && obj(b) && typeof b.value === 'string'
+            redacted = obj(r) && r.value === null && storedOn(r.reason) && Object.keys(r).length === 2 && obj(b) && typeof b.value === 'string'
             break
           case IPC.IDENTITY_GET:
             redacted = r === '__redacted__' && typeof b === 'string'
             break
           case IPC.PROVIDER_CREDENTIAL_GET:
-            redacted = same(r, { credentials: {}, error: REMOTE_VALUES_UNSUPPORTED }) && obj(b)
+            redacted = obj(r) && same(r.credentials, {}) && storedOn(r.error) && Object.keys(r).length === 2 && obj(b)
             break
           case IPC.MCP_CREDENTIAL_GET: {
             const rc = obj(r) && obj(r.credentials) ? r.credentials : null

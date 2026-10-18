@@ -184,6 +184,8 @@ export interface DaemonModeDeps {
   stashWaitMs?: number
   /** The daemon's `remote_access` push (remote-access.md §8), for Settings → Networking → Remote access. */
   onRemoteAccessEvent?: (payload: unknown) => void
+  /** Remote mode: the connection's name, for "Stored on <name>." and "Open on <name>." (settings-scopes.md §7). */
+  runtimeName?: () => string | null
 }
 
 export interface DaemonModeHandle {
@@ -391,7 +393,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       },
       log,
     })
-    return { picker, oauth, host, upload: uploadFile(deps.fetch ?? fetch) }
+    return { picker, oauth, host, name: () => deps.runtimeName?.() || host(), upload: uploadFile(deps.fetch ?? fetch) }
   })()
 
   const mcpOAuth = new McpOAuthAuthorizeOpener({
