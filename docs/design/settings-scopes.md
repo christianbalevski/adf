@@ -93,7 +93,7 @@ Columns **Local** and **Remote** give editability with the local runtime and wit
 
 ### 3.3 Scope calls that are not obvious
 
-- **Owner identity.** It belongs to the person, but the phrase and DID live on each runtime host and are changed there. Runtime (Q2).
+- **Owner identity.** It belongs to the person, but the phrase and DID live on each runtime host and are changed there. Runtime (§12).
 - **Check provider connections, Live catalogs.** Shown under Privacy today, but the runtime makes those requests. Runtime.
 - **Agents folder, Usage.** Shown under General today; both are the runtime's. Usage's "recorded by this Studio" is wrong in daemon mode and becomes "Token totals on this runtime."
 - **`keepDaemonRunning`.** About this computer's daemon, stored by Studio. Studio, on the This computer row.
@@ -167,7 +167,7 @@ Title "Connection". Help: "The runtime this window uses."
 
 ### 5.2 Where saved connections live
 
-- **List:** `cli-remotes.json` in `daemonSettingsDir()`, through `src/main/cli/remotes.ts` (`loadRemotes`, `saveRemotes`, `remoteNameFor`). Studio MUST resolve the folder with `daemonSettingsDir()`, not `app.getPath('userData')`, so it reads the file `adf` reads. Studio adds no field: an older `adf` rewrites the file without losing anything.
+- **List:** `cli-remotes.json` in the folder of the settings file Studio's daemon uses (`ADF_DAEMON_SETTINGS`, which is `daemonSettingsDir()` for `adf` in a default install), through `src/main/cli/remotes.ts` (`loadRemotes`, `saveRemotes`, `remoteNameFor`), so Studio reads the file `adf` reads. Studio adds no field: an older `adf` rewrites the file without losing anything.
 - **Tokens:** `storeRemoteToken`, `readRemoteToken`, `deleteRemoteToken`: the OS keychain, else `cli-remote-tokens.json` (user-only).
 - **Pinning:** before a saved token is sent, `pinnedRemoteRefusal` checks the fingerprint from `/remote/hello`, as `adf` does.
 - **Studio-only fields in `studio-backend.json`:** `remote.name` (new: the saved remote in use, null for the `remote` slot) and `insecureHttpOrigins` (new: origins whose plain HTTP the user confirmed). `mode` stays `embedded | local | remote`.
@@ -276,7 +276,11 @@ Difficulty is on a 1-10 scale. Time is agent time.
 
 Overall 5/10, about 4-5 hours of agent time. Step 1 and steps 2 and 7 MAY ship first as a bug-fix PR. Step 3 comes before 4 and 8.
 
-## 12. Open questions (i)
+## 12. Decisions (i)
 
-1. **Shared tokens with `adf`.** Studio stores new connection tokens where `adf` does: the OS keychain, `remote-token:<fingerprint>`. One pairing then works in Studio, `adf` and the terminal app. On macOS the keychain may ask once the first time Studio reads a token `adf` saved, and the other way round. The alternative keeps Studio's tokens in `safeStorage`, and a remote paired with `adf` must be paired again in Studio. Recommended: shared.
-2. **Owner identity under Runtime · <name>.** The owner phrase belongs to the person but is held and changed on each runtime host. Recommended: Runtime → Identity, as §4. The alternative splits the owner part into Studio, which would then show the identity of a runtime it does not manage.
+Owner answers, 2026-10-18:
+
+1. **Connections and tokens are shared with `adf`.** Studio uses `cli-remotes.json` and the OS keychain (`ADF` / `remote-token:<fingerprint>`), so a computer paired in Studio or with `adf pair` shows in both. Studio reads a token only when it connects, never to draw the list. A keychain read that is refused or fails (macOS asks once per app the first time Studio reads an item `adf` wrote) ends that connection attempt with "Studio could not read the token for <name> from the OS keychain. Allow ADF Studio to use it, or pair again." Nothing falls back silently.
+2. **Owner identity is under Runtime → Identity.** With a remote runtime it is read-only, with "Change on <name>." (§7).
+
+Out of scope: an identity for the Studio client itself, so changes made from Studio can be attributed to it. Tracked in #148 (client DIDs).
