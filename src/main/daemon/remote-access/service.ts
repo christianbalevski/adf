@@ -2,7 +2,8 @@
  * Remote access: other computers reach this daemon (docs/design/remote-access.md).
  *
  * Owns the setting (remote-access.json), the device tokens
- * (daemon-devices.json), the listeners on private and Tailscale addresses,
+ * (daemon-devices.json), the listeners on private and Tailscale addresses of
+ * the networks the user allowed (owner decision 2026-10-18 b),
  * the pairing window and the mDNS announcement, and answers the routes in
  * routes/remote-access-routes.ts. Turning it on or off never restarts the
  * daemon: listeners open and close live (owner decision O1).
@@ -11,22 +12,22 @@
  * `remote_access` event (no token, no code), which reaches Studio's client
  * stream and the daemon event bus.
  *
- * While on, the addresses are re-read every 10 s; Tailscale and the network
- * categories every 60 s and whenever the set of interfaces changes. All of
- * it runs off the request path (timers), asynchronously.
+ * While on, the addresses and networks are re-read every 10 s; Tailscale every
+ * 60 s and whenever a tailnet address appears or goes. All of it runs off the
+ * request path (timers), asynchronously.
  */
 
 import { networkInterfaces, hostname as osHostname, type NetworkInterfaceInfo } from 'node:os'
 import type { Socket } from 'node:net'
 import type { IncomingMessage } from 'node:http'
 import type {
-  PairClaimAccepted, PairClaimResult, PairingWindowView, RemoteAccessEvent, RemoteAccessPatch,
+  NetworkView, PairClaimAccepted, PairClaimResult, PairingWindowView, RemoteAccessEvent, RemoteAccessPatch,
   RemoteAccessStatus, RemoteAddress, RemoteDevice, RemoteHello, RemoteUrl,
 } from '../../../shared/types/remote-access.types'
 import type { DeviceTokenAuthority } from '../request-guard'
 import type { ClientSessionRegistry } from '../client-sessions'
 import { isLoopbackAddress } from '../local-access'
-import { addressCandidates, lanInterfaceNames, urlHost, type AddressCandidate } from './addresses'
+import { urlHost, type AddressCandidate } from './addresses'
 import { BonjourAnnouncer, type Announcer } from './announcer'
 import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
 import {
@@ -36,11 +37,11 @@ import {
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
-import { NetworkCategoryTracker } from './network-key'
-import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from './network-category'
+import { NetworkWatcher } from './network-key'
+import { readGatewayIdentities, readOsCategories, readWifiNames } from './network-category'
 import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
-import { TailscaleClient, type TailscaleSelf, type TailscaleServe } from './tailscale'
+import { TailscaleClient, tailnetNameOf, type TailscaleSelf, type TailscaleServe } from './tailscale'
 
 export const ADDRESS_CHECK_MS = 10_000
 export const SLOW_CHECK_MS = 60_000
@@ -77,9 +78,16 @@ export interface RemoteAccessServiceOptions {
   sessions?: () => ClientSessionRegistry | undefined
   // Seams (tests).
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
-  categories?: (ifaces: readonly string[], config: RemoteAccessConfig) => Promise<NetworkCategories>
-  /** Per LAN interface, the network it is on (`<gateway IP>|<gateway MAC>`, '' unknown); read every check. */
+  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown); read every check. */
   gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
+  /** Per LAN interface, the Wi-Fi name (Linux; none where it needs a permission). */
+  wifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
+  /** Windows' network category per interface: shown as a warning only, never consent. */
+  osCategories?: (ifaces: readonly string[]) => Promise<Map<string, 'private' | 'public'>>
+  /** The allowed networks changed (the daemon's mesh re-reads them at once). */
+  onNetworksChanged?: () => void
+  /** The mesh's LAN mode is on (it needs the same consent; Studio asks when either is on). */
+  meshLan?: () => boolean
   tailscale?: TailscaleLike
   announcer?: Announcer
   firewall?: (input: FirewallProbeInput) => Promise<FirewallView>
@@ -128,13 +136,14 @@ export class RemoteAccessService {
   private listeners: RemoteListeners | null = null
   private candidates: AddressCandidate[] = []
   private listenerProblems = new Map<string, string>()
-  private categories: NetworkCategories = { categories: new Map(), current: [], problem: null }
+  /** The networks this computer is on, as last read (network-key.ts). */
+  private networks: NetworkView[] = []
+  private networksKey = ''
   /**
-   * The LAN interfaces' categories, valid only for each interface's addresses
-   * and gateway at the read (network-key.ts): any change re-reads, and the
-   * interface's listeners close until the new read confirms private.
+   * Identifies the networks (gateway MAC + subnet, tailnet name) and applies
+   * the user's consent; a changed network closes its listeners at once.
    */
-  private readonly tracker: NetworkCategoryTracker
+  private readonly watcher: NetworkWatcher
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleServe: TailscaleServe = { serve: 'unknown', httpsUrl: null }
   private tailscaleAt = 0
@@ -149,7 +158,6 @@ export class RemoteAccessService {
   private readonly log: (line: string) => void
   private readonly emitEvent: (event: RemoteAccessEvent) => void
   private readonly interfaces: () => NodeJS.Dict<NetworkInterfaceInfo[]>
-  private readonly readCategories: (ifaces: readonly string[], config: RemoteAccessConfig) => Promise<NetworkCategories>
   private readonly readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
   private readonly tailscale: TailscaleLike
   private readonly announcer: Announcer
@@ -167,11 +175,11 @@ export class RemoteAccessService {
     this.emitEvent = opts.emit ?? (() => {})
     this.interfaces = opts.interfaces ?? networkInterfaces
     this.platform = opts.platform ?? process.platform
-    this.readCategories = opts.categories ?? ((ifaces, config) => readNetworkCategories(ifaces, config.privateNetworks, { platform: this.platform }))
     this.readGateways = opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces, { platform: this.platform }))
-    this.tracker = new NetworkCategoryTracker({
-      readCategories: (ifaces) => this.readCategories(ifaces, this.config),
+    this.watcher = new NetworkWatcher({
       readGateways: (ifaces, interfaces) => this.readGateways(ifaces, interfaces),
+      readWifiNames: opts.wifiNames ?? ((ifaces) => readWifiNames(ifaces, { platform: this.platform })),
+      readOsCategories: opts.osCategories ?? ((ifaces) => readOsCategories(ifaces, { platform: this.platform })),
       slowCheckMs: opts.slowCheckMs ?? SLOW_CHECK_MS,
       now: () => this.now(),
     })
@@ -344,31 +352,29 @@ export class RemoteAccessService {
         this.log('[remote-access] tailscale serve fronts this daemon without ADF_DAEMON_BEHIND_PROXY: pairing counts every tailnet user as one (127.0.0.1) and shows the user as unverified; set ADF_DAEMON_BEHIND_PROXY=1 for per-user limits and verified logins (it trusts every process on this computer)')
       }
     }
-    const tailscaleIps = new Set(this.tailscaleSelf.ips)
-    // The category of an interface holds for its addresses and gateway at the read (security review item 2,
-    // network-key.ts, shared with the mesh's LAN mode).
-    const read = this.categories
-    this.categories = await this.tracker.refresh({
+    // Listen only on a network the user allowed (owner decision 2026-10-18 b, network-key.ts, shared with
+    // the mesh's LAN mode). A changed network closes its interface's listeners first.
+    const reading = await this.watcher.read({
       interfaces,
-      tailscaleIps,
-      force: opts.force,
-      beforeReread: async (changed) => {
-        // MUST NOT listen on a network not confirmed private (O2): close the changed interfaces' LAN
-        // listeners before the (slow) re-read; they open again only if it says private.
+      tailscaleIps: new Set(this.tailscaleSelf.ips),
+      tailnet: tailnetNameOf(this.tailscaleSelf),
+      allowed: this.config.allowedNetworks,
+      ...(this.config.addresses ? { only: this.config.addresses } : {}),
+      beforeChange: async (changed) => {
         const listeners = this.listeners
         if (!listeners) return
         const closing = new Set(this.candidates.filter(c => c.kind === 'lan' && changed.includes(c.iface)).map(c => c.address))
         const keep = listeners.addresses().filter(a => !closing.has(a))
         if (keep.length !== listeners.addresses().length) {
-          this.log(`[remote-access] network changed on ${changed.join(', ')}: closing its listeners until the network is confirmed private`)
+          this.log(`[remote-access] network changed on ${changed.join(', ')}: closing its listeners until that network is allowed`)
           await listeners.sync(keep)
         }
       },
     })
-    if (this.categories !== read && this.categories.problem) this.log(`[remote-access] ${this.categories.problem}`)
     if (this.stopped || !this.enabled) return
     const before = this.candidates.map(c => `${c.address}:${c.refusal ? 'off' : 'on'}`).join(',')
-    this.candidates = addressCandidates({ interfaces, tailscaleIps, categories: this.categories.categories, only: this.config.addresses })
+    this.candidates = reading.candidates
+    this.noteNetworks(reading.networks)
     const wanted = this.candidates.filter(c => !c.refusal).map(c => c.address)
     const previous = new Set(this.listeners.addresses())
     this.listenerProblems = await this.listeners.sync(wanted, { shouldOpen: () => this.enabled && !this.stopped })
@@ -378,11 +384,37 @@ export class RemoteAccessService {
     const added = listening.filter(a => !previous.has(a))
     const removed = [...previous].filter(a => !listening.includes(a))
     if (before !== after || added.length || removed.length) {
-      const publicOnes = this.candidates.filter(c => c.refusal).map(c => c.address)
-      this.log(`[remote-access] addresses: listening on ${listening.length ? listening.join(', ') : 'none'}${added.length ? `; added ${added.join(', ')}` : ''}${removed.length ? `; removed ${removed.join(', ')}` : ''}${publicOnes.length ? `; not on public network ${publicOnes.join(', ')}` : ''}`)
+      const refused = this.candidates.filter(c => c.refusal).map(c => c.address)
+      this.log(`[remote-access] addresses: listening on ${listening.length ? listening.join(', ') : 'none'}${added.length ? `; added ${added.join(', ')}` : ''}${removed.length ? `; removed ${removed.join(', ')}` : ''}${refused.length ? `; on a network not allowed: ${refused.join(', ')}` : ''}`)
       this.emit({ type: 'addresses_changed' })
     }
     await this.reannounce()
+  }
+
+  /** The current networks changed (another network, or its consent): Studio re-reads and asks about a new one. */
+  private noteNetworks(networks: NetworkView[]): void {
+    this.networks = networks
+    const key = networks.map(n => `${n.id ?? n.label}:${n.allowed ? 1 : 0}`).sort().join(',')
+    if (key === this.networksKey) return
+    this.networksKey = key
+    const waiting = networks.filter(n => !n.allowed)
+    if (waiting.length) this.log(`[remote-access] not allowed on: ${waiting.map(n => `${n.label}${n.id ? ` (${n.id})` : ' (cannot be identified yet)'}`).join(', ')}`)
+    this.emit({ type: 'networks_changed' })
+  }
+
+  /** The networks now, read on demand when remote access is off (consent is also given while off, for the mesh). */
+  private async currentNetworks(): Promise<NetworkView[]> {
+    if (this.enabled) {
+      await this.apply({})
+      return this.networks
+    }
+    if (this.tailscaleAt === 0) {
+      this.tailscaleSelf = await this.tailscale.self()
+      this.tailscaleAt = this.now()
+    }
+    const reading = await this.watcher.read({ interfaces: this.interfaces(), tailscaleIps: new Set(this.tailscaleSelf.ips), tailnet: tailnetNameOf(this.tailscaleSelf), allowed: this.config.allowedNetworks })
+    this.networks = reading.networks
+    return this.networks
   }
 
   private tailscaleChanged(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>): boolean {
@@ -418,30 +450,15 @@ export class RemoteAccessService {
 
   private async refreshFirewall(): Promise<void> {
     try {
-      this.firewallView = await this.probeFirewall({ port: this.port, allLanPublic: this.allLanPublic(), platform: this.platform })
+      this.firewallView = await this.probeFirewall({ port: this.port, platform: this.platform })
       if (this.firewallView.state === 'blocked') this.log(`[remote-access] ${this.firewallView.message}`)
     } catch (err) {
       this.firewallView = { state: 'unknown', message: `Could not read the firewall state (${err instanceof Error ? err.message : String(err)}).`, commands: [] }
     }
   }
 
-  /** The probe's answer, except that a network not marked private is always `public_network` (every OS). */
   private firewallState(): FirewallView {
-    if (this.enabled && this.allLanPublic()) {
-      return {
-        state: 'public_network',
-        message: this.platform === 'win32'
-          ? 'Windows treats this network as Public, so ADF does not listen on it. Set it to Private in Windows Settings → Network if you trust it.'
-          : 'This network is not marked private, so ADF does not listen on it. Mark it private (Allow on This Network, or adf daemon remote trust) if you trust it.',
-        commands: this.firewallView?.commands ?? [],
-      }
-    }
     return this.firewallView ?? { state: 'unknown', message: 'Not checked yet.', commands: [] }
-  }
-
-  private allLanPublic(): boolean {
-    const lan = this.candidates.filter(c => c.kind === 'lan')
-    return lan.length > 0 && lan.every(c => c.network === 'public')
   }
 
   // --- requests ------------------------------------------------------------------
@@ -522,6 +539,7 @@ export class RemoteAccessService {
       await this.apply({ force: true })
       await this.refreshFirewall()
     }
+    const networks = this.enabled ? this.networks : await this.currentNetworks().catch(() => [])
     const listening = new Set(this.listeners?.addresses() ?? [])
     const addresses: RemoteAddress[] = this.enabled
       ? this.candidates.map(c => ({
@@ -529,17 +547,18 @@ export class RemoteAccessService {
         family: c.family,
         kind: c.kind,
         iface: c.iface,
-        network: c.network,
+        networkId: c.networkId,
+        allowed: c.refusal === null,
         listening: listening.has(c.address),
         problem: c.refusal ?? this.listenerProblems.get(c.address) ?? null,
       }))
       : []
-    const { state, message } = this.stateLine(addresses)
+    const { state, message } = this.stateLine(addresses, networks)
     return {
       enabled: this.config.enabled,
       state,
       message,
-      problem: this.configProblem ?? this.store.problem ?? this.categories.problem,
+      problem: this.configProblem ?? this.store.problem,
       name: this.computerName,
       fingerprint: this.fingerprint,
       port: this.port,
@@ -556,16 +575,20 @@ export class RemoteAccessService {
       firewall: this.firewallState(),
       devices: this.store.list().map(d => this.deviceView(d)),
       pairing: this.pairing.view(),
+      networks,
+      allowedNetworks: this.config.allowedNetworks,
+      meshLan: (() => { try { return this.opts.meshLan?.() ?? false } catch { return false } })(),
     }
   }
 
-  private stateLine(addresses: RemoteAddress[]): { state: RemoteAccessStatus['state']; message: string } {
+  private stateLine(addresses: RemoteAddress[], networks: NetworkView[]): { state: RemoteAccessStatus['state']; message: string } {
     if (this.envBind) return { state: 'env_bind', message: `The daemon is bound to ${this.opts.envBindHost} by ADF_DAEMON_HOST; the remote access setting is not used.` }
     if (this.configProblem) return { state: 'error', message: this.configProblem }
     if (!this.config.enabled) return { state: 'off', message: 'Remote access off.' }
     const on = addresses.filter(a => a.listening).map(a => a.address)
     if (on.length > 0) return { state: 'on', message: `Listening on ${on.join(', ')}.` }
-    if (addresses.some(a => a.network === 'public')) return { state: 'no_address', message: 'Not reachable on this network (Public).' }
+    const waiting = networks.filter(n => !n.allowed)
+    if (waiting.length > 0) return { state: 'paused', message: `Paused on ${waiting.map(n => n.label).join(', ')}.` }
     return { state: 'no_address', message: 'No private network address now.' }
   }
 
@@ -621,7 +644,6 @@ export class RemoteAccessService {
     }
     if (patch.enabled === true && !this.config.enabled) await this.turnOn()
     else if (patch.enabled === false && this.config.enabled) await this.turnOff()
-    if (patch.trustNetwork !== undefined) await this.trustCurrentNetworks(patch.trustNetwork)
     if (patch.name !== undefined) await this.reannounce()
     return await this.status()
   }
@@ -640,7 +662,6 @@ export class RemoteAccessService {
     this.config = { ...this.config, enabled: true, daemonId: this.config.daemonId ?? newDaemonId(), name: this.config.name || defaultComputerName() }
     this.save()
     this.log(`[remote-access] turned on (fingerprint ${this.fingerprint})`)
-    if (this.platform !== 'win32') await this.trustCurrentNetworks(true, { quietIfNone: true })
     await this.apply({ force: true })
     await this.refreshFirewall()
     this.emit({ type: 'enabled' })
@@ -670,34 +691,39 @@ export class RemoteAccessService {
     this.emit({ type: 'disabled' })
   }
 
-  /** macOS/Linux: mark (or unmark) the networks of the current LAN interfaces private (§3.3.1). */
-  private async trustCurrentNetworks(trust: boolean, opts: { quietIfNone?: boolean } = {}): Promise<void> {
-    if (this.platform === 'win32') {
-      throw new RemoteAccessError('On Windows the network category decides: set this network to Private in Windows Settings → Network & internet.', 409, 'network_category_os')
+  /**
+   * The user allows a network this computer is on now (owner decision
+   * 2026-10-18 b). Local-only route: a device token never gets here.
+   */
+  async allowNetwork(id: string): Promise<RemoteAccessStatus> {
+    const network = (await this.currentNetworks()).find(n => n.id === id)
+    if (!network || !network.id) throw new RemoteAccessError('That network is not one this computer is on now.', 404, 'network_not_found')
+    if (!this.config.allowedNetworks.some(n => n.id === id)) {
+      this.config = { ...this.config, allowedNetworks: [...this.config.allowedNetworks, { id: network.id, kind: network.kind, label: network.label, addedAt: new Date(this.now()).toISOString() }] }
+      this.save()
+      this.log(`[remote-access] network allowed: ${network.label} (${network.id})`)
+      this.networksChanged()
     }
-    const interfaces = this.interfaces()
-    if (this.tailscaleAt === 0) this.tailscaleSelf = await this.tailscale.self()
-    const ifaces = lanInterfaceNames(interfaces, new Set(this.tailscaleSelf.ips))
-    const read = await this.readCategories(ifaces, this.config)
-    if (read.current.length === 0) {
-      const why = read.problem ?? 'no network with a default gateway was found on a private address'
-      if (!opts.quietIfNone) throw new RemoteAccessError(`This network cannot be identified (${why}), so it cannot be marked private.`, 409, 'network_unidentified')
-      this.log(`[remote-access] no network marked private: ${why}`)
-      return
-    }
-    const ids = new Set(read.current.map(n => n.id))
-    const before = this.config.privateNetworks.length
-    const at = new Date(this.now()).toISOString()
-    const networks = trust
-      ? [...this.config.privateNetworks, ...read.current.filter(n => !this.config.privateNetworks.some(p => p.id === n.id)).map(n => ({ id: n.id, label: n.label, addedAt: at }))]
-      : this.config.privateNetworks.filter(p => !ids.has(p.id))
-    if (networks.length === before && trust) return
-    this.config = { ...this.config, privateNetworks: networks }
+    if (this.enabled) await this.apply({})
+    return await this.status()
+  }
+
+  /** The user removes an allowed network: its listeners close now. */
+  async forgetNetwork(id: string): Promise<RemoteAccessStatus> {
+    const network = this.config.allowedNetworks.find(n => n.id === id)
+    if (!network) throw new RemoteAccessError('That network is not allowed.', 404, 'network_not_found')
+    this.config = { ...this.config, allowedNetworks: this.config.allowedNetworks.filter(n => n.id !== id) }
     this.save()
-    this.tracker.invalidate()
-    this.log(`[remote-access] ${trust ? 'marked private' : 'no longer private'}: ${read.current.map(n => n.label).join(', ')}`)
-    this.emit({ type: 'networks_changed', reason: trust ? 'trusted' : 'untrusted' })
-    if (this.enabled) await this.apply({ force: true })
+    this.log(`[remote-access] network removed: ${network.label} (${network.id}); its listeners close`)
+    this.networksChanged()
+    if (this.enabled) await this.apply({})
+    return await this.status()
+  }
+
+  private networksChanged(): void {
+    this.networksKey = ''
+    this.emit({ type: 'networks_changed' })
+    try { this.opts.onNetworksChanged?.() } catch { /* the mesh catches up at its next check */ }
   }
 
   createDevice(label: string, createdBy: 'studio' | 'cli', origin: 'paired' | 'token' = 'token'): { device: RemoteDevice; token: string } {
@@ -754,7 +780,7 @@ export class RemoteAccessService {
 
   private addressViews(): RemoteAddress[] {
     const listening = new Set(this.listeners?.addresses() ?? [])
-    return this.candidates.map(c => ({ address: c.address, family: c.family, kind: c.kind, iface: c.iface, network: c.network, listening: listening.has(c.address), problem: null }))
+    return this.candidates.map(c => ({ address: c.address, family: c.family, kind: c.kind, iface: c.iface, networkId: c.networkId, allowed: c.refusal === null, listening: listening.has(c.address), problem: null }))
   }
 
   async setTailscaleServe(enabled: boolean): Promise<{ tailscale: RemoteAccessStatus['tailscale']; output: string }> {

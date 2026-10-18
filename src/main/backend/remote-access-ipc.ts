@@ -14,8 +14,10 @@ import { PairingFlow, type PairingFlowDeps } from './remote-access/pairing'
 import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/quit-gate'
 import { LanReach } from '../services/lan-reach'
 import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
-import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
-import type { NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
+import { allowNetwork, cleanDisplayName, forgetNetwork, readAllowedNetworks, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
+import type { NetworkConsentResult, NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
+import type { AllowedNetwork } from '../../shared/types/remote-access.types'
+import { NetworkConsentPrompt, type NetworkQuestion } from './remote-access/network-consent'
 
 /**
  * Remote access in Studio main
@@ -41,8 +43,10 @@ export interface RemoteAccessIpcDeps {
   codec: SecretCodec
   window: () => BrowserWindow | null
   keepDaemonRunning: () => boolean
-  /** Studio's user data: adf-settings.json (the runtime alias) and remote-access.json (networks marked private). */
+  /** Studio's user data: adf-settings.json (the runtime alias) and remote-access.json (the allowed networks). */
   settingsDir?: string
+  /** Embedded mode: the mesh listens on the LAN (it needs consent too), and re-syncs it after an allow or a remove. */
+  meshLan?: () => { on: boolean; sync: () => Promise<void> } | null
   /** Tests: replace the Electron dialogs, notifications and network. */
   overrides?: {
     host?: Partial<RemoteAccessHostDeps>
@@ -52,6 +56,10 @@ export interface RemoteAccessIpcDeps {
     reach?: LanReach
     firewall?: () => Promise<FirewallView>
     platform?: NodeJS.Platform
+    /** The "Remote access paused on <network>." question; true = Allow on this network. */
+    askNetwork?: (question: NetworkQuestion) => Promise<boolean>
+    /** How often the consent check runs (default 10 s); 0 = never by timer (tests call it). */
+    consentPollMs?: number
   }
   log?: Pick<Console, 'log' | 'warn'>
 }
@@ -61,6 +69,8 @@ export interface RemoteAccessIpc {
   discovery: RemoteDiscovery
   pairing: PairingFlow
   quitGate: RemoteQuitGate
+  /** Ask about a network that is not allowed (once per visit); runs every 10 s. */
+  consent: NetworkConsentPrompt
   /** The daemon's `remote_access` push (daemon-mode event bridge). */
   onDaemonEvent(payload: unknown): void
   dispose(): void
@@ -83,18 +93,17 @@ export function runtimeName(settingsDir: string | undefined): string {
 }
 
 /** The status line's view of a snapshot (pure). */
-export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapshot']>>, firewall: FirewallView, platform: NodeJS.Platform): NetworkStatusView {
-  const lan = snapshot.addresses.filter((a) => a.kind === 'lan').map((a) => ({ address: a.address, iface: a.iface, network: a.network === 'private' ? 'private' as const : 'public' as const }))
+export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapshot']>>, firewall: FirewallView, allowedNetworks: AllowedNetwork[]): NetworkStatusView {
+  const lan = snapshot.addresses.filter((a) => a.kind === 'lan').map((a) => ({ address: a.address, iface: a.iface, allowed: a.refusal === null }))
   const tailnet = snapshot.addresses.find((a) => a.kind === 'tailnet' && a.family === 'IPv4')
   return {
     available: true,
-    network: lan.length === 0 ? 'none' : lan.some((a) => a.network === 'private') ? 'private' : 'public',
     lan,
+    networks: snapshot.networks,
+    allowedNetworks,
     tailscale: snapshot.tailscale,
     tailnetAddress: tailnet?.address ?? null,
     firewall: { state: firewall.state, message: firewall.message },
-    problem: snapshot.problem,
-    markable: platform !== 'win32',
   }
 }
 
@@ -270,7 +279,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
 
   // --- Host: Settings → Networking → Remote access ---
   ipcMain.handle(IPC.REMOTE_ACCESS_GET, (_event, opts?: { refresh?: unknown }) => host.get({ refresh: opts?.refresh === true }))
-  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown; trustNetwork?: unknown }) => host.set(request ?? {}))
+  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown }) => host.set(request ?? {}))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, (_event, label: unknown) => host.addDevice(label))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_REMOVE, (_event, id: unknown) => host.removeDevice(id))
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, () => host.openPairing())
@@ -283,16 +292,77 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   let firewallCache: { at: number; view: FirewallView } | null = null
   ipcMain.handle(IPC.NETWORK_STATUS_GET, async (): Promise<NetworkStatusView> => {
     if (deps.mode === 'remote') {
-      return { available: false, network: 'none', lan: [], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'unknown', message: '' }, problem: null, markable: false }
+      return { available: false, lan: [], networks: [], allowedNetworks: [], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'unknown', message: '' } }
     }
     const snapshot = await reach.snapshot()
-    const allPublic = snapshot.addresses.some((a) => a.kind === 'lan') && snapshot.addresses.every((a) => a.kind !== 'lan' || a.refusal !== null)
     if (!firewallCache || Date.now() - firewallCache.at > 60_000) {
-      const view = await (o.firewall ?? (() => probeFirewall({ port: 7385, allLanPublic: allPublic, platform })))().catch((err): FirewallView => ({ state: 'unknown', message: err instanceof Error ? err.message : String(err), commands: [] }))
+      const view = await (o.firewall ?? (() => probeFirewall({ port: 7385, platform })))().catch((err): FirewallView => ({ state: 'unknown', message: err instanceof Error ? err.message : String(err), commands: [] }))
       firewallCache = { at: Date.now(), view }
     }
-    return networkStatusView(snapshot, firewallCache.view, platform)
+    return networkStatusView(snapshot, firewallCache.view, await readAllowedNetworks(deps.settingsDir ?? null))
   })
+
+  // --- Consent per network (owner decision 2026-10-18 b) ---
+  // Local mode: the daemon's local-only routes. Embedded: remote-access.json, then the mesh re-syncs.
+  const consent = async (action: 'allow' | 'forget', id: unknown): Promise<NetworkConsentResult> => {
+    if (typeof id !== 'string' || !id) return { ok: false, error: 'No network given.' }
+    if (deps.mode === 'remote') return { ok: false, error: unavailableReason('remote') }
+    if (deps.mode === 'local') {
+      const result = await host.network(action, id)
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    }
+    if (!deps.settingsDir) return { ok: false, error: 'No settings folder.' }
+    try {
+      if (action === 'allow') {
+        const network = (await reach.snapshot()).networks.find((n) => n.id === id)
+        if (!network?.id) return { ok: false, error: 'That network is not one this computer is on now.' }
+        allowNetwork(deps.settingsDir, { id: network.id, kind: network.kind, label: network.label })
+        log.log(`[Network] Allowed on ${network.label} (${network.id})`)
+      } else {
+        forgetNetwork(deps.settingsDir, id)
+        log.log(`[Network] Removed ${id}; its listeners close`)
+      }
+      await deps.meshLan?.()?.sync()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  ipcMain.handle(IPC.NETWORK_ALLOW, (_event, id: unknown) => consent('allow', id))
+  ipcMain.handle(IPC.NETWORK_FORGET, (_event, id: unknown) => consent('forget', id))
+
+  const consentPrompt = new NetworkConsentPrompt({
+    read: async () => {
+      if (deps.mode === 'remote') return null
+      if (deps.mode === 'local') {
+        const status = (await host.get()).status
+        return status ? { active: status.enabled || status.meshLan, networks: status.networks } : null
+      }
+      const mesh = deps.meshLan?.() ?? null
+      if (!mesh?.on) return { active: false, networks: [] }
+      return { active: true, networks: (await reach.snapshot()).networks }
+    },
+    ask: o.askNetwork ?? (async (q) => (await box({
+      type: 'warning',
+      title: q.title,
+      message: q.message,
+      ...(q.warning ? { detail: q.warning } : {}),
+      buttons: [q.allowLabel, q.laterLabel],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    })) === 0),
+    allow: async (id) => {
+      const result = await consent('allow', id)
+      windows.send(IPC.REMOTE_ACCESS_CHANGED, { view: await host.get(), notice: null })
+      return result
+    },
+    log,
+  })
+  const consentPollMs = o.consentPollMs ?? 10_000
+  const checkConsent = (): void => { consentPrompt.check().catch((err) => log.warn('[Remote access] Network check failed:', err instanceof Error ? err.message : err)) }
+  const consentTimer = consentPollMs > 0 ? setInterval(checkConsent, consentPollMs) : null
+  consentTimer?.unref?.()
 
   // --- Client: Settings → Backend → Remote computer ---
   ipcMain.handle(IPC.REMOTE_DISCOVERY_START, () => { discovery.start(); return true })
@@ -306,8 +376,13 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     discovery,
     pairing,
     quitGate,
-    onDaemonEvent: (payload) => host.onDaemonEvent((payload ?? {}) as Record<string, unknown>),
+    consent: consentPrompt,
+    onDaemonEvent: (payload) => {
+      host.onDaemonEvent((payload ?? {}) as Record<string, unknown>)
+      if ((payload as { type?: unknown } | null)?.type === 'networks_changed') checkConsent()
+    },
     dispose: () => {
+      if (consentTimer) clearInterval(consentTimer)
       host.dispose()
       discovery.stop()
       pairing.cancel(true)

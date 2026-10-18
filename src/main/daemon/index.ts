@@ -250,7 +250,7 @@ meshManager.setWsConnectionManager(wsConnectionManager)
 // /ping advertises the runtime DID + delegation the daemon signs with (Studio's
 // only when adopted), not whatever the shared settings file holds.
 const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
-// LAN mode: private networks and Tailscale only, the rule remote access uses (remote-access.md §3.3).
+// LAN mode: only on networks the user allowed, the rule and the list remote access uses (remote-access.md §3.3.1).
 meshServer.setLanReach(new LanReach({ settingsDir: dirname(settingsPath) }))
 // When the mesh server binds, and a stop on request that holds (mesh-controls.ts).
 const meshServerBinder = createMeshServerBinder({ settings, mesh: meshManager, server: meshServer })
@@ -399,6 +399,9 @@ const remoteAccess = new RemoteAccessService({
   // This machine's own clients only (LOCAL_ONLY_PUSH_TOPICS): never the
   // umbilical bus, which GET /events serves to device tokens and agent taps read.
   emit: (event) => client.sessions.publishPush('remote_access', event),
+  // One consent list: the mesh's LAN listeners follow an allow or a remove at once.
+  onNetworksChanged: () => { void meshServer.syncLan(true) },
+  meshLan: () => meshServer.isLanMode(),
 })
 agentFactory.startTemplatesWatcher()
 // Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.

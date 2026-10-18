@@ -20,6 +20,16 @@ export interface TailscaleSelf {
   ips: string[]
   /** MagicDNS FQDN without the trailing dot, or null. */
   dnsName: string | null
+  /** The tailnet's name (`CurrentTailnet.Name`, else the MagicDNS suffix): the tailnet network's identity for consent. */
+  tailnet?: string | null
+}
+
+/** The tailnet name of a self view: its own, else the MagicDNS suffix of its name. */
+export function tailnetNameOf(self: TailscaleSelf): string | null {
+  if (self.state !== 'running') return null
+  if (self.tailnet) return self.tailnet
+  const dns = self.dnsName?.toLowerCase() ?? ''
+  return dns.includes('.') ? dns.slice(dns.indexOf('.') + 1) : null
 }
 
 export interface TailscaleServe {
@@ -29,11 +39,12 @@ export interface TailscaleServe {
 
 /** `tailscale status --json` → state, `Self.TailscaleIPs`, `Self.DNSName`. */
 export function parseTailscaleStatus(json: string): TailscaleSelf {
-  const status = JSON.parse(json) as { BackendState?: unknown; Self?: { TailscaleIPs?: unknown; DNSName?: unknown } }
+  const status = JSON.parse(json) as { BackendState?: unknown; MagicDNSSuffix?: unknown; CurrentTailnet?: { Name?: unknown; MagicDNSSuffix?: unknown }; Self?: { TailscaleIPs?: unknown; DNSName?: unknown } }
   const running = status.BackendState === 'Running'
   const ips = Array.isArray(status.Self?.TailscaleIPs) ? status.Self.TailscaleIPs.filter((ip): ip is string => typeof ip === 'string').map(ip => ip.toLowerCase()) : []
   const dns = typeof status.Self?.DNSName === 'string' ? status.Self.DNSName.replace(/\.$/, '') : ''
-  return { state: running ? 'running' : 'stopped', ips: running ? ips : [], dnsName: running && dns ? dns : null }
+  const name = [status.CurrentTailnet?.Name, status.CurrentTailnet?.MagicDNSSuffix, status.MagicDNSSuffix].find((v): v is string => typeof v === 'string' && v.length > 0)
+  return { state: running ? 'running' : 'stopped', ips: running ? ips : [], dnsName: running && dns ? dns : null, tailnet: running && name ? name.replace(/\.$/, '').toLowerCase() : null }
 }
 
 /**

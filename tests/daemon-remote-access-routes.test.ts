@@ -6,14 +6,14 @@
  * - the remote listener refuses the install's token and takes device tokens;
  * - pairing: code, owner confirmation, single delivery, brute-force lockout;
  * - revocation closes the device's streams (event bus SSE and client session);
- * - no listener on a network that is not marked private;
+ * - no listener on a network the user has not allowed (owner decision 2026-10-18 b);
  * - a device's session does not hold a Studio-requested stop.
  *
- * The network is faked (interfaces, categories, Tailscale, mDNS, firewall);
+ * The network is faked (interfaces, gateway, OS category, Tailscale, mDNS, firewall);
  * the "private address" 192.168.77.10 is bound on 127.0.0.1 through the
  * service's bindAddress seam, on its own port.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, request as httpRequest, type IncomingMessage } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,6 +39,7 @@ import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { DaemonEventBus } from '../src/main/daemon/event-bus'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { RemoteAccessService } from '../src/main/daemon/remote-access/service'
+import { lanNetworkId, tailnetNetworkId } from '../src/main/daemon/remote-access/network-key'
 import type { Announcement, Announcer } from '../src/main/daemon/remote-access/announcer'
 import type { ClientSessionRegistry } from '../src/main/daemon/client-sessions'
 import type { RemoteAccessEvent } from '../src/shared/types/remote-access.types'
@@ -48,6 +49,10 @@ const PROOF = 'p'.repeat(43)
 const LAN = '192.168.77.10'
 const master = { authorization: `Bearer ${TOKEN}` }
 const managed = { ...master, 'x-adf-local-proof': PROOF }
+/** The test LAN: gateway aa:bb:cc:dd:ee:01, 192.168.77.0/24. */
+const HOME = lanNetworkId('aa:bb:cc:dd:ee:01', '192.168.77.0/24', null)
+const HOME_LABEL = 'eth0 (192.168.77.0/24)'
+const TAILNET = tailnetNetworkId('tail1234.ts.net')
 
 function validate(schema: string, body: unknown): string[] {
   const ajv = new Ajv2020({ strict: false, allErrors: true })
@@ -83,8 +88,9 @@ interface Harness {
   events: RemoteAccessEvent[]
   logs: string[]
   requestShutdown: ReturnType<typeof vi.fn>
-  /** The fake network: eth0's address, its gateway identity, the category the next read answers (after `gate`, if set). */
-  network: { category: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number; onBind?: () => void }
+  /** The fake network: eth0's address, its gateway identity, what the OS says (shown only), and the slow OS read (after `gate`, if set). */
+  network: { osCategory?: 'private' | 'public'; addr: string; gateway: string; gate: Promise<void> | null; reads: number; onBind?: () => void }
+  dir: string
   sessions(): ClientSessionRegistry
   whoisCalls: string[]
 }
@@ -97,36 +103,47 @@ afterEach(async () => {
   }
 })
 
-async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown }; serve?: boolean } = {}): Promise<Harness> {
+/**
+ * `allowed` (default true): the user already allowed the test LAN (remote-access.json).
+ * `tailnet`: this computer is also on tailnet tail1234.ts.net at 100.101.102.103.
+ */
+async function harness(opts: { allowed?: boolean; osCategory?: 'private' | 'public'; platform?: NodeJS.Platform; tailnet?: boolean; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown }; serve?: boolean } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-remote-routes-'))
   dirs.push(dir)
+  if (opts.allowed !== false) {
+    writeFileSync(join(dir, 'remote-access.json'), JSON.stringify({ v: 1, enabled: false, name: 'host-1', daemonId: null, allowedNetworks: [{ id: HOME, kind: 'lan', label: HOME_LABEL, addedAt: '2026-10-18T00:00:00.000Z' }] }))
+  }
   const port = await freePort()
   const announcer = new FakeAnnouncer()
   const events: RemoteAccessEvent[] = []
   const logs: string[] = []
   const whoisCalls: string[] = []
-  const network: Harness['network'] = { category: opts.category ?? 'private', addr: LAN, gateway: '192.168.77.1|aa:bb:cc:dd:ee:01', gate: null, reads: 0 }
+  const network: Harness['network'] = { ...(opts.osCategory ? { osCategory: opts.osCategory } : {}), addr: LAN, gateway: '192.168.77.1|aa:bb:cc:dd:ee:01', gate: null, reads: 0 }
+  const tailnetIp = '100.101.102.103'
   let server: FastifyInstance | null = null
   const sessions = () => (server as unknown as { adfClientSessions: ClientSessionRegistry }).adfClientSessions
   const service = new RemoteAccessService({
     settingsDir: dir,
     port,
     clientApiVersion: 2,
-    platform: 'linux',
+    platform: opts.platform ?? 'linux',
     hostName: () => 'host-1',
-    interfaces: () => ({ eth0: [{ address: network.addr, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${network.addr}/24` } as NetworkInterfaceInfo] }),
-    categories: async (ifaces) => {
+    interfaces: () => ({
+      eth0: [{ address: network.addr, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: `${network.addr}/24` } as NetworkInterfaceInfo],
+      ...(opts.tailnet ? { Tailscale: [{ address: tailnetIp, family: 'IPv4', internal: false, netmask: '255.255.255.255', mac: '00:00:00:00:00:00', cidr: `${tailnetIp}/32` } as NetworkInterfaceInfo] } : {}),
+    }),
+    gateways: async (ifaces) => new Map(ifaces.map(i => [i, network.gateway])),
+    wifiNames: async () => new Map(),
+    // The slow read (Windows' category): shown only, never consent.
+    osCategories: async (ifaces) => {
       network.reads++
       if (network.gate) await network.gate
-      return {
-        categories: new Map(ifaces.map(i => [i, network.category])),
-        current: [{ iface: 'eth0', id: 'net-home', label: 'eth0 via 192.168.77.1' }],
-        problem: null,
-      }
+      return network.osCategory ? new Map(ifaces.map(i => [i, network.osCategory!])) : new Map()
     },
-    gateways: async (ifaces) => new Map(ifaces.map(i => [i, network.gateway])),
     tailscale: {
-      self: async () => (opts.serve ? { state: 'running', ips: [], dnsName: 'host-1.tail1234.ts.net' } : { state: 'absent', ips: [], dnsName: null }),
+      self: async () => (opts.tailnet
+        ? { state: 'running', ips: [tailnetIp], dnsName: 'host-1.tail1234.ts.net', tailnet: 'tail1234.ts.net' }
+        : opts.serve ? { state: 'running', ips: [], dnsName: 'host-1.tail1234.ts.net' } : { state: 'absent', ips: [], dnsName: null }),
       serveStatus: async () => (opts.serve ? { serve: 'on', httpsUrl: 'https://host-1.tail1234.ts.net' } : { serve: 'unknown', httpsUrl: null }),
       setServe: async () => { throw new Error('Tailscale is not installed on this computer.') },
       serveCommand: (p, on) => (on ? ['serve', '--bg', String(p)] : ['serve', '--https=443', 'off']),
@@ -154,7 +171,7 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
   await server.listen({ host: '127.0.0.1', port: 0 })
   const s = server
   await service.attach((req, res) => s.routing(req, res))
-  const h: Harness = { server: s, service, port, announcer, events, logs, requestShutdown, network, sessions, whoisCalls }
+  const h: Harness = { server: s, service, port, announcer, events, logs, requestShutdown, network, sessions, whoisCalls, dir }
   harnesses.push(h)
   return h
 }
@@ -200,12 +217,12 @@ describe('management routes (§11.2)', () => {
     expect(validate('RemoteAccessStatus', status)).toEqual([])
     expect(status).toMatchObject({ enabled: true, state: 'on', name: 'agent-1 host', message: `Listening on ${LAN}.` })
     expect(status.fingerprint).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/)
-    expect(status.addresses).toEqual([{ address: LAN, family: 'IPv4', kind: 'lan', iface: 'eth0', network: 'private', listening: true, problem: null }])
+    expect(status.addresses).toEqual([{ address: LAN, family: 'IPv4', kind: 'lan', iface: 'eth0', networkId: HOME, allowed: true, listening: true, problem: null }])
+    expect(status.networks).toEqual([{ id: HOME, kind: 'lan', label: HOME_LABEL, allowed: true, osCategory: 'unknown', ifaces: ['eth0'], addresses: [LAN] }])
+    expect(status.allowedNetworks).toEqual([expect.objectContaining({ id: HOME, label: HOME_LABEL })])
     expect(status.urls.map((u: { url: string }) => u.url)).toEqual([`http://${LAN}:${h.port}`, `http://host-1.local:${h.port}`])
     expect(status.hostNames).toEqual(['host-1', 'host-1.local'])
     expect(h.events.map(e => e.type)).toContain('enabled')
-    // macOS / Linux: turning on marks the current network private, visibly.
-    expect(h.events.map(e => e.type)).toContain('networks_changed')
     expect(h.announcer.announced.at(-1)).toMatchObject({ name: 'agent-1 host', port: h.port, txt: { v: '1', pair: '0', api: '2', fp: status.fingerprint } })
     expect((await remote(h, 'GET', '/remote/hello')).json).toEqual({ v: 1, name: 'agent-1 host', fingerprint: status.fingerprint, pairingOpen: false, clientApiVersion: 2 })
 
@@ -225,7 +242,7 @@ describe('management routes (§11.2)', () => {
     expect(noProof.json().code).toBe('loopback_only')
     const proxied = await h.server.inject({ method: 'GET', url: '/remote-access', headers: { ...managed, 'x-forwarded-for': '203.0.113.9' } })
     expect(proxied.statusCode).toBe(403)
-    for (const [method, url] of [['GET', '/remote-access'], ['PUT', '/remote-access'], ['POST', '/remote-access/devices'], ['DELETE', `/remote-access/devices/${device.id}`], ['POST', '/remote-access/pairing'], ['DELETE', '/remote-access/pairing'], ['POST', '/remote-access/pairing/claims/x'], ['POST', '/remote-access/tailscale-serve']] as const) {
+    for (const [method, url] of [['GET', '/remote-access'], ['PUT', '/remote-access'], ['POST', '/remote-access/networks'], ['DELETE', `/remote-access/networks/${HOME}`], ['POST', '/remote-access/devices'], ['DELETE', `/remote-access/devices/${device.id}`], ['POST', '/remote-access/pairing'], ['DELETE', '/remote-access/pairing'], ['POST', '/remote-access/pairing/claims/x'], ['POST', '/remote-access/tailscale-serve']] as const) {
       // Even from loopback with the proof (an SSH tunnel): a device token is refused.
       const res = await h.server.inject({ method, url, headers: { authorization: `Bearer ${device.token}`, 'x-adf-local-proof': PROOF }, payload: {} })
       expect(res.statusCode, `${method} ${url}`).toBe(403)
@@ -235,7 +252,7 @@ describe('management routes (§11.2)', () => {
     }
   })
 
-  it('validates bodies; trustNetwork marks or unmarks the current network', async () => {
+  it('validates bodies; there is no trustNetwork any more', async () => {
     const h = await harness()
     const empty = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: {} })
     expect(empty.statusCode).toBe(400)
@@ -243,9 +260,13 @@ describe('management routes (§11.2)', () => {
     expect(badName.json().code).toBe('bad_request')
     const badLabel = await h.server.inject({ method: 'POST', url: '/remote-access/devices', headers: managed, payload: { label: '' } })
     expect(badLabel.statusCode).toBe(400)
-    const trust = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { trustNetwork: false } })
-    expect(trust.statusCode).toBe(200)
-    expect(h.events.map(e => e.type)).toContain('networks_changed')
+    const trust = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { trustNetwork: true } })
+    expect(trust.statusCode).toBe(400)
+    expect((await h.server.inject({ method: 'POST', url: '/remote-access/networks', headers: managed, payload: { id: 'net-home' } })).statusCode).toBe(400)
+    const elsewhere = await h.server.inject({ method: 'POST', url: '/remote-access/networks', headers: managed, payload: { id: lanNetworkId('de:ad:be:ef:00:01', '10.0.0.0/24', null) } })
+    expect(elsewhere.statusCode).toBe(404)
+    expect(elsewhere.json().code).toBe('network_not_found')
+    expect((await h.server.inject({ method: 'DELETE', url: `/remote-access/networks/${TAILNET}`, headers: managed })).json().code).toBe('network_not_found')
     expect((await h.server.inject({ method: 'DELETE', url: '/remote-access/devices/zzzzzzzzzz', headers: managed })).json().code).toBe('device_not_found')
   })
 })
@@ -331,20 +352,84 @@ describe('revocation closes streams (§4.7)', () => {
   })
 })
 
-describe('no listener on a network that is not private (owner decision O2)', () => {
-  it('stays on, lists the address with the reason, and nothing listens', async () => {
-    const h = await harness({ category: 'public' })
+describe('consent per network (owner decision 2026-10-18 b)', () => {
+  const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
+  const status = async (h: Harness) => (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
+  const allow = (h: Harness, id: string) => h.server.inject({ method: 'POST', url: '/remote-access/networks', headers: managed, payload: { id } })
+  const forget = (h: Harness, id: string) => h.server.inject({ method: 'DELETE', url: `/remote-access/networks/${id}`, headers: managed })
+
+  it('a new network gets no listener until it is allowed; allowing opens it, removing closes it at once', async () => {
+    const h = await harness({ allowed: false })
     await turnOn(h)
-    const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
-    expect(status).toMatchObject({ enabled: true, state: 'no_address', message: 'Not reachable on this network (Public).', firewall: { state: 'public_network' } })
-    expect(status.addresses).toEqual([{ address: LAN, family: 'IPv4', kind: 'lan', iface: 'eth0', network: 'public', listening: false, problem: 'Not reachable on this network (Public).' }])
-    expect(status.urls).toEqual([])
+    const paused = await status(h)
+    expect(validate('RemoteAccessStatus', paused)).toEqual([])
+    expect(paused).toMatchObject({ enabled: true, state: 'paused', message: `Paused on ${HOME_LABEL}.`, allowedNetworks: [] })
+    expect(paused.networks).toEqual([{ id: HOME, kind: 'lan', label: HOME_LABEL, allowed: false, osCategory: 'unknown', ifaces: ['eth0'], addresses: [LAN] }])
+    expect(paused.addresses).toEqual([{ address: LAN, family: 'IPv4', kind: 'lan', iface: 'eth0', networkId: HOME, allowed: false, listening: false, problem: 'Not allowed on this network.' }])
+    expect(paused.urls).toEqual([])
+    expect(listening(h)).toEqual([])
     await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
     expect(h.announcer.announcing).toBe(false)
-    // The network turns private: the listener opens at the next check.
-    h.network.category = 'private'
-    await h.service.apply({ force: true })
+
+    const allowed = await allow(h, HOME)
+    expect(allowed.statusCode).toBe(200)
+    expect(allowed.json()).toMatchObject({ state: 'on', message: `Listening on ${LAN}.`, allowedNetworks: [{ id: HOME, kind: 'lan', label: HOME_LABEL }] })
+    expect(listening(h)).toEqual([LAN])
     expect((await remote(h, 'GET', '/remote/hello')).status).toBe(200)
+    expect(h.events.map(e => e.type)).toContain('networks_changed')
+    // remote-access.json keeps the consent (the mesh reads the same list).
+    expect(JSON.parse(readFileSync(join(h.dir, 'remote-access.json'), 'utf-8')).allowedNetworks).toEqual([expect.objectContaining({ id: HOME })])
+
+    const removed = await forget(h, HOME)
+    expect(removed.json()).toMatchObject({ state: 'paused', allowedNetworks: [] })
+    expect(listening(h)).toEqual([])
+    await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
+    expect(JSON.parse(readFileSync(join(h.dir, 'remote-access.json'), 'utf-8')).allowedNetworks).toEqual([])
+  })
+
+  it('a device token cannot allow a network, not even over a tunnel with the local proof', async () => {
+    const h = await harness({ tailnet: true })
+    await turnOn(h)
+    const device = await addDevice(h)
+    const local = await h.server.inject({ method: 'POST', url: '/remote-access/networks', headers: { authorization: `Bearer ${device.token}`, 'x-adf-local-proof': PROOF }, payload: { id: TAILNET } })
+    expect(local.statusCode).toBe(403)
+    expect(local.json().code).toBe('device_token_refused')
+    const over = await remote(h, 'POST', '/remote-access/networks', { authorization: `Bearer ${device.token}` }, { id: TAILNET })
+    expect(over.status).toBe(403)
+    expect((await status(h)).allowedNetworks.map((n: { id: string }) => n.id)).toEqual([HOME])
+  })
+
+  it('a Windows Private network without consent gets no listener; the OS category is shown, never used', async () => {
+    const h = await harness({ allowed: false, platform: 'win32', osCategory: 'private' })
+    await turnOn(h)
+    const s = await status(h)
+    expect(s).toMatchObject({ state: 'paused', networks: [{ id: HOME, allowed: false, osCategory: 'private' }] })
+    expect(listening(h)).toEqual([])
+    await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
+  })
+
+  it('a network can be allowed while remote access is off; turning on then listens', async () => {
+    const h = await harness({ allowed: false, osCategory: 'public' })
+    const off = await status(h)
+    expect(off).toMatchObject({ enabled: false, networks: [{ id: HOME, allowed: false, osCategory: 'public' }] })
+    expect((await allow(h, HOME)).json()).toMatchObject({ enabled: false, allowedNetworks: [{ id: HOME }] })
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+  })
+
+  it('the tailnet is a network of its own: identified by its name, allowed separately', async () => {
+    const h = await harness({ tailnet: true })
+    await turnOn(h)
+    const s = await status(h)
+    expect(s.networks).toEqual([
+      { id: TAILNET, kind: 'tailnet', label: 'Tailnet tail1234.ts.net', allowed: false, osCategory: 'private', ifaces: ['Tailscale'], addresses: ['100.101.102.103'] },
+      expect.objectContaining({ id: HOME, allowed: true }),
+    ])
+    expect(s.addresses).toEqual([
+      expect.objectContaining({ address: '100.101.102.103', kind: 'tailnet', networkId: TAILNET, allowed: false, listening: false }),
+      expect.objectContaining({ address: LAN, allowed: true, listening: true }),
+    ])
+    expect((await allow(h, TAILNET)).json().addresses[0]).toMatchObject({ address: '100.101.102.103', allowed: true })
   })
 })
 
@@ -550,35 +635,34 @@ describe('security review item 1: claims stay with this machine', () => {
   })
 })
 
-describe('security review item 2: a network change is never assumed private', () => {
+describe('security review item 2: a network change is never assumed allowed', () => {
   const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
 
   it('a new address on the same interface name is re-read before it gets a listener', async () => {
     const h = await harness()
     await turnOn(h)
     expect(listening(h)).toEqual([LAN])
-    // The laptop moves to a hotel network: new address, Public, within the 60 s category cache.
+    // The laptop moves to a hotel network: new address, another gateway, not allowed.
     h.network.addr = '10.9.9.9'
     h.network.gateway = '10.9.9.1|de:ad:be:ef:00:01'
-    h.network.category = 'public'
     await h.service.apply({})
     expect(listening(h)).toEqual([])
     const status = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json()
-    expect(status.addresses).toEqual([expect.objectContaining({ address: '10.9.9.9', network: 'public', listening: false })])
+    expect(status.state).toBe('paused')
+    expect(status.addresses).toEqual([expect.objectContaining({ address: '10.9.9.9', allowed: false, listening: false })])
   })
 
-  it('the same address behind another gateway closes the listener at once and keeps it closed until the re-read says private', async () => {
+  it('switching from an allowed network to one not allowed (same address, another gateway) closes the listener at once', async () => {
     const h = await harness()
     await turnOn(h)
     expect(listening(h)).toEqual([LAN])
     let release!: () => void
     h.network.gate = new Promise<void>(r => { release = r })
     h.network.gateway = '192.168.77.1|de:ad:be:ef:00:02' // another router, same subnet and address
-    h.network.category = 'public'
     const readsBefore = h.network.reads
     const applying = h.service.apply({})
     for (let i = 0; i < 50 && h.network.reads <= readsBefore; i++) await new Promise(r => setTimeout(r, 10))
-    // The category read is still running: nothing listens on the unconfirmed network.
+    // The slow OS read is still running: the listener closed before it.
     expect(listening(h)).toEqual([])
     await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
     release()
@@ -586,9 +670,8 @@ describe('security review item 2: a network change is never assumed private', ()
     h.network.gate = null
     expect(listening(h)).toEqual([])
     expect(h.logs.some(l => /network changed on eth0: closing its listeners/.test(l))).toBe(true)
-    // Back home: confirmed private again, the listener returns.
+    // Back home: an allowed network again, the listener returns.
     h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
-    h.network.category = 'private'
     await h.service.apply({})
     expect(listening(h)).toEqual([LAN])
   })
@@ -740,7 +823,7 @@ describe('security review item 6: "off" during a listener opening', () => {
 describe('re-review 1: a gateway MAC missing for a moment is not a network change', () => {
   const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
 
-  it('an empty or missing MAC keeps the listeners and the category; a known different MAC or a new address closes them', async () => {
+  it('an empty or missing MAC keeps the listeners and the network; a known different MAC or a new address closes them', async () => {
     const h = await harness()
     await turnOn(h)
     expect(listening(h)).toEqual([LAN])
@@ -759,7 +842,6 @@ describe('re-review 1: a gateway MAC missing for a moment is not a network chang
     expect(h.network.reads).toBe(reads)
     // A known, different MAC is another network.
     h.network.gateway = '192.168.77.1|de:ad:be:ef:00:09'
-    h.network.category = 'public'
     await h.service.apply({})
     expect(listening(h)).toEqual([])
     expect(h.logs.some(l => /network changed on eth0/.test(l))).toBe(true)

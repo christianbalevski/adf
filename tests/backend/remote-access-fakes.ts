@@ -1,4 +1,4 @@
-import type { PairingClaimView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../src/shared/types/remote-access.types'
+import type { AllowedNetwork, NetworkView, PairingClaimView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../src/shared/types/remote-access.types'
 
 /**
  * A fake ADF daemon with remote access (docs/design/remote-access.md §11):
@@ -28,8 +28,11 @@ export interface FakeRemoteDaemon {
     unreachable: Set<string>
     /** An ADF from before remote access: no /remote-access routes, a token asked on /remote/hello and /pair/*. */
     old: boolean
-    /** The last PUT /remote-access body's trustNetwork. */
-    trusted: boolean | null
+    /** The networks this computer is on (GET /remote-access networks). */
+    networks: NetworkView[]
+    /** The networks the user allowed. */
+    allowed: AllowedNetwork[]
+    meshLan: boolean
   }
   requests: Array<{ origin: string; method: string; path: string; body: unknown; headers: Record<string, string> }>
   /** Answer the pending claim as the host's owner would. */
@@ -67,7 +70,9 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     claims: new Map(),
     unreachable: new Set(),
     old: false,
-    trusted: null,
+    networks: [{ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', allowed: true, osCategory: 'private', ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }],
+    allowed: [{ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', addedAt: '2026-10-18T09:00:00Z' }],
+    meshLan: false,
     sourceWrong: 0,
   }
   const status = (): RemoteAccessStatus => ({
@@ -79,8 +84,8 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     fingerprint: state.enabled ? state.fingerprint : null,
     port: 7385,
     addresses: state.enabled ? [
-      { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', network: 'private', listening: true, problem: null },
-      { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', network: 'tailnet', listening: true, problem: null },
+      { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', networkId: 'lan-0123456789abcdef', allowed: true, listening: true, problem: null },
+      { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', networkId: 'tailnet-0123456789abcdef', allowed: true, listening: true, problem: null },
     ] : [],
     urls: state.enabled ? state.urls : [],
     hostNames: [],
@@ -88,6 +93,9 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     mdns: { announcing: state.enabled, problem: null },
     firewall: state.firewall,
     devices: state.devices,
+    networks: state.networks.map((n) => ({ ...n, allowed: state.allowed.some((a) => a.id === n.id) })),
+    allowedNetworks: state.allowed,
+    meshLan: state.meshLan,
     pairing: state.pairing ? { code: state.pairing.code, name: state.name, fingerprint: state.fingerprint, openedAt: state.pairing.openedAt, expiresAt: state.pairing.expiresAt, attemptsLeft: state.pairing.attemptsLeft, lockedSources: state.pairing.lockedSources ?? 0, claim: state.pairing.claim } : null,
   })
 
@@ -130,11 +138,22 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
         if (!management) return err(403, 'loopback_only', 'Only this computer may change remote access.')
         if (method === 'GET' && path === '/remote-access') return json(200, status())
         if (method === 'PUT' && path === '/remote-access') {
-          if (typeof body.trustNetwork === 'boolean') state.trusted = body.trustNetwork
           if (typeof body.enabled !== 'boolean') return json(200, status())
           state.enabled = body.enabled
           if (typeof body.name === 'string') state.name = body.name
           if (!state.enabled) state.pairing = null
+          return json(200, status())
+        }
+        if (method === 'POST' && path === '/remote-access/networks') {
+          const n = state.networks.find((x) => x.id === body.id)
+          if (!n?.id) return err(404, 'network_not_found', 'That network is not one this computer is on now.')
+          if (!state.allowed.some((a) => a.id === n.id)) state.allowed.push({ id: n.id, kind: n.kind, label: n.label, addedAt: '2026-10-18T10:00:00Z' })
+          return json(200, status())
+        }
+        if (method === 'DELETE' && path.startsWith('/remote-access/networks/')) {
+          const id = decodeURIComponent(path.slice('/remote-access/networks/'.length))
+          if (!state.allowed.some((a) => a.id === id)) return err(404, 'network_not_found', 'That network is not allowed.')
+          state.allowed = state.allowed.filter((a) => a.id !== id)
           return json(200, status())
         }
         if (method === 'POST' && path === '/remote-access/devices') {

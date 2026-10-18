@@ -1,6 +1,6 @@
 /**
  * Remote access building blocks (docs/design/remote-access.md): the address
- * filter and the public/private network rule (§3.3, §3.3.1), the device
+ * filter and the network identity and consent (§3.3, §3.3.1), the device
  * token store (§4.2-§4.3), the pairing window's limits (§5.3-§5.5), the
  * Tailscale and firewall parsers, and the request guard's token matrix (§4.4).
  */
@@ -9,11 +9,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { NetworkInterfaceInfo } from 'node:os'
 import { afterAll, describe, expect, it } from 'vitest'
-import { addressCandidates, PUBLIC_NETWORK_SENTENCE } from '../src/main/daemon/remote-access/addresses'
+import { addressCandidates, NOT_ALLOWED_SENTENCE } from '../src/main/daemon/remote-access/addresses'
 import {
-  currentNetworks, networkId, parseDarwinArp, parseDarwinDefaultRoutes, parseLinuxArp, parseLinuxRoutes,
-  parseWindowsArp, parseWindowsProfiles, parseWindowsRoutes, readGatewayIdentities, readNetworkCategories,
+  parseDarwinArp, parseDarwinDefaultRoutes, parseLinuxArp, parseLinuxRoutes,
+  parseWindowsArp, parseWindowsProfiles, parseWindowsRoutes, readGatewayIdentities, readOsCategories, readWifiNames,
 } from '../src/main/daemon/remote-access/network-category'
+import { lanNetworkId, mergeGatewayIdentity, NetworkWatcher, subnetOf, tailnetNetworkId } from '../src/main/daemon/remote-access/network-key'
 import { DeviceStore, DEVICES_FILENAME, parseDeviceToken } from '../src/main/daemon/remote-access/device-store'
 import { cleanDisplayName, fingerprintOf, loadRemoteAccessConfig, newDaemonId, saveRemoteAccessConfig, defaultRemoteAccessConfig } from '../src/main/daemon/remote-access/config'
 import { PairingError, PairingManager, PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL } from '../src/main/daemon/remote-access/pairing'
@@ -36,7 +37,7 @@ function nic(address: string, extra: Partial<NetworkInterfaceInfo> = {}): Networ
   return { address, family, internal: false, netmask: '', mac: '00:00:00:00:00:00', cidr: null, ...(family === 'IPv6' ? { scopeid: 0 } : {}), ...extra } as NetworkInterfaceInfo
 }
 
-describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
+describe('address candidates (§3.3) and what the OS tells about a network (§3.3.1)', () => {
   const interfaces = {
     lo: [nic('127.0.0.1', { internal: true })],
     'Wi-Fi': [nic('192.168.1.20'), nic('fe80::1'), nic('2001:db8::5'), nic('fd12:3456::7')],
@@ -50,34 +51,21 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
   }
 
   it('keeps private LAN and confirmed Tailscale addresses; drops public, link-local, global IPv6, CGNAT and virtual adapters', () => {
-    const out = addressCandidates({
-      interfaces,
-      tailscaleIps: new Set(['100.101.102.103', 'fd7a:115c:a1e0::1']),
-      categories: new Map([['Wi-Fi', 'private'], ['Ethernet', 'private'], ['eth2', 'private']]),
-    })
+    const out = addressCandidates({ interfaces, tailscaleIps: new Set(['100.101.102.103', 'fd7a:115c:a1e0::1']) })
     // Wi-Fi's ULA is left out: the interface has a private IPv4 address; eth2 has only ULA.
-    expect(out.map(c => `${c.address}/${c.kind}/${c.network}`)).toEqual([
-      '100.101.102.103/tailnet/tailnet',
-      'fd7a:115c:a1e0::1/tailnet/tailnet',
-      '10.0.0.4/lan/private',
-      '192.168.1.20/lan/private',
-      'fd99::2/lan/private',
+    expect(out.map(c => `${c.address}/${c.kind}`)).toEqual([
+      '100.101.102.103/tailnet',
+      'fd7a:115c:a1e0::1/tailnet',
+      '10.0.0.4/lan',
+      '192.168.1.20/lan',
+      'fd99::2/lan',
     ])
-    expect(out.every(c => c.refusal === null)).toBe(true)
-  })
-
-  it('never listens on a network that is not marked private: unsure = public (owner decision O2)', () => {
-    const out = addressCandidates({ interfaces, tailscaleIps: new Set(), categories: new Map([['Wi-Fi', 'public']]) })
-    const lan = out.filter(c => c.kind === 'lan')
-    expect(lan.length).toBe(3) // 192.168.1.20, 10.0.0.4, fd99::2
-    // Wi-Fi is Public; Ethernet has no category at all: both refused.
-    expect(lan.every(c => c.network === 'public' && c.refusal === PUBLIC_NETWORK_SENTENCE)).toBe(true)
     // Unconfirmed 100.64/10 (carrier-grade NAT) and Tailscale IPv6 are never candidates.
-    expect(out.find(c => c.address.startsWith('100.') || c.address.startsWith('fd7a'))).toBeUndefined()
+    expect(addressCandidates({ interfaces, tailscaleIps: new Set() }).find(c => c.address.startsWith('100.') || c.address.startsWith('fd7a'))).toBeUndefined()
   })
 
   it('an `addresses` override still obeys every rule', () => {
-    const out = addressCandidates({ interfaces, tailscaleIps: new Set(), categories: new Map([['Ethernet', 'private']]), only: ['10.0.0.4', '203.0.113.4'] })
+    const out = addressCandidates({ interfaces, tailscaleIps: new Set(), only: ['10.0.0.4', '203.0.113.4'] })
     expect(out.map(c => c.address)).toEqual(['10.0.0.4'])
   })
 
@@ -93,37 +81,32 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
     expect(Object.fromEntries(parseWindowsProfiles('{"InterfaceAlias":"Wi-Fi","NetworkCategory":"Public"}'))).toEqual({ 'Wi-Fi': 'public' })
   })
 
-  it('Windows: a failed query makes every interface public and says why', async () => {
-    const read = await readNetworkCategories(['Wi-Fi'], [], { platform: 'win32', exec: async () => { throw new Error('powershell missing') } })
-    expect(read.categories.get('Wi-Fi')).toBe('public')
-    expect(read.problem).toMatch(/treating it as public/)
+  it('the OS category is read on Windows only, shown only; a failed query is unknown', async () => {
+    const exec = async () => JSON.stringify([{ InterfaceAlias: 'Wi-Fi', NetworkCategory: 1 }])
+    expect(Object.fromEntries(await readOsCategories(['Wi-Fi'], { platform: 'win32', exec }))).toEqual({ 'Wi-Fi': 'private' })
+    expect((await readOsCategories(['Wi-Fi'], { platform: 'win32', exec: async () => { throw new Error('powershell missing') } })).size).toBe(0)
+    expect((await readOsCategories(['en0'], { platform: 'darwin', exec })).size).toBe(0)
   })
 
-  it('macOS: the default gateway (IP + MAC) identifies the network; only an owner-marked one is private', async () => {
+  it('the Wi-Fi name only where no permission prompt is needed (Linux iwgetid); never on Windows or macOS', async () => {
+    const calls: string[] = []
+    const exec = async (file: string, args: string[]) => { calls.push(`${file} ${args.join(' ')}`); if (args[0] === 'eth0') throw new Error('not wireless'); return 'Home WiFi\n' }
+    expect(Object.fromEntries(await readWifiNames(['wlan0', 'eth0'], { platform: 'linux', exec }))).toEqual({ wlan0: 'Home WiFi' })
+    expect(calls).toEqual(['iwgetid wlan0 -r', 'iwgetid eth0 -r'])
+    expect((await readWifiNames(['Wi-Fi'], { platform: 'win32', exec })).size).toBe(0)
+    expect((await readWifiNames(['en0'], { platform: 'darwin', exec })).size).toBe(0)
+    expect(calls.length).toBe(2)
+  })
+
+  it('macOS and Linux gateway parsers: netstat/arp, /proc/net/route (little-endian) and /proc/net/arp', () => {
     const netstat = 'Routing tables\n\nInternet:\nDestination        Gateway            Flags        Netif Expire\ndefault            192.168.1.1        UGScg          en0\ndefault            link#14            UCSIg        utun3\n'
     const arp = '? (192.168.1.1) at a4:2b:b0:1:2:3 on en0 ifscope [ethernet]\n? (192.168.1.9) at (incomplete) on en0 ifscope [ethernet]\n'
     expect(Object.fromEntries(parseDarwinDefaultRoutes(netstat))).toEqual({ en0: '192.168.1.1' })
     expect(parseDarwinArp(arp).get('en0|192.168.1.1')).toBe('a4:2b:b0:01:02:03')
-    const exec = async (file: string) => (file === 'netstat' ? netstat : arp)
-    const home = networkId('192.168.1.1', 'a4:2b:b0:01:02:03')
-    const unknown = await readNetworkCategories(['en0'], [], { platform: 'darwin', exec })
-    expect(unknown.categories.get('en0')).toBe('public')
-    expect(unknown.current).toEqual([{ iface: 'en0', id: home, label: 'en0 via 192.168.1.1' }])
-    const trusted = await readNetworkCategories(['en0'], [{ id: home, label: 'en0 via 192.168.1.1', addedAt: '2026-10-18T00:00:00Z' }], { platform: 'darwin', exec })
-    expect(trusted.categories.get('en0')).toBe('private')
-    // Same gateway IP, another router (hotel): another network.
-    expect(networkId('192.168.1.1', 'de:ad:be:ef:00:01')).not.toBe(home)
-  })
-
-  it('Linux: /proc/net/route (little-endian gateway) and /proc/net/arp; no gateway or no MAC = not identified', async () => {
     const route = 'Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\nwlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\neth1\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n'
-    const arp = 'IP address       HW type     Flags       HW address            Mask     Device\n192.168.1.1      0x1         0x2         a4:2b:b0:01:02:03     *        wlan0\n'
-    const routes = parseLinuxRoutes(route)
-    expect(Object.fromEntries(routes)).toEqual({ wlan0: '192.168.1.1' })
-    const macs = parseLinuxArp(arp)
-    expect(currentNetworks(['wlan0', 'eth1'], routes, macs).map(n => n.iface)).toEqual(['wlan0'])
-    const read = await readNetworkCategories(['wlan0', 'eth1'], [], { platform: 'linux', readText: async (p) => (p.endsWith('route') ? route : arp) })
-    expect(Object.fromEntries(read.categories)).toEqual({ wlan0: 'public', eth1: 'public' })
+    const linuxArp = 'IP address       HW type     Flags       HW address            Mask     Device\n192.168.1.1      0x1         0x2         a4:2b:b0:01:02:03     *        wlan0\n'
+    expect(Object.fromEntries(parseLinuxRoutes(route))).toEqual({ wlan0: '192.168.1.1' })
+    expect(parseLinuxArp(linuxArp).get('wlan0|192.168.1.1')).toBe('a4:2b:b0:01:02:03')
   })
 
   it('gateway identities per interface (security review item 2): Windows route + arp, Linux /proc; failures = unknown', async () => {
@@ -139,6 +122,69 @@ describe('address candidates (§3.3) and public networks (§3.3.1)', () => {
     expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async (p) => (p.endsWith('route') ? linuxRoute : linuxArp) })))
       .toEqual({ wlan0: '192.168.1.1|a4:2b:b0:01:02:03' })
     expect(Object.fromEntries(await readGatewayIdentities(['wlan0'], {}, { platform: 'linux', readText: async () => { throw new Error('no /proc') } }))).toEqual({ wlan0: '' })
+  })
+})
+
+describe('network identity and consent (owner decision 2026-10-18 b)', () => {
+  const wifi = (address: string) => ({ 'Wi-Fi': [nic(address, { netmask: '255.255.255.0', cidr: `${address}/24` })] })
+  const watcher = (gateways: () => string, extra: { ssid?: string; os?: 'private' | 'public' } = {}) => new NetworkWatcher({
+    readGateways: async (ifaces) => new Map(ifaces.map(i => [i, gateways()])),
+    readWifiNames: async (ifaces) => new Map(extra.ssid ? ifaces.map(i => [i, extra.ssid!]) : []),
+    readOsCategories: async (ifaces) => new Map(extra.os ? ifaces.map(i => [i, extra.os!]) : []),
+    slowCheckMs: 60_000,
+  })
+  const HOME = lanNetworkId('a4:2b:b0:01:02:03', '192.168.1.0/24', null)
+  const allowedHome = [{ id: HOME, kind: 'lan' as const, label: 'Wi-Fi (192.168.1.0/24)', addedAt: '2026-10-18T00:00:00Z' }]
+
+  it('a LAN is its gateway MAC + subnet (+ Wi-Fi name where readable); the tailnet is its name', () => {
+    expect(subnetOf({ address: '192.168.1.20', netmask: '255.255.255.0', cidr: null })).toBe('192.168.1.0/24')
+    expect(subnetOf({ address: '10.1.2.3', netmask: '255.255.0.0', cidr: null })).toBe('10.1.0.0/16')
+    expect(subnetOf({ address: 'fd12:3456:789a:1::5', netmask: 'ffff:ffff:ffff:ffff::', cidr: null })).toBe('fd12:3456:789a:1::/64')
+    expect(HOME).toMatch(/^lan-[0-9a-f]{16}$/)
+    // Same router, another subnet; another router, same subnet; another Wi-Fi name: each another network.
+    expect(lanNetworkId('a4:2b:b0:01:02:03', '192.168.2.0/24', null)).not.toBe(HOME)
+    expect(lanNetworkId('de:ad:be:ef:00:01', '192.168.1.0/24', null)).not.toBe(HOME)
+    expect(lanNetworkId('a4:2b:b0:01:02:03', '192.168.1.0/24', 'Cafe')).not.toBe(HOME)
+    expect(lanNetworkId('A4:2B:B0:01:02:03', '192.168.1.0/24', null)).toBe(HOME)
+    expect(tailnetNetworkId('tail1234.ts.net')).toMatch(/^tailnet-[0-9a-f]{16}$/)
+    expect(tailnetNetworkId('Tail1234.ts.net')).toBe(tailnetNetworkId('tail1234.ts.net'))
+    expect(parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', CurrentTailnet: { Name: 'agent-1@example.com', MagicDNSSuffix: 'tail1234.ts.net' }, Self: { TailscaleIPs: ['100.1.1.1'], DNSName: 'h.tail1234.ts.net.' } })).tailnet).toBe('agent-1@example.com')
+    expect(parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', MagicDNSSuffix: 'tail1234.ts.net.', Self: { TailscaleIPs: ['100.1.1.1'] } })).tailnet).toBe('tail1234.ts.net')
+  })
+
+  it('the shared change key: an unknown MAC keeps the previous identity; a known other MAC or gateway does not', () => {
+    expect(mergeGatewayIdentity('192.168.1.1|aa', '192.168.1.1|')).toBe('192.168.1.1|aa')
+    expect(mergeGatewayIdentity('192.168.1.1|aa', '')).toBe('192.168.1.1|aa')
+    expect(mergeGatewayIdentity('192.168.1.1|aa', '192.168.1.1|bb')).toBe('192.168.1.1|bb')
+    expect(mergeGatewayIdentity('192.168.1.1|aa', '10.0.0.1|')).toBe('10.0.0.1|')
+  })
+
+  it('first visit: nothing allowed, nothing listens, whatever the OS says (Windows Private too)', async () => {
+    const read = await watcher(() => '192.168.1.1|a4:2b:b0:01:02:03', { os: 'private' }).read({ interfaces: wifi('192.168.1.20'), tailscaleIps: new Set(), tailnet: null, allowed: [] })
+    expect(read.candidates).toEqual([expect.objectContaining({ address: '192.168.1.20', networkId: HOME, refusal: NOT_ALLOWED_SENTENCE })])
+    expect(read.networks).toEqual([{ id: HOME, kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', allowed: false, osCategory: 'private', ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }])
+  })
+
+  it('an allowed network listens; a gateway without a MAC yet cannot be identified, so it cannot be allowed', async () => {
+    const allowed = await watcher(() => '192.168.1.1|a4:2b:b0:01:02:03').read({ interfaces: wifi('192.168.1.20'), tailscaleIps: new Set(), tailnet: null, allowed: allowedHome })
+    expect(allowed.candidates[0].refusal).toBeNull()
+    expect(allowed.networks[0]).toMatchObject({ allowed: true, osCategory: 'unknown' })
+    const unknown = await watcher(() => '192.168.1.1|').read({ interfaces: wifi('192.168.1.20'), tailscaleIps: new Set(), tailnet: null, allowed: allowedHome })
+    expect(unknown.candidates[0]).toMatchObject({ networkId: null, refusal: NOT_ALLOWED_SENTENCE })
+    expect(unknown.networks[0]).toMatchObject({ id: null, allowed: false })
+  })
+
+  it('a changed network on an interface is reported before anything else is read; a missing MAC is no change', async () => {
+    let gateway = '192.168.1.1|a4:2b:b0:01:02:03'
+    const w = watcher(() => gateway)
+    const changes: string[][] = []
+    const read = () => w.read({ interfaces: wifi('192.168.1.20'), tailscaleIps: new Set(), tailnet: null, allowed: allowedHome, beforeChange: async (c) => { changes.push(c) } })
+    await read()
+    gateway = '192.168.1.1|'
+    expect((await read()).candidates[0].refusal).toBeNull()
+    gateway = '192.168.1.1|de:ad:be:ef:00:01'
+    expect((await read()).candidates[0].refusal).toBe(NOT_ALLOWED_SENTENCE)
+    expect(changes).toEqual([['Wi-Fi']])
   })
 })
 
@@ -327,8 +373,8 @@ describe('pairing window (§5.3-§5.5)', () => {
 describe('Tailscale and firewall parsers', () => {
   it('reads Self.TailscaleIPs and the MagicDNS name only while running', () => {
     expect(parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['100.101.102.103', 'FD7A:115C:A1E0::1'], DNSName: 'host-1.tail1234.ts.net.' } })))
-      .toEqual({ state: 'running', ips: ['100.101.102.103', 'fd7a:115c:a1e0::1'], dnsName: 'host-1.tail1234.ts.net' })
-    expect(parseTailscaleStatus(JSON.stringify({ BackendState: 'Stopped', Self: { TailscaleIPs: ['100.1.1.1'] } }))).toEqual({ state: 'stopped', ips: [], dnsName: null })
+      .toEqual({ state: 'running', ips: ['100.101.102.103', 'fd7a:115c:a1e0::1'], dnsName: 'host-1.tail1234.ts.net', tailnet: null })
+    expect(parseTailscaleStatus(JSON.stringify({ BackendState: 'Stopped', Self: { TailscaleIPs: ['100.1.1.1'] } }))).toEqual({ state: 'stopped', ips: [], dnsName: null, tailnet: null })
   })
 
   it('serve is on only when a handler proxies to this daemon\'s port', () => {
@@ -339,13 +385,12 @@ describe('Tailscale and firewall parsers', () => {
   })
 
   it('firewall: Windows block rules and Public networks, macOS block-all, Linux commands', async () => {
-    expect((await probeFirewall({ port: 7385, allLanPublic: false, platform: 'win32', program: 'C:\\ADF Studio.exe', exec: async () => '1\r\n' })).state).toBe('blocked')
-    expect((await probeFirewall({ port: 7385, allLanPublic: true, platform: 'win32', exec: async () => '0' })).state).toBe('public_network')
-    expect((await probeFirewall({ port: 7385, allLanPublic: false, platform: 'win32', exec: async () => '0' })).state).toBe('ok')
+    expect((await probeFirewall({ port: 7385, platform: 'win32', program: 'C:\\ADF Studio.exe', exec: async () => '1\r\n' })).state).toBe('blocked')
+    expect((await probeFirewall({ port: 7385, platform: 'win32', exec: async () => '0' })).state).toBe('ok')
     const mac = (blockAll: string) => async (_f: string, args: string[]) => (args[0] === '--getglobalstate' ? 'Firewall is enabled. (State = 1)' : args[0] === '--getblockall' ? blockAll : 'is permitted')
-    expect((await probeFirewall({ port: 7385, allLanPublic: false, platform: 'darwin', exec: mac('Firewall has block all state set to enabled.') })).state).toBe('blocked')
-    expect((await probeFirewall({ port: 7385, allLanPublic: false, platform: 'darwin', exec: mac('Block all DISABLED!') })).state).toBe('ok')
-    const linux = await probeFirewall({ port: 7385, allLanPublic: false, platform: 'linux' })
+    expect((await probeFirewall({ port: 7385, platform: 'darwin', exec: mac('Firewall has block all state set to enabled.') })).state).toBe('blocked')
+    expect((await probeFirewall({ port: 7385, platform: 'darwin', exec: mac('Block all DISABLED!') })).state).toBe('ok')
+    const linux = await probeFirewall({ port: 7385, platform: 'linux' })
     expect(linux.state).toBe('unknown')
     expect(linux.commands.join('\n')).toMatch(/ufw allow .*7385/)
   })

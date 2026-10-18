@@ -1,7 +1,7 @@
 /**
  * Remote access in the renderer (Settings → Networking, Settings → Backend)
  * (docs/design/remote-access.md §7, §9.1; owner decisions 2026-10-18): the
- * status line (Public network), the address order and labels, the devices
+ * status line (consent per network), the address order and labels, the devices
  * list, the pairing code, the token shown once, the computers found and the
  * pairing dialog's messages. Static markup, no jsdom.
  */
@@ -13,6 +13,8 @@ import {
   meshServerHosts,
   meshVisibilityLine,
   networkStatusText,
+  NetworkConsentPanel,
+  PUBLIC_NETWORK_WARNING,
   remoteSummary,
   NewTokenPanel,
   NOT_ENCRYPTED_WARNING,
@@ -38,9 +40,10 @@ import { DOCS } from '../../../src/shared/constants/docs-links'
 const status = (over: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus => ({
   enabled: true, state: 'on', message: '', problem: null, name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', port: 7385,
   addresses: [
-    { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', network: 'private', listening: true, problem: null },
-    { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', network: 'tailnet', listening: true, problem: null },
+    { address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', networkId: 'lan-0123456789abcdef', allowed: true, listening: true, problem: null },
+    { address: '100.101.102.103', family: 'IPv4', kind: 'tailnet', iface: 'Tailscale', networkId: 'tailnet-0123456789abcdef', allowed: true, listening: true, problem: null },
   ],
+  networks: [], allowedNetworks: [], meshLan: false,
   urls: [], hostNames: [],
   tailscale: { state: 'running', serve: 'off', httpsUrl: null, serveCommand: null },
   mdns: { announcing: true, problem: null },
@@ -54,10 +57,10 @@ const device = (over: Partial<RemoteDevice> = {}): RemoteDevice => ({
 })
 
 describe('status line', () => {
-  it('off, on with the listening addresses, and Public (nothing listens)', () => {
+  it('off, on with the listening addresses, and paused on a network not allowed (nothing listens)', () => {
     expect(remoteStatusLine(status({ enabled: false, state: 'off' }))).toBe('Off.')
     expect(remoteStatusLine(status())).toBe('Listening on 192.168.1.20, 100.101.102.103.')
-    expect(remoteStatusLine(status({ addresses: [], firewall: { state: 'public_network', message: '', commands: [] } }))).toBe('Not reachable on this network (Public).')
+    expect(remoteStatusLine(status({ state: 'paused', message: 'Paused on Cafe (10.0.0.0/24).', addresses: [] }))).toBe('Paused on Cafe (10.0.0.0/24).')
   })
 
   it('no address, the env bind and errors show the daemon\'s sentence', () => {
@@ -159,16 +162,38 @@ describe('pairing dialog messages (client)', () => {
 })
 
 describe('Settings → Networking', () => {
+  const home = { id: 'lan-0123456789abcdef', kind: 'lan' as const, label: 'Home (192.168.1.0/24)', allowed: true, osCategory: 'private' as const, ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }
+  const cafe = { id: 'lan-fedcba9876543210', kind: 'lan' as const, label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'unknown' as const, ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'] }
   const net = (over: Partial<NetworkStatusView>): NetworkStatusView => ({
-    available: true, network: 'private', lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', network: 'private' }],
-    tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, problem: null, markable: false, ...over,
+    available: true, lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', allowed: true }], networks: [home],
+    allowedNetworks: [{ id: home.id, kind: 'lan', label: home.label, addedAt: '2026-10-18T00:00:00Z' }],
+    tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, ...over,
   })
 
-  it('the status line: category, LAN address, Tailscale, firewall', () => {
-    expect(networkStatusText(net({}))).toBe('Network: Private (Wi-Fi) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok')
-    expect(networkStatusText(net({ network: 'public', lan: [{ address: '10.0.0.5', iface: 'Wi-Fi', network: 'public' }], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'blocked', message: 'x' } })))
-      .toBe('Network: Public (Wi-Fi) · LAN 10.0.0.5, not listening · Tailscale not installed · Firewall blocked')
-    expect(networkStatusText(net({ network: 'none', lan: [], tailscale: 'stopped' }))).toBe('Network: no LAN address · Tailscale stopped · Firewall ok')
+  it('the status line: the networks (allowed or not), LAN address, Tailscale, firewall', () => {
+    expect(networkStatusText(net({}))).toBe('Network: Home (192.168.1.0/24) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok')
+    expect(networkStatusText(net({ networks: [cafe], lan: [{ address: '10.0.0.5', iface: 'Wi-Fi', allowed: false }], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'blocked', message: 'x' } })))
+      .toBe('Network: Cafe (10.0.0.0/24) (not allowed) · LAN 10.0.0.5, not listening · Tailscale not installed · Firewall blocked')
+    expect(networkStatusText(net({ networks: [], lan: [], tailscale: 'stopped' }))).toBe('Network: no LAN address · Tailscale stopped · Firewall ok')
+  })
+
+  it('a network not allowed: "Remote access paused on <network>.", Allow on this network, the warning; Allowed networks with Remove', () => {
+    const html = renderToStaticMarkup(<NetworkConsentPanel view={net({ networks: [cafe] })} busy={false} note={null} onAllow={() => {}} onRemove={() => {}} />)
+    expect(html).toContain('Remote access paused on Cafe (10.0.0.0/24).')
+    expect(html).toContain('Allow on this network')
+    expect(html).toContain(PUBLIC_NETWORK_WARNING)
+    expect(PUBLIC_NETWORK_WARNING).toBe('Public network. The token is sent unencrypted.')
+    expect(html).toContain('Allowed networks')
+    expect(html).toContain('Home (192.168.1.0/24)')
+    expect(html).toContain('Remove')
+    const allowedHere = renderToStaticMarkup(<NetworkConsentPanel view={net({})} busy={false} note={null} onAllow={() => {}} onRemove={() => {}} />)
+    expect(allowedHere).not.toContain('Allow on this network')
+    expect(allowedHere).toContain('Current network')
+    // A Windows Private network gets the button but no warning.
+    const privateCafe = renderToStaticMarkup(<NetworkConsentPanel view={net({ networks: [{ ...cafe, osCategory: 'private' }] })} busy={false} note={null} onAllow={() => {}} onRemove={() => {}} />)
+    expect(privateCafe).toContain('Allow on this network')
+    expect(privateCafe).not.toContain(PUBLIC_NETWORK_WARNING)
+    expect(renderToStaticMarkup(<NetworkConsentPanel view={net({ allowedNetworks: [] })} busy={false} note={null} onAllow={() => {}} onRemove={() => {}} />)).toContain('None')
   })
 
   it('agent visibility on the mesh: the LanAgentsList predicate, then public, then the rest', () => {

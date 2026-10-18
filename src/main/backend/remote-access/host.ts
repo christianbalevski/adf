@@ -137,20 +137,16 @@ export class RemoteAccessHost {
     }
   }
 
-  /**
-   * The toggle (turning it on is confirmed once, plainly), the computer's
-   * name, and macOS/Linux "Allow on This Network" (`trustNetwork`, §3.3.1).
-   */
-  async set(request: { enabled?: unknown; name?: unknown; trustNetwork?: unknown }): Promise<RemoteAccessResult> {
+  /** The toggle (turning it on is confirmed once, plainly) and the computer's name. */
+  async set(request: { enabled?: unknown; name?: unknown }): Promise<RemoteAccessResult> {
     const enabled = typeof request?.enabled === 'boolean' ? request.enabled : undefined
-    const trustNetwork = typeof request?.trustNetwork === 'boolean' ? request.trustNetwork : undefined
     const name = typeof request?.name === 'string' && request.name.trim() ? request.name.trim() : undefined
-    if (enabled === undefined && trustNetwork === undefined && name === undefined) return { ok: false, code: 'daemon', error: 'Nothing to change.' }
+    if (enabled === undefined && name === undefined) return { ok: false, code: 'daemon', error: 'Nothing to change.' }
     if (typeof this.management() === 'string') return { ok: false, code: 'unavailable', error: this.management() as string }
     if (enabled === undefined) {
-      return this.run(trustNetwork === undefined ? 'Renaming' : trustNetwork ? 'Allowing on this network' : 'Forgetting this network', async (m) => {
-        const s = await m.set({ ...(name ? { name } : {}), ...(trustNetwork !== undefined ? { trustNetwork } : {}) })
-        this.log.log(`[Remote access] ${trustNetwork === undefined ? `Name: ${s.name}` : trustNetwork ? 'This network is private now' : 'This network is no longer private'} (Settings → Backend): ${s.message}`)
+      return this.run('Renaming', async (m) => {
+        const s = await m.set({ ...(name ? { name } : {}) })
+        this.log.log(`[Remote access] Name: ${s.name} (Settings → Networking): ${s.message}`)
         return s
       })
     }
@@ -165,12 +161,23 @@ export class RemoteAccessHost {
         return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
       }
     }
-    const result = await this.run(enabled ? 'Turning on' : 'Turning off', (m) => m.set({ enabled, ...(name ? { name } : {}), ...(trustNetwork !== undefined ? { trustNetwork } : {}) }))
+    const result = await this.run(enabled ? 'Turning on' : 'Turning off', (m) => m.set({ enabled, ...(name ? { name } : {}) }))
     if (result.ok) {
       const s = result.view.status
       this.log.log(`[Remote access] ${enabled ? 'On' : 'Off'} (Settings → Backend): ${s?.state ?? '?'}${s?.message ? `: ${s.message}` : ''}`)
     }
     return result
+  }
+
+  /** Allow on this network / Remove (owner decision 2026-10-18 b): the daemon's consent routes. */
+  async network(action: 'allow' | 'forget', id: unknown): Promise<RemoteAccessResult> {
+    if (typeof id !== 'string' || !id) return { ok: false, code: 'daemon', error: 'No network given.' }
+    return this.run(action === 'allow' ? 'Allow on this network' : 'Remove network', async (m) => {
+      const s = action === 'allow' ? await m.allowNetwork(id) : await m.forgetNetwork(id)
+      const label = s.networks.find((n) => n.id === id)?.label ?? s.allowedNetworks.find((n) => n.id === id)?.label ?? id
+      this.log.log(`[Remote access] ${action === 'allow' ? 'Allowed on' : 'Removed'} ${label} (Settings → Networking): ${s.message}`)
+      return s
+    })
   }
 
   /** "Add a computer": a device token, returned once. */

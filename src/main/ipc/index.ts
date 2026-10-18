@@ -400,7 +400,7 @@ async function startMdnsIfEligibleInner(): Promise<void> {
   if (!meshServer || !meshServer.isRunning()) return
   const host = meshServer.getHost()
   if (host !== '0.0.0.0') return  // only announce/browse when LAN-bound
-  if (!meshServer.isLanReachable()) return  // LAN mode on a network that is not private: nothing to announce
+  if (!meshServer.isLanReachable()) return  // LAN mode on a network not allowed: nothing to announce
 
   // LAN-visible spans both 'lan' and 'public' tiers: a public agent is
   // reachable from the public internet, which subsumes the LAN, so it must
@@ -1959,7 +1959,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Start MeshServer (always runs, independent of mesh enable/disable)
   meshServer = new MeshServer(codeSandboxService, settings)
-  // LAN mode: private networks and Tailscale only; macOS/Linux read the networks the owner marked private (remote-access.json).
+  // LAN mode: only on networks the user allowed (remote-access.json allowedNetworks, shared with remote access).
   meshServer.setLanReach(new LanReach({ settingsDir: getUserDataPath() }))
   meshServer.start()
     .then(() => { void startMdnsIfEligible() })
@@ -8429,6 +8429,12 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
 }
 
 /** Expose the active workspace for the adf-file:// protocol handler. */
+/** Embedded mode: the mesh's LAN mode, for the consent prompt and an allow or remove (remote-access-ipc.ts). */
+export function meshLanState(): { on: boolean; sync: () => Promise<void> } | null {
+  const server = meshServer
+  return server ? { on: server.isLanMode(), sync: () => server.syncLan(true) } : null
+}
+
 export function getCurrentWorkspace(): AdfWorkspace | null {
   return currentWorkspace
 }

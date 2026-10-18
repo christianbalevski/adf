@@ -2,14 +2,13 @@
  * Which addresses other computers may reach this runtime on, for every
  * listener that goes beyond loopback: the mesh server's LAN mode and
  * remote access (docs/design/remote-access.md §3.3, §3.3.1). Private LAN
- * addresses on a network the OS (Windows) or the owner (macOS, Linux:
- * `privateNetworks` in remote-access.json) marks private, and Tailscale
- * addresses. Never a public network, never a public address.
+ * addresses and Tailscale addresses, and only on a network the user allowed
+ * (owner decision 2026-10-18 b: `allowedNetworks` in remote-access.json, one
+ * list for both). Never without consent, never a public address.
  *
- * - `LanReach`: the current addresses with their network, the Tailscale
- *   state, and why a category could not be read. Interfaces are read on
- *   every call (cheap); network categories and Tailscale at most every 60 s
- *   or when the interfaces change (they run a command).
+ * - `LanReach`: the current addresses with their network and whether it is
+ *   allowed, and the networks. Interfaces, gateways and the allowed list are
+ *   read on every call (cheap); Tailscale at most every 60 s.
  * - `LanListeners`: one http.Server per address on the server's port, next
  *   to its loopback listener, handing requests and WebSocket upgrades to
  *   the same Fastify instance. No wildcard bind.
@@ -22,31 +21,35 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from 'node:net'
 import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os'
 import type { Duplex } from 'node:stream'
-import { addressCandidates, type AddressCandidate } from '../daemon/remote-access/addresses'
-import { loadRemoteAccessConfig } from '../daemon/remote-access/config'
-import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from '../daemon/remote-access/network-category'
-import { NetworkCategoryTracker } from '../daemon/remote-access/network-key'
-import { TailscaleClient, type TailscaleSelf } from '../daemon/remote-access/tailscale'
+import type { AllowedNetwork, NetworkView } from '../../shared/types/remote-access.types'
+import type { AddressCandidate } from '../daemon/remote-access/addresses'
+import { readAllowedNetworks } from '../daemon/remote-access/config'
+import { readGatewayIdentities, readOsCategories, readWifiNames } from '../daemon/remote-access/network-category'
+import { NetworkWatcher } from '../daemon/remote-access/network-key'
+import { TailscaleClient, tailnetNameOf, type TailscaleSelf } from '../daemon/remote-access/tailscale'
 
 const SLOW_REFRESH_MS = 60_000
 
 export interface LanReachSnapshot {
-  /** Every candidate address with its network; `refusal` set on a public network. */
+  /** Every candidate address with its network; `refusal` set when that network is not allowed. */
   addresses: AddressCandidate[]
   /** The addresses a listener may use now. */
   listenable: string[]
+  /** The networks this computer is on now. */
+  networks: NetworkView[]
   tailscale: TailscaleSelf['state']
-  /** Why the network category could not be read (everything is then public); null when fine. */
-  problem: string | null
 }
 
 export interface LanReachOptions {
-  /** Where remote-access.json lives (macOS, Linux: the networks the owner marked private); null: none trusted. */
+  /** Where remote-access.json lives (`allowedNetworks`); null: no network allowed. */
   settingsDir: string | null
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
-  categories?: (ifaces: readonly string[]) => Promise<NetworkCategories>
+  /** The allowed networks. Default: read from remote-access.json on every call. */
+  allowed?: () => Promise<AllowedNetwork[]>
   /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown). Default: readGatewayIdentities. */
   gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
+  wifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
+  osCategories?: (ifaces: readonly string[]) => Promise<Map<string, 'private' | 'public'>>
   tailscale?: () => Promise<TailscaleSelf>
   now?: () => number
 }
@@ -55,16 +58,14 @@ export class LanReach {
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleAt = 0
   private readonly tailscaleClient = new TailscaleClient()
-  /** The daemon's rule (network-key.ts): a category holds for the interface's addresses and gateway at the read (re-review 2). */
-  private readonly tracker: NetworkCategoryTracker
+  /** The daemon's rule (network-key.ts): the same network identity and the same consent list. */
+  private readonly watcher: NetworkWatcher
 
   constructor(private readonly opts: LanReachOptions) {
-    this.tracker = new NetworkCategoryTracker({
-      readCategories: this.opts.categories ?? ((ifaces) => {
-        const trusted = this.opts.settingsDir ? loadRemoteAccessConfig(this.opts.settingsDir).config.privateNetworks : []
-        return readNetworkCategories(ifaces, trusted)
-      }),
+    this.watcher = new NetworkWatcher({
       readGateways: this.opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces)),
+      readWifiNames: this.opts.wifiNames ?? ((ifaces) => readWifiNames(ifaces)),
+      readOsCategories: this.opts.osCategories ?? ((ifaces) => readOsCategories(ifaces)),
       slowCheckMs: SLOW_REFRESH_MS,
       ...(this.opts.now ? { now: this.opts.now } : {}),
     })
@@ -72,7 +73,7 @@ export class LanReach {
 
   /**
    * The addresses now. `onNetworkChanged` gets the LAN interfaces whose
-   * network changed, before the category re-read: close their listeners.
+   * network changed, before anything else: close their listeners.
    */
   async snapshot(opts: { force?: boolean; onNetworkChanged?: (ifaces: string[]) => Promise<void> } = {}): Promise<LanReachSnapshot> {
     const now = (this.opts.now ?? Date.now)()
@@ -81,14 +82,19 @@ export class LanReach {
       this.tailscaleSelf = await (this.opts.tailscale ?? (() => this.tailscaleClient.self()))().catch(() => ({ state: 'absent' as const, ips: [], dnsName: null }))
       this.tailscaleAt = now
     }
-    const tailscaleIps = new Set(this.tailscaleSelf.ips.map((ip) => ip.toLowerCase()))
-    const categories = await this.tracker.refresh({ interfaces, tailscaleIps, force: opts.force, ...(opts.onNetworkChanged ? { beforeReread: opts.onNetworkChanged } : {}) })
-    const addresses = addressCandidates({ interfaces, tailscaleIps, categories: categories.categories })
+    const allowed = await (this.opts.allowed ?? (() => readAllowedNetworks(this.opts.settingsDir)))()
+    const reading = await this.watcher.read({
+      interfaces,
+      tailscaleIps: new Set(this.tailscaleSelf.ips.map((ip) => ip.toLowerCase())),
+      tailnet: tailnetNameOf(this.tailscaleSelf),
+      allowed,
+      ...(opts.onNetworkChanged ? { beforeChange: opts.onNetworkChanged } : {}),
+    })
     return {
-      addresses,
-      listenable: addresses.filter((a) => a.refusal === null).map((a) => a.address),
+      addresses: reading.candidates,
+      listenable: reading.candidates.filter((a) => a.refusal === null).map((a) => a.address),
+      networks: reading.networks,
       tailscale: this.tailscaleSelf.state,
-      problem: categories.problem,
     }
   }
 }

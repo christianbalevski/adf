@@ -1,25 +1,24 @@
 /**
  * `<settings dir>/remote-access.json` (docs/design/remote-access.md §3.1):
  * whether other computers may connect, the name they see, the daemon's
- * remote-access id (its fingerprint) and, on macOS and Linux, the networks
- * the owner marked private (§3.3.1). Only the daemon writes it, through the
- * management routes; whoever starts the daemon (Studio, adf, a service)
- * gets the same behaviour without an environment variable.
+ * remote-access id (its fingerprint) and the networks the user allowed
+ * (§3.3.1, owner decision 2026-10-18 b; the mesh's LAN mode reads the same
+ * list). The daemon writes it through the management routes; embedded
+ * Studio, which has no daemon, changes only `allowedNetworks` (allowNetwork,
+ * forgetNetwork). Whoever starts the daemon (Studio, adf, a service) gets the
+ * same behaviour without an environment variable.
  */
 
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { writeSecretFileAtomic } from '../../utils/secret-write'
 
 export const REMOTE_ACCESS_FILENAME = 'remote-access.json'
 
-export interface PrivateNetwork {
-  id: string
-  label: string
-  addedAt: string
-}
+import type { AllowedNetwork } from '../../../shared/types/remote-access.types'
 
 export interface RemoteAccessConfig {
   v: 1
@@ -27,7 +26,8 @@ export interface RemoteAccessConfig {
   name: string
   /** 128-bit random, base32; minted on first enable, never changed. */
   daemonId: string | null
-  privateNetworks: PrivateNetwork[]
+  /** Networks the user allowed: only there do remote access and the mesh's LAN mode listen. */
+  allowedNetworks: AllowedNetwork[]
   /** Advanced (CLI `--address`): bind exactly these instead of the automatic set. */
   addresses?: string[]
 }
@@ -93,7 +93,7 @@ export function defaultComputerName(): string {
 }
 
 export function defaultRemoteAccessConfig(name: string = defaultComputerName()): RemoteAccessConfig {
-  return { v: 1, enabled: false, name, daemonId: null, privateNetworks: [] }
+  return { v: 1, enabled: false, name, daemonId: null, allowedNetworks: [] }
 }
 
 export function remoteAccessConfigPath(settingsDir: string): string {
@@ -118,9 +118,7 @@ export function loadRemoteAccessConfig(settingsDir: string, defaultName?: string
   if (!isRecord(raw) || raw.v !== 1) {
     return { config: defaults, problem: `${path} has an unsupported version; remote access is off until it is fixed or deleted` }
   }
-  const networks = Array.isArray(raw.privateNetworks)
-    ? raw.privateNetworks.filter((n): n is PrivateNetwork => isRecord(n) && typeof n.id === 'string' && typeof n.label === 'string' && typeof n.addedAt === 'string')
-    : []
+  const networks = parseAllowedNetworks(raw.allowedNetworks)
   const addresses = Array.isArray(raw.addresses) ? raw.addresses.filter((a): a is string => typeof a === 'string') : undefined
   return {
     config: {
@@ -128,7 +126,7 @@ export function loadRemoteAccessConfig(settingsDir: string, defaultName?: string
       enabled: raw.enabled === true,
       name: cleanDisplayName(raw.name, 63) ?? defaults.name,
       daemonId: typeof raw.daemonId === 'string' && /^[a-z2-7]{26}$/.test(raw.daemonId) ? raw.daemonId : null,
-      privateNetworks: networks,
+      allowedNetworks: networks,
       ...(addresses && addresses.length ? { addresses } : {}),
     },
     problem: null,
@@ -138,6 +136,42 @@ export function loadRemoteAccessConfig(settingsDir: string, defaultName?: string
 /** Atomic write, readable by the current user only from the first byte; throws SecretFileError when it cannot be restricted. */
 export function saveRemoteAccessConfig(settingsDir: string, config: RemoteAccessConfig): void {
   writeSecretFileAtomic(remoteAccessConfigPath(settingsDir), `${JSON.stringify(config, null, 2)}\n`)
+}
+
+function parseAllowedNetworks(raw: unknown): AllowedNetwork[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((n): n is AllowedNetwork => isRecord(n) && typeof n.id === 'string' && /^(lan|tailnet)-[0-9a-f]{16}$/.test(n.id)
+    && (n.kind === 'lan' || n.kind === 'tailnet') && typeof n.label === 'string' && typeof n.addedAt === 'string')
+}
+
+/** The allowed networks, read without blocking (the mesh's LAN mode reads them every check). [] when absent or unreadable. */
+export async function readAllowedNetworks(settingsDir: string | null): Promise<AllowedNetwork[]> {
+  if (!settingsDir) return []
+  try {
+    const raw = JSON.parse(await readFile(remoteAccessConfigPath(settingsDir), 'utf-8')) as unknown
+    return isRecord(raw) && raw.v === 1 ? parseAllowedNetworks(raw.allowedNetworks) : []
+  } catch {
+    return []
+  }
+}
+
+/** Allow a network (embedded Studio; the daemon goes through its routes). Returns the list. */
+export function allowNetwork(settingsDir: string, network: Omit<AllowedNetwork, 'addedAt'>, at = new Date()): AllowedNetwork[] {
+  const loaded = loadRemoteAccessConfig(settingsDir)
+  if (loaded.problem) throw new Error(loaded.problem)
+  if (loaded.config.allowedNetworks.some(n => n.id === network.id)) return loaded.config.allowedNetworks
+  const allowedNetworks = [...loaded.config.allowedNetworks, { ...network, addedAt: at.toISOString() }]
+  saveRemoteAccessConfig(settingsDir, { ...loaded.config, allowedNetworks })
+  return allowedNetworks
+}
+
+/** Remove an allowed network (embedded Studio). Returns the list. */
+export function forgetNetwork(settingsDir: string, id: string): AllowedNetwork[] {
+  const loaded = loadRemoteAccessConfig(settingsDir)
+  if (loaded.problem) throw new Error(loaded.problem)
+  const allowedNetworks = loaded.config.allowedNetworks.filter(n => n.id !== id)
+  if (allowedNetworks.length !== loaded.config.allowedNetworks.length) saveRemoteAccessConfig(settingsDir, { ...loaded.config, allowedNetworks })
+  return allowedNetworks
 }
 
 export function newDaemonId(): string {

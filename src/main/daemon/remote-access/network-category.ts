@@ -1,23 +1,15 @@
 /**
- * Private or public network, per interface (docs/design/remote-access.md
- * §3.3.1, owner decision O2). The daemon never listens on a network that is
- * not marked private.
- *
- * - Windows: the OS's NetConnectionProfile category (`Get-NetConnectionProfile`,
- *   no elevation). Private and DomainAuthenticated are private; Public, an
- *   interface without a profile, or a failed query are public.
- * - macOS, Linux: no OS category exists. A network is identified by the
- *   interface's default gateway (IP and MAC address); it is private only when
- *   the owner marked it so (`privateNetworks` in remote-access.json). No
- *   gateway, no MAC, a failed read, or an unlisted network: public.
+ * What this computer can read about its networks without a permission
+ * prompt (docs/design/remote-access.md §3.3.1, owner decision 2026-10-18 b):
+ * each LAN interface's default gateway (IP and MAC), the Wi-Fi name where a
+ * plain command gives it (Linux), and Windows' network category, which is
+ * only shown (a warning on a Public network), never consent.
  *
  * All commands run asynchronously with a timeout; parsers are pure.
  */
 
 import { execFile } from 'node:child_process'
-import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import type { PrivateNetwork } from './config'
 
 export type Exec = (file: string, args: string[], opts?: { timeoutMs?: number }) => Promise<string>
 
@@ -27,20 +19,6 @@ export const defaultExec: Exec = (file, args, opts = {}) => new Promise((resolve
     else resolve(String(stdout))
   })
 })
-
-export interface CurrentNetwork {
-  iface: string
-  id: string
-  label: string
-}
-
-export interface NetworkCategories {
-  categories: Map<string, 'private' | 'public'>
-  /** macOS/Linux: the identified networks of the given interfaces (the ones trustNetwork marks). */
-  current: CurrentNetwork[]
-  /** Why the categories could not be read (everything is then public); null when fine. */
-  problem: string | null
-}
 
 // --- Windows ------------------------------------------------------------------
 
@@ -66,11 +44,7 @@ export function parseWindowsProfiles(json: string): Map<string, 'private' | 'pub
 
 const WINDOWS_PROFILE_COMMAND = 'Get-NetConnectionProfile | Select-Object InterfaceAlias,NetworkCategory | ConvertTo-Json -Compress'
 
-// --- macOS / Linux: the default gateway's identity ------------------------------
-
-export function networkId(gatewayIp: string, gatewayMac: string): string {
-  return createHash('sha256').update(`${gatewayIp}|${gatewayMac.toLowerCase()}`, 'utf-8').digest('hex').slice(0, 16)
-}
+// --- macOS / Linux: the default gateway ------------------------------------------
 
 /** `netstat -rn -f inet` (macOS): `default  192.168.1.1  UGScg  en0` → en0 → 192.168.1.1 (the first default per interface). */
 export function parseDarwinDefaultRoutes(text: string): Map<string, string> {
@@ -124,19 +98,6 @@ export function parseLinuxArp(text: string): Map<string, string> {
 
 function normalizeMac(mac: string): string {
   return mac.toLowerCase().split(':').map(part => part.padStart(2, '0')).join(':')
-}
-
-/** The identified networks of `ifaces`, from the default routes and the ARP table. */
-export function currentNetworks(ifaces: readonly string[], routes: Map<string, string>, arp: Map<string, string>): CurrentNetwork[] {
-  const out: CurrentNetwork[] = []
-  for (const iface of ifaces) {
-    const gateway = routes.get(iface)
-    if (!gateway) continue
-    const mac = arp.get(`${iface}|${gateway}`)
-    if (!mac) continue
-    out.push({ iface, id: networkId(gateway, mac), label: `${iface} via ${gateway}` })
-  }
-  return out
 }
 
 // --- Windows: default gateways (cheap; the category itself needs PowerShell) -----
@@ -228,40 +189,37 @@ export interface CategoryReaderDeps {
 }
 
 /**
- * The category of each of `ifaces` (the LAN interfaces with a private
- * address). Never throws: a failure makes every interface public and says why.
+ * Windows' category of each of `ifaces` (Get-NetConnectionProfile, no
+ * elevation); an empty map elsewhere or on a failure. Shown only: a Public
+ * or unknown network gets the warning line; it never allows or refuses.
  */
-export async function readNetworkCategories(ifaces: readonly string[], trusted: readonly PrivateNetwork[], deps: CategoryReaderDeps = {}): Promise<NetworkCategories> {
+export async function readOsCategories(ifaces: readonly string[], deps: CategoryReaderDeps = {}): Promise<Map<string, 'private' | 'public'>> {
   const platform = deps.platform ?? process.platform
   const exec = deps.exec ?? defaultExec
-  const readText = deps.readText ?? ((path: string) => readFile(path, 'utf-8'))
-  const categories = new Map<string, 'private' | 'public'>()
-  for (const iface of ifaces) categories.set(iface, 'public')
-  if (ifaces.length === 0) return { categories, current: [], problem: null }
+  if (platform !== 'win32' || ifaces.length === 0) return new Map()
   try {
-    if (platform === 'win32') {
-      const profiles = parseWindowsProfiles(await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROFILE_COMMAND], { timeoutMs: 10_000 }))
-      for (const iface of ifaces) categories.set(iface, profiles.get(iface) ?? 'public')
-      return { categories, current: [], problem: null }
-    }
-    let routes: Map<string, string>
-    let arp: Map<string, string>
-    if (platform === 'darwin') {
-      routes = parseDarwinDefaultRoutes(await exec('netstat', ['-rn', '-f', 'inet']))
-      arp = parseDarwinArp(await exec('arp', ['-an']))
-    } else {
-      routes = parseLinuxRoutes(await readText('/proc/net/route'))
-      arp = parseLinuxArp(await readText('/proc/net/arp'))
-    }
-    const current = currentNetworks(ifaces, routes, arp)
-    const ids = new Set(trusted.map(n => n.id))
-    for (const network of current) if (ids.has(network.id)) categories.set(network.iface, 'private')
-    return { categories, current, problem: null }
-  } catch (err) {
-    return {
-      categories,
-      current: [],
-      problem: `could not read whether this network is private (${err instanceof Error ? err.message : String(err)}); treating it as public`,
-    }
+    const profiles = parseWindowsProfiles(await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROFILE_COMMAND], { timeoutMs: 10_000 }))
+    return new Map(ifaces.filter(i => profiles.has(i)).map(i => [i, profiles.get(i)!]))
+  } catch {
+    return new Map()
   }
+}
+
+/**
+ * The Wi-Fi name (SSID) of each of `ifaces` where reading it needs no
+ * permission: Linux (`iwgetid <iface> -r`). Windows (netsh, since 24H2) and
+ * macOS (since 14.4) require location access for it, so none there.
+ */
+export async function readWifiNames(ifaces: readonly string[], deps: CategoryReaderDeps = {}): Promise<Map<string, string>> {
+  const platform = deps.platform ?? process.platform
+  const exec = deps.exec ?? defaultExec
+  const out = new Map<string, string>()
+  if (platform !== 'linux') return out
+  for (const iface of ifaces) {
+    try {
+      const ssid = (await exec('iwgetid', [iface, '-r'], { timeoutMs: 2_000 })).trim()
+      if (ssid) out.set(iface, ssid)
+    } catch { /* wired, or no iwgetid: no name */ }
+  }
+  return out
 }

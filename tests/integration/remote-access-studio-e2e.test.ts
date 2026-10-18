@@ -69,6 +69,8 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
   const events: Array<Record<string, unknown>> = []
   const asked: string[] = []
   const notices: string[] = []
+  /** "Remote access paused on <network>." questions; answered Not now (the test allows through the IPC). */
+  const networkAsks: string[] = []
   let store: ReturnType<typeof createBackendSettingsStore>
   const invoke = <T>(channel: string, ...args: unknown[]) => electronStub.handlers.get(channel)!({}, ...args) as Promise<T>
 
@@ -122,6 +124,8 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       overrides: {
         host: { confirm: async () => true, askClaim: async ({ claim }) => { asked.push(claim.deviceName); return true }, notify: (t) => notices.push(t), pollMs: 200 },
         discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] },
+        askNetwork: async (q) => { networkAsks.push(q.message); return false },
+        consentPollMs: 1_000,
       },
       log: quiet,
     })
@@ -151,6 +155,23 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     expect(fingerprint).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/)
     expect(on.view.status!.name).toBe('agent-1 e2e')
     console.log(`[e2e] on: ${on.view.status!.state}: ${on.view.status!.message}`)
+
+    // Consent per network (owner decision 2026-10-18 b): this computer's networks are new to the
+    // isolated settings, so nothing listens beyond loopback until each is allowed.
+    const waiting = on.view.status!.networks.filter((n) => !n.allowed && n.id)
+    expect(on.view.status!.addresses.filter((a) => a.listening)).toEqual([])
+    if (on.view.status!.addresses.length > 0) expect(on.view.status!.state).toBe('paused')
+    // Studio asks once per network (Not now here): "Remote access paused on <network>."
+    if (waiting.length) await until(() => networkAsks, (a) => waiting.every((n) => a.includes(`Remote access paused on ${n.label}.`)), 15_000)
+    expect(new Set(networkAsks).size).toBe(networkAsks.length)
+    for (const n of waiting) {
+      expect(await invoke(IPC.NETWORK_ALLOW, n.id)).toEqual({ ok: true })
+      console.log(`[e2e] allowed ${n.label}`)
+    }
+    const allowedView = await invoke<RemoteAccessView>(IPC.REMOTE_ACCESS_GET)
+    expect(allowedView.status!.networks.filter((n) => n.id).every((n) => n.allowed)).toBe(true)
+    expect(allowedView.status!.allowedNetworks.map((n) => n.id).sort()).toEqual(waiting.map((n) => n.id).sort())
+    for (const a of allowedView.status!.addresses.filter((x) => x.allowed)) expect(a.listening || a.problem !== null).toBe(true)
 
     // Add a computer: a device token, accepted on the loopback listener, refused on the management routes.
     const added = await invoke<RemoteDeviceAddResult>(IPC.REMOTE_ACCESS_DEVICE_ADD, 'agent-3 desktop')
@@ -206,6 +227,12 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     expect(revoked.status).toBe(401)
     expect((await revoked.json()).code).toBe('device_revoked')
     await until(() => notices, (n) => n.includes('Device revoked: agent-2 laptop.'))
+
+    // Remove each allowed network: its listeners close at once.
+    for (const n of waiting) expect(await invoke(IPC.NETWORK_FORGET, n.id)).toEqual({ ok: true })
+    const forgotten = await invoke<RemoteAccessView>(IPC.REMOTE_ACCESS_GET)
+    expect(forgotten.status!.allowedNetworks).toEqual([])
+    expect(forgotten.status!.addresses.filter((a) => a.listening)).toEqual([])
 
     const offAgain = await invoke<{ ok: boolean; view: RemoteAccessView }>(IPC.REMOTE_ACCESS_SET, { enabled: false })
     expect(offAgain.ok && offAgain.view.status?.enabled).toBe(false)

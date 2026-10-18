@@ -14,7 +14,7 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
-import type { NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
+import type { NetworkConsentResult, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -738,7 +738,7 @@ export interface AdfApi {
   /** The host panel: the daemon's remote-access status, in local mode only. */
   getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
   /** The toggle (turning it on is confirmed in a native dialog first), the name, and macOS/Linux "Allow on This Network" (`trustNetwork`). */
-  setRemoteAccess: (request: { enabled?: boolean; name?: string; trustNetwork?: boolean }) => Promise<RemoteAccessResult>
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => Promise<RemoteAccessResult>
   /** "Add a computer": a device token, returned this once. */
   addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
   /** Remove a computer (confirmed first): disconnected now, its token stops working. */
@@ -759,8 +759,12 @@ export interface AdfApi {
   submitRemotePairingCode: (code: string) => Promise<RemotePairState>
   cancelRemotePairing: () => Promise<RemotePairState>
   onRemotePairingState: (callback: (state: RemotePairState) => void) => () => void
-  /** Settings → Networking's status line: network category, LAN address, Tailscale, firewall. */
+  /** Settings → Networking's status line: the networks and whether each is allowed, LAN address, Tailscale, firewall. */
   getNetworkStatus: () => Promise<NetworkStatusView>
+  /** Allow on this network (remote access and the mesh's LAN mode listen there). */
+  allowNetwork: (id: string) => Promise<NetworkConsentResult>
+  /** Remove an allowed network: its listeners close now. */
+  forgetNetwork: (id: string) => Promise<NetworkConsentResult>
 
   // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void

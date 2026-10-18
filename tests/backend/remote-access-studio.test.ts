@@ -28,6 +28,8 @@ import { RemoteDiscovery, type DaemonAnnouncement } from '../../src/main/backend
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
 import { claimQuestion, networkStatusView, registerRemoteAccessHandlers, runtimeName, unavailableReason } from '../../src/main/backend/remote-access-ipc'
 import type { LanReach } from '../../src/main/services/lan-reach'
+import { NetworkConsentPrompt, networkQuestion, PUBLIC_WARNING, type NetworkQuestion } from '../../src/main/backend/remote-access/network-consent'
+import type { NetworkView } from '../../src/shared/types/remote-access.types'
 import { hostname } from 'node:os'
 import { probeTailnet } from '../../src/main/cli/daemon-discovery'
 import { applyBackendPatch, createBackendSettingsStore, defaultBackendConfig, normalizeBackendConfig, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
@@ -259,12 +261,17 @@ describe('host panel (Settings → Backend → This computer)', () => {
     expect(unavailableReason('embedded')).toContain('This computer')
   })
 
-  it('Allow on This Network (macOS, Linux) sends trustNetwork only', async () => {
+  it('Allow on this network posts the network id; Remove deletes it; set() has no trustNetwork', async () => {
     h.daemon.state.enabled = true
-    const result = await h.host.set({ trustNetwork: true })
-    expect(result.ok).toBe(true)
-    expect(h.daemon.state.trusted).toBe(true)
-    expect(h.daemon.requests.find((r) => r.method === 'PUT')?.body).toEqual({ trustNetwork: true })
+    h.daemon.state.allowed = []
+    const allowed = await h.host.network('allow', 'lan-0123456789abcdef')
+    expect(allowed).toMatchObject({ ok: true, view: { status: { allowedNetworks: [{ id: 'lan-0123456789abcdef' }] } } })
+    expect(h.daemon.requests.find((r) => r.method === 'POST' && r.path === '/remote-access/networks')?.body).toEqual({ id: 'lan-0123456789abcdef' })
+    const removed = await h.host.network('forget', 'lan-0123456789abcdef')
+    expect(removed).toMatchObject({ ok: true, view: { status: { allowedNetworks: [] } } })
+    expect(h.daemon.requests.some((r) => r.method === 'DELETE' && r.path === '/remote-access/networks/lan-0123456789abcdef')).toBe(true)
+    expect(await h.host.network('allow', 'lan-ffffffffffffffff')).toMatchObject({ ok: false, code: 'daemon', error: 'That network is not one this computer is on now.' })
+    expect(await h.host.set({ trustNetwork: true } as never)).toMatchObject({ ok: false, error: 'Nothing to change.' })
     expect(h.confirms).toEqual([])
   })
 
@@ -865,20 +872,20 @@ describe('one name and the Networking status line', () => {
     expect(runtimeName(dir)).toBe(hostname())
   })
 
-  it('the status line view: Private when a LAN address is on a private network, Public when none is', () => {
+  it('the status line view: the networks, each allowed or not, and the allowed list', () => {
+    const lan: NetworkView = { id: 'lan-0123456789abcdef', kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', allowed: false, osCategory: 'public', ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }
     const snapshot = {
       addresses: [
-        { address: '100.101.102.103', family: 'IPv4' as const, kind: 'tailnet' as const, iface: 'Tailscale', network: 'tailnet' as const, refusal: null },
-        { address: '192.168.1.20', family: 'IPv4' as const, kind: 'lan' as const, iface: 'Wi-Fi', network: 'public' as const, refusal: 'Not reachable on this network (Public).' },
+        { address: '100.101.102.103', family: 'IPv4' as const, kind: 'tailnet' as const, iface: 'Tailscale', networkId: 'tailnet-0123456789abcdef', refusal: null },
+        { address: '192.168.1.20', family: 'IPv4' as const, kind: 'lan' as const, iface: 'Wi-Fi', networkId: lan.id, refusal: 'Not allowed on this network.' },
       ],
-      listenable: ['100.101.102.103'], tailscale: 'running' as const, problem: null,
+      listenable: ['100.101.102.103'], networks: [lan], tailscale: 'running' as const,
     }
-    expect(networkStatusView(snapshot, { state: 'ok', message: '', commands: [] }, 'darwin')).toEqual({
-      available: true, network: 'public', lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', network: 'public' }],
-      tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, problem: null, markable: true,
+    const allowedTailnet = [{ id: 'tailnet-0123456789abcdef', kind: 'tailnet' as const, label: 'Tailnet tail1234.ts.net', addedAt: '2026-10-18T00:00:00Z' }]
+    expect(networkStatusView(snapshot, { state: 'ok', message: '', commands: [] }, allowedTailnet)).toEqual({
+      available: true, lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', allowed: false }], networks: [lan], allowedNetworks: allowedTailnet,
+      tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' },
     })
-    const priv = { ...snapshot, addresses: [snapshot.addresses[0], { ...snapshot.addresses[1], network: 'private' as const, refusal: null }] }
-    expect(networkStatusView(priv, { state: 'ok', message: '', commands: [] }, 'win32')).toMatchObject({ network: 'private', markable: false })
   })
 
   it('NETWORK_STATUS_GET reads this computer\'s network; remote mode answers available: false', async () => {
@@ -887,18 +894,96 @@ describe('one name and the Networking status line', () => {
     dirs.push(dir)
     writeFileSync(join(dir, 'studio-backend.json'), JSON.stringify({ v: 1, mode: 'local' }))
     const store = createBackendSettingsStore({ boot: resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet), codec: fakeCodec(), log: quiet })
-    const reach = { snapshot: async () => ({ addresses: [{ address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', network: 'private', refusal: null }], listenable: ['192.168.1.20'], tailscale: 'absent', problem: null }) } as unknown as LanReach
+    const home: NetworkView = { id: 'lan-0123456789abcdef', kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', allowed: true, osCategory: 'private', ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }
+    writeFileSync(join(dir, 'remote-access.json'), JSON.stringify({ v: 1, enabled: false, name: 'h', daemonId: null, allowedNetworks: [{ id: home.id, kind: 'lan', label: home.label, addedAt: '2026-10-18T00:00:00Z' }] }))
+    const reach = { snapshot: async () => ({ addresses: [{ address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', networkId: home.id, refusal: null }], listenable: ['192.168.1.20'], networks: [home], tailscale: 'absent' }) } as unknown as LanReach
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
       overrides: { reach, firewall: async () => ({ state: 'ok', message: 'fine', commands: [] }), platform: 'win32', discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
       log: quiet,
     })
     const view = await electronStub.handlers.get(IPC.NETWORK_STATUS_GET)!({})
-    expect(view).toMatchObject({ available: true, network: 'private', lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', network: 'private' }], tailscale: 'absent', firewall: { state: 'ok' } })
+    expect(view).toMatchObject({ available: true, lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', allowed: true }], networks: [home], allowedNetworks: [{ id: home.id }], tailscale: 'absent', firewall: { state: 'ok' } })
     ipc.dispose()
     electronStub.handlers.clear()
     const remote = registerRemoteAccessHandlers({ mode: 'remote', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, overrides: { reach }, log: quiet })
     expect(await electronStub.handlers.get(IPC.NETWORK_STATUS_GET)!({})).toMatchObject({ available: false })
+    remote.dispose()
+  })
+})
+
+describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
+  const dirs: string[] = []
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
+  const net = (over: Partial<NetworkView> = {}): NetworkView => ({ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'unknown', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'], ...over })
+
+  it('the question: "Remote access paused on <network>." with Allow on this network; the warning only on a LAN not reported Private', () => {
+    expect(networkQuestion(net())).toMatchObject({ title: 'Remote access paused', message: 'Remote access paused on Cafe (10.0.0.0/24).', allowLabel: 'Allow on this network', warning: PUBLIC_WARNING })
+    expect(PUBLIC_WARNING).toBe('Public network. The token is sent unencrypted.')
+    expect(networkQuestion(net({ osCategory: 'public' })).warning).toBe(PUBLIC_WARNING)
+    expect(networkQuestion(net({ osCategory: 'private' })).warning).toBeNull()
+    expect(networkQuestion(net({ kind: 'tailnet', label: 'Tailnet tail1234.ts.net', osCategory: 'private' })).warning).toBeNull()
+  })
+
+  it('asks once per visit, only while remote access or mesh LAN is on; leaving and coming back asks again', async () => {
+    const state = { active: true, networks: [net()] }
+    const asked: NetworkQuestion[] = []
+    const allowed: string[] = []
+    let answer = false
+    const prompt = new NetworkConsentPrompt({
+      read: async () => state,
+      ask: async (q) => { asked.push(q); return answer },
+      allow: async (id) => { allowed.push(id); return { ok: true } },
+      log: quiet,
+    })
+    await prompt.check()
+    await prompt.check()
+    expect(asked.map((q) => q.message)).toEqual(['Remote access paused on Cafe (10.0.0.0/24).'])
+    state.networks = []
+    await prompt.check()
+    state.networks = [net()]
+    answer = true
+    await prompt.check()
+    expect(asked.length).toBe(2)
+    expect(allowed).toEqual(['lan-0123456789abcdef'])
+    // Off: no question. An allowed or unidentified network: no question.
+    const quiet2: NetworkQuestion[] = []
+    const off = new NetworkConsentPrompt({ read: async () => ({ active: false, networks: [net()] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
+    await off.check()
+    const none = new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [net({ allowed: true }), net({ id: null })] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
+    await none.check()
+    expect(quiet2).toEqual([])
+  })
+
+  it('without a daemon: Allow writes remote-access.json and re-syncs the mesh; Remove too; the prompt asks while mesh LAN is on', async () => {
+    electronStub.handlers.clear()
+    const dir = mkdtempSync(join(tmpdir(), 'adf-netconsent-'))
+    dirs.push(dir)
+    writeFileSync(join(dir, 'studio-backend.json'), JSON.stringify({ v: 1, mode: 'embedded' }))
+    const store = createBackendSettingsStore({ boot: resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet), codec: fakeCodec(), log: quiet })
+    const cafe = net()
+    const reach = { snapshot: async () => ({ addresses: [], listenable: [], networks: [cafe], tailscale: 'absent' }) } as unknown as LanReach
+    let syncs = 0
+    const asked: NetworkQuestion[] = []
+    const ipc = registerRemoteAccessHandlers({
+      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
+      meshLan: () => ({ on: true, sync: async () => { syncs++ } }),
+      overrides: { reach, consentPollMs: 0, askNetwork: async (q) => { asked.push(q); return true }, discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      log: quiet,
+    })
+    await ipc.consent.check()
+    expect(asked.map((q) => [q.message, q.warning])).toEqual([['Remote access paused on Cafe (10.0.0.0/24).', PUBLIC_WARNING]])
+    const saved = () => JSON.parse(readFileSync(join(dir, 'remote-access.json'), 'utf-8')).allowedNetworks
+    expect(saved()).toEqual([expect.objectContaining({ id: cafe.id, kind: 'lan', label: cafe.label })])
+    expect(syncs).toBe(1)
+    expect(await electronStub.handlers.get(IPC.NETWORK_FORGET)!({}, cafe.id)).toEqual({ ok: true })
+    expect(saved()).toEqual([])
+    expect(syncs).toBe(2)
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, 'lan-ffffffffffffffff')).toEqual({ ok: false, error: 'That network is not one this computer is on now.' })
+    ipc.dispose()
+    electronStub.handlers.clear()
+    const remote = registerRemoteAccessHandlers({ mode: 'remote', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, overrides: { reach, consentPollMs: 0 }, log: quiet })
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toMatchObject({ ok: false })
     remote.dispose()
   })
 })

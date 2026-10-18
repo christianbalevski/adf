@@ -1,8 +1,9 @@
 /**
  * Which addresses other computers may reach (docs/design/remote-access.md
- * §3.3): private LAN addresses on a private network, and Tailscale
- * addresses. Pure: the caller passes the interfaces, the Tailscale
- * addresses and the network categories it read.
+ * §3.3): private LAN addresses and Tailscale addresses, never a public
+ * address or a virtual adapter. Whether one listens is the user's consent
+ * for its network (network-key.ts, owner decision 2026-10-18 b), which the
+ * caller applies. Pure.
  */
 
 import { isIP } from 'node:net'
@@ -13,13 +14,16 @@ export interface AddressCandidate {
   address: string
   family: 'IPv4' | 'IPv6'
   kind: 'lan' | 'tailnet'
+  /** The interface name `os.networkInterfaces()` reports. */
   iface: string
-  network: 'private' | 'public' | 'tailnet'
-  /** Why it gets no listener even though it is a candidate (public network); null = listen. */
+  /** The network it is on (network-key.ts); null until the caller identified it, or when it cannot be. */
+  networkId: string | null
+  /** Why it gets no listener (its network is not allowed); null = listen. Set by the caller. */
   refusal: string | null
 }
 
-export const PUBLIC_NETWORK_SENTENCE = 'Not reachable on this network (Public).'
+/** An address whose network the user has not allowed. */
+export const NOT_ALLOWED_SENTENCE = 'Not allowed on this network.'
 
 export function isTailnetV6(address: string): boolean {
   return /^fd7a:115c:a1e0:/i.test(address)
@@ -37,17 +41,15 @@ export interface CandidateInputs {
   interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>
   /** `Self.TailscaleIPs` from `tailscale status --json`; empty without Tailscale. */
   tailscaleIps: ReadonlySet<string>
-  /** Per interface name: private or public. Missing = public (unsure = not private, §3.3.1). */
-  categories: ReadonlyMap<string, 'private' | 'public'>
   /** `remote-access.json` `addresses`: only these, still under every rule. */
   only?: readonly string[]
 }
 
 /**
- * Every address that may get a listener, with its network. Public-network
- * LAN addresses are returned with a refusal so the status can list them;
- * anything else (public IPs, link-local, carrier-grade NAT, virtual
- * adapters) is left out.
+ * Every address that may get a listener: private LAN addresses and
+ * Tailscale addresses. Anything else (public IPs, link-local, carrier-grade
+ * NAT, virtual adapters) is left out. `networkId` and `refusal` are the
+ * caller's to set.
  */
 export function addressCandidates(inputs: CandidateInputs): AddressCandidate[] {
   const out: AddressCandidate[] = []
@@ -69,7 +71,7 @@ export function addressCandidates(inputs: CandidateInputs): AddressCandidate[] {
       const tailnet = inputs.tailscaleIps.has(address)
       if (tailnet) {
         seen.add(address)
-        out.push({ address, family, kind: 'tailnet', iface, network: 'tailnet', refusal: null })
+        out.push({ address, family, kind: 'tailnet', iface, networkId: null, refusal: null })
         continue
       }
       // Carrier-grade NAT or Tailscale ranges Tailscale did not confirm: never bound.
@@ -79,8 +81,7 @@ export function addressCandidates(inputs: CandidateInputs): AddressCandidate[] {
       const lan = family === 'IPv4' ? isRFC1918(address) : isUlaV6(address) && !hasPrivateV4.has(iface)
       if (!lan) continue
       seen.add(address)
-      const network = inputs.categories.get(iface) === 'private' ? 'private' : 'public'
-      out.push({ address, family, kind: 'lan', iface, network, refusal: network === 'private' ? null : PUBLIC_NETWORK_SENTENCE })
+      out.push({ address, family, kind: 'lan', iface, networkId: null, refusal: null })
     }
   }
   // Tailnet first, then IPv4 before IPv6, then by interface: a stable order for the status.
@@ -90,10 +91,10 @@ export function addressCandidates(inputs: CandidateInputs): AddressCandidate[] {
     || a.address.localeCompare(b.address))
 }
 
-/** LAN interfaces (non-virtual, private address, not Tailscale): the ones a network category is needed for. */
+/** LAN interfaces (non-virtual, private address, not Tailscale): the ones a network identity is needed for. */
 export function lanInterfaceNames(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>, tailscaleIps: ReadonlySet<string>): string[] {
   const names = new Set<string>()
-  for (const candidate of addressCandidates({ interfaces, tailscaleIps, categories: new Map() })) {
+  for (const candidate of addressCandidates({ interfaces, tailscaleIps })) {
     if (candidate.kind === 'lan') names.add(candidate.iface)
   }
   return [...names]

@@ -24,6 +24,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { requireLocalCaller } from '../identity-routes'
 import { requireLocalProof } from './identity-import-routes'
 import { cleanDisplayName } from '../remote-access/config'
+import { NETWORK_ID } from '../remote-access/network-key'
 import { RemoteAccessError, type RemoteAccessService } from '../remote-access/service'
 import type { ClientSessionRegistry } from '../client-sessions'
 import type { RemoteAccessPatch } from '../../../shared/types/remote-access.types'
@@ -80,7 +81,7 @@ export function registerRemoteAccessRoutes(server: FastifyInstance, ctx: DaemonR
     const s = manage(request, reply)
     if (!s) return reply
     const body = request.body
-    if (!isRecord(body)) return badRequest(reply, 'Body must be an object: {enabled?, name?, trustNetwork?}')
+    if (!isRecord(body)) return badRequest(reply, 'Body must be an object: {enabled?, name?}')
     const patch: RemoteAccessPatch = {}
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== 'boolean') return badRequest(reply, 'enabled must be a boolean')
@@ -90,13 +91,28 @@ export function registerRemoteAccessRoutes(server: FastifyInstance, ctx: DaemonR
       if (typeof body.name !== 'string') return badRequest(reply, 'name must be a string')
       patch.name = body.name
     }
-    if (body.trustNetwork !== undefined) {
-      if (typeof body.trustNetwork !== 'boolean') return badRequest(reply, 'trustNetwork must be a boolean')
-      patch.trustNetwork = body.trustNetwork
-    }
-    if (Object.keys(patch).length === 0) return badRequest(reply, 'Give at least one of enabled, name, trustNetwork')
+    if (Object.keys(patch).length === 0) return badRequest(reply, 'Give at least one of enabled, name')
     void reply.header('Cache-Control', 'no-store')
     try { return await s.update(patch) } catch (err) { return sendError(reply, err) }
+  })
+
+  // The user's consent per network (owner decision 2026-10-18 b). Local-only, like every
+  // management route: a device token never allows a network.
+  server.post<{ Body: unknown }>('/remote-access/networks', async (request, reply) => {
+    const s = manage(request, reply)
+    if (!s) return reply
+    const id = isRecord(request.body) ? request.body.id : undefined
+    if (typeof id !== 'string' || !NETWORK_ID.test(id)) return badRequest(reply, 'id must be a network id from GET /remote-access networks[]')
+    void reply.header('Cache-Control', 'no-store')
+    try { return await s.allowNetwork(id) } catch (err) { return sendError(reply, err) }
+  })
+
+  server.delete<{ Params: { id: string } }>('/remote-access/networks/:id', async (request, reply) => {
+    const s = manage(request, reply)
+    if (!s) return reply
+    if (!NETWORK_ID.test(request.params.id)) return badRequest(reply, 'Not a network id')
+    void reply.header('Cache-Control', 'no-store')
+    try { return await s.forgetNetwork(request.params.id) } catch (err) { return sendError(reply, err) }
   })
 
   server.post<{ Body: unknown }>('/remote-access/devices', async (request, reply) => {

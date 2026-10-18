@@ -716,7 +716,7 @@ const api: AdfApi = {
 
   // Remote access (remote-access.md)
   getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
-  setRemoteAccess: (request: { enabled?: boolean; name?: string; trustNetwork?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
   addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
   removeRemoteDevice: (id: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_REMOVE, id),
   openRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_OPEN),
@@ -743,6 +743,8 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.REMOTE_PAIR_STATE, handler)
   },
   getNetworkStatus: () => ipcRenderer.invoke(IPC.NETWORK_STATUS_GET),
+  allowNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_ALLOW, id),
+  forgetNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_FORGET, id),
 
   // Remote mode: daemon-side picker
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {

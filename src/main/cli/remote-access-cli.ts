@@ -27,7 +27,8 @@ export interface HostTarget {
 }
 
 export const REMOTE_USAGE = `Usage: adf daemon remote on [--name <name>] | off | status [--json]
-       adf daemon remote trust | untrust     macOS, Linux: mark this network private (or not)
+       adf daemon remote allow-network [<id|label>]   Allow on this network (default: the one network not allowed)
+       adf daemon remote forget-network <id|label>    Remove an allowed network; its listeners close now
        adf daemon remote serve on | off      https through tailscale serve
        adf daemon devices [list] [--json]
        adf daemon devices add <label>        Print a new device token (shown once)
@@ -35,10 +36,10 @@ export const REMOTE_USAGE = `Usage: adf daemon remote on [--name <name>] | off |
        adf daemon pair                       Open a pairing window and show its code
 
 Remote access: devices you pair or add use this computer's ADF daemon (no
-restart; agents keep running). It listens only on private-network and Tailscale addresses,
-never on a network the OS (Windows) or you (macOS, Linux) did not mark
-private. A device token gives full control of this computer's agents: it is
-as powerful as your owner seed phrase.`
+restart; agents keep running). It listens only on private and Tailscale
+addresses, and only on a network you allowed (once per network; the mesh's LAN
+mode uses the same list). A device token gives full control of this
+computer's agents: it is as powerful as your owner seed phrase.`
 
 class ManageError extends Error {
   constructor(message: string, readonly status: number, readonly code: string | null) { super(message) }
@@ -97,6 +98,15 @@ export function formatRemoteStatus(s: RemoteAccessStatus): string {
     for (const u of s.urls) lines.push(`  ${u.url}  ${u.encrypted ? 'encrypted' : 'not encrypted'}${u.kind === 'tailscale-https' ? ' (tailscale serve)' : u.kind === 'tailnet' ? ' (tailnet)' : ''}`)
   }
   for (const a of s.addresses.filter(x => !x.listening)) lines.push(`Not listening on ${a.address} (${a.iface}): ${a.problem ?? 'not available'}`)
+  if (s.networks.length) {
+    lines.push('Networks now:')
+    for (const n of s.networks) {
+      const warn = n.kind === 'lan' && !n.allowed && n.osCategory !== 'private' ? ' Public network. The token is sent unencrypted.' : ''
+      lines.push(`  ${n.label}  ${n.allowed ? 'allowed' : n.id ? `paused (allow: adf daemon remote allow-network ${n.id})${warn}` : 'paused (cannot be identified yet)'}`)
+    }
+  }
+  lines.push(`Allowed networks (${s.allowedNetworks.length}):`)
+  for (const n of s.allowedNetworks) lines.push(`  ${n.id}  ${n.label}`)
   if (s.enabled) {
     if (s.tailscale.state === 'running') {
       lines.push(`Tailscale: https through tailscale serve is ${s.tailscale.serve}${s.tailscale.httpsUrl ? ` at ${s.tailscale.httpsUrl}` : s.tailscale.serve === 'off' ? ' (turn on: adf daemon remote serve on)' : ''}`)
@@ -131,8 +141,28 @@ async function remoteCommand(args: string[], io: HostCliIo, target: HostTarget):
     }
     return 0
   }
-  if (action === 'trust' || action === 'untrust') {
-    const status = await call<RemoteAccessStatus>(io, target, 'PUT', '/remote-access', { trustNetwork: action === 'trust' })
+  if (action === 'allow-network' || action === 'forget-network') {
+    const which = rest.filter(a => a !== '--json').join(' ').trim()
+    const current = await call<RemoteAccessStatus>(io, target, 'GET', '/remote-access?refresh=1')
+    let id: string | null = null
+    if (action === 'allow-network') {
+      const candidates = current.networks.filter(n => n.id && (!which ? !n.allowed : n.id === which || n.label === which))
+      if (candidates.length !== 1) {
+        io.stderr(candidates.length === 0
+          ? `${which ? `No current network "${which}".` : 'No network waiting to be allowed.'} Networks now: ${current.networks.map(n => `${n.label} (${n.id ?? 'cannot be identified yet'}${n.allowed ? ', allowed' : ''})`).join(', ') || 'none'}\n`
+          : `More than one network is not allowed; name one: ${candidates.map(n => n.id).join(', ')}\n`)
+        return 1
+      }
+      id = candidates[0].id
+    } else {
+      if (!which) { io.stderr(`${REMOTE_USAGE}\n`); return 2 }
+      const found = current.allowedNetworks.filter(n => n.id === which || n.label === which)
+      if (found.length !== 1) { io.stderr(`${found.length ? 'More than one allowed network has that name; use its id.' : `No allowed network "${which}".`}\n`); return 1 }
+      id = found[0].id
+    }
+    const status = action === 'allow-network'
+      ? await call<RemoteAccessStatus>(io, target, 'POST', '/remote-access/networks', { id })
+      : await call<RemoteAccessStatus>(io, target, 'DELETE', `/remote-access/networks/${encodeURIComponent(id!)}`)
     io.stdout(json ? `${JSON.stringify(status, null, 2)}\n` : formatRemoteStatus(status))
     return 0
   }

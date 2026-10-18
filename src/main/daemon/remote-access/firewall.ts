@@ -25,8 +25,6 @@ export function windowsBlockQuery(program: string): string {
 
 export interface FirewallProbeInput {
   port: number
-  /** Every LAN address is on a network the OS marks Public (Windows). */
-  allLanPublic: boolean
   platform?: NodeJS.Platform
   program?: string
   exec?: Exec
@@ -45,9 +43,6 @@ export async function probeFirewall(input: FirewallProbeInput): Promise<Firewall
           message: `Windows Firewall blocks ${program}. Open Windows Security → Firewall & network protection → Allow an app through firewall, and allow it on Private networks.`,
           commands: [],
         }
-      }
-      if (input.allLanPublic) {
-        return { state: 'public_network', message: 'Windows treats this network as Public, so ADF does not listen on it. Set it to Private in Windows Settings → Network if you trust it.', commands: [] }
       }
       return { state: 'ok', message: 'Windows asks once whether ADF may accept connections. Choose Allow on private networks.', commands: [] }
     }

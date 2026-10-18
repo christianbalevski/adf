@@ -5,7 +5,7 @@
  * except the one a device-token creation returns once (§4.6).
  */
 
-import type { RemoteAccessStatus, RemoteDevice } from './remote-access.types'
+import type { AllowedNetwork, NetworkView, RemoteAccessStatus, RemoteDevice } from './remote-access.types'
 
 /** Settings → Backend → This computer: the host panel. */
 export interface RemoteAccessView {
@@ -53,19 +53,20 @@ export type RemoteDeviceAddResult =
 export interface NetworkStatusView {
   /** False in remote mode: the mesh and remote access are on the remote computer. */
   available: boolean
-  /** private: some LAN address is on a private network; public: all are on a Public one; none: no LAN address. */
-  network: 'private' | 'public' | 'none'
-  /** LAN addresses with their network (no Tailscale). */
-  lan: Array<{ address: string; iface: string; network: 'private' | 'public' }>
+  /** LAN addresses (no Tailscale), and whether their network is allowed. */
+  lan: Array<{ address: string; iface: string; allowed: boolean }>
+  /** The networks this computer is on now. */
+  networks: NetworkView[]
+  /** The networks the user allowed (remote-access.json; remote access and the mesh's LAN mode). */
+  allowedNetworks: AllowedNetwork[]
   tailscale: 'absent' | 'stopped' | 'running'
   /** This computer's tailnet IPv4 address, or null. */
   tailnetAddress: string | null
-  firewall: { state: 'ok' | 'blocked' | 'public_network' | 'unknown'; message: string }
-  /** Why the network category could not be read (it then counts as Public). */
-  problem: string | null
-  /** macOS and Linux: a network is private only when marked (remote access's Mark private); Windows: the OS decides. */
-  markable: boolean
+  firewall: { state: 'ok' | 'blocked' | 'unknown'; message: string }
 }
+
+/** NETWORK_ALLOW / NETWORK_FORGET. */
+export type NetworkConsentResult = { ok: true } | { ok: false; error: string }
 
 // --- Client side: Settings → Backend → Remote computer ---------------------
 

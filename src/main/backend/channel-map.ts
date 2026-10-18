@@ -539,6 +539,8 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_PAIR_CANCEL]: local('invoke', 'Stops the pairing flow here.'),
   [IPC.REMOTE_PAIR_STATE]: local('push', 'Pairing progress and errors; never the code or the token.'),
   [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
+  [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
+  [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------
   [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),

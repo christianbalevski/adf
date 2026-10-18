@@ -460,6 +460,8 @@ export const IPC = {
   REMOTE_PAIR_STATE: 'adf:remote-pair:state',
   // Settings → Networking's status line: network category, LAN and tailnet address, firewall (lan-reach.ts).
   NETWORK_STATUS_GET: 'adf:network:status',
+  NETWORK_ALLOW: 'adf:network:allow',
+  NETWORK_FORGET: 'adf:network:forget',
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   RECOVERY_STASH: 'adf:recovery:stash',

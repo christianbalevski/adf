@@ -158,14 +158,14 @@ async function enforceVisibility(request: FastifyRequest, reply: FastifyReply) {
 // MeshServer
 // ===========================================================================
 
-/** How often LAN mode re-reads the addresses (a Wi-Fi change, a network turning Public). */
+/** How often LAN mode re-reads the addresses (a Wi-Fi change, another network). */
 const LAN_CHECK_MS = 10_000
 
 /**
  * - `loopback`: 127.0.0.1 only.
  * - `lan` ("Allow LAN access", or an agent with lan visibility): 127.0.0.1
- *   plus each private-network and Tailscale address (lan-reach.ts), never a
- *   public network. `getHost()` reports '0.0.0.0' as the LAN-mode marker.
+ *   plus each private and Tailscale address on a network the user allowed
+ *   (lan-reach.ts), never without that consent. `getHost()` reports '0.0.0.0' as the LAN-mode marker.
  * - `all`: 0.0.0.0, for an agent with public visibility (the owner chose the internet).
  * - `env`: MESH_HOST, as given.
  */
@@ -204,7 +204,7 @@ export class MeshServer {
     }
   }
 
-  /** Where LAN mode reads the networks the owner marked private (remote-access.json's directory). */
+  /** Where LAN mode reads the networks the user allowed (remote-access.json's directory). */
   setLanReach(reach: LanReach, seams: { bindAddress?: (address: string) => string } = {}): void {
     this.lanReach = reach
     this.lanBindAddress = seams.bindAddress ?? null
@@ -314,12 +314,12 @@ export class MeshServer {
         this.lanReach ??= new LanReach({ settingsDir: null })
         const snapshot = await this.lanReach.snapshot({
           force,
-          // A network change closes that interface's listeners before the category re-read (re-review 2).
+          // A network change closes that interface's listeners at once; they open again only on an allowed network.
           onNetworkChanged: async (ifaces) => {
             const closing = new Set((this.lanSnapshot?.addresses ?? []).filter((a) => a.kind === 'lan' && ifaces.includes(a.iface)).map((a) => a.address))
             const keep = listeners.addresses().filter((a) => !closing.has(a))
             if (keep.length === listeners.addresses().length) return
-            console.log(`[MeshServer] Network changed on ${ifaces.join(', ')}: closing its LAN listeners until the network is confirmed private`)
+            console.log(`[MeshServer] Network changed on ${ifaces.join(', ')}: closing its LAN listeners until that network is allowed`)
             await listeners.sync(keep)
           },
         })
@@ -330,7 +330,7 @@ export class MeshServer {
         for (const [address, problem] of problems) console.warn(`[MeshServer] ${problem}`)
         if (before !== snapshot.listenable.join(',')) {
           const refused = snapshot.addresses.filter((a) => a.refusal).map((a) => `${a.address} (${a.iface})`)
-          console.log(`[MeshServer] LAN addresses: ${listeners.addresses().join(', ') || 'none'}${refused.length ? `; not on a private network: ${refused.join(', ')}` : ''}${snapshot.problem ? `; ${snapshot.problem}` : ''}`)
+          console.log(`[MeshServer] LAN addresses: ${listeners.addresses().join(', ') || 'none'}${refused.length ? `; on a network not allowed: ${refused.join(', ')}` : ''}`)
         }
       } catch (err) {
         console.warn('[MeshServer] LAN address check failed:', err instanceof Error ? err.message : err)
@@ -383,6 +383,11 @@ export class MeshServer {
     return []
   }
   /** Other computers can reach this server now (mDNS announces only then). */
+  /** LAN mode is on (it listens only on allowed networks). */
+  isLanMode(): boolean {
+    return this.running && this.bindMode === 'lan'
+  }
+
   isLanReachable(): boolean {
     return this.getLanAddresses().length > 0
   }

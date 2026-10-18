@@ -1,14 +1,22 @@
 /**
- * Which network a LAN interface is on, for remote access and the mesh's LAN
- * mode (docs/design/remote-access.md §3.3.1, security review item 2): a
- * network category holds only for the interface's addresses and default
- * gateway (IP and MAC) at the read. One module, so the daemon's listeners
- * and the mesh follow the same rule (re-review 2).
+ * Which networks this computer is on, and whether the user allowed each
+ * (docs/design/remote-access.md §3.3.1, owner decision 2026-10-18 b: never
+ * listen without the user's consent, given once per network, the same on
+ * every OS). Remote access and the mesh's LAN mode use this one module.
+ *
+ * - LAN network: identified by its default gateway's MAC address and the
+ *   subnet, plus the Wi-Fi name where it is readable without a permission
+ *   prompt. A MAC missing for a moment keeps the last one (re-review 1).
+ * - Tailnet: identified by the tailnet's name.
+ * - A changed network on an interface closes its listeners at once
+ *   (`beforeChange`), before anything else is read.
  */
 
+import { createHash } from 'node:crypto'
+import { isIP } from 'node:net'
 import type { NetworkInterfaceInfo } from 'node:os'
-import { addressCandidates, lanInterfaceNames } from './addresses'
-import type { NetworkCategories } from './network-category'
+import type { AllowedNetwork, NetworkView } from '../../../shared/types/remote-access.types'
+import { addressCandidates, NOT_ALLOWED_SENTENCE, type AddressCandidate } from './addresses'
 
 /**
  * The gateway identity (`<gateway IP>|<gateway MAC>`) read now, merged with
@@ -26,69 +34,127 @@ export function mergeGatewayIdentity(previous: string | undefined, read: string)
   return `${ip}|${mac}`
 }
 
-export interface NetworkCategoryTrackerDeps {
-  /** The category of each LAN interface (a command: slow). */
-  readCategories: (ifaces: readonly string[]) => Promise<NetworkCategories>
-  /** Per LAN interface, `<gateway IP>|<gateway MAC>`, '' unknown (cheap: read every check). */
+/** `192.168.1.20/24` → `192.168.1.0/24`; IPv6: the /64 prefix. Null without a usable cidr. */
+export function subnetOf(info: Pick<NetworkInterfaceInfo, 'address' | 'netmask' | 'cidr'>): string | null {
+  if (isIP(info.address) === 4) {
+    const mask = (info.netmask ?? '').split('.').map(Number)
+    const parts = info.address.split('.').map(Number)
+    if (mask.length !== 4 || mask.some(n => !Number.isInteger(n))) return null
+    const bits = mask.reduce((n, m) => n + (m >>> 0).toString(2).split('').filter(b => b === '1').length, 0)
+    return `${parts.map((p, i) => p & mask[i]).join('.')}/${bits}`
+  }
+  const groups = info.address.toLowerCase().split('::')[0].split(':').slice(0, 4)
+  return groups.length ? `${groups.join(':')}::/64` : null
+}
+
+const hash = (text: string) => createHash('sha256').update(text, 'utf-8').digest('hex').slice(0, 16)
+
+export function lanNetworkId(gatewayMac: string, subnet: string, ssid: string | null): string {
+  return `lan-${hash(`${gatewayMac.toLowerCase()}|${subnet}|${ssid ?? ''}`)}`
+}
+
+export function tailnetNetworkId(tailnet: string): string {
+  return `tailnet-${hash(tailnet.toLowerCase())}`
+}
+
+/** A network id as routes take it. */
+export const NETWORK_ID = /^(lan|tailnet)-[0-9a-f]{16}$/
+
+export interface NetworkWatcherDeps {
+  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown). Cheap: read every check. */
   readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
-  /** A category read is reused this long while every interface's key stays the same. */
+  /** Per LAN interface, the Wi-Fi name where readable without a prompt. */
+  readWifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
+  /** Windows' category per interface (shown only). Slow: read at most every `slowCheckMs`. */
+  readOsCategories?: (ifaces: readonly string[]) => Promise<Map<string, 'private' | 'public'>>
   slowCheckMs: number
   now?: () => number
 }
 
-const EMPTY: NetworkCategories = { categories: new Map(), current: [], problem: null }
+export interface NetworkReading {
+  /** Candidate addresses, each with its network id and, when that network is not allowed, a refusal. */
+  candidates: AddressCandidate[]
+  networks: NetworkView[]
+}
 
-/**
- * The categories of the LAN interfaces, valid only for each interface's key
- * (its LAN addresses and merged gateway identity) at the read. A changed key
- * re-reads at once, and `beforeReread` gets the changed interfaces first so
- * the caller closes their listeners until the new read says private: a
- * network is never assumed private across a change.
- */
-export class NetworkCategoryTracker {
-  private current: NetworkCategories = EMPTY
+export class NetworkWatcher {
   private keys = new Map<string, string>()
   private gatewayIds = new Map<string, string>()
-  private at = 0
+  private osCategories = new Map<string, 'private' | 'public'>()
+  private osAt = 0
 
-  constructor(private readonly deps: NetworkCategoryTrackerDeps) {}
+  constructor(private readonly deps: NetworkWatcherDeps) {}
 
-  get categories(): NetworkCategories {
-    return this.current
-  }
-
-  /** The next refresh re-reads (the owner marked a network private). */
-  invalidate(): void {
-    this.at = 0
-  }
-
-  async refresh(input: {
+  /**
+   * Identify the networks now and apply `allowed`. `beforeChange` gets the
+   * interfaces whose network changed (another gateway, another subnet,
+   * another Wi-Fi, other addresses) before anything else: close their
+   * listeners at once.
+   */
+  async read(input: {
     interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>
     tailscaleIps: ReadonlySet<string>
-    force?: boolean
-    /** The interfaces whose network changed, before the slow re-read: close their LAN listeners. */
-    beforeReread?: (changed: string[]) => Promise<void>
-  }): Promise<NetworkCategories> {
+    tailnet: string | null
+    allowed: readonly AllowedNetwork[]
+    only?: readonly string[]
+    beforeChange?: (changed: string[]) => Promise<void>
+  }): Promise<NetworkReading> {
     const now = (this.deps.now ?? Date.now)()
-    const lanIfaces = lanInterfaceNames(input.interfaces, input.tailscaleIps)
-    const gateways = await this.deps.readGateways(lanIfaces, input.interfaces)
+    const candidates = addressCandidates({ interfaces: input.interfaces, tailscaleIps: input.tailscaleIps, ...(input.only ? { only: input.only } : {}) })
+    const lanIfaces = [...new Set(candidates.filter(c => c.kind === 'lan').map(c => c.iface))]
+    const [gateways, ssids] = await Promise.all([
+      this.deps.readGateways(lanIfaces, input.interfaces),
+      this.deps.readWifiNames ? this.deps.readWifiNames(lanIfaces).catch(() => new Map<string, string>()) : Promise.resolve(new Map<string, string>()),
+    ])
+    const ids = new Map<string, string | null>()
     const keys = new Map<string, string>()
-    for (const c of addressCandidates({ interfaces: input.interfaces, tailscaleIps: input.tailscaleIps, categories: new Map() })) {
-      if (c.kind === 'lan') keys.set(c.iface, [keys.get(c.iface), c.address].filter(Boolean).join(','))
-    }
     for (const iface of lanIfaces) {
-      // A MAC or gateway missing for a moment is unknown, not another network (re-review 1).
-      const id = mergeGatewayIdentity(this.gatewayIds.get(iface), gateways.get(iface) ?? '')
-      this.gatewayIds.set(iface, id)
-      keys.set(iface, `${keys.get(iface) ?? ''}|${id}`)
+      const gateway = mergeGatewayIdentity(this.gatewayIds.get(iface), gateways.get(iface) ?? '')
+      this.gatewayIds.set(iface, gateway)
+      const mac = gateway.split('|')[1] ?? ''
+      const info = (input.interfaces[iface] ?? []).find(i => !i.internal && isIP(i.address) === 4) ?? (input.interfaces[iface] ?? []).find(i => !i.internal)
+      const subnet = info ? subnetOf(info) : null
+      const id = mac && subnet ? lanNetworkId(mac, subnet, ssids.get(iface) ?? null) : null
+      ids.set(iface, id)
+      const addresses = candidates.filter(c => c.iface === iface).map(c => c.address).join(',')
+      keys.set(iface, `${addresses}|${id ?? ''}`)
     }
-    const changed = lanIfaces.filter((iface) => this.keys.get(iface) !== keys.get(iface))
-    if (input.force || changed.length > 0 || this.keys.size !== keys.size || now - this.at >= this.deps.slowCheckMs) {
-      if (changed.length > 0) await input.beforeReread?.(changed)
-      this.current = await this.deps.readCategories(lanIfaces)
-      this.at = now
-      this.keys = keys
+    const changed = lanIfaces.filter(iface => this.keys.has(iface) && this.keys.get(iface) !== keys.get(iface))
+    if (changed.length > 0) await input.beforeChange?.(changed)
+    this.keys = keys
+    if (this.deps.readOsCategories && (changed.length > 0 || now - this.osAt >= this.deps.slowCheckMs)) {
+      this.osCategories = await this.deps.readOsCategories(lanIfaces).catch(() => new Map())
+      this.osAt = now
     }
-    return this.current
+    const allowed = new Set(input.allowed.map(n => n.id))
+    const tailnetId = input.tailnet ? tailnetNetworkId(input.tailnet) : null
+    for (const c of candidates) {
+      c.networkId = c.kind === 'tailnet' ? tailnetId : ids.get(c.iface) ?? null
+      c.refusal = c.networkId && allowed.has(c.networkId) ? null : NOT_ALLOWED_SENTENCE
+    }
+    const networks: NetworkView[] = []
+    const byId = new Map<string, NetworkView>()
+    for (const c of candidates) {
+      const key = c.networkId ?? `unidentified:${c.kind}:${c.iface}`
+      let view = byId.get(key)
+      if (!view) {
+        const ssid = c.kind === 'lan' ? ssids.get(c.iface) ?? null : null
+        const subnet = c.kind === 'lan' ? (() => { const i = (input.interfaces[c.iface] ?? []).find(x => x.address.toLowerCase() === c.address); return i ? subnetOf(i) : null })() : null
+        view = {
+          id: c.networkId,
+          kind: c.kind,
+          label: c.kind === 'tailnet' ? `Tailnet ${input.tailnet ?? '(unknown)'}` : `${ssid ?? c.iface}${subnet ? ` (${subnet})` : ''}`,
+          allowed: !!c.networkId && allowed.has(c.networkId),
+          osCategory: c.kind === 'tailnet' ? 'private' : this.osCategories.get(c.iface) ?? 'unknown',
+          ifaces: [],
+          addresses: [],
+        }
+        byId.set(key, view)
+        networks.push(view)
+      }
+      if (!view.ifaces.includes(c.iface)) view.ifaces.push(c.iface)
+      view.addresses.push(c.address)
+    }
+    return { candidates, networks }
   }
 }

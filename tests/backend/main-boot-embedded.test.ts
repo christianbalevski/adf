@@ -81,6 +81,8 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'ipcMain.handle(adf:remote-access:pairing-close)',
     'ipcMain.handle(adf:remote-access:tailscale-serve)',
     'ipcMain.handle(adf:network:status)',
+    'ipcMain.handle(adf:network:allow)',
+    'ipcMain.handle(adf:network:forget)',
     'ipcMain.handle(adf:remote-discovery:start)',
     'ipcMain.handle(adf:remote-discovery:stop)',
     'ipcMain.handle(adf:remote-pair:start)',

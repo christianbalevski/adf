@@ -6,7 +6,34 @@
  * says so.
  */
 
-export type RemoteAccessState = 'off' | 'on' | 'no_address' | 'env_bind' | 'error'
+/** `paused`: on, but no address listens because this computer's networks are not allowed (owner decision 2026-10-18 b). */
+export type RemoteAccessState = 'off' | 'on' | 'paused' | 'no_address' | 'env_bind' | 'error'
+
+/**
+ * A network this computer is on now (owner decision 2026-10-18 b: listen only
+ * on a network the user allowed). LAN: identified by the default gateway's
+ * MAC address and the subnet (and the Wi-Fi name where it is readable
+ * without a permission prompt). Tailnet: by the tailnet's name.
+ */
+export interface NetworkView {
+  /** Null: the network cannot be identified yet (no gateway MAC known); it cannot be allowed. */
+  id: string | null
+  kind: 'lan' | 'tailnet'
+  label: string
+  allowed: boolean
+  /** What the OS says (Windows' category); unknown elsewhere. Only for the warning line: it is never consent. */
+  osCategory: 'private' | 'public' | 'unknown'
+  ifaces: string[]
+  addresses: string[]
+}
+
+/** A network the user allowed (remote-access.json `allowedNetworks`; the mesh's LAN mode reads the same list). */
+export interface AllowedNetwork {
+  id: string
+  kind: 'lan' | 'tailnet'
+  label: string
+  addedAt: string
+}
 
 export interface RemoteAddress {
   address: string
@@ -14,8 +41,10 @@ export interface RemoteAddress {
   kind: 'lan' | 'tailnet'
   /** The interface name `os.networkInterfaces()` reports. */
   iface: string
-  /** `public`: the OS (Windows) or the owner's list (macOS, Linux) does not mark the network private; no listener (§3.3.1). */
-  network: 'private' | 'public' | 'tailnet'
+  /** The network the address is on (NetworkView.id); null when it cannot be identified. */
+  networkId: string | null
+  /** The user allowed that network; only then does the address listen. */
+  allowed: boolean
   listening: boolean
   problem: string | null
 }
@@ -79,9 +108,15 @@ export interface RemoteAccessStatus {
   hostNames: string[]
   tailscale: { state: 'absent' | 'stopped' | 'running'; serve: 'on' | 'off' | 'unknown'; httpsUrl: string | null; serveCommand: string | null }
   mdns: { announcing: boolean; problem: string | null }
-  firewall: { state: 'ok' | 'blocked' | 'public_network' | 'unknown'; message: string; commands: string[] }
+  firewall: { state: 'ok' | 'blocked' | 'unknown'; message: string; commands: string[] }
   devices: RemoteDevice[]
   pairing: PairingWindowView | null
+  /** The networks this computer is on now. */
+  networks: NetworkView[]
+  /** The networks the user allowed. */
+  allowedNetworks: AllowedNetwork[]
+  /** The daemon's mesh listens on the LAN (same consent): Studio asks about a new network when this or `enabled` is on. */
+  meshLan: boolean
 }
 
 export interface RemoteHello {
@@ -114,8 +149,6 @@ export type PairClaimResult =
 export interface RemoteAccessPatch {
   enabled?: boolean
   name?: string
-  /** macOS and Linux: mark (true) or unmark (false) the current networks private. Windows: 409 `network_category_os`. */
-  trustNetwork?: boolean
 }
 
 /**

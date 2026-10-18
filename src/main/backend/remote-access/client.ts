@@ -71,6 +71,16 @@ export class RemoteAccessManagement {
     return this.call('PUT', '/remote-access', body)
   }
 
+  /** Allow a network this computer is on now (owner decision 2026-10-18 b). */
+  allowNetwork(id: string): Promise<RemoteAccessStatus> {
+    return this.call('POST', '/remote-access/networks', { id })
+  }
+
+  /** Remove an allowed network: its listeners close now. */
+  forgetNetwork(id: string): Promise<RemoteAccessStatus> {
+    return this.call('DELETE', `/remote-access/networks/${enc(id)}`)
+  }
+
   addDevice(label: string): Promise<{ device: RemoteDevice; token: string }> {
     return this.call('POST', '/remote-access/devices', { label })
   }

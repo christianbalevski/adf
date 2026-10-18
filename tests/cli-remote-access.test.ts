@@ -45,6 +45,10 @@ import { mergeDiscovered } from '../src/main/cli/daemon-discovery'
 import { loadRemotes, readRemoteToken, REMOTE_TOKENS_FILENAME } from '../src/main/cli/remotes'
 import { resolveDaemonToken, resolveDaemonUrl } from '../src/main/cli/daemon-url'
 import { runCli } from '../src/main/cli/index'
+import { lanNetworkId } from '../src/main/daemon/remote-access/network-key'
+
+/** The test LAN (gateway 00:00:5e:00:01:01, 192.168.77.0/24). */
+const HOME = lanNetworkId('00:00:5e:00:01:01', '192.168.77.0/24', null)
 
 const TOKEN = 't'.repeat(43)
 const PROOF = 'p'.repeat(43)
@@ -72,8 +76,12 @@ afterEach(async () => {
   }
 })
 
-async function host() {
+/** `allowed` (default true): the user already allowed the test LAN. */
+async function host(opts: { allowed?: boolean } = {}) {
   const dataDir = tempDir()
+  if (opts.allowed !== false) {
+    writeFileSync(join(dataDir, 'remote-access.json'), JSON.stringify({ v: 1, enabled: false, name: 'host-1', daemonId: null, allowedNetworks: [{ id: HOME, kind: 'lan', label: 'eth0 (192.168.77.0/24)', addedAt: '2026-10-18T00:00:00.000Z' }] }))
+  }
   const remotePort = await freePort()
   const service = new RemoteAccessService({
     settingsDir: dataDir,
@@ -82,7 +90,9 @@ async function host() {
     platform: 'linux',
     hostName: () => 'host-1',
     interfaces: () => ({ eth0: [{ address: '192.168.77.10', family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:01', cidr: '192.168.77.10/24' } as NetworkInterfaceInfo] }),
-    categories: async (ifaces) => ({ categories: new Map(ifaces.map(i => [i, 'private' as const])), current: [{ iface: 'eth0', id: 'net-home', label: 'eth0 via 192.168.77.1' }], problem: null }),
+    gateways: async (ifaces) => new Map(ifaces.map(i => [i, '192.168.77.1|00:00:5e:00:01:01'])),
+    wifiNames: async () => new Map(),
+    osCategories: async () => new Map(),
     tailscale: {
       self: async () => ({ state: 'absent', ips: [], dnsName: null }),
       serveStatus: async () => ({ serve: 'unknown', httpsUrl: null }),
@@ -121,6 +131,31 @@ async function host() {
   const run = (sub: 'remote' | 'devices' | 'pair', ...args: string[]) => runHostRemoteCommand(sub, args, io, target)
   return { run, out, err, answers, remoteUrl: `http://127.0.0.1:${remotePort}`, target }
 }
+
+describe('adf daemon remote allow-network / forget-network (owner decision 2026-10-18 b)', () => {
+  it('status shows the network paused; allow-network opens it, forget-network closes it', async () => {
+    const h = await host({ allowed: false })
+    expect(await h.run('remote', 'on')).toBe(0)
+    const paused = h.out.join('')
+    expect(paused).toContain('Remote access: on\nPaused on eth0 (192.168.77.0/24).')
+    expect(paused).toContain(`  eth0 (192.168.77.0/24)  paused (allow: adf daemon remote allow-network ${HOME}) Public network. The token is sent unencrypted.`)
+    expect(paused).toContain('Allowed networks (0):')
+    h.out.length = 0
+    expect(await h.run('remote', 'allow-network')).toBe(0)
+    expect(h.out.join('')).toContain('Listening on 192.168.77.10.')
+    expect(h.out.join('')).toContain(`Allowed networks (1):\n  ${HOME}  eth0 (192.168.77.0/24)`)
+    expect((await fetch(`${h.remoteUrl}/remote/hello`)).status).toBe(200)
+    h.out.length = 0
+    expect(await h.run('remote', 'forget-network', 'eth0 (192.168.77.0/24)')).toBe(0)
+    expect(h.out.join('')).toContain('Paused on eth0 (192.168.77.0/24).')
+    await expect(fetch(`${h.remoteUrl}/remote/hello`)).rejects.toThrow()
+    h.err.length = 0
+    expect(await h.run('remote', 'forget-network', 'nowhere')).toBe(1)
+    expect(h.err.join('')).toContain('No allowed network "nowhere".')
+    expect(await h.run('remote', 'forget-network')).toBe(2)
+    expect(await h.run('remote', 'trust')).toBe(2)
+  })
+})
 
 describe('adf daemon remote / devices (host)', () => {
   it('on, status, devices add (token alone on stdout), list, revoke by label, off', async () => {

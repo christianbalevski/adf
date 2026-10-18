@@ -1,8 +1,9 @@
 /**
  * Remote access in Settings (docs/design/remote-access.md §7, §9.1):
  *
- * - Settings → Networking: `NetworkStatusLine` (the network the mesh and
- *   remote access both use) and `RemoteAccessGroup`, the host side (local
+ * - Settings → Networking: `NetworkStatusLine` (the networks the mesh and
+ *   remote access both use, Allow on this network, Allowed networks with
+ *   Remove) and `RemoteAccessGroup`, the host side (local
  *   mode). Every action goes to main, which asks the daemon and confirms in
  *   a native dialog where the design says so. A new device token is shown
  *   once, here, and dropped on Done; nothing else here holds a token.
@@ -20,16 +21,15 @@ import { Button, SettingsGroup, SettingsRow, TextInput } from '../ui'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
-import type { PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
+import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { NetworkStatusView, RemoteAccessView, RemoteDiscoveryEntry, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import type { MeshAgentStatus } from '../../../shared/types/ipc.types'
 
 // --- Pure helpers (tested) ------------------------------------------------------
 
-/** Remote access's own line (§8; owner decision 4 for a Public network). */
+/** Remote access's own line (§8; "Paused on <network>." until the user allows it, owner decision 2026-10-18 b). */
 export function remoteStatusLine(status: RemoteAccessStatus): string {
   if (!status.enabled) return 'Off.'
-  if (status.firewall.state === 'public_network') return 'Not reachable on this network (Public).'
   if (status.state === 'on') {
     const listening = status.addresses.filter((a) => a.listening).map((a) => a.address)
     return listening.length > 0 ? `Listening on ${listening.join(', ')}.` : 'On.'
@@ -49,10 +49,10 @@ export function remoteSummary(view: RemoteAccessView | null): string {
 /** The status line at the top of Settings → Networking. */
 export function networkStatusText(view: NetworkStatusView): string {
   const parts: string[] = []
-  const lan = view.lan[0]
-  if (view.network === 'none') parts.push('Network: no LAN address')
-  else parts.push(`Network: ${view.network === 'private' ? 'Private' : 'Public'}${lan ? ` (${lan.iface})` : ''}`)
-  if (view.lan.length > 0) parts.push(`LAN ${view.lan.map((a) => a.address).join(', ')}${view.network === 'public' ? ', not listening' : ''}`)
+  const lans = view.networks.filter((n) => n.kind === 'lan')
+  if (lans.length === 0) parts.push('Network: no LAN address')
+  else parts.push(`Network: ${lans.map((n) => `${n.label}${n.allowed ? '' : ' (not allowed)'}`).join(', ')}`)
+  if (view.lan.length > 0) parts.push(`LAN ${view.lan.map((a) => a.address).join(', ')}${view.lan.every((a) => !a.allowed) ? ', not listening' : ''}`)
   parts.push(view.tailscale === 'running' ? `Tailscale on${view.tailnetAddress ? ` (${view.tailnetAddress})` : ''}` : view.tailscale === 'stopped' ? 'Tailscale stopped' : 'Tailscale not installed')
   parts.push(`Firewall ${view.firewall.state === 'blocked' ? 'blocked' : view.firewall.state === 'unknown' ? 'unknown' : 'ok'}`)
   return parts.join(' · ')
@@ -199,35 +199,82 @@ export function NewTokenPanel({ label, token, onDone }: { label: string; token: 
 
 // --- Settings → Networking -----------------------------------------------------------
 
-/** One line: network category, LAN address, Tailscale, firewall. Mesh and remote access both follow it. */
+/** The warning under Allow on this network: a LAN the OS reports Public, or does not report. */
+export const PUBLIC_NETWORK_WARNING = 'Public network. The token is sent unencrypted.'
+
+export function networkWarning(network: NetworkView): string | null {
+  return network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
+}
+
+/**
+ * The status line (networks, LAN address, Tailscale, firewall), Allow on
+ * this network for each network not allowed, and Allowed networks with
+ * Remove. Mesh and remote access both follow it (owner decision 2026-10-18 b).
+ */
 export function NetworkStatusLine() {
   const [view, setView] = useState<NetworkStatusView | null>(null)
-  const [canMark, setCanMark] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const load = () => {
     window.adfApi?.getNetworkStatus?.().then(setView).catch(() => {})
-    window.adfApi?.getRemoteAccess?.().then((v) => setCanMark(v.available)).catch(() => {})
   }
   useEffect(() => {
     load()
     const timer = setInterval(load, 10_000)
-    return () => clearInterval(timer)
+    const off = window.adfApi?.onRemoteAccessChanged?.(() => load())
+    return () => { clearInterval(timer); off?.() }
   }, [])
   if (!view?.available) return null
-  const mark = async () => {
+  const change = async (action: 'allow' | 'forget', id: string) => {
     setNote(null)
-    const result = await window.adfApi.setRemoteAccess({ trustNetwork: true })
-    if (!result.ok) setNote(result.error)
-    load()
+    setBusy(true)
+    try {
+      const result = action === 'allow' ? await window.adfApi.allowNetwork(id) : await window.adfApi.forgetNetwork(id)
+      if (!result.ok) setNote(result.error)
+    } catch {
+      setNote('Studio could not change the allowed networks.')
+    } finally {
+      setBusy(false)
+      load()
+    }
   }
+  return <NetworkConsentPanel view={view} busy={busy} note={note} onAllow={(id) => void change('allow', id)} onRemove={(id) => void change('forget', id)} />
+}
+
+/** The status line with "Remote access paused on <network>." and Allow on this network, then Allowed networks with Remove. */
+export function NetworkConsentPanel({ view, busy, note, onAllow, onRemove }: {
+  view: NetworkStatusView
+  busy: boolean
+  note: string | null
+  onAllow: (id: string) => void
+  onRemove: (id: string) => void
+}) {
+  const waiting = view.networks.filter((n) => !n.allowed && n.id)
   return (
-    <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-      <span>{networkStatusText(view)}<LearnMore href={DOCS.networkingStatus} /></span>
-      {view.network === 'public' && view.markable && canMark && <Button size="compact" onClick={() => void mark()}>Mark private</Button>}
-      {(view.firewall.state === 'blocked' || view.problem || note) && (
-        <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? (view.firewall.state === 'blocked' ? view.firewall.message : view.problem)}</span>
-      )}
-    </div>
+    <>
+      <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+        <span>{networkStatusText(view)}<LearnMore href={DOCS.networkingStatus} /></span>
+        {waiting.map((n) => (
+          <div key={n.id} className="flex w-full flex-wrap items-center justify-between gap-2">
+            <span>Remote access paused on {n.label}.</span>
+            <Button size="compact" disabled={busy} onClick={() => onAllow(n.id!)}>Allow on this network</Button>
+            {networkWarning(n) && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{networkWarning(n)}</span>}
+          </div>
+        ))}
+        {(view.firewall.state === 'blocked' || note) && (
+          <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? view.firewall.message}</span>
+        )}
+      </div>
+      <SettingsGroup title="Allowed networks">
+        {view.allowedNetworks.length === 0
+          ? <SettingsRow label="None" />
+          : view.allowedNetworks.map((n) => (
+            <SettingsRow key={n.id} label={n.label} description={view.networks.some((c) => c.id === n.id) ? 'Current network' : undefined}>
+              <Button size="compact" disabled={busy} onClick={() => onRemove(n.id)}>Remove</Button>
+            </SettingsRow>
+          ))}
+      </SettingsGroup>
+    </>
   )
 }
 
