@@ -15,9 +15,9 @@ import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/q
 import { LanReach } from '../services/lan-reach'
 import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
 import { allowNetwork, cleanDisplayName, forgetNetwork, readAllowedNetworks, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
-import type { NetworkConsentResult, NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
+import type { NetworkConsentResult, NetworkNotice, NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
-import { NetworkConsentPrompt, type NetworkQuestion } from './remote-access/network-consent'
+import { NetworkConsentPrompt } from './remote-access/network-consent'
 
 /**
  * Remote access in Studio main
@@ -56,8 +56,6 @@ export interface RemoteAccessIpcDeps {
     reach?: LanReach
     firewall?: () => Promise<FirewallView>
     platform?: NodeJS.Platform
-    /** The "Remote access paused on <network>." question; true = Allow on this network. */
-    askNetwork?: (question: NetworkQuestion) => Promise<boolean>
     /** How often the consent check runs (default 10 s); 0 = never by timer (tests call it). */
     consentPollMs?: number
   }
@@ -69,7 +67,7 @@ export interface RemoteAccessIpc {
   discovery: RemoteDiscovery
   pairing: PairingFlow
   quitGate: RemoteQuitGate
-  /** Ask about a network that is not allowed (once per visit); runs every 10 s. */
+  /** The in-window notice for a network that is not allowed (once per network per session); runs every 10 s. */
   consent: NetworkConsentPrompt
   /** The daemon's `remote_access` push (daemon-mode event bridge). */
   onDaemonEvent(payload: unknown): void
@@ -303,12 +301,28 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   })
 
   // --- Consent per network (owner decision 2026-10-18 b) ---
+  // The notice is non-modal (consent review 3): a list pushed to every window, read again by a window that opens later.
+  const notices = new Map<string, NetworkNotice>()
+  const pushNotices = (): void => { windows.send(IPC.NETWORK_NOTICES_CHANGED, [...notices.values()]) }
+  const dropNotice = (key: string): void => {
+    consentPrompt.dismiss(key)
+    if (notices.delete(key)) pushNotices()
+  }
+  ipcMain.handle(IPC.NETWORK_NOTICES_GET, (): NetworkNotice[] => [...notices.values()])
+  ipcMain.handle(IPC.NETWORK_NOTICE_DISMISS, (_event, key: unknown) => {
+    if (typeof key === 'string' && notices.has(key)) {
+      log.log(`[Remote access] Not now: ${notices.get(key)!.message}`)
+      dropNotice(key)
+    }
+    return true
+  })
   // Local mode: the daemon's local-only routes. Embedded: remote-access.json, then the mesh re-syncs.
   const consent = async (action: 'allow' | 'forget', id: unknown): Promise<NetworkConsentResult> => {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'No network given.' }
     if (deps.mode === 'remote') return { ok: false, error: unavailableReason('remote') }
     if (deps.mode === 'local') {
       const result = await host.network(action, id)
+      if (result.ok && action === 'allow') dropNotice(id)
       return result.ok ? { ok: true } : { ok: false, error: result.error }
     }
     if (!deps.settingsDir) return { ok: false, error: 'No settings folder.' }
@@ -323,6 +337,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
         log.log(`[Network] Removed ${id}; its listeners close`)
       }
       await deps.meshLan?.()?.sync()
+      if (action === 'allow') dropNotice(id)
       return { ok: true }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -342,20 +357,13 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       if (!mesh?.on) return { active: false, networks: [] }
       return { active: true, networks: (await reach.snapshot()).networks }
     },
-    ask: o.askNetwork ?? (async (q) => (await box({
-      type: 'warning',
-      title: q.title,
-      message: q.message,
-      ...(q.warning ? { detail: q.warning } : {}),
-      buttons: q.canAllow ? [q.allowLabel, q.laterLabel] : ['OK'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true,
-    })) === 0),
-    allow: async (id) => {
-      const result = await consent('allow', id)
-      windows.send(IPC.REMOTE_ACCESS_CHANGED, { view: await host.get(), notice: null })
-      return result
+    show: (notice) => {
+      notices.set(notice.key, notice)
+      pushNotices()
+    },
+    withdraw: (keys) => {
+      for (const key of keys) notices.delete(key)
+      pushNotices()
     },
     log,
   })

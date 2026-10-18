@@ -69,8 +69,6 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
   const events: Array<Record<string, unknown>> = []
   const asked: string[] = []
   const notices: string[] = []
-  /** "Remote access paused on <network>." questions; answered Not now (the test allows through the IPC). */
-  const networkAsks: string[] = []
   let store: ReturnType<typeof createBackendSettingsStore>
   const invoke = <T>(channel: string, ...args: unknown[]) => electronStub.handlers.get(channel)!({}, ...args) as Promise<T>
 
@@ -124,7 +122,6 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       overrides: {
         host: { confirm: async () => true, askClaim: async ({ claim }) => { asked.push(claim.deviceName); return true }, notify: (t) => notices.push(t), pollMs: 200 },
         discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] },
-        askNetwork: async (q) => { networkAsks.push(q.message); return false },
         consentPollMs: 1_000,
       },
       log: quiet,
@@ -162,8 +159,9 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     expect(on.view.status!.addresses.filter((a) => a.listening)).toEqual([])
     if (on.view.status!.addresses.length > 0) expect(on.view.status!.state).toBe('paused')
     // Studio asks once per network (Not now here): "Remote access paused on <network>."
-    if (waiting.length) await until(() => networkAsks, (a) => waiting.every((n) => a.includes(`Remote access paused on ${n.label}.`)), 15_000)
-    expect(new Set(networkAsks).size).toBe(networkAsks.length)
+    // The notice is in the window, never a dialog (consent review 3): one per network.
+    if (waiting.length) await until(() => invoke<Array<{ message: string }>>(IPC.NETWORK_NOTICES_GET), (a) => waiting.every((n) => a.some((x) => x.message === `Remote access paused on ${n.label}.`)), 15_000)
+    expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
     for (const n of waiting) {
       expect(await invoke(IPC.NETWORK_ALLOW, n.id)).toEqual({ ok: true })
       console.log(`[e2e] allowed ${n.label}`)

@@ -662,9 +662,10 @@ token, or your Allow during a pairing window, to do anything.
 
 **Allowed networks** lists every network you allowed. **Remove** closes its
 listeners at once. When remote access or **Allow LAN access** is on and you
-join a network you have not allowed, Studio asks once with the same
-"Remote access paused on *network*." and **Allow on this network** or
-**Not now**. In the terminal: `adf daemon remote status` shows the networks,
+join a network you have not allowed, a strip under the title bar says
+"Remote access paused on *network*." with **Allow on this network** and
+**Not now**. It does not block the window, and it shows once per network
+until Studio restarts, also when the Wi-Fi drops and comes back. In the terminal: `adf daemon remote status` shows the networks,
 `adf daemon remote allow-network` and `forget-network <id|name>` change
 them. A device can never allow a network.
 

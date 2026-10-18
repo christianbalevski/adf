@@ -14,7 +14,7 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
-import type { NetworkConsentResult, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
+import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -765,6 +765,11 @@ export interface AdfApi {
   allowNetwork: (id: string) => Promise<NetworkConsentResult>
   /** Remove an allowed network: its listeners close now. */
   forgetNetwork: (id: string) => Promise<NetworkConsentResult>
+  /** "Remote access paused on <network>." notices on screen now (non-modal, in the window). */
+  getNetworkNotices: () => Promise<NetworkNotice[]>
+  /** Not now: the notice goes and is not shown again this session. */
+  dismissNetworkNotice: (key: string) => Promise<boolean>
+  onNetworkNoticesChanged: (callback: (notices: NetworkNotice[]) => void) => () => void
 
   // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void

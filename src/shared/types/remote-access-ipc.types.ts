@@ -65,6 +65,22 @@ export interface NetworkStatusView {
   firewall: { state: 'ok' | 'blocked' | 'unknown'; message: string }
 }
 
+/**
+ * "Remote access paused on <network>." shown in the window, not as a dialog
+ * (NETWORK_NOTICES_CHANGED / NETWORK_NOTICES_GET): once per network per
+ * session, until Allow, Not now (NETWORK_NOTICE_DISMISS), or the network goes.
+ */
+export interface NetworkNotice {
+  /** The network id, or `unidentified:…` for a network that cannot be identified. */
+  key: string
+  /** Null: an unidentified network, which cannot be allowed. */
+  networkId: string | null
+  message: string
+  /** "Public network. The token is sent unencrypted." on a LAN the OS reports Public or does not report. */
+  warning: string | null
+  canAllow: boolean
+}
+
 /** NETWORK_ALLOW / NETWORK_FORGET. */
 export type NetworkConsentResult = { ok: true } | { ok: false; error: string }
 

@@ -540,6 +540,9 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_PAIR_STATE]: local('push', 'Pairing progress and errors; never the code or the token.'),
   [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
   [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
+  [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),
+  [IPC.NETWORK_NOTICE_DISMISS]: local('invoke', 'Not now on a notice: it goes and is not shown again this session.'),
+  [IPC.NETWORK_NOTICES_CHANGED]: local('push', 'The notices list, pushed when one is shown, dismissed, allowed or withdrawn; non-modal, never a dialog.'),
   [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------

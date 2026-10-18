@@ -6,7 +6,7 @@ import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch, RemoteCheckRequest, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
-import type { RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
+import type { NetworkNotice, RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 type SubscriptionPayload<Subscription> = Subscription extends (callback: (data: infer Payload) => void) => () => void
   ? Payload
@@ -745,6 +745,13 @@ const api: AdfApi = {
   getNetworkStatus: () => ipcRenderer.invoke(IPC.NETWORK_STATUS_GET),
   allowNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_ALLOW, id),
   forgetNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_FORGET, id),
+  getNetworkNotices: () => ipcRenderer.invoke(IPC.NETWORK_NOTICES_GET),
+  dismissNetworkNotice: (key: string) => ipcRenderer.invoke(IPC.NETWORK_NOTICE_DISMISS, key),
+  onNetworkNoticesChanged: (callback: (notices: NetworkNotice[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, notices: NetworkNotice[]) => callback(notices)
+    ipcRenderer.on(IPC.NETWORK_NOTICES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.NETWORK_NOTICES_CHANGED, handler)
+  },
 
   // Remote mode: daemon-side picker
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {

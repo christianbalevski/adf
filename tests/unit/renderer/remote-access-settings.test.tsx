@@ -236,3 +236,23 @@ describe('Settings → Networking', () => {
     for (const banned of ['Allow other computers to connect', 'Found on your network', 'Who can reach this computer?', 'Your other computers']) expect(html).not.toContain(banned)
   })
 })
+
+describe('consent review 3: the network notice is a strip in the window, not a dialog', () => {
+  it('message, Allow on this network and Not now; the Public warning; an unidentified network offers Open Networking instead', async () => {
+    const { NetworkNoticeList } = await import('../../../src/renderer/components/common/NetworkNoticeBanner')
+    const noop = () => {}
+    const html = renderToStaticMarkup(<NetworkNoticeList busy={null} error={null} onAllow={noop} onDismiss={noop} onOpenNetworking={noop} notices={[
+      { key: 'lan-0123456789abcdef', networkId: 'lan-0123456789abcdef', message: 'Remote access paused on Cafe (10.0.0.0/24).', warning: 'Public network. The token is sent unencrypted.', canAllow: true },
+      { key: 'unidentified:lan:Wi-Fi', networkId: null, message: 'Remote access paused on Unidentified network.', warning: null, canAllow: false },
+    ]} />)
+    expect(html).toContain('role="status"')
+    expect(html).not.toContain('role="dialog"')
+    expect(html).toContain('Remote access paused on Cafe (10.0.0.0/24).')
+    expect(html.match(/Allow on this network/g)?.length).toBe(1)
+    expect(html.match(/Not now/g)?.length).toBe(2)
+    expect(html).toContain('Public network. The token is sent unencrypted.')
+    expect(html).toContain('Remote access paused on Unidentified network.')
+    expect(html).toContain('Open Networking')
+    expect(renderToStaticMarkup(<NetworkNoticeList busy={null} error={null} onAllow={noop} onDismiss={noop} onOpenNetworking={noop} notices={[]} />)).toBe('')
+  })
+})

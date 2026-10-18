@@ -93,6 +93,8 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.NETWORK_STATUS_GET,
   IPC.NETWORK_ALLOW,
   IPC.NETWORK_FORGET,
+  IPC.NETWORK_NOTICES_GET,
+  IPC.NETWORK_NOTICE_DISMISS,
 ]
 
 export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Backend (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`

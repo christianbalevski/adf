@@ -462,6 +462,9 @@ export const IPC = {
   NETWORK_STATUS_GET: 'adf:network:status',
   NETWORK_ALLOW: 'adf:network:allow',
   NETWORK_FORGET: 'adf:network:forget',
+  NETWORK_NOTICES_GET: 'adf:network:notices',
+  NETWORK_NOTICE_DISMISS: 'adf:network:notice-dismiss',
+  NETWORK_NOTICES_CHANGED: 'adf:network:notices-changed',
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   RECOVERY_STASH: 'adf:recovery:stash',

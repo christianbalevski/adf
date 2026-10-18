@@ -917,55 +917,88 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
   const net = (over: Partial<NetworkView> = {}): NetworkView => ({ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'unknown', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'], ...over })
 
-  it('the question: "Remote access paused on <network>." with Allow on this network; the warning only on a LAN not reported Private', () => {
-    expect(networkQuestion(net())).toMatchObject({ title: 'Remote access paused', message: 'Remote access paused on Cafe (10.0.0.0/24).', allowLabel: 'Allow on this network', warning: PUBLIC_WARNING })
+  it('the notice: "Remote access paused on <network>." with Allow on this network; the warning only on a LAN not reported Private', () => {
+    expect(networkQuestion(net())).toMatchObject({ key: 'lan-0123456789abcdef', networkId: 'lan-0123456789abcdef', message: 'Remote access paused on Cafe (10.0.0.0/24).', canAllow: true, warning: PUBLIC_WARNING })
     expect(PUBLIC_WARNING).toBe('Public network. The token is sent unencrypted.')
     expect(networkQuestion(net({ osCategory: 'public' })).warning).toBe(PUBLIC_WARNING)
     expect(networkQuestion(net({ osCategory: 'private' })).warning).toBeNull()
     expect(networkQuestion(net({ kind: 'tailnet', label: 'Tailnet tail1234.ts.net', osCategory: 'private' })).warning).toBeNull()
   })
 
-  it('asks once per visit, only while remote access or mesh LAN is on; leaving and coming back asks again', async () => {
+  it('consent review 3: one notice per network per session, only while remote access or mesh LAN is on; flapping Wi-Fi never re-asks; it goes when the network is allowed or left', async () => {
     const state = { active: true, networks: [net()] }
-    const asked: NetworkQuestion[] = []
-    const allowed: string[] = []
-    let answer = false
-    const prompt = new NetworkConsentPrompt({
-      read: async () => state,
-      ask: async (q) => { asked.push(q); return answer },
-      allow: async (id) => { allowed.push(id); return { ok: true } },
-      log: quiet,
-    })
+    const shown: NetworkQuestion[] = []
+    const withdrawn: string[][] = []
+    const prompt = new NetworkConsentPrompt({ read: async () => state, show: (q) => { shown.push(q) }, withdraw: (keys) => { withdrawn.push(keys) }, log: quiet })
     await prompt.check()
     await prompt.check()
-    expect(asked.map((q) => q.message)).toEqual(['Remote access paused on Cafe (10.0.0.0/24).'])
+    expect(shown.map((q) => q.message)).toEqual(['Remote access paused on Cafe (10.0.0.0/24).'])
+    // Wi-Fi flaps: gone (the notice goes), back (no new notice this session).
+    state.networks = []
+    await prompt.check()
+    expect(withdrawn).toEqual([['lan-0123456789abcdef']])
+    state.networks = [net()]
+    await prompt.check()
     state.networks = []
     await prompt.check()
     state.networks = [net()]
-    answer = true
     await prompt.check()
-    expect(asked.length).toBe(2)
-    expect(allowed).toEqual(['lan-0123456789abcdef'])
-    // Off: no question. An allowed network: no question.
+    expect(shown.length).toBe(1)
+    // Off: no notice. An allowed network: no notice.
     const quiet2: NetworkQuestion[] = []
-    const off = new NetworkConsentPrompt({ read: async () => ({ active: false, networks: [net()] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
-    await off.check()
-    const none = new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [net({ allowed: true })] }), ask: async (q) => { quiet2.push(q); return true }, allow: async () => ({ ok: true }) })
-    await none.check()
+    await new NetworkConsentPrompt({ read: async () => ({ active: false, networks: [net()] }), show: (q) => { quiet2.push(q) }, withdraw: () => {} }).check()
+    await new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [net({ allowed: true })] }), show: (q) => { quiet2.push(q) }, withdraw: () => {} }).check()
     expect(quiet2).toEqual([])
   })
 
   it('consent review 1: an unidentified network gets the notice, labelled "Unidentified network", with nothing to allow', async () => {
-    const asked: NetworkQuestion[] = []
-    const allowed: string[] = []
+    const shown: NetworkQuestion[] = []
     const unidentified = net({ id: null, label: 'Unidentified network' })
-    const prompt = new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [unidentified] }), ask: async (q) => { asked.push(q); return true }, allow: async (id) => { allowed.push(id); return { ok: true } } })
-    await prompt.check()
-    expect(asked).toEqual([expect.objectContaining({ message: 'Remote access paused on Unidentified network.', canAllow: false, warning: null })])
-    expect(allowed).toEqual([])
+    await new NetworkConsentPrompt({ read: async () => ({ active: true, networks: [unidentified] }), show: (q) => { shown.push(q) }, withdraw: () => {} }).check()
+    expect(shown).toEqual([expect.objectContaining({ message: 'Remote access paused on Unidentified network.', canAllow: false, networkId: null, warning: null })])
   })
 
-  it('without a daemon: Allow writes remote-access.json and re-syncs the mesh; Remove too; the prompt asks while mesh LAN is on', async () => {
+  it('consent review 3: the notice is non-modal: pushed to the window (no dialog), listed for a window that opens later, dismissed by Not now, gone after Allow', async () => {
+    electronStub.handlers.clear()
+    electronStub.calls.length = 0
+    electronStub.pushes.length = 0
+    const dir = mkdtempSync(join(tmpdir(), 'adf-netnotice-'))
+    dirs.push(dir)
+    writeFileSync(join(dir, 'studio-backend.json'), JSON.stringify({ v: 1, mode: 'embedded' }))
+    const store = createBackendSettingsStore({ boot: resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet), codec: fakeCodec(), log: quiet })
+    const cafe = net()
+    const home = net({ id: 'lan-fedcba9876543210', label: 'Home (192.168.1.0/24)', osCategory: 'private' })
+    let networks = [cafe, home]
+    const reach = { snapshot: async () => ({ addresses: [], listenable: [], networks, tailscale: 'absent' }) } as unknown as LanReach
+    const ipc = registerRemoteAccessHandlers({
+      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
+      meshLan: () => ({ on: true, sync: async () => {} }),
+      overrides: { reach, consentPollMs: 0, discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      log: quiet,
+    })
+    await ipc.consent.check()
+    expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
+    const last = () => electronStub.pushes.filter((p) => p.channel === IPC.NETWORK_NOTICES_CHANGED).at(-1)?.args[0] as Array<{ key: string; message: string; warning: string | null; canAllow: boolean }>
+    expect(last().map((n) => [n.message, n.warning, n.canAllow])).toEqual([
+      ['Remote access paused on Cafe (10.0.0.0/24).', PUBLIC_WARNING, true],
+      ['Remote access paused on Home (192.168.1.0/24).', null, true],
+    ])
+    expect(await electronStub.handlers.get(IPC.NETWORK_NOTICES_GET)!({})).toEqual(last())
+    // Not now on Home; Allow on this network on Cafe.
+    await electronStub.handlers.get(IPC.NETWORK_NOTICE_DISMISS)!({}, home.id)
+    expect(last().map((n) => n.key)).toEqual([cafe.id])
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toEqual({ ok: true })
+    expect(last()).toEqual([])
+    // Home flaps: no new notice this session.
+    networks = [cafe]
+    await ipc.consent.check()
+    networks = [{ ...cafe, allowed: true }, home]
+    await ipc.consent.check()
+    expect(await electronStub.handlers.get(IPC.NETWORK_NOTICES_GET)!({})).toEqual([])
+    ipc.dispose()
+  })
+
+  it('without a daemon: Allow writes remote-access.json and re-syncs the mesh; Remove too', async () => {
     electronStub.handlers.clear()
     const dir = mkdtempSync(join(tmpdir(), 'adf-netconsent-'))
     dirs.push(dir)
@@ -974,15 +1007,13 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     const cafe = net()
     const reach = { snapshot: async () => ({ addresses: [], listenable: [], networks: [cafe], tailscale: 'absent' }) } as unknown as LanReach
     let syncs = 0
-    const asked: NetworkQuestion[] = []
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
       meshLan: () => ({ on: true, sync: async () => { syncs++ } }),
-      overrides: { reach, consentPollMs: 0, askNetwork: async (q) => { asked.push(q); return true }, discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
+      overrides: { reach, consentPollMs: 0, discovery: { browse: () => ({ stop: () => {} }), tailnet: async () => [] } },
       log: quiet,
     })
-    await ipc.consent.check()
-    expect(asked.map((q) => [q.message, q.warning])).toEqual([['Remote access paused on Cafe (10.0.0.0/24).', PUBLIC_WARNING]])
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toEqual({ ok: true })
     const saved = () => JSON.parse(readFileSync(join(dir, 'remote-access.json'), 'utf-8')).allowedNetworks
     expect(saved()).toEqual([expect.objectContaining({ id: cafe.id, kind: 'lan', label: cafe.label })])
     expect(syncs).toBe(1)
