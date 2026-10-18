@@ -98,8 +98,8 @@ async function postJson<T>(io: PairIo, url: string, body: unknown): Promise<{ st
   return { status: res.status, body: parsed, retryAfter: Number.isFinite(retry) && retry > 0 ? retry : null }
 }
 
-async function getJson<T>(io: PairIo, url: string): Promise<{ status: number; body: T & { error?: string; code?: string } }> {
-  const res = await io.fetch(url, { headers: { Accept: 'application/json' }, redirect: 'manual' })
+async function getJson<T>(io: PairIo, url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: T & { error?: string; code?: string } }> {
+  const res = await io.fetch(url, { headers: { Accept: 'application/json', ...headers }, redirect: 'manual' })
   const text = await res.text()
   return { status: res.status, body: text ? JSON.parse(text) : {} }
 }
@@ -221,7 +221,7 @@ export async function runPair(args: string[], io: PairIo): Promise<number> {
   io.stderr(`Waiting for "${hello.name}" to allow this computer…\n`)
   let result: PairClaimResult | null = null
   while (!result || result.state === 'pending') {
-    const res = await getJson<PairClaimResult>(io, `${url}/pair/claims/${encodeURIComponent(accepted.claimId)}?wait=25`)
+    const res = await getJson<PairClaimResult>(io, `${url}/pair/claims/${encodeURIComponent(accepted.claimId)}?wait=25`, { 'X-ADF-Pair-Secret': accepted.collectSecret })
     if (res.status !== 200) {
       io.stderr(`${res.body.error ?? `HTTP ${res.status}`}\n`)
       return 1

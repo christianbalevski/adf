@@ -233,15 +233,17 @@ Opened by **Pair a computer** in Studio or `adf daemon pair` (`POST /remote-acce
 ```text
 client                                   host daemon                         host UI (Studio / adf daemon pair)
   POST /pair/claim {code, deviceName, clientKind}
-                      ── code ok ──▶ claim pending ── event claim_pending ──▶ "Allow agent-2 laptop?"
-  ◀── 202 {claimId, expiresAt}
-  GET /pair/claims/:claimId?wait=25  (long poll, repeated)
+                      ── code ok ──▶ claim pending ── event claim_pending ──▶ GET /remote-access → "Allow agent-2 laptop?"
+  ◀── 202 {claimId, expiresAt, collectSecret}
+  GET /pair/claims/:claimId?wait=25, X-ADF-Pair-Secret: collectSecret  (long poll, repeated)
                                                     ◀── POST /remote-access/pairing/claims/:claimId {allow}
   ◀── {state: approved, token, device, daemon}   (delivered once, then the claim is deleted)
 ```
 
 - `deviceName`: 1-64 characters, control and bidi characters refused (400), trimmed. It becomes the device label.
-- `claimId`: 128-bit random, known only to the claimant; it is the capability to collect the token.
+- `claimId`: 128-bit random. The owner's clients see it (`GET /remote-access` → `pairing.claim`) and answer with it; it does not collect anything.
+- `collectSecret`: 256-bit random, only in the 202 answer, never in the status, an event or the log. Collecting the result needs it as `X-ADF-Pair-Secret`, compared in constant time; a missing or wrong one answers 404 `claim_not_found`, as an unknown claim does. So a paired device, or anything that learns the claim id, cannot collect a new device's token (security review 2026-10-18, item 1).
+- `claim_pending` means "pending claims changed" and carries nothing; Studio and `adf daemon pair` read the claim through the local-only `GET /remote-access`.
 - Host confirmation is REQUIRED in addition to the code. The prompt shows: device name, source address, how it arrived (`lan`, `tailnet`, `proxy`), the client kind, and, on a tailnet, the peer's Tailscale login from `tailscale whois <addr>` when available. Text: "Allow *agent-2 laptop* (192.168.1.31, this network) to control this computer's ADF daemon? It gets the same power as your seed phrase." Buttons **Allow** / **Deny**. Studio shows it as a modal in the window and, when the window is not focused, an OS notification that opens it. `adf daemon pair` prompts `Allow …? [y/N]`. The first decision from any local client wins.
 - Why both: the code proves the person at the client sees the host's screen, so a stranger on the LAN cannot spam "Allow?" prompts under a plausible name; the confirmation proves the owner consents and lets them check the address, which is the only defence against a relayed code (§10).
 - Approval creates the device record (`origin: 'paired'`) before the token is released. The token is returned once, to the first poll after approval, with `Cache-Control: no-store`; the claim is then deleted. A token never collected (client gone) leaves a device the owner sees in the list with "Never connected" and can revoke.
@@ -323,7 +325,7 @@ Settings → Backend → This computer (Studio in `local` mode; in `embedded` or
 | Device first connection after start, disconnect | Devices list (live); no notice | `devices list` | Line |
 | Refusals (`master_token_remote`, `device_revoked`, rate limit) | — | — | Rate-limited line with count |
 
-Studio gets them through the client push topic `remote_access` and the daemon event bus (umbilical `daemon.remote_access`): `{type, deviceId?, label?, claimId?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (`claimId`, `label` = the device name; Studio shows "Allow *label*?" and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
+Studio gets them through the client push topic `remote_access`, which goes to this computer's own client sessions only: never to a session opened with a device token, and never onto the umbilical bus (`GET /events` serves device tokens, and agents' taps read it). `{type, deviceId?, label?, reason?}`, `type`: `enabled`, `disabled`, `addresses_changed`, `networks_changed` (§3.3.1), `pairing_opened`, `pairing_closed` (`reason`: `wrong_codes`, `expired`, `cancelled`, `paired`, `denied`, `disabled`), `claim_pending` (no fields: Studio reads `GET /remote-access` → `pairing.claim`, shows "Allow *deviceName*?" and answers with `POST /remote-access/pairing/claims/:claimId`), `device_added`, `device_revoked`, `device_connected`, `device_disconnected`. A status whose LAN addresses are all on non-private networks reports `firewall.state: 'public_network'` on every OS; it then re-reads `GET /remote-access`. Event payloads MUST NOT carry tokens or codes. Studio main also writes each notice to `main.log`.
 
 ## 9. Client side
 
@@ -404,7 +406,7 @@ interface RemoteAccessStatus {
 }
 interface RemoteHello { v: 1; name: string; fingerprint: string; pairingOpen: boolean; clientApiVersion: number }
 interface PairClaimRequest { code: string; deviceName: string; clientKind: 'studio' | 'cli' }
-interface PairClaimAccepted { claimId: string; expiresAt: string }
+interface PairClaimAccepted { claimId: string; expiresAt: string; collectSecret: string }
 type PairClaimResult =
   | { state: 'pending' }
   | { state: 'denied' }
@@ -436,7 +438,7 @@ Host / Origin checks apply; no bearer token; all answers `Cache-Control: no-stor
 |---|---|---|
 | `GET /remote/hello` | — | 200 `RemoteHello` |
 | `POST /pair/claim` | `PairClaimRequest` | 202 `PairClaimAccepted` |
-| `GET /pair/claims/:claimId?wait=<0-25>` | — | 200 `PairClaimResult` (holds up to `wait` s while pending) |
+| `GET /pair/claims/:claimId?wait=<0-25>` | header `X-ADF-Pair-Secret` = the 202's `collectSecret` | 200 `PairClaimResult` (holds up to `wait` s while pending) |
 
 ### 11.4 Error codes
 

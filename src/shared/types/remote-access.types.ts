@@ -98,6 +98,8 @@ export interface PairClaimRequest {
 export interface PairClaimAccepted {
   claimId: string
   expiresAt: string
+  /** Send it as X-ADF-Pair-Secret to collect the result (GET /pair/claims/:claimId). Only the claimant has it. */
+  collectSecret: string
 }
 
 export type PairClaimResult =
@@ -113,7 +115,12 @@ export interface RemoteAccessPatch {
   trustNetwork?: boolean
 }
 
-/** Daemon event bus / client push topic `remote_access`. Never carries a token or a code. */
+/**
+ * Client push topic `remote_access`, to this computer's own sessions only
+ * (never a device session, never the umbilical bus). Never carries a token,
+ * a code or a claim: `claim_pending` means "pending claims changed", read
+ * them through GET /remote-access.
+ */
 export interface RemoteAccessEvent {
   type:
     | 'enabled' | 'disabled' | 'addresses_changed'
@@ -122,7 +129,6 @@ export interface RemoteAccessEvent {
     | 'networks_changed'
   deviceId?: string
   label?: string
-  claimId?: string
   /** `pairing_closed`: 'wrong_codes' | 'expired' | 'cancelled' | 'paired' | 'denied' | 'disabled'. */
   reason?: string
 }

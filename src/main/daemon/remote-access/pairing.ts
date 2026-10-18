@@ -11,7 +11,7 @@
  * never opened. The code is never logged, announced or put in an event.
  */
 
-import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import type { PairClaimResult, PairingClaimView, PairingWindowView, RemoteUrl } from '../../../shared/types/remote-access.types'
 
 export const PAIRING_WINDOW_MS = 120_000
@@ -34,6 +34,8 @@ export type PairingCloseReason = 'expired' | 'wrong_codes' | 'cancelled' | 'pair
 
 interface Claim {
   view: PairingClaimView
+  /** Only the claimant has it (the 202 answer): collecting the token needs it, not the claim id the owner's clients see. */
+  secret: string
   state: 'pending' | 'approved' | 'denied'
   result?: Extract<PairClaimResult, { state: 'approved' }>
   waiters: Set<() => void>
@@ -59,6 +61,13 @@ export interface ApprovedDevice {
   token: string
   device: { id: string; label: string }
   daemon: { name: string; fingerprint: string; urls: RemoteUrl[] }
+}
+
+/** Constant-time comparison of two secrets of any length. */
+function secretsEqual(presented: string, expected: string): boolean {
+  const a = createHash('sha256').update(presented, 'utf-8').digest()
+  const b = createHash('sha256').update(expected, 'utf-8').digest()
+  return timingSafeEqual(a, b)
 }
 
 export class PairingManager {
@@ -137,7 +146,7 @@ export class PairingManager {
    * PairingError for every refusal; `wrongCode` is true for a wrong code
    * (the route delays that answer).
    */
-  claim(input: { code: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null }): { claimId: string; expiresAt: string; claim: PairingClaimView } {
+  claim(input: { code: string; deviceName: string; clientKind: 'studio' | 'cli'; address: string; via: 'lan' | 'tailnet' | 'proxy'; tailnetLogin: string | null }): { claimId: string; expiresAt: string; collectSecret: string; claim: PairingClaimView } {
     this.rateLimit(input.address)
     const w = this.window
     if (!w || w.expiresAt <= this.now()) throw new PairingError('No pairing window is open on this computer. Open one on the host (Pair a computer, or adf daemon pair) and try again.', 404, 'pairing_closed')
@@ -160,10 +169,11 @@ export class PairingManager {
       tailnetLogin: input.tailnetLogin,
       at: new Date(this.now()).toISOString(),
     }
-    this.claims.set(claimId, { view, state: 'pending', waiters: new Set() })
+    const collectSecret = randomBytes(32).toString('base64url')
+    this.claims.set(claimId, { view, secret: collectSecret, state: 'pending', waiters: new Set() })
     w.claimId = claimId
     this.events.claimPending(view)
-    return { claimId, expiresAt: new Date(w.expiresAt).toISOString(), claim: view }
+    return { claimId, expiresAt: new Date(w.expiresAt).toISOString(), collectSecret, claim: view }
   }
 
   /** The owner's answer. `approve` mints the device; its token is kept until the claimant collects it. */
@@ -193,11 +203,13 @@ export class PairingManager {
 
   /**
    * The claimant's poll: waits up to `waitMs` while pending. An approved
-   * result is delivered once, then the claim is deleted. Null = unknown claim.
+   * result is delivered once, then the claim is deleted. Null = unknown
+   * claim, or a collect secret that is not this claim's (constant time): the
+   * claim id alone, which the owner's clients see, collects nothing.
    */
-  async poll(claimId: string, waitMs: number): Promise<PairClaimResult | null> {
+  async poll(claimId: string, collectSecret: string, waitMs: number): Promise<PairClaimResult | null> {
     let claim = this.claims.get(claimId)
-    if (!claim) return null
+    if (!claim || !secretsEqual(collectSecret, claim.secret)) return null
     if (claim.state === 'pending' && waitMs > 0) {
       await new Promise<void>(resolve => {
         const done = () => { clearTimeout(timer); claim?.waiters.delete(done); resolve() }

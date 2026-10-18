@@ -173,7 +173,8 @@ export class RemoteAccessService {
       },
       claimPending: (claim) => {
         this.log(`[remote-access] pairing request from "${claim.deviceName}" at ${claim.address} (${claim.via}${claim.tailnetLogin ? `, ${claim.tailnetLogin}` : ''}): waiting for the owner`)
-        this.emit({ type: 'claim_pending', claimId: claim.claimId, label: claim.deviceName })
+        // "Pending claims changed" only: the claim (its id included) is read through GET /remote-access, this machine only.
+        this.emit({ type: 'claim_pending' })
       },
     }, { now: this.now, host: () => ({ name: this.config.name, fingerprint: this.fingerprint ?? '' }) })
   }
@@ -717,7 +718,7 @@ export class RemoteAccessService {
     const tailnetLogin = via === 'tailnet' || (via === 'proxy' && /^100\./.test(address)) ? await this.tailscale.whois(address) : null
     try {
       const accepted = this.pairing.claim({ ...body, address, via, tailnetLogin })
-      return { claimId: accepted.claimId, expiresAt: accepted.expiresAt }
+      return { claimId: accepted.claimId, expiresAt: accepted.expiresAt, collectSecret: accepted.collectSecret }
     } catch (err) {
       if (err instanceof PairingError) {
         this.log(`[remote-access] pairing claim from ${address} ("${body.deviceName}") refused: ${err.code}`)
@@ -727,8 +728,8 @@ export class RemoteAccessService {
     }
   }
 
-  async poll(claimId: string, waitMs: number): Promise<PairClaimResult> {
-    const result = await this.pairing.poll(claimId, waitMs)
+  async poll(claimId: string, collectSecret: string, waitMs: number): Promise<PairClaimResult> {
+    const result = await this.pairing.poll(claimId, collectSecret, waitMs)
     if (!result) throw new RemoteAccessError('No such pairing request (it expired, was collected, or the window closed).', 404, 'claim_not_found')
     return result
   }

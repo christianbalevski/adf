@@ -92,7 +92,6 @@ export const UMBILICAL_EVENT_TYPES = [
   // --- daemon ------------------------------------------------------------
   'daemon.started',
   'daemon.autostart.report',
-  'daemon.remote_access',
 
   // --- lifecycle / control-plane -----------------------------------------
   // These are emitted by the runtime (HIL, asks, suspend, config/context,

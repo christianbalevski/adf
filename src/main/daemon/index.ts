@@ -389,10 +389,9 @@ const remoteAccess = new RemoteAccessService({
   clientApiVersion: CLIENT_API_VERSION,
   envBindHost: isLoopbackName(host) ? null : host,
   sessions: () => client.sessions,
-  emit: (event) => {
-    client.sessions.publishPush('remote_access', event)
-    withSource('system:daemon', () => emitUmbilicalEvent({ event_type: 'daemon.remote_access', payload: { ...event } }))
-  },
+  // This machine's own clients only (LOCAL_ONLY_PUSH_TOPICS): never the
+  // umbilical bus, which GET /events serves to device tokens and agent taps read.
+  emit: (event) => client.sessions.publishPush('remote_access', event),
 })
 agentFactory.startTemplatesWatcher()
 // Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.

@@ -17784,7 +17784,8 @@ Example 202 (`application/json`):
 ```json
 {
   "claimId": "string",
-  "expiresAt": "2026-01-01T00:00:00.000Z"
+  "expiresAt": "2026-01-01T00:00:00.000Z",
+  "collectSecret": "string"
 }
 ```
 
@@ -17794,7 +17795,7 @@ Example 202 (`application/json`):
 
 **Collect the result of a claim (no token)**
 
-Long poll: waits up to `wait` seconds while pending. An approved result (with the device token) is delivered once, then the claim is gone (404). `Cache-Control: no-store`.
+Long poll: waits up to `wait` seconds while pending. Needs the claim's collect secret (`X-ADF-Pair-Secret`); the claim id alone collects nothing. An approved result (with the device token) is delivered once, then the claim is gone (404). `Cache-Control: no-store`.
 
 Operation `pollPairingClaim` · no authentication
 
@@ -17804,6 +17805,7 @@ Operation `pollPairingClaim` · no authentication
 |---|---|---|---|---|
 | `claimId` | path | string | yes | Claim id (POST /pair/claim) |
 | `wait` | query | integer |  |  |
+| `X-ADF-Pair-Secret` | header | string | yes | The claim's collectSecret (POST /pair/claim). Compared in constant time; a missing or wrong one answers 404 `claim_not_found`, as an unknown claim does |
 
 **Responses**
 
@@ -17812,7 +17814,7 @@ Operation `pollPairingClaim` · no authentication
 | 200 | [PairClaimResult](#schema-pairclaimresult) | pending, denied, or approved with the token |
 | 400 | [ErrorResponse](#schema-errorresponse) | `wait` out of range |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-| 404 | [ErrorResponse](#schema-errorresponse) | Unknown, expired or collected claim (`claim_not_found`), or remote access is off (`remote_access_off`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown, expired or collected claim, or a missing or wrong collect secret (`claim_not_found`), or remote access is off (`remote_access_off`) |
 
 Example 200 (`application/json`):
 
@@ -22703,8 +22705,9 @@ Type: object \| object
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `claimId` | string | yes | 128-bit random; the capability to collect the token |
+| `claimId` | string | yes | The claim's id. The owner's clients see it (GET /remote-access); it does not collect the token |
 | `expiresAt` | string | yes |  |
+| `collectSecret` | string | yes | 256-bit random, only in this answer: send it as `X-ADF-Pair-Secret` to collect the result (GET /pair/claims/{claimId}) |
 
 <a id="schema-pairclaimresult"></a>
 

@@ -251,15 +251,15 @@ describe('pairing window (§5.3-§5.5)', () => {
   it('a correct code waits for the owner; busy for others; approval delivers the token once', async () => {
     const { m, events, now } = manager()
     const view = m.open()
-    const { claimId } = m.claim(claimInput(view.code, '192.168.1.31'))
+    const { claimId, collectSecret } = m.claim(claimInput(view.code, '192.168.1.31'))
     expect(events).toContain('pending:agent-2 laptop')
     now.t += 2_100
     expect(() => m.claim(claimInput(view.code, '192.168.1.32'))).toThrow(expect.objectContaining({ code: 'pairing_busy', status: 409 }))
-    expect(await m.poll(claimId, 0)).toEqual({ state: 'pending' })
-    const waiting = m.poll(claimId, 5_000)
+    expect(await m.poll(claimId, collectSecret, 0)).toEqual({ state: 'pending' })
+    const waiting = m.poll(claimId, collectSecret, 5_000)
     m.decide(claimId, true, () => ({ token: 'adfd_x', device: { id: 'abcdefghij', label: 'agent-2 laptop' }, daemon: { name: 'host', fingerprint: 'AAAA-BBBB', urls: [] } }))
     expect(await waiting).toMatchObject({ state: 'approved', token: 'adfd_x' })
-    expect(await m.poll(claimId, 0)).toBeNull()
+    expect(await m.poll(claimId, collectSecret, 0)).toBeNull()
     expect(events).toContain('closed:paired')
     expect(() => m.decide(claimId, true, () => { throw new Error('never') })).toThrow(expect.objectContaining({ code: 'claim_not_found' }))
   })
@@ -267,9 +267,9 @@ describe('pairing window (§5.3-§5.5)', () => {
   it('deny answers denied and closes; the code alone never yields a token', async () => {
     const { m } = manager()
     const view = m.open()
-    const { claimId } = m.claim(claimInput(view.code, '192.168.1.31'))
+    const { claimId, collectSecret } = m.claim(claimInput(view.code, '192.168.1.31'))
     m.decide(claimId, false, () => { throw new Error('a denied claim mints nothing') })
-    expect(await m.poll(claimId, 0)).toEqual({ state: 'denied' })
+    expect(await m.poll(claimId, collectSecret, 0)).toEqual({ state: 'denied' })
     expect(() => m.decide(claimId, true, () => { throw new Error('never') })).toThrow(expect.objectContaining({ code: 'claim_decided' }))
     expect(m.isOpen).toBe(false)
   })
@@ -277,11 +277,11 @@ describe('pairing window (§5.3-§5.5)', () => {
   it('expires after 120 s, dropping a pending claim', async () => {
     const { m, now } = manager()
     const view = m.open()
-    const { claimId } = m.claim(claimInput(view.code, '192.168.1.31'))
+    const { claimId, collectSecret } = m.claim(claimInput(view.code, '192.168.1.31'))
     now.t += 121_000
     expect(m.view()).toBeNull()
     m.close('expired')
-    expect(await m.poll(claimId, 0)).toBeNull()
+    expect(await m.poll(claimId, collectSecret, 0)).toBeNull()
   })
 })
 

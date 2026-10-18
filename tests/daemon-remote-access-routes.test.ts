@@ -95,7 +95,7 @@ afterEach(async () => {
   }
 })
 
-async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli' } = {}): Promise<Harness> {
+async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'studio' | 'cli'; behindProxy?: boolean } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-remote-routes-'))
   dirs.push(dir)
   const port = await freePort()
@@ -130,7 +130,8 @@ async function harness(opts: { category?: 'private' | 'public'; startedBy?: 'stu
     bindAddress: () => '127.0.0.1',
     wrongCodeDelayMs: 0,
     log: (line) => logs.push(line),
-    emit: (event) => events.push(event),
+    // As daemon/index.ts wires it: the client push topic.
+    emit: (event) => { events.push(event); sessions().publishPush('remote_access', event) },
     sessions,
   })
   const requestShutdown = vi.fn()
@@ -357,19 +358,20 @@ describe('pairing over the remote listener (§5)', () => {
 
     const accepted = await claim(h, code)
     expect(accepted.status).toBe(202)
-    const { claimId } = accepted.json
-    expect((await remote(h, 'GET', `/pair/claims/${claimId}`)).json).toEqual({ state: 'pending' })
+    const { claimId, collectSecret } = accepted.json
+    const collect = { 'x-adf-pair-secret': collectSecret as string }
+    expect((await remote(h, 'GET', `/pair/claims/${claimId}`, collect)).json).toEqual({ state: 'pending' })
     const view = (await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing
     expect(view.claim).toMatchObject({ claimId, deviceName: 'agent-2 laptop', clientKind: 'cli', address: '127.0.0.1', via: 'lan' })
 
-    const waiting = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`)
+    const waiting = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`, collect)
     const decided = await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: true } })
     expect(decided.json()).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop', origin: 'paired' } })
     const result = await waiting
     expect(result.headers['cache-control']).toBe('no-store')
     expect(result.json).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop' }, daemon: { name: 'host-1' } })
     expect(validate('PairClaimResult', result.json)).toEqual([])
-    expect((await remote(h, 'GET', `/pair/claims/${claimId}`)).json.code).toBe('claim_not_found')
+    expect((await remote(h, 'GET', `/pair/claims/${claimId}`, collect)).json.code).toBe('claim_not_found')
     expect((await remote(h, 'GET', '/version', { authorization: `Bearer ${result.json.token}` })).status).toBe(200)
 
     const transcript = JSON.stringify(h.events) + h.logs.join('\n')
@@ -407,9 +409,10 @@ describe('pairing over the remote listener (§5)', () => {
     expect((await remote(h, 'POST', '/pair/claim', {}, { code: '123456', deviceName: 'a\nb', clientKind: 'cli' })).status).toBe(400)
     const svc = h.service as unknown as { pairing: { perAddress: Map<string, number[]> } }
     svc.pairing.perAddress.clear()
-    const { claimId } = (await claim(h, code)).json
+    const { claimId, collectSecret } = (await claim(h, code)).json
+    const collect = { 'x-adf-pair-secret': collectSecret as string }
     await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: false } })
-    expect((await remote(h, 'GET', `/pair/claims/${claimId}`)).json).toEqual({ state: 'denied' })
+    expect((await remote(h, 'GET', `/pair/claims/${claimId}`, collect)).json).toEqual({ state: 'denied' })
     const again = await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: true } })
     expect(again.statusCode).toBe(409)
     expect(again.json().code).toBe('claim_decided')
@@ -440,5 +443,71 @@ describe('quit with devices connected (§3.6, owner decision O3)', () => {
     expect(quit.json()).toMatchObject({ stopping: true, otherSessions: 0 })
     await new Promise(r => setTimeout(r, 80))
     expect(h.requestShutdown).toHaveBeenCalled()
+  })
+})
+
+describe('security review item 1: claims stay with this machine', () => {
+  /** An SSE stream over a real socket: `port` (the loopback listener, or the remote one), Host as given. */
+  function stream(port: number, host: string, path: string, token: string): Promise<{ text: () => string; close: () => void }> {
+    return new Promise((resolve, reject) => {
+      let text = ''
+      const req = httpRequest({ host: '127.0.0.1', port, path, headers: { host, authorization: `Bearer ${token}` } }, (res) => {
+        res.setEncoding('utf-8')
+        res.on('data', (c) => { text += c })
+        resolve({ text: () => text, close: () => res.destroy() })
+      })
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
+  it('a device session never sees claim data, and the claim id alone collects nothing', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const hostile = await addDevice(h, 'agent-3 hostile')
+    const deviceAuth = { authorization: `Bearer ${hostile.token}` }
+    const deviceSession = await remote(h, 'POST', '/client/sessions', deviceAuth, { client: 'studio', version: '1' })
+    expect(deviceSession.status).toBe(201)
+    const deviceStream = await stream(h.port, `${LAN}:${h.port}`, `/client/sessions/${deviceSession.json.sessionId}/events`, hostile.token)
+    const deviceBus = await stream(h.port, `${LAN}:${h.port}`, '/events', hostile.token)
+    const mainPort = (h.server.server.address() as { port: number }).port
+    const local = await h.server.inject({ method: 'POST', url: '/client/sessions', headers: master, payload: { client: 'studio', version: '1' } })
+    const localStream = await stream(mainPort, `127.0.0.1:${mainPort}`, `/client/sessions/${local.json().sessionId}/events`, TOKEN)
+    await new Promise(r => setTimeout(r, 100))
+
+    const code = (await h.server.inject({ method: 'POST', url: '/remote-access/pairing', headers: managed })).json().code as string
+    const accepted = await h.server.inject({ method: 'POST', url: '/pair/claim', payload: { code, deviceName: 'agent-2 laptop', clientKind: 'studio' } })
+    expect(accepted.statusCode).toBe(202)
+    const { claimId, collectSecret } = accepted.json() as { claimId: string; collectSecret: string }
+    expect(collectSecret).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(collectSecret).not.toBe(claimId)
+    await new Promise(r => setTimeout(r, 200))
+
+    // This machine's own client gets "pending claims changed", without the claim.
+    expect(localStream.text()).toContain('"topic":"remote_access"')
+    expect(localStream.text()).toContain('claim_pending')
+    expect(localStream.text()).not.toContain(claimId)
+    // Another computer gets nothing of remote access, on either stream.
+    for (const seen of [deviceStream.text(), deviceBus.text()]) {
+      expect(seen).not.toContain(claimId)
+      expect(seen).not.toContain('remote_access')
+      expect(seen).not.toContain('agent-2 laptop')
+    }
+    expect(JSON.stringify(h.events)).not.toContain(claimId)
+    // The owner's own client reads the claim through the local-only status.
+    expect((await h.server.inject({ method: 'GET', url: '/remote-access', headers: managed })).json().pairing.claim.claimId).toBe(claimId)
+
+    // A device that learned the claim id cannot collect the token: no secret, a wrong one, or its own token.
+    const stolen = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`, deviceAuth)
+    const guessed = remote(h, 'GET', `/pair/claims/${claimId}?wait=5`, { 'x-adf-pair-secret': 'A'.repeat(43) })
+    await h.server.inject({ method: 'POST', url: `/remote-access/pairing/claims/${claimId}`, headers: managed, payload: { allow: true } })
+    for (const r of [await stolen, await guessed]) {
+      expect(r.status).toBe(404)
+      expect(r.json.code).toBe('claim_not_found')
+      expect(JSON.stringify(r.json)).not.toContain('adfd_')
+    }
+    const legit = await remote(h, 'GET', `/pair/claims/${claimId}`, { 'x-adf-pair-secret': collectSecret })
+    expect(legit.json).toMatchObject({ state: 'approved', device: { label: 'agent-2 laptop' } })
+    for (const s of [deviceStream, deviceBus, localStream]) s.close()
   })
 })
