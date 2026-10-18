@@ -72,6 +72,13 @@ mac:
       to: Assets.car
   extendInfo:
     CFBundleIconName: AppIcon
+    # macOS 15 asks for Local Network access before mDNS or a LAN connection;
+    # without these keys the prompt cannot show and discovery fails silently
+    # (docs/design/remote-access.md §6).
+    NSLocalNetworkUsageDescription: ADF Studio finds and connects to your other computers running ADF on this network.
+    NSBonjourServices:
+      - _adf-daemon._tcp
+      - _adf-runtime._tcp
   # Signing + notarization. Locally, electron-builder auto-discovers the
   # "Developer ID Application" identity in the login keychain; CI gets it via
   # CSC_LINK / CSC_KEY_PASSWORD. `notarize: true` submits to Apple using

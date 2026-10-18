@@ -14,6 +14,7 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemoteCheckRequest, RemoteCheckResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
+import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -732,6 +733,32 @@ export interface AdfApi {
    * (the window first kept its unsaved editor text as recovery copies).
    */
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => Promise<void>
+
+  // Allow other computers to connect (remote-access.md §7, §9.1). Host: Settings → Backend → This computer.
+  /** The host panel: the daemon's remote-access status, in local mode only. */
+  getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
+  /** The toggle; turning it on is confirmed in a native dialog first. */
+  setRemoteAccess: (request: { enabled: boolean; name?: string }) => Promise<RemoteAccessResult>
+  /** "Add a computer": a device token, returned this once. */
+  addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
+  /** Remove a computer (confirmed first): disconnected now, its token stops working. */
+  removeRemoteDevice: (id: string) => Promise<RemoteAccessResult>
+  /** "Pair a computer": a 6-digit code for 120 s; main asks "Allow <device>?" when a computer enters it. */
+  openRemotePairing: () => Promise<RemoteAccessResult>
+  closeRemotePairing: () => Promise<RemoteAccessResult>
+  /** `tailscale serve` for the daemon port, confirmed first with the exact command. */
+  setRemoteTailscaleServe: (enabled: boolean) => Promise<RemoteAccessResult & { output?: string }>
+  onRemoteAccessChanged: (callback: (change: RemoteAccessChange) => void) => () => void
+  // Client: Settings → Backend → Remote computer. No token reaches the renderer.
+  /** Look for ADF computers (mDNS, tailnet) while the section is open. */
+  startRemoteDiscovery: () => Promise<boolean>
+  stopRemoteDiscovery: () => Promise<boolean>
+  onRemoteDiscoveryUpdate: (callback: (update: RemoteDiscoveryUpdate) => void) => () => void
+  /** Pairing: hello the host, then the code, then the host's Allow; the token is saved in main. */
+  startRemotePairing: (request: RemotePairStartRequest) => Promise<RemotePairState>
+  submitRemotePairingCode: (code: string) => Promise<RemotePairState>
+  cancelRemotePairing: () => Promise<RemotePairState>
+  onRemotePairingState: (callback: (state: RemotePairState) => void) => () => void
 
   // Remote mode: the daemon-side picker (design §9.3). Main asks; the renderer browses the daemon's folders and answers.
   onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => () => void

@@ -671,6 +671,36 @@ folder to repeat an item.
 | UPG-12 | Windows: replace `studio-backend.json` with a folder of that name (or deny your account read access to the file). Launch. | "Studio cannot use or replace its backend settings file." with the path, the error (EISDIR or EACCES) and "Fix its permissions or delete it, then restart Studio.", buttons … for This Launch. The chosen backend runs for this launch only ("Agents run … for this session only: …"); no sign-in moves; the next launch asks again. | N/A | [ ] | N/A |
 | UPG-13 | UPG-01, but quit Studio (or kill it) before the daemon connects, so the notice is not shown; launch again. | The second launch moves nothing more and shows the notice once, listing what the first launch moved. A third launch shows none. | N/A | [ ] | N/A |
 
+## 31. Allow other computers to connect (REMOTE-ACCESS)
+
+Guide: [Studio backend › Allow other computers to connect](../guides/studio-backend.md#allow-other-computers-to-connect).
+Design: [remote-access.md](remote-access.md). Two computers: the host
+(Studio in L, `agent-1-pc`) and the laptop (`agent-2 laptop`), on one LAN and
+one tailnet. Host items are walked in L. Laptop items are walked in the
+laptop's mode before it switches (L), and again after **Switch to This
+Daemon** (R).
+
+| ID | Steps | Expected | E | L | R |
+|---|---|---|---|---|---|
+| RA-01 | Host: Settings → Backend → This computer → Allow other computers to connect. Cancel; then turn it on and Allow. | One question: "Allow other computers to connect?" with "… Its token is as powerful as your seed phrase." (Windows: also "Choose Allow on private networks."). Cancel: still off, no request in the daemon log. Allow: Status "Reachable from other computers at 192.168.x.y, 100.x.y.z."; name and fingerprint under it; agents keep running (no restart, same pid in `adf daemon status`). | N/A | [ ] | N/A |
+| RA-02 | Host, first time on: Windows Defender Firewall prompt; macOS 15 Local Network prompt on the laptop at its first discovery. | Windows asks for ADF Studio; Allow on private networks. macOS asks "ADF Studio would like to find and connect to devices on your local network" (text from NSLocalNetworkUsageDescription). Studio adds no firewall rule itself. | N/A | [ ] | [ ] |
+| RA-03 | Host joins a network Windows marks Public (or set the profile to Public). | Status "Not reachable on this network (Public)."; `netstat -ano \| findstr 7385` shows only 127.0.0.1; back on a private network the addresses return without touching the toggle. | N/A | [ ] | N/A |
+| RA-04 | Host: Addresses with Tailscale running; Turn On https with Tailscale; Copy each. | Order: Tailscale https (after turning it on), tailnet, LAN, `.local`. Tailnet and https say Encrypted; LAN and `.local` say Not encrypted with "Anyone on this network can read the token." The Tailscale button first shows the command (`tailscale serve --bg 7385`) and runs nothing on Cancel. Copy puts the exact URL on the clipboard. | N/A | [ ] | N/A |
+| RA-05 | Host: Add a Computer, name it `agent-2 laptop`, Create Token; Copy; Done; leave and reopen Settings. Laptop: paste the LAN address and the token in Remote computer, Test connection. | The token (`adfd_…`) shows once with Copy and Done; after Done it is gone and nothing shows it again. Notice "agent-2 laptop can now connect to this computer." Laptop: "Connected to the ADF daemon at …". The host's own token (`adf daemon token`) pasted instead is refused ("This computer's own token is not accepted from other computers. …"). | N/A | [ ] | [ ] |
+| RA-06 | Host: Pair a Computer. Laptop: Found on your network → agent-1-pc → Pair, enter the code. Host: Allow. Laptop: Switch to This Daemon. | Host window: the code in large digits, "Expires in 2:00 · 5 tries left". Laptop: "Waiting for agent-1-pc to allow this computer…". Host: a dialog over the window "Allow agent-2 laptop?" naming the laptop's address, "this network" or "your tailnet", ADF Studio, and the seed-phrase sentence. After Allow: host notice "agent-2 laptop can now connect to this computer."; laptop "Paired with agent-1-pc. Its address and token are saved."; the token field says "Paired with agent-1-pc as agent-2 laptop. …"; the saved URL is the tailnet one when both are offered. The switch connects. | N/A | [ ] | [ ] |
+| RA-07 | RA-06 with Studio on the host minimised behind another app. | An OS notification "Allow agent-2 laptop?"; clicking it brings Studio forward with the dialog. | N/A | [ ] | N/A |
+| RA-08 | RA-06, but Deny on the host. | Laptop: "agent-1-pc did not allow this computer."; nothing saved; the host's list has no new computer and no notice. | N/A | [ ] | [ ] |
+| RA-09 | Laptop: enter a wrong code five times (a stranger guessing). | Laptop: "Wrong code. 4 tries left." … then "Wrong code, and no tries are left. Choose Pair a computer on agent-1-pc for a new code." Host: the pairing window closes and the notice "Pairing closed after 5 wrong codes." | N/A | [ ] | [ ] |
+| RA-10 | Host: Pair a Computer, then Cancel (or wait 2 minutes). Laptop: enter the old code. | Laptop: "The pairing window on agent-1-pc is closed. Choose Pair a computer there for a new code." | N/A | [ ] | [ ] |
+| RA-11 | Windows host: in Windows Security, block ADF Studio (or Cancel its firewall prompt). Laptop: Pair on the LAN address. | Laptop: "Studio could not reach agent-1-pc at http://192.168.x.y:7385. The host's firewall may block port 7385." Host: Status shows the firewall sentence ("Windows Firewall blocks ADF Studio. …"). | N/A | [ ] | [ ] |
+| RA-12 | Laptop: open Settings → Backend with the host on; leave Settings. | Found on your network lists agent-1-pc once (LAN and tailnet merged), with its fingerprint, Encrypted for the tailnet address, "Ready to pair" while the host's window is open, "Already paired" after RA-06. main.log: "Looking for ADF computers …" on open, "Stopped looking …" on leaving. A plain-http entry's Pair dialog keeps the code field disabled until "I trust this network; the token is sent unencrypted." is checked. | N/A | [ ] | [ ] |
+| RA-13 | Host: the Computers list while the laptop is connected; Revoke it; Cancel; Revoke again. | "agent-2 laptop" with "Paired · Connected now" (a token-added one: "Token · Never connected" until used). Revoke asks "Remove agent-2 laptop? It is disconnected now and its token stops working."; Cancel keeps it. Revoke: notice "agent-2 laptop was removed and disconnected."; the laptop loses the connection at once and its next connect is refused. | N/A | [ ] | N/A |
+| RA-14 | Host, keep-running off, Studio started the daemon, the laptop connected: menu Quit; Cancel; Quit again; Keep Running. Repeat with Stop Daemon. | "1 computer is connected. Keep the daemon running for it, or stop it?" with Keep Running, Stop Daemon, Cancel. Cancel: Studio stays open. The next quit asks again. Keep Running: Studio quits, `adf daemon status` shows it running, the laptop stays connected, and Settings → Backend still shows keep-running off. Stop Daemon: the daemon stops and the laptop loses it. | N/A | [ ] | N/A |
+| RA-15 | As RA-14 by closing the window (Windows ✕) and by the tray's Quit. With nobody connected, or keep-running on, or a CLI-started daemon: quit. | Same question in both paths. Without connected computers, with keep-running on, or with `adf daemon start`: no question. | N/A | [ ] | N/A |
+| RA-16 | Host, keep-running off, access on: the When Studio quits row; Keep Running When Studio Quits. | "Other computers lose the connection when Studio quits." The button turns keep-running on ("Saved. Applies from now on.") and the row goes. | N/A | [ ] | N/A |
+| RA-17 | Host: turn access off with the laptop connected; then look at the toggle in E and R. | Off: Status "Not reachable from other computers."; the laptop loses the connection; the Computers list is kept for next time. In E and R the toggle is disabled and says why ("Other computers can connect only when agents run on this computer …" / "Studio uses a remote computer now. …"). | [ ] | [ ] | [ ] |
+| RA-18 | Laptop on Linux without a Secret Service keyring: Pair. | Refused before the code is sent, with the keyring sentence; the host shows no question. | N/A | [ ] | N/A |
+
 ---
 
 ## Appendix A. Bridge method → checklist ID
@@ -834,6 +864,12 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `getBackendSettings`, `setBackendSettings` | MODE-02, MODE-03, MODE-12, SW-04, SW-07, REM-04, REM-05 |
 | `checkRemoteBackend` | REM-02, REM-03 |
 | `restartStudio` | DMN-37 |
+| `getRemoteAccess`, `setRemoteAccess`, `onRemoteAccessChanged` | RA-01, RA-03, RA-16, RA-17 |
+| `addRemoteDevice`, `removeRemoteDevice` | RA-05, RA-13 |
+| `openRemotePairing`, `closeRemotePairing` | RA-06, RA-09, RA-10 |
+| `setRemoteTailscaleServe` | RA-04 |
+| `startRemoteDiscovery`, `stopRemoteDiscovery`, `onRemoteDiscoveryUpdate` | RA-12 |
+| `startRemotePairing`, `submitRemotePairingCode`, `cancelRemotePairing`, `onRemotePairingState` | RA-06, RA-08, RA-09, RA-10, RA-11, RA-18 |
 | `onRemotePickerRequest`, `respondRemotePicker`, `browseRemoteFolder`, `createRemoteFolder` | REM-07, REM-08, REM-09, REM-10, REM-11 |
 | `recoveryStash`, `recoveryList`, `recoveryReveal`, `recoveryArchive` | MULTI-06, MULTI-07 |
 

@@ -120,6 +120,8 @@ export interface EventBridgeDeps {
   onFileRenamed?: (oldPath: string, newPath: string) => void
   /** A daemon notice for the user (`daemon_orphan_hold`). */
   onNotice?: (text: string) => void
+  /** The `remote_access` push (remote-access.md §8): Settings → Backend → This computer re-reads the status. */
+  onRemoteAccess?: (payload: unknown) => void
   /** Upper bound of one AGENT_INVOKE wait. Default TURN_WAIT_TIMEOUT_MS. */
   turnTimeoutMs?: number
   log?: Log
@@ -712,6 +714,12 @@ export class EventBridge {
   }
 
   private onPush(frame: PushFrame): void {
+    // remote-access.md §8: not in the daemon's ClientPushTopic on this branch
+    // yet; once it is, this becomes a PUSH_TOPICS route with its own action.
+    if ((frame.topic as string) === 'remote_access') {
+      this.deps.onRemoteAccess?.(frame.payload)
+      return
+    }
     const route = PUSH_TOPICS[frame.topic]
     if (!route) {
       this.log.warn(`[Backend] Unknown push topic ${String(frame.topic)}; not shown`)

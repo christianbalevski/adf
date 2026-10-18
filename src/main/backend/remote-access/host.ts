@@ -1,0 +1,359 @@
+import type { DaemonClient } from '../../../shared/daemon-client'
+import type { PairingClaimView, RemoteAccessStatus } from '../../../shared/types/remote-access.types'
+import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult } from '../../../shared/types/remote-access-ipc.types'
+import { RemoteAccessApiError, RemoteAccessManagement } from './client'
+
+/**
+ * Settings → Backend → This computer: "Allow other computers to connect"
+ * (docs/design/remote-access.md §7, §8). Studio main's side of the host
+ * panel, local mode only: every action goes to the daemon's management
+ * routes (master token, local proof); Studio keeps no remote-access state
+ * of its own.
+ *
+ * - Turning access on, removing a computer and changing `tailscale serve`
+ *   are confirmed first (a native dialog over the window).
+ * - While a pairing window is open the status is read every second, so the
+ *   countdown, the attempts left and a pending claim show without the
+ *   daemon's events; a claim raises "Allow <device>?" once.
+ * - Notices (device added, removed, pairing closed by wrong codes) go to an
+ *   OS notification, main.log and the panel.
+ */
+
+export interface ClaimPrompt {
+  claim: PairingClaimView
+  /** Aborted when the claim is gone (decided elsewhere, expired). */
+  signal: AbortSignal
+}
+
+export interface RemoteAccessHostDeps {
+  /** The local daemon's client, or why there is none (embedded or remote mode). */
+  daemon: () => { client: () => Promise<DaemonClient> } | { unavailable: string }
+  /** The daemon stops when Studio quits (Studio started it, keep-running off). */
+  stopsWithStudio: () => boolean
+  push: (change: RemoteAccessChange) => void
+  /** OS notification; main logs the notice itself. */
+  notify: (text: string) => void
+  /** A yes/no confirmation over the window. */
+  confirm: (prompt: { message: string; detail: string; ok: string }) => Promise<boolean>
+  /** "Allow <device>?": true allow, false deny, null when the prompt went away unanswered. */
+  askClaim: (prompt: ClaimPrompt) => Promise<boolean | null>
+  platform?: NodeJS.Platform
+  pollMs?: number
+  log?: Pick<Console, 'log' | 'warn'>
+}
+
+/** The `remote_access` event (§8): `{type, deviceId?, label?, claimId?, reason?}`. Never a token or a code. */
+export interface RemoteAccessEvent {
+  type?: unknown
+  deviceId?: unknown
+  label?: unknown
+  claimId?: unknown
+  reason?: unknown
+}
+
+export const ENABLE_DETAIL = 'A computer you pair or give a token can do anything you can on this computer\'s agents. Its token is as powerful as your seed phrase.'
+export const WINDOWS_FIREWALL_DETAIL = 'Windows may ask whether ADF Studio may accept connections. Choose Allow on private networks.'
+
+export function deviceAddedNotice(label: string): string {
+  return `${label} can now connect to this computer.`
+}
+
+export function deviceRemovedNotice(label: string): string {
+  return `${label} was removed and disconnected.`
+}
+
+export const WRONG_CODES_NOTICE = 'Pairing closed after 5 wrong codes.'
+
+function errorText(err: unknown): string {
+  if (err instanceof RemoteAccessApiError) {
+    if (err.status === 404 && err.code === 'http_404') return 'This ADF daemon cannot let other computers connect. Update ADF, then restart the daemon.'
+    return err.message
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
+export class RemoteAccessHost {
+  private readonly log: Pick<Console, 'log' | 'warn'>
+  private last: RemoteAccessStatus | null = null
+  private poll: ReturnType<typeof setInterval> | null = null
+  private polling = false
+  private readonly prompts = new Map<string, AbortController>()
+  private readonly recentNotices = new Map<string, number>()
+  private disposed = false
+
+  constructor(private readonly deps: RemoteAccessHostDeps) {
+    this.log = deps.log ?? console
+  }
+
+  /** The last status read (the quit prompt's fallback). */
+  get lastStatus(): RemoteAccessStatus | null {
+    return this.last
+  }
+
+  private management(): RemoteAccessManagement | string {
+    const daemon = this.deps.daemon()
+    return 'unavailable' in daemon ? daemon.unavailable : new RemoteAccessManagement(new LazyClient(daemon.client))
+  }
+
+  private view(status: RemoteAccessStatus | null, error: string | null): RemoteAccessView {
+    const daemon = this.deps.daemon()
+    const unavailable = 'unavailable' in daemon ? daemon.unavailable : null
+    return { available: unavailable === null, unavailableReason: unavailable, status, error, stopsWithStudio: unavailable === null && this.deps.stopsWithStudio() }
+  }
+
+  private adopt(status: RemoteAccessStatus): RemoteAccessView {
+    this.last = status
+    this.watchPairing(status)
+    return this.view(status, null)
+  }
+
+  private publish(view: RemoteAccessView, notice: string | null = null): void {
+    if (!this.disposed) this.deps.push({ view, notice })
+  }
+
+  async get(opts: { refresh?: boolean } = {}): Promise<RemoteAccessView> {
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') return this.view(null, null)
+    try {
+      return this.adopt(await mgmt.status({ refresh: opts.refresh === true }))
+    } catch (err) {
+      return this.view(this.last, errorText(err))
+    }
+  }
+
+  private async run(action: string, fn: (mgmt: RemoteAccessManagement) => Promise<RemoteAccessStatus>): Promise<RemoteAccessResult> {
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') return { ok: false, code: 'unavailable', error: mgmt }
+    try {
+      const view = this.adopt(await fn(mgmt))
+      this.publish(view)
+      return { ok: true, view }
+    } catch (err) {
+      const error = errorText(err)
+      this.log.warn(`[Remote access] ${action} failed: ${error}`)
+      return { ok: false, code: err instanceof RemoteAccessApiError && err.code === 'cancelled' ? 'cancelled' : 'daemon', error }
+    }
+  }
+
+  /** The toggle. Turning it on is confirmed once, plainly. */
+  async set(request: { enabled?: unknown; name?: unknown }): Promise<RemoteAccessResult> {
+    if (typeof request?.enabled !== 'boolean') return { ok: false, code: 'daemon', error: 'enabled must be true or false.' }
+    const enabled = request.enabled
+    const name = typeof request.name === 'string' && request.name.trim() ? request.name.trim() : undefined
+    if (typeof this.management() === 'string') return { ok: false, code: 'unavailable', error: this.management() as string }
+    if (enabled && !this.last?.enabled) {
+      const ok = await this.deps.confirm({
+        message: 'Allow other computers to connect?',
+        detail: [ENABLE_DETAIL, ...((this.deps.platform ?? process.platform) === 'win32' ? [WINDOWS_FIREWALL_DETAIL] : [])].join('\n\n'),
+        ok: 'Allow',
+      })
+      if (!ok) {
+        this.log.log('[Remote access] Turning on cancelled in the confirmation')
+        return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
+      }
+    }
+    const result = await this.run(enabled ? 'Turning on' : 'Turning off', (m) => m.set({ enabled, ...(name ? { name } : {}) }))
+    if (result.ok) {
+      const s = result.view.status
+      this.log.log(`[Remote access] ${enabled ? 'On' : 'Off'} (Settings → Backend): ${s?.state ?? '?'}${s?.message ? `: ${s.message}` : ''}`)
+    }
+    return result
+  }
+
+  /** "Add a computer": a device token, returned once. */
+  async addDevice(label: unknown): Promise<RemoteDeviceAddResult> {
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') return { ok: false, code: 'unavailable', error: mgmt }
+    const text = typeof label === 'string' && label.trim() ? label.trim() : `Computer added ${new Date().toISOString().slice(0, 10)}`
+    try {
+      const { device, token } = await mgmt.addDevice(text)
+      this.log.log(`[Remote access] Token created for "${device.label}" (${device.id}); shown once in Settings → Backend`)
+      this.notice(`added:${device.id}`, deviceAddedNotice(device.label))
+      const view = await this.get()
+      this.publish(view)
+      return { ok: true, view, device, token }
+    } catch (err) {
+      const error = errorText(err)
+      this.log.warn(`[Remote access] Creating a token failed: ${error}`)
+      return { ok: false, code: 'daemon', error }
+    }
+  }
+
+  async removeDevice(id: unknown): Promise<RemoteAccessResult> {
+    if (typeof id !== 'string' || !id) return { ok: false, code: 'daemon', error: 'Unknown computer.' }
+    const device = this.last?.devices.find((d) => d.id === id)
+    const label = device?.label ?? id
+    const ok = await this.deps.confirm({ message: `Remove ${label}?`, detail: 'It is disconnected now and its token stops working.', ok: 'Remove' })
+    if (!ok) return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
+    return this.run(`Removing ${label}`, async (m) => {
+      const removed = await m.removeDevice(id)
+      this.log.log(`[Remote access] Removed "${removed.device.label}" (${id}): closed ${removed.closedSessions} sessions, ${removed.closedConnections} connections`)
+      this.notice(`revoked:${id}`, deviceRemovedNotice(removed.device.label))
+      return m.status()
+    })
+  }
+
+  async openPairing(): Promise<RemoteAccessResult> {
+    return this.run('Opening pairing', async (m) => {
+      await m.openPairing()
+      this.log.log('[Remote access] Pairing window opened (Settings → Backend)')
+      return m.status()
+    })
+  }
+
+  async closePairing(): Promise<RemoteAccessResult> {
+    return this.run('Closing pairing', async (m) => {
+      await m.closePairing()
+      this.log.log('[Remote access] Pairing window closed (Settings → Backend)')
+      return m.status()
+    })
+  }
+
+  /** "Turn On https with Tailscale" / "Turn Off": the exact command is confirmed first (§5.7). */
+  async tailscaleServe(enabled: unknown): Promise<RemoteAccessResult & { output?: string }> {
+    if (typeof enabled !== 'boolean') return { ok: false, code: 'daemon', error: 'enabled must be true or false.' }
+    const command = this.last?.tailscale.serveCommand ?? null
+    const ok = await this.deps.confirm(enabled
+      ? { message: 'Turn on https with Tailscale?', detail: `Studio asks the daemon to run:\n${command ?? 'tailscale serve'}\n\nOther computers on your tailnet then reach this computer over https.`, ok: 'Turn On' }
+      : { message: 'Turn off https with Tailscale?', detail: 'The daemon removes the tailscale serve entry for its port only.', ok: 'Turn Off' })
+    if (!ok) return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
+    let output: string | undefined
+    const result = await this.run(`tailscale serve ${enabled ? 'on' : 'off'}`, async (m) => {
+      try {
+        output = (await m.tailscaleServe(enabled)).output
+      } catch (err) {
+        if (err instanceof RemoteAccessApiError && err.code === 'tailscale_failed') {
+          throw new RemoteAccessApiError(`${err.message}${err.extra.command ? ` Run it by hand: ${err.extra.command}` : ''}`, err.status, err.code)
+        }
+        throw err
+      }
+      this.log.log(`[Remote access] tailscale serve ${enabled ? 'on' : 'off'}: ${output ?? ''}`.trim())
+      return m.status({ refresh: true })
+    })
+    return result.ok ? { ...result, ...(output !== undefined ? { output } : {}) } : result
+  }
+
+  /** A `remote_access` event from the daemon's client stream. */
+  onDaemonEvent(event: RemoteAccessEvent): void {
+    const type = typeof event?.type === 'string' ? event.type : ''
+    const label = typeof event?.label === 'string' ? event.label : null
+    const deviceId = typeof event?.deviceId === 'string' ? event.deviceId : null
+    if (type === 'device_added' && label) this.notice(`added:${deviceId ?? label}`, deviceAddedNotice(label))
+    else if (type === 'device_revoked' && label) this.notice(`revoked:${deviceId ?? label}`, deviceRemovedNotice(label))
+    else if (type === 'pairing_closed' && event.reason === 'wrong_codes') this.notice('wrong_codes', WRONG_CODES_NOTICE)
+    void this.get().then((view) => this.publish(view))
+  }
+
+  /**
+   * Computers connected now, for the quit prompt: a fresh read within
+   * `timeoutMs`, else the last status. Null when unknown.
+   */
+  async connectedCount(timeoutMs = 1_500): Promise<number | null> {
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') return null
+    try {
+      this.last = await mgmt.status({ timeoutMs })
+    } catch (err) {
+      this.log.warn(`[Remote access] Could not read the connected computers at quit: ${errorText(err)}`)
+      if (!this.last) return null
+    }
+    return this.last.enabled ? this.last.devices.filter((d) => d.connected).length : 0
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.stopPoll()
+    for (const prompt of this.prompts.values()) prompt.abort()
+    this.prompts.clear()
+  }
+
+  private notice(key: string, text: string): void {
+    const now = Date.now()
+    for (const [k, at] of this.recentNotices) if (now - at > 30_000) this.recentNotices.delete(k)
+    if (this.recentNotices.has(key)) return
+    this.recentNotices.set(key, now)
+    this.log.log(`[Remote access] Notice: ${text}`)
+    this.deps.notify(text)
+    this.publish(this.view(this.last, null), text)
+  }
+
+  // --- Pairing window: poll, claim prompt -------------------------------------
+
+  private watchPairing(status: RemoteAccessStatus): void {
+    const claimId = status.pairing?.claim?.claimId ?? null
+    // A prompt whose claim is gone (decided in the terminal, expired) closes.
+    for (const [id, abort] of this.prompts) {
+      if (id !== claimId) { abort.abort(); this.prompts.delete(id) }
+    }
+    if (status.pairing?.claim && !this.prompts.has(status.pairing.claim.claimId)) void this.prompt(status.pairing.claim)
+    if (status.pairing && !this.poll && !this.disposed) {
+      this.poll = setInterval(() => void this.tick(), this.deps.pollMs ?? 1_000)
+      this.poll.unref?.()
+    } else if (!status.pairing) {
+      this.stopPoll()
+    }
+  }
+
+  private stopPoll(): void {
+    if (this.poll) clearInterval(this.poll)
+    this.poll = null
+  }
+
+  private async tick(): Promise<void> {
+    if (this.polling) return
+    this.polling = true
+    try {
+      const wasOpen = this.last?.pairing ?? null
+      const view = await this.get()
+      // Closed by wrong codes without the daemon's event: the last read had no tries left.
+      if (wasOpen && !view.status?.pairing && wasOpen.attemptsLeft <= 1 && !wasOpen.claim && Date.parse(wasOpen.expiresAt) > Date.now()) {
+        this.notice('wrong_codes', WRONG_CODES_NOTICE)
+      }
+      this.publish(view)
+    } finally {
+      this.polling = false
+    }
+  }
+
+  private async prompt(claim: PairingClaimView): Promise<void> {
+    const abort = new AbortController()
+    this.prompts.set(claim.claimId, abort)
+    this.log.log(`[Remote access] ${claim.deviceName} (${claim.address}, ${claim.via}) entered the right code; asking whether to allow it`)
+    let allow: boolean | null
+    try {
+      allow = await this.deps.askClaim({ claim, signal: abort.signal })
+    } catch {
+      allow = null
+    }
+    if (abort.signal.aborted || allow === null) {
+      this.log.log(`[Remote access] The question about ${claim.deviceName} closed without an answer here`)
+      return
+    }
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') return
+    try {
+      const decided = await mgmt.decideClaim(claim.claimId, allow)
+      if (decided.state === 'approved') {
+        this.log.log(`[Remote access] Allowed ${claim.deviceName} (${claim.address}) as "${decided.device.label}" (${decided.device.id})`)
+        this.notice(`added:${decided.device.id}`, deviceAddedNotice(decided.device.label))
+      } else {
+        this.log.log(`[Remote access] Denied ${claim.deviceName} (${claim.address})`)
+      }
+    } catch (err) {
+      const decidedElsewhere = err instanceof RemoteAccessApiError && (err.code === 'claim_decided' || err.code === 'claim_not_found' || err.code === 'pairing_closed')
+      this.log.warn(`[Remote access] ${allow ? 'Allowing' : 'Denying'} ${claim.deviceName}: ${decidedElsewhere ? 'already decided or expired' : errorText(err)}`)
+      if (!decidedElsewhere) this.deps.notify(`Studio could not ${allow ? 'allow' : 'deny'} ${claim.deviceName}: ${errorText(err)}`)
+    } finally {
+      this.prompts.delete(claim.claimId)
+      void this.get().then((view) => this.publish(view))
+    }
+  }
+}
+
+/** The daemon client once connected: `request` resolves the client first. */
+class LazyClient implements Pick<DaemonClient, 'request'> {
+  constructor(private readonly client: () => Promise<DaemonClient>) {}
+  async request<T>(...args: Parameters<DaemonClient['request']>): Promise<T> {
+    return (await this.client()).request<T>(...args)
+  }
+}
