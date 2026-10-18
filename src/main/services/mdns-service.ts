@@ -3,6 +3,7 @@ import { EventEmitter } from 'events'
 import { hostname, networkInterfaces, type NetworkInterfaceInfo } from 'os'
 import { Bonjour, type Service } from 'bonjour-service'
 import type { NetworkPeer } from '../../shared/types/remote-access.types'
+import { peerName, txtWithinBounds } from './peer-text'
 
 /**
  * Discovered remote ADF runtime, as seen through mDNS browsing.
@@ -58,19 +59,21 @@ export interface MdnsStartOptions extends MdnsAnnouncement {
   iface?: string
 }
 
-/** A remote-access sighting: where the daemon answers, and whether its pairing window is open. */
+/**
+ * One sighting of a daemon with remote access on. Kept per source (an
+ * announcement instance, a tailnet address), never merged into another:
+ * one fingerprint at two addresses is shown twice and flagged (discovery
+ * review 3).
+ */
 interface RemoteSighting {
+  /** Cleaned and bounded at intake (peerName). */
+  name: string
   address: string
   port: number
   pairingOpen: boolean
-}
-
-interface RemoteRecord {
-  name: string
-  /** The runtime announcing it (`_adf-runtime._tcp`), linking it to that runtime's mesh entry. */
+  kind: 'lan' | 'tailnet'
+  /** The runtime announcing it (`_adf-runtime._tcp` with its mesh), linking it to that runtime's mesh entry. */
   runtimeId: string | null
-  lan: RemoteSighting | null
-  tailnet: RemoteSighting | null
 }
 
 const SERVICE_TYPE = 'adf-runtime'
@@ -110,8 +113,8 @@ export class MdnsService extends EventEmitter {
   private bonjour: Bonjour | null = null
   private published: Service | null = null
   private discovered = new Map<string, DiscoveredRuntime>()
-  /** Remote-access sightings by fingerprint (LAN announcement, legacy announcement, tailnet hello). */
-  private remotes = new Map<string, RemoteRecord>()
+  /** Remote-access sightings: fingerprint → source (`mdns:<instance>`, `legacy:<instance>`, `tailnet:<address>`) → sighting. */
+  private remotes = new Map<string, Map<string, RemoteSighting>>()
   private selfRuntimeId: string | null = null
   private selfFingerprint: string | null = null
   private base: { port: number; runtimeId: string; runtimeDid?: string } | null = null
@@ -280,50 +283,90 @@ export class MdnsService extends EventEmitter {
    */
   peers(): NetworkPeer[] {
     const out: NetworkPeer[] = []
-    const linked = new Set<string>()
+    const byRuntime = new Map<string, { name: string; remote: NonNullable<NetworkPeer['remote']> }>()
+    for (const [fp, sightings] of this.remotes) {
+      const list = [...sightings.values()]
+      if (list.length === 0) continue
+      const lan = list.filter((s) => s.kind === 'lan')
+      const tailnet = list.filter((s) => s.kind === 'tailnet')
+      // One computer is seen at most once on the LAN and once on the tailnet; more is a clash.
+      if (lan.length > 1 || tailnet.length > 1) {
+        for (const s of list) {
+          out.push({
+            key: `fp:${fp}@${s.address}`,
+            name: s.name,
+            source: s.kind === 'tailnet' ? 'tailnet' : 'mdns',
+            mesh: null,
+            remote: { url: buildBaseUrl(s.address, s.port), port: s.port, fingerprint: fp, pairingOpen: s.pairingOpen, kind: s.kind, clash: list.length },
+          })
+        }
+        continue
+      }
+      // The tailnet address wins (encrypted); the LAN one is the same computer.
+      const best = tailnet[0] ?? lan[0]
+      const remote: NonNullable<NetworkPeer['remote']> = { url: buildBaseUrl(best.address, best.port), port: best.port, fingerprint: fp, pairingOpen: list.some((s) => s.pairingOpen), kind: best.kind, clash: null }
+      const runtimeId = list.find((s) => s.runtimeId)?.runtimeId ?? null
+      const name = lan[0]?.name ?? best.name
+      if (runtimeId && this.discovered.has(runtimeId)) byRuntime.set(runtimeId, { name, remote })
+      else out.push({ key: runtimeId ?? `fp:${fp}`, name, source: tailnet[0] && !lan[0] ? 'tailnet' : 'mdns', mesh: null, remote })
+    }
     for (const runtime of this.discovered.values()) {
-      const fp = [...this.remotes.entries()].find(([, r]) => r.runtimeId === runtime.runtime_id)?.[0] ?? null
-      if (fp) linked.add(fp)
-      const record = fp ? this.remotes.get(fp)! : null
+      const linked = byRuntime.get(runtime.runtime_id)
       out.push({
         key: runtime.runtime_id,
-        name: record?.name ?? runtime.host.replace(/\.local\.?$/, ''),
+        name: linked?.name ?? runtime.host.replace(/\.local\.?$/, ''),
         source: runtime.source ?? 'mdns',
         mesh: { url: runtime.url, port: runtime.port },
-        remote: fp && record ? remoteView(fp, record) : null,
+        remote: linked?.remote ?? null,
       })
     }
-    for (const [fp, record] of this.remotes) {
-      if (linked.has(fp)) continue
-      const remote = remoteView(fp, record)
-      if (!remote) continue
-      out.push({ key: record.runtimeId ?? `fp:${fp}`, name: record.name, source: record.lan ? 'mdns' : 'tailnet', mesh: null, remote })
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name))
+    return out.sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key))
   }
 
-  /** The tailnet sweep found an ADF daemon with remote access on (GET /remote/hello). */
+  /** The tailnet sweep found an ADF daemon with remote access on (GET /remote/hello, already bounded and checked). */
   upsertTailnetDaemon(found: { fingerprint: string; name: string; address: string; port: number; pairingOpen: boolean }): void {
     if (!FINGERPRINT.test(found.fingerprint) || found.fingerprint === this.selfFingerprint) return
-    const record = this.remotes.get(found.fingerprint) ?? { name: found.name, runtimeId: null, lan: null, tailnet: null }
-    const sighting = { address: found.address, port: found.port, pairingOpen: found.pairingOpen }
-    const changed = JSON.stringify(record.tailnet) !== JSON.stringify(sighting) || record.name !== found.name
-    record.tailnet = sighting
-    record.name = found.name
-    this.remotes.set(found.fingerprint, record)
+    const name = peerName(found.name) ?? found.fingerprint
+    if (this.setSighting(found.fingerprint, `tailnet:${found.address}`, { name, address: found.address, port: found.port, pairingOpen: found.pairingOpen, kind: 'tailnet', runtimeId: null })) {
+      this.emit('peers_changed')
+    }
+  }
+
+  /** After a tailnet sweep: sightings it no longer found (`<fingerprint>@<address>`) go. */
+  expireTailnetDaemons(seen: ReadonlySet<string>): void {
+    let changed = false
+    for (const [fp, sightings] of this.remotes) {
+      for (const [source, s] of sightings) {
+        if (s.kind !== 'tailnet' || seen.has(`${fp}@${s.address}`)) continue
+        sightings.delete(source)
+        changed = true
+      }
+      if (sightings.size === 0) this.remotes.delete(fp)
+    }
     if (changed) this.emit('peers_changed')
   }
 
-  /** After a tailnet sweep: daemons it no longer found lose their tailnet sighting. */
-  expireTailnetDaemons(seen: ReadonlySet<string>): void {
+  /** Store a sighting; true when something changed. */
+  private setSighting(fp: string, source: string, sighting: RemoteSighting): boolean {
+    const sightings = this.remotes.get(fp) ?? new Map<string, RemoteSighting>()
+    const before = JSON.stringify(sightings.get(source) ?? null)
+    sightings.set(source, sighting)
+    this.remotes.set(fp, sightings)
+    return before !== JSON.stringify(sighting)
+  }
+
+  /** Drop sightings that match; true when something went. */
+  private dropSightings(match: (fp: string, source: string, s: RemoteSighting) => boolean): boolean {
     let changed = false
-    for (const [fp, record] of this.remotes) {
-      if (!record.tailnet || seen.has(fp)) continue
-      record.tailnet = null
-      if (!record.lan) this.remotes.delete(fp)
-      changed = true
+    for (const [fp, sightings] of this.remotes) {
+      for (const [source, s] of sightings) {
+        if (!match(fp, source, s)) continue
+        sightings.delete(source)
+        changed = true
+      }
+      if (sightings.size === 0) this.remotes.delete(fp)
     }
-    if (changed) this.emit('peers_changed')
+    return changed
   }
 
   getDiscoveredRuntimes(): DiscoveredRuntime[] {
@@ -392,6 +435,8 @@ export class MdnsService extends EventEmitter {
   private onServiceUp(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
     const runtimeId = typeof txt.runtime_id === 'string' ? txt.runtime_id : undefined
+    // Untrusted input (discovery review 3): a record over 4 KB, or with a value over 255 bytes, is dropped.
+    if (!txtWithinBounds(txt)) return
     // A record without the mesh carries remote access only (no runtime id): by fingerprint.
     if (!runtimeId) { this.onRemoteOnlyUp(service, txt); return }
     if (runtimeId === this.selfRuntimeId) return // self-skip (race-safe via TXT)
@@ -421,19 +466,14 @@ export class MdnsService extends EventEmitter {
     // Remote access in the same announcement (§5.1).
     const fp = txtString(txt, 'fp')
     const daemonPort = Number(txtString(txt, 'daemon_port'))
-    if (fp && FINGERPRINT.test(fp) && txtString(txt, 'v') === '1' && Number.isInteger(daemonPort) && daemonPort > 0) {
-      const record = this.remotes.get(fp) ?? { name: '', runtimeId, lan: null, tailnet: null }
-      record.runtimeId = runtimeId
-      record.name = txtString(txt, 'name') || record.name || host.replace(/\.local\.?$/, '')
-      record.lan = { address: reachHost, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1' }
-      this.remotes.set(fp, record)
+    const source = `mdns:${service.name}`
+    if (fp && FINGERPRINT.test(fp) && txtString(txt, 'v') === '1' && Number.isInteger(daemonPort) && daemonPort > 0 && daemonPort < 65536) {
+      const name = peerName(txtString(txt, 'name')) ?? peerName(host.replace(/\.local\.?$/, '')) ?? fp
+      this.dropSightings((f, src) => src === source && f !== fp)
+      this.setSighting(fp, source, { name, address: reachHost, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId })
     } else {
       // Remote access went off on that runtime.
-      for (const [key, record] of this.remotes) {
-        if (record.runtimeId !== runtimeId || !record.lan) continue
-        record.lan = null
-        if (!record.tailnet) this.remotes.delete(key)
-      }
+      this.dropSightings((_f, src, s) => src === source || s.runtimeId === runtimeId)
     }
 
     const now = Date.now()
@@ -466,68 +506,50 @@ export class MdnsService extends EventEmitter {
   /** TODO(remove after the next release): `_adf-daemon._tcp` of this PR's intermediate commits. */
   private onLegacyDaemonUp(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
+    if (!txtWithinBounds(txt)) return
     const fp = txtString(txt, 'fp')
     if (!fp || !FINGERPRINT.test(fp) || txtString(txt, 'v') !== '1' || !service.port) return
     if (fp === this.selfFingerprint) return
-    const referer = (service as unknown as { referer?: { address?: string } }).referer?.address
-    const addresses = (service.addresses ?? []) as string[]
-    const address = referer ?? addresses.find((ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) ?? addresses[0]
+    const address = sourceAddress(service)
     if (!address) return
-    const record = this.remotes.get(fp) ?? { name: service.name, runtimeId: null, lan: null, tailnet: null }
-    if (!record.runtimeId) record.name = service.name
-    record.lan = { address, port: service.port, pairingOpen: txtString(txt, 'pair') === '1' }
-    this.remotes.set(fp, record)
+    const name = peerName(service.name) ?? fp
+    this.setSighting(fp, `legacy:${service.name}`, { name, address, port: service.port, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null })
     this.emit('peers_changed')
   }
 
   private onLegacyDaemonDown(service: Service): void {
     const fp = txtString((service.txt ?? {}) as Record<string, unknown>, 'fp')
-    const record = fp ? this.remotes.get(fp) : undefined
-    if (!fp || !record || record.runtimeId) return
-    record.lan = null
-    if (!record.tailnet) this.remotes.delete(fp)
-    this.emit('peers_changed')
+    const changed = this.dropSightings((f, src) => service.name ? src === `legacy:${service.name}` : f === fp && src.startsWith('legacy:'))
+    if (changed) this.emit('peers_changed')
   }
 
   /** A record with remote access only (the mesh hidden): no runtime id, keyed by fingerprint. */
   private onRemoteOnlyUp(service: Service, txt: Record<string, unknown>): void {
     const fp = txtString(txt, 'fp')
     const daemonPort = Number(txtString(txt, 'daemon_port'))
-    if (!fp || !FINGERPRINT.test(fp) || txtString(txt, 'v') !== '1' || !Number.isInteger(daemonPort) || daemonPort <= 0) return
+    if (!fp || !FINGERPRINT.test(fp) || txtString(txt, 'v') !== '1' || !Number.isInteger(daemonPort) || daemonPort <= 0 || daemonPort >= 65536) return
     if (fp === this.selfFingerprint) return
-    const referer = (service as unknown as { referer?: { address?: string } }).referer?.address
-    const addresses = (service.addresses ?? []) as string[]
-    const address = referer ?? addresses.find((ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) ?? addresses[0]
+    const address = sourceAddress(service)
     if (!address) return
     // The alias, or (a per-network token is not a name) the host name.
     const host = (service.host || '').replace(/\.local\.?$/, '')
-    const name = /^adf-[0-9a-f]{12}$/.test(service.name ?? '') ? host || fp : service.name || host || fp
-    const record = this.remotes.get(fp) ?? { name, runtimeId: null, lan: null, tailnet: null }
-    record.name = name
-    record.lan = { address, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1' }
-    this.remotes.set(fp, record)
+    const name = (/^adf-[0-9a-f]{12}$/.test(service.name ?? '') ? null : peerName(service.name)) ?? peerName(host) ?? fp
+    const source = `mdns:${service.name}`
+    this.dropSightings((f, src) => src === source && f !== fp)
+    this.setSighting(fp, source, { name, address, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId: null })
     this.emit('peers_changed')
   }
 
   private onServiceDown(service: Service): void {
     const txt = (service.txt ?? {}) as Record<string, unknown>
     const runtimeId = typeof txt.runtime_id === 'string' ? txt.runtime_id : undefined
-    if (!runtimeId) {
-      const fp = txtString(txt, 'fp')
-      const record = fp ? this.remotes.get(fp) : undefined
-      if (!fp || !record || record.runtimeId) return
-      record.lan = null
-      if (!record.tailnet) this.remotes.delete(fp)
-      this.emit('peers_changed')
-      return
-    }
-    for (const [fp, record] of this.remotes) {
-      if (record.runtimeId !== runtimeId) continue
-      record.lan = null
-      if (!record.tailnet) this.remotes.delete(fp)
-    }
-    const entry = this.discovered.get(runtimeId)
-    if (entry) {
+    const fp = txtString(txt, 'fp')
+    // This announcement's sightings go (by instance; without one, by runtime or fingerprint).
+    this.dropSightings((f, src, s) => (service.name ? src === `mdns:${service.name}` : false)
+      || (!!runtimeId && s.runtimeId === runtimeId)
+      || (!service.name && !runtimeId && f === fp && src.startsWith('mdns:')))
+    const entry = runtimeId ? this.discovered.get(runtimeId) : undefined
+    if (runtimeId && entry) {
       this.discovered.delete(runtimeId)
       this.emit('expired', entry)
     }
@@ -621,16 +643,12 @@ function txtString(txt: Record<string, unknown>, key: string): string | null {
   return null
 }
 
-function remoteView(fingerprint: string, record: RemoteRecord): NetworkPeer['remote'] {
-  const best = record.tailnet ?? record.lan
-  if (!best) return null
-  return {
-    url: buildBaseUrl(best.address, best.port),
-    port: best.port,
-    fingerprint,
-    pairingOpen: (record.tailnet?.pairingOpen ?? false) || (record.lan?.pairingOpen ?? false),
-    kind: record.tailnet ? 'tailnet' : 'lan',
-  }
+/** The address an announcement came from (preferred), else a private IPv4 of it, else its first. */
+function sourceAddress(service: Service): string | null {
+  const referer = (service as unknown as { referer?: { address?: string } }).referer?.address
+  const addresses = ((service.addresses ?? []) as unknown[]).filter((a): a is string => typeof a === 'string' && a.length <= 64)
+  const address = referer ?? addresses.find((ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) ?? addresses[0]
+  return address && address.length <= 64 ? address : null
 }
 
 /** Build a URL base; wrap bare IPv6 addresses in brackets. */

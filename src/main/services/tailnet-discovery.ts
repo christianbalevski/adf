@@ -126,7 +126,7 @@ export class TailnetDiscovery {
       getDaemonPort?: () => number | null
       /** An ADF daemon with remote access on, found on the tailnet. */
       onDaemon?: (found: TailnetDaemon) => void
-      /** The fingerprints this sweep found (the others lose their tailnet sighting). */
+      /** What this sweep found, as `<fingerprint>@<address>` (the others lose their tailnet sighting). */
       onDaemonSweep?: (seen: ReadonlySet<string>) => void
       fetchFn?: typeof fetch
     }
@@ -183,7 +183,7 @@ export class TailnetDiscovery {
             if (!hello) return null
             const found: TailnetDaemon = { fingerprint: hello.fingerprint, name: hello.name, address: peer.address, port: daemonPort, pairingOpen: hello.pairingOpen }
             this.opts.onDaemon?.(found)
-            return found.fingerprint
+            return `${found.fingerprint}@${found.address}`
           }))
         : null
 

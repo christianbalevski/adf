@@ -471,7 +471,7 @@ export function DiscoveredList({ update, onPair }: { update: RemoteDiscoveryUpda
       {update.entries.length === 0 && <p className="text-[12px] text-[var(--adf-ui-text-muted)]">None yet. Turn on Remote access on the other computer.</p>}
       <ul className="divide-y divide-[var(--adf-ui-separator)]">
         {update.entries.map((e) => (
-          <li key={e.fingerprint} className="flex items-center justify-between gap-3 py-1.5">
+          <li key={`${e.fingerprint}@${e.url}`} className="flex items-center justify-between gap-3 py-1.5">
             <div className="min-w-0 text-[12px]">
               <div className="flex flex-wrap items-center gap-2 font-medium text-[var(--adf-ui-text)]">
                 {e.name}
@@ -480,6 +480,7 @@ export function DiscoveredList({ update, onPair }: { update: RemoteDiscoveryUpda
                 {!e.alreadyPaired && e.pairingOpen && <span className="text-[11px] font-normal text-[var(--adf-ui-accent)]">Pairing open</span>}
               </div>
               <div className="text-[var(--adf-ui-text-muted)]">{e.address} · {e.fingerprint}</div>
+              {e.clash && <div className="text-[11px] text-[var(--adf-ui-danger)]">Same fingerprint at {e.clash} addresses</div>}
             </div>
             <Button size="compact" onClick={() => onPair(e)}>Pair</Button>
           </li>

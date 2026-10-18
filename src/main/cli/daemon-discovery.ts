@@ -24,6 +24,8 @@ export interface DiscoveredDaemon {
   url: string
   kind: 'lan' | 'tailnet'
   pairingOpen: boolean
+  /** One fingerprint at this many addresses (discovery review 3): each is listed; null/absent when not. */
+  clash?: number | null
 }
 
 function hostPart(address: string): string {
@@ -33,7 +35,7 @@ function hostPart(address: string): string {
 /** The remote-access half of the feed. */
 export function daemonsOf(peers: NetworkPeer[]): DiscoveredDaemon[] {
   return peers.flatMap((p) => p.remote
-    ? [{ name: p.name, fingerprint: p.remote.fingerprint, url: p.remote.url, kind: p.remote.kind, pairingOpen: p.remote.pairingOpen }]
+    ? [{ name: p.name, fingerprint: p.remote.fingerprint, url: p.remote.url, kind: p.remote.kind, pairingOpen: p.remote.pairingOpen, clash: p.remote.clash ?? null }]
     : [])
 }
 
@@ -79,18 +81,33 @@ export async function probeTailnet(opts: { exec?: Exec; fetch?: typeof fetch; po
   return (await Promise.all(probes)).filter((d): d is DiscoveredDaemon => d !== null)
 }
 
-/** Both sources, merged by fingerprint (tailnet first). */
+/**
+ * Both sources, by fingerprint and address (discovery review 3): one LAN
+ * and one tailnet sighting of a fingerprint are one computer (the tailnet
+ * address wins); more than one on either is a clash, and every address is
+ * listed, flagged, never one replacing another.
+ */
 export function mergeDiscovered(lists: DiscoveredDaemon[][]): DiscoveredDaemon[] {
-  const byFp = new Map<string, DiscoveredDaemon>()
+  const byFp = new Map<string, Map<string, DiscoveredDaemon>>()
   for (const d of lists.flat()) {
-    const existing = byFp.get(d.fingerprint)
-    if (!existing || (existing.kind === 'lan' && d.kind === 'tailnet')) {
-      byFp.set(d.fingerprint, { ...d, pairingOpen: d.pairingOpen || (existing?.pairingOpen ?? false) })
-    } else if (d.pairingOpen) {
-      existing.pairingOpen = true
-    }
+    const urls = byFp.get(d.fingerprint) ?? new Map<string, DiscoveredDaemon>()
+    const existing = urls.get(d.url)
+    urls.set(d.url, existing ? { ...existing, pairingOpen: existing.pairingOpen || d.pairingOpen, clash: existing.clash ?? d.clash ?? null } : { ...d })
+    byFp.set(d.fingerprint, urls)
   }
-  return [...byFp.values()].sort((a, b) => Number(b.pairingOpen) - Number(a.pairingOpen) || a.name.localeCompare(b.name))
+  const out: DiscoveredDaemon[] = []
+  for (const urls of byFp.values()) {
+    const all = [...urls.values()]
+    const lan = all.filter(d => d.kind === 'lan')
+    const tailnet = all.filter(d => d.kind === 'tailnet')
+    if (lan.length > 1 || tailnet.length > 1 || all.some(d => (d.clash ?? 0) > 1)) {
+      for (const d of all) out.push({ ...d, clash: all.length })
+      continue
+    }
+    const best = tailnet[0] ?? lan[0]
+    out.push({ ...best, pairingOpen: all.some(d => d.pairingOpen), clash: null })
+  }
+  return out.sort((a, b) => Number(b.pairingOpen) - Number(a.pairingOpen) || a.name.localeCompare(b.name) || a.url.localeCompare(b.url))
 }
 
 /** This computer's ADF daemon's feed, or null when none answers (GET /network/peers). */

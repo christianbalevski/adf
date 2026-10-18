@@ -531,7 +531,7 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_ACCESS_PAIRING_CLOSE]: local('invoke', 'Local mode: DELETE /remote-access/pairing.'),
   [IPC.REMOTE_ACCESS_TAILSCALE_SERVE]: local('invoke', 'Local mode: POST /remote-access/tailscale-serve after a native confirmation naming the command.'),
   [IPC.REMOTE_ACCESS_CHANGED]: local('push', 'Studio main pushes the host view after an action, a poll of an open pairing window, or the daemon\'s remote_access push topic.'),
-  [IPC.REMOTE_DISCOVERY_START]: local('invoke', 'Studio main browses _adf-daemon._tcp (mDNS) and probes tailnet peers with GET /remote/hello; reads no daemon state of this computer.'),
+  [IPC.REMOTE_DISCOVERY_START]: local('invoke', 'Studio main reads this computer\'s one discovery feed: the daemon\'s GET /network/peers in local mode, else its own mDNS browse and tailnet hello sweep.'),
   [IPC.REMOTE_DISCOVERY_STOP]: local('invoke', 'Stops the browse and the probes.'),
   [IPC.REMOTE_DISCOVERY_UPDATE]: local('push', 'The merged list of computers found; no token.'),
   [IPC.REMOTE_PAIR_START]: local('invoke', 'GET /remote/hello on the other computer (no token).'),

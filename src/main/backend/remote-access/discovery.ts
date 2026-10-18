@@ -120,6 +120,7 @@ export class RemoteDiscovery {
         encrypted: kind === 'tailnet' || kind === 'https',
         pairingOpen: remote.pairingOpen,
         alreadyPaired: paired === remote.fingerprint,
+        clash: remote.clash ?? null,
       })
     }
     return out.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'tailnet' ? -1 : 1))

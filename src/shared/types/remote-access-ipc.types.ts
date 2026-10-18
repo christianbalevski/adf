@@ -101,6 +101,8 @@ export interface RemoteDiscoveryEntry {
   pairingOpen: boolean
   /** The saved remote computer has this fingerprint. */
   alreadyPaired: boolean
+  /** "Same fingerprint at N addresses": another computer may copy the fingerprint; each address is its own entry. Null when not. */
+  clash: number | null
 }
 
 export interface RemoteDiscoveryUpdate {

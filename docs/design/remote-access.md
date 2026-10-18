@@ -240,7 +240,9 @@ The record MUST NOT carry a token, a code, a claim id, the owner DID, a path or 
 | Studio's Discovered list (Settings → Backend → Remote computer) | Local mode: `GET /network/peers`, re-read on the daemon's `remote_access` push `{type: 'peers_changed'}`. Embedded mode: Studio's mesh service while it runs, else its own browse-only one. Remote mode: its own browse-only one |
 | `adf pair` | `GET /network/peers?wait=3000` from this computer's daemon; without one, its own browse-only service and hello sweep for 3 s |
 
-`GET /network/peers` keeps the daemon's discovery running for a minute (a client that only pairs needs no mesh and no remote access of its own); `wait` (0-5000 ms) lets a browser that just started hear answers.
+**Intake** (discovery review 3). What other computers send is untrusted. An announcement whose TXT record is over 4 KB, or has a value over 255 bytes, is dropped; so is a hello body over 4 KB (not read further), a fingerprint not shaped `XXXX-XXXX`, or a version other than 1. Every name is cleaned at intake (terminal sequences, control, bidi and invisible characters dropped, whitespace collapsed, at most 63 characters, `cleanDisplayName`). `adf pair` and `adf remotes` strip control characters and escape sequences from everything they print. The cache keeps each sighting per source (an announcement instance, a tailnet address): one LAN and one tailnet sighting of a fingerprint are one computer, the tailnet address shown; more than one on the LAN or on the tailnet is a clash, and every address is listed, flagged "Same fingerprint at N addresses", never one silently replacing another.
+
+`GET /network/peers` is local-only (`isLocalOnlyRoute`: this machine's own clients with the local proof, never a device token). It keeps the daemon's discovery running for a minute (a client that only pairs needs no mesh and no remote access of its own); `wait` (0-5000 ms) lets a browser that just started hear answers.
 
 ### 5.2 Hello
 

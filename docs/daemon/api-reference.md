@@ -12006,7 +12006,8 @@ Example 200 (`application/json`):
         "port": 0,
         "fingerprint": "string",
         "pairingOpen": true,
-        "kind": "lan"
+        "kind": "lan",
+        "clash": 0
       }
     }
   ]

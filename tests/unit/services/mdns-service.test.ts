@@ -359,7 +359,7 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
     expect(svc.peers()).toEqual([{
       key: 'peer-1', name: 'agent-1-pc', source: 'mdns',
       mesh: { url: 'http://192.168.1.20:7295', port: 7295 },
-      remote: { url: 'http://192.168.1.20:7385', port: 7385, fingerprint: 'ABCD-EFGH', pairingOpen: true, kind: 'lan' },
+      remote: { url: 'http://192.168.1.20:7385', port: 7385, fingerprint: 'ABCD-EFGH', pairingOpen: true, kind: 'lan', clash: null },
     }])
     // Studio's Discovered list reads the same service (embedded mode: the mesh's own).
     const updates: RemoteDiscoveryUpdate[] = []
@@ -427,7 +427,7 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
       name: 'old-host', port: 7385, addresses: ['192.168.1.40', '172.20.0.1'], referer: { address: '192.168.1.40' },
       txt: { v: '1', fp: 'OLDH-2345', pair: '1', api: '1' },
     })
-    expect(svc.peers()).toEqual([{ key: 'fp:OLDH-2345', name: 'old-host', source: 'mdns', mesh: null, remote: { url: 'http://192.168.1.40:7385', port: 7385, fingerprint: 'OLDH-2345', pairingOpen: true, kind: 'lan' } }])
+    expect(svc.peers()).toEqual([{ key: 'fp:OLDH-2345', name: 'old-host', source: 'mdns', mesh: null, remote: { url: 'http://192.168.1.40:7385', port: 7385, fingerprint: 'OLDH-2345', pairingOpen: true, kind: 'lan', clash: null } }])
     expect(svc.getDiscoveredRuntimes()).toEqual([])
     // Its own announcement on the legacy type is skipped by fingerprint.
     browsers['adf-daemon'].emit('up', { name: 'self', port: 7385, addresses: ['192.168.1.5'], txt: { v: '1', fp: 'ABCD-EFGH', pair: '0' } })
@@ -449,6 +449,68 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
     expect(svc.peers()).toEqual([expect.objectContaining({ key: 'peer-1', mesh: expect.objectContaining({ port: 7295 }), remote: expect.objectContaining({ url: 'http://100.101.102.103:7385', kind: 'tailnet' }) })])
     svc.expireTailnetDaemons(new Set())
     expect(svc.peers()[0].remote).toMatchObject({ url: 'http://192.168.1.20:7385', kind: 'lan' })
+    await svc.stop()
+  })
+})
+
+describe('discovery review 3: intake of announcements and hellos', () => {
+  let browsers: Record<string, ReturnType<typeof makeBrowser>>
+  beforeEach(() => {
+    mocks.publishMock.mockReset()
+    mocks.findMock.mockReset()
+    mocks.ctorThrows = null
+    browsers = { 'adf-runtime': makeBrowser(), 'adf-daemon': makeBrowser() }
+    mocks.findMock.mockImplementation((opts: { type: string }) => browsers[opts.type])
+  })
+  const UNSAFE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/
+  const remoteOnly = (name: string, address: string, fp = 'ABCD-EFGH', extra: Record<string, string> = {}) => ({
+    name, host: `${name}.local`, port: 7385, addresses: [address], referer: { address },
+    txt: { v: '1', fp, pair: '0', daemon_port: '7385', ...extra },
+  })
+
+  it('a TXT record over 4 KB in total, or with a value over 255 bytes, is dropped; names are cleaned and bounded', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    browsers['adf-runtime'].emit('up', remoteOnly('big', '192.168.1.30', 'BIGG-2345', { pad: 'x'.repeat(300) }))
+    browsers['adf-runtime'].emit('up', remoteOnly('huge', '192.168.1.31', 'HUGE-2345', Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, 'y'.repeat(250)]))))
+    browsers['adf-runtime'].emit('up', {
+      name: 'adf-peer-1', host: 'p.local', port: 7295, addresses: ['192.168.1.20'], referer: { address: '192.168.1.20' },
+      txt: { runtime_id: 'peer-1', runtime_did: 'd'.repeat(300), v: '1', fp: 'PEER-2345', pair: '0', daemon_port: '7385' },
+    })
+    expect(svc.peers()).toEqual([])
+    expect(svc.getDiscoveredRuntimes()).toEqual([])
+    browsers['adf-daemon'].emit('up', { name: 'legacy\u001b]0;pwned\u0007‮', port: 7385, addresses: ['192.168.1.40'], txt: { v: '1', fp: 'OLDH-2345', pair: '0' } })
+    svc.upsertTailnetDaemon({ fingerprint: 'TAIL-2345', name: `t\u001b[2J${'n'.repeat(200)}`, address: '100.1.1.1', port: 7385, pairingOpen: false })
+    for (const p of svc.peers()) {
+      expect(p.name).not.toMatch(UNSAFE)
+      expect([...p.name].length).toBeLessThanOrEqual(63)
+    }
+    expect(svc.peers().map((p) => p.remote?.fingerprint).sort()).toEqual(['OLDH-2345', 'TAIL-2345'])
+    await svc.stop()
+  })
+
+  it('one fingerprint at two addresses: both shown, flagged; LAN plus tailnet of one computer stays one entry; goodbye of one leaves the other', async () => {
+    const svc = new MdnsService()
+    await svc.start({ announce: false, browse: true, port: 7295, runtimeId: 'self' })
+    browsers['adf-runtime'].emit('up', remoteOnly('agent-1-pc', '192.168.1.20'))
+    svc.upsertTailnetDaemon({ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', address: '100.101.102.103', port: 7385, pairingOpen: false })
+    expect(svc.peers()).toEqual([expect.objectContaining({ remote: expect.objectContaining({ kind: 'tailnet', clash: null }) })])
+    // Another computer copies the fingerprint on the LAN: both listed, flagged, the first not replaced.
+    browsers['adf-runtime'].emit('up', remoteOnly('impostor', '192.168.1.66'))
+    const both = svc.peers()
+    expect(both.map((p) => [p.name, p.remote?.url, p.remote?.clash])).toEqual(expect.arrayContaining([
+      ['agent-1-pc', 'http://192.168.1.20:7385', 3],
+      ['impostor', 'http://192.168.1.66:7385', 3],
+      ['agent-1-pc', 'http://100.101.102.103:7385', 3],
+    ]))
+    expect(new Set(both.map((p) => p.key)).size).toBe(both.length)
+    browsers['adf-runtime'].emit('down', { name: 'impostor', txt: { v: '1', fp: 'ABCD-EFGH' } })
+    expect(svc.peers()).toEqual([expect.objectContaining({ remote: expect.objectContaining({ url: 'http://100.101.102.103:7385', clash: null }) })])
+    // Two tailnet addresses with one fingerprint: a clash too.
+    svc.upsertTailnetDaemon({ fingerprint: 'ABCD-EFGH', name: 'other', address: '100.64.9.9', port: 7385, pairingOpen: false })
+    expect(svc.peers().filter((p) => p.remote?.clash === 3)).toHaveLength(3)
+    svc.expireTailnetDaemons(new Set(['ABCD-EFGH@100.101.102.103']))
+    expect(svc.peers().map((p) => [p.remote?.url, p.remote?.clash])).toEqual([['http://100.101.102.103:7385', null]])
     await svc.stop()
   })
 })

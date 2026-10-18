@@ -318,8 +318,8 @@ describe('client helpers', () => {
       [{ name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: false }, { name: 'host-2', fingerprint: 'CCCC-DDDD', url: 'http://100.1.1.1:7385', kind: 'tailnet', pairingOpen: false }],
     ])
     expect(merged).toEqual([
-      { name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: true },
-      { name: 'host-2', fingerprint: 'CCCC-DDDD', url: 'http://100.1.1.1:7385', kind: 'tailnet', pairingOpen: false },
+      { name: 'host-1', fingerprint: 'AAAA-BBBB', url: 'http://100.101.102.103:7385', kind: 'tailnet', pairingOpen: true, clash: null },
+      { name: 'host-2', fingerprint: 'CCCC-DDDD', url: 'http://100.1.1.1:7385', kind: 'tailnet', pairingOpen: false, clash: null },
     ])
   })
 })

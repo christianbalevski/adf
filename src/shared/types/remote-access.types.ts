@@ -187,5 +187,13 @@ export interface NetworkPeer {
   /** Its mesh, when visible to other computers: base URL (agents under /agents). */
   mesh: { url: string; port: number } | null
   /** Its remote access, when on: the tailnet address wins over the LAN one (encrypted). */
-  remote: { url: string; port: number; fingerprint: string; pairingOpen: boolean; kind: 'lan' | 'tailnet' } | null
+  remote: {
+    url: string
+    port: number
+    fingerprint: string
+    pairingOpen: boolean
+    kind: 'lan' | 'tailnet'
+    /** One fingerprint seen at this many addresses (more than one on the LAN or on the tailnet): each is listed; null when not. */
+    clash: number | null
+  } | null
 }

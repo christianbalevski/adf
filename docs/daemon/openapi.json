@@ -30573,7 +30573,8 @@
                   "port",
                   "fingerprint",
                   "pairingOpen",
-                  "kind"
+                  "kind",
+                  "clash"
                 ],
                 "additionalProperties": false,
                 "properties": {
@@ -30596,6 +30597,13 @@
                       "lan",
                       "tailnet"
                     ]
+                  },
+                  "clash": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "description": "One fingerprint seen at this many addresses (more than one on the LAN or on the tailnet): each address is its own entry, never one replacing another; null when not"
                   }
                 }
               },

@@ -256,3 +256,12 @@ describe('consent review 3: the network notice is a strip in the window, not a d
     expect(renderToStaticMarkup(<NetworkNoticeList busy={null} error={null} onAllow={noop} onDismiss={noop} onOpenNetworking={noop} notices={[]} />)).toBe('')
   })
 })
+
+describe('discovery review 3: one fingerprint at two addresses', () => {
+  it('both rows show, each flagged', () => {
+    const entry = { fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: 'http://192.168.1.20:7385', address: '192.168.1.20', kind: 'lan' as const, encrypted: false, pairingOpen: false, alreadyPaired: false, clash: 2 }
+    const html = renderToStaticMarkup(<DiscoveredList update={{ browsing: true, problem: null, entries: [entry, { ...entry, name: 'impostor', url: 'http://192.168.1.66:7385', address: '192.168.1.66' }] }} onPair={() => {}} />)
+    expect(html.match(/Same fingerprint at 2 addresses/g)?.length).toBe(2)
+    expect(html).toContain('impostor')
+  })
+})
