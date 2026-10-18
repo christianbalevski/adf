@@ -181,7 +181,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const slot = deps.backend.config().remote
       if (!slot.url) return fail('not_found', 'That connection is not saved.')
       const name = slot.paired?.name ?? hostOf(slot.url)
-      if (!await deps.confirm({ message: `Remove ${name}`, detail: `Studio forgets its address and token. ${name} still lists this device; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+      if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio.\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
       const result = await deps.backend.set({ remoteUrl: null })
       if (!result.ok) return fail(result.code, result.error)
       log.log(`[Connection] Removed ${name}`)
@@ -191,7 +191,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (!id.startsWith('remote:')) return fail('not_found', 'That connection is not saved.')
     const name = id.slice('remote:'.length)
     if (!saved()[name]) return fail('not_found', 'That connection is not saved.')
-    if (!await deps.confirm({ message: `Remove ${name}`, detail: `Studio and the adf command forget its address and token. ${name} still lists this device; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+    if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio and adf.\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
     try {
       await forgetConnection(deps.env, name)
       await fresh()

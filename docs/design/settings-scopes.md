@@ -186,7 +186,7 @@ Title "Connection". Help: "The runtime this window uses."
 3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint. Studio cannot check this computer's identity." The token goes to the `remote` slot. If the slot holds a connection, the dialog says "Replaces <name>." first.
 4. On success: **Done** and **Connect**.
 
-**Remove connection.** More menu → Remove. Dialog "Remove rawl-hub": "Studio and the adf command forget its address and token. rawl-hub still lists this device; revoke it there." Buttons **Remove**, **Cancel**. Main deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot. The connection in use cannot be removed.
+**Remove connection.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot. The connection in use cannot be removed.
 
 ### 5.4 IPC
 

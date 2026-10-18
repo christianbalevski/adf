@@ -324,7 +324,8 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     expect(await s.connections.remove('local')).toEqual({ ok: false, code: 'in_use', error: 'In use.' })
     const removed = await s.connections.remove('remote:rawl-hub')
-    expect(s.confirms).toEqual([{ message: 'Remove rawl-hub', detail: 'Studio and the adf command forget its address and token. rawl-hub still lists this device; revoke it there.', ok: 'Remove' }])
+    // One sentence, and the note on its own line (review item 12).
+    expect(s.confirms).toEqual([{ message: 'Remove rawl-hub', detail: 'Removes the address and token from Studio and adf.\nStill listed on rawl-hub; revoke it there.', ok: 'Remove' }])
     expect(removed).toMatchObject({ ok: true, notices: ['Removed rawl-hub.'] })
     expect(loadRemotes(s.env).remotes).toEqual({})
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBeNull()
