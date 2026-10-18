@@ -36,6 +36,7 @@ import {
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
+import { mergeGatewayIdentity } from './network-key'
 import { readGatewayIdentities, readNetworkCategories, type NetworkCategories } from './network-category'
 import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
@@ -135,6 +136,8 @@ export class RemoteAccessService {
    * interface's listeners close until the new read confirms private.
    */
   private categoryKeys = new Map<string, string>()
+  /** Per LAN interface, the last known gateway identity (mergeGatewayIdentity). */
+  private gatewayIds = new Map<string, string>()
   private tailscaleSelf: TailscaleSelf = { state: 'absent', ips: [], dnsName: null }
   private tailscaleServe: TailscaleServe = { serve: 'unknown', httpsUrl: null }
   private tailscaleAt = 0
@@ -341,7 +344,12 @@ export class RemoteAccessService {
     for (const c of addressCandidates({ interfaces, tailscaleIps, categories: new Map() })) {
       if (c.kind === 'lan') keys.set(c.iface, [keys.get(c.iface), c.address].filter(Boolean).join(','))
     }
-    for (const iface of lanIfaces) keys.set(iface, `${keys.get(iface) ?? ''}|${gateways.get(iface) ?? ''}`)
+    for (const iface of lanIfaces) {
+      // A MAC or gateway missing for a moment is unknown, not another network (re-review 1).
+      const id = mergeGatewayIdentity(this.gatewayIds.get(iface), gateways.get(iface) ?? '')
+      this.gatewayIds.set(iface, id)
+      keys.set(iface, `${keys.get(iface) ?? ''}|${id}`)
+    }
     const changed = lanIfaces.filter(iface => this.categoryKeys.get(iface) !== keys.get(iface))
     if (opts.force || changed.length > 0 || this.categoryKeys.size !== keys.size || now - this.categoriesAt >= this.slowCheckMs) {
       if (changed.length > 0) {

@@ -736,3 +736,32 @@ describe('security review item 6: "off" during a listener opening', () => {
     await expect(remote(h, 'GET', '/remote/hello')).rejects.toThrow(/ECONNREFUSED/)
   })
 })
+
+describe('re-review 1: a gateway MAC missing for a moment is not a network change', () => {
+  const listening = (h: Harness) => (h.service as unknown as { listeners: { addresses(): string[] } }).listeners.addresses()
+
+  it('an empty or missing MAC keeps the listeners and the category; a known different MAC or a new address closes them', async () => {
+    const h = await harness()
+    await turnOn(h)
+    expect(listening(h)).toEqual([LAN])
+    const reads = h.network.reads
+    // ARP aged out: the gateway answers without a MAC, then not at all.
+    for (const gateway of ['192.168.77.1|', '192.168.77.1', '']) {
+      h.network.gateway = gateway
+      await h.service.apply({})
+      expect(listening(h)).toEqual([LAN])
+    }
+    expect(h.network.reads).toBe(reads)
+    expect(h.logs.some(l => /network changed/.test(l))).toBe(false)
+    // The MAC is back and the same: still nothing to do.
+    h.network.gateway = '192.168.77.1|aa:bb:cc:dd:ee:01'
+    await h.service.apply({})
+    expect(h.network.reads).toBe(reads)
+    // A known, different MAC is another network.
+    h.network.gateway = '192.168.77.1|de:ad:be:ef:00:09'
+    h.network.category = 'public'
+    await h.service.apply({})
+    expect(listening(h)).toEqual([])
+    expect(h.logs.some(l => /network changed on eth0/.test(l))).toBe(true)
+  })
+})
