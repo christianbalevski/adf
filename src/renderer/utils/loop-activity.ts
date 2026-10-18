@@ -1,4 +1,5 @@
 import type { AgentLogEntry } from '../stores/agent.store'
+import { lacksSeq } from '../hooks/live-seq'
 
 export function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
@@ -12,7 +13,7 @@ export interface LoopActivity {
 /** The glimmer describes the agent continuing, not an unfinished tool call. */
 export function getLoopActivity(
   log: AgentLogEntry[],
-  { active, starting, waiting }: { active: boolean; starting: boolean; waiting: boolean },
+  { active, starting, waiting, autonomous = false }: { active: boolean; starting: boolean; waiting: boolean; autonomous?: boolean },
 ): LoopActivity {
   const none: LoopActivity = { entryId: null, phase: null }
   if (waiting) return none
@@ -23,11 +24,19 @@ export function getLoopActivity(
     const entry = log[index]
     if (isTurnCompleteMarker(entry) || entry.type === 'error') return none
     // A streamed answer is its own activity indicator; never animate its prose.
-    if (entry.type === 'text') return none
+    // An autonomous loop doesn't stop at a reply: once the block is closed
+    // (stamped with its row, or a quiet-turn marker) the next call is underway.
+    if (entry.type === 'text') {
+      const closed = entry.metadata?.quietTurn === true || !lacksSeq(entry)
+      return autonomous && closed ? { entryId: null, phase: 'Thinking…' } : none
+    }
     if (entry.type === 'user' || entry.type === 'trigger') break
     if (entry.type === 'thinking') return { entryId: entry.id, phase: null }
     if (entry.type === 'tool_call') {
-      if (entry.metadata?.name === 'say') return none
+      // `say` never ends the turn, so the model is already composing its next
+      // step — whose input arrives only when complete. Keep its prose still,
+      // but show the trailing phase so a long next call isn't a silent gap.
+      if (entry.metadata?.name === 'say') return { entryId: null, phase: 'Thinking…' }
       return { entryId: entry.id, phase: null }
     }
     // Results and context updates don't end activity. Leave the glimmer on
