@@ -23,7 +23,7 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
-import { migratePairedSlot, remotesEnv, savedConnections } from './backend/connections'
+import { migratePairedSlot, remotesEnv, SavedConnectionsCache } from './backend/connections'
 import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
@@ -609,9 +609,13 @@ app.whenReady().then(async () => {
   const connectionsEnv = remotesEnv(getUserDataPath())
   // A remote paired before the shared list moves into it, pinned like the others.
   await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
-  const savedRemote = (name: string): { url: string } | null => {
-    try { return savedConnections(connectionsEnv)[name] ?? null } catch { return null }
-  }
+  // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
+  let connections: Connections | null = null
+  const savedCache = new SavedConnectionsCache(connectionsEnv, () => connections?.changed())
+  await savedCache.refresh().catch(() => {})
+  savedCache.watch()
+  app.once('before-quit', () => savedCache.dispose())
+  const savedRemote = (name: string): { url: string } | null => savedCache.get()[name] ?? null
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')
@@ -701,16 +705,17 @@ app.whenReady().then(async () => {
     meshLan: () => embeddedIpc?.meshLanState() ?? null,
     meshPeers: () => embeddedIpc?.meshPeerFeed() ?? null,
     remotesEnv: connectionsEnv,
+    savedCache,
     onConnectionsChanged: () => connections?.changed(),
   })
   // Settings → Connection and the status bar's runtime indicator (settings-scopes.md §4.1, §5).
   const store = backendStore
   const access = remoteAccess
-  let connections: Connections | null = null
   connections = createConnections({
     boot: backend,
     backend: store,
     env: connectionsEnv,
+    saved: savedCache,
     daemonStatus: () => daemonMode?.status() ?? null,
     discovery: () => access.discovery.snapshot(),
     confirm: async ({ message, detail, ok }) => {

@@ -20,7 +20,7 @@ import { allowNetwork, cleanDisplayName, forgetNetwork, readAllowedNetworks, UNS
 import type { NetworkConsentResult, NetworkNotice, NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
-import { remotesEnv, saveConnection, savedConnections } from './connections'
+import { remotesEnv, SavedConnectionsCache, saveConnection } from './connections'
 import { KEYCHAIN_FILE_QUESTION } from '../cli/remotes'
 
 /**
@@ -57,6 +57,8 @@ export interface RemoteAccessIpcDeps {
   remotesEnv?: NodeJS.ProcessEnv
   /** The discovery list or the saved connections changed: Settings → Connection is pushed again. */
   onConnectionsChanged?: () => void
+  /** The saved connections, cached (connections.ts); default: a cache of `remotesEnv`. */
+  savedCache?: SavedConnectionsCache
   /** Tests: replace the Electron dialogs, notifications and network. */
   overrides?: {
     host?: Partial<RemoteAccessHostDeps>
@@ -194,9 +196,9 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   }
   const localDaemon = (): LocalDaemon | null => deps.mode === 'local' ? deps.daemon() : null
   const env = deps.remotesEnv ?? (deps.settingsDir ? remotesEnv(deps.settingsDir) : process.env)
-  const saved = () => {
-    try { return savedConnections(env) } catch { return {} }
-  }
+  const savedCache = deps.savedCache ?? new SavedConnectionsCache(env)
+  const saved = () => savedCache.get()
+  const refreshSaved = () => savedCache.refresh().catch(() => savedCache.get())
 
   const host = new RemoteAccessHost({
     daemon: () => {
@@ -243,7 +245,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       deps.onConnectionsChanged?.()
     },
     pairedFingerprints: () => {
-      const fingerprints = new Set(Object.values(saved()).map((r) => r.fingerprint))
+      const fingerprints = savedCache.fingerprints()
       const slot = deps.backend.config().remote.paired?.fingerprint
       if (slot) fingerprints.add(slot)
       return fingerprints
@@ -301,6 +303,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
         const trusted = await deps.backend.set({ trustInsecureOrigin: origin })
         if (!trusted.ok) log.warn(`[Remote access] Could not record plain http for ${origin}: ${trusted.error}`)
       }
+      await refreshSaved()
       discovery.refresh()
       deps.onConnectionsChanged?.()
       return { ok: true, id: `remote:${name}` }
@@ -418,9 +421,9 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   consentTimer?.unref?.()
 
   // --- Client: Settings → Connection ---
-  ipcMain.handle(IPC.REMOTE_DISCOVERY_START, () => { discovery.start(); return true })
+  ipcMain.handle(IPC.REMOTE_DISCOVERY_START, async () => { await refreshSaved(); discovery.start(); return true })
   ipcMain.handle(IPC.REMOTE_DISCOVERY_STOP, () => { discovery.stop(); return true })
-  ipcMain.handle(IPC.REMOTE_PAIR_START, (_event, request: unknown) => pairing.start((request ?? {}) as { url: string }))
+  ipcMain.handle(IPC.REMOTE_PAIR_START, async (_event, request: unknown) => { await refreshSaved(); return pairing.start((request ?? {}) as { url: string }) })
   ipcMain.handle(IPC.REMOTE_PAIR_SUBMIT_CODE, (_event, code: unknown) => pairing.submitCode(code))
   ipcMain.handle(IPC.REMOTE_PAIR_CANCEL, () => pairing.cancel())
 

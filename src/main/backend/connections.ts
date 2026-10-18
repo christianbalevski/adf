@@ -1,9 +1,10 @@
-import { join } from 'node:path'
+import { watch, type FSWatcher } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, StudioBackendMode } from '../../shared/types/backend.types'
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
-import { deleteRemoteToken, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
+import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
 import type { BootBackend, SecretCodec, StudioBackendConfig } from './backend-config'
@@ -31,6 +32,61 @@ export function savedConnections(env: NodeJS.ProcessEnv): Record<string, SavedRe
   return loadRemotes(env).remotes
 }
 
+/**
+ * The saved connections as Studio main shows them (review item 9): read
+ * with async IO on refresh only, never on a push. It refreshes when
+ * cli-remotes.json changes on disk (adf wrote it; `watch`) and after Studio
+ * writes it (the caller refreshes); `onChange` then pushes the list again.
+ */
+export class SavedConnectionsCache {
+  private value: Record<string, SavedRemote> = {}
+  private watcher: FSWatcher | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+
+  constructor(private readonly env: NodeJS.ProcessEnv, private readonly onChange?: () => void) {}
+
+  /** The list as last read; no disk access. */
+  get(): Record<string, SavedRemote> {
+    return this.value
+  }
+
+  /** Every saved fingerprint (the "paired" marks of the discovery list). */
+  fingerprints(): Set<string> {
+    return new Set(Object.values(this.value).map((r) => r.fingerprint))
+  }
+
+  async refresh(): Promise<Record<string, SavedRemote>> {
+    const next = (await loadRemotesAsync(this.env)).remotes
+    const changed = JSON.stringify(next) !== JSON.stringify(this.value)
+    this.value = next
+    if (changed) this.onChange?.()
+    return next
+  }
+
+  /** Follow cli-remotes.json on disk (its folder: the file may not exist yet). */
+  watch(): void {
+    if (this.watcher) return
+    const path = remotesFilePath(this.env)
+    try {
+      this.watcher = watch(dirname(path), (_event, file) => {
+        if (file && String(file) !== basename(path)) return
+        if (this.timer) clearTimeout(this.timer)
+        this.timer = setTimeout(() => { this.timer = null; void this.refresh().catch(() => {}) }, 100)
+      })
+      this.watcher.on('error', () => { this.watcher?.close(); this.watcher = null })
+    } catch {
+      this.watcher = null
+    }
+  }
+
+  dispose(): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+    this.watcher?.close()
+    this.watcher = null
+  }
+}
+
 /** Ends a connection attempt with a sentence the user can act on; never holds a token. */
 export class ConnectionError extends Error {
   constructor(readonly code: 'not_configured' | 'transport' | 'no_token' | 'keychain' | 'pinned' | 'unreachable', message: string) {
@@ -51,7 +107,7 @@ export function keychainSentence(name: string): string {
  * a silent fallback.
  */
 export async function savedConnectionTarget(config: Pick<StudioBackendConfig, 'insecureHttpOrigins'>, name: string, env: NodeJS.ProcessEnv, hooks: { log?: (line: string) => void; onSlow?: () => void } = {}): Promise<{ url: string; token: string; remote: SavedRemote }> {
-  const remote = savedConnections(env)[name]
+  const remote = (await loadRemotesAsync(env)).remotes[name]
   if (!remote) throw new ConnectionError('not_configured', `No saved connection named "${name}". Choose one in Settings → Connection.`)
   const check = checkRemoteDaemonUrl(remote.url)
   if (!check.url) throw new ConnectionError('transport', `The address of ${name} is not valid: ${check.reason ?? remote.url}`)

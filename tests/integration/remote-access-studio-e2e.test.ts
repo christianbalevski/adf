@@ -26,6 +26,7 @@ import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/mai
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from '../../src/main/backend/remote-access-ipc'
 import { createBackendSettingsStore, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
 import { createConnections, registerConnectionHandlers } from '../../src/main/backend/connections-ipc'
+import { SavedConnectionsCache } from '../../src/main/backend/connections'
 import { loadRemotes, readRemoteToken } from '../../src/main/cli/remotes'
 import type { ConnectionsView } from '../../src/shared/types/connection.types'
 import { IPC } from '../../src/shared/constants/ipc-channels'
@@ -120,7 +121,10 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     clientEnv = { ...process.env, ADF_DAEMON_SETTINGS: join(dir, 'client', 'adf-settings.json'), ADF_TEST_KEYCHAIN_FILE: join(dir, 'client-keychain.json'), ADF_TEST_SEAMS: '1' }
     delete clientEnv.ADF_KEYCHAIN
     delete clientEnv.ADF_SECRET_STORE
+    // One cache for both, as Studio main has (index.ts).
+    const savedCache = new SavedConnectionsCache(clientEnv)
     remote = registerRemoteAccessHandlers({
+      savedCache,
       mode: 'local',
       daemon: () => handle,
       backend: store,
@@ -136,7 +140,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
       log: quiet,
     })
     registerConnectionHandlers(createConnections({
-      boot, backend: store, env: clientEnv,
+      boot, backend: store, env: clientEnv, saved: savedCache,
       daemonStatus: () => handle.status(),
       discovery: () => remote.discovery.snapshot(),
       confirm: async () => true,

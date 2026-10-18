@@ -5,7 +5,7 @@ import type { BackendDaemonStatus, BackendSettingsPatch } from '../../shared/typ
 import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
-import { buildConnectionsView, ConnectionError, forgetConnection, saveConnection, savedConnections, savedConnectionTarget } from './connections'
+import { buildConnectionsView, ConnectionError, forgetConnection, SavedConnectionsCache, saveConnection, savedConnectionTarget } from './connections'
 import { KEYCHAIN_FILE_QUESTION } from '../cli/remotes'
 import { remoteHandshake } from './daemon-mode/remote/connector'
 import { PairingClient } from './remote-access/client'
@@ -28,6 +28,8 @@ export interface ConnectionsDeps {
   backend: BackendSettingsStore
   /** remotesEnv(): where cli-remotes.json and the keychain fallback are. */
   env: NodeJS.ProcessEnv
+  /** The saved connections, cached (review item 9); default: a cache of `env` refreshed on each action. */
+  saved?: SavedConnectionsCache
   daemonStatus: () => BackendDaemonStatus | null
   /** The network search while the Connection page is open (RemoteDiscovery.snapshot). */
   discovery: () => RemoteDiscoveryUpdate | null
@@ -58,9 +60,10 @@ function hostOf(url: string): string {
 
 export function createConnections(deps: ConnectionsDeps): Connections {
   const log = deps.log ?? console
-  const saved = () => {
-    try { return savedConnections(deps.env) } catch { return {} }
-  }
+  const cache = deps.saved ?? new SavedConnectionsCache(deps.env)
+  // The list and every push read the cache; an action reads the file again first (async), and after it writes.
+  const saved = () => cache.get()
+  const fresh = () => cache.refresh().catch(() => cache.get())
   const view = (): ConnectionsView => buildConnectionsView({
     active: { mode: deps.boot.mode, remoteName: deps.boot.mode === 'remote' ? deps.boot.config.remote.name ?? null : null, config: deps.boot.config },
     configured: deps.backend.config(),
@@ -76,6 +79,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
 
   const use = async (id: unknown): Promise<ConnectionResult> => {
     if (typeof id !== 'string' || !id) return fail('invalid', 'No connection given.')
+    await fresh()
     if (id.startsWith('found:')) return fail('not_paired', 'Pair first.')
     let patch: BackendSettingsPatch
     if (id === 'local' || id === 'embedded') patch = { mode: id }
@@ -107,6 +111,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const token = typeof r.token === 'string' ? r.token.trim() : ''
     if (!token || token.length > MAX_TOKEN_LENGTH || !TOKEN_PATTERN.test(token)) return fail('invalid_token', 'The token must be printable characters without spaces.')
     const origin = remoteUrlOrigin(check.url)!
+    await fresh()
 
     // Who answers there, before any token is sent (trust on first use, as Pair).
     let hello: { name: string; fingerprint: string } | null = null
@@ -147,6 +152,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
         return fail(err instanceof Error && err.name === 'TokenNotStoredError' ? 'not_saved' : 'save_failed', err instanceof Error ? err.message : String(err))
       }
       if (insecure) await deps.backend.set({ trustInsecureOrigin: origin })
+      await fresh()
       log.log(`[Connection] Added ${name} (${hello.fingerprint}) at ${check.url} with a token`)
       changed()
       return { ok: true, view: view(), notices: [`Saved ${name}.`], id: `remote:${name}` }
@@ -168,6 +174,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
 
   const remove = async (id: unknown): Promise<ConnectionResult> => {
     if (typeof id !== 'string') return fail('invalid', 'No connection given.')
+    await fresh()
     const current = view().current
     if (id === current.id || id === configuredId()) return fail('in_use', 'In use.')
     if (id === 'remote') {
@@ -187,6 +194,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (!await deps.confirm({ message: `Remove ${name}`, detail: `Studio and the adf command forget its address and token. ${name} still lists this device; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
     try {
       await forgetConnection(deps.env, name)
+      await fresh()
     } catch (err) {
       return fail('save_failed', `Studio could not remove ${name}: ${err instanceof Error ? err.message : String(err)}`)
     }
