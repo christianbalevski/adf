@@ -964,17 +964,28 @@ body.panel-resizing webview {
 
 
 /* --- Home suggestion rows ----------------------------------------------
-   Rows of chips that stand still, wider than the page and centred, the
-   edges faded. SuggestionRows fades one row out, swaps its chips, and fades
-   it back in: opacity only, which stays smooth on every display. */
+   Rows of chips that stand still, wider than the page, starting centred,
+   the edges faded. A row scrolls sideways by hand (a swipe or Shift+wheel)
+   with no scrollbar. SuggestionRows fades one row out, swaps its chips,
+   and fades it back in: opacity only, smooth on every display. */
 .home-suggestion-row {
-  display: flex;
-  justify-content: center;
-  gap: 0.5rem;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
   mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
   -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
   transition: opacity 500ms ease-in-out;
+}
+.home-suggestion-row::-webkit-scrollbar {
+  display: none;
+}
+/* Centred when it fits; when wider, its start is reachable by scrolling. */
+.home-suggestion-track {
+  display: flex;
+  gap: 0.5rem;
+  width: max-content;
+  margin-inline: auto;
 }
 .home-suggestion-row[data-fading] {
   opacity: 0;

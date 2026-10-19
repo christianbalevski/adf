@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { pickSuggestions } from './suggestions'
 
 /** How often one row changes; the rows take turns, so each changes every SWAP_MS × rows. */
@@ -10,10 +10,17 @@ const FADE_OUT_MS = 300
  * Rows of suggestion chips that stand still. Every few seconds one row,
  * in turn, fades to chips not on screen. Nothing slides: text moving a few
  * pixels a second judders on a standard-density monitor however it is
- * drawn, while an opacity fade is smooth everywhere. Hovering or focusing
- * the rows holds them so a chip can be clicked. "Hide suggestions" is the
+ * drawn, while an opacity fade is smooth everywhere. A row is wider than
+ * the page and starts centred; a sideways swipe (or Shift+wheel) scrolls it
+ * by hand, the up/down wheel stays the page's. Hovering or focusing the
+ * rows holds them so a chip can be clicked. "Hide suggestions" is the
  * opt-out.
  */
+
+/** Scroll a row so its middle is in the middle. */
+function centre(row: HTMLElement | null): void {
+  if (row) row.scrollLeft = (row.scrollWidth - row.clientWidth) / 2
+}
 export function SuggestionRows({ rowCount, perRow, onPick, disabled }: {
   rowCount: number
   perRow: number
@@ -28,6 +35,21 @@ export function SuggestionRows({ rowCount, perRow, onPick, disabled }: {
   const fadingRef = useRef<number | null>(null)
   const held = useRef(false)
   const next = useRef(0)
+  const rowEls = useRef<Array<HTMLDivElement | null>>([])
+  // The row whose chips just changed starts centred again; null centres every row.
+  const recentre = useRef<number | null>(null)
+
+  useLayoutEffect(() => {
+    if (recentre.current === null) rowEls.current.forEach(centre)
+    else centre(rowEls.current[recentre.current] ?? null)
+  }, [rows])
+
+  // A resize (or the chip font arriving) centres the rows again, unless one is in use.
+  useEffect(() => {
+    const ro = new ResizeObserver(() => { if (!held.current) rowEls.current.forEach(centre) })
+    rowEls.current.forEach((el) => el && ro.observe(el))
+    return () => ro.disconnect()
+  }, [rowCount])
 
   useEffect(() => {
     let fadeTimer: ReturnType<typeof setTimeout> | null = null
@@ -38,6 +60,7 @@ export function SuggestionRows({ rowCount, perRow, onPick, disabled }: {
       fadingRef.current = index
       setFading(index)
       fadeTimer = setTimeout(() => {
+        recentre.current = index
         setRows((current) => {
           const shown = new Set(current.flat())
           const fresh = pickSuggestions(perRow, Math.random, shown)
@@ -63,7 +86,8 @@ export function SuggestionRows({ rowCount, perRow, onPick, disabled }: {
       onBlur={() => { held.current = false }}
     >
       {rows.map((row, i) => (
-        <div key={i} className="home-suggestion-row" data-fading={fading === i ? '' : undefined}>
+        <div key={i} ref={(el) => { rowEls.current[i] = el }} className="home-suggestion-row" data-fading={fading === i ? '' : undefined}>
+          <div className="home-suggestion-track">
           {row.map((s) => (
             <button
               key={s}
@@ -75,6 +99,7 @@ export function SuggestionRows({ rowCount, perRow, onPick, disabled }: {
               {s}
             </button>
           ))}
+          </div>
         </div>
       ))}
     </div>
