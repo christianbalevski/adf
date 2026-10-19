@@ -158,7 +158,7 @@ Title "Connection". Help: "The runtime this window uses."
 
 - A row has a name, its state, and one detail line: address and fingerprint for a remote. "Pairing open" is added when the host's window is open.
 - A found host whose fingerprint is saved is the saved row. It is never a second row, so a Paired row never shows Pair.
-- Rows that share a fingerprint and do not merge (§8) stay separate Not paired rows, each with "Same fingerprint at 2 addresses". If that fingerprint is saved, the warning goes on the saved row and no extra row is shown.
+- Rows that share a fingerprint and do not merge (§8) stay separate Not paired rows, one per address, with no warning. If that fingerprint is saved, only the saved row is shown.
 - Remove is in the row's More menu (⋯), for saved remotes that are not in use. Inside Studio (legacy) is also in This computer's More menu while it is not shown as a row.
 - Below the list: one button, **Add connection**.
 - When This computer is in use, two rows follow the list: the daemon line (pid, started by) with Details, as `daemonLine` today; and **Keep running after quit**, "Agents on this computer keep running after you quit Studio." Neither is shown when a remote is in use.
