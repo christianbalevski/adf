@@ -418,6 +418,10 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
 
   for (const entry of entries) {
     if (isCollapsibleActivity(entry, toolPairs)) {
+      // A trigger opens a new turn. A turn that ended on a tool call (e.g.
+      // sys_set_state) leaves no visible row between it and the next wake,
+      // so without this the timer, its turn and the last one read as one block.
+      if (entry.type === 'trigger') flushActivity()
       activityEntries.push(entry)
     } else {
       flushActivity()
