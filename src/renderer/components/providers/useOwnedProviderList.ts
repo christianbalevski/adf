@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
+import { sameContent } from '../../utils/list-rebase'
 import { rebaseProviderList, saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from './provider-save'
 
 const SAVE_DEBOUNCE_MS = 250
@@ -63,10 +64,12 @@ export function useOwnedProviderList() {
     )
     if (result.saved) {
       savedRef.current = toWrite
-      // Show the other window's changes too, unless the owner edited again meanwhile.
-      if (latest.current.providers === attempted.providers && latest.current.defaultProviderId === attempted.defaultProviderId && JSON.stringify(toWrite) !== JSON.stringify(attempted)) {
-        setProvidersState(toWrite.providers)
-        setDefaultProviderIdState(toWrite.defaultProviderId)
+      // The list shown becomes what was written, with any edit made while the save was in flight on top.
+      const shown = latest.current
+      const next = rebaseProviderList(attempted, shown, toWrite)
+      if (!sameContent(next, shown)) {
+        setProvidersState(next.providers)
+        setDefaultProviderIdState(next.defaultProviderId)
       }
     } else dirtyRef.current = true
     setSaveFailure(result.failure)

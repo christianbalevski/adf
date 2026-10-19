@@ -1,4 +1,5 @@
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
+import { rebaseById, rebaseValue } from '../../utils/list-rebase'
 
 /** The providers part of a settings save. */
 export interface ProviderListSnapshot {
@@ -63,20 +64,8 @@ export async function saveProviderList(
  * window moved it.
  */
 export function rebaseProviderList(saved: ProviderListSnapshot, attempted: ProviderListSnapshot, latest: ProviderListSnapshot): ProviderListSnapshot {
-  const before = new Map(saved.providers.map((p) => [p.id, JSON.stringify(p)]))
-  const mine = new Map(attempted.providers.map((p) => [p.id, p]))
-  const changed = (id: string): boolean => {
-    const p = mine.get(id)
-    return !!p && before.get(id) !== JSON.stringify(p)
-  }
-  const providers = latest.providers
-    .filter((p) => !(before.has(p.id) && !mine.has(p.id)))
-    .map((p) => (changed(p.id) ? mine.get(p.id)! : p))
-  for (const p of attempted.providers) {
-    if (!providers.some((q) => q.id === p.id) && (changed(p.id) || !before.has(p.id))) providers.push(p)
-  }
-  const movedDefault = (saved.defaultProviderId ?? '') !== (attempted.defaultProviderId ?? '')
-  let defaultProviderId = movedDefault ? attempted.defaultProviderId : latest.defaultProviderId
+  const providers = rebaseById(saved.providers, attempted.providers, latest.providers)
+  let defaultProviderId = rebaseValue(saved.defaultProviderId ?? '', attempted.defaultProviderId ?? '', latest.defaultProviderId ?? '') || undefined
   if (defaultProviderId && !providers.some((p) => p.id === defaultProviderId)) defaultProviderId = providers[0]?.id
   return { providers, defaultProviderId }
 }
