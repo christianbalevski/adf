@@ -22,3 +22,14 @@ export function openAgentWindow(request: { filePath: string; agentId?: string | 
     if (!result.success) console.error('[AgentWindow] Open in new window failed:', result.error)
   }).catch((err: unknown) => console.error('[AgentWindow] Open in new window failed:', err))
 }
+
+/** Close this agent window (Close Agent, a cancelled open). */
+export function closeAgentWindow(): void {
+  window.adfApi?.closeAgentWindow().catch((err: unknown) => console.error('[AgentWindow] Close window failed:', err))
+}
+
+/** Settings live in the main window: focus it and open them there, at `section`. */
+export function openMainSettings(section?: string, anchor?: string): void {
+  window.adfApi?.openMainSettings({ ...(section ? { section } : {}), ...(anchor ? { anchor } : {}) })
+    .catch((err: unknown) => console.error('[AgentWindow] Opening Settings in the main window failed:', err))
+}

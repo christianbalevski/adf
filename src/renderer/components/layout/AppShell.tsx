@@ -26,6 +26,7 @@ import { useDragResize } from '../../hooks/useDragResize'
 import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
 import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import { isAgentWindow } from '../../utils/window-kind'
+import { AgentWindowStatus } from './AgentWindowStatus'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 const RIGHT_PANEL_MIN = 260
@@ -236,7 +237,7 @@ export function AppShell() {
                     ) : filePath ? (
                       <EditorPanel />
                     ) : isAgentWindow ? (
-                      <ViewFallback />
+                      <AgentWindowStatus />
                     ) : (
                       <HomeScreen />
                     )}

@@ -8,6 +8,7 @@ import { resolveLineage } from '../../../shared/utils/lineage'
 import { formatTokens } from './FleetTerrainNode'
 import { ACTIVITY_TYPE_MARKS, BubbleText } from './MeshGraphNode'
 import type { AgentState } from '../../../shared/types/ipc.types'
+import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
 
 /**
  * Agent readout — the full-detail answer to clicking a hover card (or the
@@ -184,6 +185,16 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           >
             Open
           </button>
+          {/* Daemon mode: the agent in its own window (agent-windows.md). */}
+          {agentWindowsAvailable && (
+            <button
+              onClick={() => openAgentWindow({ filePath: agent.filePath })}
+              className="px-3 py-1 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700 shrink-0"
+              title="Open in new window"
+            >
+              Open in new window
+            </button>
+          )}
           <button
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
