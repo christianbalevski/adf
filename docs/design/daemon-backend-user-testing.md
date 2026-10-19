@@ -721,7 +721,7 @@ Design: [settings-scopes.md](settings-scopes.md). The host and laptop of §31;
 | SCOPE-07 | R: Runtime → Networking, Identity, Compute; an agent's Identity tab Reveal; the browser viewer. | Networking: no status line, no Allowed networks, Remote access says "Change on rawl-hub.", firewall line "Change on rawl-hub.", no Agent endpoints. Identity: Owner Identity says "Change on rawl-hub." (no Back up, Import or Restore), no Agent directory URL. Reveal: "Stored on rawl-hub." Browser viewer: "Open on rawl-hub." | N/A | N/A | [ ] |
 | SCOPE-08 | Status bar in L, then R; stop the host's daemon while in R; start it again. | L: nothing next to the version. R: a remote icon and "rawl-hub", the address in the tooltip; stopped: "rawl-hub · Not connected, retrying" in the same spot, and the runtime group "Runtime · rawl-hub · Not connected, retrying" with its pages disabled and "Not connected to rawl-hub."; back: "rawl-hub". A click opens Studio → Connection. | N/A | [ ] | [ ] |
 | SCOPE-09 | Older deep links: Home's token count; the daemon failure dialog's Open Settings → Connection. | The token count opens Runtime → Usage; the dialog opens Studio → Connection. | [ ] | [ ] | [ ] |
-| SCOPE-10 | Host on an older ADF (no TXT `ts`) on one LAN and one tailnet with the laptop. | Two rows flagged "Same fingerprint at 2 addresses" (the merge needs the host's own word); after updating the host, one row. | N/A | [ ] | [ ] |
+| SCOPE-10 | Host on an older ADF (no TXT `ts`) on one LAN and one tailnet with the laptop. | Not saved: two Not paired rows, one per address (the merge needs the host's own word); saved: one row; no fingerprint warning. After updating the host, one row. | N/A | [ ] | [ ] |
 
 ---
 

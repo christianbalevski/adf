@@ -22,7 +22,7 @@ import type { ConnectionCurrent, ConnectionRow } from '../../../src/shared/types
 ;(globalThis as { React?: typeof React }).React = React
 
 const row = (over: Partial<ConnectionRow>): ConnectionRow => ({
-  id: 'local', kind: 'local', name: 'This computer', state: null, action: 'connect', url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, clash: null, removable: false, ...over,
+  id: 'local', kind: 'local', name: 'This computer', state: null, action: 'connect', url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false, ...over,
 })
 const rows = (list: ConnectionRow[]) => renderToStaticMarkup(<ConnectionRows rows={list} busy={false} onConnect={() => {}} onPair={() => {}} onRemove={() => {}} />)
 const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected', ...over })
@@ -46,10 +46,10 @@ describe('the Connection page rows', () => {
     expect(html.match(/aria-label="More"/g)).toHaveLength(2)
   })
 
-  it('a Paired row never shows Pair, even with a clash warning; the warning is plain', () => {
-    const html = rows([row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'paired', action: 'connect', fingerprint: 'ABCD-EFGH', address: '100.101.102.103', clash: 2 })])
+  it('a Paired row never shows Pair', () => {
+    const html = rows([row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'paired', action: 'connect', fingerprint: 'ABCD-EFGH', address: '100.101.102.103' })])
     expect(html).not.toContain('>Pair<')
-    expect(html).toContain('Same fingerprint at 2 addresses')
+    expect(html).not.toContain('fingerprint at')
   })
 
   it('the detail line: address, fingerprint, and Pairing open only on a row that can be paired', () => {

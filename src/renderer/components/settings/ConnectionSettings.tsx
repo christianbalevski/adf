@@ -182,7 +182,6 @@ export function ConnectionRows({ rows, busy, onConnect, onPair, onRemove }: {
                 )}
               </div>
               {detail && <div className="break-all text-[var(--adf-ui-text-muted)]">{detail}</div>}
-              {row.clash && <div className="text-[11px] text-[var(--adf-ui-danger)]">Same fingerprint at {row.clash} addresses</div>}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {row.action === 'connect' && <Button size="compact" disabled={busy} onClick={() => onConnect(row.id)}>Connect</Button>}

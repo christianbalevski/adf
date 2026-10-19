@@ -76,7 +76,7 @@ describe('adf pair never prints raw peer text', () => {
     expect(exit).toBe(1)
     const all = [...out, ...err, ...prompts].join('')
     expect(all).not.toMatch(UNSAFE)
-    expect(all).toContain('Same fingerprint at 2 addresses')
+    expect(all).not.toContain('fingerprint at')
     expect(err.join('')).toContain('Bad')
   })
 })

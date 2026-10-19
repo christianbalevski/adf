@@ -50,8 +50,6 @@ export interface ConnectionRow {
   encrypted: boolean
   /** The host has a pairing window open. */
   pairingOpen: boolean
-  /** "Same fingerprint at N addresses"; null when not. */
-  clash: number | null
   /** Remove in the row's More menu: a saved connection not in use and not saved as the next one. */
   removable: boolean
 }
