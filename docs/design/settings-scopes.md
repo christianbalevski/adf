@@ -104,12 +104,13 @@ Columns **Local** and **Remote** give editability with the local runtime and wit
 
 ```
 Studio
-  Connection       where this window's agents run
   Appearance       theme, avatars, chat width, font, scale
+  Connection       where this window's agents run
   Notifications    system notifications, menu bar icon
   Updates          check for updates, version, Check now
   Privacy          no telemetry; spell-check dictionaries (Linux)
   About
+  (Settings opens on Appearance.)
 Runtime · rawl-hub
   Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels
   Files            agents folder

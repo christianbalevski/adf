@@ -42,7 +42,7 @@ computer](#remote-computer) lists each difference.
 
 Settings has two groups (design:
 [settings-scopes.md](../design/settings-scopes.md)): **Studio**, the app on
-this computer (Connection, Appearance, Notifications, Updates, Privacy,
+this computer (Appearance, Connection, Notifications, Updates, Privacy,
 About), and **Runtime · *name***, the runtime this window uses (Prompts,
 Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files,
 Identity, Networking, Compute, Usage). *name* is "This computer", "Inside

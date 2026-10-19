@@ -1306,7 +1306,7 @@ export function SettingsPage() {
   const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  const [activeTab, setActiveTab] = useState<SettingsTab>('connection')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('appearance')
   const connection = useCurrentConnection()
   const remote = connection?.kind === 'remote'
   const runtimeName = connection?.name ?? 'the runtime'

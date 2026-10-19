@@ -29,8 +29,8 @@ export type SettingsNavGroup = {
 
 /** Studio: the app on this computer. Client keys only (client-settings-keys.ts). */
 export const STUDIO_NAV_ITEMS: SettingsNavItem[] = [
-  { id: 'connection', label: 'Connection', description: 'The runtime this window uses.', keywords: 'backend daemon embedded local remote server url token pair add connection this computer', docs: DOCS.backendConnection },
   { id: 'appearance', label: 'Appearance', description: 'Theme, avatars, chat width, font and scale.', keywords: 'theme dark light font scale avatars chat width', docs: DOCS.settingsGeneral },
+  { id: 'connection', label: 'Connection', description: 'The runtime this window uses.', keywords: 'backend daemon embedded local remote server url token pair add connection this computer', docs: DOCS.backendConnection },
   { id: 'notifications', label: 'Notifications', description: 'System notifications and the menu bar icon.', keywords: 'notifications menu bar badge', docs: DOCS.settingsGeneral },
   { id: 'updates', label: 'Updates', description: 'Version and update checks.', keywords: 'update version release check', docs: DOCS.settingsGeneral },
   { id: 'privacy', label: 'Privacy', description: 'Studio sends no telemetry.', keywords: 'privacy telemetry network spell check dictionaries', docs: DOCS.settingsGeneral },

@@ -148,7 +148,7 @@ describe('the sidebar: Studio and Runtime · <name>', () => {
   })
 
   it('Studio holds Connection, Appearance, Notifications, Updates, Privacy, About; the runtime the rest', () => {
-    expect(STUDIO_NAV_ITEMS.map((i) => i.label)).toEqual(['Connection', 'Appearance', 'Notifications', 'Updates', 'Privacy', 'About'])
+    expect(STUDIO_NAV_ITEMS.map((i) => i.label)).toEqual(['Appearance', 'Connection', 'Notifications', 'Updates', 'Privacy', 'About'])
     expect(RUNTIME_NAV_ITEMS.map((i) => i.label)).toEqual(['Prompts', 'Agent templates', 'Providers', 'Packages', 'MCP servers', 'Skills', 'Channels', 'Files', 'Identity', 'Networking', 'Compute', 'Usage'])
     // Plain nouns: no question, at most one short sentence under a title.
     for (const item of [...STUDIO_NAV_ITEMS, ...RUNTIME_NAV_ITEMS]) {
