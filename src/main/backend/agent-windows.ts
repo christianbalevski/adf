@@ -167,6 +167,8 @@ export class AgentWindows {
   private readonly windows = new Map<number, OpenWindow>()
   /** Saved windows still to reopen; null until first read from the settings. */
   private carriedList: SavedAgentWindow[] | null = null
+  /** Windows closeAll closed while the runtime was unknown: carried once it is known. */
+  private heldUntilKnown: SavedAgentWindow[] = []
   private frozen = false
   /** Bumped by closeAll and freeze: a restore in flight stops opening windows. */
   private restoreGeneration = 0
@@ -184,7 +186,10 @@ export class AgentWindows {
     const runtime = this.deps.runtime()
     // Not known yet (an unnamed remote before it connects): read once it is.
     if (runtime === null) return []
-    this.carriedList = parseSavedAgentWindows(this.deps.settings.get(AGENT_WINDOWS_KEY), runtime)
+    const saved = parseSavedAgentWindows(this.deps.settings.get(AGENT_WINDOWS_KEY), runtime)
+    const held = this.heldUntilKnown
+    this.heldUntilKnown = []
+    this.carriedList = [...held, ...saved.filter((e) => !held.some((h) => this.matches(h, e.filePath, e.agentId)))]
     return this.carriedList
   }
 
@@ -327,6 +332,8 @@ export class AgentWindows {
     this.restoreGeneration++
     const open = this.list()
     if (this.deps.runtime() !== null) this.carriedList = [...open, ...this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))]
+    // Runtime not known yet: kept here and carried, then saved, once it is.
+    else this.heldUntilKnown = [...open, ...this.heldUntilKnown.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))]
     for (const w of this.windows.values()) {
       w.keep = true
       if (!w.handle.isDestroyed()) w.handle.close()

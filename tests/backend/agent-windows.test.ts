@@ -166,6 +166,16 @@ describe('saved list', () => {
     expect(later.savedIds()).toEqual([AGENT_2, AGENT_1])
   })
 
+  it('macOS closes the agent windows while the runtime is unknown: saved once it is known', () => {
+    const { manager, windows, state, savedIds } = setup({ runtime: null, saved: savedList([AGENT_1, FILE_1]) })
+    manager.open({ filePath: FILE_2, agentId: AGENT_2 })
+    manager.closeAll()
+    expect(windows[0].closed).toBe(true)
+    state.runtime = 'local'
+    manager.freeze()
+    expect(savedIds()).toEqual([AGENT_2, AGENT_1])
+  })
+
   it('drops malformed entries and lists saved for another runtime', () => {
     const raw = { runtime: 'local', windows: [{ agentId: AGENT_1, filePath: FILE_1, bounds: { x: 1, y: 2, width: 0, height: 5 } }, { filePath: 3 }, null, { filePath: FILE_2 }] }
     expect(parseSavedAgentWindows(raw, 'local')).toEqual([{ agentId: AGENT_1, filePath: FILE_1 }, { agentId: null, filePath: FILE_2 }])

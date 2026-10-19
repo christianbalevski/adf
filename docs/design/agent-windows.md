@@ -50,7 +50,7 @@ Code: `src/main/backend/daemon-mode/index.ts` (`openWindow`, `closeWindow`, `ctx
 | `QUEUE_HANDOVER_TAKE` / `QUEUE_HANDOVER_READY` | The main window takes the queued messages closed agent windows left |
 | `MENU_ACTION_TAKE_PENDING` | The page listens for menu actions from now on; the ones sent while it loaded |
 
-- Application menu (`menu.ts` `setMenuWindowResolver`): Save acts on the focused window. Close Agent acts on the focused agent window (it closes that window), else on the main window. Every other item (New, Open, Open Recent, Track Folder, Settings) acts on the main window, creating it on macOS when there is none. An action for a page that is not listening yet waits in main until the page takes it (`deliverMenuAction`, `takePendingMenuActions`). A new page (a navigation of the main frame that is not in-page: a reload) waits again; a subframe, a `<webview>` or an in-page navigation does not. Open Recent goes through main's open-file flow.
+- Application menu (`menu.ts` `setMenuWindowResolver`): Save acts on the focused window. Close Agent acts on the focused agent window (it closes that window), else on the main window. Every other item (New, Open, Open Recent, Track Folder, Settings) acts on the main window, creating it on macOS when there is none. An action for a page that is not listening yet waits in main until the page takes it (`deliverMenuAction`, `takePendingMenuActions`). A new page waits again: only a committed main-frame navigation (`did-navigate`: a reload) is one. `did-start-navigation` also fires for a navigation main blocks in will-navigate (a link in a chat, a dropped file), which never commits; a subframe, a `<webview>` or an in-page navigation keeps the page (`tests/backend/blocked-navigation-events.test.ts`, real Electron). Open Recent goes through main's open-file flow.
 - Settings links in an agent window (identity restore banner, runtime indicator, skills, compute, the Providers jump after a sign-in failure, Ctrl+,) open Settings in the main window at that section: `useAppStore.openSettingsAt` and `setShowSettings(true)` call `WINDOW_OPEN_SETTINGS` there.
 
 ## 5. Event routing and agent window state
@@ -91,7 +91,7 @@ Code: `src/main/backend/agent-windows.ts`.
 | `404 not_found`, `400 not_an_adf`, or another agent id | Dropped |
 | Anything else (daemon away, timeout, a file it could not read) | Kept saved; not opened this time |
 
-- An unnamed remote has no runtime name until it connects (its URL is the name): while the runtime is unknown the list is neither read nor written.
+- An unnamed remote has no runtime name until it connects (its URL is the name): while the runtime is unknown the list is neither read nor written. Windows macOS closes with the main window meanwhile are kept and saved once it is known.
 - A reopened window whose open then fails stays saved unless the same check says its agent is gone; a window the owner opened whose open fails is not saved.
 - Saved bounds are used when at least 100 px of the window's title strip lie on one display; otherwise the window opens at its saved size where the system puts it.
 - An agent that already has a window is not opened twice. `closeAll` (macOS) stops a restore in flight; the next restore starts over.

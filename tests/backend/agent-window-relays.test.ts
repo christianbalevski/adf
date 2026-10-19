@@ -23,7 +23,7 @@ function fakeWindow(id: number) {
     once: (event: string, fn: (...args: unknown[]) => void) => { listeners.set(event, fn) },
   }
   const win = { isDestroyed: () => false, webContents }
-  return { win: win as unknown as Electron.BrowserWindow, webContents: webContents as unknown as Electron.WebContents, sent, navigate: (details: { isMainFrame: boolean; isSameDocument: boolean }) => listeners.get('did-start-navigation')?.(details) }
+  return { win: win as unknown as Electron.BrowserWindow, webContents: webContents as unknown as Electron.WebContents, sent, emit: (event: string) => listeners.get(event)?.() }
 }
 
 describe('menu actions for a page that is not listening yet', () => {
@@ -37,13 +37,13 @@ describe('menu actions for a page that is not listening yet', () => {
     expect(takePendingMenuActions(w.webContents)).toEqual([])
     deliverMenuAction(w.win, 'save')
     expect(w.sent).toEqual(['save'])
-    // A subframe, a <webview> page or an in-page navigation is not a new page.
-    w.navigate({ isMainFrame: false, isSameDocument: false })
-    w.navigate({ isMainFrame: true, isSameDocument: true })
+    // A navigation main blocked in will-navigate starts but never commits: not a new page.
+    w.emit('did-start-navigation')
+    w.emit('did-navigate-in-page')
     deliverMenuAction(w.win, 'close-file')
     expect(w.sent).toEqual(['save', 'close-file'])
-    // A reload is.
-    w.navigate({ isMainFrame: true, isSameDocument: false })
+    // A reload commits.
+    w.emit('did-navigate')
     deliverMenuAction(w.win, 'open-settings')
     expect(w.sent).toEqual(['save', 'close-file'])
     expect(takePendingMenuActions(w.webContents)).toEqual(['open-settings'])
