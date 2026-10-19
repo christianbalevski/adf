@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type AgentToolsResult, type DaemonClient } from '../../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../../shared/types/ipc.types'
@@ -38,6 +38,9 @@ async function revealProviderKeys(ctx: DaemonModeContext, client: DaemonClient, 
     p?.apiKey === REDACTED_API_KEY && typeof p.id === 'string' && typeof keys[p.id] === 'string' ? { ...p, apiKey: keys[p.id] } : p)
 }
 
+/** The client keys App.tsx applies to the page (theme, typeface, scale, avatars). */
+export const APPEARANCE_KEYS = ['theme', 'uiFont', 'uiFontCustom', 'uiScale', 'agentAvatars'] as const
+
 export const APP_HANDLERS: DaemonHandlerTable = {
   // --- local -----------------------------------------------------------------
   [IPC.APP_GET_VERSION]: () => app.getVersion(),
@@ -50,7 +53,8 @@ export const APP_HANDLERS: DaemonHandlerTable = {
   [IPC.TEMPLATES_MIGRATION_SEEN]: (ctx) => {
     ctx.clientSettings.set('templatesMigrationSeen', true)
   },
-  [IPC.APPROVALS_GET_PENDING_REVEAL]: (ctx) => ctx.approvals.takePendingReveal(),
+  // Per window (agent windows): a window takes only the reveal sent to it.
+  [IPC.APPROVALS_GET_PENDING_REVEAL]: (ctx, event) => ctx.approvals.takePendingReveal((event as { sender?: { id?: number } } | undefined)?.sender?.id),
   // Deprecated whole-file password changes: the same refusals as embedded, no daemon call.
   [IPC.IDENTITY_PASSWORD_SET]: () => ({ success: false, error: 'Whole-file passwords are no longer supported — use a share password instead.' }),
   [IPC.IDENTITY_PASSWORD_CHANGE]: () => ({ success: false, error: 'Whole-file passwords are no longer supported — remove the password and use a share password instead.' }),
@@ -67,7 +71,7 @@ export const APP_HANDLERS: DaemonHandlerTable = {
     return mergeSettingsViews(settings, ctx.clientSettings)
   },
 
-  [IPC.SETTINGS_SET]: async (ctx, _event, newSettings: Record<string, unknown>) => {
+  [IPC.SETTINGS_SET]: async (ctx, event, newSettings: Record<string, unknown>) => {
     const { client: clientPart, backend, unclassified } = splitSettingsPatch(newSettings ?? {})
     if (unclassified.length) {
       ctx.log.warn(`[Settings] Keys in neither settings class go to the daemon: ${unclassified.join(', ')}`)
@@ -99,6 +103,16 @@ export const APP_HANDLERS: DaemonHandlerTable = {
     }
     if (Object.keys(clientPart).length > 0) ctx.clientSettings.patch(clientPart)
     if ('menuBarEnabled' in clientPart) ctx.approvals.setMenuBarEnabled(clientPart.menuBarEnabled !== false)
+    // Appearance follows in every other window at once (agent windows, agent-windows.md).
+    const appearance = APPEARANCE_KEYS.filter((key) => key in clientPart)
+    const senderId = (event as { sender?: { id?: number } } | undefined)?.sender?.id
+    if (appearance.length > 0 && senderId !== undefined) {
+      const changed = Object.fromEntries(appearance.map((key) => [key, clientPart[key]]))
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.id === senderId) continue
+        try { win.webContents.send(IPC.APPEARANCE_CHANGED, changed) } catch { /* window going away */ }
+      }
+    }
     return { success: true }
   },
 

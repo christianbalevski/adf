@@ -13,7 +13,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 
 import { electronStub } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon, type FakeClientSession } from './daemon-mode-fakes'
-import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
+import { AGENT_SESSION_END_TIMEOUT_MS, registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { NoticeOwners, noticeWindow, type WindowView } from '../../src/main/backend/daemon-mode/windows'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import type { NotificationsSnapshot, PendingNotification } from '../../src/shared/types/ipc.types'
@@ -24,6 +24,7 @@ const AGENT_1 = '6f1c2a4e-1b3d-4c5e-8f70-9a1b2c3d4e5f'
 const AGENT_2 = '0d9e8f7a-6b5c-4d3e-9f21-0a9b8c7d6e5f'
 const FILE_1 = join(tmpdir(), 'agents', 'agent-1.adf')
 const FILE_2 = join(tmpdir(), 'agents', 'agent-2.adf')
+const FILE_1_RENAMED = join(tmpdir(), 'agents', 'agent-1 renamed.adf')
 const WINDOW = 7
 
 const samePath = (a: string | null, b: string | null): boolean => !!a && !!b && a === b
@@ -72,7 +73,7 @@ describe('daemon-mode agent windows', () => {
   let dir: string
   let handle: DaemonModeHandle
   const daemon = createFakeDaemon(BASE)
-  const holds: Record<string, string> = { [FILE_1]: AGENT_1, [FILE_2]: AGENT_2 }
+  const holds: Record<string, string> = { [FILE_1]: AGENT_1, [FILE_2]: AGENT_2, [FILE_1_RENAMED]: AGENT_1 }
   const makeSession = (id: string): FakeClientSession => {
     const s = createFakeClientSession((filePath) => holds[filePath] ?? null)
     s.holdsAvailable = true
@@ -188,21 +189,42 @@ describe('daemon-mode agent windows', () => {
     expect(handle.windows.noticeOwner('n3')).toBeNull()
   })
 
-  it('closing the window ends its session and releases its documents; its notices go to the main window', async () => {
+  it('follows its agent\'s rename through its own stream', async () => {
+    windowSessions[0].listener!.onFrame({ kind: 'push', topic: 'file_renamed', payload: { oldPath: FILE_1, newPath: FILE_1_RENAMED } })
+    expect(handle.windows.current(WINDOW)).toEqual({ filePath: FILE_1_RENAMED, agentId: AGENT_1 })
+    expect(pushesOf(windowPushes, IPC.FILE_RENAMED)).toEqual([{ oldPath: FILE_1, newPath: FILE_1_RENAMED }])
+    // A reload of the window reopens the renamed file: FILE_GET_CURRENT is its session's.
+    expect(await invoke(IPC.FILE_GET_CURRENT, WINDOW)).toEqual({ filePath: FILE_1_RENAMED, agentRunning: false })
+  })
+
+  it('closing the window ends its session (the daemon releases its documents); its notices go to the main window', async () => {
     await handle.windows.close(WINDOW)
     const win = windowSessions[0]
     expect(win.ended).toBe(true)
-    expect(win.released).toEqual([AGENT_1])
     expect(handle.windows.current(WINDOW)).toBeNull()
     expect(handle.windows.noticeOwner('n1')).toBeNull()
-    // Its calls now fall back to the main session.
-    expect(await invoke(IPC.FILE_GET_CURRENT, WINDOW)).toEqual({ filePath: null, agentRunning: false })
   })
 
-  it('a quit ends every agent window\'s session before the main session\'s quit (§8.3 counts other sessions)', async () => {
+  it('refuses calls from a closed window: they never reach the main window\'s agent', async () => {
+    expect(() => invoke(IPC.FILE_GET_CURRENT, WINDOW)).toThrow('This agent window is closed.')
+    expect(() => invoke(IPC.FILE_OPEN, WINDOW, { filePath: FILE_2 })).toThrow('This agent window is closed.')
+    expect(mainSession.held).toEqual([])
+    // A sender that never was an agent window is the main window's.
+    expect(await invoke(IPC.FILE_GET_CURRENT, 99)).toEqual({ filePath: null, agentRunning: false })
+  })
+
+  it('a quit ends every agent window\'s session before the main session\'s quit (§8.3 counts other sessions); one that does not end in time does not hold it', async () => {
     handle.windows.open({ id: 8, send: () => {}, focused: () => false })
     await invoke(IPC.FILE_OPEN, 8, { filePath: FILE_2 })
+    handle.windows.open({ id: 9, send: () => {}, focused: () => false })
+    await invoke(IPC.FILE_OPEN, 9, { filePath: FILE_1_RENAMED })
+    // Window 9's session never answers its end.
+    windowSessions[2].end = () => { order.push('s-window-3 end asked'); return new Promise(() => {}) }
+    const started = Date.now()
     await handle.shutdown()
-    expect(order).toEqual(['s-window-1 ended', 's-window-2 ended', 'main quit'])
+    expect(Date.now() - started).toBeLessThan(AGENT_SESSION_END_TIMEOUT_MS + 1_000)
+    expect(order).toEqual(['s-window-1 ended', 's-window-2 ended', 's-window-3 end asked', 'main quit'])
+    // Ending the session releases; Studio does not release each document first.
+    expect(windowSessions[1].released).toEqual([])
   })
 })

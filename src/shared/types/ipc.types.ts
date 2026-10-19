@@ -669,6 +669,17 @@ export interface ResolvedNotification extends Omit<PendingNotification, 'input'>
  * object so a window that reloads or opens late is correct after a single
  * message, with no resync protocol.
  */
+/**
+ * Queued messages of one agent loop, handed from a closing agent window to
+ * the main window, which sends them when the loop's turn ends
+ * (docs/design/agent-windows.md). Image previews (blob URLs) stay behind.
+ */
+export interface QueueHandoverEntry {
+  filePath: string
+  loop: string
+  messages: Array<{ id: string; text: string; content?: unknown[]; error?: string; failures?: number }>
+}
+
 export interface NotificationsSnapshot {
   /** Oldest first — the thing blocking longest reads first. */
   pending: PendingNotification[]

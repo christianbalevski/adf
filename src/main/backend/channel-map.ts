@@ -548,6 +548,15 @@ export const CHANNEL_MAP = {
   [IPC.NETWORK_NOTICE_DISMISS]: local('invoke', 'Not now on a notice: it goes and is not shown again this session.'),
   [IPC.NETWORK_NOTICES_CHANGED]: local('push', 'The notices list, pushed when one is shown, dismissed, allowed or withdrawn; non-modal, never a dialog.'),
   [IPC.WINDOW_OPEN_AGENT]: local('invoke', 'Registered in main/index.ts in daemon mode only: opens or focuses the agent\'s window (agent-windows.md), its own client session. Inside Studio never offers it.'),
+  [IPC.WINDOW_CLOSE]: local('invoke', 'Registered in main/index.ts in daemon mode: closes the asking agent window (Close Agent, a cancelled open); the main window is never closed this way.'),
+  [IPC.WINDOW_OPEN_FAILED]: local('invoke', 'Registered in main/index.ts in daemon mode: the asking agent window could not open its agent, so it is not saved for the next launch.'),
+  [IPC.WINDOW_OPEN_SETTINGS]: local('invoke', 'Registered in main/index.ts in daemon mode: focuses the main window and opens Settings there, at a section.'),
+  [IPC.WINDOW_STASH_DONE]: local('invoke', 'Registered in main/index.ts in daemon mode: the asking agent window kept its unsaved text before a restart.'),
+  [IPC.WINDOW_QUEUE_SYNC]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages of the asking agent window, held in main for the main window.'),
+  [IPC.QUEUE_HANDOVER_TAKE]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages of closed agent windows, taken once by the main window.'),
+  [IPC.QUEUE_HANDOVER_READY]: local('push', 'Studio main tells the main window that a closed agent window left queued messages.'),
+  [IPC.MENU_ACTION_TAKE_PENDING]: local('invoke', 'Registered in main/index.ts in daemon mode: the menu actions sent while the page loaded; the call marks the page as listening.'),
+  [IPC.APPEARANCE_CHANGED]: local('push', 'Studio main sends the appearance keys a window saved to every other window.'),
   [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------

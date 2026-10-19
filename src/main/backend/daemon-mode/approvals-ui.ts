@@ -15,7 +15,7 @@ import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../../tray/me
  *
  * Reveals (a toast or menu bar click) queue for a loading renderer, exactly
  * like embedded `sendReveal`: pushed once the page has loaded, and pulled by
- * APPROVALS_GET_PENDING_REVEAL.
+ * APPROVALS_GET_PENDING_REVEAL. The queue is per window (agent windows).
  */
 
 type ApprovalRevealPayload = { filePath?: string; notificationId?: string }
@@ -35,17 +35,19 @@ export interface ApprovalsUiDeps {
   /** The main window; default the first window. */
   mainWindow?: () => BrowserWindow | null
   /**
-   * Agent windows (agent-windows.md): the agent window that shows this
-   * request's notice, or null for the main window. A reveal goes there.
+   * Agent windows (agent-windows.md): the agent window a reveal goes to (the
+   * one that owns the request's notice, else one that shows the agent), or
+   * null for the main window.
    */
-  noticeWindow?: (notificationId: string) => BrowserWindow | null
+  revealWindow?: (payload: ApprovalRevealPayload) => BrowserWindow | null
   /** Whether the window that shows `entry`'s notice has focus (no OS notification then). Default: any window. */
   noticeFocused?: (entry: PendingNotification) => boolean
   log?: Pick<Console, 'warn'>
 }
 
 export class ApprovalsUi {
-  private pendingReveal: ApprovalRevealPayload | null = null
+  /** webContents id → the reveal its loading page has not taken yet. */
+  private readonly pendingReveals = new Map<number, ApprovalRevealPayload>()
   private pending: PendingNotification[] = []
   private readonly notifier: NativeNotifier
   private menuBar: MenuBarController | null = null
@@ -94,10 +96,12 @@ export class ApprovalsUi {
     this.menuBar?.setEnabled(enabled)
   }
 
-  /** APPROVALS_GET_PENDING_REVEAL. */
-  takePendingReveal(): ApprovalRevealPayload | null {
-    const payload = this.pendingReveal
-    this.pendingReveal = null
+  /** APPROVALS_GET_PENDING_REVEAL, for the asking window (default: the main window). */
+  takePendingReveal(windowId?: number): ApprovalRevealPayload | null {
+    const id = windowId ?? this.mainWindow()?.webContents.id
+    if (id === undefined) return null
+    const payload = this.pendingReveals.get(id) ?? null
+    this.pendingReveals.delete(id)
     return payload
   }
 
@@ -165,23 +169,25 @@ export class ApprovalsUi {
       if (win.isDestroyed() || win.webContents.isDestroyed()) return
       try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
     }
-    // The agent window that shows this request's notice (agent-windows.md).
-    const agentWin = payload.notificationId ? this.deps.noticeWindow?.(payload.notificationId) ?? null : null
+    // An agent window that owns the notice or shows the agent (agent-windows.md); the main window is left as it is.
+    const agentWin = this.deps.revealWindow?.(payload) ?? null
+    let win: BrowserWindow | null
     if (agentWin && !agentWin.isDestroyed()) {
       if (agentWin.isMinimized()) agentWin.restore()
       agentWin.focus()
       app.focus?.({ steal: true })
-      send(agentWin)
-      return
+      win = agentWin
+    } else {
+      win = this.focusMainWindow() ?? this.deps.showMainWindow?.() ?? null
     }
-    const win = this.focusMainWindow() ?? this.deps.showMainWindow?.() ?? null
     if (!win || win.isDestroyed()) return
     if (!win.webContents.isLoading()) {
       send(win)
       return
     }
-    this.pendingReveal = payload
-    win.webContents.once('did-finish-load', () => send(win))
+    const target = win
+    this.pendingReveals.set(target.webContents.id, payload)
+    target.webContents.once('did-finish-load', () => send(target))
   }
 
   private platform(): NativeNotifierPlatform {

@@ -101,6 +101,13 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.NETWORK_NOTICES_GET,
   IPC.NETWORK_NOTICE_DISMISS,
   IPC.WINDOW_OPEN_AGENT,
+  IPC.WINDOW_CLOSE,
+  IPC.WINDOW_OPEN_FAILED,
+  IPC.WINDOW_OPEN_SETTINGS,
+  IPC.WINDOW_STASH_DONE,
+  IPC.WINDOW_QUEUE_SYNC,
+  IPC.QUEUE_HANDOVER_TAKE,
+  IPC.MENU_ACTION_TAKE_PENDING,
 ]
 
 export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Connection (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
@@ -130,6 +137,11 @@ export const TURN_DISCONNECT_GRACE_MS = 15_000
  * itself after this pause, at most once per window below (a daemon that
  * keeps dying is then left to the user's "Start the ADF Daemon").
  */
+/** How long a restart waits for each agent window to keep its unsaved text. */
+export const AGENT_WINDOW_STASH_WAIT_MS = 5_000
+/** How long ending one agent window's session may take; the main session's quit request follows within the quit budget. */
+export const AGENT_SESSION_END_TIMEOUT_MS = 1_500
+
 export const DAEMON_RESPAWN_DELAY_MS = 2_000
 export const DAEMON_RESPAWN_WINDOW_MS = 10 * 60_000
 
@@ -249,6 +261,8 @@ export interface DaemonWindows {
   runtime(): string
   /** The webContents id of the agent window that shows this request's notice, or null (the main window). */
   noticeOwner(notificationId: string): number | null
+  /** The agent window kept its unsaved editor text (answer to the `stash-edits` menu action). */
+  stashed(id: number): void
 }
 
 /** The daemon's remote-access management routes (remote-access.md §11.2). */
@@ -509,12 +523,16 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     return owner === null ? null : windowSessions.get(owner) ?? null
   }
 
+  const browserWindowOf = (id: number): BrowserWindow | null =>
+    BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.webContents.id === id) ?? null
+
   const approvals = new ApprovalsUi({
     mainWindow: firstWindow,
-    noticeWindow: (notificationId) => {
-      const w = agentWindowOf(notificationId)
-      if (!w) return null
-      return BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.webContents.id === w.id) ?? null
+    // The agent window that owns the notice, else one that shows the agent: the main window stays where it is.
+    revealWindow: ({ notificationId, filePath }) => {
+      const owner = notificationId ? agentWindowOf(notificationId) : null
+      const showing = owner ?? (filePath ? [...windowSessions.values()].find((w) => w.session.samePath(w.session.filePath, filePath)) ?? null : null)
+      return showing ? browserWindowOf(showing.id) : null
     },
     noticeFocused: (entry) => {
       const owner = noticeOwners.owner(entry.id)
@@ -588,16 +606,31 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
    */
   const restartKeepingEdits = (kind: 'reconnect' | 'embedded-session', reason: string): void => {
     const restart = () => kind === 'reconnect' ? relaunch.reconnect(reason) : relaunch.embeddedForSession(reason)
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && !w.webContents.isDestroyed())
-    if (!win) { restart(); return }
-    log.log(`[Backend] Asking the window to keep its unsaved editor text as recovery copies, then restarting (${reason})`)
-    win.webContents.send(IPC.MENU_ACTION, kind === 'reconnect' ? 'stash-edits-and-reconnect' : 'stash-edits-and-use-embedded')
-    const fallback = setTimeout(() => {
-      log.warn('[Backend] The window did not restart Studio after keeping its unsaved text; restarting now')
-      restart()
-    }, deps.stashWaitMs ?? 15_000)
-    fallback.unref?.()
+    // Agent windows keep theirs first (agent-windows.md); the main window then restarts.
+    void stashAgentWindows().then(() => {
+      const win = firstWindow()
+      if (!win || win.isDestroyed() || win.webContents.isDestroyed()) { restart(); return }
+      log.log(`[Backend] Asking the window to keep its unsaved editor text as recovery copies, then restarting (${reason})`)
+      win.webContents.send(IPC.MENU_ACTION, kind === 'reconnect' ? 'stash-edits-and-reconnect' : 'stash-edits-and-use-embedded')
+      const fallback = setTimeout(() => {
+        log.warn('[Backend] The window did not restart Studio after keeping its unsaved text; restarting now')
+        restart()
+      }, deps.stashWaitMs ?? 15_000)
+      fallback.unref?.()
+    })
   }
+  /** Each agent window keeps its unsaved editor text as recovery copies (`stash-edits`, answered by WINDOW_STASH_DONE). */
+  const stashWaits = new Map<number, () => void>()
+  const stashAgentWindows = (): Promise<void> => Promise.all([...windowSessions.values()].map((w) => new Promise<void>((done) => {
+    const timer = setTimeout(() => {
+      log.warn(`[Backend] Agent window ${w.id} did not keep its unsaved text in time; restarting without it`)
+      finish()
+    }, AGENT_WINDOW_STASH_WAIT_MS)
+    timer.unref?.()
+    const finish = (): void => { clearTimeout(timer); stashWaits.delete(w.id); done() }
+    stashWaits.set(w.id, finish)
+    w.target.send(IPC.MENU_ACTION, 'stash-edits')
+  }))).then(() => {})
   /**
    * After the connection failed during this session (a client session had
    * opened: documents may be open), a restart is confirmed first. A launch
@@ -1010,7 +1043,16 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     }
     const s = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) }, deps.mode === 'remote')
     const b = new BackgroundEventBatcher((events) => out.send(IPC.BACKGROUND_AGENT_EVENT_BATCH, events))
-    const br = new EventBridge({ session: s, output: remoteBrowserSession(out, false), batcher: b, client: () => connection.current, trackCreatedFiles: false, log })
+    const br = new EventBridge({
+      session: s,
+      output: remoteBrowserSession(out, false),
+      batcher: b,
+      client: () => connection.current,
+      trackCreatedFiles: false,
+      // The window follows its agent's file (a rename, a relocate).
+      onFileRenamed: (oldPath, newPath) => s.rekey(oldPath, newPath),
+      log,
+    })
     const w = { id: target.id, target, session: s, bridge: br, batcher: b, client: null, closed: false } as Omit<WindowSession, 'ready' | 'ctx'> as WindowSession
     w.ready = started.then(async (client) => {
       if (w.closed) throw new Error('The window closed')
@@ -1048,30 +1090,48 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log.log(`[Backend] Agent window ${target.id} opened: it gets its own client session`)
   }
 
+  /** Agent windows that closed (or are closing): their calls are refused, never served by the main window's session. */
+  const closedWindows = new Set<number>()
   const closeWindow = async (id: number): Promise<void> => {
     const w = windowSessions.get(id)
     if (!w) return
     windowSessions.delete(id)
+    closedWindows.add(id)
     w.closed = true
+    stashWaits.get(id)?.()
     // Its pending notices are the main window's now: still listed there, never lost.
     const main = firstWindow()
     noticeOwners.moveTo(id, main && !main.isDestroyed() ? main.webContents.id : null)
     w.bridge.dispose()
     w.batcher.dispose()
+    // Ending the session releases its documents in the daemon (D5.1); bounded, so a quit stays in its budget.
     try {
-      await w.session.releaseAll()
-      await w.client?.end()
-      log.log(`[Backend] Agent window ${id} closed: its documents are released and its client session ended`)
+      const end = w.client?.end() ?? Promise.resolve()
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const timedOut = await Promise.race([
+        end.then(() => false),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), AGENT_SESSION_END_TIMEOUT_MS); timer.unref?.() }),
+      ])
+      if (timer) clearTimeout(timer)
+      if (timedOut) log.warn(`[Backend] Agent window ${id}: its client session did not end within ${AGENT_SESSION_END_TIMEOUT_MS} ms; the daemon expires it`)
+      else log.log(`[Backend] Agent window ${id} closed: its client session ended`)
     } catch (err) {
       log.warn(`[Backend] Agent window ${id}: ending its client session failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  /** The handler context of an IPC call: its sender's window, else the main window's. */
-  const ctxFor = (event: { sender?: { id?: number } } | undefined): DaemonModeContext => {
+  /**
+   * The handler context of an IPC call: its sender's window; the main
+   * window's for a sender never registered as an agent window; null for an
+   * agent window that closed (its page may still run while it goes).
+   */
+  const ctxFor = (event: { sender?: { id?: number } } | undefined): DaemonModeContext | null => {
     const id = event?.sender?.id
-    return (id !== undefined && windowSessions.get(id)?.ctx) || ctx
+    if (id === undefined) return ctx
+    if (closedWindows.has(id)) return null
+    return windowSessions.get(id)?.ctx ?? ctx
   }
+  const closedWindowError = (): Error => new Error('This agent window is closed.')
 
   const registered: MappedChannel[] = []
   const pending: Array<{ channel: MappedChannel; workstream: string }> = []
@@ -1080,7 +1140,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     if (entry.kind === 'send') {
       const sendHandler = DAEMON_MODE_SEND_HANDLERS[channel]
       if (sendHandler) {
-        ipc.on(channel, (event, ...args) => sendHandler(ctxFor(event), event as Electron.IpcMainEvent, ...args))
+        ipc.on(channel, (event, ...args) => {
+          const c = ctxFor(event)
+          if (c) sendHandler(c, event as Electron.IpcMainEvent, ...args)
+        })
         registered.push(channel)
         continue
       }
@@ -1096,7 +1159,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     // Remote mode: the remote variant first (remote/handlers.ts), else the shared one.
     const handler = (deps.mode === 'remote' ? REMOTE_MODE_HANDLERS[channel] : undefined) ?? DAEMON_MODE_HANDLERS[channel]
     if (handler) {
-      ipc.handle(channel, (event, ...args) => handler(ctxFor(event), event, ...args))
+      ipc.handle(channel, (event, ...args) => {
+        const c = ctxFor(event)
+        if (!c) throw closedWindowError()
+        return handler(c, event, ...args)
+      })
     } else {
       const workstream = pendingWorkstream(channel)
       let warned = false
@@ -1267,6 +1334,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       },
       runtime: () => deps.mode === 'local' ? 'local' : `remote:${deps.runtimeName?.() || connection.baseUrl || ''}`,
       noticeOwner: (notificationId) => agentWindowOf(notificationId)?.id ?? null,
+      stashed: (id) => { stashWaits.get(id)?.() },
     },
   }
 }

@@ -42,10 +42,11 @@ import {
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
 import { processAgentLeases } from './runtime/agent-lease'
 import type { StudioBackendMode } from '../shared/types/backend.types'
-import { AgentWindows, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
+import { AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
+import { QueueHandover } from './backend/queue-handover'
 import { ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
 import { samePath } from './backend/daemon-mode/session'
-import { setMenuWindowResolver } from './menu'
+import { deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -133,6 +134,8 @@ let daemonMode: DaemonModeHandle | null = null
 let embeddedIpc: EmbeddedIpc | null = null
 // Daemon mode only: Open in new window (docs/design/agent-windows.md).
 let agentWindows: AgentWindows | null = null
+// Queued messages of agent windows, handed to the main window when one closes.
+const queueHandover = new QueueHandover()
 // Set when Settings → Connection confirmed a switch: the quit that follows is a restart into it.
 let switchingTo: StudioBackendMode | null = null
 // Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
@@ -472,7 +475,7 @@ function createWindow(): BrowserWindow {
     // Agent windows close with it (agent-windows.md): Windows/Linux quit
     // (window-all-closed does not fire while they are open); macOS closes
     // them and keeps them saved, so the main window reopens them.
-    if (agentWindows && agentWindows.list().length > 0) {
+    if (agentWindows && agentWindows.count > 0) {
       if (process.platform === 'darwin') agentWindows.closeAll()
       else app.quit()
     }
@@ -511,14 +514,13 @@ function loadRenderer(win: BrowserWindow, query: Record<string, string>): void {
  * call it makes is served by it; it ends when the window closes.
  */
 function createAgentWindow(
-  request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds },
+  request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean },
   events: { closed(): void; moved(): void },
 ): AgentWindowHandle {
-  const bounds = request.bounds && screen.getAllDisplays().some((d) => {
-    const a = d.workArea
-    const b = request.bounds!
-    return b.x < a.x + a.width && b.x + b.width > a.x && b.y < a.y + a.height && b.y + 40 > a.y
-  }) ? request.bounds : request.bounds ? { width: request.bounds.width, height: request.bounds.height } : undefined
+  // Saved bounds whose title strip is off every display: the saved size only.
+  const bounds = !request.bounds ? undefined
+    : titleStripVisible(request.bounds, screen.getAllDisplays().map((d) => d.workArea)) ? request.bounds
+      : { width: request.bounds.width, height: request.bounds.height }
   const win = new BrowserWindow({
     width: 1000,
     height: 820,
@@ -537,11 +539,14 @@ function createAgentWindow(
     },
     focused: () => !win.isDestroyed() && win.isFocused(),
   })
-  win.once('ready-to-show', () => win.show())
+  // A restored window opens behind the main window, which keeps the focus.
+  win.once('ready-to-show', () => { if (request.restored) win.showInactive(); else win.show() })
   win.on('session-end', handleSessionEnd)
   win.on('closed', () => {
     console.log(`[App] Agent window closed: ${request.filePath}`)
     void daemonMode?.windows.close(id)
+    // Messages it still had queued go to the main window, which sends them when the turn ends.
+    if (queueHandover.closed(id)) notifyQueueHandover()
     events.closed()
   })
   win.on('moved', () => events.moved())
@@ -557,6 +562,13 @@ function createAgentWindow(
     getBounds: () => win.getBounds(),
     close: () => { if (!win.isDestroyed()) win.close() },
   }
+}
+
+/** The main window: a closed agent window left queued messages (it takes them with QUEUE_HANDOVER_TAKE, also on load). */
+function notifyQueueHandover(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+  console.log(`[App] An agent window closed with queued messages: ${queueHandover.waiting} handed to the main window`)
+  mainWindow.webContents.send(IPC.QUEUE_HANDOVER_READY)
 }
 
 /** What every Studio window registers: webview and navigation rules, renderer log, fullscreen and title bar colours. */
@@ -756,23 +768,47 @@ app.whenReady().then(async () => {
       settings: handle.clientSettings,
       runtime: () => handle.windows.runtime(),
       // The file is there and is still the same agent (GET /files/agent/config answers its config.id).
-      exists: async (entry) => {
-        const client = await handle.client()
-        try {
-          const found = await client.request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: entry.filePath } })
-          return !entry.agentId || found.agentId === entry.agentId
-        } catch {
-          return false
-        }
-      },
+      check: async (entry) => checkSavedAgent(entry, async (filePath) =>
+        (await handle.client()).request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: filePath } })),
     })
     // adf-file:// requests name their window, so an agent window's images come from its agent (agent-windows.md).
     session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
       if (!details.url.startsWith('adf-file:')) { callback({}); return }
       callback({ requestHeaders: { ...details.requestHeaders, [ADF_WINDOW_HEADER]: String(details.webContentsId ?? '') } })
     })
-    // Save acts on the window in front; every other menu item on the main window.
-    setMenuWindowResolver((action) => action === 'save' ? BrowserWindow.getFocusedWindow() : showMainWindow())
+    // Save and Close Agent act on the window in front; every other menu item on the main window.
+    setMenuWindowResolver((action) => {
+      const focused = BrowserWindow.getFocusedWindow()
+      if (action === 'save') return focused ?? showMainWindow()
+      if (action === 'close-file' && focused && focused !== mainWindow) return focused
+      return showMainWindow()
+    }, requestOpenFile)
+    const agentWindowOf = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): BrowserWindow | null => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      return win && win !== mainWindow && agentWindows?.has(event.sender.id) ? win : null
+    }
+    ipcMain.handle(IPC.MENU_ACTION_TAKE_PENDING, (event) => takePendingMenuActions(event.sender))
+    // Close Agent, or a cancelled open, in an agent window closes that window; never the main window.
+    ipcMain.handle(IPC.WINDOW_CLOSE, (event) => {
+      const win = agentWindowOf(event)
+      if (!win) return { success: false }
+      win.close()
+      return { success: true }
+    })
+    ipcMain.handle(IPC.WINDOW_OPEN_FAILED, (event) => { agentWindows?.openFailed(event.sender.id) })
+    // Settings live in the main window: an agent window's Settings links open them there.
+    ipcMain.handle(IPC.WINDOW_OPEN_SETTINGS, (_event, request?: { section?: unknown; anchor?: unknown }) => {
+      const win = showMainWindow()
+      if (!win) return
+      if (win.isMinimized()) win.restore()
+      win.focus()
+      const section = typeof request?.section === 'string' ? request.section : ''
+      const anchor = typeof request?.anchor === 'string' ? request.anchor : ''
+      deliverMenuAction(win, section ? `open-settings-at:${section}${anchor ? `#${anchor}` : ''}` : 'open-settings')
+    })
+    ipcMain.handle(IPC.WINDOW_STASH_DONE, (event) => { handle.windows.stashed(event.sender.id) })
+    ipcMain.handle(IPC.WINDOW_QUEUE_SYNC, (event, entries: unknown) => { queueHandover.mirror(event.sender.id, entries) })
+    ipcMain.handle(IPC.QUEUE_HANDOVER_TAKE, (event) => (event.sender === mainWindow?.webContents ? queueHandover.take() : []))
     // Open in new window. Inside Studio registers no handler: its renderer never offers it.
     const windows = agentWindows
     ipcMain.handle(IPC.WINDOW_OPEN_AGENT, (_event, request?: { filePath?: unknown; agentId?: unknown; name?: unknown }) => {
