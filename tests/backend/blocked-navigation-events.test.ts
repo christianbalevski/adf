@@ -12,14 +12,15 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const electronPath = createRequire(import.meta.url)('electron') as unknown as string
+// A CI job that installs without the Electron binary (verify) has no path: skipped there.
+const electronPath = ((): string | null => { try { return createRequire(import.meta.url)('electron') as unknown as string } catch { return null } })()
 const headless = process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY
 
 describe.skipIf(headless || typeof electronPath !== 'string')('navigation events (real Electron)', () => {
   it('a blocked navigation starts but never commits; an in-page one does not commit; a reload commits', () => {
     const env = { ...process.env }
     delete env.ELECTRON_RUN_AS_NODE
-    const run = spawnSync(electronPath, [join(__dirname, '..', 'electron', 'blocked-navigation-events.cjs')], { env, encoding: 'utf8', timeout: 40_000, windowsHide: true })
+    const run = spawnSync(electronPath!, [join(__dirname, '..', 'electron', 'blocked-navigation-events.cjs')], { env, encoding: 'utf8', timeout: 40_000, windowsHide: true })
     const line = `${run.stdout}`.split('\n').find((l) => l.startsWith('RESULT '))
     expect(line, `no result from Electron (exit ${run.status}): ${run.stderr}`).toBeTruthy()
     const result = JSON.parse(line!.slice('RESULT '.length)) as { ok: boolean; message?: string; events: Array<{ phase: string; event: string; isMainFrame?: boolean; isSameDocument?: boolean }> }

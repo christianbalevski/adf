@@ -11,14 +11,15 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const electronPath = createRequire(import.meta.url)('electron') as unknown as string
+// A CI job that installs without the Electron binary (verify) has no path: skipped there.
+const electronPath = ((): string | null => { try { return createRequire(import.meta.url)('electron') as unknown as string } catch { return null } })()
 const headless = process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY
 
 describe.skipIf(headless || typeof electronPath !== 'string')('adf-file:// window header (real Electron)', () => {
   it('each window\'s image request carries that window\'s webContents id', () => {
     const env = { ...process.env }
     delete env.ELECTRON_RUN_AS_NODE
-    const run = spawnSync(electronPath, [join(__dirname, '..', 'electron', 'adf-file-window-header.cjs')], { env, encoding: 'utf8', timeout: 40_000, windowsHide: true })
+    const run = spawnSync(electronPath!, [join(__dirname, '..', 'electron', 'adf-file-window-header.cjs')], { env, encoding: 'utf8', timeout: 40_000, windowsHide: true })
     const line = `${run.stdout}`.split('\n').find((l) => l.startsWith('RESULT '))
     expect(line, `no result from Electron (exit ${run.status}): ${run.stderr}`).toBeTruthy()
     const result = JSON.parse(line!.slice('RESULT '.length)) as { ok: boolean; message?: string; ids: number[]; seen: Array<{ url: string; window: string | null }> }
