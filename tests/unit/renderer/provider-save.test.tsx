@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { providerSaveFailure, saveErrorMessage, saveProviderList } from '../../../src/renderer/components/providers/provider-save'
+import { providerSaveFailure, rebaseProviderList, saveErrorMessage, saveProviderList } from '../../../src/renderer/components/providers/provider-save'
 import { ProvidersPanel } from '../../../src/renderer/components/providers/ProvidersPanel'
 import type { ProviderConfig } from '../../../src/shared/types/ipc.types'
 
@@ -55,5 +55,25 @@ describe('a refused providers save', () => {
     )
     expect(html).toContain(`Not saved: ${LOCKED.replace(/"/g, '&quot;')}`)
     expect(html.match(/Not saved:/g)).toHaveLength(1)
+  })
+})
+
+describe('a providers save from one window, with a change from another window stored meanwhile (agent windows)', () => {
+  const saved = { providers: [provider('p1'), provider('p2')], defaultProviderId: 'p1' }
+
+  it('keeps what the other window added; applies the change and the removal made here', () => {
+    const attempted = { providers: [provider('p1', { name: 'mine' }), provider('p3')], defaultProviderId: 'p1' }
+    const latest = { providers: [provider('p1'), provider('p2', { name: 'theirs' }), provider('p4')], defaultProviderId: 'p1' }
+    // p2 was removed here, but the other window changed it: the removal is this window's, so it goes.
+    expect(rebaseProviderList(saved, attempted, latest)).toEqual({ providers: [provider('p1', { name: 'mine' }), provider('p4'), provider('p3')], defaultProviderId: 'p1' })
+  })
+
+  it('an unchanged list writes back the stored one; the default moves only when this window moved it', () => {
+    const latest = { providers: [provider('p1'), provider('p2'), provider('p4')], defaultProviderId: 'p4' }
+    expect(rebaseProviderList(saved, saved, latest)).toEqual(latest)
+    expect(rebaseProviderList(saved, { ...saved, defaultProviderId: 'p2' }, latest).defaultProviderId).toBe('p2')
+    // A default whose provider is gone falls back to the first.
+    expect(rebaseProviderList(saved, { providers: [provider('p2')], defaultProviderId: 'p1' }, { providers: [provider('p1'), provider('p2')], defaultProviderId: 'p1' }))
+      .toEqual({ providers: [provider('p2')], defaultProviderId: 'p2' })
   })
 })

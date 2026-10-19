@@ -53,3 +53,30 @@ export async function saveProviderList(
     return { saved: false, failure: providerSaveFailure(saved, attempted, message) }
   }
 }
+
+/**
+ * This window's edit of the providers list, applied to the list stored now
+ * (`latest`), so a save never drops what another window changed meanwhile
+ * (agent windows, docs/design/agent-windows.md): providers this window
+ * changed or added since `saved` take its version, ones it removed go, and
+ * every other provider is the stored one. The default moves only when this
+ * window moved it.
+ */
+export function rebaseProviderList(saved: ProviderListSnapshot, attempted: ProviderListSnapshot, latest: ProviderListSnapshot): ProviderListSnapshot {
+  const before = new Map(saved.providers.map((p) => [p.id, JSON.stringify(p)]))
+  const mine = new Map(attempted.providers.map((p) => [p.id, p]))
+  const changed = (id: string): boolean => {
+    const p = mine.get(id)
+    return !!p && before.get(id) !== JSON.stringify(p)
+  }
+  const providers = latest.providers
+    .filter((p) => !(before.has(p.id) && !mine.has(p.id)))
+    .map((p) => (changed(p.id) ? mine.get(p.id)! : p))
+  for (const p of attempted.providers) {
+    if (!providers.some((q) => q.id === p.id) && (changed(p.id) || !before.has(p.id))) providers.push(p)
+  }
+  const movedDefault = (saved.defaultProviderId ?? '') !== (attempted.defaultProviderId ?? '')
+  let defaultProviderId = movedDefault ? attempted.defaultProviderId : latest.defaultProviderId
+  if (defaultProviderId && !providers.some((p) => p.id === defaultProviderId)) defaultProviderId = providers[0]?.id
+  return { providers, defaultProviderId }
+}

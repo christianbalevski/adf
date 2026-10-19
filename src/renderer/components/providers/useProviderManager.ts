@@ -4,7 +4,7 @@ import { isSubscriptionType, nextProviderName, type ProviderCatalogEntry } from 
 import type { ModelListState, SubscriptionAuthState } from './ProviderModal'
 import { generateProviderId, type ProviderTestStatus } from './provider-status'
 import { countOverrides } from './override-utils'
-import type { ProviderSaveFailure } from './provider-save'
+import { rebaseProviderList, type ProviderSaveFailure } from './provider-save'
 import type { ClaudeAuthStatusView } from '../../../preload/api'
 
 export interface ProviderManagerInput {
@@ -255,7 +255,10 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     // here: the form's open effect immediately asks main for models, and
     // main reads providers from settings on disk, not from renderer state.
     try {
-      await window.adfApi?.setSettings({ providers: next, defaultProviderId: nextDefault })
+      // Onto the list stored now: another window's change is kept (agent windows).
+      const s = await window.adfApi?.getSettings()
+      const merged = rebaseProviderList({ providers: current, defaultProviderId }, { providers: next, defaultProviderId: nextDefault }, { providers: s?.providers ?? current, defaultProviderId: s ? s.defaultProviderId || undefined : defaultProviderId })
+      await window.adfApi?.setSettings({ providers: merged.providers, defaultProviderId: merged.defaultProviderId ?? '' })
     } catch {
       // The caller's debounced save still lands a moment later.
     }

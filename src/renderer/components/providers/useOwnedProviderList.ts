@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
-import { saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from './provider-save'
+import { rebaseProviderList, saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from './provider-save'
 
 const SAVE_DEBOUNCE_MS = 250
 
@@ -51,12 +51,24 @@ export function useOwnedProviderList() {
     if (!loadedRef.current || !dirtyRef.current) return
     const attempted = latest.current
     dirtyRef.current = false
+    // Onto the list stored now: another window's change is kept (agent windows).
+    let toWrite: ProviderListSnapshot = attempted
+    try {
+      const s = await window.adfApi.getSettings()
+      toWrite = rebaseProviderList(savedRef.current, attempted, { providers: s.providers ?? [], defaultProviderId: s.defaultProviderId || undefined })
+    } catch { /* this window's list as it is */ }
     const result = await saveProviderList(
-      () => window.adfApi.setSettings({ providers: attempted.providers, defaultProviderId: attempted.defaultProviderId ?? '' }),
-      savedRef.current, attempted,
+      () => window.adfApi.setSettings({ providers: toWrite.providers, defaultProviderId: toWrite.defaultProviderId ?? '' }),
+      savedRef.current, toWrite,
     )
-    if (result.saved) savedRef.current = attempted
-    else dirtyRef.current = true
+    if (result.saved) {
+      savedRef.current = toWrite
+      // Show the other window's changes too, unless the owner edited again meanwhile.
+      if (latest.current.providers === attempted.providers && latest.current.defaultProviderId === attempted.defaultProviderId && JSON.stringify(toWrite) !== JSON.stringify(attempted)) {
+        setProvidersState(toWrite.providers)
+        setDefaultProviderIdState(toWrite.defaultProviderId)
+      }
+    } else dirtyRef.current = true
     setSaveFailure(result.failure)
   }, [])
 
