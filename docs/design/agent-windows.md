@@ -35,7 +35,7 @@ Code: `src/main/backend/daemon-mode/index.ts` (`openWindow`, `closeWindow`, `ctx
 ## 4. IPC routing
 
 - Every daemon-mode `invoke` and `send` handler is registered once. The registered function looks up `event.sender.id` (`ctxFor`): an agent window gets its own context; a closed agent window's invoke is refused ("This agent window is closed.") and its send is dropped; any other sender gets the main context. Handlers are unchanged.
-- `adf-file://` requests: `protocol.handle` has no window. In daemon mode `session.defaultSession.webRequest.onBeforeSendHeaders` adds `X-ADF-Window: <webContentsId>` to each `adf-file:` request; the handler serves the file from that window's agent (`createAdfFileHandler` `sessionFor`). The header is always overwritten, so a page cannot name another window. `tests/backend/adf-file-window-header.test.ts` checks the Electron behaviour this relies on with the real Electron binary.
+- `adf-file://` requests: `protocol.handle` has no window. In daemon mode `session.defaultSession.webRequest.onBeforeSendHeaders` adds `X-ADF-Window: <webContentsId>` to each `adf-file:` request; the handler serves the file from that window's agent (`createAdfFileHandler` `sessionFor`). The header is always overwritten, so a page cannot name another window. The scheme privileges, the request filter and the header name are in `adf-file-window.json`, read by main and by `tests/electron/adf-file-window-header.cjs`, which `tests/backend/adf-file-window-header.test.ts` runs with the real Electron binary to check the behaviour this relies on.
 - `APP_GET_FULLSCREEN` and `APP_SET_FULLSCREEN` act on the sender's window. `APPROVALS_GET_PENDING_REVEAL` answers the sender's own pending reveal.
 - Channels registered in `main/index.ts`, daemon mode only:
 
@@ -50,7 +50,7 @@ Code: `src/main/backend/daemon-mode/index.ts` (`openWindow`, `closeWindow`, `ctx
 | `QUEUE_HANDOVER_TAKE` / `QUEUE_HANDOVER_READY` | The main window takes the queued messages closed agent windows left |
 | `MENU_ACTION_TAKE_PENDING` | The page listens for menu actions from now on; the ones sent while it loaded |
 
-- Application menu (`menu.ts` `setMenuWindowResolver`): Save acts on the focused window. Close Agent acts on the focused agent window (it closes that window), else on the main window. Every other item (New, Open, Open Recent, Track Folder, Settings) acts on the main window, creating it on macOS when there is none. An action for a page that is not listening yet waits in main until the page takes it (`deliverMenuAction`, `takePendingMenuActions`); a reload waits again. Open Recent goes through main's open-file flow.
+- Application menu (`menu.ts` `setMenuWindowResolver`): Save acts on the focused window. Close Agent acts on the focused agent window (it closes that window), else on the main window. Every other item (New, Open, Open Recent, Track Folder, Settings) acts on the main window, creating it on macOS when there is none. An action for a page that is not listening yet waits in main until the page takes it (`deliverMenuAction`, `takePendingMenuActions`). A new page (a navigation of the main frame that is not in-page: a reload) waits again; a subframe, a `<webview>` or an in-page navigation does not. Open Recent goes through main's open-file flow.
 - Settings links in an agent window (identity restore banner, runtime indicator, skills, compute, the Providers jump after a sign-in failure, Ctrl+,) open Settings in the main window at that section: `useAppStore.openSettingsAt` and `setShowSettings(true)` call `WINDOW_OPEN_SETTINGS` there.
 
 ## 5. Event routing and agent window state
@@ -61,7 +61,7 @@ Code: `src/main/backend/daemon-mode/index.ts` (`openWindow`, `closeWindow`, `ctx
 - Connection events reach every session: a reconnect, resume, revive or listener check re-dials every stream (`reconnectStreams`); a failed connection, the disconnect grace period or a daemon exit ends every window's waiting chats (`failAllTurns`); a reconnect rechecks every window's ended chats. The connection state is the main stream's.
 - Opening: the page opens the file its session has open (FILE_GET_CURRENT; after a reload, the renamed file), else the file of its page query (`window=agent&file=<path>`). Opening any other agent from inside it opens that agent's window instead (`useAdfFile.openFile`). Closing its agent (Close Agent; Cancel on the password, owner or review dialog) closes the window (`useAdfFile.closeFile`).
 - An open that is refused, rejects, or leaves no file shows "The agent did not open." with the reason, **Retry** and **Close window** (`AgentWindowStatus`), and tells main (`WINDOW_OPEN_FAILED`): such a window is not saved for the next launch until an open succeeds.
-- Queued messages: a message typed while a loop is mid-turn waits in the window's queue. An agent window mirrors its queues to main on every change (`WINDOW_QUEUE_SYNC`, `queue-handover.ts`). When it closes, what it still held goes to the main window (`QUEUE_HANDOVER_READY`, then `QUEUE_HANDOVER_TAKE`; also taken when the main window's page loads, for macOS without a main window). The main window adds them after its own queue for that loop and sends them when the loop's turn ends, as for any agent in the background; a loop that is idle already gets them at once, an agent that is off keeps them until it starts. Image previews stay behind; the message content goes.
+- Queued messages: a message typed while a loop is mid-turn waits in the window's queue. An agent window mirrors its queues to main on every change (`WINDOW_QUEUE_SYNC`, `queue-handover.ts`). When it closes, what it still held goes to the main window (`QUEUE_HANDOVER_READY`, then `QUEUE_HANDOVER_TAKE`; also taken when the main window's page loads, for macOS without a main window). The main window adds them after its own queue for that loop and sends them when the loop's turn ends, as for any agent in the background; a loop that is idle already gets them at once, an agent that is off keeps them until it starts. Image previews stay behind; the message content goes. A reloaded agent window (or one whose renderer crashed) first takes back the queue main holds for it (`WINDOW_QUEUE_GET`) and only then mirrors again, so its new, empty page never replaces main's copy. The mirror sends when the queues change (or the open file that names them), not on every document change.
 - Restart after a failed connection: every agent window first keeps its unsaved editor text as recovery copies (`stash-edits`, answered by `WINDOW_STASH_DONE`, at most 5 s each), then the main window does the same and restarts Studio. The next launch lists all copies in the main window.
 
 ## 6. Approvals and notifications
@@ -91,6 +91,8 @@ Code: `src/main/backend/agent-windows.ts`.
 | `404 not_found`, `400 not_an_adf`, or another agent id | Dropped |
 | Anything else (daemon away, timeout, a file it could not read) | Kept saved; not opened this time |
 
+- An unnamed remote has no runtime name until it connects (its URL is the name): while the runtime is unknown the list is neither read nor written.
+- A reopened window whose open then fails stays saved unless the same check says its agent is gone; a window the owner opened whose open fails is not saved.
 - Saved bounds are used when at least 100 px of the window's title strip lie on one display; otherwise the window opens at its saved size where the system puts it.
 - An agent that already has a window is not opened twice. `closeAll` (macOS) stops a restore in flight; the next restore starts over.
 
@@ -102,7 +104,7 @@ Code: `src/main/backend/agent-windows.ts`.
 | Agent window closed | Its session ends (the daemon releases its documents); its queued messages go to the main window; it leaves the saved list |
 | Main window closed, Windows and Linux | Studio quits, as today; agent windows close with it and stay saved |
 | Main window closed, macOS | Studio stays open, as today; agent windows close and stay saved; reopening the main window (Dock) reopens them |
-| Quit | The list is frozen and written; agent sessions end (bounded) before the main session's quit request, so the daemon's "no other client session" rule (§8.3) sees only Studio's main session |
+| Quit | The list is frozen and written; agent sessions end before the main session's quit request, so the daemon's "no other client session" rule (§8.3) sees only Studio's main session. Each end waits at most 1.5 s. If one has not ended by then, the quit request finds it open: with `keepDaemonRunning` off the daemon holds the stop (`holdForQuit`) and stops when that session ends, either its late DELETE or its expiry 60 s after its stream closed (D5.1). The daemon still stops; a switch to Inside Studio in that case does not wait for it, and embedded Studio reports an agent the daemon still runs as running in the daemon, as after any held stop. |
 | Windows logoff | Same as quit, fast path |
 | Remote runtime | Same as Local; all sessions use the one connection. A 401 ends every session |
 
@@ -113,5 +115,5 @@ Not offered. The main window's page has no `agentWindows=1` query, so the menu i
 ## 10. Known limits
 
 - Several runtimes at once is step 2.
-- Two windows that save the providers list at the same moment: each save is applied onto the list stored when it starts (`rebaseProviderList`), so a change made earlier in another window is kept; two saves in flight together can still race.
+- Settings writes the providers list (and the default), MCP servers and channel adapters whole. Every such save, the provider setup dialog's and the picker's too, is applied onto the lists stored when it starts (`rebaseById`, `rebaseSettingsLists`), and the page then shows what was written with any edit made meanwhile on top, so a change made in another window is kept and a removal made there is not undone. Two saves of one list from two windows within the same moment can still race.
 - Queued messages of agent windows open at quit are not kept, as the main window's are not.
