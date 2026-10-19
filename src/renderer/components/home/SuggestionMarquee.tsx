@@ -5,10 +5,13 @@ const ROW_SPEEDS = [16, 12, 14]
 
 /**
  * Rows of suggestion chips drifting sideways, alternating direction. The
- * same chips twice per row and a position wrapped to one copy's width make
- * the loop seamless. Hovering pauses the drift; the wheel (or a trackpad
- * swipe) scrolls the hovered row by hand. Not gated on reduced motion: RDP
- * sessions report it by default, and "Hide suggestions" is the opt-out.
+ * same chips twice per row and an animation over one copy's width make the
+ * loop seamless. The drift is a Web Animation of `transform`, so the
+ * compositor moves the already drawn row: no per-frame JavaScript to stutter
+ * when the page is busy, and no text redrawn at fractional pixels. Hovering
+ * pauses the drift; the wheel (or a trackpad swipe) scrolls the hovered row
+ * by hand. Not gated on reduced motion: RDP sessions report it by default,
+ * and "Hide suggestions" is the opt-out.
  */
 export function SuggestionMarquee({ rows, onPick, disabled }: {
   rows: string[][]
@@ -40,63 +43,46 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
   const rowRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const groupRef = useRef<HTMLDivElement>(null)
-  // Position in px, kept in (-W, 0] where W is one copy's width; a ref, not
-  // state, because it changes every frame.
-  const pos = useRef<number | null>(null)
   const [hovered, setHovered] = useState(false)
   const hoveredRef = useRef(false)
   hoveredRef.current = hovered
+  // Plays or pauses the row's animation from hover, screen and window state.
+  const syncRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     const track = trackRef.current
     const group = groupRef.current
-    if (!track || !group) return
-    // One copy's width, cached: a getBoundingClientRect per frame forces a
-    // layout flush on every row, every frame. A ResizeObserver re-measures it.
-    let groupWidth = group.getBoundingClientRect().width
-    const apply = () => {
-      const w = groupWidth
-      if (w <= 0) return
-      if (pos.current === null) pos.current = -Math.random() * w
-      // Wrap into (-w, 0]: the second copy makes any such offset look whole.
-      pos.current = ((pos.current % w) - w) % w
-      track.style.transform = `translate3d(${pos.current}px, 0, 0)`
-    }
+    if (!track || !group || speed === 0) return
+    let anim: Animation | null = null
+    // One loop: the track moves one copy's width. A negative speed plays it in reverse.
+    let duration = 0
+    const wrap = (t: number) => ((t % duration) + duration) % duration
 
-    let last = performance.now()
-    let frame = 0
-    const tick = (now: number) => {
-      const dt = Math.min(0.1, (now - last) / 1000)
-      last = now
-      if (!hoveredRef.current && pos.current !== null) {
-        pos.current -= speed * dt
-      }
-      apply()
-      frame = requestAnimationFrame(tick)
-    }
-    const start = () => {
-      if (frame) return
-      last = performance.now()
-      frame = requestAnimationFrame(tick)
-    }
-    const stop = () => {
-      if (!frame) return
-      cancelAnimationFrame(frame)
-      frame = 0
+    const build = (width: number) => {
+      if (width <= 0) return
+      const progress = anim && duration > 0 ? wrap(Number(anim.currentTime ?? 0)) / duration : Math.random()
+      anim?.cancel()
+      duration = (width / Math.abs(speed)) * 1000
+      anim = track.animate(
+        [{ transform: 'translate3d(0, 0, 0)' }, { transform: `translate3d(${-width}px, 0, 0)` }],
+        { duration, iterations: Infinity, easing: 'linear', direction: speed < 0 ? 'reverse' : 'normal' },
+      )
+      anim.currentTime = progress * duration
+      sync()
     }
 
     const row = rowRef.current
-    // Drift only while the row is actually on screen and the window is shown.
+    // Drift only while the row is on screen, the window is shown, and the row is not hovered.
     let onScreen = true
     const sync = () => {
-      if (onScreen && !document.hidden) start()
-      else stop()
+      if (!anim) return
+      const play = onScreen && !document.hidden && !hoveredRef.current
+      if (play && anim.playState !== 'running') anim.play()
+      else if (!play && anim.playState === 'running') anim.pause()
     }
+    syncRef.current = sync
 
-    const ro = new ResizeObserver(() => {
-      groupWidth = group.getBoundingClientRect().width
-      apply()
-    })
+    const ro = new ResizeObserver(() => build(group.getBoundingClientRect().width))
     ro.observe(group)
 
     let io: IntersectionObserver | null = null
@@ -112,23 +98,25 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
 
     const onWheel = (e: WheelEvent) => {
       const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
-      if (delta === 0) return
+      if (delta === 0 || !anim || duration <= 0) return
       e.preventDefault()
-      if (pos.current !== null) pos.current -= delta
-      apply()
+      // A wheel step of `delta` px moves the row that far left, either direction of drift.
+      anim.currentTime = wrap(Number(anim.currentTime ?? 0) + (delta / speed) * 1000)
     }
     row?.addEventListener('wheel', onWheel, { passive: false })
 
-    apply()
-    sync()
+    build(group.getBoundingClientRect().width)
     return () => {
-      stop()
+      syncRef.current = null
+      anim?.cancel()
       ro.disconnect()
       io?.disconnect()
       document.removeEventListener('visibilitychange', sync)
       row?.removeEventListener('wheel', onWheel)
     }
   }, [speed])
+
+  useEffect(() => { syncRef.current?.() }, [hovered])
 
   return (
     <div

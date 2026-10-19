@@ -964,8 +964,8 @@ body.panel-resizing webview {
 
 
 /* --- Home suggestion marquee ------------------------------------------
-   Each row is a track of the same chips twice; SuggestionMarquee moves it
-   by one copy's width and wraps, so the loop is seamless and the wheel can
+   Each row is a track of the same chips twice; SuggestionMarquee animates it
+   by one copy's width on the compositor, so the loop is seamless and the wheel can
    scroll it by hand. */
 .home-marquee {
   overflow: hidden;
