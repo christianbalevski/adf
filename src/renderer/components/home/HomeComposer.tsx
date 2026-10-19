@@ -2,8 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useAppStore } from '../../stores/app.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
-import { pickSuggestions } from './suggestions'
-import { SuggestionMarquee } from './SuggestionMarquee'
+import { SuggestionRows } from './SuggestionRows'
 import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './HomePickers'
 import { useHomeProviders } from './HomeProviders'
 import { useTemplatesStore } from '../../hooks/useTemplates'
@@ -12,8 +11,8 @@ import type { IdentityDraftHandle } from './NextAgentIdentity'
 import { generateAgentName } from '../../../shared/utils/agent-names'
 
 const MAX_ROWS = 8
-/** Suggestion rows above the bar, each a slow marquee; drawn from the pool per visit. */
-const MARQUEE_ROWS = 3
+/** Suggestion rows above the bar; drawn from the pool per visit, one row changing at a time. */
+const SUGGESTION_ROWS = 3
 const CHIPS_PER_ROW = 7
 /** Per-viewer switch for the rows; 'off' hides them. Survives restarts. */
 const SUGGESTIONS_KEY = 'adf-home-suggestions'
@@ -127,10 +126,6 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
     setSuggestionsOn(next)
     saveSuggestionsOn(next)
   }
-  const [rows] = useState(() => {
-    const picks = pickSuggestions(MARQUEE_ROWS * CHIPS_PER_ROW)
-    return Array.from({ length: MARQUEE_ROWS }, (_, i) => picks.slice(i * CHIPS_PER_ROW, (i + 1) * CHIPS_PER_ROW))
-  })
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Grow with the text up to MAX_ROWS, then scroll.
@@ -241,9 +236,9 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
 
   return (
     <div className="space-y-4">
-      {/* Three rows of suggestions drifting past each other, alternating
-          direction. Full width; hover pauses so a chip can be clicked. */}
-      {suggestionsOn && <SuggestionMarquee rows={rows} onPick={fill} disabled={busy} />}
+      {/* Three rows of suggestions, one fading to new ones every few
+          seconds. Full width; hover holds them so a chip can be clicked. */}
+      {suggestionsOn && <SuggestionRows rowCount={SUGGESTION_ROWS} perRow={CHIPS_PER_ROW} onPick={fill} disabled={busy} />}
 
       <div className="mx-auto w-full max-w-3xl px-4">
       <div

@@ -963,24 +963,22 @@ body.panel-resizing webview {
 }
 
 
-/* --- Home suggestion marquee ------------------------------------------
-   Each row is a track of the same chips twice; SuggestionMarquee animates it
-   by one copy's width on the compositor, so the loop is seamless and the wheel can
-   scroll it by hand. */
-.home-marquee {
+/* --- Home suggestion rows ----------------------------------------------
+   Rows of chips that stand still, wider than the page and centred, the
+   edges faded. SuggestionRows fades one row out, swaps its chips, and fades
+   it back in: opacity only, which stays smooth on every display. */
+.home-suggestion-row {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
   overflow: hidden;
   mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
   -webkit-mask-image: linear-gradient(to right, transparent, #000 10%, #000 90%, transparent);
+  transition: opacity 500ms ease-in-out;
 }
-.home-marquee-track {
-  display: flex;
-  width: max-content;
-  will-change: transform;
-}
-.home-marquee-group {
-  display: flex;
-  gap: 0.5rem;
-  padding-right: 0.5rem;
+.home-suggestion-row[data-fading] {
+  opacity: 0;
+  transition-duration: 300ms;
 }
 
 /* Carousel edge fades: only on a side that has more cards behind it, so

@@ -225,9 +225,9 @@ export const SUGGESTION_POOL: readonly string[] = [
   'Rank the recipes I say I will make by how long I have been saying it',
 ]
 
-/** `count` distinct entries from the pool, in random order. */
-export function pickSuggestions(count: number, random: () => number = Math.random): string[] {
-  const pool = [...SUGGESTION_POOL]
+/** `count` distinct entries from the pool, in random order, none of `exclude`. */
+export function pickSuggestions(count: number, random: () => number = Math.random, exclude: ReadonlySet<string> = new Set()): string[] {
+  const pool = SUGGESTION_POOL.filter((s) => !exclude.has(s))
   const out: string[] = []
   while (out.length < count && pool.length > 0) {
     const i = Math.min(pool.length - 1, Math.floor(random() * pool.length))

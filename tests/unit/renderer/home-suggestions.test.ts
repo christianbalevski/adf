@@ -36,4 +36,11 @@ describe('home suggestions', () => {
   it('caps at the pool size', () => {
     expect(pickSuggestions(SUGGESTION_POOL.length + 10, seeded(3))).toHaveLength(SUGGESTION_POOL.length)
   })
+
+  it('a swapped row never repeats a chip already on screen', () => {
+    const shown = new Set(pickSuggestions(14, seeded(7)))
+    const fresh = pickSuggestions(7, seeded(9), shown)
+    expect(fresh).toHaveLength(7)
+    for (const p of fresh) expect(shown.has(p)).toBe(false)
+  })
 })
