@@ -1,74 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
-/** The drift aimed for, in CSS px per second; the real speed locks to the display. */
-const TARGET_SPEED = 14
+/** Pixels per second, one per row, so the rows drift out of step. */
+const ROW_SPEEDS = [16, 12, 14]
 
 /**
- * The drift speed for a display: a whole device pixel every k frames, k
- * whole, nearest to TARGET_SPEED. A drift of 14 px/s on a 60 Hz 1x monitor
- * moves a quarter pixel a frame, shown as a pixel every 4 or 5 frames,
- * unevenly: a judder. Every 4 frames exactly (15 px/s) moves evenly.
- * 60 Hz at 1x and 120 Hz at 2x both give 15 px/s.
- */
-export function frameLockedSpeed(refreshHz: number, dpr: number): number {
-  const perFrame = 1 / dpr
-  const k = Math.max(1, Math.round(refreshHz * perFrame / TARGET_SPEED))
-  return (refreshHz * perFrame) / k
-}
-
-/** The display's refresh rate from the median of a few frame intervals. */
-function measureRefresh(frames = 24): Promise<number> {
-  return new Promise((resolve) => {
-    const deltas: number[] = []
-    let last = 0
-    const step = (now: number) => {
-      if (last) deltas.push(now - last)
-      last = now
-      if (deltas.length < frames) { requestAnimationFrame(step); return }
-      deltas.sort((a, b) => a - b)
-      const median = deltas[Math.floor(deltas.length / 2)]
-      // A common rate when the measure is plausible; 60 Hz when frames were throttled.
-      resolve(median > 2 && median < 50 ? 1000 / median : 60)
-    }
-    requestAnimationFrame(step)
-  })
-}
-
-/** The drift speed for the display the window is on, measured again when it moves to another. */
-function useDisplaySpeed(): number {
-  const [speed, setSpeed] = useState(() => frameLockedSpeed(60, window.devicePixelRatio || 1))
-  useEffect(() => {
-    let cancelled = false
-    const measure = () => {
-      measureRefresh().then((hz) => {
-        if (!cancelled) setSpeed(frameLockedSpeed(hz, window.devicePixelRatio || 1))
-      })
-    }
-    measure()
-    let media: MediaQueryList | null = null
-    const watchDpr = () => {
-      media?.removeEventListener('change', onDpr)
-      media = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
-      media.addEventListener('change', onDpr)
-    }
-    const onDpr = () => { watchDpr(); measure() }
-    watchDpr()
-    // Chromium fires `change` on window.screen when the window moves to another display.
-    const scr = window.screen as Screen & EventTarget
-    scr.addEventListener?.('change', measure)
-    return () => {
-      cancelled = true
-      media?.removeEventListener('change', onDpr)
-      scr.removeEventListener?.('change', measure)
-    }
-  }, [])
-  return speed
-}
-
-/**
- * Rows of suggestion chips drifting sideways, alternating direction, at a
- * speed locked to the display (frameLockedSpeed). The same chips twice per
- * row and an animation over one copy's width make the loop seamless. The drift is a Web Animation of `transform`, so the
+ * Rows of suggestion chips drifting sideways, alternating direction. The
+ * same chips twice per row and an animation over one copy's width make the
+ * loop seamless. The drift is a Web Animation of `transform`, so the
  * compositor moves the already drawn row: no per-frame JavaScript to stutter
  * when the page is busy, and no text redrawn at fractional pixels. Hovering
  * pauses the drift; the wheel (or a trackpad swipe) scrolls the hovered row
@@ -80,14 +18,13 @@ export function SuggestionMarquee({ rows, onPick, disabled }: {
   onPick: (s: string) => void
   disabled: boolean
 }) {
-  const speed = useDisplaySpeed()
   return (
     <div className="space-y-2" aria-label="Suggestions">
       {rows.map((row, i) => (
         <MarqueeRow
           key={i}
           chips={row}
-          speed={speed * (i % 2 === 1 ? -1 : 1)}
+          speed={ROW_SPEEDS[i % ROW_SPEEDS.length] * (i % 2 === 1 ? -1 : 1)}
           onPick={onPick}
           disabled={disabled}
         />
@@ -111,8 +48,6 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
   hoveredRef.current = hovered
   // Plays or pauses the row's animation from hover, screen and window state.
   const syncRef = useRef<(() => void) | null>(null)
-  // Where the row is in its loop (0-1), kept when the speed changes so the row does not jump.
-  const progressRef = useRef<number | null>(null)
 
   useEffect(() => {
     const track = trackRef.current
@@ -125,11 +60,12 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
 
     const build = (width: number) => {
       if (width <= 0) return
-      const progress = anim && duration > 0 ? wrap(Number(anim.currentTime ?? 0)) / duration : (progressRef.current ?? Math.random())
+      const progress = anim && duration > 0 ? wrap(Number(anim.currentTime ?? 0)) / duration : Math.random()
       anim?.cancel()
       duration = (width / Math.abs(speed)) * 1000
       // perspective() at z = 0 draws the same, but the transform is no longer a
-      // plain translation, which Chromium snaps to whole device pixels.
+      // plain translation, which Chromium snaps to whole device pixels: on a
+      // 1x display the slow drift would sit still, then jump a pixel.
       anim = track.animate(
         [{ transform: 'perspective(1000px) translate3d(0, 0, 0)' }, { transform: `perspective(1000px) translate3d(${-width}px, 0, 0)` }],
         { duration, iterations: Infinity, easing: 'linear', direction: speed < 0 ? 'reverse' : 'normal' },
@@ -175,7 +111,6 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
     build(group.getBoundingClientRect().width)
     return () => {
       syncRef.current = null
-      if (anim && duration > 0) progressRef.current = wrap(Number(anim.currentTime ?? 0)) / duration
       anim?.cancel()
       ro.disconnect()
       io?.disconnect()
