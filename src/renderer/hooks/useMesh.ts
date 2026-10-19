@@ -5,10 +5,15 @@ import type { MeshEvent } from '../../shared/types/ipc.types'
 /** Trailing window that folds an agent_joined burst into one getMeshStatus. */
 const JOIN_REFRESH_DEBOUNCE_MS = 250
 
-/** Whether the mesh runs, from the runtime: a stale read never undoes a local change made since. */
+/**
+ * Whether the mesh runs and which agents take part, from the runtime: a stale
+ * read never undoes a local change made since. The agents give the status
+ * bar's count, which an agent window has from nowhere else.
+ */
 function syncMeshRunning(): void {
   const rev = useMeshStore.getState().enabledRev
   window.adfApi?.getMeshStatus?.().then((status) => {
+    useMeshStore.getState().upsertAgents(status.agents ?? [])
     useMeshStore.getState().syncEnabled(status.running === true, rev)
   }).catch(() => {})
 }
