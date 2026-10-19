@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 
 /** The drift aimed for, in CSS px per second; the real speed locks to the display. */
-const TARGET_SPEED = 60
+const TARGET_SPEED = 14
 
 /**
  * The drift speed for a display: a whole device pixel every k frames, k
- * whole, nearest to TARGET_SPEED. A slow drift of a fraction of a pixel per
- * frame judders on a 1x display (it rounds to a pixel every few frames,
- * unevenly); a whole pixel per frame, or per two frames on a 144 Hz
- * monitor, moves evenly. 60 Hz at 1x and 120 Hz at 2x both give 60 px/s.
+ * whole, nearest to TARGET_SPEED. A drift of 14 px/s on a 60 Hz 1x monitor
+ * moves a quarter pixel a frame, shown as a pixel every 4 or 5 frames,
+ * unevenly: a judder. Every 4 frames exactly (15 px/s) moves evenly.
+ * 60 Hz at 1x and 120 Hz at 2x both give 15 px/s.
  */
 export function frameLockedSpeed(refreshHz: number, dpr: number): number {
   const perFrame = 1 / dpr
