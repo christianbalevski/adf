@@ -772,6 +772,9 @@ const api: AdfApi = {
   browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_FS_BROWSE, args),
   createRemoteFolder: (args: { parent: string; name: string }) => ipcRenderer.invoke(IPC.REMOTE_FS_MKDIR, args),
 
+  // Agent windows: Open in new window (daemon mode)
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_AGENT, request),
+
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => ipcRenderer.invoke(IPC.RECOVERY_STASH, stash),
   recoveryList: () => ipcRenderer.invoke(IPC.RECOVERY_LIST),

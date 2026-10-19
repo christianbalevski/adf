@@ -1,4 +1,4 @@
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, powerMonitor, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron'
 import { join } from 'path'
 // The embedded IPC layer (./ipc) is imported only in embedded mode, at boot:
 // loading it constructs embedded services (a PodmanService, the uvx manifest
@@ -42,6 +42,10 @@ import {
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
 import { processAgentLeases } from './runtime/agent-lease'
 import type { StudioBackendMode } from '../shared/types/backend.types'
+import { AgentWindows, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
+import { ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
+import { samePath } from './backend/daemon-mode/session'
+import { setMenuWindowResolver } from './menu'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -127,6 +131,8 @@ let fileToOpen: string | null = null
 let daemonMode: DaemonModeHandle | null = null
 // Set at boot in embedded mode only.
 let embeddedIpc: EmbeddedIpc | null = null
+// Daemon mode only: Open in new window (docs/design/agent-windows.md).
+let agentWindows: AgentWindows | null = null
 // Set when Settings → Connection confirmed a switch: the quit that follows is a restart into it.
 let switchingTo: StudioBackendMode | null = null
 // Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
@@ -167,6 +173,8 @@ let quittingForUpdate = false
 function runShutdownCleanup(): Promise<void> {
   if (shutdownCleanup) return shutdownCleanup
   const budget = shutdownBudgetMs
+  // The agent windows open now are the ones the next launch reopens.
+  agentWindows?.freeze()
   shutdownCleanup = (async () => {
     try {
       // Notify the renderer so it can show a shutdown overlay
@@ -230,6 +238,7 @@ function handleSessionEnd(): void {
   if (shutdownCleanup) return
   console.log('[App] Windows session ending — fast shutdown')
   shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
+  agentWindows?.freeze()
   shutdownCleanup = (async () => {
     try {
       await withDeadline(daemonMode ? daemonMode.shutdown() : embeddedIpc ? embeddedIpc.fastSessionEndCleanup(2_000) : Promise.resolve(), FAST_SHUTDOWN_BUDGET_MS, () => {
@@ -392,14 +401,10 @@ function getOverlayColors(): { color: string; symbolColor: string } {
     : { color: '#ffffff', symbolColor: '#474b54' } // brand light --paper / --ink-muted
 }
 
-function createWindow(): BrowserWindow {
+/** The options every Studio window shares (main and agent windows). */
+function studioWindowOptions(): Electron.BrowserWindowConstructorOptions {
   const isMac = process.platform === 'darwin'
-
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
+  return {
     // Paint only once the renderer is ready — avoids the white flash.
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0c0e13' : '#ffffff', // brand --paper
@@ -419,12 +424,25 @@ function createWindow(): BrowserWindow {
       // Agent browser viewer tabs embed noVNC pages via <webview>
       webviewTag: true
     }
+  }
+}
+
+function createWindow(): BrowserWindow {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 800,
+    minHeight: 600,
+    ...studioWindowOptions()
   })
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
     // The boot window (a dialog or keychain wait before this window existed) is done.
     closeBootWindow()
+    // Agent windows saved at the last quit (or closed with this window on macOS) reopen.
+    const windows = agentWindows
+    if (windows && daemonMode) void daemonMode.ready.then((ok) => { if (ok) void windows.restore() })
   })
 
   // Windows logoff/shutdown fires 'session-end' on each BrowserWindow (there
@@ -451,11 +469,102 @@ function createWindow(): BrowserWindow {
     // Windows/Linux: closing it quits (window-all-closed), so a boot dialog
     // still open must not keep Studio alive, nor be answered later. macOS: it stays.
     noteMainWindowClosed()
+    // Agent windows close with it (agent-windows.md): Windows/Linux quit
+    // (window-all-closed does not fire while they are open); macOS closes
+    // them and keeps them saved, so the main window reopens them.
+    if (agentWindows && agentWindows.list().length > 0) {
+      if (process.platform === 'darwin') agentWindows.closeAll()
+      else app.quit()
+    }
   })
 
+  prepareStudioWindow(mainWindow)
+
+  // Belt-and-braces push once the renderer is ready. Deliberately does NOT
+  // clear the queue: the renderer's listener registers in a React effect and
+  // may miss this push — the OPEN_FILE_GET_PENDING pull clears instead.
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (fileToOpen && mainWindow && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: fileToOpen })
+    }
+  })
+
+  // Daemon mode: the main window offers Open in new window (agent-windows.md).
+  loadRenderer(mainWindow, daemonMode ? { agentWindows: '1' } : {})
+  return mainWindow
+}
+
+/** Load the renderer; `query` tells the page which window it is (agent-windows.md). */
+function loadRenderer(win: BrowserWindow, query: Record<string, string>): void {
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  const search = new URLSearchParams(query).toString()
+  if (rendererUrl) {
+    win.loadURL(search ? `${rendererUrl}${rendererUrl.includes('?') ? '&' : '?'}${search}` : rendererUrl)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), search ? { query } : undefined)
+  }
+}
+
+/**
+ * An agent window (agent-windows.md): the agent's chat and panels, no
+ * sidebar. Its client session opens before the page loads, so every IPC
+ * call it makes is served by it; it ends when the window closes.
+ */
+function createAgentWindow(
+  request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds },
+  events: { closed(): void; moved(): void },
+): AgentWindowHandle {
+  const bounds = request.bounds && screen.getAllDisplays().some((d) => {
+    const a = d.workArea
+    const b = request.bounds!
+    return b.x < a.x + a.width && b.x + b.width > a.x && b.y < a.y + a.height && b.y + 40 > a.y
+  }) ? request.bounds : request.bounds ? { width: request.bounds.width, height: request.bounds.height } : undefined
+  const win = new BrowserWindow({
+    width: 1000,
+    height: 820,
+    minWidth: 520,
+    minHeight: 400,
+    ...bounds,
+    title: request.name,
+    ...studioWindowOptions()
+  })
+  const id = win.webContents.id
+  daemonMode?.windows.open({
+    id,
+    send: (channel, ...args) => {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return
+      try { win.webContents.send(channel, ...args) } catch { /* window going away */ }
+    },
+    focused: () => !win.isDestroyed() && win.isFocused(),
+  })
+  win.once('ready-to-show', () => win.show())
+  win.on('session-end', handleSessionEnd)
+  win.on('closed', () => {
+    console.log(`[App] Agent window closed: ${request.filePath}`)
+    void daemonMode?.windows.close(id)
+    events.closed()
+  })
+  win.on('moved', () => events.moved())
+  win.on('resized', () => events.moved())
+  prepareStudioWindow(win)
+  loadRenderer(win, { window: 'agent', file: request.filePath })
+  return {
+    id,
+    focus: () => { if (!win.isDestroyed()) win.focus() },
+    isMinimized: () => !win.isDestroyed() && win.isMinimized(),
+    restore: () => { if (!win.isDestroyed()) win.restore() },
+    isDestroyed: () => win.isDestroyed(),
+    getBounds: () => win.getBounds(),
+    close: () => { if (!win.isDestroyed()) win.close() },
+  }
+}
+
+/** What every Studio window registers: webview and navigation rules, renderer log, fullscreen and title bar colours. */
+function prepareStudioWindow(win: BrowserWindow): void {
+  const isMac = process.platform === 'darwin'
   // Webview guests may only load the local agent-browser (noVNC) pages, with
   // no preload and no node access.
-  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
     delete (webPreferences as { preload?: string }).preload
     webPreferences.nodeIntegration = false
     webPreferences.contextIsolation = true
@@ -465,23 +574,23 @@ function createWindow(): BrowserWindow {
   })
 
   const notifyFullscreenChanged = (): void => {
-    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
-    mainWindow.webContents.send(IPC.APP_FULLSCREEN_CHANGED, mainWindow.isFullScreen())
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return
+    win.webContents.send(IPC.APP_FULLSCREEN_CHANGED, win.isFullScreen())
   }
-  mainWindow.on('enter-full-screen', notifyFullscreenChanged)
-  mainWindow.on('leave-full-screen', notifyFullscreenChanged)
+  win.on('enter-full-screen', notifyFullscreenChanged)
+  win.on('leave-full-screen', notifyFullscreenChanged)
 
   if (!isMac) {
     const applyOverlay = () => {
-      if (!mainWindow || mainWindow.isDestroyed()) return
+      if (win.isDestroyed()) return
       try {
-        mainWindow.setTitleBarOverlay(getOverlayColors())
+        win.setTitleBarOverlay(getOverlayColors())
       } catch {
         // Linux WMs that don't support setTitleBarOverlay throw — ignore.
       }
     }
     nativeTheme.on('updated', applyOverlay)
-    mainWindow.on('closed', () => nativeTheme.off('updated', applyOverlay))
+    win.on('closed', () => nativeTheme.off('updated', applyOverlay))
   }
 
   // --- Content Security Policy ---
@@ -511,7 +620,7 @@ function createWindow(): BrowserWindow {
   })
 
   // External links open in default browser (safe protocols only)
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     try {
       const parsed = new URL(url)
       if (parsed.protocol === 'https:' || parsed.protocol === 'http:' || parsed.protocol === 'mailto:') {
@@ -526,7 +635,7 @@ function createWindow(): BrowserWindow {
   })
 
   // Block renderer navigation to external pages — prevents XSS from hijacking adfApi surface
-  mainWindow.webContents.on('will-navigate', (event, url) => {
+  win.webContents.on('will-navigate', (event, url) => {
     const rendererUrl = process.env.ELECTRON_RENDERER_URL
     if (rendererUrl && url.startsWith(rendererUrl)) return
     event.preventDefault()
@@ -538,30 +647,12 @@ function createWindow(): BrowserWindow {
   // in a packaged run that is pure overhead, so only warnings and errors get
   // through. Dev keeps everything, and ADF_RENDERER_LOG=1 forces it back on.
   const verboseRendererLog = isDev || process.env.ADF_RENDERER_LOG === '1'
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     // Chromium levels: 0 verbose, 1 info, 2 warning, 3 error
     if (!verboseRendererLog && level < 2) return
     const levelStr = ['VERBOSE', 'INFO', 'WARNING', 'ERROR'][level] ?? 'LOG'
     console.log(`[Renderer ${levelStr}] ${message} (${sourceId}:${line})`)
   })
-
-  // Belt-and-braces push once the renderer is ready. Deliberately does NOT
-  // clear the queue: the renderer's listener registers in a React effect and
-  // may miss this push — the OPEN_FILE_GET_PENDING pull clears instead.
-  mainWindow.webContents.on('did-finish-load', () => {
-    if (fileToOpen && mainWindow && !mainWindow.webContents.isDestroyed()) {
-      mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: fileToOpen })
-    }
-  })
-
-  // Load the renderer
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL
-  if (rendererUrl) {
-    mainWindow.loadURL(rendererUrl)
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
-  return mainWindow
 }
 
 // Harden webview guests (agent-browser noVNC pages): no popups, no navigation
@@ -646,7 +737,7 @@ app.whenReady().then(async () => {
           onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
         : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
-      hooks: { showMainWindow, openFile: requestOpenFile },
+      hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
       // Read at quit: a change in Settings → Connection applies to the next quit.
@@ -658,6 +749,42 @@ app.whenReady().then(async () => {
     })
     const handle = daemonMode
     void handle.ready.then(async (ok) => { if (ok) await resumeSwitchedAgents(backend.mode, userDataDir, (filePath) => handle.startBackgroundAgent(filePath)) })
+    agentWindows = new AgentWindows({
+      create: createAgentWindow,
+      current: (id) => handle.windows.current(id),
+      samePath: (a, b) => samePath(a, b, backend.mode === 'remote'),
+      settings: handle.clientSettings,
+      runtime: () => handle.windows.runtime(),
+      // The file is there and is still the same agent (GET /files/agent/config answers its config.id).
+      exists: async (entry) => {
+        const client = await handle.client()
+        try {
+          const found = await client.request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: entry.filePath } })
+          return !entry.agentId || found.agentId === entry.agentId
+        } catch {
+          return false
+        }
+      },
+    })
+    // adf-file:// requests name their window, so an agent window's images come from its agent (agent-windows.md).
+    session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
+      if (!details.url.startsWith('adf-file:')) { callback({}); return }
+      callback({ requestHeaders: { ...details.requestHeaders, [ADF_WINDOW_HEADER]: String(details.webContentsId ?? '') } })
+    })
+    // Save acts on the window in front; every other menu item on the main window.
+    setMenuWindowResolver((action) => action === 'save' ? BrowserWindow.getFocusedWindow() : showMainWindow())
+    // Open in new window. Inside Studio registers no handler: its renderer never offers it.
+    const windows = agentWindows
+    ipcMain.handle(IPC.WINDOW_OPEN_AGENT, (_event, request?: { filePath?: unknown; agentId?: unknown; name?: unknown }) => {
+      if (typeof request?.filePath !== 'string' || !request.filePath) return { success: false, error: 'No agent file.' }
+      if (shutdownCleanup) return { success: false, error: 'Studio is quitting.' }
+      const { created } = windows.open({
+        filePath: request.filePath,
+        agentId: typeof request.agentId === 'string' ? request.agentId : null,
+        ...(typeof request.name === 'string' && request.name ? { name: request.name } : {}),
+      })
+      return { success: true, created }
+    })
   }
   // Client keys (updater, spellcheck) come from studio-client-settings.json in daemon mode (§4.1).
   const readClientSetting = (key: string): unknown => daemonMode ? daemonMode.clientSettings.get(key) : embeddedIpc?.readAppSetting(key)
@@ -730,9 +857,10 @@ app.whenReady().then(async () => {
   daemonMode?.connection.onState(() => connections?.changed())
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))
-  ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
-  ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
-    mainWindow?.setFullScreen(!!fullscreen)
+  // The asking window's (agent windows, agent-windows.md).
+  ipcMain.handle(IPC.APP_GET_FULLSCREEN, (event) => (BrowserWindow.fromWebContents(event.sender) ?? mainWindow)?.isFullScreen() ?? false)
+  ipcMain.handle(IPC.APP_SET_FULLSCREEN, (event, fullscreen: boolean) => {
+    (BrowserWindow.fromWebContents(event.sender) ?? mainWindow)?.setFullScreen(!!fullscreen)
   })
 
   // Serve files from the current workspace's adf_files table via adf-file:// URLs

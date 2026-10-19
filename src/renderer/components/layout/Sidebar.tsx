@@ -13,6 +13,7 @@ import { startForegroundAgent } from '../../utils/start-agent'
 import { useShareDrag } from '../../hooks/useShareDrag'
 import { useDragResize } from '../../hooks/useDragResize'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
+import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
 import { Tooltip } from '../common/Tooltip'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
@@ -494,6 +495,8 @@ export function Sidebar() {
           }
         }
       },
+      // Daemon mode: the agent in its own window (agent-windows.md).
+      ...(agentWindowsAvailable ? [{ label: 'Open in new window', onSelect: () => openAgentWindow({ filePath: fp, agentId: file.agentId ?? null, ...(file.agentName ? { name: file.agentName } : {}) }) }] : []),
       { label: 'Rename…', onSelect: () => setRenameTarget({ file, dirPath }) },
       { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath }) },
       { label: 'Share…', onSelect: () => useAppStore.getState().openShareDialog(fp) },

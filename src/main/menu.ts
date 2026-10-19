@@ -58,20 +58,29 @@ const MAX_RECENT_FILES = 10
 
 let settingsRef: MenuSettings | null = null
 let daemonMenu: DaemonMenuOptions | null = null
+let windowFor: ((action: MenuAction | 'open-recent') => BrowserWindow | null | undefined) | null = null
 
-function targetWindow(): BrowserWindow | undefined {
-  return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+/**
+ * Agent windows (agent-windows.md): the window a menu item acts on. Save
+ * acts on the focused window; everything else on the main window.
+ */
+export function setMenuWindowResolver(resolve: (action: MenuAction | 'open-recent') => BrowserWindow | null | undefined): void {
+  windowFor = resolve
+}
+
+function targetWindow(action: MenuAction | 'open-recent'): BrowserWindow | undefined {
+  return windowFor?.(action) ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
 }
 
 function sendMenuAction(action: MenuAction): void {
-  targetWindow()?.webContents.send(IPC.MENU_ACTION, action)
+  targetWindow(action)?.webContents.send(IPC.MENU_ACTION, action)
 }
 
 // Recent entries reuse the same flow as double-clicking a .adf in Finder
 function sendOpenFile(filePath: string): void {
   // The user's own recent list: remote mode may offer this computer's copy for upload (local-open-grants.ts).
   if (!daemonMenu?.remoteRecents) grantLocalOpen(filePath)
-  targetWindow()?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
+  targetWindow('open-recent')?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
 }
 
 /** The settings key of this mode's Open Recent list. */

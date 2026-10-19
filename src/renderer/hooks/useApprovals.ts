@@ -109,11 +109,14 @@ export function useApprovalEvents() {
       const store = useApprovalsStore.getState()
       const openFilePath = useDocumentStore.getState().filePath
       const live = new Set(notifications.map((n) => n.id))
+      // Agent windows open (agent-windows.md): main names the requests whose notice this window shows.
+      const mine = snapshot.notify ? new Set(snapshot.notify) : null
 
       for (const n of notifications) {
         if (seenIds.current.has(n.id)) continue
         seenIds.current.add(n.id)
         if (n.filePath === openFilePath) continue
+        if (mine && !mine.has(n.id)) continue
         store.pushToast({
           id: n.id,
           kind: n.kind,

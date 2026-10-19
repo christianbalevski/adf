@@ -788,6 +788,10 @@ export interface AdfApi {
   /** New folder in a listed daemon folder (POST /fs/folders). */
   createRemoteFolder: (args: { parent: string; name: string }) => Promise<RemoteMkdirResult>
 
+  // Agent windows (docs/design/agent-windows.md)
+  /** Open in new window: the agent's own window, focused when it has one. Daemon mode only. */
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string }) => Promise<{ success: boolean; created?: boolean; error?: string }>
+
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
   recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => Promise<{ success: boolean }>

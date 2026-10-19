@@ -15,6 +15,8 @@ import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
+import { useAgentStore } from './stores/agent.store'
+import { agentWindowFile, isAgentWindow } from './utils/window-kind'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -81,6 +83,11 @@ export default function App() {
   useEffect(() => {
     if (sessionResyncDone) return
     sessionResyncDone = true
+    // An agent window opens its agent (agent-windows.md); a reload reopens it the same way.
+    if (isAgentWindow) {
+      if (agentWindowFile) void openFile(agentWindowFile)
+      return
+    }
     window.adfApi?.getCurrentFile?.().then((session) => {
       if (session?.filePath && !useDocumentStore.getState().filePath) {
         openFile(session.filePath)
@@ -108,6 +115,8 @@ export default function App() {
 
   // Listen for open-file requests from main (double-click .adf in Finder)
   useEffect(() => {
+    // Main sends these to the main window; an agent window keeps its agent.
+    if (isAgentWindow) return
     const unsubscribe = window.adfApi?.onOpenFileRequest(({ filePath }) => {
       openFile(filePath)
     })
@@ -136,6 +145,14 @@ export default function App() {
 
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+
+  // An agent window's title is its agent's name.
+  const agentName = useAgentStore((s) => s.config?.name)
+  useEffect(() => {
+    if (!isAgentWindow) return
+    const fileName = agentWindowFile?.split(/[\\/]/).pop()?.replace(/\.adf$/i, '')
+    document.title = agentName || fileName || document.title
+  }, [agentName])
 
   // Application menu actions (File > New/Open/Add Directory, app menu > Settings)
   useEffect(() => {
@@ -253,7 +270,8 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === ',') {
         e.preventDefault()
-        setShowSettings(true)
+        // Settings live in the main window.
+        if (!isAgentWindow) setShowSettings(true)
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()

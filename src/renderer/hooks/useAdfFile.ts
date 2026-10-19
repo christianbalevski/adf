@@ -12,6 +12,7 @@ import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
 import { confirmDiscardConflicts } from '../utils/edit-conflict'
+import { isAgentWindow, openAgentWindow } from '../utils/window-kind'
 
 /** W3-F: what an agent switch answers when the user kept unsaved text under a "changed elsewhere" notice. */
 const KEPT_UNSAVED = { success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
@@ -358,6 +359,14 @@ export function useAdfFile() {
   }, [setShowSettings, resetAgent, loadFileContents])
 
   const openFile = useCallback(async (filePath?: string) => {
+    // An agent window keeps its agent (agent-windows.md): another agent opens in its own window.
+    if (isAgentWindow) {
+      const current = useDocumentStore.getState().filePath
+      if (current && filePath !== current) {
+        if (filePath) openAgentWindow({ filePath })
+        return
+      }
+    }
     const tTotal = performance.now()
     // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
     if (!confirmDiscardConflicts()) return
