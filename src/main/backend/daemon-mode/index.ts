@@ -106,6 +106,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.WINDOW_OPEN_SETTINGS,
   IPC.WINDOW_STASH_DONE,
   IPC.WINDOW_QUEUE_SYNC,
+  IPC.WINDOW_QUEUE_GET,
   IPC.QUEUE_HANDOVER_TAKE,
   IPC.MENU_ACTION_TAKE_PENDING,
 ]
@@ -257,8 +258,12 @@ export interface DaemonWindows {
   close(id: number): Promise<void>
   /** The file the window's session has open (it follows renames), or null. */
   current(id: number): { filePath: string; agentId: string | null } | null
-  /** The runtime this Studio is connected to, as saved with the agent windows: `local`, or `remote:<name or URL>`. */
-  runtime(): string
+  /**
+   * The runtime this Studio is connected to, as saved with the agent windows:
+   * `local`, or `remote:<name or URL>`; null for an unnamed remote not
+   * connected yet (the list is then neither read nor written).
+   */
+  runtime(): string | null
   /** The webContents id of the agent window that shows this request's notice, or null (the main window). */
   noticeOwner(notificationId: string): number | null
   /** The agent window kept its unsaved editor text (answer to the `stash-edits` menu action). */
@@ -1332,7 +1337,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         const file = windowSessions.get(id)?.session.current
         return file ? { filePath: file.filePath, agentId: file.agentId } : null
       },
-      runtime: () => deps.mode === 'local' ? 'local' : `remote:${deps.runtimeName?.() || connection.baseUrl || ''}`,
+      runtime: () => {
+        if (deps.mode === 'local') return 'local'
+        const name = deps.runtimeName?.() || connection.baseUrl
+        return name ? `remote:${name}` : null
+      },
       noticeOwner: (notificationId) => agentWindowOf(notificationId)?.id ?? null,
       stashed: (id) => { stashWaits.get(id)?.() },
     },

@@ -801,6 +801,8 @@ export interface AdfApi {
   agentWindowStashed: () => Promise<void>
   /** This agent window's queued messages, held in main; the main window takes them when it closes. */
   syncQueuedMessages: (entries: QueueHandoverEntry[]) => Promise<void>
+  /** This agent window's queued messages as main holds them (a reloaded page takes them back first). */
+  getWindowQueue: () => Promise<QueueHandoverEntry[]>
   /** The main window: queued messages closed agent windows left (taken once). */
   takeQueueHandover: () => Promise<QueueHandoverEntry[]>
   onQueueHandover: (callback: () => void) => () => void

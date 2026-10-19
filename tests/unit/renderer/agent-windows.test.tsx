@@ -158,3 +158,50 @@ describe('queued messages of a closed agent window', () => {
       .toEqual([{ filePath: FILE_2, loop: 'main', messages: [{ id: 'x', text: 'hi' }] }])
   })
 })
+
+describe('a reloaded agent window', () => {
+  it('takes back the queue main kept for it before it mirrors, never sends an empty one first', async () => {
+    const kept = [{ filePath: FILE_1, loop: 'main', messages: [{ id: 'a', text: 'typed before the reload' }] }]
+    const syncs: unknown[] = []
+    let answer!: (entries: typeof kept) => void
+    await page(`?window=agent&file=${encodeURIComponent(FILE_1)}`, {
+      getWindowQueue: () => new Promise((resolve) => { answer = resolve }),
+      syncQueuedMessages: async (entries: unknown) => { syncs.push(entries) },
+    })
+    const { startQueueMirror } = await import('../../../src/renderer/utils/agent-window')
+    const { useMessageQueueStore, selectQueue } = await import('../../../src/renderer/stores/message-queue.store')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+    const stop = startQueueMirror()
+    // The new page's stores change before main answers: nothing goes to main yet.
+    useDocumentStore.getState().setFilePath(FILE_1)
+    useMessageQueueStore.getState().enqueue(FILE_2, 'main', { text: 'other' })
+    expect(syncs).toEqual([])
+    answer(kept)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(selectQueue(useMessageQueueStore.getState(), FILE_1, 'main').map((m) => m.text)).toEqual(['typed before the reload'])
+    expect(syncs).toHaveLength(1)
+    expect((syncs[0] as Array<{ filePath: string }>).map((e) => e.filePath).sort()).toEqual([FILE_1, FILE_2].sort())
+    stop()
+  })
+
+  it('mirrors when the queue changes, not on every document change', async () => {
+    const syncs: unknown[] = []
+    await page(`?window=agent&file=${encodeURIComponent(FILE_1)}`, {
+      getWindowQueue: async () => [],
+      syncQueuedMessages: async (entries: unknown) => { syncs.push(entries) },
+    })
+    const { startQueueMirror } = await import('../../../src/renderer/utils/agent-window')
+    const { useMessageQueueStore } = await import('../../../src/renderer/stores/message-queue.store')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const stop = startQueueMirror()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(syncs).toEqual([[]])
+    useDocumentStore.getState().setDirty(true)
+    useDocumentStore.getState().setFilePath(FILE_1)
+    expect(syncs).toHaveLength(1)
+    useMessageQueueStore.getState().enqueue(FILE_1, 'main', { text: 'one' })
+    expect(syncs).toHaveLength(2)
+    stop()
+  })
+})

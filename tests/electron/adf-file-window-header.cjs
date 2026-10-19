@@ -10,21 +10,23 @@ const { join } = require('node:path')
 const { mkdtempSync, writeFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 
-const HEADER = 'X-ADF-Window'
+// The scheme privileges, the request filter and the header name main/index.ts uses.
+const SHARED = require('../../src/main/backend/daemon-mode/adf-file-window.json')
+const HEADER = SHARED.windowHeader
 const work = mkdtempSync(join(tmpdir(), 'adf-file-window-header-'))
 app.setPath('userData', join(work, 'user-data'))
-protocol.registerSchemesAsPrivileged([{ scheme: 'adf-file', privileges: { secure: true, supportFetchAPI: true, stream: true } }])
+protocol.registerSchemesAsPrivileged([{ scheme: SHARED.scheme, privileges: SHARED.privileges }])
 
 const fail = (message) => { console.log(`RESULT ${JSON.stringify({ ok: false, message })}`); app.exit(1) }
 setTimeout(() => fail('timed out'), 20_000).unref()
 
 app.whenReady().then(async () => {
-  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
-    if (!details.url.startsWith('adf-file:')) { callback({}); return }
+  session.defaultSession.webRequest.onBeforeSendHeaders(SHARED.headerFilter, (details, callback) => {
+    if (!details.url.startsWith(`${SHARED.scheme}:`)) { callback({}); return }
     callback({ requestHeaders: { ...details.requestHeaders, [HEADER]: String(details.webContentsId ?? '') } })
   })
   const seen = []
-  protocol.handle('adf-file', (request) => {
+  protocol.handle(SHARED.scheme, (request) => {
     seen.push({ url: request.url, window: request.headers.get(HEADER) })
     return new Response('x', { headers: { 'Content-Type': 'image/png' } })
   })

@@ -14,16 +14,16 @@ import { IPC } from '../../src/shared/constants/ipc-channels'
 
 function fakeWindow(id: number) {
   const sent: string[] = []
-  const listeners = new Map<string, () => void>()
+  const listeners = new Map<string, (...args: unknown[]) => void>()
   const webContents = {
     id,
     isDestroyed: () => false,
     send: (channel: string, action: string) => { if (channel === IPC.MENU_ACTION) sent.push(action) },
-    on: (event: string, fn: () => void) => { listeners.set(event, fn) },
-    once: (event: string, fn: () => void) => { listeners.set(event, fn) },
+    on: (event: string, fn: (...args: unknown[]) => void) => { listeners.set(event, fn) },
+    once: (event: string, fn: (...args: unknown[]) => void) => { listeners.set(event, fn) },
   }
   const win = { isDestroyed: () => false, webContents }
-  return { win: win as unknown as Electron.BrowserWindow, webContents: webContents as unknown as Electron.WebContents, sent, reload: () => listeners.get('did-start-loading')?.() }
+  return { win: win as unknown as Electron.BrowserWindow, webContents: webContents as unknown as Electron.WebContents, sent, navigate: (details: { isMainFrame: boolean; isSameDocument: boolean }) => listeners.get('did-start-navigation')?.(details) }
 }
 
 describe('menu actions for a page that is not listening yet', () => {
@@ -37,9 +37,15 @@ describe('menu actions for a page that is not listening yet', () => {
     expect(takePendingMenuActions(w.webContents)).toEqual([])
     deliverMenuAction(w.win, 'save')
     expect(w.sent).toEqual(['save'])
-    w.reload()
+    // A subframe, a <webview> page or an in-page navigation is not a new page.
+    w.navigate({ isMainFrame: false, isSameDocument: false })
+    w.navigate({ isMainFrame: true, isSameDocument: true })
+    deliverMenuAction(w.win, 'close-file')
+    expect(w.sent).toEqual(['save', 'close-file'])
+    // A reload is.
+    w.navigate({ isMainFrame: true, isSameDocument: false })
     deliverMenuAction(w.win, 'open-settings')
-    expect(w.sent).toEqual(['save'])
+    expect(w.sent).toEqual(['save', 'close-file'])
     expect(takePendingMenuActions(w.webContents)).toEqual(['open-settings'])
   })
 })

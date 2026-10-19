@@ -75,8 +75,8 @@ export interface AgentWindowsDeps {
   current(id: number): { filePath: string; agentId: string | null } | null
   samePath(a: string, b: string): boolean
   settings: { get(key: string): unknown; set(key: string, value: unknown): void }
-  /** The runtime the list is saved for (DaemonWindows.runtime). */
-  runtime(): string
+  /** The runtime the list is saved for (DaemonWindows.runtime); null while unknown: the list is then neither read nor written. */
+  runtime(): string | null
   /** Restore: is the saved agent still there? */
   check(entry: SavedAgentWindow): Promise<SavedAgentCheck>
   log?: Pick<Console, 'log' | 'warn'>
@@ -159,6 +159,8 @@ interface OpenWindow {
   failed: boolean
   /** Closed by closeAll: carried, not dropped. */
   keep: boolean
+  /** Reopened by restore: a failed open drops it only when the agent is gone. */
+  restored: boolean
 }
 
 export class AgentWindows {
@@ -178,7 +180,11 @@ export class AgentWindows {
   }
 
   private get carried(): SavedAgentWindow[] {
-    this.carriedList ??= parseSavedAgentWindows(this.deps.settings.get(AGENT_WINDOWS_KEY), this.deps.runtime())
+    if (this.carriedList) return this.carriedList
+    const runtime = this.deps.runtime()
+    // Not known yet (an unnamed remote before it connects): read once it is.
+    if (runtime === null) return []
+    this.carriedList = parseSavedAgentWindows(this.deps.settings.get(AGENT_WINDOWS_KEY), runtime)
     return this.carriedList
   }
 
@@ -222,7 +228,7 @@ export class AgentWindows {
     }
     const agentId = request.agentId ?? null
     // Opened now: it is no longer one to reopen.
-    this.carriedList = this.carried.filter((e) => !this.matches(e, request.filePath, agentId))
+    if (this.deps.runtime() !== null) this.carriedList = this.carried.filter((e) => !this.matches(e, request.filePath, agentId))
     let id = -1
     const handle = this.deps.create(
       { filePath: request.filePath, agentId, name: request.name || agentWindowName(request.filePath), ...(request.bounds ? { bounds: request.bounds } : {}), restored },
@@ -236,18 +242,33 @@ export class AgentWindows {
       },
     )
     id = handle.id
-    this.windows.set(id, { handle, filePath: request.filePath, agentId, opened: false, failed: false, keep: false })
+    this.windows.set(id, { handle, filePath: request.filePath, agentId, opened: false, failed: false, keep: false, restored })
     this.log.log(`[AgentWindows] Opened a window for ${request.filePath}`)
     this.save()
     return { id, created: true }
   }
 
-  /** The window could not open its agent (WINDOW_OPEN_FAILED): it is not saved until it does. */
+  /**
+   * The window could not open its agent (WINDOW_OPEN_FAILED): it is not saved
+   * until it does. A window the launch reopened stays saved unless its agent
+   * is gone (the restore rule): a daemon that was away for a moment does not
+   * cost the window.
+   */
   openFailed(id: number): void {
     const w = this.windows.get(id)
     if (!w || w.opened) return
-    w.failed = true
-    this.save()
+    if (!w.restored) {
+      w.failed = true
+      this.save()
+      return
+    }
+    const entry = { agentId: w.agentId, filePath: w.filePath }
+    void Promise.resolve().then(() => this.deps.check(entry)).catch(() => 'unknown' as const).then((found) => {
+      if (found !== 'gone' || w.opened || !this.windows.has(id)) return
+      w.failed = true
+      this.log.log(`[AgentWindows] ${w.filePath} did not open and is no longer there: its window is not saved`)
+      this.save()
+    })
   }
 
   /** The open agent windows, as saved (a window whose open failed is left out). */
@@ -276,9 +297,12 @@ export class AgentWindows {
   save(): void {
     if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null }
     if (this.frozen) return
+    const runtime = this.deps.runtime()
+    // Never written for an unknown runtime: it would replace the saved list with one nobody can restore.
+    if (runtime === null) return
     const open = this.list()
     const carried = this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))
-    this.deps.settings.set(AGENT_WINDOWS_KEY, { runtime: this.deps.runtime(), windows: [...open, ...carried] } satisfies SavedAgentWindows)
+    this.deps.settings.set(AGENT_WINDOWS_KEY, { runtime, windows: [...open, ...carried] } satisfies SavedAgentWindows)
   }
 
   private saveSoon(): void {
@@ -302,7 +326,7 @@ export class AgentWindows {
   closeAll(): void {
     this.restoreGeneration++
     const open = this.list()
-    this.carriedList = [...open, ...this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))]
+    if (this.deps.runtime() !== null) this.carriedList = [...open, ...this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))]
     for (const w of this.windows.values()) {
       w.keep = true
       if (!w.handle.isDestroyed()) w.handle.close()

@@ -24,6 +24,8 @@ type OpenFile = (filePath: string) => Promise<{ success?: boolean; error?: strin
  */
 export async function openWindowAgent(openFile: OpenFile): Promise<void> {
   useAgentWindowStore.getState().setOpening()
+  // A reloaded page first takes back the queue main kept for it, so the re-attach sends it.
+  await restoreWindowQueue()
   let filePath = agentWindowFile
   try {
     const session = await window.adfApi?.getCurrentFile?.()
@@ -58,19 +60,43 @@ export function queueEntries(queues: Record<string, Record<string, Array<{ id: s
   return out
 }
 
-/** Agent window: mirror every queue change to main, which hands it to the main window when this window closes. */
+let windowQueueRestored: Promise<void> | null = null
+
+/**
+ * Agent window, once per page: take back the queue main holds for this
+ * window (a reload, a renderer crash), before anything is mirrored, so the
+ * new page's empty queue never replaces it.
+ */
+export function restoreWindowQueue(): Promise<void> {
+  windowQueueRestored ??= (async () => {
+    try {
+      const entries = await window.adfApi?.getWindowQueue?.()
+      if (entries?.length) adoptQueueHandover(entries, { deliver: false })
+    } catch { /* nothing kept */ }
+  })()
+  return windowQueueRestored
+}
+
+/**
+ * Agent window: mirror its queues to main, which hands them to the main
+ * window when this window closes. Starts after restoreWindowQueue; sends
+ * when the queues change (or the open file, which names them), not on
+ * every document change.
+ */
 export function startQueueMirror(): () => void {
-  let last = ''
+  let started = false
+  let stopped = false
   const sync = (): void => {
+    if (!started || stopped) return
     const entries = queueEntries(useMessageQueueStore.getState().queues, useDocumentStore.getState().filePath)
-    const text = JSON.stringify(entries)
-    if (text === last) return
-    last = text
     void window.adfApi?.syncQueuedMessages?.(entries)?.catch(() => {})
   }
-  const offQueue = useMessageQueueStore.subscribe(sync)
-  const offDoc = useDocumentStore.subscribe(sync)
-  return () => { offQueue(); offDoc() }
+  const offQueue = useMessageQueueStore.subscribe((state, prev) => { if (state.queues !== prev.queues) sync() })
+  const offDoc = useDocumentStore.subscribe((state, prev) => {
+    if (state.filePath !== prev.filePath && Object.keys(useMessageQueueStore.getState().queues).length > 0) sync()
+  })
+  void restoreWindowQueue().then(() => { started = true; sync() })
+  return () => { stopped = true; offQueue(); offDoc() }
 }
 
 /**
@@ -80,7 +106,7 @@ export function startQueueMirror(): () => void {
  * agent's own path, or the background batch); an agent that is off keeps
  * them until it starts.
  */
-export function adoptQueueHandover(entries: readonly QueueHandoverEntry[]): void {
+export function adoptQueueHandover(entries: readonly QueueHandoverEntry[], opts: { deliver?: boolean } = {}): void {
   const queue = useMessageQueueStore.getState()
   for (const entry of entries) {
     for (const m of entry.messages) {
@@ -91,8 +117,8 @@ export function adoptQueueHandover(entries: readonly QueueHandoverEntry[]): void
         ...(m.failures ? { failures: m.failures } : {}),
       })
     }
-    console.info(`[queue] ${entry.messages.length} queued message(s) of ${entry.filePath} (${entry.loop}) moved here from its closed window`)
-    if (loopIdle(entry.filePath, entry.loop)) deliverQueuedMessages(entry.filePath, entry.loop, { automatic: true })
+    console.info(`[queue] ${entry.messages.length} queued message(s) of ${entry.filePath} (${entry.loop}) taken over`)
+    if (opts.deliver !== false && loopIdle(entry.filePath, entry.loop)) deliverQueuedMessages(entry.filePath, entry.loop, { automatic: true })
   }
 }
 

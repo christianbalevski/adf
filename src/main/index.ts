@@ -44,7 +44,7 @@ import { processAgentLeases } from './runtime/agent-lease'
 import type { StudioBackendMode } from '../shared/types/backend.types'
 import { AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
 import { QueueHandover } from './backend/queue-handover'
-import { ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
+import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
 import { samePath } from './backend/daemon-mode/session'
 import { deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
 
@@ -67,7 +67,7 @@ process.env.UV_THREADPOOL_SIZE ||= '8'
 // Must be called before app.whenReady()
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: 'adf-file',
+    scheme: ADF_FILE_WINDOW.scheme,
     // Intentionally NOT a `standard` scheme. Standard schemes put the URL
     // authority through Chromium's host canonicalization, which lowercases it
     // and appends a trailing "/". The workspace file path is encoded as the
@@ -77,11 +77,8 @@ protocol.registerSchemesAsPrivileged([
     // the host is an opaque string preserved verbatim. Nothing fetch()es this
     // scheme (only <img>/<video> via img-src/media-src), so `standard` and
     // `corsEnabled` aren't needed.
-    privileges: {
-      secure: true,
-      supportFetchAPI: true,
-      stream: true
-    }
+    // secure, supportFetchAPI, stream: shared with the real-Electron test of the window header (adf-file-window.json).
+    privileges: ADF_FILE_WINDOW.privileges
   }
 ])
 
@@ -772,8 +769,8 @@ app.whenReady().then(async () => {
         (await handle.client()).request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: filePath } })),
     })
     // adf-file:// requests name their window, so an agent window's images come from its agent (agent-windows.md).
-    session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['<all_urls>'] }, (details, callback) => {
-      if (!details.url.startsWith('adf-file:')) { callback({}); return }
+    session.defaultSession.webRequest.onBeforeSendHeaders(ADF_FILE_WINDOW.headerFilter, (details, callback) => {
+      if (!details.url.startsWith(`${ADF_FILE_WINDOW.scheme}:`)) { callback({}); return }
       callback({ requestHeaders: { ...details.requestHeaders, [ADF_WINDOW_HEADER]: String(details.webContentsId ?? '') } })
     })
     // Save and Close Agent act on the window in front; every other menu item on the main window.
@@ -808,6 +805,7 @@ app.whenReady().then(async () => {
     })
     ipcMain.handle(IPC.WINDOW_STASH_DONE, (event) => { handle.windows.stashed(event.sender.id) })
     ipcMain.handle(IPC.WINDOW_QUEUE_SYNC, (event, entries: unknown) => { queueHandover.mirror(event.sender.id, entries) })
+    ipcMain.handle(IPC.WINDOW_QUEUE_GET, (event) => queueHandover.mirrorOf(event.sender.id))
     ipcMain.handle(IPC.QUEUE_HANDOVER_TAKE, (event) => (event.sender === mainWindow?.webContents ? queueHandover.take() : []))
     // Open in new window. Inside Studio registers no handler: its renderer never offers it.
     const windows = agentWindows

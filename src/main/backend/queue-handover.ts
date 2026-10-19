@@ -23,6 +23,11 @@ export class QueueHandover {
     else this.mirrors.delete(windowId)
   }
 
+  /** WINDOW_QUEUE_GET: what the window last reported (a reloaded page takes it back). */
+  mirrorOf(windowId: number): QueueHandoverEntry[] {
+    return this.mirrors.get(windowId) ?? []
+  }
+
   /** The window closed: true when it left messages for the main window. */
   closed(windowId: number): boolean {
     const left = this.mirrors.get(windowId)

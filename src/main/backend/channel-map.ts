@@ -553,6 +553,7 @@ export const CHANNEL_MAP = {
   [IPC.WINDOW_OPEN_SETTINGS]: local('invoke', 'Registered in main/index.ts in daemon mode: focuses the main window and opens Settings there, at a section.'),
   [IPC.WINDOW_STASH_DONE]: local('invoke', 'Registered in main/index.ts in daemon mode: the asking agent window kept its unsaved text before a restart.'),
   [IPC.WINDOW_QUEUE_SYNC]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages of the asking agent window, held in main for the main window.'),
+  [IPC.WINDOW_QUEUE_GET]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages main holds for the asking agent window, which a reloaded page takes back before it mirrors again.'),
   [IPC.QUEUE_HANDOVER_TAKE]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages of closed agent windows, taken once by the main window.'),
   [IPC.QUEUE_HANDOVER_READY]: local('push', 'Studio main tells the main window that a closed agent window left queued messages.'),
   [IPC.MENU_ACTION_TAKE_PENDING]: local('invoke', 'Registered in main/index.ts in daemon mode: the menu actions sent while the page loaded; the call marks the page as listening.'),

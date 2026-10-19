@@ -480,6 +480,7 @@ export const IPC = {
   WINDOW_STASH_DONE: 'adf:window:stash-done',
   // An agent window's queued messages, mirrored to main; the main window takes them when the agent window closes.
   WINDOW_QUEUE_SYNC: 'adf:window:queue-sync',
+  WINDOW_QUEUE_GET: 'adf:window:queue-get',
   QUEUE_HANDOVER_TAKE: 'adf:window:queue-handover-take',
   QUEUE_HANDOVER_READY: 'adf:window:queue-handover-ready',
   // Menu actions sent while the page was loading, taken once it listens (daemon mode).

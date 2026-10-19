@@ -779,6 +779,7 @@ const api: AdfApi = {
   openMainSettings: (request: { section?: string; anchor?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_SETTINGS, request),
   agentWindowStashed: () => ipcRenderer.invoke(IPC.WINDOW_STASH_DONE),
   syncQueuedMessages: (entries: QueueHandoverEntry[]) => ipcRenderer.invoke(IPC.WINDOW_QUEUE_SYNC, entries),
+  getWindowQueue: () => ipcRenderer.invoke(IPC.WINDOW_QUEUE_GET),
   takeQueueHandover: () => ipcRenderer.invoke(IPC.QUEUE_HANDOVER_TAKE),
   onQueueHandover: (callback: () => void) => {
     const handler = () => callback()

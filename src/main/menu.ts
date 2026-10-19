@@ -84,8 +84,14 @@ function watch(wc: Electron.WebContents): void {
   if (watched.has(wc)) return
   watched.add(wc)
   const id = wc.id
-  // A reload: the new page listens once it takes its pending actions.
-  wc.on('did-start-loading', () => { listening.delete(id) })
+  // A new page (reload, navigation of the main frame) listens once it takes its pending actions.
+  // A subframe, a <webview> or an in-page navigation keeps the page that listens.
+  wc.on('did-start-navigation', (details: unknown, _url?: unknown, isInPlace?: unknown, isMainFrame?: unknown) => {
+    const d = details as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+    const mainFrame = d?.isMainFrame ?? isMainFrame === true
+    const sameDocument = d?.isSameDocument ?? isInPlace === true
+    if (mainFrame && !sameDocument) listening.delete(id)
+  })
   wc.once('destroyed', () => { listening.delete(id); queued.delete(id) })
 }
 

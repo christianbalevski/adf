@@ -1,4 +1,8 @@
 import type { PendingNotification } from '../../../shared/types/ipc.types'
+// One source for main/index.ts and the real-Electron test (tests/electron/adf-file-window-header.cjs).
+import ADF_FILE_WINDOW from './adf-file-window.json'
+
+export { ADF_FILE_WINDOW }
 
 /**
  * Studio windows in daemon mode (#149 step 1, docs/design/agent-windows.md).
@@ -19,7 +23,7 @@ import type { PendingNotification } from '../../../shared/types/ipc.types'
  * webRequest hook, which knows the webContents): the daemon-mode handler
  * serves the file from that window's agent.
  */
-export const ADF_WINDOW_HEADER = 'X-ADF-Window'
+export const ADF_WINDOW_HEADER = ADF_FILE_WINDOW.windowHeader
 
 /** One window as the notice rule sees it. `filePath`: the agent it shows (its session's current file). */
 export interface WindowView {

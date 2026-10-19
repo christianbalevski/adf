@@ -22,7 +22,8 @@ interface FakeWindow extends AgentWindowHandle {
   request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean }
 }
 
-function setup(opts: { runtime?: string; saved?: unknown; check?: (entry: SavedAgentWindow) => Promise<SavedAgentCheck> } = {}) {
+function setup(opts: { runtime?: string | null; saved?: unknown; check?: (entry: SavedAgentWindow) => Promise<SavedAgentCheck> } = {}) {
+  const state = { runtime: opts.runtime === undefined ? 'local' : opts.runtime }
   const store = new Map<string, unknown>(opts.saved === undefined ? [] : [[AGENT_WINDOWS_KEY, opts.saved]])
   const windows: FakeWindow[] = []
   /** What each window's session has open (renames move it). */
@@ -46,12 +47,12 @@ function setup(opts: { runtime?: string; saved?: unknown; check?: (entry: SavedA
     current: (id) => sessions.get(id) ?? null,
     samePath: (a, b) => a === b,
     settings: { get: (key) => store.get(key), set: (key, value) => { store.set(key, value) } },
-    runtime: () => opts.runtime ?? 'local',
+    runtime: () => state.runtime,
     check: opts.check ?? (async () => 'open'),
     log: { log: () => {}, warn: () => {} },
   })
   const saved = () => (store.get(AGENT_WINDOWS_KEY) as { runtime: string; windows: SavedAgentWindow[] } | undefined)
-  return { manager, windows, sessions, store, saved, savedIds: () => saved()?.windows.map((w) => w.agentId) }
+  return { manager, windows, sessions, store, state, saved, savedIds: () => saved()?.windows.map((w) => w.agentId) }
 }
 
 const savedList = (...ids: Array<[string, string]>) => ({ runtime: 'local', windows: ids.map(([agentId, filePath]) => ({ agentId, filePath })) })
@@ -152,6 +153,19 @@ describe('saved list', () => {
     expect(savedIds()).toEqual([AGENT_1, AGENT_2])
   })
 
+  it('is never written while the runtime is unknown (an unnamed remote before it connects)', () => {
+    const { manager, store } = setup({ runtime: null, saved: savedList([AGENT_1, FILE_1]) })
+    manager.open({ filePath: FILE_2, agentId: AGENT_2 })
+    manager.freeze()
+    expect(store.get(AGENT_WINDOWS_KEY)).toEqual(savedList([AGENT_1, FILE_1]))
+    // Known once connected: the saved list is read then, and kept.
+    const later = setup({ runtime: null, saved: savedList([AGENT_1, FILE_1]) })
+    later.manager.open({ filePath: FILE_2, agentId: AGENT_2 })
+    later.state.runtime = 'local'
+    later.manager.save()
+    expect(later.savedIds()).toEqual([AGENT_2, AGENT_1])
+  })
+
   it('drops malformed entries and lists saved for another runtime', () => {
     const raw = { runtime: 'local', windows: [{ agentId: AGENT_1, filePath: FILE_1, bounds: { x: 1, y: 2, width: 0, height: 5 } }, { filePath: 3 }, null, { filePath: FILE_2 }] }
     expect(parseSavedAgentWindows(raw, 'local')).toEqual([{ agentId: AGENT_1, filePath: FILE_1 }, { agentId: null, filePath: FILE_2 }])
@@ -188,6 +202,20 @@ describe('restore', () => {
     answer = 'open'
     expect(await manager.restore()).toEqual({ opened: 1, skipped: 0 })
     expect(windows).toHaveLength(1)
+  })
+
+  it('a reopened window whose open fails stays saved unless its agent is gone', async () => {
+    let found: SavedAgentCheck = 'open'
+    const { manager, savedIds } = setup({ saved: savedList([AGENT_1, FILE_1], [AGENT_2, FILE_2]), check: async () => found })
+    await manager.restore()
+    found = 'unknown'
+    manager.openFailed(10)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(savedIds()).toEqual([AGENT_1, AGENT_2])
+    found = 'gone'
+    manager.openFailed(11)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(savedIds()).toEqual([AGENT_1])
   })
 
   it('closeAll during a restore stops it and keeps every window saved', async () => {
