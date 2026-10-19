@@ -852,10 +852,9 @@ computer announces remote access only while it is on and its network is
 allowed. Its announcement on this network names its tailnet addresses, so a
 computer on both is one row, at its tailnet address.
 
-"Same fingerprint at N addresses" under a row means more than one computer
-shows that fingerprint, so one may be copying it. Every address is listed.
-Pair only with the one whose fingerprint and address you check on its own
-screen.
+A computer seen at two addresses that are not merged is listed once per
+address. Pair only with the one whose fingerprint matches the one the host
+shows next to its pairing code.
 
 **Pair** opens the **Pair** dialog: this device's name (default: its runtime
 alias, else its host name), the code, and, for a plain-http address, "I
