@@ -63,8 +63,11 @@ function MarqueeRow({ chips, speed, onPick, disabled }: {
       const progress = anim && duration > 0 ? wrap(Number(anim.currentTime ?? 0)) / duration : Math.random()
       anim?.cancel()
       duration = (width / Math.abs(speed)) * 1000
+      // perspective() at z = 0 draws the same, but the transform is no longer a
+      // plain translation, which Chromium snaps to whole device pixels: on a
+      // 1x display the slow drift would sit still, then jump a pixel.
       anim = track.animate(
-        [{ transform: 'translate3d(0, 0, 0)' }, { transform: `translate3d(${-width}px, 0, 0)` }],
+        [{ transform: 'perspective(1000px) translate3d(0, 0, 0)' }, { transform: `perspective(1000px) translate3d(${-width}px, 0, 0)` }],
         { duration, iterations: Infinity, easing: 'linear', direction: speed < 0 ? 'reverse' : 'normal' },
       )
       anim.currentTime = progress * duration
