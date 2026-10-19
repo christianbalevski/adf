@@ -15,7 +15,9 @@ import type { RemoteServices } from './remote/services'
 /**
  * What every daemon-mode handler gets. Handlers hold no state of their own:
  * client state is in `session` (D3), settings in `clientSettings` and the
- * daemon (§4.2), everything else in the daemon.
+ * daemon (§4.2), everything else in the daemon. Each window has its own
+ * context (agent-windows.md): `session`, `bridge` and `ready` are the
+ * calling window's; the rest is shared.
  */
 export interface DaemonModeContext {
   mode: Exclude<StudioBackendMode, 'embedded'>
@@ -36,7 +38,7 @@ export interface DaemonModeContext {
   sharedMnemonic(): SharedMnemonicStore | null
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
-  hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void }
+  hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void; mainWindow?: () => Electron.BrowserWindow | null }
   /**
    * Local mode, after an owner import in the daemon (§5.3.1): rewrite the
    * `studio-runtime:<scope>` entry with a delegation the new owner signs

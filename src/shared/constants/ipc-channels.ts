@@ -471,6 +471,8 @@ export const IPC = {
   NETWORK_NOTICES_GET: 'adf:network:notices',
   NETWORK_NOTICE_DISMISS: 'adf:network:notice-dismiss',
   NETWORK_NOTICES_CHANGED: 'adf:network:notices-changed',
+  // Agent windows (docs/design/agent-windows.md): Open in new window. Daemon mode only.
+  WINDOW_OPEN_AGENT: 'adf:window:open-agent',
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   RECOVERY_STASH: 'adf:recovery:stash',

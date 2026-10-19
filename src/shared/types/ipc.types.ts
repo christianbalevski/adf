@@ -674,6 +674,11 @@ export interface NotificationsSnapshot {
   pending: PendingNotification[]
   /** Newest first, capped, per-app-session (never persisted). */
   history: ResolvedNotification[]
+  /**
+   * Daemon mode with agent windows open (docs/design/agent-windows.md): the
+   * ids whose notice this window shows. Absent: the window decides alone.
+   */
+  notify?: string[]
 }
 
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */

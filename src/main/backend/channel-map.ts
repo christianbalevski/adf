@@ -547,6 +547,7 @@ export const CHANNEL_MAP = {
   [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),
   [IPC.NETWORK_NOTICE_DISMISS]: local('invoke', 'Not now on a notice: it goes and is not shown again this session.'),
   [IPC.NETWORK_NOTICES_CHANGED]: local('push', 'The notices list, pushed when one is shown, dismissed, allowed or withdrawn; non-modal, never a dialog.'),
+  [IPC.WINDOW_OPEN_AGENT]: local('invoke', 'Registered in main/index.ts in daemon mode only: opens or focuses the agent\'s window (agent-windows.md), its own client session. Inside Studio never offers it.'),
   [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------

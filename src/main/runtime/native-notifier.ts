@@ -50,8 +50,12 @@ export interface NativeNotifierPlatform {
   /** The user's "System notifications" toggle. Checked per notification, so
    *  flipping it off silences the very next one without a restart. */
   isEnabled(): boolean
-  /** True when ANY app window has focus — the one case we stay silent. */
-  isWindowFocused(): boolean
+  /**
+   * True when the window that shows `entry` has focus — the one case we stay
+   * silent. Embedded: any app window. Daemon mode with agent windows: the
+   * window that owns the entry's notice (agent-windows.md).
+   */
+  isWindowFocused(entry: PendingNotification): boolean
   now(): number
   /** Show a toast. Returns null when the platform declined to create one. */
   show(request: NativeToastRequest): NativeToastHandle | null
@@ -166,9 +170,7 @@ export class NativeNotifier {
     if (!this.platform.isEnabled()) return
     if (!this.platform.isSupported()) return
     // The whole point: the in-app toast owns the focused case.
-    if (this.platform.isWindowFocused()) return
-
-    for (const entry of arrivals) this.announce(entry)
+    for (const entry of arrivals) if (!this.platform.isWindowFocused(entry)) this.announce(entry)
   }
 
   /** Close everything still on screen (app shutdown). */

@@ -32,6 +32,15 @@ export interface ApprovalsUiDeps {
   tokensToday: () => { input: number; output: number }
   showMainWindow?: () => BrowserWindow | null
   openFile?: (filePath: string) => void
+  /** The main window; default the first window. */
+  mainWindow?: () => BrowserWindow | null
+  /**
+   * Agent windows (agent-windows.md): the agent window that shows this
+   * request's notice, or null for the main window. A reveal goes there.
+   */
+  noticeWindow?: (notificationId: string) => BrowserWindow | null
+  /** Whether the window that shows `entry`'s notice has focus (no OS notification then). Default: any window. */
+  noticeFocused?: (entry: PendingNotification) => boolean
   log?: Pick<Console, 'warn'>
 }
 
@@ -135,6 +144,7 @@ export class ApprovalsUi {
   }
 
   private mainWindow(): BrowserWindow | null {
+    if (this.deps.mainWindow) return this.deps.mainWindow()
     const windows = BrowserWindow.getAllWindows()
     return windows.length > 0 ? windows[0] : null
   }
@@ -155,6 +165,15 @@ export class ApprovalsUi {
       if (win.isDestroyed() || win.webContents.isDestroyed()) return
       try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
     }
+    // The agent window that shows this request's notice (agent-windows.md).
+    const agentWin = payload.notificationId ? this.deps.noticeWindow?.(payload.notificationId) ?? null : null
+    if (agentWin && !agentWin.isDestroyed()) {
+      if (agentWin.isMinimized()) agentWin.restore()
+      agentWin.focus()
+      app.focus?.({ steal: true })
+      send(agentWin)
+      return
+    }
     const win = this.focusMainWindow() ?? this.deps.showMainWindow?.() ?? null
     if (!win || win.isDestroyed()) return
     if (!win.webContents.isLoading()) {
@@ -171,7 +190,7 @@ export class ApprovalsUi {
         try { return Notification.isSupported() } catch { return false }
       },
       isEnabled: () => this.deps.notificationsEnabled(),
-      isWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
+      isWindowFocused: (entry) => this.deps.noticeFocused ? this.deps.noticeFocused(entry) : BrowserWindow.getFocusedWindow() !== null,
       now: () => Date.now(),
       show: (request): NativeToastHandle | null => {
         try {

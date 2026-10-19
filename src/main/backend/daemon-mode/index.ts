@@ -35,6 +35,8 @@ import { REMOTE_WAITING_PREFIX } from './remote/connector'
 import { OAuthCallbackRelay } from './remote/oauth-relay'
 import { RemotePicker } from './remote/picker'
 import { uploadFile, type RemoteServices } from './remote/services'
+import type { BridgeOutput, TurnOutcome } from './event-bridge'
+import { ADF_WINDOW_HEADER, NoticeOwners, type WindowView } from './windows'
 
 /**
  * Daemon-mode IPC registration (design D1, §3): the alternative to
@@ -98,6 +100,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.NETWORK_FORGET,
   IPC.NETWORK_NOTICES_GET,
   IPC.NETWORK_NOTICE_DISMISS,
+  IPC.WINDOW_OPEN_AGENT,
 ]
 
 export const RECOVERY_HINT = `To run agents in Studio instead, choose Inside Studio (legacy) in Settings → Connection (Studio restarts), or start Studio with ${BACKEND_ENV_OVERRIDE}=embedded for one session (sign-ins and the runtime identity then stay with the daemon).`
@@ -136,7 +139,8 @@ export interface DaemonModeDeps {
   connect: DaemonConnector
   /** Studio's userData (studio-client-settings.json lives here). */
   userDataDir: string
-  hooks?: { showMainWindow?: () => BrowserWindow | null; openFile?: (filePath: string) => void }
+  /** `mainWindow`: the main window (pushes not addressed to an agent window go there); default the first window. */
+  hooks?: { showMainWindow?: () => BrowserWindow | null; openFile?: (filePath: string) => void; mainWindow?: () => BrowserWindow | null }
   log?: Pick<Console, 'log' | 'warn' | 'error'>
   /** Agent lease registry (tests); defaults to the process registry. */
   leases?: Pick<AgentLeaseRegistry, 'registerClient'>
@@ -222,6 +226,29 @@ export interface DaemonModeHandle {
    * the quit question about connected computers (remote-access.md §3.6).
    */
   shutdown(opts?: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean }): Promise<void>
+  /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
+  windows: DaemonWindows
+}
+
+/** An agent window as daemon mode sees it: its webContents. */
+export interface WindowTarget {
+  /** The webContents id: IPC calls whose sender has it are served by this window's session. */
+  id: number
+  send(channel: string, ...args: unknown[]): void
+  focused(): boolean
+}
+
+export interface DaemonWindows {
+  /** A new agent window: opens its client session. Call before its page loads. */
+  open(target: WindowTarget): void
+  /** The window closed: its documents are released and its session ends. */
+  close(id: number): Promise<void>
+  /** The file the window's session has open (it follows renames), or null. */
+  current(id: number): { filePath: string; agentId: string | null } | null
+  /** The runtime this Studio is connected to, as saved with the agent windows: `local`, or `remote:<name or URL>`. */
+  runtime(): string
+  /** The webContents id of the agent window that shows this request's notice, or null (the main window). */
+  noticeOwner(notificationId: string): number | null
 }
 
 /** The daemon's remote-access management routes (remote-access.md §11.2). */
@@ -281,8 +308,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   )
   // Remote, a pinned connection: before every new connection the address must show the pinned fingerprint (connection.ts).
   const redial = (reason: string): void => {
-    if (!connection.pinned) { clientSession?.reconnect(); return }
-    void connection.reverify(reason).then((ok) => { if (ok) clientSession?.reconnect() })
+    if (!connection.pinned) { reconnectStreams(); return }
+    void connection.reverify(reason).then((ok) => { if (ok) reconnectStreams() })
   }
   // Remote mode: a 401 after connecting (the server's token changed) is the
   // "refused the token" sentence and ends the connection; retrying could not
@@ -294,8 +321,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     const url = connection.baseUrl ?? 'the remote daemon'
     log.error(`[Backend] The ADF daemon at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
     connection.markFailed(`The ADF daemon at ${url} refused the token. Run adf daemon token on the server and add it in Settings → Connection → Add connection.`)
-    bridge.failTurns('disconnected')
+    failAllTurns('disconnected')
     void clientSession?.end().catch(() => {})
+    for (const w of windowSessions.values()) void w.client?.end().catch(() => {})
   }
   const baseFetch: typeof fetch = deps.fetch ?? ((input, init) => fetch(input, init))
   const connectionFetch: typeof fetch | undefined = deps.mode !== 'remote' ? deps.fetch : (async (input: string | URL | Request, init?: RequestInit) => {
@@ -318,9 +346,46 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   const session = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) }, deps.mode === 'remote')
 
   const firstWindow = (): BrowserWindow | null => {
+    if (hooks.mainWindow) return hooks.mainWindow()
     const windows = BrowserWindow.getAllWindows()
     return windows.length > 0 ? windows[0] : null
   }
+
+  // --- Agent windows (docs/design/agent-windows.md) ---------------------------
+  // Each agent window is its own client session (D5) with its own document
+  // holds, focus, stream and bridge. The main window keeps `session` and
+  // `bridge` below; an IPC call is served by its sender's session.
+  interface WindowSession {
+    id: number
+    target: WindowTarget
+    session: DaemonModeSession
+    bridge: EventBridge
+    batcher: BackgroundEventBatcher
+    client: ClientSession | null
+    closed: boolean
+    ready: Promise<DaemonClient>
+    ctx: DaemonModeContext
+  }
+  const windowSessions = new Map<number, WindowSession>()
+  const noticeOwners = new NoticeOwners((a, b) => samePath(a, b, deps.mode === 'remote'))
+  /** Every window as the notice rule sees it: the main window shows the main session's file. */
+  const windowViews = (): WindowView[] => {
+    const views: WindowView[] = []
+    const main = firstWindow()
+    const focused = BrowserWindow.getFocusedWindow()
+    if (main && !main.isDestroyed()) views.push({ id: main.webContents.id, main: true, focused: focused === main, filePath: session.filePath })
+    for (const w of windowSessions.values()) views.push({ id: w.id, main: false, focused: w.target.focused(), filePath: w.session.filePath })
+    return views
+  }
+  const reconnectStreams = (): void => {
+    clientSession?.reconnect()
+    for (const w of windowSessions.values()) w.client?.reconnect()
+  }
+  const failAllTurns = (outcome: Extract<TurnOutcome, 'disconnected' | 'exited' | 'stopped'>): void => {
+    bridge.failTurns(outcome)
+    for (const w of windowSessions.values()) w.bridge.failTurns(outcome)
+  }
+
   const output = {
     send(channel: string, ...args: unknown[]) {
       const win = firstWindow()
@@ -420,7 +485,45 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   // The macOS menu bar's first refresh runs inside the ApprovalsUi
   // constructor, before the bridge exists: no agents yet.
   const runningAgents = () => (bridge ? bridge.runningAgents() : [])
+  /**
+   * An approvals snapshot to every window. With agent windows open, each
+   * copy names the requests whose notice that window shows (`notify`); with
+   * none, the push is exactly embedded's.
+   */
+  const publishApprovals = (snapshot: NotificationsSnapshot): void => {
+    if (windowSessions.size === 0) { output.sendAll(IPC.APPROVALS_CHANGED, snapshot); return }
+    const main = firstWindow()
+    if (main && !main.isDestroyed() && !main.webContents.isDestroyed()) {
+      try { main.webContents.send(IPC.APPROVALS_CHANGED, { ...snapshot, notify: noticeOwners.idsFor(main.webContents.id) }) } catch { /* window going away */ }
+    }
+    for (const w of windowSessions.values()) w.target.send(IPC.APPROVALS_CHANGED, { ...snapshot, notify: noticeOwners.idsFor(w.id) })
+  }
+  /** One approvals snapshot: notice windows first, then the native notifier and the menu bar. */
+  const applyApprovals = (snapshot: NotificationsSnapshot): void => {
+    noticeOwners.assign(snapshot.pending ?? [], windowViews())
+    approvals.apply(snapshot)
+    void mcpOAuth.apply(snapshot)
+  }
+  const agentWindowOf = (notificationId: string): WindowSession | null => {
+    const owner = noticeOwners.owner(notificationId)
+    return owner === null ? null : windowSessions.get(owner) ?? null
+  }
+
   const approvals = new ApprovalsUi({
+    mainWindow: firstWindow,
+    noticeWindow: (notificationId) => {
+      const w = agentWindowOf(notificationId)
+      if (!w) return null
+      return BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.webContents.id === w.id) ?? null
+    },
+    noticeFocused: (entry) => {
+      const owner = noticeOwners.owner(entry.id)
+      const w = owner === null ? null : windowSessions.get(owner)
+      if (w) return w.target.focused()
+      if (windowSessions.size === 0) return BrowserWindow.getFocusedWindow() !== null
+      const main = firstWindow()
+      return !!main && BrowserWindow.getFocusedWindow() === main
+    },
     notificationsEnabled: () => clientSettings.get('nativeNotificationsEnabled') !== false,
     menuBarEnabled: () => clientSettings.get('menuBarEnabled') !== false,
     agents: () => runningAgents()
@@ -439,25 +542,35 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   // Remote mode: a browser session's viewer port is the server's loopback.
   // Opening it here would load this computer's loopback, so the push is
   // replaced by a notice (remote-unsupported, design §9.3).
-  const bridgeOutput: typeof output = deps.mode !== 'remote' ? output : {
+  // An agent window's bridge drops the push: the main window's says it once.
+  const remoteBrowserSession = (out: BridgeOutput, notice: boolean): BridgeOutput => deps.mode !== 'remote' ? out : {
     send(channel: string, ...args: unknown[]) {
       if (channel === IPC.COMPUTE_BROWSER_SESSION) {
+        if (!notice) return
         const name = (args[0] as { agentName?: unknown } | undefined)?.agentName
         const text = `${typeof name === 'string' && name ? name : 'An agent'} ${REMOTE_BROWSER_SESSION_SENTENCE}`
         log.warn(`[Remote] ${text}`)
         statusUi.notice(text)
         return
       }
-      output.send(channel, ...args)
+      out.send(channel, ...args)
     },
-    sendAll: (channel: string, ...args: unknown[]) => output.sendAll(channel, ...args),
+    sendAll: (channel: string, ...args: unknown[]) => out.sendAll(channel, ...args),
   }
+  // APPROVALS_CHANGED reaches every window from the main window's stream (publishApprovals).
+  const bridgeOutput = remoteBrowserSession({
+    send: (channel: string, ...args: unknown[]) => output.send(channel, ...args),
+    sendAll: (channel: string, ...args: unknown[]) => {
+      if (channel === IPC.APPROVALS_CHANGED) publishApprovals(args[0] as NotificationsSnapshot)
+      else output.sendAll(channel, ...args)
+    },
+  }, true)
   bridge = new EventBridge({
     session,
     output: bridgeOutput,
     batcher,
     client: () => connection.current,
-    onApprovals: (snapshot) => { approvals.apply(snapshot); void mcpOAuth.apply(snapshot) },
+    onApprovals: applyApprovals,
     onAgentsChanged: () => { approvals.refresh(); refreshTokens() },
     onFileRenamed: (oldPath, newPath) => session.rekey(oldPath, newPath),
     onNotice: (text) => statusUi.notice(text),
@@ -621,8 +734,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     }
     try {
       const snapshot = await client.request<NotificationsSnapshot>('GET', '/approvals')
-      approvals.apply(snapshot)
-      void mcpOAuth.apply(snapshot)
+      applyApprovals(snapshot)
       // Requests reach the daemon: connected, before the stream's own open.
       connection.markConnected()
     } catch (err) {
@@ -643,7 +755,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       },
       onFatal: (message) => {
         connection.markFailed(message)
-        bridge.failTurns('disconnected')
+        failAllTurns('disconnected')
       },
     })
     return client
@@ -660,20 +772,23 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   // handler reports it).
   let turnGrace: ReturnType<typeof setTimeout> | null = null
   connection.onState((state) => {
-    if (state.state === 'failed') bridge.failTurns('disconnected')
+    if (state.state === 'failed') failAllTurns('disconnected')
     if (state.state === 'disconnected' && !turnGrace) {
       turnGrace = setTimeout(() => {
         turnGrace = null
         if (connection.state.state === 'disconnected') {
           log.warn(`[Backend] The ADF daemon has been away for ${TURN_DISCONNECT_GRACE_MS / 1000}s; ending the chats that wait for their turn`)
-          bridge.failTurns('disconnected')
+          failAllTurns('disconnected')
         }
       }, TURN_DISCONNECT_GRACE_MS)
       turnGrace.unref?.()
     }
     if (state.state === 'connected' && turnGrace) { clearTimeout(turnGrace); turnGrace = null }
     // Chats whose wait ended while away: their agent's real state now.
-    if (state.state === 'connected') void bridge.recheckTurns()
+    if (state.state === 'connected') {
+      void bridge.recheckTurns()
+      for (const w of windowSessions.values()) void w.bridge.recheckTurns()
+    }
   })
 
   // --- Local mode: the daemon's process exited ---------------------------------
@@ -736,7 +851,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
             : undefined
     log.warn(`[Backend] ${daemonExitSentence({ pid, cause: cause?.text ?? null })}${cause ? '' : ' Its log has no shutdown line: it was killed or crashed.'} Started by ${startedBy ?? 'unknown'}; ${agentsAtExit.length} agent(s) were running.${auto ? ' Studio starts it again.' : ''}`)
     // The turns its agents ran cannot end any more.
-    bridge.failTurns('exited')
+    failAllTurns('exited')
     if (!auto) {
       // A daemon replaced from the terminal (`adf daemon restart`) answers again within moments: no dialog then.
       await waitExitWatch(deps.respawnDelayMs ?? DAEMON_RESPAWN_DELAY_MS)
@@ -754,7 +869,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   }
   // The token goes out again only once the listener is the daemon its pid file names (local), or the address shows the
   // pinned fingerprint (remote; connection.ts): re-dial then, not at the next backoff.
-  connection.onListenerVerified(() => { if (connection.state.state !== 'connected') clientSession?.reconnect() })
+  connection.onListenerVerified(() => { if (connection.state.state !== 'connected') reconnectStreams() })
   if (deps.mode === 'local') {
     connection.onState((state) => {
       if (state.state === 'connected' || state.state === 'failed') stopExitWatch()
@@ -784,12 +899,12 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     // A pinned connection sends nothing to the address before its fingerprint is checked again.
     if (connection.pinned) { redial('the computer resumed'); return }
     void client.withTimeout(RESUME_HEALTH_TIMEOUT_MS).health().then(
-      () => { clientSession?.reconnect() },
+      () => { reconnectStreams() },
       (err: unknown) => {
         const reason = err instanceof Error ? err.message : String(err)
         log.warn(`[Backend] The ADF daemon did not answer after the computer resumed: ${reason}`)
         connection.markDisconnected(`no answer after the computer resumed: ${reason}`)
-        clientSession?.reconnect()
+        reconnectStreams()
       },
     )
   }
@@ -823,7 +938,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         const endpoint = await connection.revive()
         if (endpoint.daemon) versionInfo = endpoint.daemon
         // Dial now unless the stream's own retry already reached the new daemon (a re-dial would drop that stream).
-        if (connection.state.state !== 'connected') clientSession?.reconnect()
+        if (connection.state.state !== 'connected') reconnectStreams()
         if (!(await waitConnected(60_000))) throw new Error('the new ADF daemon did not accept the client stream within 60 s')
         const toStart = agentsAtExit
         agentsAtExit = []
@@ -856,18 +971,19 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     return reviving
   }
 
-  const ctx: DaemonModeContext = {
+  /** A window's handler context: its own session, bridge and session-stamped client; everything else shared. */
+  const contextFor = (s: DaemonModeSession, b: EventBridge, ready: () => Promise<DaemonClient>): DaemonModeContext => ({
     mode: deps.mode,
     connection,
-    session,
-    bridge,
+    session: s,
+    bridge: b,
     clientSettings,
     approvals,
     installs,
-    ready: () => started.then(sessionClient),
+    ready,
     runningAgentAt: async (filePath) => findRunningAgent(await started, filePath),
     raw: async (path, query) => {
-      const client = sessionClient(await started)
+      const client = await ready()
       const url = client.url(path, query)
       return (deps.fetch ?? fetch)(url, { headers: client.headers({ Accept: '*/*' }), redirect: 'manual' })
     },
@@ -877,6 +993,84 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     ...(deps.afterOwnerImport ? { afterOwnerImport: deps.afterOwnerImport } : {}),
     remote: remoteServices,
     log,
+  })
+  const ctx = contextFor(session, bridge, () => started.then(sessionClient))
+
+  /**
+   * An agent window's client session: opened once the daemon is reached
+   * (`started`), never `exitDaemonWhenClosed` (the main window's session
+   * carries the quit rule). Its frames feed its own bridge, whose pushes go
+   * to that window only; approvals reach it through publishApprovals.
+   */
+  const openWindow = (target: WindowTarget): void => {
+    if (windowSessions.has(target.id)) return
+    const out: BridgeOutput = {
+      send: (channel, ...args) => { if (channel !== IPC.APPROVALS_CHANGED) target.send(channel, ...args) },
+      sendAll: (channel, ...args) => { if (channel !== IPC.APPROVALS_CHANGED) target.send(channel, ...args) },
+    }
+    const s = new DaemonModeSession(null, log, (text) => { log.warn(`[Backend] ${text}`); statusUi.notice(text) }, deps.mode === 'remote')
+    const b = new BackgroundEventBatcher((events) => out.send(IPC.BACKGROUND_AGENT_EVENT_BATCH, events))
+    const br = new EventBridge({ session: s, output: remoteBrowserSession(out, false), batcher: b, client: () => connection.current, trackCreatedFiles: false, log })
+    const w = { id: target.id, target, session: s, bridge: br, batcher: b, client: null, closed: false } as Omit<WindowSession, 'ready' | 'ctx'> as WindowSession
+    w.ready = started.then(async (client) => {
+      if (w.closed) throw new Error('The window closed')
+      const cs = (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed: false, log, ...(deps.mode === 'local' ? { pid: process.pid } : {}) })))(client)
+      w.client = cs
+      s.attach(cs)
+      try {
+        const summaries = await client.request<AgentSummary[]>('GET', '/agents')
+        const statuses = await Promise.all(summaries.map((a) =>
+          client.request<AgentStatus>('GET', `/agents/${encodeURIComponent(a.id)}/status`).catch(() => null)))
+        br.seed(statuses.filter((a): a is AgentStatus => !!a))
+      } catch (err) {
+        log.warn(`[Backend] Agent window ${target.id}: could not list the daemon's agents: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      if (w.closed) return client
+      cs.start({
+        onFrame: (frame) => br.handleFrame(frame),
+        onGap: (gap) => { void br.handleGap(gap) },
+        // The main window's stream reports the connection state.
+        onConnection: () => {},
+        onReattached: () => s.reattach(),
+        onFatal: (message) => {
+          log.warn(`[Backend] Agent window ${target.id}: ${message}`)
+          br.failTurns('disconnected')
+        },
+      })
+      return client
+    })
+    w.ready.catch(() => {})
+    w.ctx = contextFor(s, br, () => w.ready.then((client) => {
+      const id = w.client?.sessionId
+      return id ? client.withClientSession(id) : client
+    }))
+    windowSessions.set(target.id, w)
+    log.log(`[Backend] Agent window ${target.id} opened: it gets its own client session`)
+  }
+
+  const closeWindow = async (id: number): Promise<void> => {
+    const w = windowSessions.get(id)
+    if (!w) return
+    windowSessions.delete(id)
+    w.closed = true
+    // Its pending notices are the main window's now: still listed there, never lost.
+    const main = firstWindow()
+    noticeOwners.moveTo(id, main && !main.isDestroyed() ? main.webContents.id : null)
+    w.bridge.dispose()
+    w.batcher.dispose()
+    try {
+      await w.session.releaseAll()
+      await w.client?.end()
+      log.log(`[Backend] Agent window ${id} closed: its documents are released and its client session ended`)
+    } catch (err) {
+      log.warn(`[Backend] Agent window ${id}: ending its client session failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  /** The handler context of an IPC call: its sender's window, else the main window's. */
+  const ctxFor = (event: { sender?: { id?: number } } | undefined): DaemonModeContext => {
+    const id = event?.sender?.id
+    return (id !== undefined && windowSessions.get(id)?.ctx) || ctx
   }
 
   const registered: MappedChannel[] = []
@@ -886,7 +1080,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     if (entry.kind === 'send') {
       const sendHandler = DAEMON_MODE_SEND_HANDLERS[channel]
       if (sendHandler) {
-        ipc.on(channel, (event, ...args) => sendHandler(ctx, event as Electron.IpcMainEvent, ...args))
+        ipc.on(channel, (event, ...args) => sendHandler(ctxFor(event), event as Electron.IpcMainEvent, ...args))
         registered.push(channel)
         continue
       }
@@ -902,7 +1096,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     // Remote mode: the remote variant first (remote/handlers.ts), else the shared one.
     const handler = (deps.mode === 'remote' ? REMOTE_MODE_HANDLERS[channel] : undefined) ?? DAEMON_MODE_HANDLERS[channel]
     if (handler) {
-      ipc.handle(channel, (event, ...args) => handler(ctx, event, ...args))
+      ipc.handle(channel, (event, ...args) => handler(ctxFor(event), event, ...args))
     } else {
       const workstream = pendingWorkstream(channel)
       let warned = false
@@ -921,7 +1115,14 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   }
   log.log(`[Backend] ${deps.mode} daemon mode: ${registered.length - pending.length} channels implemented, ${pending.length} answer "not available in daemon mode yet"`)
 
-  const adfFile = createAdfFileHandler({ session, connection, fetch: deps.fetch, log })
+  // An agent window's request carries its webContents id (main/index.ts sets the header).
+  const adfFile = createAdfFileHandler({
+    session,
+    sessionFor: (request) => windowSessions.get(Number(request.headers.get(ADF_WINDOW_HEADER)))?.session ?? session,
+    connection,
+    fetch: deps.fetch,
+    log,
+  })
 
   /** Resolves true once the daemon's process exited (its pid, not its /health), false at the deadline. */
   const waitDaemonGone = async (budgetMs: number): Promise<boolean> => {
@@ -947,6 +1148,8 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       if (deps.mode === 'local' && opts.keepDaemonRunning === true && !keepRunning()) log.log('[Backend] Quit: the ADF daemon keeps running for the computers connected to it (this quit only)')
       let answer: ClientQuitAnswer | null = null
       try {
+        // Agent windows' sessions end first: the quit below counts other open sessions (§8.3).
+        await Promise.all([...windowSessions.keys()].map((id) => closeWindow(id)))
         await session.releaseAll()
         if (deps.mode === 'local' && clientSession?.quit) answer = await clientSession.quit(stopDaemon)
         else await clientSession?.end()
@@ -1055,5 +1258,15 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     startBackgroundAgent,
     agentActivity,
     shutdown,
+    windows: {
+      open: openWindow,
+      close: closeWindow,
+      current: (id) => {
+        const file = windowSessions.get(id)?.session.current
+        return file ? { filePath: file.filePath, agentId: file.agentId } : null
+      },
+      runtime: () => deps.mode === 'local' ? 'local' : `remote:${deps.runtimeName?.() || connection.baseUrl || ''}`,
+      noticeOwner: (notificationId) => agentWindowOf(notificationId)?.id ?? null,
+    },
   }
 }
