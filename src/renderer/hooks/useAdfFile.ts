@@ -12,6 +12,7 @@ import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
 import { confirmDiscardConflicts } from '../utils/edit-conflict'
+import { closeAgentWindow, isAgentWindow, openAgentWindow } from '../utils/window-kind'
 
 /** W3-F: what an agent switch answers when the user kept unsaved text under a "changed elsewhere" notice. */
 const KEPT_UNSAVED = { success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
@@ -358,6 +359,14 @@ export function useAdfFile() {
   }, [setShowSettings, resetAgent, loadFileContents])
 
   const openFile = useCallback(async (filePath?: string) => {
+    // An agent window keeps its agent (agent-windows.md): another agent opens in its own window.
+    if (isAgentWindow) {
+      const current = useDocumentStore.getState().filePath
+      if (current && filePath !== current) {
+        if (filePath) openAgentWindow({ filePath })
+        return
+      }
+    }
     const tTotal = performance.now()
     // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
     if (!confirmDiscardConflicts()) return
@@ -594,6 +603,12 @@ export function useAdfFile() {
 
   const closeFile = useCallback(async () => {
     if (!confirmDiscardConflicts()) return
+    // An agent window shows one agent: closing it (Close Agent, a cancelled password,
+    // owner or review dialog) closes the window. Its queued messages go to the main window.
+    if (isAgentWindow) {
+      closeAgentWindow()
+      return
+    }
     // The password prompt was cancelled (or the file closed): nothing to re-attach after an unlock.
     reattachAfterUnlock.clear()
     // Closing a running agent moves it to the background, where its queue is

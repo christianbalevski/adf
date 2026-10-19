@@ -32,6 +32,8 @@ export function createElectronStub(): ElectronStub {
   }
   const call = (api: string, args: unknown[]) => { stub.calls.push({ api, args }) }
   const webContents = {
+    // The main window's id (agent windows, agent-windows.md, are told apart by it).
+    id: 1,
     send: (channel: string, ...args: unknown[]) => { stub.pushes.push({ channel, args }) },
     isDestroyed: () => false,
     isLoading: () => false,

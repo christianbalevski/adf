@@ -471,6 +471,22 @@ export const IPC = {
   NETWORK_NOTICES_GET: 'adf:network:notices',
   NETWORK_NOTICE_DISMISS: 'adf:network:notice-dismiss',
   NETWORK_NOTICES_CHANGED: 'adf:network:notices-changed',
+  // Agent windows (docs/design/agent-windows.md): Open in new window. Daemon mode only.
+  WINDOW_OPEN_AGENT: 'adf:window:open-agent',
+  // The asking agent window: close it; it could not open its agent; open Settings in the main window; its unsaved text is kept.
+  WINDOW_CLOSE: 'adf:window:close',
+  WINDOW_OPEN_FAILED: 'adf:window:open-failed',
+  WINDOW_OPEN_SETTINGS: 'adf:window:open-settings',
+  WINDOW_STASH_DONE: 'adf:window:stash-done',
+  // An agent window's queued messages, mirrored to main; the main window takes them when the agent window closes.
+  WINDOW_QUEUE_SYNC: 'adf:window:queue-sync',
+  WINDOW_QUEUE_GET: 'adf:window:queue-get',
+  QUEUE_HANDOVER_TAKE: 'adf:window:queue-handover-take',
+  QUEUE_HANDOVER_READY: 'adf:window:queue-handover-ready',
+  // Menu actions sent while the page was loading, taken once it listens (daemon mode).
+  MENU_ACTION_TAKE_PENDING: 'adf:menu:take-pending',
+  // Theme, typeface, scale or avatars changed in another window.
+  APPEARANCE_CHANGED: 'adf:appearance:changed',
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   RECOVERY_STASH: 'adf:recovery:stash',

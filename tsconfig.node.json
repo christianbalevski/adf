@@ -15,5 +15,5 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "mcp-registry.json", "electron.vite.config.ts", "docs/daemon/openapi.json"]
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "mcp-registry.json", "electron.vite.config.ts", "docs/daemon/openapi.json", "src/main/backend/daemon-mode/adf-file-window.json"]
 }

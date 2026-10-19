@@ -124,6 +124,12 @@ export interface EventBridgeDeps {
   onNotice?: (text: string) => void
   /** The `remote_access` push (remote-access.md §8): Settings → Networking → Remote access re-reads the status. */
   onRemoteAccess?: (payload: unknown) => void
+  /**
+   * Track the folder of a file an agent created (embedded's
+   * notifyAdfFileCreated). Default true; false for an agent window's bridge
+   * (agent-windows.md): the main window's bridge does it once.
+   */
+  trackCreatedFiles?: boolean
   /** Upper bound of one AGENT_INVOKE wait. Default TURN_WAIT_TIMEOUT_MS. */
   turnTimeoutMs?: number
   log?: Log
@@ -521,7 +527,7 @@ export class EventBridge {
     const filePath = agent?.filePath ?? frame.filePath
     const focused = this.deps.session.isFocused(frame.agentId, filePath)
     const event = frame.event
-    if (event.type === 'adf_file_created') {
+    if (event.type === 'adf_file_created' && this.deps.trackCreatedFiles !== false) {
       const created = (event.payload as { filePath?: unknown })?.filePath
       if (typeof created === 'string') void this.adfFileCreated(created)
     }
@@ -727,7 +733,7 @@ export class EventBridge {
     }
     if (route.action === 'adf_file_created') {
       const created = (frame.payload as { filePath?: unknown })?.filePath
-      if (typeof created === 'string') void this.adfFileCreated(created)
+      if (typeof created === 'string' && this.deps.trackCreatedFiles !== false) void this.adfFileCreated(created)
       return
     }
     if (route.action === 'notice') {

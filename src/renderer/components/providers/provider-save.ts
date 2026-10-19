@@ -1,4 +1,5 @@
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
+import { rebaseById, rebaseValue } from '../../utils/list-rebase'
 
 /** The providers part of a settings save. */
 export interface ProviderListSnapshot {
@@ -52,4 +53,19 @@ export async function saveProviderList(
     console.warn('[Providers] Settings save refused:', message)
     return { saved: false, failure: providerSaveFailure(saved, attempted, message) }
   }
+}
+
+/**
+ * This window's edit of the providers list, applied to the list stored now
+ * (`latest`), so a save never drops what another window changed meanwhile
+ * (agent windows, docs/design/agent-windows.md): providers this window
+ * changed or added since `saved` take its version, ones it removed go, and
+ * every other provider is the stored one. The default moves only when this
+ * window moved it.
+ */
+export function rebaseProviderList(saved: ProviderListSnapshot, attempted: ProviderListSnapshot, latest: ProviderListSnapshot): ProviderListSnapshot {
+  const providers = rebaseById(saved.providers, attempted.providers, latest.providers)
+  let defaultProviderId = rebaseValue(saved.defaultProviderId ?? '', attempted.defaultProviderId ?? '', latest.defaultProviderId ?? '') || undefined
+  if (defaultProviderId && !providers.some((p) => p.id === defaultProviderId)) defaultProviderId = providers[0]?.id
+  return { providers, defaultProviderId }
 }

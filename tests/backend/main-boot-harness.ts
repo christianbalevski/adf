@@ -72,7 +72,8 @@ function createBootHarness() {
       registerSchemesAsPrivileged: rec('protocol.registerSchemesAsPrivileged'),
       handle: (scheme: string) => { calls.push(`protocol.handle(${scheme})`) },
     },
-    session: { defaultSession: { webRequest: { onHeadersReceived: rec('session.onHeadersReceived') } } },
+    // Daemon mode names the window of each adf-file:// request (agent-windows.md).
+    session: { defaultSession: { webRequest: { onHeadersReceived: rec('session.onHeadersReceived'), onBeforeSendHeaders: rec('session.onBeforeSendHeaders') } } },
     shell: { openExternal: async () => {}, openPath: async () => '' },
     dialog: {
       // Recorded with whether it has a parent window: a parentless dialog at boot can hang it (macOS app-modal).

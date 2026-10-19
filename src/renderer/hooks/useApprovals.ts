@@ -41,6 +41,28 @@ function toPendingInteractions(notifications: PendingNotification[]): Record<str
 }
 
 /**
+ * The requests of one snapshot that get an in-app toast here: new ones (`seen`
+ * is updated, answered ids leave it), not for the agent this window shows
+ * (its chat shows the request), and, with agent windows open, only those
+ * main names for this window (`notify`, docs/design/agent-windows.md).
+ */
+export function arrivalsToAnnounce(snapshot: NotificationsSnapshot, seen: Set<string>, openFilePath: string | null): PendingNotification[] {
+  const mine = snapshot.notify ? new Set(snapshot.notify) : null
+  const out: PendingNotification[] = []
+  for (const n of snapshot.pending) {
+    if (seen.has(n.id)) continue
+    seen.add(n.id)
+    if (n.filePath === openFilePath) continue
+    if (mine && !mine.has(n.id)) continue
+    out.push(n)
+  }
+  // Forget answered ids so the set does not grow across a long session.
+  const live = new Set(snapshot.pending.map((n) => n.id))
+  for (const id of seen) if (!live.has(id)) seen.delete(id)
+  return out
+}
+
+/**
  * Feeds the approvals store — and the fleet map's pending badge — from the
  * main process's global ApprovalHub.
  *
@@ -105,15 +127,8 @@ export function useApprovalEvents() {
 
     const apply = (snapshot: NotificationsSnapshot): void => {
       hasAppliedPush.current = true
-      const notifications = snapshot.pending
       const store = useApprovalsStore.getState()
-      const openFilePath = useDocumentStore.getState().filePath
-      const live = new Set(notifications.map((n) => n.id))
-
-      for (const n of notifications) {
-        if (seenIds.current.has(n.id)) continue
-        seenIds.current.add(n.id)
-        if (n.filePath === openFilePath) continue
+      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useDocumentStore.getState().filePath)) {
         store.pushToast({
           id: n.id,
           kind: n.kind,
@@ -123,11 +138,6 @@ export function useApprovalEvents() {
           filePath: n.filePath
         })
         scheduleExpiry(n.id)
-      }
-
-      // Forget answered ids so the set does not grow across a long session.
-      for (const id of seenIds.current) {
-        if (!live.has(id)) seenIds.current.delete(id)
       }
 
       commit(snapshot)

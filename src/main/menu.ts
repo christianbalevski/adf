@@ -58,20 +58,75 @@ const MAX_RECENT_FILES = 10
 
 let settingsRef: MenuSettings | null = null
 let daemonMenu: DaemonMenuOptions | null = null
+let windowFor: ((action: MenuAction | 'open-recent') => BrowserWindow | null | undefined) | null = null
 
-function targetWindow(): BrowserWindow | undefined {
-  return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+/**
+ * Agent windows (agent-windows.md): the window a menu item acts on (main/index.ts
+ * decides). With a resolver set (daemon mode), an action for a page that is
+ * not listening yet (a window just created, a reload) waits until the page
+ * takes it (takePendingMenuActions).
+ */
+export function setMenuWindowResolver(resolve: (action: MenuAction | 'open-recent') => BrowserWindow | null | undefined, openFile?: (filePath: string) => void): void {
+  windowFor = resolve
+  openRecent = openFile ?? null
+}
+
+/** Open Recent through main's open-file flow (it waits for a page that is still loading). */
+let openRecent: ((filePath: string) => void) | null = null
+
+/** webContents ids whose page takes menu actions now. */
+const listening = new Set<number>()
+/** webContents id → actions sent before its page listened. */
+const queued = new Map<number, string[]>()
+const watched = new WeakSet<Electron.WebContents>()
+
+function watch(wc: Electron.WebContents): void {
+  if (watched.has(wc)) return
+  watched.add(wc)
+  const id = wc.id
+  // A new page (a reload) listens once it takes its pending actions. Only a
+  // committed main-frame navigation is one: did-navigate. did-start-navigation
+  // also fires for a navigation will-navigate then blocks (main/index.ts blocks
+  // every page navigation), and a subframe, a <webview> or an in-page
+  // navigation keeps its page (tests/electron/blocked-navigation-events.cjs).
+  wc.on('did-navigate', () => { listening.delete(id) })
+  wc.once('destroyed', () => { listening.delete(id); queued.delete(id) })
+}
+
+/** Send a menu action to a window's page, or keep it until the page listens (daemon mode). */
+export function deliverMenuAction(win: BrowserWindow, action: string): void {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) return
+  const wc = win.webContents
+  if (!windowFor) { wc.send(IPC.MENU_ACTION, action); return }
+  watch(wc)
+  if (listening.has(wc.id)) { wc.send(IPC.MENU_ACTION, action); return }
+  queued.set(wc.id, [...(queued.get(wc.id) ?? []), action])
+}
+
+/** MENU_ACTION_TAKE_PENDING: the page listens from now on; the actions it missed. */
+export function takePendingMenuActions(wc: Electron.WebContents): string[] {
+  watch(wc)
+  listening.add(wc.id)
+  const actions = queued.get(wc.id) ?? []
+  queued.delete(wc.id)
+  return actions
+}
+
+function targetWindow(action: MenuAction | 'open-recent'): BrowserWindow | undefined {
+  return windowFor?.(action) ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
 }
 
 function sendMenuAction(action: MenuAction): void {
-  targetWindow()?.webContents.send(IPC.MENU_ACTION, action)
+  const win = targetWindow(action)
+  if (win) deliverMenuAction(win, action)
 }
 
 // Recent entries reuse the same flow as double-clicking a .adf in Finder
 function sendOpenFile(filePath: string): void {
   // The user's own recent list: remote mode may offer this computer's copy for upload (local-open-grants.ts).
   if (!daemonMenu?.remoteRecents) grantLocalOpen(filePath)
-  targetWindow()?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
+  if (openRecent) { openRecent(filePath); return }
+  targetWindow('open-recent')?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
 }
 
 /** The settings key of this mode's Open Recent list. */

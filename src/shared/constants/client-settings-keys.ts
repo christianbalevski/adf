@@ -59,6 +59,9 @@ export const CLIENT_SETTINGS_KEYS = [
   'remoteRecentFiles',
   'updateChecksEnabled',
   'spellcheckDownloadsEnabled',
+  // The agent windows open at the last quit, for the runtime they belong to
+  // (docs/design/agent-windows.md). Daemon mode only (CLIENT_FILE_ONLY_KEYS).
+  'agentWindows',
 ] as const
 
 export const BACKEND_SETTINGS_KEYS = [
@@ -139,7 +142,7 @@ export const REMOTE_RECENT_FILES_KEY = 'remoteRecentFiles'
  * reads them, and a remote daemon's paths must not become paths embedded
  * Studio opens or sweeps.
  */
-export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY]
+export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY, 'agentWindows']
 
 /** The settings key of Open Recent: `recentFiles`, or `remoteRecentFiles` in remote mode. */
 export function recentFilesKey(remote: boolean): 'recentFiles' | typeof REMOTE_RECENT_FILES_KEY {

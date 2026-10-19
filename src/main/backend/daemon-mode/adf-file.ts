@@ -24,6 +24,8 @@ export function adfFilePathFromUrl(url: string): string {
 
 export function createAdfFileHandler(deps: {
   session: DaemonModeSession
+  /** The session of the window that asked (agent windows, agent-windows.md); default `session`. */
+  sessionFor?: (request: Request) => DaemonModeSession
   connection: DaemonConnection
   fetch?: typeof fetch
   log?: Log
@@ -31,7 +33,7 @@ export function createAdfFileHandler(deps: {
   const fetchImpl = deps.fetch ?? fetch
 
   return async (request) => {
-    const agentId = deps.session.agentId
+    const agentId = (deps.sessionFor?.(request) ?? deps.session).agentId
     const client = deps.connection.current
     if (!agentId || !client) return new Response('No workspace open', { status: 404 })
 

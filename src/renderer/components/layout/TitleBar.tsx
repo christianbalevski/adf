@@ -12,6 +12,7 @@ import { Wordmark } from '../common/Wordmark'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { useOpenAgentOrbitalSeed } from '../orbital/useOrbitalSeed'
 import { getLiveStep } from '../../utils/loop-activity'
+import { agentWindowsAvailable, isAgentWindow, openAgentWindow } from '../../utils/window-kind'
 
 
 
@@ -187,7 +188,8 @@ export function TitleBar() {
   // Continues the pane below it: Settings' nav is a fixed w-60, the agent
   // sidebar is whatever the user dragged it to. The variable is SidebarFrame's,
   // so this pane tracks a drag without subscribing to anything.
-  const leftPaneWidth = showSettings ? 240 : sidebarCollapsed ? null : `var(${SIDEBAR_WIDTH_VAR}, 240px)`
+  // An agent window (agent-windows.md) has no sidebar and no app navigation.
+  const leftPaneWidth = isAgentWindow ? null : showSettings ? 240 : sidebarCollapsed ? null : `var(${SIDEBAR_WIDTH_VAR}, 240px)`
 
   useEffect(() => {
     let mounted = true
@@ -255,7 +257,7 @@ export function TitleBar() {
           }
         />
 
-        <nav
+        {!isAgentWindow && <nav
           className="flex items-center gap-0.5 shrink-0"
           aria-label="Application navigation"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
@@ -292,7 +294,7 @@ export function TitleBar() {
           {/* Global notifications — app-level surface, so it lives with the
               app-global nav cluster, not the per-agent controls. */}
           <ApprovalsMenu align="left" />
-        </nav>
+        </nav>}
       </div>
 
       <div className="h-full flex-1 min-w-0 bg-[var(--adf-ui-canvas)] border-b border-hairline text-[var(--adf-ui-text-muted)] flex items-center">
@@ -321,6 +323,20 @@ export function TitleBar() {
             : 'calc(8px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
         } as React.CSSProperties}
       >
+        {filePath && config && agentWindowsAvailable && (
+          <button
+            onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name })}
+            title="Open in new window"
+            aria-label="Open in new window"
+            className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </svg>
+          </button>
+        )}
         {filePath && config && (
           agentState === 'off' ? (
             <Button

@@ -1,4 +1,4 @@
-import type { AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentProviderKeySource, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
+import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentProviderKeySource, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
   QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
@@ -787,6 +787,28 @@ export interface AdfApi {
   browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => Promise<RemoteBrowseResult>
   /** New folder in a listed daemon folder (POST /fs/folders). */
   createRemoteFolder: (args: { parent: string; name: string }) => Promise<RemoteMkdirResult>
+
+  // Agent windows (docs/design/agent-windows.md)
+  /** Open in new window: the agent's own window, focused when it has one. Daemon mode only. */
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string }) => Promise<{ success: boolean; created?: boolean; error?: string }>
+  /** Close this agent window (never the main window). */
+  closeAgentWindow: () => Promise<{ success: boolean }>
+  /** This agent window could not open its agent: it is not saved for the next launch. */
+  agentWindowOpenFailed: () => Promise<void>
+  /** Focus the main window and open Settings there. */
+  openMainSettings: (request: { section?: string; anchor?: string }) => Promise<void>
+  /** This agent window kept its unsaved editor text (the `stash-edits` menu action). */
+  agentWindowStashed: () => Promise<void>
+  /** This agent window's queued messages, held in main; the main window takes them when it closes. */
+  syncQueuedMessages: (entries: QueueHandoverEntry[]) => Promise<void>
+  /** This agent window's queued messages as main holds them (a reloaded page takes them back first). */
+  getWindowQueue: () => Promise<QueueHandoverEntry[]>
+  /** The main window: queued messages closed agent windows left (taken once). */
+  takeQueueHandover: () => Promise<QueueHandoverEntry[]>
+  onQueueHandover: (callback: () => void) => () => void
+  /** Menu actions sent while this page loaded; marks the page as listening. */
+  takePendingMenuActions: () => Promise<string[]>
+  onAppearanceChanged: (callback: (changed: Partial<AppSettings>) => void) => () => void
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */

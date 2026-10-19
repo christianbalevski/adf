@@ -308,7 +308,7 @@ Deliberate embedded deviations (security fixes in code both modes share, accepte
 
 | Class | Keys | Lives in (daemon mode) |
 |---|---|---|
-| **Client** (Studio presentation and Studio-host behaviour) | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars`, `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `nativeNotificationsEnabled`, `menuBarEnabled`, `recentFiles`, `remoteRecentFiles` (remote mode's Open Recent; stays in the client file on a switch to embedded), `updateChecksEnabled`, `spellcheckDownloadsEnabled` | `studio-client-settings.json` (Studio userData) |
+| **Client** (Studio presentation and Studio-host behaviour) | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars`, `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `nativeNotificationsEnabled`, `menuBarEnabled`, `recentFiles`, `remoteRecentFiles` (remote mode's Open Recent; stays in the client file on a switch to embedded), `updateChecksEnabled`, `spellcheckDownloadsEnabled`, `agentWindows` (the agent windows to reopen; stays in the client file on a switch to embedded) | `studio-client-settings.json` (Studio userData) |
 | **Backend** (read by runtime, providers, MCP, adapters, mesh, review, compute, tracked dirs) | every other key, including `trackedDirectories`, `agentsFolder`, `compute`, `remoteCatalogsEnabled`, `providerChecksEnabled`, `skillCatalogSources` (the terminal app reads it) | The daemon's settings file, through `GET/PATCH /settings` and the dedicated routes |
 | **Backend selection** | `mode` (default `local`, §4.4), `keepDaemonRunning` (default `false`), `remote.url`, `remote.token` | `studio-backend.json` (Studio userData), token as `safe:` |
 

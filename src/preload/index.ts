@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
-import type { AppUpdateState, FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
+import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnapshot, QueueHandoverEntry } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
@@ -771,6 +771,27 @@ const api: AdfApi = {
   respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => ipcRenderer.invoke(IPC.REMOTE_PICKER_RESPOND, requestId, answer),
   browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_FS_BROWSE, args),
   createRemoteFolder: (args: { parent: string; name: string }) => ipcRenderer.invoke(IPC.REMOTE_FS_MKDIR, args),
+
+  // Agent windows: Open in new window (daemon mode)
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_AGENT, request),
+  closeAgentWindow: () => ipcRenderer.invoke(IPC.WINDOW_CLOSE),
+  agentWindowOpenFailed: () => ipcRenderer.invoke(IPC.WINDOW_OPEN_FAILED),
+  openMainSettings: (request: { section?: string; anchor?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_SETTINGS, request),
+  agentWindowStashed: () => ipcRenderer.invoke(IPC.WINDOW_STASH_DONE),
+  syncQueuedMessages: (entries: QueueHandoverEntry[]) => ipcRenderer.invoke(IPC.WINDOW_QUEUE_SYNC, entries),
+  getWindowQueue: () => ipcRenderer.invoke(IPC.WINDOW_QUEUE_GET),
+  takeQueueHandover: () => ipcRenderer.invoke(IPC.QUEUE_HANDOVER_TAKE),
+  onQueueHandover: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC.QUEUE_HANDOVER_READY, handler)
+    return () => ipcRenderer.removeListener(IPC.QUEUE_HANDOVER_READY, handler)
+  },
+  takePendingMenuActions: () => ipcRenderer.invoke(IPC.MENU_ACTION_TAKE_PENDING),
+  onAppearanceChanged: (callback: (changed: Partial<AppSettings>) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, changed: Partial<AppSettings>) => callback(changed)
+    ipcRenderer.on(IPC.APPEARANCE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.APPEARANCE_CHANGED, handler)
+  },
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => ipcRenderer.invoke(IPC.RECOVERY_STASH, stash),

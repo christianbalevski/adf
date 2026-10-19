@@ -1,0 +1,6 @@
+{
+  "scheme": "adf-file",
+  "privileges": { "secure": true, "supportFetchAPI": true, "stream": true },
+  "windowHeader": "X-ADF-Window",
+  "headerFilter": { "urls": ["<all_urls>"] }
+}

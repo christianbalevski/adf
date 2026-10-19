@@ -1,3 +1,5 @@
+import { listsToWrite, rebaseSettingsLists, settingsListsOf, type SettingsLists } from '../../utils/settings-lists'
+import { sameContent } from '../../utils/list-rebase'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
 import { isFontInstalled } from '../../utils/fonts'
@@ -1386,6 +1388,8 @@ export function SettingsPage() {
   const pendingSave = useRef<(() => Promise<unknown> | void) | null>(null)
   /** The providers part the store last accepted; a refused save marks the rows that differ from it. */
   const savedProviders = useRef<ProviderListSnapshot>({ providers: [], defaultProviderId: undefined })
+  /** The lists as this page last loaded or wrote them: a save applies this page's edit onto the stored lists (agent windows). */
+  const savedLists = useRef<SettingsLists>({ providers: [], defaultProviderId: undefined, mcpServers: [], adapters: [] })
   const [providerSaveFailure, setProviderSaveFailure] = useState<ProviderSaveFailure | null>(null)
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
@@ -1487,6 +1491,7 @@ export function SettingsPage() {
         setDefaultProviderId(undefined)
       }
       setMcpServers((settings.mcpServers as McpServerRegistration[]) ?? [])
+      savedLists.current = settingsListsOf(settings as unknown as Record<string, unknown>)
       setAdapterRegistrations((settings.adapters as AdapterRegistration[]) ?? [])
       setSystemPrompt(
         (settings.globalSystemPrompt as string) ?? DEFAULT_BASE_PROMPT
@@ -1566,14 +1571,19 @@ export function SettingsPage() {
   // values and main would not yet know the new provider exists. Returning the
   // setSettings promise lets callers await the write before asking main to
   // read it back.
-  const doSave = () => {
+  const shownLists = useRef<SettingsLists>(savedLists.current)
+  shownLists.current = { providers, defaultProviderId, mcpServers, adapters: adapterRegistrations }
+  const doSave = async () => {
     if (!hasLoaded.current) return
-    const attempted: ProviderListSnapshot = { providers, defaultProviderId }
+    const shown: SettingsLists = { providers, defaultProviderId, mcpServers, adapters: adapterRegistrations }
+    // Onto the lists stored now: another window's change to them is kept, not overwritten (agent windows).
+    const lists = await listsToWrite(savedLists.current, shown, async () => (await window.adfApi.getSettings()) as unknown as Record<string, unknown>)
+    const attempted: ProviderListSnapshot = { providers: lists.providers, defaultProviderId: lists.defaultProviderId }
     const written = () => window.adfApi?.setSettings({
-      providers,
-      defaultProviderId,
-      mcpServers,
-      adapters: adapterRegistrations,
+      providers: lists.providers,
+      defaultProviderId: lists.defaultProviderId,
+      mcpServers: lists.mcpServers,
+      adapters: lists.adapters,
       globalSystemPrompt: systemPrompt,
       compactionPrompt,
       toolPrompts,
@@ -1592,7 +1602,17 @@ export function SettingsPage() {
     // A refused save (the daemon's secret store locked, say) never reads as
     // saved: the rows it concerns say why, and the edits stay for the next try.
     const saving = saveProviderList(written, savedProviders.current, attempted).then((result) => {
-      if (result.saved) savedProviders.current = attempted
+      if (result.saved) {
+        savedProviders.current = attempted
+        savedLists.current = lists
+        // Shown: what was written, with any edit made while the save was in flight on top.
+        const now = shownLists.current
+        const next = rebaseSettingsLists(shown, now, lists)
+        if (!sameContent(next.providers, now.providers)) setProviders(next.providers)
+        if (next.defaultProviderId !== now.defaultProviderId) setDefaultProviderId(next.defaultProviderId)
+        if (!sameContent(next.mcpServers, now.mcpServers)) setMcpServers(next.mcpServers)
+        if (!sameContent(next.adapters, now.adapters)) setAdapterRegistrations(next.adapters)
+      }
       setProviderSaveFailure(result.failure)
     })
     invalidateConfigCaches()

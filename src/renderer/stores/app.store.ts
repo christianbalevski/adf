@@ -1,3 +1,4 @@
+import { isAgentWindow, openMainSettings } from '../utils/window-kind'
 import { create } from 'zustand'
 import { AGENT_AVATAR_MODE_DEFAULT, type AgentAvatarMode } from '../components/orbital/agent-avatar'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
@@ -412,12 +413,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   bottomPanelTab: 'logs',
   shuttingDown: false,
 
-  setShowSettings: (show) => set({
-    showSettings: show,
-    ...(show ? { showMeshGraph: false } : {})
-  }),
-  openSettingsAt: (section, anchor) =>
-    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null }),
+  // An agent window has no Settings: they open in the main window (agent-windows.md).
+  setShowSettings: (show) => {
+    if (show && isAgentWindow) { openMainSettings(); return }
+    set({
+      showSettings: show,
+      ...(show ? { showMeshGraph: false } : {})
+    })
+  },
+  openSettingsAt: (section, anchor) => {
+    if (isAgentWindow) { openMainSettings(section, anchor); return }
+    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null })
+  },
   consumePendingSettingsAnchor: () => {
     const current = get().pendingSettingsAnchor
     if (current) set({ pendingSettingsAnchor: null })

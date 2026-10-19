@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, Component, type ReactNode } from 'react'
 import { AppShell } from './components/layout/AppShell'
-import { useAppStore, isUiScale, resolveUiFontStack, isUiFont } from './stores/app.store'
+import { useAppStore, isUiScale, resolveUiFontStack, isUiFont, type SettingsSection } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
 import { useMessageQueueStore } from './stores/message-queue.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
@@ -15,6 +15,9 @@ import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
+import { useAgentStore } from './stores/agent.store'
+import { agentWindowFile, agentWindowsAvailable, isAgentWindow } from './utils/window-kind'
+import { openWindowAgent, startQueueHandover, startQueueMirror } from './utils/agent-window'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -81,6 +84,11 @@ export default function App() {
   useEffect(() => {
     if (sessionResyncDone) return
     sessionResyncDone = true
+    // An agent window opens its agent (agent-windows.md); a reload reopens the file its session has open.
+    if (isAgentWindow) {
+      void openWindowAgent(openFile)
+      return
+    }
     window.adfApi?.getCurrentFile?.().then((session) => {
       if (session?.filePath && !useDocumentStore.getState().filePath) {
         openFile(session.filePath)
@@ -92,6 +100,12 @@ export default function App() {
 
   // W3-F: copies of unsaved text a "changed elsewhere" notice holds, so a quit keeps them.
   useEffect(() => startEditRecovery(), [])
+
+  // Queued messages outlive an agent window: it mirrors them to main, the main window takes them when it closes.
+  useEffect(() => {
+    if (isAgentWindow) return startQueueMirror()
+    if (agentWindowsAvailable) return startQueueHandover()
+  }, [])
 
   // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save).
   // The tab is saved through the editor's own save path (W3-F): over its
@@ -108,6 +122,8 @@ export default function App() {
 
   // Listen for open-file requests from main (double-click .adf in Finder)
   useEffect(() => {
+    // Main sends these to the main window; an agent window keeps its agent.
+    if (isAgentWindow) return
     const unsubscribe = window.adfApi?.onOpenFileRequest(({ filePath }) => {
       openFile(filePath)
     })
@@ -137,9 +153,23 @@ export default function App() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
 
+  // An agent window's title is its agent's name.
+  const agentName = useAgentStore((s) => s.config?.name)
+  useEffect(() => {
+    if (!isAgentWindow) return
+    const fileName = agentWindowFile?.split(/[\\/]/).pop()?.replace(/\.adf$/i, '')
+    document.title = agentName || fileName || document.title
+  }, [agentName])
+
   // Application menu actions (File > New/Open/Add Directory, app menu > Settings)
   useEffect(() => {
-    return window.adfApi?.onMenuAction(async (action) => {
+    const handle = async (action: string): Promise<void> => {
+      // An agent window's Settings links open Settings in the main window (agent-windows.md).
+      if (action.startsWith('open-settings-at:')) {
+        const [section, anchor] = action.slice('open-settings-at:'.length).split('#')
+        useAppStore.getState().openSettingsAt(section as SettingsSection, anchor || undefined)
+        return
+      }
       switch (action) {
         case 'new-file': {
           const result = await createFile('Untitled')
@@ -173,8 +203,19 @@ export default function App() {
           await stashUnsavedEditors()
           await window.adfApi?.restartStudio(action === 'stash-edits-and-reconnect' ? 'reconnect' : 'embedded-session')
           break
+        // An agent window before that restart: keep its unsaved editors; the main window restarts.
+        case 'stash-edits':
+          await stashUnsavedEditors()
+          await window.adfApi?.agentWindowStashed()
+          break
       }
-    })
+    }
+    const off = window.adfApi?.onMenuAction((action) => { void handle(action) })
+    // Daemon mode: actions sent while this page loaded wait in main until it listens.
+    if (isAgentWindow || agentWindowsAvailable) {
+      void window.adfApi?.takePendingMenuActions?.().then((actions) => { for (const action of actions ?? []) void handle(action) }).catch(() => {})
+    }
+    return off
   }, [openFile, createFile, closeFile, addDirectory, saveActiveDocument, setShowMeshGraph, setShowSettings])
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
@@ -201,6 +242,18 @@ export default function App() {
       if (isUiScale(settings.uiScale)) setUiScale(settings.uiScale)
       if (isAgentAvatarMode(settings.agentAvatars)) setAgentAvatars(settings.agentAvatars)
       setAppearanceLoaded(true)
+    })
+  }, [setTheme, setUiFont, setUiFontCustom, setUiScale, setAgentAvatars])
+
+  // Appearance saved in another window (agent windows) applies here at once.
+  useEffect(() => {
+    return window.adfApi?.onAppearanceChanged?.((changed) => {
+      const theme = changed.theme as string | undefined
+      if (theme === 'dark' || theme === 'light' || theme === 'system') setTheme(theme)
+      if (isUiFont(changed.uiFont)) setUiFont(changed.uiFont)
+      if (typeof changed.uiFontCustom === 'string') setUiFontCustom(changed.uiFontCustom)
+      if (isUiScale(changed.uiScale)) setUiScale(changed.uiScale)
+      if (isAgentAvatarMode(changed.agentAvatars)) setAgentAvatars(changed.agentAvatars)
     })
   }, [setTheme, setUiFont, setUiFontCustom, setUiScale, setAgentAvatars])
 
@@ -253,6 +306,7 @@ export default function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === ',') {
         e.preventDefault()
+        // An agent window opens them in the main window (app.store).
         setShowSettings(true)
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {

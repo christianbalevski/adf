@@ -25,6 +25,8 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useDragResize } from '../../hooks/useDragResize'
 import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
 import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
+import { isAgentWindow } from '../../utils/window-kind'
+import { AgentWindowStatus } from './AgentWindowStatus'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 const RIGHT_PANEL_MIN = 260
@@ -69,8 +71,9 @@ function ViewFallback() {
 
 export function AppShell() {
   const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
-  const showSettings = useAppStore((s) => s.showSettings)
-  const showMeshGraph = useAppStore((s) => s.showMeshGraph)
+  // An agent window (agent-windows.md) shows its agent only: no Settings, no fleet map, no sidebar.
+  const showSettings = useAppStore((s) => s.showSettings) && !isAgentWindow
+  const showMeshGraph = useAppStore((s) => s.showMeshGraph) && !isAgentWindow
   const filePath = useDocumentStore((s) => s.filePath)
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
     loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
@@ -198,15 +201,15 @@ export function AppShell() {
       {!showMeshGraph && !showSettings && <AgentReviewBanner />}
       {!showMeshGraph && !showSettings && <IdentityRestoreBanner />}
       {/* W3-F: unsaved versions a quit left under a "changed elsewhere" notice. */}
-      {!showMeshGraph && <RecoveredEditsNotice />}
+      {!showMeshGraph && !isAgentWindow && <RecoveredEditsNotice />}
       {/* Remote access paused on a network not allowed: non-modal, everywhere but the fleet map (it has its own bar). */}
-      {!showMeshGraph && <NetworkNoticeBanner />}
+      {!showMeshGraph && !isAgentWindow && <NetworkNoticeBanner />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Settings has its own navigation; the workspace tree stays out of
             the way. The fleet map hides it too — opening a file from the tree
             leaves the map anyway, so the tree is dead weight there. */}
-        {!showSettings && !showMeshGraph && <SidebarFrame><Sidebar /></SidebarFrame>}
+        {!showSettings && !showMeshGraph && !isAgentWindow && <SidebarFrame><Sidebar /></SidebarFrame>}
 
         {/* Everything right of the tree, status bar included: the sidebar runs
             the full window height, and the status bar starts at the same left
@@ -233,6 +236,8 @@ export function AppShell() {
                       <SettingsPage />
                     ) : filePath ? (
                       <EditorPanel />
+                    ) : isAgentWindow ? (
+                      <AgentWindowStatus />
                     ) : (
                       <HomeScreen />
                     )}
@@ -267,14 +272,15 @@ export function AppShell() {
             )}
           </div>
 
-          {meshEnabled && !showSettings && <MeshTrafficBar />}
+          {meshEnabled && !showSettings && !isAgentWindow && <MeshTrafficBar />}
           {!showSettings && <StatusBar />}
         </div>
       </div>
 
       {/* Outside the view switch: an off-screen agent's approval must announce
           itself on the fleet map and in Settings too, not only in the editor. */}
-      <ApprovalToasts />
+      {/* An agent window shows its agent's requests in its chat; the main window has the toasts. */}
+      {!isAgentWindow && <ApprovalToasts />}
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
