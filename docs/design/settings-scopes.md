@@ -127,7 +127,7 @@ Runtime · rawl-hub
 
 ### 4.1 Runtime indicator
 
-The status bar (`StatusBar.tsx`) gets one item left of the update badge, so the version never shifts: `[runtime] [update] v0.7.8 [Mesh] [Kill]`.
+The status bar (`StatusBar.tsx`) groups the runtime with its mesh and Kill, right of the version: `[update] v0.7.8 ( [runtime] [Mesh] [Kill] )`. All three act on the runtime this window uses.
 
 | Runtime | Connection | Shows |
 |---|---|---|

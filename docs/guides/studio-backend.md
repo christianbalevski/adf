@@ -79,7 +79,8 @@ While This computer is in use, **This computer** under the list shows the
 **ADF daemon** line ([Daemon status](#daemon-status)) and **Keep running after
 quit** ([Quit Studio](#quit-studio)). With a remote connection neither shows.
 
-The status bar shows the runtime left of the version: nothing for This
+The status bar shows the runtime right of the version, grouped with its
+mesh and Kill: nothing for This
 computer while it is connected; a remote connection's name with a remote
 icon (its address in the tooltip); the state in the same spot while a
 connection is not connected ("rawl-hub · Not connected, retrying", "This

@@ -167,7 +167,6 @@ export function StatusBar() {
         </>
       )}
       <span className="ml-auto" />
-      <RuntimeIndicator current={connection} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       <UpdateBadge />
       <span
         className="flex items-center gap-1 tabular-nums"
@@ -181,12 +180,15 @@ export function StatusBar() {
           </span>
         )}
       </span>
+      {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
+      <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
+      <RuntimeIndicator current={connection} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       <span
         role="status"
         className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
             meshEnabled
               ? 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]'
-              : 'border border-[var(--adf-ui-border)] text-[var(--adf-ui-text-subtle)]'
+              : 'text-[var(--adf-ui-text-subtle)]'
         }`}
         title={meshEnabled ? `Mesh is running with ${activeAgentCount} participating agents` : 'Mesh is off; manage it in Settings > Networking'}
       >
@@ -208,6 +210,7 @@ export function StatusBar() {
         </svg>
         Kill
       </button>
+      </div>
     </div>
   )
 }
@@ -223,10 +226,11 @@ function RemoteIcon() {
 }
 
 /**
- * The runtime this window uses (settings-scopes.md §4.1), left of the update
- * badge so the version never shifts. Nothing for This computer while it is
- * connected; a remote's name with the remote icon; the state while not
- * connected. The tooltip is the address. A click opens Settings → Connection.
+ * The runtime this window uses (settings-scopes.md §4.1), first in the
+ * runtime group right of the version, before its mesh and Kill. Nothing for
+ * This computer while it is connected; a remote's name with the remote icon;
+ * the state while not connected. The tooltip is the address. A click opens
+ * Settings → Connection.
  */
 export function RuntimeIndicator({ current, onOpen }: { current: ConnectionCurrent | null; onOpen: () => void }) {
   const shown = runtimeIndicator(current)

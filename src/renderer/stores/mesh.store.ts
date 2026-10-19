@@ -3,9 +3,13 @@ import type { FleetAgentStatus, AgentState } from '../../shared/types/ipc.types'
 
 interface MeshStoreState {
   enabled: boolean
+  /** Bumped by every local setEnabled/reset: a status read that started before one is stale. */
+  enabledRev: number
   agents: FleetAgentStatus[]
 
   setEnabled: (enabled: boolean) => void
+  /** The runtime's answer to a status read started at `rev`; ignored when a local change came since. */
+  syncEnabled: (running: boolean, rev: number) => void
   setAgents: (agents: FleetAgentStatus[]) => void
   upsertAgents: (live: Omit<FleetAgentStatus, 'online'>[]) => void
   markAgentOffline: (filePath: string) => void
@@ -17,9 +21,11 @@ interface MeshStoreState {
 
 export const useMeshStore = create<MeshStoreState>((set) => ({
   enabled: false,
+  enabledRev: 0,
   agents: [],
 
-  setEnabled: (enabled) => set({ enabled }),
+  setEnabled: (enabled) => set((s) => ({ enabled, enabledRev: s.enabledRev + 1 })),
+  syncEnabled: (running, rev) => set((s) => (s.enabledRev !== rev || s.enabled === running ? s : { enabled: running })),
   // Identity-stable: the 5s poll delivers a fresh array even when nothing
   // changed, and that churn cascades through the fleet map (full layout
   // recompute, node/edge rediff, every terrain node re-rendering). Keep the
@@ -74,5 +80,5 @@ export const useMeshStore = create<MeshStoreState>((set) => ({
       }
       return agents ? { agents } : s
     }),
-  reset: () => set({ enabled: false, agents: [] })
+  reset: () => set((s) => ({ enabled: false, enabledRev: s.enabledRev + 1, agents: [] }))
 }))

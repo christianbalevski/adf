@@ -5,13 +5,26 @@ import type { MeshEvent } from '../../shared/types/ipc.types'
 /** Trailing window that folds an agent_joined burst into one getMeshStatus. */
 const JOIN_REFRESH_DEBOUNCE_MS = 250
 
+/** Whether the mesh runs, from the runtime: a stale read never undoes a local change made since. */
+function syncMeshRunning(): void {
+  const rev = useMeshStore.getState().enabledRev
+  window.adfApi?.getMeshStatus?.().then((status) => {
+    useMeshStore.getState().syncEnabled(status.running === true, rev)
+  }).catch(() => {})
+}
+
 /**
  * Subscribes to MESH_EVENT IPC and updates the mesh store.
  * Should be called once at the app root level.
+ * Every window reads whether the mesh runs at start and on focus: Home turns
+ * it on in the main window only, and an agent window (#149) never shows Home.
  */
 export function useMeshEvents() {
   useEffect(() => {
     if (!window.adfApi?.onMeshEvent) return
+
+    syncMeshRunning()
+    window.addEventListener('focus', syncMeshRunning)
 
     // A mass start fires one agent_joined per agent; a trailing debounce
     // collapses the burst into a single status fetch.
@@ -20,8 +33,10 @@ export function useMeshEvents() {
       if (joinTimer) clearTimeout(joinTimer)
       joinTimer = setTimeout(() => {
         joinTimer = null
+        const rev = useMeshStore.getState().enabledRev
         window.adfApi.getMeshStatus().then((status) => {
           useMeshStore.getState().upsertAgents(status.agents)
+          useMeshStore.getState().syncEnabled(status.running === true, rev)
         })
       }, JOIN_REFRESH_DEBOUNCE_MS)
     }
@@ -44,6 +59,8 @@ export function useMeshEvents() {
         }
         case 'agent_left': {
           store.markAgentOffline(event.payload.filePath)
+          // The mesh may have stopped (turned off or Kill in another window).
+          scheduleStatusRefresh()
           break
         }
         case 'message_routed': {
@@ -55,6 +72,7 @@ export function useMeshEvents() {
 
     return () => {
       if (joinTimer) clearTimeout(joinTimer)
+      window.removeEventListener('focus', syncMeshRunning)
       unsubscribe?.()
     }
   }, [])
