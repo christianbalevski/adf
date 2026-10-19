@@ -622,7 +622,7 @@ describe('Discovered (discovery): a view of the one discovery feed', () => {
     d.feed!.list = [peer({}, { pairingOpen: true }), peer({ key: 'mesh-only', name: 'mesh-only', mesh: { url: 'http://192.168.1.9:7295', port: 7295 } }, null)]
     d.discovery.start()
     await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 1)
-    expect(d.updates.at(-1)).toEqual({ browsing: true, problem: null, entries: [{ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: LAN, address: '192.168.1.20', kind: 'lan', encrypted: false, pairingOpen: true, alreadyPaired: false, clash: null }] })
+    expect(d.updates.at(-1)).toEqual({ browsing: true, problem: null, entries: [{ fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', url: LAN, address: '192.168.1.20', kind: 'lan', encrypted: false, pairingOpen: true, alreadyPaired: false }] })
     // The first read waits a moment for a fresh browser's answers.
     expect(d.feed!.waits[0]).toBeGreaterThan(0)
     d.feed!.list = []
@@ -632,12 +632,12 @@ describe('Discovered (discovery): a view of the one discovery feed', () => {
     expect(d.feed!.released).toBe(1)
   })
 
-  it('discovery review 3: one fingerprint at two addresses lists both, flagged', async () => {
+  it('discovery review 3: one fingerprint at two addresses lists both', async () => {
     const d = setup()
     d.feed!.list = [peer({ key: 'fp:ABCD-EFGH@192.168.1.20' }, { clash: 2 }), peer({ key: 'fp:ABCD-EFGH@192.168.1.66', name: 'impostor' }, { url: 'http://192.168.1.66:7385', clash: 2 })]
     d.discovery.start()
     await until(() => (d.updates.at(-1)?.entries.length ?? 0) === 2)
-    expect(d.updates.at(-1)?.entries.map((e) => [e.name, e.address, e.clash])).toEqual([['agent-1-pc', '192.168.1.20', 2], ['impostor', '192.168.1.66', 2]])
+    expect(d.updates.at(-1)?.entries.map((e) => [e.name, e.address])).toEqual([['agent-1-pc', '192.168.1.20'], ['impostor', '192.168.1.66']])
     d.discovery.stop()
   })
 

@@ -124,8 +124,7 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
     io.stderr('No ADF computer found. On the other computer turn on Remote access (Settings → Networking, or adf daemon remote on), then run adf pair <its address>.\n')
     return null
   }
-  found.forEach((d, i) => io.stderr(`  ${i + 1}. ${d.name}  ${d.fingerprint}  ${d.url}  (${d.kind === 'tailnet' ? 'tailnet' : 'this network'}${d.pairingOpen ? ', ready to pair' : ''})${d.clash ? `  Same fingerprint at ${d.clash} addresses` : ''}\n`))
-  if (found.some(d => d.clash)) io.stderr('Another computer may be copying a fingerprint: pair only with the one whose fingerprint and address you check on its screen.\n')
+  found.forEach((d, i) => io.stderr(`  ${i + 1}. ${d.name}  ${d.fingerprint}  ${d.url}  (${d.kind === 'tailnet' ? 'tailnet' : 'this network'}${d.pairingOpen ? ', ready to pair' : ''})\n`))
   const answer = await io.prompt(found.length === 1 ? 'Pair with 1? [Y/n] ' : `Which one (1-${found.length})? `)
   if (answer === null) return null
   const index = found.length === 1 && /^\s*(y|yes)?\s*$/i.test(answer) ? 0 : Number(answer.trim()) - 1

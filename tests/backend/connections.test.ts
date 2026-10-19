@@ -134,7 +134,7 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
 
 describe('the rows of the Connection page', () => {
   const saved = { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: 'd', label: 'l', pairedAt: '' } }
-  const entry = (over: Partial<RemoteDiscoveryEntry> = {}): RemoteDiscoveryEntry => ({ fingerprint: 'ABCD-EFGH', name: 'rawl-hub', url: HUB, address: '100.101.102.103', kind: 'tailnet', encrypted: true, pairingOpen: false, alreadyPaired: true, clash: null, ...over })
+  const entry = (over: Partial<RemoteDiscoveryEntry> = {}): RemoteDiscoveryEntry => ({ fingerprint: 'ABCD-EFGH', name: 'rawl-hub', url: HUB, address: '100.101.102.103', kind: 'tailnet', encrypted: true, pairingOpen: false, alreadyPaired: true, ...over })
   const local = (over: Partial<Parameters<typeof buildConnectionsView>[0]> = {}) => buildConnectionsView({
     active: { mode: 'local', remoteName: null, config: defaultBackendConfig() }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved, discovery: null, ...over,
   })
@@ -153,13 +153,12 @@ describe('the rows of the Connection page', () => {
     expect(view.rows.some((r) => r.state === 'paired' && r.action === 'pair')).toBe(false)
   })
 
-  it('one fingerprint at two addresses: separate Not paired rows, flagged; when saved, the warning goes on the saved row', async () => {
-    const clash = [entry({ clash: 2, alreadyPaired: false, fingerprint: 'NEWW-2345' }), entry({ clash: 2, alreadyPaired: false, fingerprint: 'NEWW-2345', url: LAN, address: '192.168.1.20' })]
-    expect(local({ discovery: { browsing: true, problem: null, entries: clash } }).rows.filter((r) => r.kind === 'found').map((r) => [r.address, r.clash])).toEqual([['100.101.102.103', 2], ['192.168.1.20', 2]])
-    const savedClash = clash.map((e) => ({ ...e, fingerprint: 'ABCD-EFGH' }))
-    const view = local({ discovery: { browsing: true, problem: null, entries: savedClash } })
+  it('one fingerprint at two addresses: separate Not paired rows; when saved, only the saved row', async () => {
+    const twice = [entry({ alreadyPaired: false, fingerprint: 'NEWW-2345' }), entry({ alreadyPaired: false, fingerprint: 'NEWW-2345', url: LAN, address: '192.168.1.20' })]
+    expect(local({ discovery: { browsing: true, problem: null, entries: twice } }).rows.filter((r) => r.kind === 'found').map((r) => r.address)).toEqual(['100.101.102.103', '192.168.1.20'])
+    const view = local({ discovery: { browsing: true, problem: null, entries: twice.map((e) => ({ ...e, fingerprint: 'ABCD-EFGH' })) } })
     expect(view.rows.filter((r) => r.kind === 'found')).toEqual([])
-    expect(view.rows.find((r) => r.id === 'remote:rawl-hub')?.clash).toBe(2)
+    expect(view.rows.filter((r) => r.fingerprint === 'ABCD-EFGH').map((r) => r.id)).toEqual(['remote:rawl-hub'])
   })
 
   it('a remote in use: its row shows the link state and no action, is not removable; This computer offers Connect', async () => {

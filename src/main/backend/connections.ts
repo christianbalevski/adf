@@ -299,7 +299,7 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     id, kind, name,
     state: inUse(id) ? current.state : null,
     action: inUse(id) ? null : 'connect',
-    url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, clash: null, removable: false,
+    url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false,
   })
   const rows: ConnectionRow[] = [plain('local', 'local', 'This computer')]
   if (current.kind === 'embedded' || input.configured.mode === 'embedded') rows.push(plain('embedded', 'embedded', 'Inside Studio (legacy)'))
@@ -309,7 +309,7 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     id, kind: 'saved', name,
     state: inUse(id) ? current.state : 'paired',
     action: inUse(id) ? null : 'connect',
-    url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false, clash: null,
+    url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
     removable: !inUse(id) && configuredId !== id,
   })
   for (const name of Object.keys(input.saved).sort((a, b) => a.localeCompare(b))) {
@@ -331,14 +331,13 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     const match = saved.find((r) => r.fingerprint === entry.fingerprint)
     if (match) {
       match.pairingOpen = match.pairingOpen || entry.pairingOpen
-      if (entry.clash) match.clash = Math.max(match.clash ?? 0, entry.clash)
       continue
     }
     found.push({
       id: `found:${entry.fingerprint}@${entry.url}`, kind: 'found', name: entry.name,
       state: 'not-paired', action: 'pair',
       url: entry.url, address: entry.address, fingerprint: entry.fingerprint, encrypted: entry.encrypted,
-      pairingOpen: entry.pairingOpen, clash: entry.clash, removable: false,
+      pairingOpen: entry.pairingOpen, removable: false,
     })
   }
   const configuredName = configuredId === 'local' ? 'This computer'
