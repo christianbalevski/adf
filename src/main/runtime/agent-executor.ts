@@ -126,6 +126,10 @@ const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read',
  * write-isolated bookkeeping; per-loop recovery is a later wave.
  */
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+// Sent when a turn answering an owner chat is about to end with nothing the
+// owner can see (only thinking, or a bare state change). Written to the loop
+// like any other model input.
+const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
 // gets one turn to persist durable learnings to its mind pages before the loop
 // is compacted. During that turn the preflight guard compacts only at
@@ -685,6 +689,9 @@ export class AgentExecutor extends EventEmitter {
   private providerValidated: boolean = false
   private bufferTimer: NodeJS.Timeout | null = null
   private readonly BATCH_WINDOW_MS = 50
+  // An owner chat reached this turn and nothing visible (text, say, ask) has
+  // followed it yet. See noteSilentTurn.
+  private ownerChatUnanswered = false
 
   // System prompt caching for performance
   private systemPromptCache: {
@@ -2297,7 +2304,10 @@ export class AgentExecutor extends EventEmitter {
       // Chats queued behind the trigger (the rest of an interrupting burst,
       // or ones that arrived while this turn was being scheduled) join it as
       // consecutive user rows, in arrival order, before the first model call.
-      if (!opts?.nested) this.deliverQueuedChatsAtTurnStart()
+      if (!opts?.nested) {
+        this.ownerChatUnanswered = eventType === 'chat'
+        this.deliverQueuedChatsAtTurnStart()
+      }
 
       // Seed from the persisted context baseline (API-reported input+output of
       // the last call, or the post-compaction/clear estimate — see
@@ -2319,6 +2329,8 @@ export class AgentExecutor extends EventEmitter {
       // Circuit breaker for autonomous narration loops: consecutive responses
       // with no tool calls. Escalates the continuation nudge, then forces idle.
       let consecutiveTextOnly = 0
+      // The silent-turn notice goes in at most once per turn.
+      let silenceNoticed = false
       // Deduplication for context injection ("No Secrets" audit trail)
       // Uses instance-scoped hashes so dedup survives across executeTurn() calls.
 
@@ -2722,6 +2734,11 @@ export class AgentExecutor extends EventEmitter {
           }
         )
 
+        if (response.content.some(b => (b.type === 'text' && b.text?.trim())
+          || (b.type === 'tool_use' && (b.name === 'say' || b.name === 'ask')))) {
+          this.ownerChatUnanswered = false
+        }
+
         if (toolUseBlocks.length > 0) {
           consecutiveTextOnly = 0
           this.setState('tool_use')
@@ -2736,6 +2753,9 @@ export class AgentExecutor extends EventEmitter {
           )
           this.noteCallFingerprint(assistantMsg.seq, callFingerprint)
           const assistantSeq = assistantMsg.seq
+          // Everything this response streamed reaches the renderer before its
+          // first tool call does; otherwise the last batch lands after the call.
+          this.flushDeltaBuffer()
 
           const toolResults: ContentBlock[] = []
           let needsLoopReset = false
@@ -3397,6 +3417,13 @@ export class AgentExecutor extends EventEmitter {
             console.log('[AgentExecutor] Session reset after loop clear/compact')
           }
 
+          // A state change that would end an owner's chat turn with nothing said
+          // gets one chance to reply first. 'off' is a deliberate stop.
+          if (!continueLoop && !silenceNoticed && targetState !== 'off' && !needsLoopReset && this.noteSilentTurn()) {
+            silenceNoticed = true
+            continueLoop = true
+          }
+
           // If a tool signalled end-of-turn, emit turn_complete and stop
           if (!continueLoop) {
             // Flush any remaining buffered deltas before signaling completion
@@ -3442,7 +3469,9 @@ export class AgentExecutor extends EventEmitter {
           // Interactive mode: text without tool calls ends the turn
           // Autonomous mode: text is logged, turn continues
           if (!this.config.autonomous) {
-            continueLoop = false
+            // A thinking-only answer to an owner chat gets one chance to reply.
+            if (!silenceNoticed && response.stop_reason !== 'max_tokens' && this.noteSilentTurn()) silenceNoticed = true
+            else continueLoop = false
           } else if (!this._interruptRestart && !this._ownerStateTransitionRequested) {
             consecutiveTextOnly++
 
@@ -6070,6 +6099,28 @@ export class AgentExecutor extends EventEmitter {
     return chats
   }
 
+  /**
+   * The turn is about to end with nothing the owner can see since their chat:
+   * only thinking, or a bare state change. Tell the model, through the loop
+   * like any other input, so it can reply. Returns whether the notice went in.
+   */
+  private noteSilentTurn(): boolean {
+    if (!this.ownerChatUnanswered) return false
+    if (this.getState() === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) return false
+    const message: LLMMessage = { role: 'user', content: [{ type: 'text', text: `[Context: System] ${SILENT_TURN_NOTICE}` }] }
+    this.session.addMessage(message)
+    this.session.flushToLoop()
+    try {
+      this.session.getWorkspace().insertLog('warn', 'executor', 'silent_turn', null, 'Turn would have ended without a reply to the owner; asked the model to reply')
+    } catch { /* observability is never fatal */ }
+    this.emitEvent({
+      type: 'context_injected',
+      payload: { category: 'System', content: SILENT_TURN_NOTICE, ...(message.seq !== undefined ? { seq: message.seq } : {}) },
+      timestamp: Date.now()
+    })
+    return true
+  }
+
   /** Deliver queued chats as consecutive user rows after the turn's trigger. */
   private deliverQueuedChatsAtTurnStart(): void {
     // They queued while nothing was working (a scheduled successor, a manual
@@ -6085,6 +6136,7 @@ export class AgentExecutor extends EventEmitter {
    */
   private deliverQueuedChats(delivery: 'turn_start' | 'next_step'): number {
     const chats = this.takeQueuedChats(delivery)
+    if (chats.length > 0) this.ownerChatUnanswered = true
     for (const chat of chats) {
       if (this.preAppendedRowAlreadyInSession(chat)) continue
       const content = this.buildTriggerContent(chat)
