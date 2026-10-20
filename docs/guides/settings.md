@@ -375,6 +375,9 @@ One line at the top of the tab: the networks, the LAN address, Tailscale, and th
 - **Host and port** — The addresses it listens on (e.g., `127.0.0.1, 192.168.1.20, port 7295`), or `127.0.0.1 only (no private network)` in LAN mode on a network not allowed
 - **Server URL** — Clickable link to the server root
 - **Agent visibility** — "N agents visible on LAN · N public · N private": agents by `messaging.visibility` (`lan`; `public`; the rest)
+- **Port** — the mesh port (`meshPort`, default 7295). Leaving the field changes nothing; **Apply** saves it and restarts a running server on it. A value outside 1–65535 is refused under the field.
+
+**Discovery** lists the runtimes found on the LAN (mDNS), on the tailnet (**Tailscale**, `tailnetDiscovery`) and from **Peers** (`meshManualPeers`). A peer is `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port; an address with `http://`, a path or a port outside 1–65535 is refused under the field.
 
 ### Mesh
 

@@ -1067,6 +1067,7 @@ function ManualPeersRows() {
   const [peers, setPeers] = useState<string[]>([])
   const [tailnetOn, setTailnetOn] = useState(true)
   const [draft, setDraft] = useState('')
+  const [draftError, setDraftError] = useState<string | null>(null)
 
   useEffect(() => {
     void (async () => {
@@ -1087,10 +1088,11 @@ function ManualPeersRows() {
   }, [commit, peers])
 
   const add = useCallback(async () => {
-    const v = draft.trim()
-    if (!v) return
+    const checked = checkPeerAddress(draft)
+    if (!checked.ok) { setDraftError(checked.error); return }
     setDraft('')
-    await save([...peers.filter((p) => p !== v), v])
+    setDraftError(null)
+    await save([...peers.filter((p) => p !== checked.value), checked.value])
   }, [draft, peers, save])
 
   return (
@@ -1108,7 +1110,8 @@ function ManualPeersRows() {
       <SettingsRow
         separator
         stacked
-        label={<>Peers<InfoHint tip="Any runtime reachable by address: on the LAN, the tailnet, or a public server. Probed on the same cycle as discovery; matches appear under Runtimes." /></>}
+        label={<>Peers<InfoHint tip="Any runtime reachable by address: on the LAN, the tailnet, or a public server. A bare host uses the mesh port. Probed on the same cycle as discovery; matches appear under Runtimes." /></>}
+        error={draftError ?? undefined}
       >
         {peers.length > 0 && (
           <ul className="mb-2 space-y-1">
@@ -1134,7 +1137,8 @@ function ManualPeersRows() {
           <TextInput
             aria-label="Peer address"
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            aria-invalid={!!draftError}
+            onChange={(e) => { setDraft(e.target.value); setDraftError(null) }}
             onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
             placeholder="host:port, e.g. 100.101.102.103:7295"
             spellCheck={false}
@@ -1224,6 +1228,10 @@ function SettingsPageBody() {
   const [meshAgents, setMeshAgents] = useState<MeshAgentStatus[]>([])
   const [lanInfo, setLanInfo] = useState<{ hostname: string; addresses: Array<{ iface: string; address: string; family: 'IPv4' | 'IPv6'; mac: string }> }>({ hostname: '', addresses: [] })
   const [meshRestarting, setMeshRestarting] = useState(false)
+  // The Port field is a draft: leaving it changes nothing; Apply saves it and restarts a running server.
+  const [meshPortDraft, setMeshPortDraft] = useState('7295')
+  const [meshPortError, setMeshPortError] = useState<string | null>(null)
+  useEffect(() => { setMeshPortDraft(String(meshPort)); setMeshPortError(null) }, [meshPort])
   const restartMeshServer = async () => {
     setMeshRestarting(true)
     try {
@@ -1234,6 +1242,14 @@ function SettingsPageBody() {
     } finally {
       setMeshRestarting(false)
     }
+  }
+  const applyMeshPort = async () => {
+    const checked = checkWholeNumber(meshPortDraft, 1, 65535)
+    if (!checked.ok) { setMeshPortError(checked.error); return }
+    if (checked.value === meshPort) return
+    // Commit before the restart — main reads the saved port back.
+    const saved = await persist({ meshPort: checked.value }, setMeshPort, checked.value, meshPort)
+    if (saved && meshServerStatus.running && checked.value !== meshServerStatus.port) await restartMeshServer()
   }
   const meshEnabled = useMeshStore((s) => s.enabled)
   const { enableMesh, disableMesh } = useMesh()
@@ -2211,27 +2227,27 @@ function SettingsPageBody() {
             >
               <span aria-hidden="true" className={`block size-2 rounded-full ${meshServerStatus.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-danger)]'}`} />
             </SettingsRow>
-            <SettingsRow separator label="Port" description="The server restarts when you leave the field.">
-              <TextInput
-                aria-label="Port"
-                type="number"
-                min={1}
-                max={65535}
-                value={meshPort}
-                disabled={meshRestarting}
-                onChange={(e) => {
-                  const port = parseInt(e.target.value, 10)
-                  if (!isNaN(port) && port >= 1 && port <= 65535) setMeshPort(port)
-                }}
-                onBlur={async () => {
-                  // Commit before the restart — main reads the saved port back.
-                  const saved = await commit({ meshPort })
-                  if (saved && meshServerStatus.running && meshPort !== meshServerStatus.port) {
-                    await restartMeshServer()
-                  }
-                }}
-                className="!w-24 !text-[12px]"
-              />
+            <SettingsRow
+              separator
+              label="Port"
+              description={meshServerStatus.running ? 'Apply restarts the server on the new port.' : 'Used when the server starts.'}
+              error={meshPortError ?? undefined}
+            >
+              <div className="flex items-center gap-2">
+                <TextInput
+                  aria-label="Port"
+                  inputMode="numeric"
+                  value={meshPortDraft}
+                  disabled={meshRestarting}
+                  aria-invalid={!!meshPortError}
+                  onChange={(e) => { setMeshPortDraft(e.target.value); setMeshPortError(null) }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void applyMeshPort() }}
+                  className="!w-24 !text-[12px]"
+                />
+                <Button size="compact" disabled={meshRestarting || meshPortDraft.trim() === String(meshPort)} onClick={() => void applyMeshPort()}>
+                  Apply
+                </Button>
+              </div>
             </SettingsRow>
             <SettingsRow
               separator
