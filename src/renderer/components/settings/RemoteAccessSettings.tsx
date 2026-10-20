@@ -10,7 +10,8 @@
  *   design says so. A new device token is shown once, here, and dropped on
  *   Done; nothing else here holds a token. With a remote runtime these are
  *   host-only: `HostOnlyRemoteAccess` says "Change on <name>."
- * - Studio → Connection: `PairDialog` for a computer found on the network.
+ * - Studio → Connections: the Add dialog (ConnectionSettings.tsx) pairs with
+ *   a computer found on the network or at a typed address, with pairMessage.
  *   Discovery and pairing run in main; the token never reaches the renderer.
  *
  * Copy (owner rule 2026-10-18): headings, labels, buttons and dialog titles
@@ -25,7 +26,7 @@ import { DocsLink } from '../common/DocsLink'
 import { Tooltip } from '../common/Tooltip'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
-import type { NetworkStatusView, RemoteAccessView, RemoteDiscoveryEntry, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
+import type { NetworkStatusView, RemoteAccessView, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import type { MeshAgentStatus } from '../../../shared/types/ipc.types'
 
 // --- Pure helpers (tested) ------------------------------------------------------
@@ -536,86 +537,4 @@ export function pairMessage(state: RemotePairState | null, hostName: string): { 
   if (state.step === 'claiming') return { kind: 'ok', text: 'Sending the code…' }
   if (state.message) return { kind: state.code ? 'error' : 'ok', text: state.message }
   return null
-}
-
-/** A computer to pair with: a Not paired row of the Connection page. */
-export type PairTarget = Pick<RemoteDiscoveryEntry, 'name' | 'url' | 'address' | 'fingerprint' | 'encrypted'>
-
-export function PairDialog({ entry, onClose, onConnect }: { entry: PairTarget; onClose: () => void; onConnect: (id: string) => void }) {
-  const [deviceName, setDeviceName] = useState('')
-  const [trusted, setTrusted] = useState(false)
-  const [code, setCode] = useState('')
-  const [state, setState] = useState<RemotePairState | null>(null)
-  const [mismatch, setMismatch] = useState<string | null>(null)
-
-  useEffect(() => window.adfApi?.onRemotePairingState?.((next) => {
-    if (next.host && next.host.url !== entry.url) return
-    setState(next)
-  }), [entry.url])
-
-  const step = state?.step ?? null
-  const working = step === 'claiming' || step === 'waiting'
-  const done = step === 'paired'
-  const codeEnabled = (entry.encrypted || trusted) && !working && !done
-
-  const pair = async () => {
-    setMismatch(null)
-    let current = state
-    if (!current || current.step !== 'need_code' || current.host?.url !== entry.url) {
-      current = await window.adfApi.startRemotePairing({ url: entry.url, ...(deviceName.trim() ? { deviceName: deviceName.trim() } : {}), allowInsecureHttp: !entry.encrypted && trusted })
-      setState(current)
-      if (current.step !== 'need_code' || current.code) return
-      if (current.host && current.host.fingerprint !== entry.fingerprint) {
-        await window.adfApi.cancelRemotePairing()
-        setMismatch(`${entry.address} now answers as another computer (${current.host.fingerprint}). Pair from the list again.`)
-        return
-      }
-    }
-    setState(await window.adfApi.submitRemotePairingCode(code.replace(/\s/g, '')))
-  }
-  const close = () => {
-    if (working || step === 'need_code') void window.adfApi.cancelRemotePairing()
-    onClose()
-  }
-  const message = mismatch ? { kind: 'error' as const, text: mismatch } : pairMessage(state, entry.name)
-
-  return (
-    <Dialog open title="Pair" onClose={close} lightDismiss={false}>
-      <div className="space-y-3 text-[12px]">
-        <p className="text-[var(--adf-ui-text-muted)]">{entry.name} at {entry.address}, fingerprint {entry.fingerprint}. Check that the host shows the same fingerprint.</p>
-        {!done && (
-          <>
-            <label className="block space-y-1">
-              <span className="text-[var(--adf-ui-text)]">Device name</span>
-              <TextInput value={deviceName} onChange={(e) => setDeviceName(e.target.value)} placeholder="Runtime alias or host name" maxLength={64} disabled={working} aria-label="Device name" />
-            </label>
-            {!entry.encrypted && (
-              <label className="flex items-center gap-2 cursor-pointer text-[var(--adf-ui-text-muted)]">
-                <input type="checkbox" checked={trusted} disabled={working} onChange={(e) => setTrusted(e.target.checked)} className="rounded text-blue-500" />
-                I trust this network; the token is sent unencrypted.
-              </label>
-            )}
-            <label className="block space-y-1">
-              <span className="text-[var(--adf-ui-text)]">Code</span>
-              <TextInput value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" maxLength={7} placeholder="123 456" disabled={!codeEnabled} aria-label="Pairing code" className="font-mono text-[18px] tracking-[0.2em]" />
-            </label>
-          </>
-        )}
-        {message && <p role="status" className={message.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}>{message.text}</p>}
-        <div className="flex justify-end gap-2 pt-1">
-          {done ? (
-            <>
-              <Button onClick={onClose}>Done</Button>
-              {state?.savedId && <Button variant="primary" onClick={() => onConnect(state.savedId!)}>Connect</Button>}
-            </>
-          ) : (
-            <>
-              <Button onClick={close}>Cancel</Button>
-              <Button variant="primary" disabled={!codeEnabled || code.replace(/\s/g, '').length !== 6} loading={working} onClick={() => void pair()}>Pair</Button>
-            </>
-          )}
-        </div>
-      </div>
-    </Dialog>
-  )
 }

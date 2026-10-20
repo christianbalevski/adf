@@ -12,6 +12,7 @@ import { useBrowserSessionEvents } from './hooks/useBrowserSession'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
 import { useRuntimeFeeds } from './hooks/useRuntimeFeeds'
 import { runtimeLabel, useRuntimesStore } from './stores/runtimes.store'
+import { requestSettingsRuntime } from './stores/settings-runtime.store'
 import { openApi } from './utils/runtime-api'
 import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
@@ -135,16 +136,18 @@ export default function App() {
   useEffect(() => {
     // Main sends these to the main window; an agent window keeps its agent.
     if (isAgentWindow) return
-    const unsubscribe = window.adfApi?.onOpenFileRequest(({ filePath }) => {
-      openFile(filePath)
+    // `runtimeId`: Open Recent of another runtime (multi-runtime.md §6.6); absent, This computer's.
+    const unsubscribe = window.adfApi?.onOpenFileRequest(({ filePath, runtimeId }) => {
+      openFile(filePath, runtimeId || undefined)
     })
     // Drain any request queued before this listener existed — main's one-shot
     // did-finish-load push can fire before the React effect registers (the
     // pull clears main's queue on read, so push + pull never double-open).
     window.adfApi?.getPendingOpenFile?.().then((pending) => {
       const filePath = pending?.filePath
-      if (filePath && useDocumentStore.getState().filePath !== filePath) {
-        openFile(filePath)
+      const doc = useDocumentStore.getState()
+      if (filePath && (doc.filePath !== filePath || (pending.runtimeId && doc.runtimeId !== pending.runtimeId))) {
+        openFile(filePath, pending.runtimeId || undefined)
       }
     }).catch(() => { /* pull is best-effort; the push path still works */ })
     return unsubscribe
@@ -199,6 +202,11 @@ export default function App() {
   useEffect(() => {
     const handle = async (action: string): Promise<void> => {
       // An agent window's Settings links open Settings in the main window (agent-windows.md).
+      // Settings opens on that runtime (an agent window's Settings link, multi-runtime.md §6.3); the open action follows.
+      if (action.startsWith('settings-runtime:')) {
+        requestSettingsRuntime(action.slice('settings-runtime:'.length))
+        return
+      }
       if (action.startsWith('open-settings-at:')) {
         const [section, anchor] = action.slice('open-settings-at:'.length).split('#')
         useAppStore.getState().openSettingsAt(section as SettingsSection, anchor || undefined)

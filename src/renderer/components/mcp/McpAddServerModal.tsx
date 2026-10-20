@@ -10,6 +10,7 @@ import { Tooltip } from '../common/Tooltip'
 import { McpCredentialPanel } from './McpCredentialPanel'
 import { McpServerLogs } from './McpServerLogs'
 import { BrandIcon } from './BrandIcon'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 /** One-line boundary statement shown on host-located servers. */
 export const HOST_BOUNDARY_TEXT = 'Runs on the host with your user account’s access — your agents drive it.'
@@ -264,6 +265,8 @@ export function McpAddServerModal(props: McpAddServerModalProps) {
 }
 
 function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged }: McpAddServerModalProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
   const [draft, setDraft] = useState<McpServerRegistration | null>(null)
   const [filePayloads, setFilePayloads] = useState<Record<string, FilePayload>>({})
@@ -429,7 +432,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
       const credentialFiles = Object.entries(filePayloads)
         .filter(([path]) => declared.has(path))
         .map(([path, p]) => ({ path, contentB64: p.contentB64 }))
-      const result = await window.adfApi?.testMcpRegistration({
+      const result = await api?.testMcpRegistration({
         registration: { ...draft, authArgs: commitAuthArgs() },
         credentialFiles: credentialFiles.length ? credentialFiles : undefined,
       })
@@ -465,7 +468,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     const next = !showLogs
     setShowLogs(next)
     if (next && logEntries === null && draft) {
-      const result = await window.adfApi?.getMcpServerLogs({ name: draft.name })
+      const result = await api?.getMcpServerLogs({ name: draft.name })
       setLogEntries(result?.logs ?? [])
     }
   }

@@ -1,16 +1,17 @@
 /**
- * Settings → Studio → Connections (docs/design/settings-scopes.md §5): the
- * runtimes this window can use. With no runtime on another computer saved it
- * is one line, "Runtimes on other computers", with Add (SimpleConnections). One list: This computer, Inside Studio
- * (legacy) while it runs or is saved, the saved connections (shared with
- * `adf`: cli-remotes.json and the OS keychain), and the computers found on
- * the network that are not paired. Each row has a state and at most one
- * action, Connect or Pair; Remove is in the row's More menu. Typing an
- * address is under Add connection.
+ * Settings → Studio → Connections (docs/design/settings-scopes.md §5,
+ * docs/design/multi-runtime.md §6.5): the runtimes Studio connects to. With
+ * no runtime on another computer saved it is one line, "Runtimes on other
+ * computers", with Add (SimpleConnections). Otherwise one list: This
+ * computer, Inside Studio (legacy) while it runs or is saved, the saved
+ * connections (shared with `adf`: cli-remotes.json and the OS keychain), each
+ * connected while it is saved and shown with its state, and the computers
+ * found on the network that are not saved, each with Add. Remove is in a
+ * saved row's More menu: it disconnects and forgets.
  *
- * Connect saves the choice in studio-backend.json; main shows the switch
- * dialog (what moves, turns in flight) and restarts Studio on it (#149 will
- * rebind the window instead). No token ever reaches the renderer.
+ * Add is one dialog for a typed address and a found computer: the code, or a
+ * token. On success the connection is saved and connects; there is no
+ * Connect step. No token ever reaches the renderer.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -23,7 +24,8 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import { CONNECTION_STATE_LABELS, type ConnectionResult, type ConnectionRow, type ConnectionsView } from '../../../shared/types/connection.types'
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../../shared/types/backend.types'
 import type { RemotePairErrorCode, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
-import { PairDialog, pairMessage, type PairTarget } from './RemoteAccessSettings'
+import { pairMessage } from './RemoteAccessSettings'
+import type { RemoteDiscoveryEntry } from '../../../shared/types/remote-access-ipc.types'
 import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
 
 /** The modes as users see them in the switch rows. Inside Studio is the legacy backend, kept for this release only. */
@@ -162,11 +164,12 @@ export function emptyDiscoveryLine(view: Pick<ConnectionsView, 'rows' | 'discove
 }
 
 /** The list (static markup in tests): name, state, detail, one action, the More menu. */
-export function ConnectionRows({ rows, busy, onConnect, onPair, onRemove }: {
+export function ConnectionRows({ rows, busy, onConnect, onAdd, onRemove }: {
   rows: ConnectionRow[]
   busy: boolean
   onConnect: (id: string) => void
-  onPair: (row: ConnectionRow) => void
+  /** A computer found on the network: the Add dialog, on its address. */
+  onAdd: (row: ConnectionRow) => void
   onRemove: (id: string) => void
 }) {
   const legacyRow = rows.some((r) => r.kind === 'embedded')
@@ -195,7 +198,7 @@ export function ConnectionRows({ rows, busy, onConnect, onPair, onRemove }: {
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {row.action === 'connect' && <Button size="compact" disabled={busy} onClick={() => onConnect(row.id)}>Connect</Button>}
-              {row.action === 'pair' && <Button size="compact" variant="primary" disabled={busy} onClick={() => onPair(row)}>Pair</Button>}
+              {row.action === 'pair' && <Button size="compact" variant="primary" disabled={busy} onClick={() => onAdd(row)}>Add</Button>}
               <RowMenu items={menu} disabled={busy} />
             </div>
           </li>
@@ -217,13 +220,23 @@ function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: strin
 /** Codes after which the host answered as a daemon without a fingerprint: a token is the only way. */
 const TOKEN_ONLY: ReadonlySet<RemotePairErrorCode> = new Set(['remote_access_off', 'old_daemon'])
 
+/** A computer found on the network, as the Add dialog opens on it. */
+export type AddTarget = Pick<RemoteDiscoveryEntry, 'name' | 'url' | 'address' | 'fingerprint' | 'encrypted'>
+
+/** The found computer answered as another one: nothing is sent to it. */
+export function foundMismatchMessage(found: AddTarget, shown: string): string {
+  return `${found.address} now answers as another computer (${shown}). Add it from the list again.`
+}
+
 /**
- * Add connection (settings-scopes.md §5.3): Address, Next (hello), then the
- * code, or a token. Without a hello the token is the only way, and the
- * connection has no fingerprint.
+ * Add (settings-scopes.md §5.3, multi-runtime.md §6.5): Address, Next
+ * (hello), then the code, or a token. Without a hello the token is the only
+ * way, and the connection has no fingerprint. Opened on a found computer,
+ * the address is its own and the hello must show its fingerprint. On
+ * success the connection is saved and connects: Done is the only button.
  */
-export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => void; onConnect: (id: string) => void }) {
-  const [url, setUrl] = useState('')
+export function AddConnectionDialog({ onClose, found = null }: { onClose: () => void; found?: AddTarget | null }) {
+  const [url, setUrl] = useState(found?.url ?? '')
   const [trusted, setTrusted] = useState(false)
   const [step, setStep] = useState<'address' | 'code' | 'token' | 'done'>('address')
   const [pair, setPair] = useState<RemotePairState | null>(null)
@@ -231,7 +244,6 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
   const [token, setToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  const [savedId, setSavedId] = useState<string | null>(null)
   const [noFingerprint, setNoFingerprint] = useState(false)
   const check = url.trim() ? checkRemoteDaemonUrl(url) : null
   const insecure = check?.kind === 'insecure-http'
@@ -239,7 +251,7 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
   useEffect(() => window.adfApi?.onRemotePairingState?.((next) => {
     if (step !== 'code' || (next.host && check?.url && next.host.url !== check.url)) return
     setPair(next)
-    if (next.step === 'paired') { setSavedId(next.savedId ?? null); setStep('done') }
+    if (next.step === 'paired') setStep('done')
     setMessage(pairMessage(next, next.host?.name ?? ''))
   }), [step, check?.url])
 
@@ -249,6 +261,11 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
     setMessage(null)
     try {
       const state = await window.adfApi.startRemotePairing({ url: check.url, allowInsecureHttp: insecure && trusted })
+      if (found && state.host && state.host.fingerprint !== found.fingerprint) {
+        await window.adfApi.cancelRemotePairing()
+        setMessage({ kind: 'error', text: foundMismatchMessage(found, state.host.fingerprint) })
+        return
+      }
       setPair(state)
       if (state.step === 'need_code' && !state.code) { setStep('code'); setMessage(state.message ? { kind: 'ok', text: state.message } : null); return }
       if (state.code && TOKEN_ONLY.has(state.code)) { setNoFingerprint(true); setStep('token'); return }
@@ -273,7 +290,7 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
     setMessage(null)
     try {
       const result: ConnectionResult = await window.adfApi.addConnection({ url: check.url, token, allowInsecureHttp: insecure && trusted })
-      if (result.ok) { setSavedId(result.id ?? null); setStep('done'); setMessage({ kind: 'ok', text: result.notices.join(' ') }) }
+      if (result.ok) { setStep('done'); setMessage({ kind: 'ok', text: result.notices.join(' ') }) }
       else if (result.code !== 'cancelled') setMessage({ kind: 'error', text: result.error })
     } finally {
       setBusy(false)
@@ -286,10 +303,11 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
   const waiting = pair?.step === 'claiming' || pair?.step === 'waiting'
 
   return (
-    <Dialog open title="Add connection" onClose={close} lightDismiss={false}>
+    <Dialog open title="Add" onClose={close} lightDismiss={false}>
       <div className="space-y-3 text-[12px]">
         {step === 'address' && (
           <>
+            {found && <p className="text-[var(--adf-ui-text-muted)]">{found.name} at {found.address}, fingerprint {found.fingerprint}.</p>}
             <label className="block space-y-1">
               <span className="text-[var(--adf-ui-text)]">Address</span>
               <TextInput value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://adf.example.com" spellCheck={false} autoComplete="off" aria-label="Address" autoFocus />
@@ -325,10 +343,7 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
         <MessageLine message={message} />
         <div className="flex justify-end gap-2 pt-1">
           {step === 'done' ? (
-            <>
-              <Button onClick={onClose}>Done</Button>
-              {savedId && <Button variant="primary" onClick={() => { onClose(); onConnect(savedId) }}>Connect</Button>}
-            </>
+            <Button variant="primary" onClick={onClose}>Done</Button>
           ) : (
             <>
               <Button onClick={close}>Cancel</Button>
@@ -380,8 +395,8 @@ export function ConnectionSettings() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  const [pairWith, setPairWith] = useState<PairTarget | null>(null)
-  const [adding, setAdding] = useState(false)
+  // The Add dialog: on a typed address (true) or on a found computer.
+  const [adding, setAdding] = useState<AddTarget | true | null>(null)
   const { track } = useSettingsSave()
 
   useEffect(() => {
@@ -562,7 +577,7 @@ export function ConnectionSettings() {
           details={thisComputerRows}
           extra={switchRows}
         />
-        {adding && <AddConnectionDialog onClose={() => setAdding(false)} onConnect={connect} />}
+        {adding && <AddConnectionDialog onClose={() => setAdding(null)} found={adding === true ? null : adding} />}
       </>
     )
   }
@@ -572,20 +587,19 @@ export function ConnectionSettings() {
       {notices}
 
       <SettingsGroup title="Runtimes" docs={DOCS.backendConnection}>
-        <ConnectionRows rows={view.rows} busy={busy} onConnect={connect} onPair={(row) => row.url && row.fingerprint && setPairWith({ name: row.name, url: row.url, address: row.address ?? row.url, fingerprint: row.fingerprint, encrypted: row.encrypted })} onRemove={remove} />
+        <ConnectionRows rows={view.rows} busy={busy} onConnect={connect} onAdd={(row) => row.url && row.fingerprint && setAdding({ name: row.name, url: row.url, address: row.address ?? row.url, fingerprint: row.fingerprint, encrypted: row.encrypted })} onRemove={remove} />
         {view.discovery?.problem && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{view.discovery.problem}</p>}
         {emptyDiscoveryLine(view) && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{emptyDiscoveryLine(view)}</p>}
         <div className="flex items-center justify-between gap-4 border-t border-[var(--adf-ui-separator)] px-4 py-3">
           <MessageLine message={message} />
-          <Button disabled={busy} onClick={() => setAdding(true)}>Add connection</Button>
+          <Button disabled={busy} onClick={() => setAdding(true)}>Add</Button>
         </div>
         {switchRows}
       </SettingsGroup>
 
       {local && <SettingsGroup title="This computer">{thisComputerRows}</SettingsGroup>}
 
-      {pairWith && <PairDialog entry={pairWith} onClose={() => setPairWith(null)} onConnect={(id) => { setPairWith(null); connect(id) }} />}
-      {adding && <AddConnectionDialog onClose={() => setAdding(false)} onConnect={connect} />}
+      {adding && <AddConnectionDialog onClose={() => setAdding(null)} found={adding === true ? null : adding} />}
     </>
   )
 }

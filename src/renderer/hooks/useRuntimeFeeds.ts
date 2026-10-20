@@ -10,6 +10,8 @@ import { apiFor } from '../utils/runtime-api'
 import { isAgentWindow } from '../utils/window-kind'
 import { useDocumentStore } from '../stores/document.store'
 import { useMessageQueueStore } from '../stores/message-queue.store'
+import { useAgentStore } from '../stores/agent.store'
+import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { foldAgentStatuses } from '../utils/background-agent-statuses'
 import { deliverSettledBackgroundQueues } from '../utils/queued-delivery'
 import { agentKey } from '../../shared/types/agent-ref'
@@ -133,6 +135,14 @@ export function syncRuntimeFeeds(runtimes: readonly RuntimeView[]): void {
     useTrackedDirsStore.getState().dropRuntime(id)
     useBackgroundAgentsStore.getState().dropRuntime(id)
     useMeshStore.getState().dropRuntime(id)
+    // The open agent was on it (Remove, multi-runtime.md §3.3): the main window shows Home; main already closed its file there.
+    if (runtimes.length > 0 && useDocumentStore.getState().runtimeId === id && useDocumentStore.getState().filePath) {
+      console.log(`[Runtimes] ${id} left the set: closing its open agent ${useDocumentStore.getState().filePath}`)
+      useDocumentStore.getState().reset()
+      useAgentStore.getState().reset()
+      useAppStore.getState().resetAgentReview()
+      useEditorTabsStore.getState().reset()
+    }
   }
   for (const runtime of others) {
     let feed = feeds.get(runtime.id)

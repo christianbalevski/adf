@@ -17,8 +17,15 @@ export function apiFor(runtimeId?: RuntimeId | null): AdfApi {
   const target = runtimeId || LOCAL_RUNTIME
   const own = typeof api?.runtimeId === 'string' && api.runtimeId ? api.runtimeId : LOCAL_RUNTIME
   if (own === target || typeof api?.runtime !== 'function') return api
-  return api.runtime(target)
+  // One surface per runtime for this page's adfApi: the context bridge hands back a new object per call.
+  let bound = surfaces.get(api)
+  if (!bound) { bound = new Map(); surfaces.set(api, bound) }
+  let surface = bound.get(target)
+  if (!surface) { surface = api.runtime(target); bound.set(target, surface) }
+  return surface
 }
+
+const surfaces = new WeakMap<AdfApi, Map<RuntimeId, AdfApi>>()
 
 /**
  * The surface of the open agent's runtime. An agent window's `window.adfApi`

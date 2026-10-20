@@ -31,14 +31,19 @@ export function notSavedMessage(reason: string): string {
  * `globalThis` because the web tsconfig does not include the preload's Window
  * augmentation (same accessor pattern as approvals.store.ts).
  */
-export async function writeSettings(patch: Record<string, unknown>): Promise<SettingsWriteOutcome> {
-  const api = (globalThis as { adfApi?: { setSettings?: (patch: Record<string, unknown>) => Promise<unknown> } }).adfApi
+export async function writeSettings(patch: Record<string, unknown>, surface?: SettingsWriter | null): Promise<SettingsWriteOutcome> {
+  const api = surface ?? (globalThis as { adfApi?: SettingsWriter }).adfApi
   if (!api?.setSettings) return { ok: false, error: 'Studio is not connected.' }
   try {
     return settingsWriteOutcome(await api.setSettings(patch))
   } catch (err) {
     return { ok: false, error: saveErrorMessage(err) }
   }
+}
+
+/** What a settings write needs of an adfApi surface. */
+export interface SettingsWriter {
+  setSettings?: (patch: Record<string, unknown>) => Promise<unknown>
 }
 
 export interface SettingsToast {
@@ -78,7 +83,10 @@ const StatusContext = createContext<{ saved: boolean; toasts: SettingsToast[]; d
 const SAVED_MS = 2000
 const UNDO_MS = 10_000
 
-export function SettingsSaveProvider({ children }: { children: React.ReactNode }) {
+/** `api`: the surface writes go to (the Settings picker's runtime for its pages, multi-runtime.md §6.3); default `window.adfApi`. */
+export function SettingsSaveProvider({ children, api: surface }: { children: React.ReactNode; api?: SettingsWriter | null }) {
+  const surfaceRef = useRef(surface)
+  surfaceRef.current = surface
   const [saved, setSaved] = useState(false)
   const [toasts, setToasts] = useState<SettingsToast[]>([])
   const inFlight = useRef(0)
@@ -129,7 +137,7 @@ export function SettingsSaveProvider({ children }: { children: React.ReactNode }
     return true
   }, [push])
 
-  const commit = useCallback((patch: Record<string, unknown>, rollback?: () => void) => track(writeSettings(patch), rollback), [track])
+  const commit = useCallback((patch: Record<string, unknown>, rollback?: () => void) => track(writeSettings(patch, surfaceRef.current), rollback), [track])
   const offerUndo = useCallback((message: string, onUndo: () => void) => push({ kind: 'undo', message, onUndo }), [push])
 
   const api = useMemo(() => ({ commit, track, offerUndo }), [commit, track, offerUndo])

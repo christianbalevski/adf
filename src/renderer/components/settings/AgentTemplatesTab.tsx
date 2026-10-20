@@ -15,6 +15,7 @@ import { useConfirm } from '../common/ConfirmDialog'
 import { InfoHint } from '../common/DocsLink'
 import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import { useSettingsSave } from './settings-save'
+import { useSettingsApi } from './settings-runtime'
 
 /**
  * Settings > Agent templates.
@@ -111,6 +112,8 @@ interface AgentTemplatesTabProps {
 }
 
 export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProviders }: AgentTemplatesTabProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const { templates, folder, defaultId, migrated, loaded } = useTemplates()
   const sorted = useMemo(() => sortTemplates(templates), [templates])
 
@@ -142,7 +145,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
   const [confirmDialog, confirm] = useConfirm()
   useEffect(() => {
     let cancelled = false
-    void window.adfApi.getSettings().then((settings) => {
+    void api.getSettings().then((settings) => {
       if (!cancelled) setChildTemplateId(settings?.childTemplateId ?? '')
     }).catch(() => { /* leave it on None */ })
     return () => { cancelled = true }
@@ -193,7 +196,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
 
   const refreshContents = useCallback(async (id: string) => {
     try {
-      const res = await window.adfApi.getTemplateContents(id)
+      const res = await api.getTemplateContents(id)
       // The selection may have moved while this was in flight; a stale answer
       // must not replace what is on screen.
       if (selectedIdRef.current !== id) return
@@ -251,7 +254,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
     setContents(null)
     if (!id) return
     setLoadingContents(true)
-    void window.adfApi.getTemplateContents(id)
+    void api.getTemplateContents(id)
       .then((res) => {
         if (selectedIdRef.current !== id) return
         if (res?.success && res.contents) setContents(res.contents)
@@ -278,7 +281,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
 
   // Folder changed on disk: re-read the open template unless it has unsaved edits.
   useEffect(() => {
-    const off = window.adfApi.onTemplatesChanged(() => {
+    const off = api.onTemplatesChanged(() => {
       const id = selectedIdRef.current
       if (!id || dirty.current || pending.current.size > 0) return
       void refreshContents(id)
@@ -291,7 +294,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
     dirty.current = true
     setContents((prev) => (prev ? { ...prev, files: { ...prev.files, [key]: content } } : prev))
     schedule(`file:${path}`, () => {
-      void runWrite(id, () => window.adfApi.setTemplateFile({ id, path, content }))
+      void runWrite(id, () => api.setTemplateFile({ id, path, content }))
     })
   }
 
@@ -305,7 +308,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       void (async () => {
         inFlight.current++
         try {
-          const res = await window.adfApi.setTemplateMeta({ id, description: next.description, warning: next.warning })
+          const res = await api.setTemplateMeta({ id, description: next.description, warning: next.warning })
           const error = res?.success ? null : res?.error || 'The notes could not be saved.'
           setMetaError(error)
           report(error)
@@ -325,14 +328,14 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
     dirty.current = true
     setContents((prev) => (prev ? { ...prev, config: next } : prev))
     schedule('config', () => {
-      void runWrite(id, () => window.adfApi.setTemplateConfig({ id, config: next }))
+      void runWrite(id, () => api.setTemplateConfig({ id, config: next }))
     })
   }
 
   const addFiles = async (id: string) => {
     setAdding(true)
     try {
-      const res = await window.adfApi.addTemplateFiles(id)
+      const res = await api.addTemplateFiles(id)
       if (!res.success) {
         if (res.error && res.error !== 'Cancelled') setWriteError(res.error)
       } else {
@@ -346,7 +349,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
 
   const removeFile = async (id: string, path: string) => {
     if (!await confirm({ title: 'Remove file', body: `${path} is removed from this template. New agents no longer get it.`, confirmLabel: 'Remove', danger: true })) return
-    await runWrite(id, () => window.adfApi.removeTemplateFile({ id, path }))
+    await runWrite(id, () => api.removeTemplateFile({ id, path }))
     await refreshContents(id)
   }
 
@@ -376,7 +379,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
     setListError(null)
     setBusy(true)
     try {
-      const res = await window.adfApi.createTemplate({ name, fromId })
+      const res = await api.createTemplate({ name, fromId })
       if (!res.success) {
         setListError(res.error || 'The template could not be created.')
         return
@@ -408,7 +411,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
   const reviewTemplate = async (t: AgentTemplateSummary) => {
     setListError(null)
     try {
-      const review = await window.adfApi.checkTemplateReview(t.id)
+      const review = await api.checkTemplateReview(t.id)
       if (review.needsReview && review.configSummary) {
         useAppStore.getState().openTemplateReview(t.id, review.configSummary, () => { void refreshList() })
       } else {
@@ -440,7 +443,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
     flushPending()
     setBusy(true)
     try {
-      const res = await window.adfApi.renameTemplate({ id: renaming.id, name })
+      const res = await api.renameTemplate({ id: renaming.id, name })
       if (!res.success) {
         setRenameError(res.error || 'The template could not be renamed.')
         return
@@ -465,7 +468,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       {
         label: 'Make default',
         disabled: t.id === defaultId,
-        onSelect: () => { void act(() => window.adfApi.setDefaultTemplate(t.id)) },
+        onSelect: () => { void act(() => api.setDefaultTemplate(t.id)) },
       },
       {
         label: 'Duplicate',
@@ -473,7 +476,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       },
       {
         label: 'Reveal in Finder',
-        onSelect: () => { void window.adfApi.revealTemplate(t.id) },
+        onSelect: () => { void api.revealTemplate(t.id) },
       },
     ]
     if (t.shipped) {
@@ -483,7 +486,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
         separatorBefore: true,
         onSelect: () => {
           void confirm({ title: 'Reset template', body: `"${t.name}" goes back to the version Studio ships. Your changes to it are lost.`, confirmLabel: 'Reset', danger: true })
-            .then((yes) => { if (yes) void act(() => window.adfApi.resetShippedTemplate(shipped)) })
+            .then((yes) => { if (yes) void act(() => api.resetShippedTemplate(shipped)) })
         },
       })
     }
@@ -493,14 +496,14 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       separatorBefore: !t.shipped,
       onSelect: () => {
         void confirm({ title: 'Delete template', body: `"${t.name}" goes to the trash.`, confirmLabel: 'Delete', danger: true })
-          .then((yes) => { if (yes) void act(() => window.adfApi.deleteTemplate(t.id)) })
+          .then((yes) => { if (yes) void act(() => api.deleteTemplate(t.id)) })
       },
     })
     return items
   }
 
   const dismissMigration = async () => {
-    await window.adfApi.templatesMigrationSeen()
+    await api.templatesMigrationSeen()
     await refreshList()
   }
 

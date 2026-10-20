@@ -7,6 +7,7 @@ import { countOverrides } from './override-utils'
 import { rebaseProviderList, type ProviderSaveFailure } from './provider-save'
 import { recommendedModel } from './provider-ready'
 import type { ClaudeAuthStatusView } from '../../../preload/api'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 export interface ProviderManagerInput {
   providers: ProviderConfig[]
@@ -30,6 +31,8 @@ export interface ProviderManagerInput {
  * from either place is the same provider.
  */
 export function useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure }: ProviderManagerInput) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const providersRef = useRef(providers)
   providersRef.current = providers
 
@@ -45,7 +48,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     setStatus((s) => ({ ...s, [id]: 'testing' }))
     let next: ProviderTestStatus
     try {
-      next = (await window.adfApi?.testProvider(id, force))?.status ?? 'unknown'
+      next = (await api?.testProvider(id, force))?.status ?? 'unknown'
     } catch {
       next = 'failed'
     }
@@ -72,7 +75,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
       for (const p of providers) {
         if (isSubscriptionType(p.type)) continue
         try {
-          const r = await window.adfApi?.listProviderCredentialFiles({ providerId: p.id })
+          const r = await api?.listProviderCredentialFiles({ providerId: p.id })
           next[p.id] = countOverrides(r?.files ?? [], p)
         } catch {
           next[p.id] = 0
@@ -102,7 +105,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     try {
       // main reads the provider back from settings, so the write has to land first.
       await flushSave()
-      const result = await window.adfApi?.listModels(id)
+      const result = await api?.listModels(id)
       const list = [...(result?.models ?? [])].sort((a, b) => a.localeCompare(b))
       setModels((m) => ({ ...m, [id]: { models: list, error: result?.error } }))
       const p = providersRef.current.find((x) => x.id === id)
@@ -135,13 +138,13 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
   const [grokLoading, setGrokLoading] = useState(false)
   const [grokDevice, setGrokDevice] = useState<{ userCode: string; verificationUri: string } | null>(null)
 
-  const refreshChatgpt = useCallback(() => { window.adfApi?.chatgptAuthStatus().then(setChatgptAuth).catch(() => {}) }, [])
-  const refreshGrok = useCallback(() => { window.adfApi?.grokAuthStatus().then(setGrokAuth).catch(() => {}) }, [])
+  const refreshChatgpt = useCallback(() => { api?.chatgptAuthStatus().then(setChatgptAuth).catch(() => {}) }, [])
+  const refreshGrok = useCallback(() => { api?.grokAuthStatus().then(setGrokAuth).catch(() => {}) }, [])
   const [claudeAuth, setClaudeAuth] = useState<ClaudeAuthStatusView>({ authenticated: false, installed: true })
   const [claudeLoading, setClaudeLoading] = useState(false)
   const [claudeError, setClaudeError] = useState<string | undefined>()
   const refreshClaude = useCallback((recheck = false) => {
-    window.adfApi?.claudeAuthStatus(recheck).then(setClaudeAuth).catch(() => {})
+    api?.claudeAuthStatus(recheck).then(setClaudeAuth).catch(() => {})
   }, [])
 
   const chatgpt: SubscriptionAuthState = {
@@ -152,7 +155,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
       setChatgptLoading(true)
       setChatgptError(undefined)
       try {
-        const result = await window.adfApi?.chatgptAuthStart()
+        const result = await api?.chatgptAuthStart()
         if (result && !result.success) {
           console.warn('[ChatGPT Auth]', result.error)
           setChatgptError(result.error || 'Sign-in failed.')
@@ -165,7 +168,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
         setChatgptLoading(false)
       }
     },
-    signOut: async () => { await window.adfApi?.chatgptAuthLogout(); refreshChatgpt() },
+    signOut: async () => { await api?.chatgptAuthLogout(); refreshChatgpt() },
   }
 
   const grok: SubscriptionAuthState = {
@@ -177,7 +180,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
       setGrokLoading(true)
       setGrokError(undefined)
       try {
-        const result = await window.adfApi?.grokAuthStart()
+        const result = await api?.grokAuthStart()
         if (result?.success && result.userCode && result.verificationUri) {
           setGrokDevice({ userCode: result.userCode, verificationUri: result.verificationUri })
         } else if (result && !result.success) {
@@ -190,7 +193,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
         setGrokLoading(false)
       }
     },
-    signOut: async () => { await window.adfApi?.grokAuthLogout(); setGrokDevice(null); refreshGrok() },
+    signOut: async () => { await api?.grokAuthLogout(); setGrokDevice(null); refreshGrok() },
   }
 
   const claude: SubscriptionAuthState = {
@@ -202,7 +205,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
       setClaudeLoading(true)
       setClaudeError(undefined)
       try {
-        const result = await window.adfApi?.claudeAuthStart()
+        const result = await api?.claudeAuthStart()
         if (result && !result.success) setClaudeError(result.error)
       } catch (err) {
         setClaudeError(String(err))
@@ -212,17 +215,17 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
       }
     },
     signOut: async () => {
-      const result = await window.adfApi?.claudeAuthLogout()
+      const result = await api?.claudeAuthLogout()
       setClaudeError(result && !result.success ? result.error : undefined)
       refreshClaude()
     },
     submitCode: async (code: string) => {
-      const result = await window.adfApi?.claudeAuthSubmitCode(code)
+      const result = await api?.claudeAuthSubmitCode(code)
       setClaudeError(result && !result.success ? result.error : undefined)
       refreshClaude()
     },
     cancel: async () => {
-      await window.adfApi?.claudeAuthCancel()
+      await api?.claudeAuthCancel()
       setClaudeError(undefined)
       refreshClaude()
     },
@@ -251,7 +254,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
   useEffect(() => {
     if (!grokDevice) return
     const timer = setInterval(() => {
-      window.adfApi?.grokAuthStatus().then((s) => {
+      api?.grokAuthStatus().then((s) => {
         setGrokAuth(s)
         if (s.authenticated || s.flowError || s.flowPending === false) setGrokDevice(null)
       }).catch(() => {})
@@ -309,9 +312,9 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     // main reads providers from settings on disk, not from renderer state.
     try {
       // Onto the list stored now: another window's change is kept (agent windows).
-      const s = await window.adfApi?.getSettings()
+      const s = await api?.getSettings()
       const merged = rebaseProviderList({ providers: current, defaultProviderId }, { providers: next, defaultProviderId: nextDefault }, { providers: s?.providers ?? current, defaultProviderId: s ? s.defaultProviderId || undefined : defaultProviderId })
-      await window.adfApi?.setSettings({ providers: merged.providers, defaultProviderId: merged.defaultProviderId ?? '' })
+      await api?.setSettings({ providers: merged.providers, defaultProviderId: merged.defaultProviderId ?? '' })
     } catch {
       // The caller's debounced save still lands a moment later.
     }

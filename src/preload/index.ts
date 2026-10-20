@@ -670,8 +670,8 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     ipcRenderer.invoke(IPC.CLAUDE_AUTH_LOGOUT),
 
   // Open file request (main -> renderer, e.g. double-click .adf in Finder)
-  onOpenFileRequest: (callback: (data: { filePath: string }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string }) =>
+  onOpenFileRequest: (callback: (data: { filePath: string; runtimeId?: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string; runtimeId?: string }) =>
       callback(data)
     ipcRenderer.on(IPC.OPEN_FILE_REQUEST, handler)
     return () => ipcRenderer.removeListener(IPC.OPEN_FILE_REQUEST, handler)

@@ -694,9 +694,10 @@ export interface AdfApi {
   claudeAuthLogout: () => Promise<{ success: boolean; error?: string }>
 
   // Open file request (main -> renderer)
-  onOpenFileRequest: (callback: (data: { filePath: string }) => void) => () => void
+  /** `runtimeId`: Open Recent of another runtime (multi-runtime.md §6.6); absent for This computer. */
+  onOpenFileRequest: (callback: (data: { filePath: string; runtimeId?: string }) => void) => () => void
   /** Cold-start pull: fetch-and-clear the double-click path queued before the renderer's listener registered. */
-  getPendingOpenFile: () => Promise<{ filePath: string | null }>
+  getPendingOpenFile: () => Promise<{ filePath: string | null; runtimeId?: string }>
   /** Generic directory picker (no side effects); null when cancelled. */
   pickDirectory: () => Promise<{ path: string | null }>
 

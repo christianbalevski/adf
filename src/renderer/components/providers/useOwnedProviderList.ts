@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import { sameContent } from '../../utils/list-rebase'
 import { rebaseProviderList, saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from './provider-save'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 const SAVE_DEBOUNCE_MS = 250
 
@@ -14,6 +15,8 @@ const SAVE_DEBOUNCE_MS = 250
  * (`saveFailure`); it is tried again with the next edit or flush.
  */
 export function useOwnedProviderList() {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const [providers, setProvidersState] = useState<ProviderConfig[]>([])
   const [defaultProviderId, setDefaultProviderIdState] = useState<string | undefined>(undefined)
   const [loaded, setLoaded] = useState(false)
@@ -37,7 +40,7 @@ export function useOwnedProviderList() {
   }, [])
 
   const load = useCallback(async () => {
-    const s = await window.adfApi.getSettings()
+    const s = await api.getSettings()
     setProvidersState(s.providers ?? [])
     setDefaultProviderIdState(s.defaultProviderId || undefined)
     savedRef.current = { providers: s.providers ?? [], defaultProviderId: s.defaultProviderId || undefined }
@@ -55,11 +58,11 @@ export function useOwnedProviderList() {
     // Onto the list stored now: another window's change is kept (agent windows).
     let toWrite: ProviderListSnapshot = attempted
     try {
-      const s = await window.adfApi.getSettings()
+      const s = await api.getSettings()
       toWrite = rebaseProviderList(savedRef.current, attempted, { providers: s.providers ?? [], defaultProviderId: s.defaultProviderId || undefined })
     } catch { /* this window's list as it is */ }
     const result = await saveProviderList(
-      () => window.adfApi.setSettings({ providers: toWrite.providers, defaultProviderId: toWrite.defaultProviderId ?? '' }),
+      () => api.setSettings({ providers: toWrite.providers, defaultProviderId: toWrite.defaultProviderId ?? '' }),
       savedRef.current, toWrite,
     )
     if (result.saved) {

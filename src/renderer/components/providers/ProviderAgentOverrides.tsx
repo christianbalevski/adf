@@ -6,6 +6,7 @@ import { Tooltip } from '../common/Tooltip'
 import { Button, IconButton, Select, TextInput } from '../ui'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 interface AdfProviderOverride {
   defaultModel?: string
@@ -35,6 +36,8 @@ interface ProviderAgentOverridesProps {
  * "overrides", and calls out the missing key rather than implying it is normal.
  */
 export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountChange }: ProviderAgentOverridesProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const [files, setFiles] = useState<ProviderCredentialFileInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [tracked, setTracked] = useState<TrackedAdfFile[]>([])
@@ -64,7 +67,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await window.adfApi?.listProviderCredentialFiles({ providerId: provider.id })
+      const result = await api?.listProviderCredentialFiles({ providerId: provider.id })
       const scanned = result?.files ?? []
       setFiles((prev) => {
         const keep = prev.filter((f) => manualPaths.current.has(f.filePath) && !scanned.some((s) => s.filePath === f.filePath))
@@ -89,7 +92,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
     setEditing(filePath)
     setLoadErrors((prev) => { const n = { ...prev }; delete n[filePath]; return n })
     try {
-      const loaded = credentialFormLoad(await window.adfApi?.getProviderCredentials({ filePath, providerId: provider.id }))
+      const loaded = credentialFormLoad(await api?.getProviderCredentials({ filePath, providerId: provider.id }))
       if (loaded.apiKey !== null) setKeys((prev) => ({ ...prev, [filePath]: loaded.apiKey! }))
       if (loaded.providerConfig) setOverrides((prev) => ({ ...prev, [filePath]: loaded.providerConfig! }))
       if (loaded.error) setLoadErrors((prev) => ({ ...prev, [filePath]: loaded.error! }))
@@ -116,7 +119,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
       const o = overrides[filePath] ?? {}
       // The agent's copy starts from the app default, then applies the override.
       const { apiKey: _k, credentialStorage: _s, ...base } = provider
-      const attach = await window.adfApi?.attachProvider({
+      const attach = await api?.attachProvider({
         filePath,
         provider: {
           ...base,
@@ -127,7 +130,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
       })
       if (attach && !attach.success) throw new Error(attach.error ?? 'Failed to attach provider')
       if (apiKey) {
-        const r = await window.adfApi?.setProviderCredential({ filePath, providerId: provider.id, value: apiKey })
+        const r = await api?.setProviderCredential({ filePath, providerId: provider.id, value: apiKey })
         if (r && !r.success) throw new Error(r.error ?? 'Failed to save key')
       }
       setFiles((prev) => prev.map((f) => f.filePath === filePath
@@ -148,7 +151,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
 
   const remove = async (filePath: string) => {
     if (!window.confirm(`Remove this agent's copy of ${provider.name || 'this provider'}? It goes back to the app values, and its own key for this provider is deleted.`)) return
-    await window.adfApi?.detachProvider({ filePath, providerId: provider.id })
+    await api?.detachProvider({ filePath, providerId: provider.id })
     manualPaths.current.delete(filePath)
     const next = files.filter((f) => f.filePath !== filePath)
     setFiles(next)

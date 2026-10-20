@@ -24,21 +24,24 @@ import type { ConnectionCurrent, ConnectionRow } from '../../../src/shared/types
 const row = (over: Partial<ConnectionRow>): ConnectionRow => ({
   id: 'local', kind: 'local', name: 'This computer', state: null, action: 'connect', url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false, ...over,
 })
-const rows = (list: ConnectionRow[]) => renderToStaticMarkup(<ConnectionRows rows={list} busy={false} onConnect={() => {}} onPair={() => {}} onRemove={() => {}} />)
+const rows = (list: ConnectionRow[]) => renderToStaticMarkup(<ConnectionRows rows={list} busy={false} onConnect={() => {}} onAdd={() => {}} onRemove={() => {}} />)
 const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected', ...over })
 
 describe('the Connection page rows', () => {
   it('each row: its state and at most one action; the row in use has none', () => {
     const html = rows([
       row({ state: 'connected', action: null }),
-      row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'paired', action: 'connect', url: 'http://100.101.102.103:7385', address: '100.101.102.103', fingerprint: 'ABCD-EFGH', removable: true }),
+      // A saved connection is connected while saved (multi-runtime.md §6.5): its state, no action.
+      row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'retrying', action: null, url: 'http://100.101.102.103:7385', address: '100.101.102.103', fingerprint: 'ABCD-EFGH', removable: true }),
       row({ id: 'found:NEWW-2345@http://192.168.1.44:7385', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair', url: 'http://192.168.1.44:7385', address: '192.168.1.44', fingerprint: 'NEWW-2345', encrypted: false, pairingOpen: true }),
     ])
     expect(html).toContain('>Connected<')
-    expect(html).toContain('>Paired<')
+    expect(html).toContain('>Not connected, retrying<')
     expect(html).toContain('>Not paired<')
-    expect(html.match(/>Connect</g)).toHaveLength(1)
-    expect(html.match(/>Pair</g)).toHaveLength(1)
+    expect(html).not.toContain('>Connect<')
+    // A found computer: Add, never Pair (§6.5).
+    expect(html.match(/>Add</g)).toHaveLength(1)
+    expect(html).not.toContain('>Pair<')
     expect(html).toContain('100.101.102.103 · ABCD-EFGH')
     expect(html).toContain('192.168.1.44 · NEWW-2345 · Pairing open')
     expect(html).toContain('>Not encrypted<')

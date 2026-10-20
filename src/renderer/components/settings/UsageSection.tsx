@@ -6,6 +6,7 @@ import { UsageChart, SERIES_COLORS, MAX_NAMED_SERIES, type ChartSeries, type Usa
 import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
 import { localDateKey } from '../../../shared/utils/date-key'
+import { useSettingsApi } from './settings-runtime'
 
 type TokenUsageEntry = TokenUsageData[string][string][string]
 
@@ -102,6 +103,8 @@ function WindowStats({ t, windowDays }: { t: Totals; windowDays: WindowDays }) {
 }
 
 export function TokenUsageSection() {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const [tokenUsage, setTokenUsage] = useState<TokenUsageData>({})
   const [windowDays, setWindowDays] = useState<WindowDays>('30')
   const [metric, setMetric] = useState<UsageMetric>('tokens')
@@ -109,7 +112,7 @@ export function TokenUsageSection() {
   const [confirmDialog, confirm] = useConfirm()
 
   useEffect(() => {
-    window.adfApi?.getTokenUsage().then((data) => {
+    api?.getTokenUsage().then((data) => {
       setTokenUsage(data)
     })
   }, [])
@@ -118,12 +121,12 @@ export function TokenUsageSection() {
     if (!await confirm({ title: 'Clear usage', body: 'Every token count is deleted. This cannot be undone; Download JSON keeps a copy.', confirmLabel: 'Clear usage', danger: true })) {
       return
     }
-    await window.adfApi?.clearTokenUsage()
+    await api?.clearTokenUsage()
     setTokenUsage({})
   }
 
   const handleDownload = async () => {
-    await window.adfApi?.saveTokenUsageExport?.(JSON.stringify(tokenUsage, null, 2))
+    await api?.saveTokenUsageExport?.(JSON.stringify(tokenUsage, null, 2))
   }
 
   const allDates = useMemo(() => Object.keys(tokenUsage).sort(), [tokenUsage])

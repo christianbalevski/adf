@@ -16,9 +16,14 @@ import { AboutTab, UpdatesGroup } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
+import { SettingsRuntimeProvider, useSettingsApi } from './settings-runtime'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
 import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
-import { runtimeDown, runtimeGroupLabel, useCurrentConnection, useRemoteConnectionsSaved } from '../../stores/connection.store'
+import { runtimeDown, runtimeGroupLabel, useCurrentConnection } from '../../stores/connection.store'
+import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
+import { initialSettingsRuntime, useSettingsRuntimeStore } from '../../stores/settings-runtime.store'
+import { apiFor } from '../../utils/runtime-api'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { CONNECTION_STATE_LABELS } from '../../../shared/types/connection.types'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
@@ -29,7 +34,7 @@ import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
-import { useMeshStore } from '../../stores/mesh.store'
+import { selectMeshSlice, useMeshStore } from '../../stores/mesh.store'
 import { useMesh } from '../../hooks/useMesh'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
 import { CommitInput, checkPeerAddress, checkWholeNumber } from './settings-inputs'
@@ -157,6 +162,7 @@ function StateBadge({ tone, children }: { tone: 'ok' | 'warn' | 'bad'; children:
  * owner-signed delegation. Includes seed backup + import flows.
  */
 function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: string }) {
+  const api = useSettingsApi()
   const [status, setStatus] = useState<OwnerIdentityStatusView | null>(null)
   const [meshServer, setMeshServer] = useState<{ running: boolean; port: number; host: string } | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
@@ -188,9 +194,9 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
   }
 
   const refresh = useCallback(() => {
-    window.adfApi?.getOwnerIdentityStatus().then(setStatus)
-    window.adfApi?.getMeshServerStatus().then(setMeshServer)
-    window.adfApi?.getSettings?.().then((s: unknown) => {
+    api?.getOwnerIdentityStatus().then(setStatus)
+    api?.getMeshServerStatus().then(setMeshServer)
+    api?.getSettings?.().then((s: unknown) => {
       const cfg = s as { ownerAlias?: string; runtimeAlias?: string; shareOwnerIdentity?: boolean } | undefined
       savedAliases.current = { owner: cfg?.ownerAlias ?? '', runtime: cfg?.runtimeAlias ?? '' }
       setOwnerAlias(cfg?.ownerAlias ?? '')
@@ -209,14 +215,14 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
   }
 
   const openBackup = async () => {
-    const r = await window.adfApi?.revealOwnerMnemonic()
+    const r = await api?.revealOwnerMnemonic()
     setMnemonic(r?.mnemonic ?? null)
     setMnemonicReason(r?.reason ?? null)
     setBackupOpen(true)
   }
 
   const confirmBackup = async () => {
-    await window.adfApi?.confirmOwnerBackup()
+    await api?.confirmOwnerBackup()
     setBackupOpen(false)
     setMnemonic(null)
     refresh()
@@ -235,7 +241,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
     setImportResult(null)
     try {
       const expected = importMode === 'restore' ? status?.ownerDid : undefined
-      const r = await window.adfApi?.importOwnerMnemonic(importPhrase, expected)
+      const r = await api?.importOwnerMnemonic(importPhrase, expected)
       if (r?.success) {
         setImportResult({ ok: true, message: `Identity ${expected ? 'restored' : 'imported'}. ${r.restamped ?? 0} agent file(s) restamped${r.failures?.length ? `, ${r.failures.length} failed` : ''}.` })
         setImportPhrase('')
@@ -497,6 +503,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
  * browser then says so rather than pretending a source exists.
  */
 function SkillsTab() {
+  const api = useSettingsApi()
   /** `null` until the preference has been read — an empty list is a real value. */
   const [sources, setSources] = useState<string[] | null>(null)
   const [draft, setDraft] = useState('')
@@ -504,7 +511,7 @@ function SkillsTab() {
 
   useEffect(() => {
     void (async () => {
-      const stored = (await window.adfApi?.getSettings?.()) as unknown as
+      const stored = (await api?.getSettings?.()) as unknown as
         { skillCatalogSources?: unknown } | undefined
       setSources(normalizeCatalogSources(stored?.skillCatalogSources))
     })()
@@ -636,6 +643,7 @@ function PackagesTab({
   sandboxMaxWorkers: number
   setSandboxMaxWorkers: (n: number) => void
 }) {
+  const api = useSettingsApi()
   const [newPkgName, setNewPkgName] = useState('')
   const [newPkgVersion, setNewPkgVersion] = useState('')
   const [pkgInstalling, setPkgInstalling] = useState<string | null>(null)
@@ -648,7 +656,7 @@ function PackagesTab({
 
   // Fetch manifest on mount and after installs
   const refreshManifest = useCallback(() => {
-    window.adfApi?.listInstalledSandboxPackages().then((r) => {
+    api?.listInstalledSandboxPackages().then((r) => {
       setInstalledOnDisk(r?.packages ?? [])
     })
   }, [])
@@ -667,7 +675,7 @@ function PackagesTab({
     setPkgInstalling(newPkgName.trim())
     setPkgError(null)
     try {
-      const result = await window.adfApi?.installSandboxPackages([
+      const result = await api?.installSandboxPackages([
         { name: newPkgName.trim(), version: newPkgVersion.trim() || 'latest' }
       ])
       const r = result?.results?.[newPkgName.trim()]
@@ -992,10 +1000,11 @@ interface DiscoveredRuntime {
  * tailnet sweep; matches appear in the list within seconds.
  */
 function DiscoveryGroup() {
+  const api = useSettingsApi()
   const [peers, setPeers] = useState<DiscoveredRuntime[]>([])
   const [rechecking, setRechecking] = useState(false)
   const refresh = useCallback(async () => {
-    const list = await window.adfApi?.getDiscoveredRuntimes?.()
+    const list = await api?.getDiscoveredRuntimes?.()
     if (list) setPeers(list)
   }, [])
   // Manual recheck: force an immediate tailnet/manual re-probe (no staleness
@@ -1003,7 +1012,7 @@ function DiscoveryGroup() {
   const recheck = useCallback(async () => {
     setRechecking(true)
     try {
-      const list = await window.adfApi?.getDiscoveredRuntimes?.(true)
+      const list = await api?.getDiscoveredRuntimes?.(true)
       if (list) setPeers(list)
     } finally {
       setRechecking(false)
@@ -1012,7 +1021,7 @@ function DiscoveryGroup() {
 
   useEffect(() => {
     void refresh()
-    const unsub = window.adfApi?.onMeshEvent?.((event: { type?: string }) => {
+    const unsub = api?.onMeshEvent?.((event: { type?: string }) => {
       if (event?.type === 'lan_peer_discovered' || event?.type === 'lan_peer_expired') {
         void refresh()
       }
@@ -1066,6 +1075,7 @@ function DiscoveryGroup() {
 
 /** The Tailscale sweep switch and the manual peer list, as rows of Discovery. */
 function ManualPeersRows() {
+  const api = useSettingsApi()
   const [peers, setPeers] = useState<string[]>([])
   const [tailnetOn, setTailnetOn] = useState(true)
   const [draft, setDraft] = useState('')
@@ -1073,7 +1083,7 @@ function ManualPeersRows() {
 
   useEffect(() => {
     void (async () => {
-      const s = (await window.adfApi?.getSettings?.()) as unknown as {
+      const s = (await api?.getSettings?.()) as unknown as {
         meshManualPeers?: string[]
         tailnetDiscovery?: boolean
       }
@@ -1155,17 +1165,55 @@ function ManualPeersRows() {
   )
 }
 
-/** Settings, with its one save model (settings-save.tsx): "Saved" in the header, refusals and Undo as toasts. */
+/**
+ * Settings, with its one save model (settings-save.tsx): "Saved" in the
+ * header, refusals and Undo as toasts. Multi-runtime (multi-runtime.md
+ * §6.3): the runtime pages show the runtime the picker names; the body is
+ * drawn anew for each pick, so every runtime page reads that runtime. Studio
+ * pages are This computer's whatever the pick.
+ */
 export function SettingsPage() {
+  const runtimes = useRuntimes()
+  const [picked, setPicked] = useState<RuntimeId>(initialSettingsRuntime)
+  // Asked for while Settings is open: an agent window's Settings link, a status-bar group.
+  const requested = useSettingsRuntimeStore((s) => s.requested)
+  useEffect(() => {
+    if (requested === null) return
+    const id = useSettingsRuntimeStore.getState().take()
+    if (id) setPicked(id)
+  }, [requested])
+  // A picked runtime that left the set: This computer.
+  const runtimeId = runtimes.some((r) => r.id === picked) ? picked : LOCAL_RUNTIME
+  const [activeTab, setActiveTab] = useState<SettingsTab>('appearance')
+  const [settingsSearch, setSettingsSearch] = useState('')
+  const runtimePage = RUNTIME_NAV_ITEMS.some((item) => item.id === activeTab)
   return (
-    <SettingsSaveProvider>
-      <SettingsPageBody />
-      <SettingsToasts />
-    </SettingsSaveProvider>
+    <SettingsRuntimeProvider runtimeId={runtimeId}>
+      <SettingsSaveProvider api={runtimePage ? apiFor(runtimeId) : window.adfApi}>
+        <SettingsPageBody
+          key={runtimeId}
+          runtimeId={runtimeId}
+          onPick={setPicked}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          settingsSearch={settingsSearch}
+          setSettingsSearch={setSettingsSearch}
+        />
+        <SettingsToasts />
+      </SettingsSaveProvider>
+    </SettingsRuntimeProvider>
   )
 }
 
-function SettingsPageBody() {
+function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settingsSearch, setSettingsSearch }: {
+  runtimeId: RuntimeId
+  onPick: (id: RuntimeId) => void
+  activeTab: SettingsTab
+  setActiveTab: (tab: SettingsTab) => void
+  settingsSearch: string
+  setSettingsSearch: (search: string) => void
+}) {
+  const api = useSettingsApi()
   const { commit, track, offerUndo } = useSettingsSave()
   const [confirmDialog, confirm] = useConfirm()
   const [providers, setProviders] = useState<ProviderConfig[]>([])
@@ -1186,13 +1234,17 @@ function SettingsPageBody() {
   const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  const [activeTab, setActiveTab] = useState<SettingsTab>('appearance')
   const connection = useCurrentConnection()
-  const remote = connection?.kind === 'remote'
-  const runtimeName = connection?.name ?? 'the runtime'
-  const remoteSaved = useRemoteConnectionsSaved()
-  const navGroups = settingsNavGroups(runtimeGroupLabel(connection), remoteSaved)
-  const [settingsSearch, setSettingsSearch] = useState('')
+  const runtimes = useRuntimes()
+  const multi = runtimes.length > 1
+  // The runtime the pages show: the picked one; with one runtime, this window's connection, as before.
+  const runtime = multi ? runtimes.find((r) => r.id === runtimeId) ?? null : connection
+  const remote = runtime?.kind === 'remote'
+  const runtimeName = runtime?.name ?? 'the runtime'
+  // Runtime names show with more than one runtime, or while the one runtime is another computer (remote mode).
+  const named = multi || connection?.kind === 'remote'
+  const navGroups = settingsNavGroups(runtimeGroupLabel(connection), named && !multi)
+  const pickedMesh = runtimeId === LOCAL_RUNTIME ? undefined : runtimeId
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
@@ -1238,7 +1290,7 @@ function SettingsPageBody() {
   const restartMeshServer = async () => {
     setMeshRestarting(true)
     try {
-      const res = await window.adfApi?.restartMeshServer()
+      const res = await api?.restartMeshServer()
       if (res) {
         setMeshServerStatus({ running: res.running ?? false, port: res.port ?? meshPort, host: res.host ?? (meshLan ? '0.0.0.0' : '127.0.0.1') })
       }
@@ -1254,8 +1306,8 @@ function SettingsPageBody() {
     const saved = await persist({ meshPort: checked.value }, setMeshPort, checked.value, meshPort)
     if (saved && meshServerStatus.running && checked.value !== meshServerStatus.port) await restartMeshServer()
   }
-  const meshEnabled = useMeshStore((s) => s.enabled)
-  const { enableMesh, disableMesh } = useMesh()
+  const meshEnabled = useMeshStore((s) => selectMeshSlice(s, pickedMesh).enabled)
+  const { enableMesh, disableMesh } = useMesh(pickedMesh)
   const [meshSwitching, setMeshSwitching] = useState(false)
   const [meshSwitchError, setMeshSwitchError] = useState<string | null>(null)
   /** The Mesh switch: the mesh and its server together, now; Autostart is separate (meshEnabled). */
@@ -1268,7 +1320,7 @@ function SettingsPageBody() {
         setMeshSwitchError(result.error ?? `Mesh ${on ? 'start' : 'stop'} failed.`)
         return
       }
-      const server = on ? await window.adfApi?.startMeshServer() : await window.adfApi?.stopMeshServer()
+      const server = on ? await api?.startMeshServer() : await api?.stopMeshServer()
       if (server) {
         setMeshServerStatus({ running: server.running ?? false, port: server.port ?? meshServerStatus.port, host: server.host ?? meshServerStatus.host })
         if (!server.success && server.error) setMeshSwitchError(server.error)
@@ -1311,7 +1363,7 @@ function SettingsPageBody() {
   const contentScrollRef = useRef<HTMLElement>(null)
   const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
   const runtimePage = RUNTIME_NAV_ITEMS.some((item) => item.id === activeTab)
-  const runtimeUnreachable = runtimePage && runtimeDown(connection)
+  const runtimeUnreachable = runtimePage && runtimeDown(runtime)
   const normalizedSearch = settingsSearch.trim().toLowerCase()
   const visibleNavGroups = normalizedSearch
     ? navGroups.map((group) => ({
@@ -1392,7 +1444,20 @@ function SettingsPageBody() {
   }, [pendingAnchor, activeTab])
 
   useEffect(() => {
-    window.adfApi?.getSettings().then((settings) => {
+    // Studio pages' keys are This computer's whatever runtime is picked (§6.3).
+    const studioKeys = (settings: Record<string, unknown>) => {
+      setNativeNotifications(settings.nativeNotificationsEnabled !== false)
+      setMenuBar(settings.menuBarEnabled !== false)
+      setUpdateChecks(settings.updateChecksEnabled !== false)
+      setRemoteCatalogs(settings.remoteCatalogsEnabled !== false)
+      setProviderChecks(settings.providerChecksEnabled !== false)
+      setSpellcheckDownloads(settings.spellcheckDownloadsEnabled === true)
+    }
+    if (runtimeId !== LOCAL_RUNTIME) {
+      window.adfApi?.getSettings().then((settings) => studioKeys(settings as unknown as Record<string, unknown>))
+        .catch((err: unknown) => console.warn('[Settings] The settings of This computer were not read:', err))
+    }
+    api?.getSettings().then((settings) => {
       const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
       setProviders(loadedProviders)
       savedProviders.current = { providers: loadedProviders, defaultProviderId: (settings.defaultProviderId as string | undefined) || undefined }
@@ -1420,12 +1485,7 @@ function SettingsPageBody() {
         (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
       )
       setAutoApplyPromptUpdates(settings[PROMPT_AUTO_UPDATE_KEY] === true)
-      setNativeNotifications(settings.nativeNotificationsEnabled !== false)
-      setMenuBar(settings.menuBarEnabled !== false)
-      setUpdateChecks(settings.updateChecksEnabled !== false)
-      setRemoteCatalogs(settings.remoteCatalogsEnabled !== false)
-      setProviderChecks(settings.providerChecksEnabled !== false)
-      setSpellcheckDownloads(settings.spellcheckDownloadsEnabled === true)
+      if (runtimeId === LOCAL_RUNTIME) studioKeys(settings as unknown as Record<string, unknown>)
       setMeshAutoStart(settings.meshEnabled !== false)
       setMeshLan(!!settings.meshLan)
       setMeshPort((settings.meshPort as number) ?? 7295)
@@ -1458,17 +1518,17 @@ function SettingsPageBody() {
   useEffect(() => {
     if (activeTab !== 'networking') return
     const refresh = () => {
-      window.adfApi?.getMeshServerStatus().then(setMeshServerStatus)
-      window.adfApi?.getMeshStatus().then((s) => setMeshAgents(s.agents))
+      api?.getMeshServerStatus().then(setMeshServerStatus)
+      api?.getMeshStatus().then((s) => setMeshAgents(s.agents))
     }
     refresh()
-    window.adfApi?.getMeshServerLanIps().then(setLanInfo)
+    api?.getMeshServerLanIps().then(setLanInfo)
     // Subscribe to mesh events for live updates. Only lifecycle/peer events
     // change what this tab shows — `message_routed` fires per message and would
     // otherwise cost two IPC round-trips each. The rest coalesce behind a
     // trailing debounce.
     let refreshTimer: ReturnType<typeof setTimeout> | undefined
-    const unsub = window.adfApi?.onMeshEvent((event: MeshEvent) => {
+    const unsub = api?.onMeshEvent((event: MeshEvent) => {
       if (!MESH_STATUS_EVENTS.has(event.type)) return
       clearTimeout(refreshTimer)
       refreshTimer = setTimeout(refresh, 500)
@@ -1494,10 +1554,10 @@ function SettingsPageBody() {
     if (!hasLoaded.current) return
     const shown: SettingsLists = { providers, defaultProviderId, mcpServers, adapters: adapterRegistrations }
     // Onto the lists stored now: another window's change to them is kept, not overwritten (agent windows).
-    const lists = await listsToWrite(savedLists.current, shown, async () => (await window.adfApi.getSettings()) as unknown as Record<string, unknown>)
+    const lists = await listsToWrite(savedLists.current, shown, async () => (await api.getSettings()) as unknown as Record<string, unknown>)
     const attempted: ProviderListSnapshot = { providers: lists.providers, defaultProviderId: lists.defaultProviderId }
     const written = async () => {
-      const result = await window.adfApi?.setSettings({
+      const result = await api?.setSettings({
       providers: lists.providers,
       defaultProviderId: lists.defaultProviderId,
       mcpServers: lists.mcpServers,
@@ -1629,7 +1689,7 @@ function SettingsPageBody() {
   }
 
   const handleChooseAgentsFolder = async () => {
-    const result = await window.adfApi?.pickDirectory?.()
+    const result = await api?.pickDirectory?.()
     const path = result?.path
     if (!path) return
     void persist({ agentsFolder: path }, setAgentsFolder, path, agentsFolder)
@@ -1767,7 +1827,20 @@ function SettingsPageBody() {
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Settings sections">
           {visibleNavGroups.length > 0 ? visibleNavGroups.map((group, groupIndex) => (
             <div key={group.scope} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-[var(--adf-ui-separator)]' : 'mt-1'} data-settings-scope={group.scope}>
-              {group.label && (
+              {group.scope === 'runtime' && multi ? (
+                // §6.3: the runtime pages follow the picked runtime; Studio pages do not.
+                <div className="mb-1.5 px-2" data-runtime-picker>
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">Runtime</div>
+                  <Select
+                    value={runtimeId}
+                    onChange={(event) => onPick(event.target.value)}
+                    aria-label="Runtime"
+                    className="h-7 text-xs"
+                  >
+                    {runtimes.map((r) => <option key={r.id} value={r.id}>{runtimeHeader(r)}</option>)}
+                  </Select>
+                </div>
+              ) : group.label && (
                 <div className="mb-1 truncate px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>
                   {group.label}
                 </div>
@@ -1815,9 +1888,9 @@ function SettingsPageBody() {
             </p>
           </header>
 
-          {runtimeUnreachable && connection && (
+          {runtimeUnreachable && runtime && (
             <p role="status" className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-              {remoteSaved ? `Not connected to ${connection.name}.` : `${CONNECTION_STATE_LABELS[connection.state]}.`}
+              {named ? `Not connected to ${runtime.name}.` : `${CONNECTION_STATE_LABELS[runtime.state]}.`}
             </p>
           )}
           <fieldset disabled={runtimeUnreachable} className="contents">
@@ -2462,6 +2535,7 @@ function ComputeTab({
   executionTargets: ExecutionTarget[]
   setExecutionTargets: React.Dispatch<React.SetStateAction<ExecutionTarget[]>>
 }) {
+  const api = useSettingsApi()
   const [availability, setAvailability] = useState<PodmanAvailability | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
@@ -2505,13 +2579,13 @@ function ComputeTab({
   }, [commit, setExecutionTargets])
 
   const refreshAll = useCallback(() => {
-    window.adfApi?.computeStatus?.().then((s: ComputeEnvView) => {
+    api?.computeStatus?.().then((s: ComputeEnvView) => {
       if (s) setComputeEnvStatus(s)
     })
-    window.adfApi?.computeSetup?.({ step: 'check' }).then((r: { success: boolean; availability?: PodmanAvailability }) => {
+    api?.computeSetup?.({ step: 'check' }).then((r: { success: boolean; availability?: PodmanAvailability }) => {
       if (r?.availability) setAvailability(r.availability)
     })
-    window.adfApi?.computeListContainers?.().then((r: { containers: ContainerSummary[] }) => {
+    api?.computeListContainers?.().then((r: { containers: ContainerSummary[] }) => {
       if (r?.containers) setContainers(r.containers)
     })
   }, [])
@@ -2529,13 +2603,13 @@ function ComputeTab({
     setSetupLog(rebuilding ? `Rebuilding ${container.name}...` : `Removing ${container.name}...`)
     try {
       const result = isShared
-        ? await window.adfApi.computeDestroy()
+        ? await api.computeDestroy()
         : rebuilding
-          ? await window.adfApi.computeRebuildContainer({ name: container.name })
-          : await window.adfApi.computeDestroyContainer({ name: container.name })
+          ? await api.computeRebuildContainer({ name: container.name })
+          : await api.computeDestroyContainer({ name: container.name })
       if (!result.success) throw new Error(result.error ?? (rebuilding ? 'Rebuild failed' : 'Remove failed'))
       if (isShared) {
-        const init = await window.adfApi.computeInit()
+        const init = await api.computeInit()
         if (!init.success) throw new Error(init.error ?? 'Recreate failed')
       }
       const recreated = isShared || ('recreated' in result && result.recreated === true)
@@ -2560,7 +2634,7 @@ function ComputeTab({
     setSetupError(null)
     setSetupLog(`Running: ${label}...`)
     try {
-      const r = await window.adfApi?.computeSetup?.({ step, installCommand })
+      const r = await api?.computeSetup?.({ step, installCommand })
       if (r?.success) {
         setSetupLog(`${label} completed`)
         if (r.availability) setAvailability(r.availability)
@@ -2671,7 +2745,7 @@ function ComputeTab({
                         try {
                           const stopQuestion = containerStopConfirmation(c, isShared, computeEnvStatus.activeAgents)
                           if (stopQuestion && !await confirm({ title: `Stop ${c.name}`, body: stopQuestion, confirmLabel: 'Stop', danger: true })) return
-                          const result = c.running ? await window.adfApi.computeStopContainer({ name: c.name }) : await window.adfApi.computeStartContainer({ name: c.name })
+                          const result = c.running ? await api.computeStopContainer({ name: c.name }) : await api.computeStartContainer({ name: c.name })
                           if (!result.success) setSetupError(result.error ?? `${c.running ? 'Stop' : 'Start'} failed`)
                         } finally { setBusyContainer(null); refreshAll() }
                       }}
@@ -2879,7 +2953,7 @@ function ComputeTab({
                   setTargetMessage(null)
                   if (await saveExecutionTargets(executionTargets.filter((item) => item.id !== target.id))) {
                     offerUndo(`Removed ${alias}.`, () => {
-                      void window.adfApi?.getSettings().then((s) => {
+                      void api?.getSettings().then((s) => {
                         const now = (s?.compute?.executionTargets ?? []) as ExecutionTarget[]
                         if (!now.some((item) => item.id === target.id)) void saveExecutionTargets([...now, target])
                       })
@@ -2944,7 +3018,7 @@ function ComputeTab({
                 setTargetBusy(true)
                 setTargetMessage(null)
                 try {
-                  const result = await window.adfApi.computeTestExecutionTarget(candidate)
+                  const result = await api.computeTestExecutionTarget(candidate)
                   if (!result.success) {
                     setTargetMessage({ kind: 'error', text: result.error ?? 'Target test failed.' })
                     return
@@ -3337,6 +3411,7 @@ function MachineStartStep({
 
 /** Summary-first container inspection using normal application chrome. */
 function ContainerDetailPanel({ container, onClose }: { container: ContainerSummary; onClose: () => void }) {
+  const api = useSettingsApi()
   type DetailTab = 'summary' | 'activity' | 'logs' | 'processes' | 'workspace' | 'packages' | 'inspect'
   type Detail = { overview: ContainerOverview | null; processes: string; packages: string; workspace: string; logs: string; inspect: string }
   const [tab, setTab] = useState<DetailTab>('summary')
@@ -3349,8 +3424,8 @@ function ContainerDetailPanel({ container, onClose }: { container: ContainerSumm
     setLoading(true)
     setError(null)
     Promise.all([
-      window.adfApi.computeContainerDetail({ name: container.name }),
-      window.adfApi.computeExecLog({ name: container.name }),
+      api.computeContainerDetail({ name: container.name }),
+      api.computeExecLog({ name: container.name }),
     ]).then(([d, l]: [any, any]) => {
       if (d?.success) setDetail(d)
       else setError(d?.error ?? 'Container details are unavailable.')
