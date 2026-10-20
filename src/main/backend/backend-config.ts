@@ -12,13 +12,17 @@ import type {
   BackendSettingsView,
   StudioBackendMode,
   StudioBackendSource,
+  StudioRunMode,
 } from '../../shared/types/backend.types'
 
 /**
  * Backend selection at boot (design D9, §4.1): `studio-backend.json` in
  * Studio's userData says whether this Studio runs agents itself (embedded) or
- * is a client of an ADF daemon (local, remote). The file is read once, before
- * any IPC handler is registered; a change takes effect at the next launch.
+ * is a client of This computer's ADF daemon (local), with every saved
+ * connection in its runtime set (docs/design/multi-runtime.md §3.1). The file
+ * is read once, before any IPC handler is registered; a change takes effect at
+ * the next launch. A file of an older Studio in `mode: remote` is run as
+ * `local` (§7.3; runtime-migration.ts rewrites it).
  *
  * No file means DEFAULT_BACKEND_MODE, Local daemon (owner decision
  * 2026-10-16): new installs and 0.7.x installs upgrading alike. The first
@@ -34,7 +38,7 @@ import type {
 
 export const BACKEND_CONFIG_FILE = 'studio-backend.json'
 
-/** Recovery override: `ADF_STUDIO_BACKEND=embedded` boots embedded whatever the file says. */
+/** Recovery override: `ADF_STUDIO_BACKEND=embedded` boots embedded whatever the file says; `remote` is read as `local`. */
 export const BACKEND_ENV_OVERRIDE = 'ADF_STUDIO_BACKEND'
 
 const SAFE_PREFIX = 'safe:'
@@ -54,6 +58,7 @@ const DEFAULT_LABEL = 'the default, This computer'
 
 export interface StudioBackendConfig {
   v: 1
+  /** `remote`: an older Studio's file, migrated at the first launch of this version (multi-runtime.md §7.3). */
   mode: StudioBackendMode
   /** Leave the daemon running when Studio quits (§8.3). Default off. */
   keepDaemonRunning: boolean
@@ -69,9 +74,9 @@ export interface StudioBackendConfig {
      */
     paired?: RemotePairedComputer | null
     /**
-     * The saved connection in use when `mode` is `remote` (settings-scopes.md
-     * §5.2): a name in `cli-remotes.json`, shared with `adf`. Null or absent:
-     * the `url` and `token` above (a connection with no fingerprint).
+     * An older Studio's file in `mode: remote`: the saved connection it used
+     * (a name in `cli-remotes.json`). Read only by the migration, which
+     * removes it (multi-runtime.md §7.3).
      */
     name?: string | null
   }
@@ -130,7 +135,7 @@ export interface SecretCodec {
 }
 
 export interface BootBackend {
-  mode: StudioBackendMode
+  mode: StudioRunMode
   source: StudioBackendSource
   configPath: string
   /** The file's contents, normalized (defaults when there is no file). */
@@ -268,10 +273,6 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
     const ids = obj.runtimeOrder.filter((id): id is string => typeof id === 'string' && (id === 'remote' || (id.startsWith('remote:') && validRemoteName(id.slice('remote:'.length)))))
     config.runtimeOrder = [...new Set(ids)].slice(0, MAX_RUNTIME_ORDER)
   }
-  // Mode remote without a usable URL stays remote: the connector refuses it
-  // with a dialog that points at Settings → Connections. Falling back to embedded
-  // here would autostart this computer's agents without a word (W4-B review).
-  if (config.mode === 'remote' && !config.remote.url && !config.remote.name) warnings.push('mode is remote but there is no usable remote.url; Studio will say so at launch')
   return { config, warnings, dropped, modeProblem }
 }
 
@@ -329,22 +330,16 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
   if (file.problem) notices.push(`studio-backend.json: ${file.problem}.`)
   if (dropped.length > 0) notices.push(`studio-backend.json: ignored ${dropped.join('; ')}.`)
 
-  let mode = config.mode
-  // The file asks for remote, but its URL may not be used. Studio still boots
-  // remote, runs no agents, and the remote connector refuses with a dialog
-  // naming the reason (W4-B review: no silent embedded boot, which would
-  // autostart this computer's agents). Settings → Connections shows it too.
-  const refusal = config.mode === 'remote' && !config.remote.name ? remoteTransportRefusal(config) : null
-  if (refusal) {
-    log.warn(`[Backend] ${configPath}: mode is remote, but ${refusal} Studio will not connect until it is fixed.`)
-    notices.push(`The remote daemon cannot be used: ${refusal}`)
-  }
+  // An older Studio's remote mode: This computer, with that connection in the runtime set (multi-runtime.md §7.3).
+  let mode: StudioRunMode = runMode(config.mode)
+  if (config.mode === 'remote') log.log(`[Backend] ${configPath} says remote (an older Studio): this launch runs This computer, with that connection in the runtime set`)
   let source: StudioBackendSource = file.found ? 'file' : 'default'
   const override = env[BACKEND_ENV_OVERRIDE]?.trim().toLowerCase()
   if (override) {
     if (isMode(override)) {
-      mode = override
+      mode = runMode(override)
       source = 'env'
+      if (override === 'remote') log.log(`[Backend] ${BACKEND_ENV_OVERRIDE}=remote is read as local: every saved connection is in the runtime set`)
     } else {
       log.warn(`[Backend] Ignoring ${BACKEND_ENV_OVERRIDE}=${JSON.stringify(override)}: expected embedded, local or remote`)
     }
@@ -390,26 +385,28 @@ export function toBackendSettingsView(
   boot: Pick<BootBackend, 'mode' | 'source' | 'notices' | 'defaultSwitch' | 'sessionReason'>,
   codec: SecretCodec,
   daemon: BackendDaemonStatus | null = null,
-  pendingSwitch: BackendSettingsView['pendingSwitch'] = null,
 ): BackendSettingsView {
   return {
     active: { mode: boot.mode, source: boot.source, notices: boot.notices ?? [], sessionReason: boot.sessionReason ?? null },
     remoteUrlProblem: remoteTransportRefusal(config),
     configured: {
-      mode: config.mode,
+      mode: runMode(config.mode),
       keepDaemonRunning: config.keepDaemonRunning,
       remoteUrl: config.remote.url,
       remoteTokenSaved: config.remote.token !== null,
       allowInsecureHttp: config.remote.allowInsecureHttp,
       remotePaired: config.remote.paired ? { fingerprint: config.remote.paired.fingerprint, name: config.remote.paired.name, label: config.remote.paired.label } : null,
-      remoteName: config.remote.name ?? null,
     },
     daemon,
-    pendingSwitch,
     defaultSwitch: boot.defaultSwitch ?? null,
     encryptionAvailable: codec.available(),
     encryptionUnavailableReason: codec.available() ? null : (codec.unavailableReason?.() ?? null),
   }
+}
+
+/** The mode a launch runs for a file's mode: `remote` (an older Studio's) is `local` (multi-runtime.md §7.3). */
+export function runMode(mode: StudioBackendMode): StudioRunMode {
+  return mode === 'remote' ? 'local' : mode
 }
 
 export type ApplyPatchResult =
@@ -433,9 +430,8 @@ export function applyBackendPatch(
   patch: BackendSettingsPatch,
   /**
    * `paired`: main only, when a pairing saves this URL and token (remote-access.md §9.3); never from the renderer's patch.
-   * `savedRemote`: the saved connection of that name in `cli-remotes.json`, or null (settings-scopes.md §5.2).
    */
-  opts: { codec: SecretCodec; paired?: RemotePairedComputer; savedRemote?: (name: string) => { url: string } | null },
+  opts: { codec: SecretCodec; paired?: RemotePairedComputer },
 ): ApplyPatchResult {
   const next: StudioBackendConfig = { ...current, remote: { ...current.remote }, ...(current.insecureHttpOrigins ? { insecureHttpOrigins: [...current.insecureHttpOrigins] } : {}) }
   const notices: string[] = []
@@ -450,7 +446,6 @@ export function applyBackendPatch(
     ['clearRemoteToken', 'boolean', 'invalid_patch'],
     ['allowInsecureHttp', 'boolean', 'invalid_patch'],
     ['insecureHttpOrigin', 'string', 'invalid_patch'],
-    ['remoteName', 'string|null', 'invalid_patch'],
     ['trustInsecureOrigin', 'string', 'invalid_patch'],
   ]
   for (const [field, type, code] of fieldTypes) {
@@ -461,23 +456,13 @@ export function applyBackendPatch(
   }
 
   if (patch.mode !== undefined) {
+    // multi-runtime.md §7.1: there is no remote mode; a saved connection is connected while it is saved.
+    if ((patch.mode as string) === 'remote') return fail('invalid_mode', 'A saved connection is connected while it is saved.')
     if (!isMode(patch.mode)) return fail('invalid_mode', 'Unknown backend mode.')
     if (patch.mode !== current.mode) {
-      // Remote moves nothing to another machine (§5.5); it is allowed once its
-      // URL and token are saved (checked below).
       next.mode = patch.mode
       changes.push(`mode=${patch.mode}`)
     }
-  }
-
-  if (patch.remoteName !== undefined && (patch.remoteName ?? null) !== (current.remote.name ?? null)) {
-    if (patch.remoteName !== null) {
-      if (!validRemoteName(patch.remoteName) || !opts.savedRemote?.(patch.remoteName)) return fail('remote_not_configured', `No saved connection named "${String(patch.remoteName)}".`)
-      next.remote.name = patch.remoteName
-    } else {
-      delete next.remote.name
-    }
-    changes.push(`connection=${patch.remoteName ?? 'the remote URL'}`)
   }
 
   if (patch.trustInsecureOrigin !== undefined) {
@@ -577,25 +562,11 @@ export function applyBackendPatch(
   } else if (touchesRemote && unconfirmedHttp) {
     return fail('insecure_url_unconfirmed', 'This http:// address is not loopback or a tailnet address. Confirm that you trust this network, or use https://.')
   }
-  // A switch to remote needs a daemon Studio may talk to.
-  const toSaved = next.mode === 'remote' && !!next.remote.name
-  if (toSaved && (patch.mode === 'remote' || patch.remoteName !== undefined)) {
-    // The saved connection's address and token are checked where they are read (connections.ts).
-    if (!opts.savedRemote?.(next.remote.name!)) return fail('remote_not_configured', `No saved connection named "${next.remote.name}".`)
-  } else if (patch.mode === 'remote' && patch.mode !== current.mode) {
-    if (!next.remote.url) return fail('remote_not_configured', 'Save the remote daemon URL and token before switching to it.')
-    const refusal = remoteTransportRefusal(next)
-    if (refusal) return fail('insecure_url_unconfirmed', refusal)
-    if (!next.remote.token) return fail('remote_not_configured', `Save the token for ${next.remote.url} before switching to it.`)
-  }
-
   return { ok: true, config: next, notices, changes }
 }
 
-/** One key per connection: the mode, and for remote the saved connection's name (empty: the remote URL). */
-export function connectionKey(mode: StudioBackendMode, remoteName: string | null | undefined): string {
-  return mode === 'remote' ? `remote:${remoteName ?? ''}` : mode
-}
+/** A mode saved in Settings → Connections (multi-runtime.md §7.2): Studio does not restart. */
+export const SAVED_FOR_NEXT_LAUNCH = 'Saved. Applies at the next launch.'
 
 export interface BackendSettingsStore {
   get(): BackendSettingsView
@@ -615,7 +586,8 @@ export interface BackendSettingsStore {
 /**
  * Settings → Connections state for one Studio process. Studio main is the only
  * writer of `studio-backend.json` (§4.2), so the boot read stays the source
- * of truth and saves go straight to disk. Saves are serialized.
+ * of truth and saves go straight to disk. Saves are serialized. A saved mode
+ * applies at the next launch (multi-runtime.md §7.2): nothing restarts.
  */
 export function createBackendSettingsStore(deps: {
   boot: BootBackend
@@ -623,75 +595,22 @@ export function createBackendSettingsStore(deps: {
   log?: Log
   /** The daemon line of the view (daemon mode). */
   daemonStatus?: () => BackendDaemonStatus | null
-  /**
-   * A save that changes the mode (design D9, §11): show the switch dialog
-   * (what moves, what happens to running agents). False cancels the save.
-   */
-  confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
-  /** After a confirmed mode change is on disk: restart Studio into it. Returns a notice for the page. */
-  applyModeSwitch?: (target: StudioBackendMode) => string | void
   /** keepDaemonRunning was saved with a new value (the running session follows it). */
   onKeepDaemonRunningChange?: (keep: boolean) => void
-  /** A saved switch waiting for turns in flight (mode-switch.ts createModeSwitcher). */
-  pendingSwitch?: () => BackendSettingsView['pendingSwitch']
-  /** Restart into the waiting switch now; a notice, or null when none waits. */
-  finishSwitchNow?: () => string | null
-  /** Stop waiting; the target it was waiting for, or null when none waits. */
-  cancelSwitch?: () => StudioBackendMode | null
-  /** Once a switch's restart has started: the refusal for any later mode change or switch action. */
-  restarting?: () => string | null
-  /** A saved connection of `cli-remotes.json` by name (settings-scopes.md §5.2). */
-  savedRemote?: (name: string) => { url: string } | null
 }): BackendSettingsStore {
   const log = deps.log ?? console
   let current = deps.boot.config
   let queue: Promise<unknown> = Promise.resolve()
   /** Fields the boot read ignored: the first write leaves them out of the file, and that save says so. */
   let droppedUnwritten = [...(deps.boot.dropped ?? [])]
-  /**
-   * The file's mode before the first switch this run saved: Cancel switch
-   * writes it back. Not the running mode, which ADF_STUDIO_BACKEND or a
-   * one-session restart may have chosen without the file.
-   */
-  let modeBeforeSwitch: StudioBackendMode | null = null
 
-  const view = (): BackendSettingsView => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null, deps.pendingSwitch?.() ?? null)
+  const view = (): BackendSettingsView => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null)
 
-  const save = async (input: BackendSettingsPatch, paired?: RemotePairedComputer): Promise<BackendSettingsSaveResult> => {
+  const save = async (patch: BackendSettingsPatch, paired?: RemotePairedComputer): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
-    const { switchAction, ...rest } = input
-    // Studio is restarting into a switch already: a mode change or a switch action now would not apply (nor be undone).
-    const restarting = deps.restarting?.() ?? null
-    if (restarting && (switchAction !== undefined || (rest.mode !== undefined && rest.mode !== current.mode))) {
-      log.warn(`[Backend] Settings → Connections change refused: ${restarting}`)
-      return { ok: false, code: 'restarting', error: restarting }
-    }
-    let patch: BackendSettingsPatch = rest
-    if (switchAction !== undefined) {
-      if (switchAction === 'finish-now') {
-        const notice = deps.finishSwitchNow?.() ?? null
-        return { ok: true, view: view(), notices: [notice ?? 'No switch is waiting.'] }
-      }
-      if (switchAction !== 'cancel') return fail('invalid_patch', 'Unknown switch action.') as BackendSettingsSaveResult
-      const target = deps.cancelSwitch?.() ?? null
-      if (!target) return { ok: true, view: view(), notices: ['No switch is waiting.'] }
-      // The waiting switch had saved its mode: the mode the file had before it is saved again.
-      const restore = modeBeforeSwitch ?? deps.boot.config.mode
-      log.log(`[Backend] Switch to ${target} cancelled; saving ${restore} as the mode again${restore !== deps.boot.mode ? ` (this launch runs ${deps.boot.mode}: ${deps.boot.source === 'env' ? 'ADF_STUDIO_BACKEND' : 'for this session only'})` : ''}`)
-      patch = { ...rest, mode: restore }
-    }
     const previous = current
-    const result = applyBackendPatch(current, patch, { codec: deps.codec, ...(paired ? { paired } : {}), ...(deps.savedRemote ? { savedRemote: deps.savedRemote } : {}) })
+    const result = applyBackendPatch(current, patch, { codec: deps.codec, ...(paired ? { paired } : {}) })
     if (!result.ok) return result
-    // A switch away from the running backend restarts Studio (D9); back to it is a plain save.
-    // Remote to another saved connection is a switch too (settings-scopes.md §5.3).
-    const nextKey = connectionKey(result.config.mode, result.config.remote.name)
-    const switching = nextKey !== connectionKey(current.mode, current.remote.name)
-      && nextKey !== connectionKey(deps.boot.mode, deps.boot.config.remote.name)
-    if (switching && deps.confirmModeSwitch && !await deps.confirmModeSwitch(result.config.mode)) {
-      log.log(`[Backend] Switch to ${result.config.mode} cancelled in the switch dialog`)
-      return { ok: false, code: 'switch_cancelled', error: 'Switch cancelled. Nothing changed.' }
-    }
     if (result.changes.length > 0) {
       if (droppedUnwritten.length > 0) {
         result.notices.push(`studio-backend.json no longer holds ${droppedUnwritten.join('; ')}.`)
@@ -704,22 +623,14 @@ export function createBackendSettingsStore(deps: {
         log.warn(`[Backend] Could not write ${deps.boot.configPath}: ${(err as Error)?.message ?? 'unknown error'}`)
         return { ok: false, code: 'write_failed', error: `Could not save ${deps.boot.configPath}.` }
       }
-      if (switching) modeBeforeSwitch ??= previous.mode
-      else if (switchAction === 'cancel' || result.config.mode !== previous.mode) modeBeforeSwitch = null
       current = result.config
       droppedUnwritten = []
-      log.log(`[Backend] Settings → Connections saved: ${result.changes.join(', ')} (${switching ? 'Studio restarts into it now' : 'applies at next launch'})`)
+      log.log(`[Backend] Settings → Connections saved: ${result.changes.join(', ')} (applies at the next launch)`)
     }
     const notices = [...result.notices]
-    // Choosing the running mode while a switch waits for its turns is the latest choice: that switch is cancelled (as Cancel switch).
-    const changedConnection = nextKey !== connectionKey(previous.mode, previous.remote.name)
-    const replaced = !switching && changedConnection && switchAction === undefined ? deps.cancelSwitch?.() ?? null : null
-    if (replaced) log.log(`[Backend] Switch to ${replaced} cancelled: ${result.config.mode} was chosen again`)
-    if (switching) notices.push((deps.applyModeSwitch?.(result.config.mode)) || 'Studio restarts now.')
-    else if (replaced) notices.push('Switch cancelled; Studio stays in this mode.')
-    else if (changedConnection) notices.push('Studio already runs this mode; no restart is needed.')
+    // A mode chosen (multi-runtime.md §7.2): saved for the next launch; the one this launch runs is just saved.
+    if (result.config.mode !== previous.mode) notices.push(result.config.mode === deps.boot.mode ? 'Saved.' : SAVED_FOR_NEXT_LAUNCH)
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
-    if (switchAction === 'cancel') notices.splice(0, notices.length, 'Switch cancelled; Studio stays in this mode.')
     return { ok: true, view: view(), notices }
   }
 

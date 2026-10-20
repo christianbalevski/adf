@@ -1,13 +1,13 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
-import type { BackendDaemonStatus, StudioBackendMode } from '../../shared/types/backend.types'
+import type { BackendDaemonStatus, StudioRunMode } from '../../shared/types/backend.types'
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
-import type { BootBackend, SecretCodec, StudioBackendConfig } from './backend-config'
+import { runMode, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { PinMismatchError } from './daemon-mode/connection'
 
@@ -18,7 +18,8 @@ import { PinMismatchError } from './daemon-mode/connection'
  * (`ADF` / `remote-token:<fingerprint>`), else the user-only
  * `cli-remote-tokens.json` (src/main/cli/remotes.ts). Studio adds no field
  * to that file. The remote URL of `studio-backend.json` stays a connection
- * of its own: one without a fingerprint.
+ * of its own: one without a fingerprint. Every saved connection is in the
+ * runtime set while it is saved (docs/design/multi-runtime.md §3.1).
  *
  * Electron-free. Tokens never leave Studio main.
  */
@@ -202,9 +203,10 @@ export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnecti
  * The paired remote URL of studio-backend.json (a pairing saved before the
  * shared list) moves into cli-remotes.json and the keychain on its first use
  * (settings-scopes.md §9), so it is pinned like every saved connection. The
- * remote URL slot is then empty; remote mode uses the saved name. Keychain
- * only: when it does not take the token the slot stays, and its pin is
- * still checked (remote/connector.ts). Returns the saved name, or null.
+ * remote URL slot is then empty; an older Studio's remote mode names the saved
+ * connection, for the migration (runtime-migration.ts). Keychain only: when
+ * it does not take the token the slot stays, and its pin is still checked
+ * (remote/connector.ts). Returns the saved name, or null.
  */
 export async function migratePairedSlot(boot: Pick<BootBackend, 'config' | 'configPath' | 'writeBlocked'>, codec: SecretCodec, env: NodeJS.ProcessEnv, log: Pick<Console, 'log' | 'warn'> = console): Promise<string | null> {
   const slot = boot.config.remote
@@ -283,77 +285,66 @@ export const LINK_STATE: Record<BackendDaemonStatus['connection'], ConnectionCur
 }
 
 export interface ConnectionsViewInput {
-  /** The mode this launch runs, and its saved connection (remote). */
-  active: { mode: StudioBackendMode; remoteName: string | null; config: StudioBackendConfig }
+  /** The mode this launch runs. */
+  active: { mode: StudioRunMode }
   /** What studio-backend.json holds now (the next launch). */
   configured: StudioBackendConfig
   daemon: BackendDaemonStatus | null
   saved: Record<string, SavedRemote>
   discovery: RemoteDiscoveryUpdate | null
   /**
-   * Local mode: the state of each runtime of the set, by id (multi-runtime.md
-   * §6.5). A saved connection is then a runtime: its row shows its link state
-   * and offers no Connect. Absent (remote mode, Inside Studio): the rows of
-   * settings-scopes.md §5.1.
+   * This computer's launch: the state of each runtime of the set, by id
+   * (multi-runtime.md §6.5). A saved connection not in it yet is connecting.
+   * Absent (Inside Studio): the runtime set is not loaded, and saved
+   * connections are listed with no state (§7.2).
    */
   runtimeStates?: Record<string, ConnectionCurrent['state']>
 }
 
-/** The connection this launch uses (settings-scopes.md §4.1, §5.4). */
-export function currentConnection(input: Pick<ConnectionsViewInput, 'active' | 'daemon' | 'saved'>): ConnectionCurrent {
-  const { mode, remoteName, config } = input.active
-  if (mode === 'embedded') return { id: 'embedded', kind: 'embedded', name: 'Inside Studio', url: null, state: 'connected' }
-  const state = input.daemon ? LINK_STATE[input.daemon.connection] : 'connecting'
-  if (mode === 'local') return { id: 'local', kind: 'local', name: 'This computer', url: null, state }
-  if (remoteName) return { id: `remote:${remoteName}`, kind: 'remote', name: remoteName, url: input.saved[remoteName]?.url ?? input.daemon?.url ?? null, state }
-  const url = config.remote.url
-  return { id: 'remote', kind: 'remote', name: config.remote.paired?.name ?? hostOf(url) ?? 'Remote computer', url, state }
+/** The connection this launch uses (settings-scopes.md §4.1, §5.4): This computer, or Inside Studio. */
+export function currentConnection(input: Pick<ConnectionsViewInput, 'active' | 'daemon'>): ConnectionCurrent {
+  if (input.active.mode === 'embedded') return { id: 'embedded', kind: 'embedded', name: 'Inside Studio', url: null, state: 'connected' }
+  return { id: 'local', kind: 'local', name: 'This computer', url: null, state: input.daemon ? LINK_STATE[input.daemon.connection] : 'connecting' }
 }
 
 /**
- * The Connection page's rows (settings-scopes.md §5.1): This computer;
- * Inside Studio while it runs or is saved; each saved connection; each
- * computer found whose fingerprint is not saved. A found computer whose
- * fingerprint is saved is that saved row (never a second row), so a Paired
- * row never offers Pair.
+ * The Connection page's rows (multi-runtime.md §6.5): This computer; Inside
+ * Studio while it runs or is saved; each saved connection, with its state
+ * and Remove; each computer found whose fingerprint is not saved, with Add.
+ * A found computer whose fingerprint is saved is that saved row (never a
+ * second row).
  */
 export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsView {
   const current = currentConnection(input)
-  const configuredId = input.configured.mode === 'remote' ? (input.configured.remote.name ? `remote:${input.configured.remote.name}` : 'remote') : input.configured.mode
+  const configuredId = runMode(input.configured.mode)
   const inUse = (id: string) => current.id === id
   const plain = (id: string, kind: 'local' | 'embedded', name: string): ConnectionRow => ({
     id, kind, name,
     state: inUse(id) ? current.state : null,
+    // Saved for the next launch (§7.2).
     action: inUse(id) ? null : 'connect',
     url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false,
   })
   const rows: ConnectionRow[] = [plain('local', 'local', 'This computer')]
-  if (current.kind === 'embedded' || input.configured.mode === 'embedded') rows.push(plain('embedded', 'embedded', 'Inside Studio (legacy)'))
+  if (current.kind === 'embedded' || configuredId === 'embedded') rows.push(plain('embedded', 'embedded', 'Inside Studio (legacy)'))
 
   const saved: ConnectionRow[] = []
   const states = input.runtimeStates
   const savedRow = (id: string, name: string, url: string | null, fingerprint: string | null): ConnectionRow => ({
     id, kind: 'saved', name,
-    // Saving connects (§12 item 2): a saved connection not in the set yet is connecting.
-    state: states ? states[id] ?? 'connecting' : inUse(id) ? current.state : 'paired',
-    action: states || inUse(id) ? null : 'connect',
+    // Saving connects (§12 item 2): a saved connection not in the set yet is connecting. Inside Studio: no state.
+    state: states ? states[id] ?? 'connecting' : null,
+    action: null,
     url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
-    // The one in use too (e.g. it no longer connects): Remove switches to This computer first.
     removable: true,
   })
   for (const name of Object.keys(input.saved).sort((a, b) => a.localeCompare(b))) {
     const remote = input.saved[name]
     saved.push(savedRow(`remote:${name}`, name, remote.url, remote.fingerprint))
   }
-  // The remote URL of studio-backend.json: one row, unless its paired fingerprint is a saved connection not in use.
-  const slot = input.configured.remote.url ? input.configured.remote : input.active.mode === 'remote' && !input.active.remoteName ? input.active.config.remote : null
-  if (slot?.url) {
-    const fp = slot.paired?.fingerprint ?? null
-    const twin = fp ? saved.find((r) => r.fingerprint === fp) : undefined
-    const row = savedRow('remote', slot.paired?.name ?? hostOf(slot.url) ?? 'Remote computer', slot.url, fp)
-    if (!twin) saved.push(row)
-    else if (inUse('remote')) saved.splice(saved.indexOf(twin), 1, row)
-  }
+  // The remote URL of studio-backend.json: one row, unless its paired fingerprint is a saved connection (runtimeSlot).
+  const slot = runtimeSlot(input.configured, input.saved)
+  if (slot) saved.push(savedRow('remote', slot.name, slot.url, input.configured.remote.paired?.fingerprint ?? null))
 
   const found: ConnectionRow[] = []
   for (const entry of input.discovery?.entries ?? []) {
@@ -369,12 +360,9 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
       pairingOpen: entry.pairingOpen, removable: false,
     })
   }
-  const configuredName = configuredId === 'local' ? 'This computer'
-    : configuredId === 'embedded' ? 'Inside Studio'
-    : input.configured.remote.name ?? input.configured.remote.paired?.name ?? hostOf(input.configured.remote.url) ?? 'Remote computer'
   return {
     current,
-    next: configuredId !== current.id ? { id: configuredId, name: configuredName } : null,
+    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? 'This computer' : 'Inside Studio' } : null,
     rows: [...rows, ...saved, ...found],
     discovery: input.discovery ? { browsing: input.discovery.browsing, problem: input.discovery.problem } : null,
   }

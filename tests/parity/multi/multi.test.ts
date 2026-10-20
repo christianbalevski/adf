@@ -215,6 +215,42 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
     await runScenario(scenario, t.backend)
   }, 180_000)
 
+  it('a device token: remote access on at the host, Studio connects and chats with the token it issued; revoked there, that runtime fails alone', async () => {
+    const { refusedTokenSentence } = await import('../../../src/main/backend/daemon-mode/remote/connector')
+    for (let run = 0; run < RUNS; run++) {
+      const t = capture({ deviceToken: true })
+      const scenario: ParityScenario = {
+        name: 'multi-device-token',
+        description: 'host-1 has remote access on and issued a device token; Studio\'s saved connection holds that token, not the master token.',
+        fixtures: [{ name: 'agent-1' }],
+        quietMs: 1000,
+        llm: echo,
+        shownStream: localOnly,
+        async run(ctx) {
+          const b = t.booted()
+          const rt = b.handle.runtimes.get(REMOTE)!
+          expect(b.device?.token).toMatch(/\S/)
+          // The real hello of the host (remote access on), with the fingerprint the connection is pinned to.
+          expect(b.proxy.forwardHello).toBe(true)
+          expect(rt.connection.state.state).toBe('connected')
+          await chat(ctx, b, true, b.remoteAgents['agent-2'].filePath, 'Hello from remote.')
+          expect(JSON.stringify(await ctx.invoke(IPC.DOC_GET_CHAT, TAG, {}))).toContain('Reply to host-1.')
+          await ctx.invoke(IPC.AGENT_STOP, TAG)
+          // Revoked on the host: its requests answer 401, the runtime fails with the refused-token sentence, no dialog.
+          await b.revokeDevice()
+          await ctx.invoke(IPC.FILE_GET_CURRENT, TAG).catch(() => null)
+          await b.until(() => rt.connection.state.state === 'failed', 'the remote failed after the revocation', 30_000)
+          expect(rt.connection.state).toEqual({ state: 'failed', message: refusedTokenSentence(`http://127.0.0.1:${b.proxy.port}`) })
+          expect(b.handle.connection.state.state).toBe('connected')
+          expect(b.electron.localCalls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
+          await ctx.invoke(IPC.FILE_OPEN, { filePath: ctx.agent('agent-1').filePath })
+          expect(await ctx.invoke<{ filePath: string | null }>(IPC.FILE_GET_CURRENT)).toMatchObject({ filePath: ctx.agent('agent-1').filePath })
+        },
+      }
+      await runScenario(scenario, t.backend)
+    }
+  }, RUNS * 180_000)
+
   it('another computer at the remote\'s address: that runtime fails with the pin sentence and its token is never sent there', async () => {
     const { pinMismatchSentence } = await import('../../../src/main/backend/connections')
     const t = capture()

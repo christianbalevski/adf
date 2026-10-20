@@ -1,21 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
-import { REMOTE_OWNER_RESTORE_SENTENCE } from '../../../shared/constants/remote-owner-identity'
 
 /**
  * Strip below the title bar when this machine's owner DID is seed-derived but
  * Studio cannot read its phrase (set up in the ADF terminal with a
  * passphrase-protected file). Studio never mints a replacement owner in that
- * case; this says so and opens Settings → Identity to restore it.
+ * case; this says so and opens Settings → Identity to restore it. It is
+ * This computer's (window.adfApi): a remote's owner is restored on its
+ * machine, and its Settings → Identity page says so (settings-scopes.md §7).
  */
 export function IdentityRestoreBanner() {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
   const [ownerDid, setOwnerDid] = useState<string | null>(null)
-  /** A remote daemon's owner is restored on its machine, not from here. */
-  const [remote, setRemote] = useState(false)
 
   useEffect(() => {
-    window.adfApi?.getBackendSettings?.().then((b) => setRemote(b.active.mode === 'remote')).catch(() => {})
     const check = () => {
       window.adfApi?.getOwnerIdentityStatus?.()
         .then((status) => setOwnerDid(status?.restoreRequired ? status.ownerDid : null))
@@ -29,13 +27,6 @@ export function IdentityRestoreBanner() {
 
   if (!ownerDid) return null
   const short = ownerDid.length > 24 ? `${ownerDid.slice(0, 14)}…${ownerDid.slice(-4)}` : ownerDid
-  if (remote) {
-    return (
-      <div role="status" className="w-full shrink-0 flex items-center justify-center gap-2 px-3 py-1.5 border-b border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] text-[11px] text-[var(--adf-ui-warning)]">
-        <span>The remote daemon’s owner identity <span className="font-mono">{short}</span> needs its 12 words. {REMOTE_OWNER_RESTORE_SENTENCE}</span>
-      </div>
-    )
-  }
   return (
     <div role="status" className="w-full shrink-0">
       <button

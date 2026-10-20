@@ -2,9 +2,9 @@ import { safeStorage } from 'electron'
 // Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
 import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
-import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsPatch } from '../../shared/types/backend.types'
 import { createBackendSettingsStore, type BackendSettingsStore, type BootBackend, type SecretCodec } from './backend-config'
-import { isObfuscationOnly, relaunchEmbeddedForSession, relaunchStudio } from './mode-switch'
+import { isObfuscationOnly, relaunchEmbeddedForSession, relaunchStudio } from './boot-handover'
 
 const SAFE_PREFIX = 'safe:'
 
@@ -33,23 +33,16 @@ export const safeStorageCodec: SecretCodec = {
  */
 export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
   daemonStatus?: () => BackendDaemonStatus | null
-  confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
-  applyModeSwitch?: (target: StudioBackendMode) => string | void
   onKeepDaemonRunningChange?: (keep: boolean) => void
-  pendingSwitch?: () => BackendSettingsView['pendingSwitch']
-  finishSwitchNow?: () => string | null
-  cancelSwitch?: () => StudioBackendMode | null
-  restarting?: () => string | null
-  savedRemote?: (name: string) => { url: string } | null
 } = {}): BackendSettingsStore {
   const store = createBackendSettingsStore({ boot, codec: safeStorageCodec, ...hooks })
   ipcMain.handle(IPC.BACKEND_SETTINGS_GET, () => store.get())
   ipcMain.handle(IPC.BACKEND_SETTINGS_SET, (_event, patch: BackendSettingsPatch) =>
     store.set(patch && typeof patch === 'object' ? patch : {}))
-  // The saved mode differs from the running one outside a switch (a boot that fell back, a
-  // hand-edited file): restart into it, dropping a session-only override (mode-switch.ts).
-  // `kind` (daemon mode): the window kept its unsaved editor text as recovery copies and restarts for Reconnect or
-  // Use Embedded for This Session after the daemon connection failed (daemon-mode/index.ts restartKeepingEdits).
+  // Restart now (Settings → Connections, once a mode is saved for the next launch), dropping a session-only
+  // override (boot-handover.ts). `kind` (daemon mode): the window kept its unsaved editor text as recovery copies and
+  // restarts for Reconnect or Run Inside Studio for This Session after This computer's daemon connection failed
+  // (runtime-connection.ts restartKeepingEdits).
   ipcMain.handle(IPC.BACKEND_RESTART_STUDIO, (_event, kind?: unknown) => {
     if (kind === 'reconnect') relaunchStudio('Reconnect after a failed connection to the ADF daemon (unsaved editor text kept as recovery copies)')
     else if (kind === 'embedded-session' && boot.mode === 'local') relaunchEmbeddedForSession('no usable ADF daemon (unsaved editor text kept as recovery copies)')

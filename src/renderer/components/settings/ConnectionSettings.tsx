@@ -12,6 +12,10 @@
  * Add is one dialog for a typed address and a found computer: the code, or a
  * token. On success the connection is saved and connects; there is no
  * Connect step. No token ever reaches the renderer.
+ *
+ * This computer and Inside Studio (legacy) are whole-Studio modes: choosing
+ * one saves it for the next launch (multi-runtime.md §7.2). Nothing restarts
+ * unless the owner presses Restart.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -22,17 +26,16 @@ import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import { CONNECTION_STATE_LABELS, type ConnectionResult, type ConnectionRow, type ConnectionsView } from '../../../shared/types/connection.types'
-import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../../shared/types/backend.types'
+import type { BackendDaemonStatus, BackendSettingsView, StudioRunMode } from '../../../shared/types/backend.types'
 import type { RemotePairErrorCode, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { pairMessage } from './RemoteAccessSettings'
 import type { RemoteDiscoveryEntry } from '../../../shared/types/remote-access-ipc.types'
 import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
 
-/** The modes as users see them in the switch rows. Inside Studio is the legacy backend, kept for this release only. */
-const MODE_LABELS: Record<StudioBackendMode, string> = {
+/** The modes as users see them. Inside Studio is the legacy backend, kept for this release only. */
+const MODE_LABELS: Record<StudioRunMode, string> = {
   embedded: 'Inside Studio (legacy)',
   local: 'This computer',
-  remote: 'Remote computer',
 }
 
 /** A "Learn more" link to the guide after a row's one-sentence description. */
@@ -108,10 +111,10 @@ export function overrideLine(view: BackendSettingsView): string | null {
   return null
 }
 
-/** The saved connection is not the running one, outside a switch or a one-launch override: "Restart to connect to <name>." */
-export function pendingRestartLine(view: BackendSettingsView, next: ConnectionsView['next']): string | null {
-  if (!next || view.active.source === 'env' || view.active.source === 'session' || view.pendingSwitch) return null
-  return `Restart to connect to ${next.name}.`
+/** The mode saved for the next launch differs from the running one, outside a one-launch override (multi-runtime.md §7.2). */
+export function nextLaunchLine(view: BackendSettingsView, next: ConnectionsView['next']): string | null {
+  if (!next || view.active.source === 'env' || view.active.source === 'session') return null
+  return `Next launch: ${next.name}.`
 }
 
 /** A row's detail line: the address and fingerprint, and "Pairing open". */
@@ -418,16 +421,15 @@ export function ConnectionSettings() {
     return () => { void window.adfApi?.stopRemoteDiscovery?.().catch(() => {}) }
   }, [listing])
 
-  // While the daemon connects or a switch waits for turns in flight, follow it.
+  // While the daemon connects, follow it.
   const daemonState = backend?.daemon?.connection
-  const switchWaiting = !!backend?.pendingSwitch
   useEffect(() => {
-    if (daemonState !== 'connecting' && daemonState !== 'disconnected' && !switchWaiting) return
+    if (daemonState !== 'connecting' && daemonState !== 'disconnected') return
     const timer = setInterval(() => {
       window.adfApi?.getBackendSettings().then(setBackend).catch(() => {})
     }, 1500)
     return () => clearInterval(timer)
-  }, [daemonState, switchWaiting])
+  }, [daemonState])
 
   const run = async (fn: () => Promise<ConnectionResult>) => {
     setBusy(true)
@@ -437,7 +439,7 @@ export function ConnectionSettings() {
       if (result.ok) {
         useConnectionStore.getState().setView(result.view)
         if (result.notices.length > 0) setMessage({ kind: 'ok', text: result.notices.join(' ') })
-      } else if (result.code !== 'cancelled' && result.code !== 'switch_cancelled') {
+      } else if (result.code !== 'cancelled') {
         setMessage({ kind: 'error', text: result.error })
       }
       window.adfApi?.getBackendSettings().then(setBackend).catch(() => {})
@@ -449,22 +451,6 @@ export function ConnectionSettings() {
   }
   const connect = (id: string) => void run(() => window.adfApi.useConnection(id))
   const remove = (id: string) => void run(() => window.adfApi.removeConnection(id))
-  const saveBackend = async (patch: BackendSettingsPatch, okText: string) => {
-    setBusy(true)
-    setMessage(null)
-    try {
-      const result = await window.adfApi.setBackendSettings(patch)
-      if (result.ok) {
-        setBackend(result.view)
-        const text = [okText, ...result.notices].filter(Boolean).join(' ')
-        if (text) setMessage({ kind: 'ok', text })
-      } else {
-        setMessage({ kind: result.code === 'switch_cancelled' ? 'ok' : 'error', text: result.error })
-      }
-    } finally {
-      setBusy(false)
-    }
-  }
 
   /** The one setting on this page: written at once, "Saved" in the header, put back on a refusal. */
   const saveKeepRunning = (next: boolean) => {
@@ -489,27 +475,10 @@ export function ConnectionSettings() {
 
   const local = view.current.kind === 'local'
   const override = overrideLine(backend)
-  const restartLine = pendingRestartLine(backend, view.next)
+  const nextLine = nextLaunchLine(backend, view.next)
 
-  /** A switch waiting for turns in flight, and the launch that moved off Inside Studio. */
+  /** The launch that moved this install off Inside Studio. */
   const switchRows = <>
-    {backend.pendingSwitch && (
-      <SettingsRow
-        separator
-        label={`Switching to ${MODE_LABELS[backend.pendingSwitch.target]}`}
-        description={<>
-          {backend.pendingSwitch.gaveUp
-            ? `Still waiting after 30 minutes for ${backend.pendingSwitch.waitingFor.join(', ') || 'a turn'}; Finish switch now stops the turns.`
-            : `Studio restarts once the turns in flight finish (${backend.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
-          <LearnMore href={DOCS.backendTurns} />
-        </>}
-      >
-        <div className="flex items-center gap-2">
-          <Button variant="primary" disabled={busy} onClick={() => void saveBackend({ switchAction: 'finish-now' }, '')}>Finish switch now</Button>
-          <Button disabled={busy} onClick={() => void saveBackend({ switchAction: 'cancel' }, '')}>Cancel switch</Button>
-        </div>
-      </SettingsRow>
-    )}
     {backend.defaultSwitch && (
       <SettingsRow
         separator
@@ -557,10 +526,10 @@ export function ConnectionSettings() {
         {backend.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
       </div>
     )}
-    {restartLine && (
+    {nextLine && (
       <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-        <span>{restartLine}</span>
-        <Button variant="primary" size="compact" onClick={() => void window.adfApi.restartStudio()}>Restart now</Button>
+        <span>{nextLine}</span>
+        <Button size="compact" onClick={() => void window.adfApi.restartStudio()}>Restart</Button>
       </div>
     )}
   </>

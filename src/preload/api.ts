@@ -760,7 +760,7 @@ export interface AdfApi {
   // Settings → Connections (settings-scopes.md §5). No token reaches the renderer.
   /** The runtimes this window can use, and the one it uses. */
   listConnections: () => Promise<ConnectionsView>
-  /** Connect: the switch dialog, then Studio restarts on that connection. */
+  /** This computer or Inside Studio (legacy): saved for the next launch; Studio does not restart (multi-runtime.md §7.2). */
   useConnection: (id: string) => Promise<ConnectionResult>
   /** Add connection with a token; the code path is startRemotePairing. */
   addConnection: (request: ConnectionAddRequest) => Promise<ConnectionResult>

@@ -427,8 +427,6 @@ describe('runtime-aware IPC routing (§4.3)', () => {
       { ...pending('n1', REMOTE_FILE_2, 'agent-2', 1), runtimeId: 'remote:host-1' },
       pending('n1', FILE_1, 'agent-1', 2),
     ])
-    // The primary's own waiting list stays its own.
-    expect(t.handle.agentActivity().map((a) => a.filePath)).toEqual([FILE_1])
     // The runtime leaves: its entries go.
     t.handle.runtimes.sync({})
     await until(() => {

@@ -32,21 +32,15 @@ import { createConnections, pushConnections, registerConnectionHandlers, type Co
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
   askVersionMismatch,
-  createModeSwitcher,
   isRelaunching,
   notifyDaemonOfHandover,
-  relaunchStudio,
-  restartingMessage,
-  resumeSwitchedAgents,
   runBootHandover,
   sessionBackendEnv,
-  SWITCH_DAEMON_EXIT_WAIT_MS,
   syncRuntimeEntryAfterImport,
-} from './backend/mode-switch'
+} from './backend/boot-handover'
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
-import { processAgentLeases } from './runtime/agent-lease'
-import type { StudioBackendMode } from '../shared/types/backend.types'
-import { AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
+import { migrateRemoteMode, migrateRemoteModeClientFile, relinkSavedAgentWindows, type RemoteModeMigration } from './backend/runtime-migration'
+import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
 import { samePath } from './backend/daemon-mode/session'
@@ -142,8 +136,6 @@ let embeddedIpc: EmbeddedIpc | null = null
 let agentWindows: AgentWindows | null = null
 // Queued messages of agent windows, handed to the main window when one closes.
 const queueHandover = new QueueHandover()
-// Set when Settings → Connections confirmed a switch: the quit that follows is a restart into it.
-let switchingTo: StudioBackendMode | null = null
 // Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
 let remoteAccess: RemoteAccessIpc | null = null
 // A quit from a signal is not held for the question about connected computers.
@@ -151,11 +143,11 @@ let quitUnasked = false
 /**
  * Owner decision 5 (remote-access.md §3.6): a quit while other computers are
  * connected to the daemon Studio would stop asks first. Not for a signal, an
- * update, a switch or a restart (they have their own dialogs, or none can be
- * shown). True: go on now; false: held, `resume` runs after the answer.
+ * update or a restart (they have their own dialogs, or none can be shown).
+ * True: go on now; false: held, `resume` runs after the answer.
  */
 function remoteQuitHold(resume: () => void): boolean {
-  if (!remoteAccess || quitUnasked || quittingForUpdate || switchingTo !== null || isRelaunching()) return true
+  if (!remoteAccess || quitUnasked || quittingForUpdate || isRelaunching()) return true
   return remoteAccess.quitGate.hold(resume)
 }
 // Set at the end of the whenReady continuation, once IPC handlers and the
@@ -193,18 +185,16 @@ function runShutdownCleanup(): Promise<void> {
       // On the fast path, shrink the inner phase-2 teardown too so the
       // synchronous workspace-close/WAL-sweep phase still gets to run.
       const cleanupOpts = budget < SHUTDOWN_BUDGET_MS ? { teardownBudgetMs: 1_500 } : undefined
-      // Daemon mode runs no agents here: quitting ends the client session and,
-      // per keepDaemonRunning, stops the daemon Studio started (§8.3). A switch
-      // to embedded waits for that daemon, so embedded Studio can start its agents.
+      // Daemon mode runs no agents here: quitting ends the client sessions and,
+      // per keepDaemonRunning, stops the daemon Studio started (§8.3).
       remoteAccess?.dispose()
       const cleanup = daemonMode
         ? daemonMode.shutdown({
-          ...(switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? { waitForDaemonExitMs: SWITCH_DAEMON_EXIT_WAIT_MS } : {}),
           // "Keep Running" in the question about connected computers: this quit only.
           ...(remoteAccess?.quitGate.keepDaemonForThisQuit ? { keepDaemonRunning: true } : {}),
         })
         : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
-      const { timedOut } = await withDeadline(cleanup, daemonMode && switchingTo === 'embedded' && budget === SHUTDOWN_BUDGET_MS ? SWITCH_DAEMON_EXIT_WAIT_MS + 3_000 : budget, () => {
+      const { timedOut } = await withDeadline(cleanup, budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
@@ -735,8 +725,8 @@ app.whenReady().then(async () => {
   // version-mismatch choice) moves client keys only: credentials stay where
   // the configured mode keeps them (§8.2).
   const sessionOnly = backend.source === 'env' || backend.source === 'session'
-  // Mode-switch handover (§11): move what belongs to this mode's side before
-  // any backend handler, store or daemon exists. Idempotent; a no-op when
+  // Boot handover (§11): move what belongs to this mode's side before any
+  // backend handler, store or daemon exists. Idempotent; a no-op when
   // everything is already where it belongs.
   const handover = bootGuard.skipHandover ? null : await runBootHandover(backend.mode, getUserDataPath(), { sessionOnly })
   // First launch without studio-backend.json: save the default, and on an install that ran Embedded prepare the one notice.
@@ -748,12 +738,9 @@ app.whenReady().then(async () => {
   await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
   // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
   let connections: Connections | null = null
-  // Local mode: every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
-  // Remote mode keeps its one runtime until phase 4 moves it to local (§13 item 1).
-  const runtimeSetOn = backend.mode === 'local'
+  // Every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
   // Saving a connection connects it; forgetting it disconnects it (§12 item 2). Read from the caches: no disk access.
   const syncRuntimes = (): void => {
-    if (!runtimeSetOn) return
     const saved = savedCache.get()
     daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved))
   }
@@ -764,7 +751,14 @@ app.whenReady().then(async () => {
   await savedCache.refresh().catch(() => {})
   savedCache.watch()
   app.once('before-quit', () => savedCache.dispose())
-  const savedRemote = (name: string): { url: string } | null => savedCache.get()[name] ?? null
+  // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
+  // before any connector or client settings store exists. A launch Inside Studio leaves the file for the next one.
+  let migration: RemoteModeMigration | null = null
+  if (backend.mode === 'local' && backend.config.mode === 'remote') {
+    const legacy = backend.config
+    migration = await migrateRemoteMode(backend, savedCache.get())
+    await migrateRemoteModeClientFile(getUserDataPath(), legacy, migration?.runtime ?? null, savedCache.get())
+  }
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')
@@ -777,24 +771,17 @@ app.whenReady().then(async () => {
     embeddedIpc.registerAllIpcHandlers({ showMainWindow, openFile: requestOpenFile, ...(bootGuard.skipAutostart ? { skipBootAutostart: bootGuard.skipAutostart } : {}) })
     // A daemon that keeps running on these settings re-reads the stores the handover emptied.
     if (handover?.changed && !sessionOnly) void notifyDaemonOfHandover(getUserDataPath())
-    // The agents that ran before a switch run again here (§11.1), once the
-    // mesh is up, as autostart waits for it (a null wsConnectionManager otherwise).
-    const embedded = embeddedIpc
-    void resumeSwitchedAgents('embedded', getUserDataPath(), async (filePath) =>
-      embedded.hostActions?.startBackgroundAgent?.(filePath) ?? { success: false, error: "the embedded backend is not ready" }, { ready: embedded.hostActions?.ready })
   } else {
     const userDataDir = getUserDataPath()
     daemonMode = registerDaemonModeHandlers({
-      mode: backend.mode,
+      mode: 'local',
       userDataDir,
-      connect: backend.mode === 'local'
-        ? localDaemonConnector({
-          userDataDir,
-          execPath: process.execPath,
-          daemonEntry: join(__dirname, 'daemon.js'),
-          onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
-        })
-        : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
+      connect: localDaemonConnector({
+        userDataDir,
+        execPath: process.execPath,
+        daemonEntry: join(__dirname, 'daemon.js'),
+        onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
+      }),
       hooks: {
         showMainWindow,
         openFile: requestOpenFile,
@@ -811,35 +798,36 @@ app.whenReady().then(async () => {
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,
       onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
-      runtimeName: () => backend.config.remote.name ?? backend.config.remote.paired?.name ?? null,
-      // The primary runtime's id (multi-runtime.md §1.3).
-      runtimeId: backend.mode === 'local' ? 'local' : backend.config.remote.name ? `remote:${backend.config.remote.name}` : 'remote',
       // Each saved connection's connector: its token is read only when it connects (§3.5).
-      ...(runtimeSetOn ? {
-        runtimeSet: {
-          connectorFor: (name: string) => {
-            const config = backendStore?.config() ?? backend.config
-            return remoteDaemonConnector({ ...config, mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name } }, safeStorageCodec, { env: connectionsEnv })
-          },
-          // The remote slot: its URL and token from studio-backend.json, pinned when it was paired.
-          slotConnector: () => {
-            const config = backendStore?.config() ?? backend.config
-            return remoteDaemonConnector({ ...config, mode: 'remote', remote: { ...config.remote, name: null } }, safeStorageCodec, { env: connectionsEnv })
-          },
-          ...(backend.config.runtimeOrder ? { initialOrder: backend.config.runtimeOrder } : {}),
-          // §3.1: written only when it changes, never while no remote is saved.
-          onOrder: (order: string[]) => { void backendStore?.setRuntimeOrder(order) },
+      runtimeSet: {
+        connectorFor: (name: string) => {
+          const config = backendStore?.config() ?? backend.config
+          return remoteDaemonConnector({ ...config, mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name } }, safeStorageCodec, { env: connectionsEnv })
         },
-      } : {}),
-      ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
+        // The remote slot: its URL and token from studio-backend.json, pinned when it was paired.
+        slotConnector: () => {
+          const config = backendStore?.config() ?? backend.config
+          return remoteDaemonConnector({ ...config, mode: 'remote', remote: { ...config.remote, name: null } }, safeStorageCodec, { env: connectionsEnv })
+        },
+        ...(backend.config.runtimeOrder ? { initialOrder: backend.config.runtimeOrder } : {}),
+        // §3.1: written only when it changes, never while no remote is saved.
+        onOrder: (order: string[]) => { void backendStore?.setRuntimeOrder(order) },
+      },
+      afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase),
     })
     const handle = daemonMode
     syncRuntimes()
-    void handle.ready.then(async (ok) => { if (ok) await resumeSwitchedAgents(backend.mode, userDataDir, (filePath) => handle.startBackgroundAgent(filePath)) })
+    // §7.5: a saved agent window of a runtime no longer in the set moves to the saved connection with its fingerprint.
+    // Never rewritten when nothing moves (a list of This computer only keeps its bytes).
+    const relinked = relinkSavedAgentWindows(handle.clientSettings.get(AGENT_WINDOWS_KEY), savedCache.get(), !!runtimeSlot(backend.config, savedCache.get()))
+    if (relinked) {
+      console.log('[AgentWindows] Saved agent windows of a renamed connection moved to it (same fingerprint)')
+      handle.clientSettings.set(AGENT_WINDOWS_KEY, relinked)
+    }
     agentWindows = new AgentWindows({
       create: createAgentWindow,
       current: (id) => handle.windows.current(id),
-      samePath: (a, b, runtimeId) => samePath(a, b, (handle.runtimes.get(runtimeId)?.kind ?? backend.mode) === 'remote'),
+      samePath: (a, b, runtimeId) => samePath(a, b, handle.runtimes.get(runtimeId)?.kind === 'remote'),
       settings: handle.clientSettings,
       runtime: () => handle.windows.runtime(),
       // The file is there and is still the same agent (GET /files/agent/config answers its config.id).
@@ -915,11 +903,15 @@ app.whenReady().then(async () => {
       // §5.5: one window per agent ref; the runtime must be in the set. Omitted: the primary runtime.
       const runtime = typeof request.runtimeId === 'string' && request.runtimeId ? handle.runtimes.get(request.runtimeId) : handle.runtimes.primary
       if (!runtime) return { success: false, error: notConnectedSentence(String(request.runtimeId)) }
+      // A remote's window is saved with its connection's fingerprint (§7.5).
+      const fingerprint = runtime.primary ? null
+        : runtime.id.startsWith('remote:') ? savedCache.get()[runtime.id.slice('remote:'.length)]?.fingerprint ?? null
+          : (backendStore?.config() ?? backend.config).remote.paired?.fingerprint ?? null
       const { created } = windows.open({
         filePath: request.filePath,
         agentId: typeof request.agentId === 'string' ? request.agentId : null,
         ...(typeof request.name === 'string' && request.name ? { name: request.name } : {}),
-        ...(runtime.primary ? {} : { runtimeId: runtime.id }),
+        ...(runtime.primary ? {} : { runtimeId: runtime.id, ...(fingerprint ? { fingerprint } : {}) }),
       })
       return { success: true, created }
     })
@@ -930,34 +922,10 @@ app.whenReady().then(async () => {
     if (daemonMode) daemonMode.clientSettings.set(key, value)
     else embeddedIpc?.writeAppSetting(key, value)
   }
-  const switcher = createModeSwitcher({
-    activeMode: backend.mode,
-    userDataDir: getUserDataPath(),
-    agentActivity: () => daemonMode
-      ? daemonMode.agentActivity()
-      : embeddedIpc?.hostActions?.agentActivity?.() ?? processAgentLeases().heldPaths().map((filePath) => ({ filePath, busy: false })),
-    keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? false,
-    daemonStartedBy: () => daemonMode?.status().startedBy ?? null,
-    window: () => mainWindow,
-    remoteUrl: () => {
-      const config = backendStore?.config() ?? backend.config
-      return config.remote.name ? savedRemote(config.remote.name)?.url ?? null : config.remote.url
-    },
-    relaunch: (target) => {
-      switchingTo = target
-      relaunchStudio(`the backend was switched to ${target} in Settings → Connections`)
-    },
-  })
+  // A mode chosen in Settings → Connections applies at the next launch (multi-runtime.md §7.2).
   backendStore = registerBackendSettingsHandlers(backend, {
     daemonStatus: () => daemonMode?.status() ?? null,
-    confirmModeSwitch: switcher.confirm,
-    applyModeSwitch: switcher.apply,
-    pendingSwitch: switcher.pendingSwitch,
-    finishSwitchNow: switcher.finishNow,
-    cancelSwitch: switcher.cancel,
-    restarting: () => { const target = switcher.restartingInto(); return target ? restartingMessage(target) : null },
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
-    savedRemote,
   })
   remoteAccess = registerRemoteAccessHandlers({
     mode: backend.mode,
@@ -1051,9 +1019,10 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
-  // Over the main window once it is ready: the boot guard's dialog, the first-launch notice (once the daemon connected) or the handover summary.
+  // Over the main window once it is ready: the boot guard's dialog, the migration's sentence (§7.3), the first-launch
+  // notice (once the daemon connected) or the handover summary.
   const bootWindow = mainWindow
-  if (bootWindow) bootWindow.once('ready-to-show', () => void showBootNotices({ report: handover, mode: backend.mode, notice: firstLaunch, guard: bootGuard.notice, window: bootWindow, ready: daemonMode?.ready, userDataDir: getUserDataPath() }))
+  if (bootWindow) bootWindow.once('ready-to-show', () => void showBootNotices({ report: handover, mode: backend.mode, notice: firstLaunch, guard: bootGuard.notice, migration: migration?.notice ?? null, window: bootWindow, ready: daemonMode?.ready, userDataDir: getUserDataPath() }))
 
   initAppUpdater({
     // Read per check, not cached: turning it off in Settings stops the next one.

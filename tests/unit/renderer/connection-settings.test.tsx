@@ -10,13 +10,13 @@ import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConnectionRows, SimpleConnections, connectionDetail, emptyDiscoveryLine, pendingRestartLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
+import { ConnectionRows, SimpleConnections, connectionDetail, emptyDiscoveryLine, nextLaunchLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor } from '../../../src/renderer/components/settings/settings-nav'
-import { remoteConnectionsSaved, runtimeGroupLabel } from '../../../src/renderer/stores/connection.store'
+import { remoteConnectionsSaved } from '../../../src/renderer/stores/connection.store'
 import { DOCS } from '../../../src/shared/constants/docs-links'
 import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
 import type { BackendDaemonStatus, BackendSettingsView } from '../../../src/shared/types/backend.types'
-import type { ConnectionCurrent, ConnectionRow } from '../../../src/shared/types/connection.types'
+import type { ConnectionRow } from '../../../src/shared/types/connection.types'
 
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
@@ -25,7 +25,6 @@ const row = (over: Partial<ConnectionRow>): ConnectionRow => ({
   id: 'local', kind: 'local', name: 'This computer', state: null, action: 'connect', url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false, ...over,
 })
 const rows = (list: ConnectionRow[]) => renderToStaticMarkup(<ConnectionRows rows={list} busy={false} onConnect={() => {}} onAdd={() => {}} onRemove={() => {}} />)
-const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected', ...over })
 
 describe('the Connection page rows', () => {
   it('each row: its state and at most one action; the row in use has none', () => {
@@ -58,9 +57,11 @@ describe('the Connection page rows', () => {
     expect(emptyDiscoveryLine({ rows: [local, row({ id: 'found:F@u', kind: 'found', name: 'desk', action: 'pair' })], discovery: searching })).toBeNull()
   })
 
-  it('a Paired row never shows Pair', () => {
-    const html = rows([row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'paired', action: 'connect', fingerprint: 'ABCD-EFGH', address: '100.101.102.103' })])
+  it('a saved row never shows Pair, Add or Connect', () => {
+    const html = rows([row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connecting', action: null, fingerprint: 'ABCD-EFGH', address: '100.101.102.103', removable: true })])
     expect(html).not.toContain('>Pair<')
+    expect(html).not.toContain('>Add<')
+    expect(html).not.toContain('>Connect<')
     expect(html).not.toContain('fingerprint at')
   })
 
@@ -76,12 +77,14 @@ describe('the Connection page rows', () => {
   })
 
   it('no question marks, no "Use this daemon", no "Switch to This Daemon"', () => {
-    const html = rows([row({}), row({ id: 'remote:x', kind: 'saved', name: 'x', state: 'paired' })])
+    const html = rows([row({}), row({ id: 'remote:x', kind: 'saved', name: 'x', state: 'connected', action: null })])
     expect(html).not.toMatch(/\?/)
     const source = readFileSync(join(__dirname, '../../../src/renderer/components/settings/ConnectionSettings.tsx'), 'utf-8')
     expect(source).not.toContain('Use this daemon')
     expect(source).not.toContain('Switch to This Daemon')
     expect(source).not.toContain('Run agents in')
+    // multi-runtime.md §7.1: no switch and no restart to connect (§1.4: never "additive").
+    expect(source).not.toMatch(/Restart to connect|Switch and Restart|Finish switch now|Cancel switch|additive/i)
     // One sentence for a connection without a fingerprint (review item 13).
     expect(source).toContain('No fingerprint; identity not checked.')
     expect(source).not.toContain('Studio cannot check')
@@ -92,7 +95,7 @@ describe('the Connection page rows', () => {
   })
 })
 
-describe('This computer and the switch notices', () => {
+describe('This computer and the next-launch notices', () => {
   const daemon: BackendDaemonStatus = {
     connection: 'connected', progress: null, message: null, url: 'http://127.0.0.1:7385', pid: 4242, version: '0.8.0',
     startedBy: 'studio', how: 'spawned', localProof: { available: true, problem: null }, trust: null, keychainProblem: null, logFile: null,
@@ -134,17 +137,16 @@ describe('This computer and the switch notices', () => {
     expect(overrideLine(view({ source: 'file' }))).toBeNull()
   })
 
-  it('a saved connection that differs from the running one: "Restart to connect to <name>.", remote to remote too (review item 7)', () => {
-    const backend = (source: BackendSettingsView['active']['source'], pendingSwitch: BackendSettingsView['pendingSwitch'] = null): BackendSettingsView => ({
-      active: { mode: 'remote', source, notices: [] }, remoteUrlProblem: null, pendingSwitch,
-      configured: { mode: 'remote', keepDaemonRunning: false, remoteUrl: null, remoteTokenSaved: false, allowInsecureHttp: false, remoteName: 'desk' },
+  it('a mode saved for the next launch says so in one line; nothing for a one-launch override (multi-runtime.md §7.2)', () => {
+    const backend = (source: BackendSettingsView['active']['source']): BackendSettingsView => ({
+      active: { mode: 'local', source, notices: [] }, remoteUrlProblem: null,
+      configured: { mode: 'embedded', keepDaemonRunning: false, remoteUrl: null, remoteTokenSaved: false, allowInsecureHttp: false },
       encryptionAvailable: true, encryptionUnavailableReason: null,
     })
-    const next = { id: 'remote:desk', name: 'desk' }
-    expect(pendingRestartLine(backend('file'), next)).toBe('Restart to connect to desk.')
-    expect(pendingRestartLine(backend('file'), null)).toBeNull()
-    expect(pendingRestartLine(backend('env'), next)).toBeNull()
-    expect(pendingRestartLine(backend('file', { target: 'remote', waitingFor: [], gaveUp: false }), next)).toBeNull()
+    const next = { id: 'embedded', name: 'Inside Studio' }
+    expect(nextLaunchLine(backend('file'), next)).toBe('Next launch: Inside Studio.')
+    expect(nextLaunchLine(backend('file'), null)).toBeNull()
+    expect(nextLaunchLine(backend('env'), next)).toBeNull()
   })
 
   it('"Default changed": the date and the version in one line; what moved and what was not done are separate', () => {
@@ -158,14 +160,9 @@ describe('This computer and the switch notices', () => {
   })
 })
 
-describe('the sidebar: Studio and Runtime · <name>', () => {
-  it('two groups, Studio first; the runtime group is named after the connection only once a remote is saved', () => {
-    // Local only: plain ADF Studio, the runtime's pages have no heading.
-    expect(settingsNavGroups(runtimeGroupLabel(current()), false).map((g) => g.label)).toEqual(['Studio', ''])
-    expect(settingsNavGroups(runtimeGroupLabel(current()), true).map((g) => g.label)).toEqual(['Studio', 'Runtime · This computer'])
-    expect(runtimeGroupLabel(current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub' }))).toBe('Runtime · rawl-hub')
-    expect(runtimeGroupLabel(current({ kind: 'remote', name: 'rawl-hub', state: 'retrying' }))).toBe('Runtime · rawl-hub · Not connected, retrying')
-    expect(runtimeGroupLabel(null)).toBe('Runtime')
+describe('the sidebar: Studio and the runtime pages', () => {
+  it('two groups, Studio first; the runtime pages are unheaded (the Runtime picker heads them with more than one runtime)', () => {
+    expect(settingsNavGroups().map((g) => g.label)).toEqual(['Studio', ''])
   })
 
   it('Studio holds Appearance, Notifications, Updates, Privacy, About, then Connections; the runtime the rest', () => {
@@ -220,15 +217,14 @@ describe('Connection page docs links', () => {
 })
 
 describe('local only: Connections is one line', () => {
-  const saved = row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'paired', action: 'connect', removable: true })
+  const saved = row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connected', action: null, removable: true })
   const found = row({ id: 'found:F@u', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair' })
 
-  it('a remote counts as saved once it is in the list or in use; a computer found on the network does not', () => {
+  it('a remote counts as saved once it is in the list; a computer found on the network does not', () => {
     expect(remoteConnectionsSaved(null)).toBe(false)
-    expect(remoteConnectionsSaved({ current: current(), rows: [row({ state: 'connected', action: null })] })).toBe(false)
-    expect(remoteConnectionsSaved({ current: current(), rows: [row({ state: 'connected', action: null }), found] })).toBe(false)
-    expect(remoteConnectionsSaved({ current: current(), rows: [row({ state: 'connected', action: null }), saved] })).toBe(true)
-    expect(remoteConnectionsSaved({ current: current({ id: 'remote', kind: 'remote', name: 'rawl-hub' }), rows: [] })).toBe(true)
+    expect(remoteConnectionsSaved({ rows: [row({ state: 'connected', action: null })] })).toBe(false)
+    expect(remoteConnectionsSaved({ rows: [row({ state: 'connected', action: null }), found] })).toBe(false)
+    expect(remoteConnectionsSaved({ rows: [row({ state: 'connected', action: null }), saved] })).toBe(true)
   })
 
   it('one line and Add; This computer and Inside Studio (legacy) under Details', () => {

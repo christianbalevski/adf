@@ -32,7 +32,7 @@ export function killResultLabel(result: { success: boolean; stoppedAgents?: numb
   return `${agents} · Mesh off`
 }
 
-/** Kill's tooltip; it names the runtime it acts on only while runtime names show (more than one runtime, or a remote). */
+/** Kill's tooltip; it names the runtime it acts on only while runtime names show (more than one runtime). */
 export function killTooltip(current: Pick<ConnectionCurrent, 'name'> | null, named: boolean): string {
   return named ? `Stops all agents and mesh on ${current?.name ?? 'This computer'}` : 'Stops all agents and mesh'
 }
@@ -95,10 +95,9 @@ export function StatusBar() {
   const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
   // This window's connection (settings-scopes.md §4.1); main answers per window (#149).
   const connection = useCurrentConnection()
-  // One runtime: one group, named only when it is another computer (remote mode). More: one group per runtime (§6.2).
+  // One runtime: one unnamed group. More: one group per runtime (§6.2).
   const runtimes = useRuntimes()
   const multi = runtimes.length > 1
-  const named = connection?.kind === 'remote'
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)
   const toggleLogsPanel = useAppStore((s) => s.toggleLogsPanel)
   const bottomPanelTab = useAppStore((s) => s.bottomPanelTab)
@@ -226,7 +225,7 @@ export function StatusBar() {
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
       {multi ? <RuntimeGroups runtimes={runtimes} /> : (
       <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
-      <RuntimeIndicator current={connection} showName={named} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
+      <RuntimeIndicator current={connection} showName={false} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
       <Tooltip tip={meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off'} className="flex">
       <button
@@ -248,11 +247,11 @@ export function StatusBar() {
           {killResult}
         </span>
       )}
-      <Tooltip tip={isAnythingRunning ? killTooltip(connection, named) : 'Nothing running'} className="flex">
+      <Tooltip tip={isAnythingRunning ? killTooltip(connection, false) : 'Nothing running'} className="flex">
       <button
         onClick={isAnythingRunning ? handleEmergencyStop : undefined}
         disabled={!isAnythingRunning}
-        aria-label={isAnythingRunning ? killTooltip(connection, named) : 'Kill: nothing running'}
+        aria-label={isAnythingRunning ? killTooltip(connection, false) : 'Kill: nothing running'}
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'

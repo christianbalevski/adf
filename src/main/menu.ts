@@ -28,20 +28,19 @@ export interface DaemonMenuOptions {
   reconnect: () => void
   /**
    * After a failed launch (no daemon this session), while `launchFailed`
-   * says so: local mode offers "Use Embedded for This Session" (Studio
-   * restarts in embedded mode for one launch), remote mode "Open Settings →
-   * Backend" (fix the URL or token there).
+   * says so: "Run Inside Studio for This Session" (Studio restarts in
+   * embedded mode for one launch).
    */
   useEmbeddedForSession?: () => void
-  openBackendSettings?: () => void
   launchFailed?: () => boolean
   /**
-   * Remote mode: recent files are paths on the daemon's machine. They are
-   * not added to the OS recent documents (the Windows shell may contact a
-   * UNC host), not checked for existence here, and never granted as files
-   * of this computer (local-open-grants.ts) (W4-B review). They are kept
-   * under their own client key, `remoteRecentFiles`, which a switch back to
-   * embedded leaves behind (W5-D3).
+   * A remote primary (tests only, DaemonModeDeps.mode): recent files are
+   * paths on the daemon's machine. They are not added to the OS recent
+   * documents (the Windows shell may contact a UNC host), not checked for
+   * existence here, and never granted as files of this computer
+   * (local-open-grants.ts) (W4-B review). They are kept under their own
+   * client key, `remoteRecentFiles`, which the boot handover into embedded
+   * leaves behind (W5-D3).
    */
   remoteRecents?: boolean
   /**
@@ -74,7 +73,6 @@ export type MenuAction =
   | 'save'
   | 'close-file'
   | 'open-settings'
-  | 'open-settings-backend'
   | 'go-home'
   | 'show-fleet-map'
   | 'toggle-sidebar'
@@ -442,7 +440,6 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
   const logFile = options.logFile()
   const problem = options.problem()
   const useEmbedded = options.useEmbeddedForSession
-  const openBackend = options.openBackendSettings
   const failed = !!problem && options.launchFailed?.() === true
   const runtimes = options.runtimes?.() ?? []
   if (runtimes.length > 1) {
@@ -456,7 +453,6 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
       ...(reconnectable.length === 1 ? [{ label: 'Reconnect', toolTip: reconnectable[0].name, click: () => reconnectable[0].reconnect() }] : []),
       ...(reconnectable.length > 1 ? [{ label: 'Reconnect', submenu: reconnectable.map((r) => ({ label: r.name, click: () => r.reconnect() })) }] : []),
       ...(failed && useEmbedded ? [{ label: 'Run Inside Studio for This Session', click: () => useEmbedded() }] : []),
-      ...(failed && openBackend ? [{ label: 'Open Settings → Connections', click: () => openBackend() }] : [])
     ]
   }
   return [
@@ -465,6 +461,5 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
     ...(problem ? [{ label: problem, enabled: false }] : []),
     ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : []),
     ...(failed && useEmbedded ? [{ label: 'Run Inside Studio for This Session', click: () => useEmbedded() }] : []),
-    ...(failed && openBackend ? [{ label: 'Open Settings → Connections', click: () => openBackend() }] : [])
   ]
 }

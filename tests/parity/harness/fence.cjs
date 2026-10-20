@@ -569,6 +569,8 @@ function install(options) {
     loggingFailed: false,
     saved,
   }
+  // The mark the daemon's fenced-only test seams check (src/main/daemon/remote-access/test-probes.ts).
+  patch(globalThis, Symbol.for('adf.parity.fence'), true)
   installFilesystem(patch)
   installSqliteGuard(patch)
   for (const name of SPAWNERS) {

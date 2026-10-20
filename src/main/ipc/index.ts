@@ -1758,10 +1758,11 @@ function setLiveAgentName(filePath: string, name: string): void {
 
 /**
  * Main-process actions of the embedded backend for the backend switch
- * (W4-A, backend/mode-switch.ts): which agents run and whether a turn is in
- * flight, and the gated background start (the same path as
- * BACKGROUND_AGENT_START) to resume agents a switch carried over. Set by
- * registerAllIpcHandlers; nothing in the IPC layer reads it.
+ * (W4-A): which agents run and whether a turn is in flight, and the gated
+ * background start (the same path as BACKGROUND_AGENT_START). Set by
+ * registerAllIpcHandlers; nothing reads it since the switch-and-restart flow
+ * was removed (docs/design/multi-runtime.md §7.1). It goes with the embedded
+ * backend.
  */
 export const hostActions: {
   startBackgroundAgent?: (filePath: string) => Promise<{ success: boolean; error?: string; code?: string }>

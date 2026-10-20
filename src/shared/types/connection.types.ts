@@ -1,16 +1,17 @@
 /**
- * Settings → Connections (docs/design/settings-scopes.md §5): the runtimes
- * this window can use. This computer, Inside Studio (legacy) while it is in
- * use or saved, the saved remotes (`cli-remotes.json`, shared with `adf`, and
- * the remote URL of `studio-backend.json`), and computers found on the
- * network that are not paired. Never a token.
+ * Settings → Connections (docs/design/settings-scopes.md §5,
+ * docs/design/multi-runtime.md §6.5): This computer, Inside Studio (legacy)
+ * while it is in use or saved, the saved remotes (`cli-remotes.json`, shared
+ * with `adf`, and the remote URL of `studio-backend.json`), each connected
+ * while it is saved, and computers found on the network that are not saved.
+ * Never a token.
  */
 
 /** The connection a window uses: its runtime. */
 export type ConnectionKind = 'local' | 'embedded' | 'remote'
 
-/** A row's state. In use: the link state; otherwise Paired or Not paired (or none for This computer). */
-export type ConnectionState = 'connected' | 'connecting' | 'retrying' | 'not-connected' | 'paired' | 'not-paired'
+/** A row's state: a runtime's link state, or Not paired for a computer found on the network. */
+export type ConnectionState = 'connected' | 'connecting' | 'retrying' | 'not-connected' | 'not-paired'
 
 /** The words of each state, shared by the Connection page and the status bar's runtime indicator. */
 export const CONNECTION_STATE_LABELS: Record<ConnectionState, string> = {
@@ -18,15 +19,14 @@ export const CONNECTION_STATE_LABELS: Record<ConnectionState, string> = {
   connecting: 'Connecting',
   retrying: 'Not connected, retrying',
   'not-connected': 'Not connected',
-  paired: 'Paired',
   'not-paired': 'Not paired',
 }
 
 export interface ConnectionCurrent {
-  /** `local`, `embedded`, `remote` (the remote URL of studio-backend.json) or `remote:<name>` (a saved connection). */
+  /** `local` or `embedded`: the mode this launch runs (a remote is a runtime of the set, never the current connection). */
   id: string
   kind: ConnectionKind
-  /** "This computer", "Inside Studio", or the saved connection's name. */
+  /** "This computer" or "Inside Studio". */
   name: string
   /** Remote: the address in use (the indicator's tooltip). */
   url: string | null
@@ -38,9 +38,12 @@ export interface ConnectionRow {
   id: string
   kind: 'local' | 'embedded' | 'saved' | 'found'
   name: string
-  /** Null: This computer or Inside Studio while not in use. */
+  /** Null: This computer or Inside Studio while not in use; a saved connection while Inside Studio runs (§7.2). */
   state: ConnectionState | null
-  /** At most one action: Connect, or Pair for a computer not paired. Null for the row in use. */
+  /**
+   * At most one action: Connect (This computer or Inside Studio, saved for
+   * the next launch), or Add (`pair`) for a computer found on the network.
+   */
   action: 'connect' | 'pair' | null
   url: string | null
   /** The host part of `url`, for the detail line. */
@@ -50,13 +53,13 @@ export interface ConnectionRow {
   encrypted: boolean
   /** The host has a pairing window open. */
   pairingOpen: boolean
-  /** Remove in the row's More menu: every saved connection; the one in use (or saved as the next one) switches to This computer first. */
+  /** Remove in the row's More menu: every saved connection. */
   removable: boolean
 }
 
 export interface ConnectionsView {
   current: ConnectionCurrent
-  /** The saved connection when it is not the one this launch runs (applies at the restart). */
+  /** The mode saved for the next launch when it is not the one this launch runs (multi-runtime.md §7.2). */
   next: { id: string; name: string } | null
   rows: ConnectionRow[]
   /** The network search behind the Not paired rows; null when it is not running. */

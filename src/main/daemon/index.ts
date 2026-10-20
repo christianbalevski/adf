@@ -21,6 +21,7 @@ import { killAllHostExecs } from '../services/host-exec.service'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { DaemonHost } from './daemon-host'
 import { RemoteAccessService } from './remote-access/service'
+import { remoteAccessTestProbes } from './remote-access/test-probes'
 import { isLoopbackName } from './request-guard'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
@@ -406,6 +407,8 @@ const remoteAccess = new RemoteAccessService({
   // One consent list: the mesh's LAN listeners follow an allow or a remove at once.
   onNetworksChanged: () => { void meshServer.syncLan(true) },
   meshLan: () => meshServer.isLanMode(),
+  // Test seam (ADF_TEST_REMOTE_ACCESS_PROBES=1, ADF_TEST_SEAMS=1, unpackaged, fenced): the probes report nothing found.
+  ...remoteAccessTestProbes(),
 })
 // The feed changed: this machine's own clients re-read GET /network/peers (one event stream, peers_changed).
 runtimeDiscovery.onPeersChanged(() => client.sessions.publishPush('remote_access', { type: 'peers_changed' }))

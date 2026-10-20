@@ -77,5 +77,4 @@ it('0.7.x upgrade: daemon mode, the default saved, no dialog before the window, 
   await fireReadyToShow()
   expect(h.calls.filter((c) => c.startsWith('dialog.'))).toEqual([])
   expect(existsSync(join(h.state.userData, 'studio-default-switch.json'))).toBe(false)
-  expect(existsSync(join(h.state.userData, 'studio-switch-resume.json'))).toBe(false)
 })

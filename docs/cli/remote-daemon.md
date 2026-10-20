@@ -105,7 +105,7 @@ adf
   daemon answers `401` and `adf` points you to `adf daemon token`.
 - Through the tunnel the daemon sees a loopback connection, so owner identity
   create / restore / unlock and `adf daemon stop` work as on the server.
-  This holds for `adf` only: ADF Studio in remote mode (URL
+  This holds for `adf` only: ADF Studio with a connection to the tunnel (URL
   `http://127.0.0.1:7386`) never sends a seed phrase to another machine and
   has no local proof for the server, so its owner identity actions say to run
   `adf identity` on the server, through the tunnel too.
@@ -283,7 +283,7 @@ and signed in on the server, not your laptop.
   to the daemon on save.
 - `adf daemon logs`, `status` details (data dir, log) and `token` read the
   local machine: run them on the server.
-- ADF Studio in remote mode picks paths on the server, offers files of your
+- ADF Studio, on a connection to the server, picks paths on the server, offers files of your
   laptop as uploads, and keeps owner identity, stored credential values and
   the agent browser viewer on the server. See
   [Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).
