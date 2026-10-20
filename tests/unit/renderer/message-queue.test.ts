@@ -7,6 +7,7 @@ vi.mock('react', async (importOriginal) => ({
 }))
 import { useAgentStore, selectLoopSlice } from '../../../src/renderer/stores/agent.store'
 import { useDocumentStore } from '../../../src/renderer/stores/document.store'
+import { useAppStore } from '../../../src/renderer/stores/app.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../../src/renderer/stores/message-queue.store'
 import { useBackgroundAgentsStore } from '../../../src/renderer/stores/background-agents.store'
 import type { AgentExecutionEvent, RendererBackgroundAgentEvent } from '../../../src/shared/types/ipc.types'
@@ -419,6 +420,28 @@ describe('a new message to a stopped agent that still has a queue', () => {
       await vi.waitFor(() => expect(main.invokeAgent).toHaveBeenCalledTimes(1))
       expect(startAgent).toHaveBeenCalledWith(AGENT_1, true)
       expect(main.invokeAgent).toHaveBeenCalledWith('older\n\nnewer', AGENT_1, expect.any(Array), 'main')
+    })
+
+    it('without a queue, a start that does not happen leaves the message "Not sent" with the reason, not a bubble', async () => {
+      useMessageQueueStore.setState({ queues: {} })
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      adfApi().startAgent = async () => ({ success: false, error: 'No model configured' })
+      await submit('hello')
+      expect(main.invokeAgent).not.toHaveBeenCalled()
+      expect(queued(AGENT_1)).toMatchObject([{ text: 'hello', error: 'No model configured', failures: 1 }])
+      expect(useAgentStore.getState().log.some((e) => e.type === 'user' && e.content === 'hello')).toBe(false)
+    })
+
+    it('without a queue, a cancelled provider sheet leaves it "Not sent" too', async () => {
+      useMessageQueueStore.setState({ queues: {} })
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      adfApi().startAgent = async () => ({ success: false, code: 'provider_missing', error: 'No provider is connected' })
+      const sent = submit('hello')
+      await vi.waitFor(() => expect(useAppStore.getState().providerSetupRequest).not.toBeNull())
+      useAppStore.getState().resolveProviderSetup(null)
+      await sent
+      expect(main.invokeAgent).not.toHaveBeenCalled()
+      expect(queued(AGENT_1)).toMatchObject([{ text: 'hello', error: 'No provider is connected' }])
     })
 
     it('without a queue: starts it, then sends the message directly', async () => {
