@@ -1157,6 +1157,10 @@
   timestamp: "<t>"
   type: "state_changed"
 
+## push adf:workspace:data-changed (1)
+#1:
+  scope: "files"
+
 ## local calls (3)
 #1 Menu.setApplicationMenu:
   -
