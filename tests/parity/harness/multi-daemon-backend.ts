@@ -28,10 +28,13 @@ import { waitForLeasesSettled } from './lease-settle'
  *   its own loopback port and mesh port. Studio reaches it through a
  *   loopback proxy that acts as the other computer (it forwards a public
  *   Host and X-Forwarded-For, so the daemon treats no request as local, and
- *   records any local proof as a leak). The proxy answers GET /remote/hello
- *   with the remote's name and fingerprint: remote access cannot be turned on
- *   in a fenced daemon (its probes spawn tailscale, the firewall and the
- *   network-category tools, which the fence refuses).
+ *   records any local proof as a leak). By default the proxy answers GET
+ *   /remote/hello with the remote's name and fingerprint, and the saved
+ *   token is the remote's master token: remote access is off there.
+ *   `deviceToken`: remote access is on in the remote daemon (its probes
+ *   replaced by the fenced test seam ADF_TEST_REMOTE_ACCESS_PROBES,
+ *   src/main/daemon/remote-access/test-probes.ts), the proxy forwards the
+ *   real hello, and the saved token is a device token the host issued.
  * - a saved connection for it in a Studio connections folder of its own
  *   (cli-remotes.json, its token in the run's file secret store:
  *   ADF_KEYCHAIN=0, ADF_SECRET_STORE=file), pinned to that fingerprint.
@@ -64,6 +67,12 @@ export interface MultiDaemonOptions {
   restrictTools?: readonly string[]
   /** studio-backend.json keepDaemonRunning: This computer's daemon outlives Studio's quit (a test that quits Studio itself). */
   keepDaemonRunning?: boolean
+  /**
+   * Remote access on in the remote daemon (fenced probe seam), its real
+   * /remote/hello, and a device token from POST /remote-access/devices as
+   * the saved connection's token, instead of the master token.
+   */
+  deviceToken?: boolean
 }
 
 /** Mark tools restricted in an agent file before any daemon opens it. */
@@ -155,10 +164,12 @@ export interface RemoteProxy {
   refuse: boolean
   /** Requests are accepted and never answered (a computer that went away without closing its connections). */
   blackhole: boolean
+  /** /remote/hello goes to the daemon, whose remote access is on (`deviceToken`); `hello` then records what it answered. */
+  forwardHello: boolean
 }
 
-async function startProxy(upstream: number, hello: RemoteProxy['hello']): Promise<RemoteProxy> {
-  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, refuse: false, blackhole: false }
+async function startProxy(upstream: number, hello: RemoteProxy['hello'], forwardHello = false): Promise<RemoteProxy> {
+  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, refuse: false, blackhole: false, forwardHello }
   proxy.server = createHttpServer(async (req, res) => {
     const path = (req.url ?? '').split('?')[0]
     const headers = { ...req.headers }
@@ -168,7 +179,7 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello']): Promis
     }
     if (proxy.blackhole) { req.resume(); return }
     if (headers.authorization) proxy.authorized.push(`${proxy.upstream} ${req.method} ${path}`)
-    if (req.method === 'GET' && path === '/remote/hello') {
+    if (req.method === 'GET' && path === '/remote/hello' && !proxy.forwardHello) {
       req.resume()
       // The daemon that answers at the address shows the hello: nothing answers while it is down.
       const upstream = proxy.upstream
@@ -234,6 +245,10 @@ export interface BootedMultiBackend extends BootedBackend {
   saveRemote(): Promise<void>
   /** Forget it (Studio's Remove, `adf remotes forget`). */
   forgetRemote(): Promise<void>
+  /** `deviceToken`: the device the host issued the saved token to. */
+  readonly device: { id: string; token: string } | null
+  /** `deviceToken`: revoke that device on the host (DELETE /remote-access/devices/:id, as Settings → Remote access there). */
+  revokeDevice(): Promise<void>
   /** Hard-kill the remote daemon. */
   killRemote(): Promise<void>
   /** Another computer at the remote's address: a third daemon with its own root and fingerprint behind the same proxy. */
@@ -300,6 +315,7 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         MESH_PORT: String(remoteMesh),
         ADF_DAEMON_STARTED_BY: 'cli',
         ADF_DAEMON_ALLOWED_HOSTS: REMOTE_PROXY_HOST,
+        ...(options.deviceToken ? { ADF_TEST_REMOTE_ACCESS_PROBES: '1' } : {}),
       })
       let remote: Child
       try {
@@ -311,8 +327,37 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
       children.push(remote)
       if (remote.pid !== undefined) pids.push({ value: remote.pid, name: 'pid:remote' })
       const { fingerprintOf } = (await import(/* @vite-ignore */ srcPath('main/daemon/remote-access/config.ts'))) as typeof import('../../../src/main/daemon/remote-access/config')
-      const fingerprint = fingerprintOf(randomBytes(16).toString('hex'))
-      const proxy = await startProxy(remotePort, { name: remoteName, fingerprint })
+      /** The host's own management routes: this machine (loopback, no proxy headers), its master token and local proof. */
+      const manage = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+        const { readLocalProof, LOCAL_PROOF_HEADER } = (await import(/* @vite-ignore */ srcPath('main/daemon/local-access.ts'))) as typeof import('../../../src/main/daemon/local-access')
+        const proof = readLocalProof(remoteRoot.userDataDir, remotePort)
+        if (!proof) throw new Error(`parity harness: no local proof of the remote daemon in ${remoteRoot.userDataDir}`)
+        const res = await fetch(`http://127.0.0.1:${remotePort}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${remoteToken}`, [LOCAL_PROOF_HEADER]: proof, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          signal: AbortSignal.timeout(15_000),
+        })
+        const text = await res.text()
+        if (!res.ok) throw new Error(`parity harness: ${method} ${path} on the remote daemon answered ${res.status}: ${text}`)
+        return (text ? JSON.parse(text) : null) as T
+      }
+      let device: { id: string; token: string } | null = null
+      let fingerprint = fingerprintOf(randomBytes(16).toString('hex'))
+      if (options.deviceToken) {
+        try {
+          const on = await manage<{ enabled: boolean; fingerprint: string | null; name: string }>('PUT', '/remote-access', { enabled: true, name: remoteName })
+          if (!on.enabled || !on.fingerprint || on.name !== remoteName) throw new Error(`parity harness: remote access did not turn on in the remote daemon: ${JSON.stringify(on)}`)
+          fingerprint = on.fingerprint
+          const issued = await manage<{ device: { id: string }; token: string }>('POST', '/remote-access/devices', { label: 'Studio' })
+          device = { id: issued.device.id, token: issued.token }
+        } catch (err) {
+          for (const c of children) await killTree(c.child, c.exited)
+          throw err
+        }
+      }
+      const savedToken = device?.token ?? remoteToken
+      const proxy = await startProxy(remotePort, { name: remoteName, fingerprint }, !!options.deviceToken)
       env.allowPort(proxy.port)
       const proxyUrl = `http://127.0.0.1:${proxy.port}`
 
@@ -344,7 +389,7 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         const runtimeTag = (await import(/* @vite-ignore */ srcPath('shared/runtime-tag.ts'))) as typeof import('../../../src/shared/runtime-tag')
         const backendConfig = (await import(/* @vite-ignore */ srcPath('main/backend/backend-config.ts'))) as typeof import('../../../src/main/backend/backend-config')
         if (options.savedAtBoot !== false) {
-          await connections.saveConnection(remotesEnv, { url: proxyUrl, token: remoteToken, fingerprint, hostName: remoteName, deviceId: 'device-1', label: 'Studio' }, { confirmFile: async () => true })
+          await connections.saveConnection(remotesEnv, { url: proxyUrl, token: savedToken, fingerprint, hostName: remoteName, deviceId: device?.id ?? 'device-1', label: 'Studio' }, { confirmFile: async () => true })
         }
         const codec = { available: () => true, encrypt: (p: string) => `safe:${Buffer.from(p).toString('base64')}`, decrypt: (s: string) => Buffer.from(s.slice(5), 'base64').toString() }
         const localLog = join(localOutside, 'adf-daemon.log')
@@ -418,8 +463,13 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         connectedRuntimes,
         until: untilFn,
         async saveRemote() {
-          await connections.saveConnection(remotesEnv, { url: proxyUrl, token: remoteToken, fingerprint, hostName: remoteName, deviceId: 'device-1', label: 'Studio' }, { confirmFile: async () => true })
+          await connections.saveConnection(remotesEnv, { url: proxyUrl, token: savedToken, fingerprint, hostName: remoteName, deviceId: device?.id ?? 'device-1', label: 'Studio' }, { confirmFile: async () => true })
           await cache.refresh()
+        },
+        device,
+        async revokeDevice() {
+          if (!device) throw new Error('parity harness: revokeDevice needs deviceToken')
+          await manage('DELETE', `/remote-access/devices/${encodeURIComponent(device.id)}`)
         },
         async forgetRemote() {
           await connections.forgetConnection(remotesEnv, remoteName)
