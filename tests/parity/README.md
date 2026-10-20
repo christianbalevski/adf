@@ -31,6 +31,8 @@ The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the b
 | `harness/recording.ts`, `format.ts` | Recording shape, per-agent timelines, text rendering, line diff |
 | `harness/normalize.ts` | Every normalization rule, each with what it hides |
 | `harness/daemon-backend.ts` | `daemonBackend()`: the built daemon in a fenced child process, Studio's daemon-mode handlers in this process; `switchToLocalMode()` |
+| `harness/multi-daemon-backend.ts` | `multiDaemonBackend()`: Studio in local mode with This computer and one saved connection, each a built daemon in its own fenced child process |
+| `multi/multi.test.ts` | Two-runtime scenarios (docs/design/multi-runtime.md §9.1) |
 | `harness/gaps.ts` | The daemon side's known differences: named, workstream-tagged transforms (the gap allowlist) |
 | `scenarios/core.ts` | open, start, chat turn with a tool call |
 | `recordings/*.embedded.txt` | Embedded baseline (golden form, rules G1 and G2) |
@@ -97,3 +99,27 @@ The in-process mode (`vi.doMock` stubs, the daemon in the test process, started 
 ### Reconnect
 
 `daemon-reconnect.test.ts` kills the daemon child under a connected Studio: the Help menu shows the connection problem and "Reconnect to the ADF Daemon", one dialog says so, and a call fails with "Cannot reach daemon". A restarted daemon (a new epoch) is reconnected to by itself; the client stream reports `stream.gap`, the pushes include the D6 resync set the daemon can answer today (tracked directories, the approvals snapshot), and FILE_GET_CURRENT still names the open file. A second test drops the client stream in the middle of a streamed turn: the resume is exact, the chat message's turn settles, and the chat and the written file end as they would have. The resync's `chat_updated`, `DOC_AGENT_CONFIG_CHANGED` and running-agent batch are covered by tests/backend/daemon-mode-bridge.test.ts; a stream that LOSES frames mid-turn (the resync after an evicted cursor) is a `todo` pending W2-B's per-session ring.
+
+## Multi-daemon backend
+
+`multiDaemonBackend()` (`harness/multi-daemon-backend.ts`, docs/design/multi-runtime.md §9.1) runs Studio in local mode with two runtimes, each the built daemon bundle in its own fenced child process:
+
+- `local` is the run's daemon, as in `daemonBackend()`: the run's user data, the master token, the local proof.
+- The remote (`remote:host-1`) is a second daemon with its own root from `env.createIsolatedDirectory` (settings, user data, agents, lease registry, temp, test keychain file), its own loopback port and its own mesh port. Its settings are the run's settings with its own agents folder; its fixture agents (default agent-2) are created there.
+- Studio reaches the remote through a loopback proxy that acts as the other computer: it forwards a public Host name (allowed by `ADF_DAEMON_ALLOWED_HOSTS`) and `X-Forwarded-For`, so the daemon treats no request as local, and records any local proof as a leak. The proxy answers `GET /remote/hello` with the remote's name and fingerprint while the daemon behind it answers `/health`, and refuses the connection otherwise. Remote access itself is not turned on: its probes spawn `tailscale`, the firewall and the network-category tools, which the fence refuses.
+- The saved connection is in a Studio connections folder of its own (`cli-remotes.json`; its token in the run's file secret store, `ADF_KEYCHAIN=0`, `ADF_SECRET_STORE=file`), pinned to that fingerprint. Studio connects with the real remote connector of a saved connection (`savedConnectionTarget`, the pin check, the handshake). A `SavedConnectionsCache` on that folder calls `runtimes.sync`, as main/index.ts does.
+
+Options: `savedAtBoot: false` (the test saves the connection while Studio runs), `thisComputerOnly` (pushes tagged with a runtime are dropped from the recording as they arrive, so it compares with a single-runtime recording), `restrictTools` (in every fixture agent of both runtimes), `keepDaemonRunning`. The booted form exposes the proxy (`refuse`: 401 for every request; `blackhole`: requests are never answered; `upstream`, `hello`), `saveRemote()`, `forgetRemote()`, `killRemote()`, `replaceRemoteWithImpostor()` (a third daemon with another fingerprint behind the same address) and `openAgentWindow(runtimeId)`.
+
+`multi/multi.test.ts` runs, each through `runScenario` (fences, real-state check, quiet window, leaks) and `PARITY_RUNS` times where the run is a recording:
+
+| Scenario | Asserts |
+|---|---|
+| Chat on each runtime at once | Each turn's chat holds its own reply only; the remote's events are tagged; no untagged push names the remote's agent |
+| Approvals from both | One untagged `APPROVALS_CHANGED` list with both requests, the remote's carrying `runtimeId`; each answered with its own runtime's tag; both files written |
+| Remote daemon killed mid-run | This computer's chat turn completes; its recording equals `daemonBackend()`'s for `chat-tool-call`. Compared without the application menu's repeated rebuilds and the local calls that name the remote (Help names the remote while it is down; its notices) |
+| 401 from the remote | That runtime fails with `refusedTokenSentence`; This computer stays connected and answers; no dialog; a notification names the remote |
+| Pin mismatch | Another daemon at the remote's address: the runtime fails with `pinMismatchSentence`; no request with a token reaches it |
+| Saved, then forgotten, while Studio runs | The connection joins the set and connects (`runtimeConnected`); forgotten, it leaves the set and a tagged call is refused |
+| Remove with an agent window open | `closeAgentWindow(id, false)`; the window's and the main window's sessions end on the remote; calls from the window are refused |
+| Quit with the remote unreachable | `shutdown()` returns within twice `AGENT_SESSION_END_TIMEOUT_MS` plus 2 s |

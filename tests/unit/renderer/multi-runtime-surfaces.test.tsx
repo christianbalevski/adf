@@ -167,7 +167,8 @@ describe('Settings runtime picker (§6.3)', () => {
     expect(two).toContain('>host-2 · Not connected, retrying</option>')
     // Studio pages come first, unaffected by the picker.
     expect(two.indexOf('data-settings-scope="studio"')).toBeLessThan(two.indexOf('data-runtime-picker'))
-  })
+    // Settings is a large module: imported twice, fresh, under a loaded run.
+  }, 60_000)
 })
 
 describe('Connections: Add (§6.5)', () => {

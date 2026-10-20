@@ -35,7 +35,7 @@ import { waitForLeasesSettled } from './lease-settle'
  */
 
 const REPO = resolve(__dirname, '../../..')
-const ELECTRON = resolve(REPO, 'node_modules/electron/dist', process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron')
+export const ELECTRON = resolve(REPO, 'node_modules/electron/dist', process.platform === 'win32' ? 'electron.exe' : process.platform === 'darwin' ? 'Electron.app/Contents/MacOS/Electron' : 'electron')
 export const DAEMON_BUNDLE = resolve(REPO, 'out/main/daemon.js')
 const BOOT_TIMEOUT_MS = 90_000
 
@@ -44,7 +44,7 @@ const BOOT_TIMEOUT_MS = 90_000
  * shutdown ran (a crash, a timeout that kills the worker), they are killed
  * on the way out, the same hard way.
  */
-const LIVE_DAEMONS = new Set<number>()
+export const LIVE_DAEMONS = new Set<number>()
 process.on('exit', () => {
   for (const pid of LIVE_DAEMONS) {
     try {
@@ -57,7 +57,7 @@ process.on('exit', () => {
 type DaemonModeModule = typeof import('../../../src/main/backend/daemon-mode/index')
 type LeaseModule = typeof import('../../../src/main/runtime/agent-lease')
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   return new Promise((done, fail) => {
     const server = createServer()
     server.once('error', fail)
@@ -71,7 +71,7 @@ async function freePort(): Promise<number> {
 
 /** `safe:` values of the identity fixture use the electron fake's encoding (electron-fake.ts). */
 const PARITY_SAFE = 'parity-safe:'
-const paritySafeStorage: StudioSecretCodec = {
+export const paritySafeStorage: StudioSecretCodec = {
   available: () => true,
   encrypt: (plain) => 'safe:' + Buffer.from(PARITY_SAFE + plain, 'utf-8').toString('base64'),
   decrypt: (stored) => {
@@ -91,7 +91,7 @@ const paritySafeStorage: StudioSecretCodec = {
  * daemon's own.
  */
 const STDLIB_DIR = 'sandbox-stdlib'
-function writeStdlibManifest(env: ParityEnv): string {
+export function writeStdlibManifest(env: ParityEnv): string {
   const source = readFileSync(resolve(REPO, 'src/main/services/sandbox-stdlib.service.ts'), 'utf-8')
   const list = source.slice(source.indexOf('const STDLIB_PACKAGES'), source.indexOf(']', source.indexOf('const STDLIB_PACKAGES')))
   const packages: Record<string, { name: string; version: string; installedAt: number }> = {}
@@ -103,7 +103,7 @@ function writeStdlibManifest(env: ParityEnv): string {
   return dir
 }
 
-async function waitForLog(logFile: string, text: string, timeoutMs: number, from = 0): Promise<boolean> {
+export async function waitForLog(logFile: string, text: string, timeoutMs: number, from = 0): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try { if (readFileSync(logFile, 'utf-8').slice(from).includes(text)) return true } catch { /* not yet */ }
@@ -137,7 +137,7 @@ export async function switchToLocalMode(env: ParityEnv, keychainFile: string): P
   return report
 }
 
-async function waitHealthy(url: string, child: ChildProcess, exited: () => number | null, logFile: string): Promise<void> {
+export async function waitHealthy(url: string, child: ChildProcess, exited: () => number | null, logFile: string): Promise<void> {
   const deadline = Date.now() + BOOT_TIMEOUT_MS
   while (Date.now() < deadline) {
     if (exited() !== null) break
@@ -153,7 +153,7 @@ async function waitHealthy(url: string, child: ChildProcess, exited: () => numbe
 }
 
 /** Hard kill of the daemon and everything it started. Never graceful (see the file comment). */
-async function killTree(child: ChildProcess, exited: () => number | null): Promise<void> {
+export async function killTree(child: ChildProcess, exited: () => number | null): Promise<void> {
   if (child.pid === undefined || exited() !== null) return
   if (process.platform === 'win32') {
     await new Promise<void>((done) => execFile('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true }, () => done()))
