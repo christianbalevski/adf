@@ -798,7 +798,7 @@ export interface AdfApi {
 
   // Agent windows (docs/design/agent-windows.md)
   /** Open in new window: the agent's own window, focused when it has one. Daemon mode only. */
-  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string }) => Promise<{ success: boolean; created?: boolean; error?: string }>
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string; runtimeId?: string }) => Promise<{ success: boolean; created?: boolean; error?: string }>
   /** Close this agent window (never the main window). */
   closeAgentWindow: () => Promise<{ success: boolean }>
   /** This agent window could not open its agent: it is not saved for the next launch. */
@@ -815,16 +815,16 @@ export interface AdfApi {
   takeQueueHandover: () => Promise<QueueHandoverEntry[]>
   onQueueHandover: (callback: () => void) => () => void
   /** The main window: the agents open in agent windows now. */
-  listAgentWindows: () => Promise<{ windows: Array<{ filePath: string; agentId: string | null }> }>
+  listAgentWindows: () => Promise<{ windows: Array<{ filePath: string; agentId: string | null; runtimeId?: string }> }>
   /** The main window: that list, pushed when an agent window opens, closes or fails to open its agent. */
-  onAgentWindowsChanged: (callback: (payload: { windows: Array<{ filePath: string; agentId: string | null }> }) => void) => () => void
+  onAgentWindowsChanged: (callback: (payload: { windows: Array<{ filePath: string; agentId: string | null; runtimeId?: string }> }) => void) => () => void
   /** Menu actions sent while this page loaded; marks the page as listening. */
   takePendingMenuActions: () => Promise<string[]>
   onAppearanceChanged: (callback: (changed: Partial<AppSettings>) => void) => () => void
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
-  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => Promise<{ success: boolean }>
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string }) => Promise<{ success: boolean }>
   /** Copies left by a quit or crash with the notice up. */
   recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number }> }>
   /** Dismiss: move them under recovered/archive/<time>/. */
@@ -837,7 +837,7 @@ export interface AdfApi {
   // --- Runtimes (docs/design/multi-runtime.md §4.1) ---
   /** The runtime this surface talks to: `local` for window.adfApi in the main window. */
   runtimeId: string
-  /** The same surface bound to runtime `id`: calls carry its tag (none for `local`), `on` delivers its pushes. */
+  /** The same surface bound to runtime `id`: its runtime calls carry its tag (none for `local`; a Studio call never does), `on` delivers its pushes. */
   runtime(id: string): AdfApi
   /** Every push on an IPC channel with its runtime id (`local` for an untagged one). Returns the unsubscribe. */
   onAnyRuntime(channel: string, callback: (runtimeId: string, ...args: unknown[]) => void): () => void

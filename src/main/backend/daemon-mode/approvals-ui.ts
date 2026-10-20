@@ -43,6 +43,8 @@ export interface ApprovalsUiDeps {
   revealWindow?: (payload: ApprovalRevealPayload) => BrowserWindow | null
   /** Whether the window that shows `entry`'s notice has focus (no OS notification then). Default: any window. */
   noticeFocused?: (entry: PendingNotification) => boolean
+  /** The name an OS notification gives the entry's runtime: only while Studio has more than one runtime (multi-runtime.md §6.1). */
+  runtimeName?: (runtimeId: string | undefined) => string | null
   log?: Pick<Console, 'warn'>
 }
 
@@ -217,6 +219,7 @@ export class ApprovalsUi {
       },
       reveal: (entry) => this.sendReveal(revealOf(entry)),
       openPanel: () => this.sendReveal({}),
+      runtimeName: (entry) => this.deps.runtimeName?.(entry.runtimeId) ?? null,
     }
   }
 }

@@ -129,7 +129,14 @@ export interface DaemonModeDeps {
   /** Studio's userData (studio-client-settings.json lives here). */
   userDataDir: string
   /** `mainWindow`: the main window (pushes not addressed to an agent window go there); default the first window. `closeAgentWindow`: close an agent window whose runtime left the set. */
-  hooks?: { showMainWindow?: () => BrowserWindow | null; openFile?: (filePath: string) => void; mainWindow?: () => BrowserWindow | null; closeAgentWindow?: (webContentsId: number) => void }
+  hooks?: {
+    showMainWindow?: () => BrowserWindow | null
+    openFile?: (filePath: string) => void
+    mainWindow?: () => BrowserWindow | null
+    closeAgentWindow?: (webContentsId: number) => void
+    /** The runtime set, its order, or the state of a runtime other than the primary changed (multi-runtime.md §4.5). */
+    runtimesChanged?: () => void
+  }
   log?: Pick<Console, 'log' | 'warn' | 'error'>
   /** Agent lease registry (tests); defaults to the process registry. */
   leases?: Pick<AgentLeaseRegistry, 'registerClient'>
@@ -370,6 +377,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       return !!main && BrowserWindow.getFocusedWindow() === main
     },
     notificationsEnabled: () => clientSettings.get('nativeNotificationsEnabled') !== false,
+    // Every OS notification names its runtime while there is more than one (§6.1); This computer is named too.
+    runtimeName: (runtimeId) => {
+      if (!manager || manager.runtimes().length < 2) return null
+      return manager.get(runtimeId)?.name() ?? runtimeId ?? null
+    },
     menuBarEnabled: () => clientSettings.get('menuBarEnabled') !== false,
     // The macOS menu bar's first refresh runs inside this constructor, before any runtime exists: no agents yet.
     agents: () => manager ? manager.runtimes().flatMap((rt) => rt.menuBarAgents()) : [],
@@ -420,7 +432,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log,
     create: (id, name) => {
       if (!deps.runtimeSet) throw new Error(`${id}: this Studio has no runtime set (multi-runtime is off)`)
-      return createRuntimeConnection({
+      const runtime = createRuntimeConnection({
         id,
         kind: 'remote',
         primary: false,
@@ -440,8 +452,12 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         shared,
         recreate: () => { void manager.replace(id) },
       })
+      // Its state shows in the runtime list (CONNECTION_CHANGED, §4.5).
+      runtime.connection.onState(() => hooks.runtimesChanged?.())
+      return runtime
     },
     closeWindow: (windowId) => hooks.closeAgentWindow?.(windowId),
+    onChange: () => hooks.runtimesChanged?.(),
     onRemoved: (id) => {
       if (!aggregator.delete(id)) return
       publishApprovals(applyMerged())

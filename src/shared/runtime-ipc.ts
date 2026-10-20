@@ -5,7 +5,9 @@ import { isRuntimeTag, LOCAL_RUNTIME, runtimeTag, type RuntimeId } from './runti
  * surface per runtime over the one `ipcRenderer`.
  *
  * - `invoke` and `send` put the runtime's tag first; the `local` surface
- *   sends no tag, so its traffic is exactly what preload sent before.
+ *   sends no tag, so its traffic is exactly what preload sent before. A
+ *   Studio call (`studioCallChannels`) is never tagged: it has no runtime,
+ *   so a surface bound to any runtime makes it as the `local` one does.
  * - `on` delivers a push tagged with the surface's runtime, without the tag.
  *   An untagged push is the primary runtime's: the `local` surface gets it on
  *   every channel; another runtime's surface gets it only on a channel that
@@ -28,15 +30,16 @@ export interface RuntimeIpc extends IpcRendererLike {
   readonly runtimeId: RuntimeId
 }
 
-export function createRuntimeIpc(ipc: IpcRendererLike, runtimeId: RuntimeId, runtimePushChannels: ReadonlySet<string>): RuntimeIpc {
+export function createRuntimeIpc(ipc: IpcRendererLike, runtimeId: RuntimeId, runtimePushChannels: ReadonlySet<string>, studioCallChannels: ReadonlySet<string> = new Set()): RuntimeIpc {
   const tag = runtimeTag(runtimeId)
   const local = tag === null
+  const tagged = (channel: string): boolean => !studioCallChannels.has(channel)
   /** channel → listener → the wrapper registered for it. */
   const wrappers = new Map<string, Map<IpcListener, IpcListener>>()
   return {
     runtimeId,
-    invoke: local ? (channel, ...args) => ipc.invoke(channel, ...args) : (channel, ...args) => ipc.invoke(channel, tag, ...args),
-    send: local ? (channel, ...args) => ipc.send(channel, ...args) : (channel, ...args) => ipc.send(channel, tag, ...args),
+    invoke: local ? (channel, ...args) => ipc.invoke(channel, ...args) : (channel, ...args) => (tagged(channel) ? ipc.invoke(channel, tag, ...args) : ipc.invoke(channel, ...args)),
+    send: local ? (channel, ...args) => ipc.send(channel, ...args) : (channel, ...args) => { if (tagged(channel)) ipc.send(channel, tag, ...args); else ipc.send(channel, ...args) },
     on(channel, listener) {
       const scoped = runtimePushChannels.has(channel)
       const wrapper: IpcListener = (event, ...args) => {

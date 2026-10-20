@@ -25,8 +25,9 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
-import { migratePairedSlot, remotesEnv, SavedConnectionsCache } from './backend/connections'
+import { LINK_STATE, migratePairedSlot, remotesEnv, SavedConnectionsCache } from './backend/connections'
 import { notConnectedSentence } from '../shared/runtime-tag'
+import type { RuntimeView } from '../shared/types/connection.types'
 import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
@@ -508,6 +509,26 @@ function loadRenderer(win: BrowserWindow, query: Record<string, string>): void {
   }
 }
 
+/** The runtime set as the renderer lists it (multi-runtime.md §4.5), in its fixed order. In-memory state only. */
+function runtimeViews(): RuntimeView[] {
+  if (!daemonMode) return []
+  return daemonMode.runtimes.runtimes().map((rt) => ({
+    id: rt.id,
+    kind: rt.kind,
+    name: rt.name(),
+    url: rt.kind === 'remote' ? rt.connection.baseUrl : null,
+    state: LINK_STATE[rt.connection.state.state],
+  }))
+}
+
+/** An agent window's title (§5.5): the agent name; with more than one runtime, `<agent> · <runtime name>`. */
+function agentWindowTitle(name: string, runtimeId: string | undefined): string {
+  const runtimes = daemonMode?.runtimes.runtimes() ?? []
+  if (runtimes.length < 2) return name
+  const runtime = daemonMode?.runtimes.get(runtimeId ?? null)
+  return runtime ? `${name} · ${runtime.name()}` : name
+}
+
 /**
  * An agent window (agent-windows.md): the agent's chat and panels, no
  * sidebar. Its client session opens before the page loads, so every IPC
@@ -527,7 +548,7 @@ function createAgentWindow(
     minWidth: 520,
     minHeight: 400,
     ...bounds,
-    title: request.name,
+    title: agentWindowTitle(request.name, request.runtimeId),
     ...studioWindowOptions()
   })
   const id = win.webContents.id
@@ -758,7 +779,7 @@ app.whenReady().then(async () => {
           onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
         : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
-      hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow, closeAgentWindow: (id) => agentWindows?.close(id) },
+      hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow, closeAgentWindow: (id) => agentWindows?.close(id), runtimesChanged: () => connections?.changed() },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
       // Read at quit: a change in Settings → Connections applies to the next quit.
@@ -932,6 +953,8 @@ app.whenReady().then(async () => {
       return response === 0
     },
     push: pushConnections,
+    // The runtime set (multi-runtime.md §4.5), listed only while it has more than one runtime.
+    runtimes: runtimeViews,
   })
   registerConnectionHandlers(connections)
   daemonMode?.connection.onState(() => connections?.changed())
