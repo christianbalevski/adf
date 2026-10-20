@@ -162,13 +162,13 @@ export interface WorkspaceFileChange {
 }
 
 /**
- * Coarse-grained "this data changed" signal, emitted after inbox/outbox rows
- * or SQL tables mutate. Owned by the workspace (like WorkspaceFileChange) so
+ * Coarse-grained "this data changed" signal, emitted after inbox/outbox rows,
+ * SQL tables or workspace files (create, write, delete, rename) mutate. Owned by the workspace (like WorkspaceFileChange) so
  * every write path — tools, lambdas, mesh delivery, adapters, Studio IPC —
  * funnels through one reliable notification point. Consumers refetch; no
  * payload is carried.
  */
-export type WorkspaceDataScope = 'inbox' | 'outbox' | 'tables'
+export type WorkspaceDataScope = 'inbox' | 'outbox' | 'tables' | 'files'
 
 export interface EnvelopeRecipients {
   ownerDid: string
@@ -2225,6 +2225,9 @@ export class AdfWorkspace {
     // write targets skills-registry.json, which is not a watched path, so this
     // cannot recurse.
     this.skillIndexer.notifyPath(path)
+    // Every writer, binary files and deletes included: `file_updated` carries
+    // text writes only, so file lists follow this coalesced signal instead.
+    this.emitDataChange('files')
     if (!this.onFileChangeCallback) return
     const mimeType = metadata?.mime_type ?? this.getMimeType(path)
     this.onFileChangeCallback({

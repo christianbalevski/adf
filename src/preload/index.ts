@@ -357,9 +357,9 @@ const api: AdfApi = {
     return () => { ipcRenderer.removeListener(IPC.INBOX_UPDATED, handler) }
   },
 
-  // Workspace data-change push (main -> renderer): inbox/outbox/tables mutated
-  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { scope: 'inbox' | 'outbox' | 'tables' }) =>
+  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files mutated
+  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) =>
       callback(data)
     ipcRenderer.on(IPC.WORKSPACE_DATA_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.WORKSPACE_DATA_CHANGED, handler)
