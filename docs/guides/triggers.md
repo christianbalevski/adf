@@ -24,7 +24,7 @@ There are eleven trigger types and two execution scopes:
 | `on_inbox` | A message arrives in the agent's inbox |
 | `on_outbox` | A message is sent from the agent's outbox |
 | `on_file_change` | A watched file is modified |
-| `on_chat` | Human sends a chat message in the Loop panel |
+| `on_chat` | Human sends a chat message in the Loops panel |
 | `on_timer` | A scheduled timer fires |
 | `on_tool_call` | A matching tool is called during the LLM loop (observational, post-execution) |
 | `on_task_create` | A task is created (HIL approval, async dispatch) |

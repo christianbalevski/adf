@@ -369,7 +369,7 @@ See the dedicated [LAN Discovery](lan-discovery.md) guide for how announcement w
 
 ### Enabling Mesh
 
-In the sidebar, toggle the mesh participation switch for your agent. You can also configure:
+Turn the mesh on in **Settings → Networking → Mesh**; the status bar shows **Mesh (N)** while it is on. Then turn on **Receive messages** in the agent's **Agent → Config → Messaging** section. You can also configure:
 
 - **Receive toggle** (`messaging.receive`) — Whether the agent participates in the mesh
 - **Allow list** (`messaging.allow_list`) — Only accept messages from these agent DIDs
