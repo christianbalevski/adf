@@ -1865,7 +1865,7 @@ function LoopStream({ loop }: { loop: string }) {
         return
       }
       case 'stop': {
-        // Exactly what the Stop button does (AgentPanel.handleStop): full
+        // Exactly what the Stop button does (TitleBar handleStop): full
         // teardown, then the display state follows.
         await window.adfApi?.stopAgent()
         setState('off')
