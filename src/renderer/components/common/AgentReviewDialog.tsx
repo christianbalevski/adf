@@ -11,7 +11,7 @@ import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 import { Button, Select, TextInput } from '../ui'
-import { openApi } from '../../utils/runtime-api'
+import { openApi, openSliceRuntime, windowAgentKey } from '../../utils/runtime-api'
 
 const TIER_STYLES = {
   shared: {
@@ -650,9 +650,11 @@ export function AgentReviewDialog() {
         if (current === reviewedPath || current === result.movedTo) {
           if (reviewedPath && reviewedPath !== result.movedTo) {
             migrateOpenTabs(reviewedPath, result.movedTo)
-            const draft = docStore.draftInputs[reviewedPath]
-            if (draft) docStore.setDraftInput(result.movedTo, draft)
-            docStore.removeDraftInput(reviewedPath)
+            // Drafts are keyed by agent key (runtime and path).
+            const from = windowAgentKey(docStore.runtimeId, reviewedPath)
+            const draft = docStore.draftInputs[from]
+            if (draft) docStore.setDraftInput(windowAgentKey(docStore.runtimeId, result.movedTo), draft)
+            docStore.removeDraftInput(from)
           }
           if (docStore.filePath !== result.movedTo) docStore.setFilePath(result.movedTo)
         }
@@ -669,7 +671,7 @@ export function AgentReviewDialog() {
       useAppStore.getState().setAgentNeedsReview(false)
       // The sidebar row's "Not reviewed" marker goes now, not at the next folder scan.
       const acceptedPath = useDocumentStore.getState().filePath
-      if (acceptedPath) useTrackedDirsStore.getState().updateFileEntry(acceptedPath, { reviewed: true })
+      if (acceptedPath) useTrackedDirsStore.getState().updateFileEntry(acceptedPath, { reviewed: true }, openSliceRuntime())
       setDialog(false)
       resetSteps()
       if (startAfter) await startAgentNow()
