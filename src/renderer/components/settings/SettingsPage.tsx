@@ -36,7 +36,8 @@ import { PromptEditor, PromptSectionRows } from './PromptEditor'
 import { SaveIndicator, SettingsSaveProvider, SettingsToasts, settingsWriteOutcome, useSettingsSave } from './settings-save'
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
-import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
+import { reconcileHostApprovedRegistrations, registrationSourceIdentity } from '../../../shared/utils/mcp-config'
+import { allowHostPatch } from '../../../shared/utils/mcp-host-placement'
 
 /**
  * Hover copy for the "Rebuild available" badge on managed containers that
@@ -1570,6 +1571,24 @@ function SettingsPageBody() {
   const saveSandboxMaxWorkers = (next: number) =>
     persist({ sandboxMaxWorkers: next }, setSandboxMaxWorkers, next, sandboxMaxWorkers)
 
+  /** Allow on a host registration in Settings → MCP: asks, then the switch on and the server approved for its package. */
+  const allowRegistrationOnHost = async (reg: McpServerRegistration) => {
+    if (!await confirm({ ...HOST_ACCESS_CONFIRM, body: `${HOST_ACCESS_CONFIRM.body} ${reg.name} is approved to run on the host.` })) return
+    const runtime = { hostAccessEnabled: computeHostAccessEnabled, hostApproved: computeHostApprovedRef.current, hostApprovedSources: computeHostApprovedSourcesRef.current }
+    const patch = allowHostPatch(reg.name, registrationSourceIdentity(reg), true, runtime)
+    const prev = { enabled: computeHostAccessEnabled, approved: runtime.hostApproved, sources: runtime.hostApprovedSources }
+    const set = (state: { enabled: boolean; approved: string[]; sources: Record<string, string> }) => {
+      computeHostApprovedRef.current = state.approved
+      computeHostApprovedSourcesRef.current = state.sources
+      setComputeHostAccessEnabled(state.enabled)
+      setComputeHostApproved(state.approved)
+      setComputeHostApprovedSources(state.sources)
+    }
+    set({ enabled: true, approved: patch.hostApproved ?? prev.approved, sources: patch.hostApprovedSources ?? prev.sources })
+    invalidateConfigCaches()
+    await commit({ compute: patch }, () => set(prev))
+  }
+
   /** Host approval changes: both lists in one write, the live refs kept in step. */
   const saveHostApproval = (approved: string[], sources: Record<string, string>) => {
     const prev = { approved: computeHostApprovedRef.current, sources: computeHostApprovedSourcesRef.current }
@@ -2179,6 +2198,9 @@ function SettingsPageBody() {
                 setMcpServers(next)
               }}
               hostAccessEnabled={computeHostAccessEnabled}
+              hostApproved={computeHostApproved}
+              hostApprovedSources={computeHostApprovedSources}
+              onAllowHost={(reg) => void allowRegistrationOnHost(reg)}
               onEnableHostAccess={() => { void confirm(HOST_ACCESS_CONFIRM).then((yes) => { if (yes) void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled) }) }}
             />
           )}

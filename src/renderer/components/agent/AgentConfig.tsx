@@ -9,6 +9,9 @@ import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, 
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpToolInfo, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
+import { agentServerPlacement, allowHostPatch, allowHostTip, serverSourceIdentity, type McpLocation, type RuntimeHostApproval } from '../../../shared/utils/mcp-host-placement'
+import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
+import { writeSettings } from '../settings/settings-save'
 import { Dialog } from '../common/Dialog'
 import { IconPicker } from '../common/IconPicker'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
@@ -664,6 +667,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [missingPackages, setMissingPackages] = useState<CodeExecutionPackage[]>([])
   const [showPkgInstallModal, setShowPkgInstallModal] = useState(false)
   const [runtimeHostEnabled, setRuntimeHostEnabled] = useState(false)
+  // The runtime's host approvals: shown in each MCP server's Runs on, changed only by a confirmed Allow.
+  const [runtimeHostApproved, setRuntimeHostApproved] = useState<string[]>([])
+  const [runtimeHostApprovedSources, setRuntimeHostApprovedSources] = useState<Record<string, string>>({})
+  const [hostAllowError, setHostAllowError] = useState<string | null>(null)
+  const [hostConfirmDialog, confirmHost] = useConfirm()
   /** settings.defaultProviderId: what a template's empty Provider falls back to. */
   const [runtimeDefaultProviderId, setRuntimeDefaultProviderId] = useState<string | undefined>(undefined)
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
@@ -725,6 +733,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     // Always fetch runtime host setting (it can change between Settings visits)
     window.adfApi?.getSettings().then((s) => {
       setRuntimeHostEnabled(s?.compute?.hostAccessEnabled ?? false)
+      setRuntimeHostApproved((s?.compute?.hostApproved as string[] | undefined) ?? [])
+      setRuntimeHostApprovedSources((s?.compute?.hostApprovedSources as Record<string, string> | undefined) ?? {})
       setExecutionTargets(s.compute?.executionTargets ?? [])
       setRuntimeDefaultProviderId((s?.defaultProviderId as string | undefined) || undefined)
     })
@@ -2738,85 +2748,78 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </>
             })()}
 
-            {/* Per-server execution location */}
+            {/* Per-server Runs on: the agent's choice AND the runtime's approval (mcp-host-placement.ts).
+                Clicking a location changes only this agent's config; Allow is the one way to the runtime's. */}
             {(local.mcp?.servers ?? []).length > 0 && (() => {
-              const hasIsolated = local.compute?.enabled ?? false
-              const hasHost = (local.compute?.host_access ?? false) && runtimeHostEnabled
-              // Build ordered list of available locations
-              const availableLocations: ('Isolated' | 'Shared' | 'Host')[] = []
-              if (hasIsolated) availableLocations.push('Isolated')
-              availableLocations.push('Shared')
-              if (hasHost) availableLocations.push('Host')
-              const canCycle = availableLocations.length > 1
+              const runtimeApproval: RuntimeHostApproval = { hostAccessEnabled: runtimeHostEnabled, hostApproved: runtimeHostApproved, hostApprovedSources: runtimeHostApprovedSources }
+              const choices: McpLocation[] = [...(local.compute?.enabled ? ['Isolated' as const] : []), 'Shared', 'Host']
+              const allowHost = async (server: NonNullable<typeof local.mcp>['servers'][number]) => {
+                const needsServer = !local.compute?.host_access
+                const confirmed = await confirmHost({
+                  ...HOST_ACCESS_CONFIRM,
+                  body: needsServer ? `${HOST_ACCESS_CONFIRM.body} ${server.name} is approved to run on the host for agents without host access.` : HOST_ACCESS_CONFIRM.body,
+                })
+                if (!confirmed) return
+                const patch = allowHostPatch(server.name, serverSourceIdentity(server), needsServer, runtimeApproval)
+                const outcome = await writeSettings({ compute: patch })
+                if (!outcome.ok) { setHostAllowError(`Not saved: ${outcome.error}`); return }
+                setHostAllowError(null)
+                setRuntimeHostEnabled(true)
+                if (patch.hostApproved) setRuntimeHostApproved(patch.hostApproved)
+                if (patch.hostApprovedSources) setRuntimeHostApprovedSources(patch.hostApprovedSources)
+              }
 
               return (
                 <div className="mt-2">
-                  <h4 className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">MCP Server Execution</h4>
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
-                    {canCycle ? 'Click to change where each server runs. Restart agent to apply.' : 'All servers run in the shared container.'}
+                  <h4 className="text-[11px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">MCP servers run on</h4>
+                  <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mb-1">
+                    Click a location to change this agent&apos;s choice. Restart the agent to apply.
                   </p>
                   <div className="space-y-1">
                     {(local.mcp?.servers ?? []).map((s) => {
-                      // Resolve display location from run_location (with legacy host_requested fallback)
-                      const effectiveRL = s.run_location ?? (s.host_requested ? 'host' : undefined)
-                      let location: 'Isolated' | 'Shared' | 'Host'
-                      if (effectiveRL === 'host' && hasHost) location = 'Host'
-                      else if (effectiveRL === 'shared' || !hasIsolated) location = 'Shared'
-                      else location = 'Isolated'
-
+                      const placement = agentServerPlacement(s, local, runtimeApproval)
+                      const location = placement.runsOn
                       const colorClass = location === 'Host'
                         ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
                         : location === 'Isolated'
                           ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400'
                           : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
                       return (
-                        <div key={s.name} className="flex items-center justify-between py-1 px-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
+                        <div key={s.name} className="flex items-center justify-between gap-2 py-1 px-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
                           <span className="text-xs text-neutral-700 dark:text-neutral-300 font-mono">{s.name}</span>
-                          <button
-                            className={`text-[10px] px-2 py-0.5 rounded ${canCycle ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${colorClass}`}
-                            disabled={!canCycle}
-                            onClick={async () => {
-                              if (!canCycle) return
-                              // Cycle to next available location
-                              const currentIdx = availableLocations.indexOf(location)
-                              const nextLocation = availableLocations[(currentIdx + 1) % availableLocations.length]
-                              // Map display location to run_location value
-                              const newRunLocation: 'host' | 'shared' | undefined =
-                                nextLocation === 'Host' ? 'host' :
-                                nextLocation === 'Shared' ? 'shared' :
-                                undefined  // Isolated = default when compute.enabled
-
-                              const updated = { ...local }
-                              const servers = [...(updated.mcp?.servers ?? [])]
-                              const idx = servers.findIndex((srv) => srv.name === s.name)
-                              if (idx >= 0) {
+                          <span className="flex items-center gap-1.5">
+                            {placement.gap && (
+                              <button
+                                type="button"
+                                className="rounded px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
+                                onClick={() => void allowHost(s)}
+                                title={allowHostTip(placement.gap)}
+                              >Allow</button>
+                            )}
+                            <button
+                              type="button"
+                              className={`text-[11px] px-2 py-0.5 rounded cursor-pointer hover:opacity-80 ${colorClass}`}
+                              onClick={() => {
+                                // The agent's own choice, nothing else: the runtime's approval is never edited from here.
+                                const next = choices[(choices.indexOf(placement.choice) + 1) % choices.length]
+                                const runLocation: 'host' | 'shared' | undefined = next === 'Host' ? 'host' : next === 'Shared' ? 'shared' : undefined
+                                const servers = [...(local.mcp?.servers ?? [])]
+                                const idx = servers.findIndex((srv) => srv.name === s.name)
+                                if (idx < 0) return
                                 const { host_requested: _, ...rest } = servers[idx]
-                                servers[idx] = { ...rest, run_location: newRunLocation }
-                                updated.mcp = { ...updated.mcp!, servers }
-                                save(updated)
-
-                                // Auto-update Settings host approval list
-                                try {
-                                  const allSettings = await window.adfApi?.getSettings()
-                                  const compute = { ...(allSettings?.compute ?? {}) } as Record<string, unknown>
-                                  const approved = [...((compute.hostApproved as string[]) ?? [])]
-                                  if (newRunLocation === 'host' && !approved.includes(s.name)) {
-                                    approved.push(s.name)
-                                  } else if (newRunLocation !== 'host') {
-                                    const i = approved.indexOf(s.name)
-                                    if (i >= 0) approved.splice(i, 1)
-                                  }
-                                  compute.hostApproved = approved
-                                  await window.adfApi?.setSettings({ compute })
-                                } catch { /* settings update is best-effort */ }
-                              }
-                            }}
-                            title={canCycle ? `Running on ${location.toLowerCase()}. Click to cycle.` : `Running on ${location.toLowerCase()}.`}
-                          >{location}</button>
+                                servers[idx] = { ...rest, run_location: runLocation }
+                                save({ ...local, mcp: { ...local.mcp!, servers } })
+                              }}
+                              title={placement.choice === location
+                                ? `Runs on ${location.toLowerCase()}. Click to change.`
+                                : `Chosen: ${placement.choice.toLowerCase()}. Runs on ${location.toLowerCase()} until the host is allowed. Click to change.`}
+                            >{location}</button>
+                          </span>
                         </div>
                       )
                     })}
                   </div>
+                  {hostAllowError && <p role="alert" className="mt-1 text-[11px] text-red-500">{hostAllowError}</p>}
                 </div>
               )
             })()}
@@ -5725,6 +5728,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           onDismiss={() => setApprovalUndo(null)}
         />
       )}
+
+      {hostConfirmDialog}
 
       {/* Tool definition modal */}
       <Dialog

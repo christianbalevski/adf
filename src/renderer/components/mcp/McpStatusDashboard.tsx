@@ -7,6 +7,7 @@ import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
 import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
+import { allowHostTip, registrationPlacement } from '../../../shared/utils/mcp-host-placement'
 
 export const STATUS_COLORS: Record<string, string> = {
   connected: 'bg-green-500',
@@ -33,9 +34,14 @@ interface McpStatusDashboardProps {
   hostAccessEnabled?: boolean
   /** Invoked from the conflict note so the user can enable host access without tab-hopping. */
   onEnableHostAccess?: () => void
+  /** settings.compute.hostApproved and its recorded sources: with hostAccessEnabled, where a host choice really runs. */
+  hostApproved?: string[]
+  hostApprovedSources?: Record<string, string>
+  /** Allow on a host registration that does not run on the host yet (asks first). */
+  onAllowHost?: (reg: McpServerRegistration) => void
 }
 
-export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess }: McpStatusDashboardProps) {
+export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost }: McpStatusDashboardProps) {
   // Ref to always access latest mcpServers inside async callbacks (avoids stale closures)
   const mcpServersRef = useRef(mcpServers)
   mcpServersRef.current = mcpServers
@@ -346,15 +352,34 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                         Remote
                       </span>
                     ) : (
-                      <Tooltip tip={reg.runLocation === 'host' ? HOST_BOUNDARY_TEXT : 'Runs isolated in the shared compute container (requires Podman).'}>
-                        <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${
-                          reg.runLocation === 'host'
-                            ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400'
-                            : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
-                        }`}>
-                          {reg.runLocation === 'host' ? 'Host' : 'Container'}
-                        </span>
-                      </Tooltip>
+                      (() => {
+                        // One Runs on value: the registration's choice AND the runtime's approval.
+                        const placement = registrationPlacement(reg, { hostAccessEnabled: hostAccessEnabled === true, hostApproved: hostApproved ?? [], hostApprovedSources })
+                        return (
+                          <>
+                            <Tooltip tip={placement.runsOnHost ? HOST_BOUNDARY_TEXT : placement.gap ? 'Chosen: host. Runs isolated in the shared compute container until the host is allowed.' : 'Runs isolated in the shared compute container (requires Podman).'}>
+                              <span className={`text-[11px] px-1 py-0.5 rounded font-medium ${
+                                placement.runsOnHost
+                                  ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400'
+                                  : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+                              }`}>
+                                {placement.runsOnHost ? 'Host' : 'Container'}
+                              </span>
+                            </Tooltip>
+                            {placement.gap && onAllowHost && (
+                              <Tooltip tip={allowHostTip(placement.gap)}>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); onAllowHost(reg) }}
+                                  className="rounded px-1 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
+                                >
+                                  Allow
+                                </button>
+                              </Tooltip>
+                            )}
+                          </>
+                        )
+                      })()
                     )}
                     {/* Chip slot 2: exposure */}
                     {isRegistrationAgentVisible(reg) && (
