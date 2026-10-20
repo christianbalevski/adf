@@ -180,7 +180,7 @@ Sessions are **per-surface**: Studio and the daemon each own a token file and ne
 
 `<provider>` is `chatgpt-subscription` or `grok-subscription`.
 
-**Signing in to Studio in Inside Studio mode does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case. When you switch Studio to This computer, Studio moves its session file to `auth.daemon.json` (and back when you switch to Inside Studio), so one session follows the backend; see [Studio backend › What moves](studio-backend.md#what-moves-during-a-switch).
+**Signing in to Studio in Inside Studio mode does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case. At the first launch with This computer, Studio moves its session file to `auth.daemon.json` (and back at the first launch Inside Studio), so one session follows the mode; see [Studio backend › What moves](studio-backend.md#what-moves-during-a-switch).
 
 **Why split them?** `safeStorage` is only callable from inside Electron, so anything it encrypts is opaque to a plain-Node daemon. Sharing one file would mean dropping Studio to an encryption scheme the daemon can also open — trading the OS keychain for a key file sitting beside the ciphertext. The split keeps Studio's keychain protection intact.
 
@@ -367,7 +367,7 @@ The page has, in this order: the network status line, **Mesh**, **Server** (stat
 
 ### Network status
 
-One line at the top of the tab: the networks, the LAN address, Tailscale, and the firewall, for example "Network: Wi-Fi (192.168.1.0/24) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok". The mesh's LAN mode and remote access both follow it: they listen only on a network you allowed, once per network, the same on every OS. A network not allowed shows "Remote access paused on *network*." with **Allow on this network**. **Allowed networks** lists them, each with **Remove**. Details: [Studio backend › Network status](studio-backend.md#network-status). Not shown in Remote computer mode.
+One line at the top of the tab: the networks, the LAN address, Tailscale, and the firewall, for example "Network: Wi-Fi (192.168.1.0/24) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok". The mesh's LAN mode and remote access both follow it: they listen only on a network you allowed, once per network, the same on every OS. A network not allowed shows "Remote access paused on *network*." with **Allow on this network**. **Allowed networks** lists them, each with **Remove**. Details: [Studio backend › Network status](studio-backend.md#network-status). Not shown with another computer picked in the **Runtime** picker.
 
 ### Server Status
 
@@ -563,6 +563,7 @@ Once a connection is saved, the page lists the runtimes Studio connects to:
 | Row | State | Action |
 |---|---|---|
 | This computer | Connected, or its state while it is not connected | None; **Inside Studio (legacy)** in its **More** menu (⋯) |
+| Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
 | A saved connection (shared with `adf`) | Connected, Connecting, Not connected, retrying, or Not connected | None; **Remove** in its **More** menu |
 | A computer found on this network or the tailnet, not saved | Not paired | **Add** |
 
@@ -573,11 +574,13 @@ Once a connection is saved, the page lists the runtimes Studio connects to:
 | This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. Each saved connection is connected too. |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
 
-A `studio-backend.json` saved by an earlier release with `"mode": "remote"` still runs that one connection, as before; a later release moves it to `local`.
+**Connect** on This computer (while Inside Studio runs) or on Inside Studio (legacy) saves the mode for the next launch: "Saved. Applies at the next launch." Studio does not restart; the page shows "Next launch: *name*." with **Restart**. While Inside Studio runs, saved connections are listed with no state and connect at the next launch with This computer.
 
-Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
+A `studio-backend.json` saved by an earlier release with `"mode": "remote"` is migrated at the first launch of this release: it becomes `"mode": "local"`, and that connection is listed with This computer (see [Upgrading from remote mode](studio-backend.md#upgrading-from-remote-mode)).
 
-While This computer is in use, the page also shows **This computer**: the daemon (state, pid, who started it; URL and version under **Details**) and **Background** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. With a remote connection neither shows.
+Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies at the next launch. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as any first launch with This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
+
+While This computer is in use, the page also shows **This computer**: the daemon (state, pid, who started it; URL and version under **Details**) and **Background** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. Inside Studio neither shows.
 
 - An address must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` address needs the confirmation that the token is sent unencrypted.
 - Tokens are in the OS keychain (shared with `adf`), sent only to their connection's address, and never shown again.
@@ -585,11 +588,11 @@ While This computer is in use, the page also shows **This computer**: the daemon
 
 ### Go back to running agents inside Studio
 
-Choose **Settings → Connections → Inside Studio (legacy)** (under **Details** while no remote is saved, else in This computer's More menu). This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+Choose **Connect** on **Settings → Connections → Inside Studio (legacy)** (under **Details** while no remote is saved, else in This computer's More menu), then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 
-If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connections shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connections as above.
+If Studio does not start with This computer, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connections shows "Inside Studio (legacy) because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connections as above.
 
 ```powershell
 # Windows (PowerShell)
@@ -601,7 +604,7 @@ $env:ADF_STUDIO_BACKEND = 'embedded'; & "$env:LOCALAPPDATA\Programs\ADF Studio\A
 ADF_STUDIO_BACKEND=embedded "/Applications/ADF Studio.app/Contents/MacOS/ADF Studio"
 ```
 
-On Linux, set the variable in the terminal you start Studio from. The variable also accepts `local` and `remote`.
+On Linux, set the variable in the terminal you start Studio from. The variable also accepts `local`; `remote` is read as `local`.
 
 ## Keyboard Shortcuts
 

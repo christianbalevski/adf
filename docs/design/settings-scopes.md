@@ -1,6 +1,6 @@
 # Settings scopes: Studio and Runtime
 
-Status: implemented on branch `feat/settings-scopes` (off `78d5498f`). User checks: [daemon-backend-user-testing.md §32 (SCOPE)](daemon-backend-user-testing.md#32-settings-scopes-scope).
+Status: implemented on branch `feat/settings-scopes` (off `78d5498f`). User checks: [daemon-backend-user-testing.md §32 (SCOPE)](daemon-backend-user-testing.md#32-settings-scopes-scope). The Connect-and-restart flow of §5.3 and remote mode were replaced by the runtime set of [multi-runtime.md](multi-runtime.md) (phase 4, §16 there): every saved connection is connected while it is saved, and the runtime pages follow the Runtime picker. §5.1, §5.3 and §10 below describe that result.
 
 ## 1. Problem
 
@@ -18,7 +18,7 @@ The key classes already exist (`CLIENT_SETTINGS_KEYS`, `BACKEND_SETTINGS_KEYS` i
 2. Scope = the existing key class. Client keys are Studio, backend keys are Runtime. No key changes class.
 3. **Connection** replaces Backend. One list: This computer and each remote. Each row has a state and at most one action (Connect or Pair). Manual entry is under **Add connection**.
 4. Saved remotes live in the CLI's `cli-remotes.json` and its token store. Studio, `adf` and the terminal app see one list.
-5. In remote mode, host-only controls show "Change on <name>." or are hidden. This computer's daemon status and remote-access hosting are not shown.
+5. With a runtime on another computer picked, host-only controls show "Change on <name>." or are hidden. This computer's daemon status and remote-access hosting are not shown for it.
 6. The host has one **Add device** button. Its dialog opens on the 6-digit code and has **Use a token instead**.
 7. A runtime indicator in the status bar names a remote runtime and its connection state.
 8. Everything that names "the current connection" is read per window, so #149 can change it per window.
@@ -157,19 +157,18 @@ With no remote saved and This computer in use, the page is one row, **Runtimes o
 | Row | State | Action |
 |---|---|---|
 | This computer, in use | Connected (or Connecting, Not connected, retrying) | none |
-| This computer, not in use | none | Connect |
-| Saved remote, in use | Connected (or Connecting, Not connected, retrying) | none |
-| Saved remote, not in use | Paired | Connect |
-| Found on the network, fingerprint not saved | Not paired | Pair |
-| Inside Studio (legacy), only while it is the active or saved mode | Connected, or none | Connect |
+| This computer, while Inside Studio runs | none | Connect (saved for the next launch) |
+| Saved remote | Connected, Connecting, Not connected, retrying, or Not connected; none while Inside Studio runs | none |
+| Found on the network, fingerprint not saved | Not paired | Add |
+| Inside Studio (legacy), only while it is the active or saved mode | Connected, or none | Connect (saved for the next launch) |
 
 - A row has a name, its state, and one detail line: address and fingerprint for a remote. "Pairing open" is added when the host's window is open.
-- A found host whose fingerprint is saved is the saved row. It is never a second row, so a Paired row never shows Pair.
+- A found host whose fingerprint is saved is the saved row. It is never a second row, so a saved row never shows Add.
 - Rows that share a fingerprint and do not merge (§8) stay separate Not paired rows, one per address, with no warning. If that fingerprint is saved, only the saved row is shown.
-- Remove is in the row's More menu (⋯), for every saved remote. On the one in use (or saved as the next one) it switches to This computer first. Inside Studio (legacy) is also in This computer's More menu while it is not shown as a row.
-- Below the list: one button, **Add connection**.
+- Remove is in the row's More menu (⋯), for every saved remote. Inside Studio (legacy) is also in This computer's More menu while it is not shown as a row.
+- Below the list: one button, **Add**.
 - When This computer is in use, two rows follow the list: the daemon line (pid, started by) with Details, as `daemonLine` today; and **Background**, "Agents on this computer keep running after you quit Studio." Neither is shown when a remote is in use.
-- Notices (switch waiting, Default changed, `ADF_STUDIO_BACKEND`, session-only launch) stay as one status band at the top.
+- Notices (Default changed, `ADF_STUDIO_BACKEND`, session-only launch, "Next launch: <name>." with Restart) stay as one status band at the top.
 - Removed: the Mode control and its two descriptions (the duplicated mode text), Daemon URL, Token, Test connection, Save, Use this daemon, Switch to This Daemon, and the Remote access summary (it is on Networking).
 
 ### 5.2 Where saved connections live
@@ -177,23 +176,21 @@ With no remote saved and This computer in use, the page is one row, **Runtimes o
 - **List:** `cli-remotes.json` in the folder of the settings file Studio's daemon uses (`ADF_DAEMON_SETTINGS`, which is `daemonSettingsDir()` for `adf` in a default install), through `src/main/cli/remotes.ts` (`loadRemotes`, `saveRemotes`, `remoteNameFor`), so Studio reads the file `adf` reads. Studio adds no field: an older `adf` rewrites the file without losing anything.
 - **Tokens:** `storeRemoteToken`, `readRemoteToken`, `deleteRemoteToken`: the OS keychain. When it refuses or there is none, Studio shows "Keychain unavailable" ("The token can be saved in a file only you can read.", Save to file / Cancel), `adf` the same line and `Save to file? [y/N]`, and only Save to file writes `cli-remote-tokens.json` (user-only).
 - **Pinning:** before a saved token is sent, `pinnedRemoteRefusal` checks the fingerprint from `/remote/hello`, as `adf` does.
-- **Studio-only fields in `studio-backend.json`:** `remote.name` (new: the saved remote in use, null for the `remote` slot) and `insecureHttpOrigins` (new: origins whose plain HTTP the user confirmed). `mode` stays `embedded | local | remote`.
+- **Studio-only fields in `studio-backend.json`:** `insecureHttpOrigins` (origins whose plain HTTP the user confirmed) and `runtimeOrder` (multi-runtime.md §3.1). `mode` is `embedded | local`; a file an older Studio left with `mode: remote` and `remote.name` (the saved remote it used) is migrated to `local` at the first launch (multi-runtime.md §7.3).
 - **The existing `remote` slot** (`url`, `token` as `safe:`, `allowInsecureHttp`, `paired`) stays where it is. It is shown as one row, named `paired.name` or the URL's host. It holds connections that have no fingerprint (§5.3, Add connection with a token to a host with remote access off).
 
 ### 5.3 Flows
 
-**Connect.** `CONNECTION_USE {id}`. Main shows the existing switch dialog (what moves, turns in flight), then restarts Studio on that connection, as Switch to This Daemon does today. After #149 main rebinds the window instead. The renderer does not know which happens.
+**Connect.** `CONNECTION_USE {id}`, for `local` and `embedded` only: main saves the mode in `studio-backend.json` for the next launch and answers "Saved. Applies at the next launch." (or "Saved." for the mode this launch runs). There is no switch dialog and no restart; the page shows "Next launch: <name>." with **Restart**. A saved connection is refused with "A saved connection is connected while it is saved." (multi-runtime.md §7.1, §7.2).
 
-**Pair** (Not paired row). The existing Pair dialog, title "Pair": host name, address, fingerprint, "Check that the host shows the same fingerprint.", Device name, the plain-HTTP confirmation when needed, Code. On success main saves the remote to K under `remoteNameFor(host name)` (the name `adf pair` gives), the row becomes Paired, and the dialog shows **Done** and **Connect**. A fingerprint that is already saved under another address updates that remote's URL only after the user confirms "rawl-hub is now at 192.168.1.44." with **Use new address** / **Cancel**.
+**Add** (a typed address, or a Not paired row). One dialog, titled "Add" (multi-runtime.md §6.5):
 
-**Add connection** (manual). Dialog "Add connection":
+1. **Address**, the plain-HTTP confirmation ("I trust this network; the token is sent unencrypted.") when the address needs it, **Next**. Opened on a found row, the address is that host's.
+2. Main calls `GET /remote/hello`. It answers: the dialog shows "Check that <name> shows fingerprint <fingerprint>." and **Code** with **Use a token instead**. On a found row the hello must show the found fingerprint. On success main saves the remote to K under `remoteNameFor(host name)` (the name `adf pair` gives). A fingerprint that is already saved under another address updates that remote's URL only after the user confirms "rawl-hub is now at 192.168.1.44." with **Use new address** / **Cancel**. A token is saved to K like a pairing.
+3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint; identity not checked." The token goes to the `remote` slot. If the slot holds a connection, **Replace connection** asks first ("Replaces <name>.").
+4. On success the connection is saved and connects at once: **Done**.
 
-1. **Address**, the plain-HTTP confirmation ("I trust this network; the token is sent unencrypted.") when the address needs it, **Next**.
-2. Main calls `GET /remote/hello`. It answers: the dialog shows "rawl-hub · ABCD-EFGH. Check that the host shows the same fingerprint." and **Code** with **Use a token instead**. The code continues as Pair. A token is saved to K like a pairing.
-3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint; identity not checked." The token goes to the `remote` slot. If the slot holds a connection, the dialog says "Replaces <name>." first.
-4. On success: **Done** and **Connect**.
-
-**Remove connection.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot. For the connection in use (or saved as the next one) the dialog reads "Switches to This computer, then removes the address and token from Studio and adf."; main saves This computer first (the switch dialog follows when Studio restarts) and removes the entry only after that switch is confirmed.
+**Remove.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", "Closes <N> agent windows." when that runtime has agent windows open, and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main closes the runtime's agent windows, ends its sessions, and deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot ("Removes the address and token from Studio."). This computer cannot be removed ("In use.").
 
 ### 5.4 IPC
 
@@ -224,7 +221,6 @@ The Devices list (label, Paired or Token, last seen, Revoke) is unchanged. `adf 
 
 | Place | With a remote runtime |
 |---|---|
-| Connection → This computer | Row with Connect. No daemon line, no Keep running after quit |
 | Networking → status line (network, Tailscale, firewall of this computer) | Hidden |
 | Networking → Allowed networks | Hidden |
 | Networking → Remote access | Group "Remote access", one row "Remote access", "Change on <name>." No control, no addresses, no devices |
@@ -236,7 +232,7 @@ The Devices list (label, Paired or Token, last seen, Revoke) is unchanged. `adf 
 | Status bar | Runtime indicator (§4.1) |
 | All other Runtime pages | As Local; writes go to <name> |
 
-The host-side panels of remote access (`RemoteAccessGroup`, `NetworkStatusLine`) MUST NOT render in remote mode. Today they show only because their channels answer `available: false` or `unavailable`.
+The host-side panels of remote access (`RemoteAccessGroup`, `NetworkStatusLine`) MUST NOT render for a remote runtime. Today they show only because their channels answer `available: false` or `unavailable`.
 
 ## 8. Bug fixes
 
@@ -249,20 +245,21 @@ The host-side panels of remote access (`RemoteAccessGroup`, `NetworkStatusLine`)
 
 - No settings key changes scope. `CLIENT_SETTINGS_KEYS` and `BACKEND_SETTINGS_KEYS` stay as they are, and no settings file is rewritten.
 - `studio-backend.json`: the `remote` slot is read where it is. No token moves. `remote.name` and `insecureHttpOrigins` are new and optional. An older Studio ignores them and uses the slot.
-- `cli-remotes.json`: format unchanged. Remotes already paired with `adf pair` show up as Paired rows on first open.
-- One fingerprint in both the slot and K: one row. Connect uses the slot when it is the one in use, else K.
+- `cli-remotes.json`: format unchanged. Remotes already paired with `adf pair` show up as saved rows on first open, and connect.
+- One fingerprint in both the slot and K: one row, the saved connection's (`runtimeSlot`, connections.ts).
+- The migration of remote-mode installs to the runtime set is multi-runtime.md §7.3 to §7.5.
 - Old page ids open the new pages (§4). Docs that say "Settings → Backend" (`docs/guides/settings.md`, `docs/guides/studio-backend.md`, `docs/cli/remote-daemon.md`, `docs/cli/troubleshooting.md`, the `NewTokenPanel` line, CLI and main messages listed by `grep "Settings → Backend" src`) change to "Settings → Connection".
 - Hosts on older versions send no `ts`; their rows stay split and flagged until they update.
 
 ## 10. Fit with #149 (g)
 
-#149: one Studio process, several windows, each window on its own connection; UI preferences shared.
+#149: one Studio process, several windows, each window on its own connection; UI preferences shared. [multi-runtime.md](multi-runtime.md) built it as a runtime set.
 
-- The connection list is a list, so windows choose from it. New Window → choose a connection uses `CONNECTION_LIST`.
-- "Connected", the Runtime group label and the status-bar indicator come from the sender window's connection (§5.4). No renderer store holds a global "current connection", and no Studio key caches the runtime's name.
-- Connect is one call, `CONNECTION_USE`. Today it restarts Studio; under #149 it rebinds the window. The UI stays the same.
-- Studio pages edit C, B, K and L, which #149 shares across windows. Runtime pages talk to the window's runtime through the window's session.
-- Left for #149: `remoteRecentFiles`, `fleetGroups`, `fleetStewards` and `fleetMapState` keyed by connection id; `keepDaemonRunning` per connection (#149 open question).
+- The connection list is a list: the runtime set is This computer and every saved connection, each connected while it is saved (`ConnectionsView.runtimes`, multi-runtime.md §4.5).
+- "Connected", the Runtime picker and the status-bar groups come from each runtime's state. An agent window shows one agent of one runtime. No renderer store holds a global "current connection", and no Studio key caches the runtime's name.
+- `CONNECTION_USE` no longer connects anything: it saves `local` or `embedded` for the next launch (§5.3). Add connects, Remove disconnects.
+- Studio pages edit C, B, K and L, which every window shares. Runtime pages talk to the picked runtime through the window's session on it.
+- Keyed by connection id (multi-runtime.md §7.4): `runtimeRecentFiles` (from `remoteRecentFiles`) and `runtimeFleet` (`fleetGroups`, `fleetStewards`, `fleetMapState` of each runtime other than This computer). `keepDaemonRunning` stays This computer's only (multi-runtime.md M10).
 - This design adds no key that assumes one connection.
 
 ## 11. Work plan and difficulty (h)
