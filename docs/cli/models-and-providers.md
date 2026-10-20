@@ -73,21 +73,40 @@ and `ChatGPT not signed in — /login chatgpt` in Chat.
 
 Set `model.multimodal.image`, `.audio`, and `.video` to match the selected
 model's input capabilities. These are explicit settings, not automatic
-capability detection. Disabling a modality also omits older attachments from
-outgoing requests, using a stable text notice. The live session retains the
-original attachment until normal media cleanup or context reset, so enabling
-the modality again can restore it without rewriting history.
+capability detection. They can only narrow what the provider carries:
+
+| Provider | Image | Audio | Video |
+| --- | --- | --- | --- |
+| Anthropic, Claude subscription | yes | no | no |
+| OpenAI, ChatGPT subscription | yes | no | no |
+| Grok subscription | yes | no | no |
+| OpenRouter, OpenAI compatible | yes | yes | yes |
+
+A new chat message with an attachment the model cannot take is refused with
+the reason (`400 media_unsupported` on `POST /agents/:id/chat`). It is never
+sent without the attachment.
+
+Attachments already in history that the model cannot take are replaced by a
+stable text placeholder in the outgoing request only. The first request of a
+turn that leaves any out adds a System row to the loop that names them and
+why. The live session keeps the original attachment until normal media cleanup
+or context reset, so switching back to a model that takes it restores it
+without rewriting history.
 
 Native media payloads are held in memory; normal session writes exclude them
-from persisted loop messages. Tool-result text may retain a saved file path, but reopening a loop
-does not automatically reload that file as a native attachment. Read it again
-when needed. Changing models requires a separate cache warmup.
+from persisted loop messages. Tool-result text may retain a saved file path,
+but reopening a loop does not automatically reload that file as a native
+attachment. Read it again when needed. Changing models requires a separate
+cache warmup.
 
 ## Prompt caching
 
 Direct Anthropic and Claude models selected through OpenRouter cache the
 system instructions and the end of conversation history before temporary
-runtime hints. Cache hits still depend on the provider's minimum token count,
-retention window, and matching prompt prefix. Explicit raw `cache_control`
-request parameters override this default policy; an empty value disables the
-default markers. Claude subscription sessions use Claude Code's own caching.
+runtime hints. OpenAI and ChatGPT subscription requests carry a
+`prompt_cache_key` that is stable per agent loop. Compaction summaries and
+`model_invoke` calls are not sent again, so they get no cache markers. Cache
+hits still depend on the provider's minimum token count, retention window, and
+matching prompt prefix. Explicit raw `cache_control` request parameters
+override this default policy; an empty value disables the default markers.
+Claude subscription sessions use Claude Code's own caching.

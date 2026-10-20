@@ -6,10 +6,11 @@ import type { CreateMessageOptions, LLMProvider } from '../../../src/main/provid
 import type { LLMResponse } from '../../../src/shared/types/provider.types'
 
 class RecordingProvider implements LLMProvider {
-  readonly name = 'prompt-refresh'
+  readonly name = 'provider-1'
   readonly modelId = 'prompt-refresh-model'
-  readonly requests: { system: string; dynamicInstructions?: string }[] = []
+  readonly requests: { system: string; dynamicInstructions?: string; promptCacheKey?: string }[] = []
   compactionCalls = 0
+  compactionOneShot: boolean[] = []
 
   constructor(private readonly failCompaction = false) {}
 
@@ -18,6 +19,7 @@ class RecordingProvider implements LLMProvider {
   async createMessage(options: CreateMessageOptions): Promise<LLMResponse> {
     if (options.system === 'Summarize the transcript.') {
       this.compactionCalls++
+      this.compactionOneShot.push(options.oneShot === true)
       return {
         id: 'summary',
         content: this.failCompaction ? [] : [{ type: 'text', text: 'Continue the pending task.' }],
@@ -25,7 +27,7 @@ class RecordingProvider implements LLMProvider {
         usage: { input_tokens: 100, output_tokens: 10 },
       }
     }
-    this.requests.push({ system: options.system, dynamicInstructions: options.dynamicInstructions })
+    this.requests.push({ system: options.system, dynamicInstructions: options.dynamicInstructions, promptCacheKey: options.promptCacheKey })
     return {
       id: `reply-${this.requests.length}`,
       content: [{ type: 'text', text: 'ok' }],
@@ -46,7 +48,7 @@ function chat(text: string) {
 
 function build(provider: RecordingProvider) {
   const agent = createHeadlessAgent({
-    name: 'prompt-refresh',
+    name: 'agent-1',
     profile: 'benchmark',
     provider,
     basePrompt: 'Your memory: {{mind.md}}',
@@ -71,25 +73,29 @@ describe('preflight compaction prompt refresh', () => {
   it('sends refreshed memory/catalog immediately and records the same prompt sent to the provider', async () => {
     const provider = new RecordingProvider()
     const agent = build(provider)
-    const peers = [{ handle: 'peer-a', description: 'existing collaborator' }]
+    const peers = [{ handle: 'agent-2', description: 'existing collaborator' }]
     agent.executor.setMeshContext(() => peers)
     try {
       await agent.executor.executeTurn(chat('start'))
       expect(provider.requests[0].system).toContain('old-memory')
       expect(provider.requests[0].system).toContain('old-skill')
 
-      peers.push({ handle: 'peer-b', description: 'new collaborator' })
+      peers.push({ handle: 'agent-3', description: 'new collaborator' })
       agent.workspace.writeFile('mind.md', 'new-memory')
       agent.workspace.writeFile('skills-registry.json', '{"skills":["new-skill"]}')
       await agent.executor.executeTurn(chat(oversizedMessage))
 
       expect(provider.compactionCalls).toBe(1)
+      // The summary is never sent again: no cache write. Turns keep one cache key.
+      expect(provider.compactionOneShot).toEqual([true])
       expect(provider.requests).toHaveLength(2)
+      expect(provider.requests[0].promptCacheKey).toMatch(/^adf-[0-9a-f]{32}$/)
+      expect(provider.requests[1].promptCacheKey).toBe(provider.requests[0].promptCacheKey)
       const firstAfterCompaction = provider.requests[1]
       expect(firstAfterCompaction.system).toContain('new-memory')
       expect(firstAfterCompaction.system).toContain('new-skill')
       expect(firstAfterCompaction.system).not.toContain('old-memory')
-      expect(firstAfterCompaction.dynamicInstructions).toContain('peer-b')
+      expect(firstAfterCompaction.dynamicInstructions).toContain('agent-3')
       expect(firstAfterCompaction.dynamicInstructions).not.toContain('tokens (threshold:')
       const auditTexts = agent.workspace.getLoop().flatMap(row => row.content_json
         .filter(block => block.type === 'text').map(block => block.text))

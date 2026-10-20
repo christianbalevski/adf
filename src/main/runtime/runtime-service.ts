@@ -1377,6 +1377,21 @@ export class RuntimeService extends EventEmitter {
    * `trigger_message` carries it as `echoOrigin`, so only that session skips
    * it. Needs `opts.turnId`.
    */
+  /**
+   * Refuse chat content the loop's model cannot take (a modality turned off,
+   * or one its provider does not carry): 400 `media_unsupported`. Run before
+   * accepting the chat, so the sender sees why instead of a reply that never
+   * saw the attachment.
+   */
+  assertChatMedia(agentId: string, loop: string | undefined, content: ContentBlock[] | undefined): void {
+    if (!content?.length) return
+    const managed = this.requireAgent(agentId)
+    const name = loop || MAIN_LOOP
+    const executor = name === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(name)?.executor
+    const error = executor?.mediaInputError(content)
+    if (error) throw new RuntimeLoopError(error, 400, 'media_unsupported')
+  }
+
   async sendChat(agentId: string, text: string, loop = 'main', opts: { turnId?: string; content?: ContentBlock[]; echoOrigin?: string } = {}): Promise<void> {
     const contentJson: ContentBlock[] = opts.content && opts.content.length > 0 ? opts.content : [{ type: 'text', text }]
     const dispatch = createDispatch(

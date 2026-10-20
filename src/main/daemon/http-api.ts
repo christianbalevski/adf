@@ -2651,6 +2651,12 @@ export function createDaemonHttpApi(
         return handleRuntimeError(reply, err)
       }
     }
+    // Media the loop's model cannot take is refused now (400 media_unsupported), never dropped after the 202.
+    try {
+      runtime.assertChatMedia(request.params.id, loop, content)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
 
     const turnId = `turn_${nanoid(12)}`
     // The echo is the sending session's alone: other clients (a second Studio, the terminal app) still get trigger_message.

@@ -21,6 +21,14 @@ export interface CreateMessageOptions {
   dynamicInstructions?: string
   /** Provider-specific options forwarded as providerOptions to the AI SDK. */
   providerParams?: Record<string, unknown>
+  /** Stable id of the conversation this request continues (agent + loop).
+   *  OpenAI and ChatGPT send it as `prompt_cache_key`, so requests that share
+   *  a prefix reach the same cache. */
+  promptCacheKey?: string
+  /** A request whose prefix is not sent again (compaction summary,
+   *  model_invoke). It gets no cache breakpoints or cache key: a cache write
+   *  costs more than plain input and would never be read. */
+  oneShot?: boolean
 }
 
 /**

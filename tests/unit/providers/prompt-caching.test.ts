@@ -8,13 +8,19 @@ import type { LLMMessage } from '../../../src/shared/types/provider.types'
 type CacheControl = { type: 'ephemeral'; ttl?: '5m' | '1h' }
 type WirePart = { type: string; text?: string; cache_control?: CacheControl; [key: string]: unknown }
 type WireMessage = { role: string; content: string | WirePart[] | null; cache_control?: CacheControl }
-type Body = { system?: WirePart[]; messages: WireMessage[]; cache_control?: CacheControl }
+type Body = { system?: WirePart[]; messages: WireMessage[]; cache_control?: CacheControl; prompt_cache_key?: string }
 
-function harness(type: 'anthropic' | 'openrouter' | 'custom', model: string, params?: Array<{ key: string; value: string }>) {
+function harness(type: 'anthropic' | 'openrouter' | 'custom' | 'openai', model: string, params?: Array<{ key: string; value: string }>) {
   const bodies: Body[] = []
   vi.stubGlobal('fetch', vi.fn(async (_input, init) => {
     bodies.push(JSON.parse(String(init?.body)))
-    const response = type === 'anthropic'
+    const response = type === 'openai'
+      ? {
+          id: 'resp_test', object: 'response', created_at: 1, model, status: 'completed',
+          output: [{ type: 'message', id: 'msg_test', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ok', annotations: [] }] }],
+          usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+        }
+      : type === 'anthropic'
       ? {
           id: 'msg_test', type: 'message', role: 'assistant', model,
           content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null,
@@ -172,5 +178,30 @@ describe('Claude cache breakpoints on the serialized request', () => {
     const { provider, bodies } = harness('anthropic', 'claude-sonnet-4-20250514', [{ key: 'cache_control', value: '' }])
     await provider.createMessage({ system: 'Instructions', messages: [{ role: 'user', content: 'Hi' }] })
     expect(countMarkers(bodies[0])).toBe(0)
+  })
+
+  it.each([
+    ['anthropic', 'claude-sonnet-4-20250514'],
+    ['openrouter', 'anthropic/claude-sonnet-4'],
+  ] as const)('%s one-shot requests (compaction, model_invoke) get no breakpoints', async (type, model) => {
+    const { provider, bodies } = harness(type, model)
+    await provider.createMessage({ system: 'Summarize the transcript.', messages: [{ role: 'user', content: 'Transcript' }], oneShot: true })
+    expect(countMarkers(bodies[0])).toBe(0)
+  })
+})
+
+describe('OpenAI prompt cache key', () => {
+  it('sends the conversation key as prompt_cache_key, and none on one-shot requests', async () => {
+    const { provider, bodies } = harness('openai', 'gpt-5.5')
+    await provider.createMessage({ system: 'Instructions', messages: [{ role: 'user', content: 'Hi' }], promptCacheKey: 'adf-key-1' })
+    expect(bodies[0].prompt_cache_key).toBe('adf-key-1')
+    await provider.createMessage({ system: 'Instructions', messages: [{ role: 'user', content: 'Hi' }], promptCacheKey: 'adf-key-1', oneShot: true })
+    expect(bodies[1].prompt_cache_key).toBeUndefined()
+  })
+
+  it('is not sent to providers without the option', async () => {
+    const { provider, bodies } = harness('custom', 'local-model')
+    await provider.createMessage({ system: 'Instructions', messages: [{ role: 'user', content: 'Hi' }], promptCacheKey: 'adf-key-1' })
+    expect(bodies[0].prompt_cache_key).toBeUndefined()
   })
 })

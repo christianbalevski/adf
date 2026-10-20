@@ -329,7 +329,7 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       ? createOpenAI({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
       : getOpenAIProvider(cfg.apiKey)
     const model = openai(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openai' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openai', promptCacheKeyOption: 'openai' })
   }
 
   if (cfg.type === 'chatgpt-subscription') {
@@ -344,6 +344,7 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       providerType: cfg.type,
       reasoningStyle: 'openai',
       forwardProviderParams: 'openai',
+      promptCacheKeyOption: 'openai',
       beginRequest,
       streamOnly: true,
       getResponseMeta

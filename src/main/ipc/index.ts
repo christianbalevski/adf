@@ -5212,12 +5212,20 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // disabled loop is an ERROR here (someone is waiting for an answer), unlike
     // the trigger path where it is dropped and logged.
     const targetLoop = args.loop ?? MAIN_LOOP
+    // Media the loop's model cannot take is refused here, as the daemon's
+    // chat route refuses it (400 media_unsupported): the chat shows why.
+    const mediaError = (agent: NonNullable<typeof currentAssembledAgent>): string | null => {
+      const executor = targetLoop === MAIN_LOOP ? agent.executor : agent.loopPool.getRuntime(targetLoop)?.executor
+      return executor?.mediaInputError(contentJson) ?? null
+    }
 
     // If targeting the foreground agent
     if (isForeground) {
       if (!currentAssembledAgent) {
         return { success: false, error: 'Agent not running' }
       }
+      const refused = mediaError(currentAssembledAgent)
+      if (refused) return { success: false, error: refused }
       try {
         await currentAssembledAgent.dispatchTo(targetLoop, createDispatch(createEvent({
           type: 'chat' as const, source: 'system',
@@ -5233,6 +5241,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (backgroundAgentManager?.hasAgent(targetFile)) {
       const agentRefs = backgroundAgentManager.getAgent(targetFile)
       if (agentRefs?.assembledAgent) {
+        const refused = mediaError(agentRefs.assembledAgent)
+        if (refused) return { success: false, error: refused }
         try {
           // Direct executor invoke bypasses the trigger evaluator's rehydrate —
           // restore the session first if the idle sweep released it.

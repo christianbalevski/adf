@@ -7,6 +7,7 @@ import type { ProviderType } from '../../shared/constants/adf-defaults'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { logger } from '../utils/logger'
 import { withPromptCacheBreakpoints, type PromptCacheProvider } from './prompt-cache'
+import { providerMediaSupport } from './media-capabilities'
 
 /** Extract a human-readable message from any thrown error shape. */
 function extractErrorMessage(error: unknown): string {
@@ -304,11 +305,14 @@ function extractOpenRouterReasoningDetails(providerMetadata?: Record<string, unk
 // SDK file parts. Neither route changes a video's position in the history.
 // ---------------------------------------------------------------------------
 
-function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel): { messages: CoreMessage[]; model: LanguageModel } {
+function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel, providerType: ProviderType | undefined): { messages: CoreMessage[]; model: LanguageModel } {
   const target = model as Exclude<LanguageModel, string> & {
     transformRequestBody?: (body: Record<string, unknown>) => Record<string, unknown>
   }
-  const bypass = typeof target.transformRequestBody === 'function'
+  // Anthropic and OpenAI models have a request-body hook too, but no video
+  // input: a raw video_url part there is a provider 400, not a video.
+  const noVideo = providerType ? !providerMediaSupport(providerType).video : /^(anthropic|openai)\./.test(target.provider)
+  const bypass = !noVideo && typeof target.transformRequestBody === 'function'
   const videos = new Map<string, string>()
   let hasVideo = false
   const projected = messages.map(message => {
@@ -335,6 +339,10 @@ function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel): { 
     return changed ? { ...message, content } as CoreMessage : message
   })
   if (!hasVideo) return { messages, model }
+  // The executor leaves history video out of turns for these providers
+  // (effectiveMediaSupport); a direct call such as model_invoke gets this
+  // plain error before anything is sent.
+  if (noVideo) throw new Error(`Video input is not supported by this provider (${target.provider}).`)
   if (bypass) return { messages: projected, model: wrapModelWithVideo(model, videos) }
 
   // OpenRouter accepts video URLs directly, but its supportedUrls declaration
@@ -350,7 +358,7 @@ function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel): { 
       }),
     }
   }
-  return { messages: projected, model }
+  throw new Error(`Video input is not supported by this provider (${target.provider}).`)
 }
 
 /** Replace placeholders on a call-local receiver, never patch the shared model. */
@@ -409,6 +417,9 @@ export interface AiSdkProviderOptions {
   defaultProviderOptions?: Record<string, Record<string, unknown>>
   /** Explicit Claude cache breakpoints, placed before transient instructions. */
   promptCaching?: PromptCacheProvider
+  /** providerOptions namespace that takes CreateMessageOptions.promptCacheKey
+   *  as `promptCacheKey` (OpenAI and ChatGPT Responses: `prompt_cache_key`). */
+  promptCacheKeyOption?: 'openai'
   /** If set, merges CreateMessageOptions.providerParams into providerOptions[key] */
   forwardProviderParams?: string
   /** Called before each request with the system prompt — used by providers
@@ -462,7 +473,7 @@ export class AiSdkProvider implements LLMProvider {
     const cachedPrompt = withPromptCacheBreakpoints(
       options.system || undefined,
       convertMessages(options.messages),
-      this.options?.promptCaching,
+      options.oneShot ? undefined : this.options?.promptCaching,
     )
     let messages = cachedPrompt.messages
     // Append dynamic instructions as a trailing user message so the system
@@ -476,7 +487,7 @@ export class AiSdkProvider implements LLMProvider {
     const reasoningPlan = planReasoning(this.options?.reasoningStyle, options, options.maxTokens)
 
     // Project video without mutating cached history or the shared model.
-    const videoRequest = prepareVideoMessages(messages, this.model)
+    const videoRequest = prepareVideoMessages(messages, this.model, this.providerType)
     messages = videoRequest.messages
     const model = videoRequest.model
 
@@ -528,6 +539,15 @@ export class AiSdkProvider implements LLMProvider {
       const ns = this.options.forwardProviderParams
       const existing = (callSettings.providerOptions ?? {}) as Record<string, Record<string, unknown>>
       existing[ns] = { ...options.providerParams, ...(existing[ns] ?? {}) }
+      callSettings.providerOptions = existing
+    }
+
+    // Route the requests of one conversation to one prompt cache. Options set
+    // above (provider_params) win over the default key.
+    const cacheKeyOption = this.options?.promptCacheKeyOption
+    if (cacheKeyOption && options.promptCacheKey && !options.oneShot) {
+      const existing = (callSettings.providerOptions ?? {}) as Record<string, Record<string, unknown>>
+      existing[cacheKeyOption] = { promptCacheKey: options.promptCacheKey, ...(existing[cacheKeyOption] ?? {}) }
       callSettings.providerOptions = existing
     }
 

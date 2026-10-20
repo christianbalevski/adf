@@ -5,7 +5,8 @@ import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
-import { projectMessageMedia } from './message-media-projection'
+import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
+import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent, ApprovalEndedBy, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
@@ -1324,6 +1325,51 @@ export class AgentExecutor extends EventEmitter {
     return built
   }
 
+  /**
+   * What this request sends, recorded once per change: getContextBreakdown()
+   * reads currentDynamicInstructions, and the system prompt and dynamic
+   * instructions are written to the loop so they are visible in the UI and
+   * queryable via SQL ("No Secrets").
+   */
+  private recordRequestContext(systemPrompt: string, dynamicInstructions: string | undefined): void {
+    // Unconditional: getContextBreakdown() must see what THIS turn sends
+    // (usually nothing). lastDynamicInstructions can't serve that role —
+    // it's a dedup high-water mark that intentionally never clears.
+    this.currentDynamicInstructions = dynamicInstructions
+
+    // "No Secrets" context injection — write system prompt and dynamic instructions
+    // to the loop so they are visible in the UI and queryable via SQL.
+    const currentSPHash = this.systemPromptCache
+      ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
+      : this.hashString(systemPrompt)
+    if (currentSPHash !== this.lastSystemPromptHash) {
+      const spSeq = this.session.appendContextEntry('system_prompt', systemPrompt)
+      this.emitEvent({
+        type: 'context_injected',
+        payload: {
+          category: 'system_prompt',
+          content: systemPrompt,
+          ...(spSeq !== undefined ? { seq: spSeq } : {})
+        },
+        timestamp: Date.now()
+      })
+      this.lastSystemPromptHash = currentSPHash
+    }
+    if (dynamicInstructions && dynamicInstructions !== this.lastDynamicInstructions) {
+      const diSeq = this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
+      this.emitEvent({
+        type: 'context_injected',
+        payload: {
+          category: 'dynamic_instructions',
+          content: dynamicInstructions,
+          ...(diSeq !== undefined ? { seq: diSeq } : {})
+        },
+        timestamp: Date.now()
+      })
+      this.lastDynamicInstructions = dynamicInstructions
+    }
+  }
+
   private buildToolSnapshot(): ToolSnapshot {
     const updatedAt = this.config.metadata?.updated_at
     if (this.toolSnapshotCache?.updatedAt === updatedAt) {
@@ -2413,6 +2459,9 @@ export class AgentExecutor extends EventEmitter {
         // per-turn dynamic info (inbox, context warning) goes via dynamicInstructions.
         let systemPrompt = this.buildSystemPrompt()
         let dynamicInstructions = this.buildDynamicInstructions(chatTokens, compactThreshold)
+        // Audit rows first, so the loop reads in the order the model receives
+        // them: prompt context, then the injected and queued rows below.
+        this.recordRequestContext(systemPrompt, dynamicInstructions)
         // `loop_inject` may be called by code while this turn is waiting on a
         // tool, HIL, or another trigger. Drain only here: the previous tool
         // batch has been committed in full and the next provider request has
@@ -2514,42 +2563,9 @@ export class AgentExecutor extends EventEmitter {
           }
         }
 
-        // Unconditional: getContextBreakdown() must see what THIS turn sends
-        // (usually nothing). lastDynamicInstructions can't serve that role —
-        // it's a dedup high-water mark that intentionally never clears.
-        this.currentDynamicInstructions = dynamicInstructions
-
-        // "No Secrets" context injection — write system prompt and dynamic instructions
-        // to the loop so they are visible in the UI and queryable via SQL.
-        const currentSPHash = this.systemPromptCache
-          ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
-          : this.hashString(systemPrompt)
-        if (currentSPHash !== this.lastSystemPromptHash) {
-          const spSeq = this.session.appendContextEntry('system_prompt', systemPrompt)
-          this.emitEvent({
-            type: 'context_injected',
-            payload: {
-              category: 'system_prompt',
-              content: systemPrompt,
-              ...(spSeq !== undefined ? { seq: spSeq } : {})
-            },
-            timestamp: Date.now()
-          })
-          this.lastSystemPromptHash = currentSPHash
-        }
-        if (dynamicInstructions && dynamicInstructions !== this.lastDynamicInstructions) {
-          const diSeq = this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
-          this.emitEvent({
-            type: 'context_injected',
-            payload: {
-              category: 'dynamic_instructions',
-              content: dynamicInstructions,
-              ...(diSeq !== undefined ? { seq: diSeq } : {})
-            },
-            timestamp: Date.now()
-          })
-          this.lastDynamicInstructions = dynamicInstructions
-        }
+        // After a successful compaction reset the audit marks, this records
+        // the refreshed prompt after the compaction rows; otherwise a no-op.
+        this.recordRequestContext(systemPrompt, dynamicInstructions)
 
         // Pre-send guard: detect orphaned tool blocks (e.g. an external session
         // reset landed mid-turn) and repair them instead of letting the provider
@@ -2623,9 +2639,14 @@ export class AgentExecutor extends EventEmitter {
         // A hook may rewrite system/tools: the measured fixed parts then do
         // not describe what was sent.
         const callFingerprint = transformedRequest ? null : this.fixedPartsFingerprint()
+        // Media the model cannot take becomes placeholder text in this request
+        // only; the session keeps the original for a model that can.
+        const media = projectMessageMedia(request.messages, this.mediaSupport())
+        if (media.omitted) this.noteMediaOmitted(media.omitted, dispatch)
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
-          messages: projectMessageMedia(request.messages, this.config.model),
+          messages: media.messages,
+          promptCacheKey: this.promptCacheKey(),
           dynamicInstructions: request.options.dynamicInstructions,
           tools: request.tools,
           maxTokens: request.options.maxTokens,
@@ -4603,12 +4624,56 @@ export class AgentExecutor extends EventEmitter {
    * Binary files: strip content (metadata only). Text files: apply truncation guards.
    * Must run before enforceToolResultLimit to avoid truncating base64 or oversized text into garbage.
    */
-  /** Check if a multimodal modality is enabled, with backward compat for vision flag. */
-  private isMultimodalEnabled(modality: 'image' | 'audio' | 'video'): boolean {
-    if (modality === 'image') {
-      return this.config.model?.multimodal?.image ?? this.config.model?.vision ?? false
-    }
-    return this.config.model?.multimodal?.[modality] ?? false
+  /** Media this agent's model takes: the provider's, narrowed by the model toggles. */
+  private mediaSupport(): MediaSupport {
+    return effectiveMediaSupport(this.config.model, this.provider?.providerType)
+  }
+
+  /** Whether a modality reaches the model (toggle on and the provider carries it). */
+  private isMultimodalEnabled(modality: MediaKind): boolean {
+    return this.mediaSupport()[modality]
+  }
+
+  /**
+   * Why new input cannot go to this loop's model, or null. Chat boundaries
+   * (HTTP, Studio IPC) refuse such input instead of sending it without its
+   * attachments.
+   */
+  mediaInputError(content: readonly ContentBlock[] | undefined): string | null {
+    return unsupportedMediaInput(content, this.config.model, this.provider?.providerType)
+  }
+
+  /** The dispatch whose turn already showed the media notice. */
+  private mediaNoticeDispatch: unknown = undefined
+
+  /** Say once per turn which attachments a request leaves out, and why. */
+  private noteMediaOmitted(omitted: MediaOmissions, dispatch: unknown): void {
+    if (this.mediaNoticeDispatch === dispatch) return
+    this.mediaNoticeDispatch = dispatch
+    const parts = MEDIA_KINDS.filter(kind => omitted[kind]).map(kind => {
+      const count = omitted[kind]!
+      return `${count} ${kind}${count === 1 ? '' : 's'} (${mediaOmissionReason(kind, this.config.model, this.provider?.providerType)})`
+    })
+    const notice = `[System] Not sent to this model: ${parts.join(', ')}. The originals stay in history.`
+    const seq = this.session.appendContextEntry('System', notice)
+    this.emitEvent({
+      type: 'context_injected',
+      payload: { category: 'System', content: notice, ...(seq !== undefined ? { seq } : {}) },
+      timestamp: Date.now()
+    })
+  }
+
+  private promptCacheKeyMemo: { id: string; loop: string | undefined; key: string } | undefined
+
+  /** A stable, opaque cache-routing key for this agent's loop. */
+  private promptCacheKey(): string {
+    const id = this.config.id
+    const loop = this.umbilicalLoop()
+    const memo = this.promptCacheKeyMemo
+    if (memo && memo.id === id && memo.loop === loop) return memo.key
+    const key = `adf-${createHash('sha256').update(`${id}\0${loop ?? 'main'}`).digest('hex').slice(0, 32)}`
+    this.promptCacheKeyMemo = { id, loop, key }
+    return key
   }
 
   /**
@@ -5268,7 +5333,8 @@ export class AgentExecutor extends EventEmitter {
         }],
         maxTokens: COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM,
         temperature: 0.3,
-        signal: this.abortController?.signal
+        signal: this.abortController?.signal,
+        oneShot: true
       }, undefined, summarizer)
 
       // Record compaction token usage

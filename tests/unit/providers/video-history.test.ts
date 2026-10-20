@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import { AiSdkProvider, convertMessages } from '../../../src/main/providers/ai-sdk-provider'
 import type { LLMMessage } from '../../../src/shared/types/provider.types'
 
@@ -32,7 +33,7 @@ function setup(kind: 'compatible' | 'openrouter', fetchOverride?: (body: WireBod
     return fetchOverride ? fetchOverride(body) : response(body.stream)
   })
   const model = kind === 'compatible'
-    ? createOpenAICompatible({ name: 'video-test', apiKey: 'test', baseURL: 'https://example.invalid/v1', fetch })('video-model')
+    ? createOpenAICompatible({ name: 'provider-1', apiKey: 'test', baseURL: 'https://example.invalid/v1', fetch })('video-model')
     : createOpenRouter({ apiKey: 'test', fetch })('google/video-model')
   const provider = new AiSdkProvider(model, kind, 'video-model')
   return { requests, provider, model, fetch }
@@ -128,5 +129,16 @@ describe('shared compatible model video isolation', () => {
     pending[0]()
     await Promise.all([first, second, plain])
     expect(sharedModel.transformRequestBody).toBe(transform)
+  })
+})
+
+describe('providers without video input', () => {
+  it('refuse a direct video request with a plain error before anything is sent (Anthropic)', async () => {
+    const fetch = vi.fn(async () => new Response('{}'))
+    const model = createAnthropic({ apiKey: 'test', fetch })('claude-sonnet-4-20250514')
+    const provider = new AiSdkProvider(model, 'provider-1', 'claude-sonnet-4-20250514', 0, { providerType: 'anthropic' })
+    await expect(provider.createMessage({ system: '', messages: [userVideo(firstVideo)] }))
+      .rejects.toThrow('Video input is not supported by this provider')
+    expect(fetch).not.toHaveBeenCalled()
   })
 })
