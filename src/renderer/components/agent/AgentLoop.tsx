@@ -924,7 +924,7 @@ const LogEntryRow = memo(({
         // A runtime notice is status, not context: shown as it is, never folded.
         <div className="flex items-start gap-2 rounded-lg border border-[var(--rule)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
           <span className="max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words">
-            {entry.content.replace(/^[System] /, '')}
+            {entry.content.replace(/^\[System\] /, '')}
           </span>
           {entry.timestamp > 0 && (
             <span className="shrink-0 text-[10px] text-[var(--ink-faint)]">

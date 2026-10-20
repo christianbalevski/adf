@@ -69,6 +69,26 @@ export function parseTurnErrorMarker(text: string): string | null {
   return parseTurnErrorRow(text)?.message ?? null
 }
 
+/**
+ * How every user-role row the runtime writes itself (nudges, recovery and
+ * crash notices) begins. The model reads these as input, so they are shown,
+ * as System notices, never as the owner's words and never hidden.
+ */
+export const RUNTIME_NOTICE_PREFIXES = [
+  '[System]',
+  '[System notice:',
+  '[Provider unavailable (',
+  '[Provider error (',
+  '[Turn error (',
+  '[Continue working autonomously',
+  '[You have responded ',
+  'Context is about to be compacted.',
+]
+
+export function isRuntimeNotice(text: string): boolean {
+  return RUNTIME_NOTICE_PREFIXES.some((prefix) => text.startsWith(prefix))
+}
+
 /** Extract the first image VFS path from tool result text and return an adf-file:// URL. */
 function extractImageUrl(content: string): string | null {
   const match = content.match(/\[image: ([^\s]+) \(/)
@@ -90,7 +110,6 @@ function detectTriggerType(text: string): string | null {
   if (text.startsWith('[Inbox notification]')) return 'inbox_notification'
   if (text === 'Go.') return 'autonomous_start'
   if (text === 'The user has manually triggered you. Review the document and respond.') return 'manual_invoke'
-  if (text.startsWith('[Continue working autonomously')) return 'autonomous_continue'
   // v3 trigger types
   if (text.startsWith('A file has been ')) return 'file_change'
   if (text.startsWith('An outbound message was sent')) return 'outbox'
@@ -189,9 +208,17 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             })
             continue
           }
+          if (isRuntimeNotice(block.text)) {
+            displayEntries.push({
+              id: `loop-${entry.seq}-${bi}`,
+              type: 'context',
+              content: block.text,
+              timestamp,
+              metadata: { seq: entry.seq, category: 'System' }
+            })
+            continue
+          }
           const triggerType = detectTriggerType(block.text)
-          // Skip synthetic autonomous continuation messages — internal bookkeeping only
-          if (triggerType === 'autonomous_continue') continue
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
@@ -406,8 +433,17 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             })
             continue
           }
+          if (isRuntimeNotice(block.text)) {
+            displayEntries.push({
+              id: `loop-${entry.seq}-${bi}`,
+              type: 'context',
+              content: block.text,
+              timestamp,
+              metadata: { seq: entry.seq, category: 'System' }
+            })
+            continue
+          }
           const triggerType = detectTriggerType(block.text)
-          if (triggerType === 'autonomous_continue') continue
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',

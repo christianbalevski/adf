@@ -118,7 +118,7 @@ describe('silent turn notice', () => {
     expect(sawNotice(provider.calls[1])).toBe(true)
     const rows = noticeRows(workspace)
     expect(rows).toHaveLength(1)
-    expect(JSON.stringify(rows[0].content_json)).toContain('[Context: System]')
+    expect(JSON.stringify(rows[0].content_json)).toContain('[System] You ended the turn')
   })
 
   it('a thinking-only reply to a chat gets the notice too', async () => {

@@ -518,7 +518,8 @@ export const AgentConfigSchema = z.object({
   autonomous: z.boolean().default(false),
   autostart: z.boolean().optional(),
   model: ModelConfigSchema,
-  instructions: z.string().min(1),
+  // Empty is valid: new agents and templates start with no instructions.
+  instructions: z.string(),
   include_base_prompt: z.boolean().optional(),
   bare_prompt: z.boolean().optional(),
   context: z.object({

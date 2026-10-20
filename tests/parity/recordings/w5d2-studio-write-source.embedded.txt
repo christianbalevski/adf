@@ -836,22 +836,12 @@ hosts/<pid:this-process>.json:
 
 ## state: agents/agent-1.adf adf_inbox (0 rows; id, message_id, from, to, reply_to, network, thread_id, parent_id, subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner, card, return_path, source, source_context, sent_at, received_at, status, original_message)
 
-## state: agents/agent-1.adf adf_logs (2 rows; id, level, origin, event, target, message, data, created_at, loop)
+## state: agents/agent-1.adf adf_logs (1 rows; id, level, origin, event, target, message, data, created_at, loop)
 #1:
-  created_at: "<t>"
-  data: null
-  event: "config_validation"
-  id: 1
-  level: "warn"
-  loop: "main"
-  message: "Agent config does not match AgentConfigSchema (1 issue(s)): instructions: String must contain at least 1 character(s)"
-  origin: "runtime"
-  target: null
-#2:
   created_at: "<t>"
   data: "{\"duration_ms\":\"<duration>\"}"
   event: "on_file_change"
-  id: 2
+  id: 1
   level: "info"
   loop: "main"
   message: "Lambda completed in <duration>ms"

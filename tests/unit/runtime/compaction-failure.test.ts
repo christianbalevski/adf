@@ -109,8 +109,8 @@ describe('AgentExecutor — compaction summarizer failure', () => {
       // Not compacted — earlier history survives, no summary marker.
       expect(texts.some(t => t.includes('[Loop Compacted'))).toBe(false)
       expect(texts.some(t => t.includes('hi'))).toBe(true)
-      // The failure note reached the loop, as an injected-context block.
-      expect(texts.some(t => t.includes('[Context: System] Compaction failed'))).toBe(true)
+      // The failure note reached the loop, as a System notice.
+      expect(texts.some(t => t.includes('[System] Compaction failed'))).toBe(true)
 
       // A summarizer that keeps failing the same way must not write one note
       // per attempt — further turns log, but the loop note is not repeated.

@@ -100,3 +100,29 @@ describe('persisted error details', () => {
     expect(persistedErrorDetails('string error')).toBeUndefined()
   })
 })
+
+describe('loop-parser runtime notices', () => {
+  // Every user-role row the runtime writes reaches the model, so every one is
+  // shown — as a System notice, not as the owner's words.
+  it.each([
+    '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]',
+    '[You have responded 2 times in a row without calling any tools. Do not reply with another status update.]',
+    'Context is about to be compacted. Before that happens: write any durable learnings…',
+    '[System] You ended the turn without replying to your principal.',
+    '[System notice: the previous agent turn t1 (timer) was interrupted before clean completion.]',
+    '[Provider error ("503") — auto-recovery retry 1/3, ~1m since the first failure.]',
+    '[Provider unavailable ("503"). Gave up.]',
+    '[Turn error ("bad") — structural recovery retry 1/3.]',
+  ])('shows %s as a System notice', (text) => {
+    for (const parse of [parseLoopToDisplay, parseLoopWithToolPairs]) {
+      const display = parse([userEntry([{ type: 'text', text }], 7)])
+      expect(display).toHaveLength(1)
+      expect(display[0]).toMatchObject({ type: 'context', content: text, metadata: { seq: 7, category: 'System' } })
+    }
+  })
+
+  it('leaves an owner message alone', () => {
+    const display = parseLoopToDisplay([userEntry([{ type: 'text', text: 'What is the System status?' }])])
+    expect(display[0].type).toBe('user')
+  })
+})

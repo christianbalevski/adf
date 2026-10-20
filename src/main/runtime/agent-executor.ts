@@ -2293,24 +2293,7 @@ export class AgentExecutor extends EventEmitter {
       // passed, mirroring the crash-recovery checkpoint notice. Added here —
       // after the re-entrant rehydrate — so an idle-swept session can't lose
       // the history the notice rides on.
-      if (opts?.recoveryNotice) {
-        const noticeMsg: LLMMessage = {
-          role: 'user',
-          content: [{ type: 'text', text: opts.recoveryNotice }]
-        }
-        this.session.addMessage(noticeMsg)
-        // The chat panel renders live from events, not the loop — without this
-        // the notice only appears after a transcript reload.
-        this.emitEvent({
-          type: 'context_injected',
-          payload: {
-            category: 'System',
-            content: opts.recoveryNotice,
-            ...(noticeMsg.seq !== undefined ? { seq: noticeMsg.seq } : {})
-          },
-          timestamp: Date.now()
-        })
-      }
+      if (opts?.recoveryNotice) this.addRuntimeNotice(opts.recoveryNotice)
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Chat triggers skip it ONLY when the sending UI echoed the message
       // itself (chat panel); fleet-bar chat has no echo and must emit.
@@ -2408,16 +2391,10 @@ export class AgentExecutor extends EventEmitter {
             // iteration compacts regardless; the preflight guard below still
             // protects against runaway growth via MEMORY_FLUSH_EMERGENCY.
             this.memoryFlushNudgeIssued = true
-            const nudge = 'Context is about to be compacted. Before that happens: write any durable ' +
+            this.addRuntimeNotice('Context is about to be compacted. Before that happens: write any durable ' +
               'learnings from this loop to your mind pages (update mind.md index + mind/log.md), citing ' +
               'source messages by their [S<seq>] markers. Track unfinished work on an open-thread page. ' +
-              'Then continue — compaction follows automatically.'
-            this.session.addMessage({ role: 'user', content: [{ type: 'text', text: nudge }] })
-            this.emitEvent({
-              type: 'context_injected',
-              payload: { category: 'System', content: 'Compaction threshold reached — memory-flush grace turn before compacting.' },
-              timestamp: Date.now()
-            })
+              'Then continue — compaction follows automatically.')
           } else {
             this.emitEvent({
               type: 'context_injected',
@@ -3526,7 +3503,7 @@ export class AgentExecutor extends EventEmitter {
                 const nudge = consecutiveTextOnly >= 2
                   ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Either call a tool now to make progress, or yield by calling sys_set_state with state "idle".]`
                   : '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]'
-                this.session.addMessage({ role: 'user', content: [{ type: 'text', text: nudge }] })
+                this.addRuntimeNotice(nudge)
               }
             }
           }
@@ -3639,16 +3616,7 @@ export class AgentExecutor extends EventEmitter {
                 ? `Outage began ~${formatElapsed(Date.now() - outageStart)} ago (now ${formatTimestamp(Date.now())}). `
                 : `Current time: ${formatTimestamp(Date.now())}. `) +
               `The trigger above was NOT processed — re-attempt unfinished work.]`
-            this.session.addMessage({
-              role: 'user',
-              content: [{ type: 'text', text: giveUpNotice }]
-            })
-            this.session.flushToLoop()
-            this.emitEvent({
-              type: 'context_injected',
-              payload: { category: 'System', content: giveUpNotice },
-              timestamp: Date.now()
-            })
+            this.addRuntimeNotice(giveUpNotice)
           }
           this.emitEvent({
             type: 'error',
@@ -3665,13 +3633,8 @@ export class AgentExecutor extends EventEmitter {
         // get a chance to reason about the failure (e.g. switch to shell tools).
         this.setState('idle')
         try { this.session.getWorkspace().insertLog('warn', 'executor', 'image_recovery_followup_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
-        this.session.addMessage({
-          role: 'user',
-          content: [{
-            type: 'text',
-            text: `[System notice: Recovery retry also failed: "${errorMsg.slice(0, 500)}". Stopping automatic image-error recovery. Reason about what happened and try a different approach (e.g. inspect the file with shell or code tools rather than viewing it directly), or wait for new input.]`
-          }]
-        })
+        this.addRuntimeNotice(
+          `[System notice: Recovery retry also failed: "${errorMsg.slice(0, 500)}". Stopping automatic image-error recovery. Reason about what happened and try a different approach (e.g. inspect the file with shell or code tools rather than viewing it directly), or wait for new input.]`)
         this.emitEvent({
           type: 'error',
           payload: { error: `Image recovery follow-up error: ${errorMsg}`, details: errorDetails },
@@ -3776,13 +3739,8 @@ export class AgentExecutor extends EventEmitter {
           const cleanedMessages = this.stripImageBlocks(this.session.getMessages())
           this.session.restoreMessages(cleanedMessages)
 
-          this.session.addMessage({
-            role: 'user',
-            content: [{
-              type: 'text',
-              text: `[System notice: The previous assistant turn failed because the provider could not process image content: "${errorMsg.slice(0, 500)}". Image attachments have been removed from the conversation. The image may be corrupted, unsupported by this model, or oversized. Reason about what happened and try alternative approaches — for example, inspect the file with shell or code tools instead of viewing it directly.]`
-            }]
-          })
+          this.addRuntimeNotice(
+            `[System notice: The previous assistant turn failed because the provider could not process image content: "${errorMsg.slice(0, 500)}". Image attachments have been removed from the conversation. The image may be corrupted, unsupported by this model, or oversized. Reason about what happened and try alternative approaches — for example, inspect the file with shell or code tools instead of viewing it directly.]`)
 
           // History already contains the original trigger message — don't re-add it.
           await this.executeTurn(dispatch, { skipTriggerMessage: true, nested: true })
@@ -3856,7 +3814,7 @@ export class AgentExecutor extends EventEmitter {
         this._ownerStateTransitionRequested = false
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        this.session.addMessage({ role: 'user', content: `[System] Turn ended by owner; state set to ${this._lastTargetState ?? 'idle'}.` })
+        this.addRuntimeNotice(`[System] Turn ended by owner; state set to ${this._lastTargetState ?? 'idle'}.`)
         this.emitEvent({
           type: 'turn_complete',
           payload: { content: [], interrupted: true },
@@ -4001,17 +3959,11 @@ export class AgentExecutor extends EventEmitter {
       // Same reasoning as the stale branch below: a recovery the model cannot
       // see is a recovery it cannot reason about. The corrupt record carries no
       // timing, so this notice states only what is actually known.
-      this.session.addMessage({
-        role: 'user',
-        content: [{
-          type: 'text',
-          text: '[System notice: the runtime could not read the previous turn checkpoint (the record was corrupt), ' +
-            `so how long ago that turn ran is unknown. The current time is ${formatTimestamp(now)}. ` +
-            'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
-            'Treat any work from before this point as unverified, and decide whether to redo it.]',
-        }],
-      })
-      this.session.flushToLoop()
+      this.addRuntimeNotice(
+        '[System notice: the runtime could not read the previous turn checkpoint (the record was corrupt), ' +
+        `so how long ago that turn ran is unknown. The current time is ${formatTimestamp(now)}. ` +
+        'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
+        'Treat any work from before this point as unverified, and decide whether to redo it.]')
       this.emitRuntimeEvent('loop.recovered', { reason: 'malformed_checkpoint' })
       return null
     }
@@ -4044,17 +3996,11 @@ export class AgentExecutor extends EventEmitter {
     // Inject as real conversation history (not an audit-only context entry, which
     // restoreMessages strips) so the recovered agent actually sees that its prior
     // turn was cut off and can decide how to proceed.
-    this.session.addMessage({
-      role: 'user',
-      content: [{
-        type: 'text',
-        text: `[System notice: the previous ${checkpoint.scope} turn ${checkpoint.id} (${checkpoint.event_type}) was interrupted before clean completion — likely a crash, reload, or hard shutdown. ` +
-          `That turn started at ${formatTimestamp(checkpoint.started_at)} and last made progress at ${formatTimestamp(checkpoint.updated_at)}; it is now ${formatTimestamp(now)}, so about ${elapsed} has passed since it began. ` +
-          'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
-          'If that turn had unfinished work, decide whether to resume it — and account for the elapsed time before acting on anything time-sensitive.]',
-      }],
-    })
-    this.session.flushToLoop()
+    this.addRuntimeNotice(
+      `[System notice: the previous ${checkpoint.scope} turn ${checkpoint.id} (${checkpoint.event_type}) was interrupted before clean completion — likely a crash, reload, or hard shutdown. ` +
+      `That turn started at ${formatTimestamp(checkpoint.started_at)} and last made progress at ${formatTimestamp(checkpoint.updated_at)}; it is now ${formatTimestamp(now)}, so about ${elapsed} has passed since it began. ` +
+      'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
+      'If that turn had unfinished work, decide whether to resume it — and account for the elapsed time before acting on anything time-sensitive.]')
     if (this.getState() !== 'stopped') this.setState('idle')
     this.emitRuntimeEvent('loop.recovered', { reason: 'stale_checkpoint' })
     return recovered
@@ -5379,21 +5325,10 @@ export class AgentExecutor extends EventEmitter {
         })
       } catch { /* non-fatal */ }
       this.compactionFailedThisTurn = true
-      // One note per distinct failure, written with the [Context: …] prefix
-      // so the loop renders it as an injected-context block (the model still
-      // receives it as a user-role message).
+      // One note per distinct failure.
       if (this.lastCompactionFailureDetail !== detail) {
         this.lastCompactionFailureDetail = detail
-        this.session.addMessage({
-          role: 'user',
-          content: [{ type: 'text', text: `[Context: System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.` }]
-        })
-        this.session.flushToLoop()
-        this.emitEvent({
-          type: 'context_injected',
-          payload: { category: 'System', content: `Compaction failed — history preserved, will retry. (${detail})` },
-          timestamp: Date.now()
-        })
+        this.addRuntimeNotice(`[System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.`)
       }
       this.emitRuntimeEvent('loop.compaction_failed', { reason: detail, trigger: reason })
       return tokenCounter.estimateMessagesTokens(this.session.getMessages())
@@ -6135,18 +6070,28 @@ export class AgentExecutor extends EventEmitter {
   private noteSilentTurn(): boolean {
     if (!this.ownerChatUnanswered) return false
     if (this.getState() === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) return false
-    const message: LLMMessage = { role: 'user', content: [{ type: 'text', text: `[Context: System] ${SILENT_TURN_NOTICE}` }] }
-    this.session.addMessage(message)
-    this.session.flushToLoop()
     try {
       this.session.getWorkspace().insertLog('warn', 'executor', 'silent_turn', null, 'Turn would have ended without a reply to the owner; asked the model to reply')
     } catch { /* observability is never fatal */ }
+    this.addRuntimeNotice(`[System] ${SILENT_TURN_NOTICE}`)
+    return true
+  }
+
+  /**
+   * Model input the runtime writes itself (nudges, recovery notices). It goes
+   * into history as a user row and to the live view with the exact text the
+   * model receives; parseLoopToDisplay shows the row as a System notice.
+   * Its text must start with one of RUNTIME_NOTICE_PREFIXES.
+   */
+  private addRuntimeNotice(text: string): void {
+    const message: LLMMessage = { role: 'user', content: [{ type: 'text', text }] }
+    this.session.addMessage(message)
+    this.session.flushToLoop()
     this.emitEvent({
       type: 'context_injected',
-      payload: { category: 'System', content: SILENT_TURN_NOTICE, ...(message.seq !== undefined ? { seq: message.seq } : {}) },
+      payload: { category: 'System', content: text, ...(message.seq !== undefined ? { seq: message.seq } : {}) },
       timestamp: Date.now()
     })
-    return true
   }
 
   /** Deliver queued chats as consecutive user rows after the turn's trigger. */

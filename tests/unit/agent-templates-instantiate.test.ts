@@ -303,6 +303,15 @@ describe('AgentTemplatesService', () => {
     return { service, folder: join(dir, 'templates') }
   }
 
+  it('saves a template whose instructions are empty', async () => {
+    const { service, folder } = makeService(new Map())
+    await service.create({ name: 'Blank' })
+    const config = readConfig(join(folder, 'blank.adf'))
+    const saved = service.setConfig({ id: 'blank', config: { ...config, instructions: '', description: 'edited' } })
+    expect(saved).toEqual({ success: true })
+    expect(readConfig(join(folder, 'blank.adf'))).toMatchObject({ instructions: '', description: 'edited' })
+  })
+
   it('renames the file, the agent inside it, and the settings that named it', async () => {
     const settings = new Map<string, unknown>()
     const { service, folder } = makeService(settings)
