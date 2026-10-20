@@ -42,6 +42,16 @@ describe('mesh controls', () => {
     expect(f.calls).toEqual(['set meshEnabled=false', 'ws.stopAll', 'mesh.disable'])
   })
 
+  it('mesh on/off persist meshEnabled by default and not with persist: false (the live Mesh switch)', () => {
+    const f = fakes()
+    f.controls.disableMesh({ persist: false })
+    f.controls.enableMesh({ persist: false })
+    expect('meshEnabled' in f.data).toBe(false)
+    expect(f.calls).toEqual(['ws.stopAll', 'mesh.disable', 'mesh.enable', 'registerLoaded'])
+    f.controls.enableMesh()
+    expect(f.data.meshEnabled).toBe(true)
+  })
+
   it('server start/stop persist meshServerEnabled by default and not with persist: false', async () => {
     const f = fakes()
     expect(await f.controls.stopServer({ persist: false })).toEqual({ success: true, running: false, port: 7295, host: '127.0.0.1' })
@@ -76,6 +86,25 @@ describe('/network/server/start|stop?persist=', () => {
     expect((await server.inject({ method: 'POST', url: '/network/server/start' })).statusCode).toBe(200)
     expect((await server.inject({ method: 'POST', url: '/network/server/stop?persist=maybe' })).statusCode).toBe(400)
     expect(seen).toEqual([['stop', { persist: false }], ['start', { persist: false }], ['start', { persist: true }]])
+  })
+
+  it('/network/mesh/enable|disable take the same persist query', async () => {
+    const seen: unknown[] = []
+    const settings = { get: () => undefined, set: () => {} }
+    const runtime = new RuntimeService({ settings, enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    const server = createDaemonHttpApi(runtime, {
+      settingsStore: settings,
+      networkService: {
+        getStatus: () => ({}),
+        enableMesh: (opts) => { seen.push(['enable', opts]); return { success: true } },
+        disableMesh: (opts) => { seen.push(['disable', opts]); return { success: true } },
+      },
+    })
+    closers.push(() => server.close())
+    expect((await server.inject({ method: 'POST', url: '/network/mesh/disable?persist=0' })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'POST', url: '/network/mesh/enable' })).statusCode).toBe(200)
+    expect((await server.inject({ method: 'POST', url: '/network/mesh/enable?persist=nope' })).statusCode).toBe(400)
+    expect(seen).toEqual([['disable', { persist: false }], ['enable', { persist: true }]])
   })
 })
 

@@ -148,8 +148,8 @@ export interface DaemonWsService {
 
 export interface DaemonNetworkService {
   getStatus(): Record<string, unknown>
-  enableMesh?(): Promise<Record<string, unknown>> | Record<string, unknown>
-  disableMesh?(): Promise<Record<string, unknown>> | Record<string, unknown>
+  enableMesh?(opts?: { persist?: boolean }): Promise<Record<string, unknown>> | Record<string, unknown>
+  disableMesh?(opts?: { persist?: boolean }): Promise<Record<string, unknown>> | Record<string, unknown>
   getRecentTools?(limit?: number): Record<string, unknown>
   getServerStatus?(): Record<string, unknown>
   /** `persist: false` (Studio's MESH_SERVER_START/STOP) leaves meshServerEnabled as it is. */
@@ -1258,21 +1258,25 @@ export function createDaemonHttpApi(
     return opts.networkService.getStatus()
   })
 
-  server.post('/network/mesh/enable', async (request, reply) => {
+  server.post<{ Querystring: { persist?: string } }>('/network/mesh/enable', async (request, reply) => {
     if (!opts.networkService) return unavailable(reply, 'Network service is not configured.')
     if (!opts.networkService.enableMesh) return methodNotAllowed(reply, 'Mesh enable is not configured.')
+    const persist = request.query.persist
+    if (persist !== undefined && !['1', '0', 'true', 'false'].includes(persist)) return badRequest(reply, 'persist must be 1, 0, true or false')
     try {
-      return await opts.networkService.enableMesh()
+      return await opts.networkService.enableMesh({ persist: persist !== '0' && persist !== 'false' })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
   })
 
-  server.post('/network/mesh/disable', async (request, reply) => {
+  server.post<{ Querystring: { persist?: string } }>('/network/mesh/disable', async (request, reply) => {
     if (!opts.networkService) return unavailable(reply, 'Network service is not configured.')
     if (!opts.networkService.disableMesh) return methodNotAllowed(reply, 'Mesh disable is not configured.')
+    const persist = request.query.persist
+    if (persist !== undefined && !['1', '0', 'true', 'false'].includes(persist)) return badRequest(reply, 'persist must be 1, 0, true or false')
     try {
-      return await opts.networkService.disableMesh()
+      return await opts.networkService.disableMesh({ persist: persist !== '0' && persist !== 'false' })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

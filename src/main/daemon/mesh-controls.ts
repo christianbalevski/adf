@@ -5,9 +5,11 @@
 //
 // Mesh off closes the agents' WebSocket connections, as Studio's
 // MESH_DISABLE does: a disabled mesh must not keep peer connections open.
-// Server start/stop persist meshServerEnabled by default (the CLI's choice
-// survives a restart); `persist: false` is Studio's MESH_SERVER_START/STOP,
-// which change the running server only, as embedded Studio does.
+// Mesh enable/disable persist meshEnabled and server start/stop persist
+// meshServerEnabled by default (the CLI's choice survives a restart);
+// `persist: false` is Studio's Mesh switch (MESH_ENABLE/DISABLE,
+// MESH_SERVER_START/STOP), which changes the live state only: Studio's "Start
+// with the runtime" checkbox writes meshEnabled itself.
 
 export interface MeshControlDeps {
   settings: { set(key: string, value: unknown): void }
@@ -35,7 +37,7 @@ export interface MeshControlDeps {
 }
 
 export interface ServerSwitchOptions {
-  /** Default true: write meshServerEnabled. */
+  /** Default true: write meshEnabled (mesh) or meshServerEnabled (server). */
   persist?: boolean
 }
 
@@ -43,18 +45,19 @@ export function createMeshControls(deps: MeshControlDeps) {
   const log = deps.log ?? console
   const serverState = () => ({ running: deps.server.isRunning(), port: deps.server.getPort(), host: deps.server.getHost(), ...(deps.server.getLanAddresses ? { lanAddresses: deps.server.getLanAddresses() } : {}) })
   return {
-    enableMesh: () => {
+    enableMesh: (opts: ServerSwitchOptions = {}) => {
       // Persist so an explicit enable survives restart (boot auto-enables
-      // unless meshEnabled === false) — parity with Studio's MESH_ENABLE IPC.
-      deps.settings.set('meshEnabled', true)
+      // unless meshEnabled === false); Studio's live switch sends persist: false.
+      if (opts.persist !== false) deps.settings.set('meshEnabled', true)
       if (!deps.mesh.isEnabled()) deps.mesh.enableMesh()
       deps.registerLoaded()
       return { success: true, meshEnabled: deps.mesh.isEnabled(), agents: deps.mesh.getAgentStatuses() }
     },
-    disableMesh: () => {
+    disableMesh: (opts: ServerSwitchOptions = {}) => {
       // Persist first: boot auto-enables mesh when meshEnabled !== false, so
-      // without this a user's disable would not survive restart.
-      deps.settings.set('meshEnabled', false)
+      // without this a CLI disable would not survive restart. Studio's live
+      // switch sends persist: false.
+      if (opts.persist !== false) deps.settings.set('meshEnabled', false)
       deps.ws.stopAll()
       log.log('[Mesh] Disabled on request: WebSocket connections closed')
       deps.mesh.disableMesh()

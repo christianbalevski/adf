@@ -363,9 +363,9 @@ One line at the top of the tab: the networks, the LAN address, Tailscale, and th
 - **Server URL** — Clickable link to the server root
 - **Agent visibility** — "N agents visible on LAN · N public · N private": agents by `messaging.visibility` (`lan`; `public`; the rest)
 
-### Mesh Toggle
+### Mesh
 
-Enable or disable the mesh network. When enabled, agents with configured serving or messaging can register on the mesh. The mesh toggle, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
+The **Mesh** switch turns the mesh and its server on or off now. Turning it off stops agent-to-agent messaging, agent websites and `serving.api` routes, and peer runtimes' delivery until it is on again. **Start with the runtime** decides whether the mesh starts when the runtime starts (`meshEnabled`); the switch does not change it. **Kill** in the status bar also turns the mesh off. The switch, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
 
 ### LAN Access
 

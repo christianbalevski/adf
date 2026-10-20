@@ -11782,9 +11782,15 @@ Example 200 (`application/json`):
 
 **Enable mesh registration (persisted)**
 
-Persists meshEnabled: true and re-registers the loaded agents. No body.
+Persists meshEnabled: true and re-registers the loaded agents. No body. With `persist=0` the setting is left as it is.
 
 Operation `enableMesh` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its "Start with the runtime" checkbox writes meshEnabled). Default `1`. |
 
 **Responses**
 
@@ -11824,9 +11830,15 @@ Example 200 (`application/json`):
 
 **Disable mesh registration (persisted)**
 
-Persists meshEnabled: false and unregisters mesh agents without unloading them. No body.
+Persists meshEnabled: false and unregisters mesh agents without unloading them. No body. With `persist=0` the setting is left as it is.
 
 Operation `disableMesh` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its "Start with the runtime" checkbox writes meshEnabled). Default `1`. |
 
 **Responses**
 
