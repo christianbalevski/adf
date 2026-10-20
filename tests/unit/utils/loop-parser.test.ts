@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { parseLoopToDisplay, parseLoopWithToolPairs } from '../../../src/shared/utils/loop-parser'
+import { formatTurnErrorRow, parseLoopToDisplay, parseLoopWithToolPairs, parseTurnErrorRow } from '../../../src/shared/utils/loop-parser'
+import { persistedErrorDetails } from '../../../src/main/runtime/agent-executor'
 import type { LoopEntry } from '../../../src/shared/types/adf-v02.types'
 
 const IMG_URL = 'data:image/png;base64,aGVsbG8='
@@ -70,5 +71,32 @@ describe('loop-parser turn error marker', () => {
   it('does not treat ordinary user text as a turn error', () => {
     const out = parseLoopToDisplay([userEntry([{ type: 'text', text: 'Turn error handling looks fine' }])])
     expect(out[0].type).toBe('user')
+  })
+
+  it('keeps the error details across a reload', () => {
+    const details = JSON.stringify({ statusCode: 400, responseBody: '{"error":"bad"}' }, null, 2)
+    const text = formatTurnErrorRow('400 Bad Request', details)
+    for (const parse of [parseLoopToDisplay, parseLoopWithToolPairs]) {
+      const out = parse([userEntry([{ type: 'text', text }], 9)])
+      expect(out[0].type).toBe('error')
+      expect(out[0].content).toBe('400 Bad Request')
+      expect(out[0].metadata?.details).toBe(details)
+    }
+    expect(parseTurnErrorRow(formatTurnErrorRow('no details'))).toEqual({ message: 'no details' })
+    expect(parseTurnErrorRow('plain text')).toBeNull()
+  })
+})
+
+describe('persisted error details', () => {
+  it('keeps status, code and a bounded body, and nothing else', () => {
+    const error = Object.assign(new Error('boom'), { statusCode: 529, code: 'overloaded', responseBody: 'x'.repeat(5000), responseHeaders: { a: 'b' } })
+    const parsed = JSON.parse(persistedErrorDetails(error)!)
+    expect(parsed.statusCode).toBe(529)
+    expect(parsed.code).toBe('overloaded')
+    expect(parsed.responseBody.length).toBeLessThanOrEqual(1501)
+    expect(parsed.responseHeaders).toBeUndefined()
+    expect(parsed.stack).toBeUndefined()
+    expect(persistedErrorDetails(new Error('plain'))).toBeUndefined()
+    expect(persistedErrorDetails('string error')).toBeUndefined()
   })
 })

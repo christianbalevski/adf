@@ -25,7 +25,7 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { sliceWellFormed, toWellFormed } from '../../shared/utils/well-formed'
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
-import { parseLoopToDisplay, TURN_ERROR_MARKER } from '../../shared/utils/loop-parser'
+import { parseLoopToDisplay, formatTurnErrorRow } from '../../shared/utils/loop-parser'
 // Shared with deriveLoopConfig — both enforcement points must read a duplicated
 // declaration the same way, or a side loop inherits an un-gated copy of a tool
 // the executor treats as restricted.
@@ -474,6 +474,27 @@ function buildErrorDetails(error: unknown, message: string): string {
   let json: string
   try { json = JSON.stringify(details, null, 2) } catch { json = message }
   return json.length > 20_000 ? `${json.slice(0, 20_000)}\n…truncated` : json
+}
+
+/**
+ * The part of `buildErrorDetails` worth keeping in the loop row: status, code
+ * and response body, bounded. The row is model-visible, so stack and headers
+ * stay in the live event only. Undefined when the error carries none of them.
+ */
+export function persistedErrorDetails(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const obj = error as Record<string, unknown>
+  const details: Record<string, unknown> = {}
+  for (const key of ['statusCode', 'status', 'code', 'url']) {
+    if (typeof obj[key] === 'string' || typeof obj[key] === 'number') details[key] = obj[key]
+  }
+  if (obj.responseBody !== undefined && obj.responseBody !== null) {
+    let body: string
+    try { body = typeof obj.responseBody === 'string' ? obj.responseBody : JSON.stringify(obj.responseBody) } catch { body = String(obj.responseBody) }
+    details.responseBody = body.length > 1500 ? `${body.slice(0, 1500)}…` : body
+  }
+  if (Object.keys(details).length === 0) return undefined
+  return JSON.stringify(details, null, 2)
 }
 
 export type AgentState = 'idle' | 'thinking' | 'tool_use' | 'awaiting_approval' | 'awaiting_ask' | 'suspended' | 'error' | 'stopped'
@@ -3533,7 +3554,7 @@ export class AgentExecutor extends EventEmitter {
       // cleanup or provider-facing claims.
       if (error instanceof PreLlmHookError) {
         this.enterErrorState('turn_error')
-        this.persistTurnError(errorMsg)
+        this.persistTurnError(errorMsg, error)
         try {
           this.session.getWorkspace().insertLog('error', 'executor', 'pre_llm_hook_error', null, errorMsg.slice(0, 300))
         } catch { /* observability is never fatal */ }
@@ -3567,7 +3588,7 @@ export class AgentExecutor extends EventEmitter {
         this.enterErrorState('auth')
         try { this.session.getWorkspace().insertLog('error', 'executor', 'provider_credentials_invalid', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
         const fixHint = authFixHint(this.provider)
-        this.persistTurnError(`${providerLabel} provider isn't authenticated: ${errorMsg} — ${fixHint}`)
+        this.persistTurnError(`${providerLabel} provider isn't authenticated: ${errorMsg} — ${fixHint}`, error)
         this.emitEvent({
           type: 'error',
           payload: {
@@ -3718,11 +3739,11 @@ export class AgentExecutor extends EventEmitter {
           return
         } catch (retryError) {
           // If retry also fails, show both errors
-          this.persistTurnError(`${errorMsg}\n\nRetry after history cleanup also failed: ${String(retryError)}`)
+          this.persistTurnError(`${errorMsg}\n\nRetry after history cleanup also failed: ${String(retryError)}`, error)
           this.emitEvent({
             type: 'error',
             payload: {
-              error: `Failed to auto-fix provider compatibility issue.\n\nOriginal error: ${errorMsg}\n\nRetry error: ${String(retryError)}\n\n💡 Try using the 'loop_compact' tool to reset the conversation history.`,
+              error: `Failed to auto-fix provider compatibility issue.\n\nOriginal error: ${errorMsg}\n\nRetry error: ${String(retryError)}\n\nRun /compact to compact the conversation history.`,
               details: errorDetails
             },
             timestamp: Date.now()
@@ -3765,7 +3786,7 @@ export class AgentExecutor extends EventEmitter {
           this._inImageRecovery = false
         }
       } else {
-        this.persistTurnError(errorMsg)
+        this.persistTurnError(errorMsg, error)
         this.emitEvent({
           type: 'error',
           payload: { error: errorMsg, details: errorDetails },
@@ -4207,12 +4228,14 @@ export class AgentExecutor extends EventEmitter {
    * bubble for their own messages. The row is read back as an `error` display
    * entry (loop-parser TURN_ERROR_MARKER) and is model-visible like any other
    * user-role notice, so the next turn knows the previous one never completed.
+   * The error's status and body ride along (`persistedErrorDetails`), so the
+   * inspector still has them after a reload.
    */
-  private persistTurnError(errorMsg: string): void {
+  private persistTurnError(errorMsg: string, error?: unknown): void {
     try {
       this.session.addMessage({
         role: 'user',
-        content: [{ type: 'text', text: `${TURN_ERROR_MARKER}${errorMsg.slice(0, 2000)}` }]
+        content: [{ type: 'text', text: formatTurnErrorRow(errorMsg.slice(0, 2000), persistedErrorDetails(error)) }]
       })
       this.session.flushToLoop()
     } catch { /* non-fatal: the live event still fires */ }
