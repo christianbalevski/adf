@@ -74,10 +74,10 @@ export const DOCS = {
 
   // Settings tabs
   settings: guideUrl('settings'),
-  settingsGeneral: guideUrl('settings', 'application-settings'),
+  settingsGeneral: guideUrl('settings', 'studio'),
   settingsSystemPrompt: guideUrl('settings', 'system-prompt'),
   agentTemplates: guideUrl('agent-templates'),
-  settingsUsage: guideUrl('settings', 'token-usage'),
+  settingsUsage: guideUrl('settings', 'usage'),
   settingsIdentity: guideUrl('settings', 'identity'),
   settingsProviders: guideUrl('settings', 'providers'),
   settingsProviderCopies: guideUrl('settings', 'per-adf-provider-configurations'),
@@ -85,7 +85,7 @@ export const DOCS = {
   settingsMcp: guideUrl('settings', 'mcp-servers'),
   settingsSkills: guideUrl('skills'),
   settingsChannels: guideUrl('settings', 'channel-adapters'),
-  settingsNetworking: guideUrl('settings', 'web-mesh-server'),
+  settingsNetworking: guideUrl('settings', 'networking'),
   settingsCompute: guideUrl('compute', 'environments'),
   settingsGuard: guideUrl('settings', 'security-guard--locked-fields'),
 

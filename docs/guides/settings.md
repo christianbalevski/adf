@@ -357,7 +357,7 @@ A small set of per-agent `security.*` fields are **guard toggles**: they decide 
 
 A second tier is **locked by default** rather than hard-denied: `security.allow_local_fetch` (the `sys_fetch`/`ws_connect` SSRF escape hatch — default `false`; loopback is allowed by default, and when this is true private/LAN/CGNAT destinations are also permitted **except** the local ADF daemon control API and cloud-metadata/link-local addresses, which stay blocked regardless) and the `stream_bind` capability gates are locked by default in the runtime (for every agent, existing and new). An agent's write is denied but surfaces as a protection request the owner can approve as a one-time override — or the owner removes the lock in the config panel.
 
-## Web (Mesh Server)
+## Networking
 
 **Settings → Networking** shows the status of the mesh HTTP server and all agents currently serving content.
 
@@ -461,7 +461,7 @@ Most individual tools (fs_read, fs_list, db_query, etc.) are self-explanatory fr
 
 See [Saving](#saving). **Back to app** closes Settings.
 
-## Theme
+## Appearance
 
 **Studio → Appearance** has:
 
@@ -470,7 +470,7 @@ See [Saving](#saving). **Back to app** closes Settings.
 - **Chat width**: **Comfortable** or **Full**, for the chat when it is in the center.
 - **Font family** and **UI scale**.
 
-## Token Usage
+## Usage
 
 ADF Studio tracks token usage across all agents. View it in **Settings → Usage**. Home's "tokens today" opens the same page.
 
@@ -504,7 +504,9 @@ ADF Studio monitors directories for `.adf` files. When a new file appears in a t
 - **Stop all** — Stop all agents in a directory
 - **Rescan** (right-click the folder row) — Read the folder again
 
-## Application Settings
+## Studio
+
+The **Studio** pages apply to this app on this computer: [Appearance](#appearance), **Notifications** (system notifications, the menu bar icon), **Updates** (automatic update checks), [Privacy](#privacy), **About** and [Connections](#connection).
 
 ### File Associations
 
