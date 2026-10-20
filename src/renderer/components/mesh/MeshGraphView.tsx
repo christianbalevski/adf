@@ -61,7 +61,7 @@ import { useMesh } from '../../hooks/useMesh'
 import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
-import { selectMapAgents, mapTarget, mergeBurn, mergePeers, runtimeOfRegion, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { selectMapAgents, mapTarget, mergeBurn, mergePeers, runtimeOfRegion, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, type MapPeer, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
 import { useRuntimesStore, runtimeHeader } from '../../stores/runtimes.store'
 import { apiFor, useOpenAgentKey } from '../../utils/runtime-api'
 import { reportFailure } from '../../stores/failure-notices.store'
@@ -255,7 +255,7 @@ function buildEdges(
 }
 
 /** The fleet polls of the runtimes other than This computer (multi-runtime.md §6.4). */
-interface RemotePollState {
+export interface RemotePollState {
   /** Message-log cursor per runtime: only the tail comes down (the map draws this computer's log). */
   seq: Record<string, number>
   /** The last refusal said per runtime, so a failing poll is said once, not every 5 s. */
@@ -304,6 +304,17 @@ async function setRuntimeDids(state: RemotePollState): Promise<Set<string>> {
     }
   }))
   return new Set(runtimes.map((r) => state.dids[r.id]).filter((d): d is string => !!d))
+}
+
+/**
+ * The peer stations the map draws, as one list: this computer's poll, then
+ * each other runtime's, without the station of a runtime of the set (by the
+ * runtime DIDs read so far, so a runtime that is down now is still known).
+ * With This computer only, this computer's list as it is, and no call.
+ */
+export async function fleetPeers<P extends MapPeer>(own: P[], remote: ReadonlyArray<{ peers: unknown[] }>, state: RemotePollState): Promise<P[]> {
+  if (useRuntimesStore.getState().runtimes.length < 2) return own
+  return mergePeers([own, ...remote.map((r) => r.peers as P[])], await setRuntimeDids(state))
 }
 
 /** Region labels and greying for the runtimes other than This computer; undefined with This computer only. */
@@ -1120,7 +1131,6 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         ? (window as unknown as { __fleetPeersOverride?: unknown }).__fleetPeersOverride
         : undefined
       const nextPeers = ((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? []
-      setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(nextPeers) ? prev : nextPeers))
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       // Every other runtime of the set: its own poll, into its slice (multi-runtime.md §6.4).
       const remote = await pollRuntimes(remotePolls.current)
@@ -1129,10 +1139,10 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       } else {
         const merged = mergeBurn(burn, remote.map((r) => ({ runtimeId: r.runtimeId, burn: r.burn })))
         if (merged) setBurn(merged)
-        const peerLists = [peersOverride ? nextPeers : (peers as typeof nextPeers), ...remote.map((r) => r.peers as typeof nextPeers)]
-        const dedup = mergePeers(peerLists, await setRuntimeDids(remotePolls.current))
-        setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(dedup) ? prev : dedup))
       }
+      // One list, set once: a runtime's own station never shows between two sets.
+      const shownPeers = await fleetPeers(nextPeers as Array<(typeof nextPeers)[number] & MapPeer>, remote, remotePolls.current)
+      setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(shownPeers) ? prev : shownPeers))
       // Boot animations end when the poll confirms the agent is up — or
       // after 30s if the start silently failed (button reappears)
       const { starting, clearStarting } = useFleetStore.getState()
