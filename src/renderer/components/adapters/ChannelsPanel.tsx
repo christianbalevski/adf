@@ -68,7 +68,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
   useEffect(() => { void refreshStatus() }, [refreshStatus])
   useEffect(() => { void refreshFiles() }, [refreshFiles])
-  useEffect(() => { loadTrackedAdfFiles().then(setAgents).catch(() => setAgents([])) }, [])
+  useEffect(() => { loadTrackedAdfFiles(api).then(setAgents).catch(() => setAgents([])) }, [api])
 
   // Live status: the event carries no file path, so re-pull the per-agent view.
   useEffect(() => {
