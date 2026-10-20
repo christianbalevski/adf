@@ -149,7 +149,7 @@ export function EditorToolbar({ editor, rawMode, onToggleRawMode }: EditorToolba
       {/* Table context toolbar — shown when cursor is inside a table */}
       {isInTable && (
         <div className="flex items-center gap-1 px-4 py-1 border-t border-neutral-100 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800">
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 font-medium uppercase tracking-wider mr-1">Table</span>
+          <span className="text-[10px] text-[var(--adf-ui-text-subtle)] font-medium uppercase tracking-wider mr-1">Table</span>
           <button
             onClick={() => editor.chain().focus().addColumnBefore().run()}
             className="px-1.5 py-0.5 text-[11px] rounded text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"

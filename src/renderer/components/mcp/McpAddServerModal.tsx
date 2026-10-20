@@ -480,7 +480,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
       <div className="flex items-start justify-between gap-3">
         <div>
           <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Interactive authorization (OAuth)</span>
-          <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+          <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
             {'Enable only if the server documents a login command (e.g. npx <pkg> auth) that stores tokens for later runs — most servers don’t need this.'}
           </p>
         </div>
@@ -500,7 +500,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             />
           </div>
           <div>
-            <label className={labelCls}>Callback port <span className="text-neutral-400">(usually auto-detected)</span></label>
+            <label className={labelCls}>Callback port <span className="text-[var(--adf-ui-text-subtle)]">(usually auto-detected)</span></label>
             <input
               type="number" min={1} max={65535}
               value={draft.authPort ?? ''}
@@ -590,7 +590,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                     {/* OAuth-only entries have nothing to paste — no "Requires:" line.
                         Dual-mode entries surface their bearer var as an optional token. */}
                     {!entry.prerequisite && entry.oauth && entry.bearerTokenEnvVar && (
-                      <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">Sign in, or paste {entry.bearerTokenEnvVar}</p>
+                      <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">Sign in, or paste {entry.bearerTokenEnvVar}</p>
                     )}
                     {!entry.prerequisite && !entry.oauth && requiredKeys.length > 0 && (
                       <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">Requires: {requiredKeys.join(', ')}</p>
@@ -603,7 +603,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               })}
             </div>
             {visibleEntries.length === 0 && (
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 py-4 text-center">No servers match — try a different search, or add a custom one below.</p>
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)] py-4 text-center">No servers match — try a different search, or add a custom one below.</p>
             )}
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -622,7 +622,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5">Streamable HTTP MCP endpoint</p>
             </button>
           </div>
-          <p className="text-[9px] text-neutral-400 dark:text-neutral-500">
+          <p className="text-[9px] text-[var(--adf-ui-text-subtle)]">
             {registryUpdatedAt ? `Registry updated ${registryUpdatedAt} · ` : 'Registry · '}{registryEntries.length} servers{registrySource === 'bundled' ? ' · offline copy' : ''}
           </p>
         </div>
@@ -672,7 +672,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             </div>
           </div>
           {registrationSourceLine(draft) && (
-            <p className="text-[10px] font-mono text-neutral-400 dark:text-neutral-500 truncate">{registrationSourceLine(draft)}</p>
+            <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft)}</p>
           )}
           {(draft.description || registryEntry?.description) && (
             <p className="text-[10px] text-neutral-500 dark:text-neutral-400">{draft.description ?? registryEntry?.description}</p>
@@ -687,7 +687,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           {/* Args */}
           {!isHttp && (
             <div>
-              <label className={labelCls}>Args {!isCustom && <span className="text-neutral-400 dark:text-neutral-500">(appended after package)</span>}</label>
+              <label className={labelCls}>Args {!isCustom && <span className="text-[var(--adf-ui-text-subtle)]">(appended after package)</span>}</label>
               <div className="space-y-1">
                 {(draft.args ?? []).map((arg, i) => (
                   <div key={i} className="flex items-center gap-1">
@@ -696,7 +696,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                       onChange={(e) => { const next = [...(draft.args ?? [])]; next[i] = e.target.value; patch({ args: next }) }}
                       className={REGISTRY_ARG_PLACEHOLDER_RE.test(arg) ? inputAmberCls : inputCls}
                     />
-                    <button onClick={() => patch({ args: (draft.args ?? []).filter((_, j) => j !== i) })} className="text-neutral-400 hover:text-red-500 text-xs px-1">x</button>
+                    <button onClick={() => patch({ args: (draft.args ?? []).filter((_, j) => j !== i) })} className="text-[var(--adf-ui-text-subtle)] hover:text-red-500 text-xs px-1">x</button>
                   </div>
                 ))}
                 <button onClick={() => patch({ args: [...(draft.args ?? []), ''] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add arg</button>
@@ -727,11 +727,11 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                   Container
                 </button>
               </div>
-              <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+              <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                 {draft.runLocation === 'host' ? HOST_BOUNDARY_TEXT : CONTAINER_TEXT}
               </p>
               {draft.runLocation !== 'host' && isCustom && (
-                <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                   {CONTAINER_CUSTOM_COMMAND_TEXT}
                 </p>
               )}
@@ -750,7 +750,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           <div className="flex items-start justify-between gap-3 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
             <div>
               <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Available to agents</span>
-              <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+              <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                 Any agent may attach and use this server (via mcp_install).
                 {draft.agentVisible === undefined && (
                   <> Default for {isHttp ? 'remote' : draft.runLocation === 'host' ? 'host' : 'container'} servers: {suggestedAgentVisible(draft) ? 'on' : 'off'}.</>
@@ -881,7 +881,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                   <div key={f.path} className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
                     <div className="min-w-0">
                       <p className="text-[10px] font-mono text-neutral-600 dark:text-neutral-300 truncate">{f.path}</p>
-                      <p className="text-[9px] text-neutral-400 dark:text-neutral-500">
+                      <p className="text-[9px] text-[var(--adf-ui-text-subtle)]">
                         {payload
                           ? `${payload.fileName} (${payload.size < 2048 ? `${payload.size} B` : `${Math.round(payload.size / 1024)} KiB`}) selected`
                           : f.required
@@ -912,7 +912,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 </p>
               )}
               {!hasPendingRequiredCreds && hasPendingOptionalCreds && (
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                   {'Selected files are stored when you Connect — Save alone won’t store them.'}
                 </p>
               )}
@@ -976,7 +976,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                     {test.oauthRan ? 'Signed in and connected' : 'Connected'} ({test.location}) — {test.tools?.length ?? 0} tools discovered{test.authRan ? ', authorization completed' : ''}
                   </p>
                   {(test.tools?.length ?? 0) > 0 && (
-                    <button onClick={() => setShowTools(!showTools)} className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 mt-0.5">
+                    <button onClick={() => setShowTools(!showTools)} className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 mt-0.5">
                       {showTools ? 'Hide tools' : 'Show tools'}
                     </button>
                   )}
@@ -1000,7 +1000,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               {(test.notes?.length ?? 0) > 0 && (
                 <ul className="mt-1 space-y-0.5">
                   {test.notes!.map((n, i) => (
-                    <li key={i} className="text-[9px] text-neutral-400 dark:text-neutral-500">• {n}</li>
+                    <li key={i} className="text-[9px] text-[var(--adf-ui-text-subtle)]">• {n}</li>
                   ))}
                 </ul>
               )}
@@ -1011,7 +1011,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           <div className="flex items-center justify-between pt-1">
             <div>
               {!editing && !externallyRemoved && (
-                <button onClick={() => { setMode('choose'); setDraft(null); setFilePayloads({}); setTest({ phase: 'idle' }) }} className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
+                <button onClick={() => { setMode('choose'); setDraft(null); setFilePayloads({}); setTest({ phase: 'idle' }) }} className="text-[11px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200">
                   ← Back
                 </button>
               )}
@@ -1027,7 +1027,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             <div className="flex items-center gap-2">
               {!draft.lastVerifiedAt && test.phase !== 'done' && (
                 <Tooltip tip="You can save without connecting; the server row will show “Not verified” until a connect succeeds.">
-                  <span className="text-[9px] text-neutral-400 dark:text-neutral-500">Not verified yet</span>
+                  <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">Not verified yet</span>
                 </Tooltip>
               )}
               <button

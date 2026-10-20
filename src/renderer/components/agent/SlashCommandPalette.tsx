@@ -62,7 +62,7 @@ export function SlashCommandPalette({
           <span
             className={`shrink-0 font-mono text-xs ${
               command.muted
-                ? 'text-neutral-400 dark:text-neutral-500'
+                ? 'text-[var(--adf-ui-text-subtle)]'
                 : 'text-neutral-700 dark:text-neutral-200'
             }`}
           >
@@ -71,14 +71,14 @@ export function SlashCommandPalette({
           <span
             className={`min-w-0 flex-1 truncate text-[11px] ${
               command.muted
-                ? 'italic text-neutral-400 dark:text-neutral-500'
+                ? 'italic text-[var(--adf-ui-text-subtle)]'
                 : 'text-neutral-500 dark:text-neutral-400'
             }`}
           >
             {command.description}
           </span>
           {command.muted && (
-            <span className="shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500">(muted)</span>
+            <span className="shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">(muted)</span>
           )}
         </button>
       ))}

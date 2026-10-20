@@ -57,7 +57,7 @@ function ViewFallback() {
   return (
     <div className="h-full w-full flex items-center justify-center">
       <svg
-        className="h-8 w-8 animate-spin text-neutral-400 dark:text-neutral-500"
+        className="h-8 w-8 animate-spin text-[var(--adf-ui-text-subtle)]"
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"

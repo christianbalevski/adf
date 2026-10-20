@@ -141,7 +141,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
                   <span className="flex-1 text-neutral-700 dark:text-neutral-200">
                     {t.name}
                     {isRequired && (
-                      <span className="ml-1 text-neutral-400 dark:text-neutral-500">(required)</span>
+                      <span className="ml-1 text-[var(--adf-ui-text-subtle)]">(required)</span>
                     )}
                     {isIdentity && (
                       <span className="ml-1 text-amber-500 dark:text-amber-400" title="Contains API keys and private keys">
@@ -149,7 +149,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
                       </span>
                     )}
                   </span>
-                  <span className="text-neutral-400 dark:text-neutral-500 tabular-nums">
+                  <span className="text-[var(--adf-ui-text-subtle)] tabular-nums">
                     {t.row_count} {t.row_count === 1 ? 'row' : 'rows'}
                   </span>
                 </label>

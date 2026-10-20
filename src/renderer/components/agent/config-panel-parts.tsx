@@ -102,7 +102,7 @@ export function LockBadge({ locked, onClick, size = 'sm' }: { locked: boolean; o
       aria-pressed={false}
       aria-label="Lock"
       title={`${PERMISSION_TIPS.locked} Click to lock.`}
-      className="shrink-0 text-neutral-300 transition-colors hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400"
+      className="shrink-0 text-[var(--adf-ui-icon-muted)] transition-colors hover:text-[var(--adf-ui-text-subtle)]"
     >
       <LockIcon size={px + 2} open />
     </button>
@@ -158,7 +158,7 @@ export function SaveStatusLine({ status, onRetry, onDiscard }: { status: ConfigS
   if (status.kind === 'idle') return null
   const text = saveStatusText(status)
   if (status.kind !== 'error') {
-    return <span role="status" className="shrink-0 px-2 text-[10px] text-neutral-400 dark:text-neutral-500">{text}</span>
+    return <span role="status" className="shrink-0 px-2 text-[10px] text-[var(--adf-ui-text-subtle)]">{text}</span>
   }
   return (
     <span role="alert" className="flex min-w-0 items-center gap-1.5 px-2 text-[10px] text-[var(--adf-ui-danger)]">
@@ -175,7 +175,7 @@ export function UndoToast({ message, onUndo, onDismiss }: { message: string; onU
     <div role="status" className="sticky bottom-2 z-20 mx-3 mb-2 flex items-center gap-2 rounded-lg border border-hairline bg-surface-0 px-3 py-2 text-xs shadow-lg">
       <span className="min-w-0 flex-1 truncate text-[var(--adf-ui-text)]">{message}</span>
       <button type="button" onClick={onUndo} className="shrink-0 font-medium text-blue-500 hover:underline dark:text-blue-400">Undo</button>
-      <button type="button" onClick={onDismiss} aria-label="Dismiss" className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">&times;</button>
+      <button type="button" onClick={onDismiss} aria-label="Dismiss" className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200">&times;</button>
     </div>
   )
 }

@@ -39,7 +39,7 @@
        100   #eceef3  dark --ink                   light hover / dark text
        200   #e6e9ef  light --rule                 light hairline
        300   #c9ced8  light --rule-strong          light control border
-       400   #858b99  dark --ink-faint             meta text, both themes
+       400   #858b99  dark --ink-faint             dark meta text (light: 3.41:1, fails)
        500   #6b707c  light --ink-faint            faint text
        600   #474b54  light --ink-muted            light secondary text
        700   #333a49  dark --rule-strong           dark control border/hover
@@ -226,6 +226,18 @@ samp,
   --adf-ui-text: var(--ink);
   --adf-ui-text-muted: var(--ink-muted);
   --adf-ui-text-subtle: var(--ink-faint);
+  /* Contrast floors (WCAG 2.2 AA). text-subtle is the faintest text grey:
+     4.96:1 on --paper, 4.63 on --paper-sunken (dark 5.65 / 5.15). On a
+     filled chip (light --rule or neutral-100, dark neutral-700) it falls
+     below 4.5, so chips use text-subtle-on-fill (4.93 on light --rule,
+     4.62 on dark neutral-700). icon-muted is for off-state icons and
+     separator glyphs, 3:1 non-text minimum (3.29 on light --rule, 3.13 on
+     dark --rule). text-disabled is for inactive controls only; WCAG exempts
+     them. Dark values are in `.dark`. tests/unit/renderer/text-contrast
+     fails on the raw greys these replace. */
+  --adf-ui-text-subtle-on-fill: #5f6370;
+  --adf-ui-icon-muted: #7a7f8c;
+  --adf-ui-text-disabled: #c9ced8;
   --adf-ui-border: var(--rule-strong);
   --adf-ui-separator: var(--rule);
   --adf-ui-accent: var(--blue);
@@ -273,6 +285,10 @@ samp,
      --paper-raised (#11141b). */
   --adf-ui-surface-raised: var(--paper-sunken);
   --adf-ui-surface-hover: var(--rule);
+  /* Contrast floors; see :root. */
+  --adf-ui-text-subtle-on-fill: #a0a5b2;
+  --adf-ui-icon-muted: #6b707c;
+  --adf-ui-text-disabled: #474b54;
   /* Kept light on purpose (see :root) — full-color brand marks read on it. */
   --adf-ui-logo-tile: #f4f4f5;
   --adf-ui-logo-tile-border: rgba(0, 0, 0, 0.28);

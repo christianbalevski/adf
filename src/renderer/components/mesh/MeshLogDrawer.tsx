@@ -41,7 +41,7 @@ export function MeshLogDrawer({ debugInfo, onRefresh }: MeshLogDrawerProps) {
           <button
             onClick={onRefresh}
             title="Refresh"
-            className="p-1 rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            className="p-1 rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 12a9 9 0 11-2.64-6.36" />
@@ -51,7 +51,7 @@ export function MeshLogDrawer({ debugInfo, onRefresh }: MeshLogDrawerProps) {
           <button
             onClick={() => setShow(false)}
             title="Close"
-            className="p-1 rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            className="p-1 rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <path d="M18 6L6 18M6 6l12 12" />
@@ -72,7 +72,7 @@ export function MeshLogDrawer({ debugInfo, onRefresh }: MeshLogDrawerProps) {
 
       {!debugInfo ? (
         <div className="flex-1 flex items-center justify-center">
-          <p className="text-xs text-neutral-400 dark:text-neutral-500">Loading…</p>
+          <p className="text-xs text-[var(--adf-ui-text-subtle)]">Loading…</p>
         </div>
       ) : tab === 'feed' ? (
         <MessageFeed messages={debugInfo.messageLog} />
@@ -141,7 +141,7 @@ function MessageFeed({ messages }: { messages: MessageBusLogEntry[] }) {
         <div className="relative">
           <svg
             width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-            className="absolute left-2 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 pointer-events-none"
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--adf-ui-text-subtle)] pointer-events-none"
           >
             <circle cx="11" cy="11" r="7" />
             <path d="M21 21l-4.3-4.3" />
@@ -151,7 +151,7 @@ function MessageFeed({ messages }: { messages: MessageBusLogEntry[] }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Filter by agent, channel, content…"
-            className="w-full pl-7 pr-2 py-1 text-[11px] rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 border border-transparent focus:border-violet-300 dark:focus:border-violet-700 focus:bg-white dark:focus:bg-neutral-900 outline-none transition-colors"
+            className="w-full pl-7 pr-2 py-1 text-[11px] rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 placeholder:text-[var(--adf-ui-text-subtle)] border border-transparent focus:border-violet-300 dark:focus:border-violet-700 focus:bg-white dark:focus:bg-neutral-900 outline-none transition-colors"
           />
         </div>
         <div className="flex items-center gap-0.5 p-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800 w-fit">
@@ -175,21 +175,21 @@ function MessageFeed({ messages }: { messages: MessageBusLogEntry[] }) {
       <div className="flex-1 overflow-y-auto">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-300 dark:text-neutral-600 mb-2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--adf-ui-icon-muted)] mb-2">
               <path d="M22 2L11 13" />
               <path d="M22 2l-7 20-4-9-9-4 20-7z" />
             </svg>
             {messages.length === 0 ? (
               <>
-                <p className="text-xs text-neutral-400 dark:text-neutral-500">No messages yet</p>
-                <p className="text-[10px] text-neutral-300 dark:text-neutral-600 mt-1">
+                <p className="text-xs text-[var(--adf-ui-text-subtle)]">No messages yet</p>
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                   Agent-to-agent traffic will show up here
                 </p>
               </>
             ) : (
               <>
-                <p className="text-xs text-neutral-400 dark:text-neutral-500">Nothing matches</p>
-                <p className="text-[10px] text-neutral-300 dark:text-neutral-600 mt-1">
+                <p className="text-xs text-[var(--adf-ui-text-subtle)]">Nothing matches</p>
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                   Try a different filter
                 </p>
               </>
@@ -252,7 +252,7 @@ function MessageRow({
             <path d="M22 2l-7 20-4-9-9-4 20-7z" />
           </svg>
           <HandleChip handle={shortPath(entry.from)} />
-          <span className="text-neutral-300 dark:text-neutral-600 text-[10px] shrink-0">&rarr;</span>
+          <span className="text-[var(--adf-ui-icon-muted)] text-[10px] shrink-0">&rarr;</span>
           <span className="flex items-center gap-1 min-w-0 truncate">
             {shownRecipients.length === 0 ? (
               <HandleChip handle="*" />
@@ -260,7 +260,7 @@ function MessageRow({
               shownRecipients.map((r) => <HandleChip key={r} handle={shortPath(r)} />)
             )}
             {extraRecipients > 0 && (
-              <span className="text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0">
+              <span className="text-[9px] text-[var(--adf-ui-text-subtle)] shrink-0">
                 +{extraRecipients}
               </span>
             )}
@@ -271,7 +271,7 @@ function MessageRow({
                 #{entry.channel}
               </span>
             )}
-            <span className="text-[9px] text-neutral-400 dark:text-neutral-500 tabular-nums" title={new Date(entry.timestamp).toLocaleString()}>
+            <span className="text-[9px] text-[var(--adf-ui-text-subtle)] tabular-nums" title={new Date(entry.timestamp).toLocaleString()}>
               {relTime(entry.timestamp, now)}
             </span>
             <DeliveryMark delivered={entry.delivered} error={entry.error} />
@@ -298,17 +298,17 @@ function MessageRow({
             </div>
           )}
           <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[9px] font-mono">
-            <span className="text-neutral-400 dark:text-neutral-500">to</span>
+            <span className="text-[var(--adf-ui-text-subtle)]">to</span>
             <span className="text-neutral-600 dark:text-neutral-300 break-all">
               {entry.to.map(shortPath).join(', ') || '*'}
             </span>
-            <span className="text-neutral-400 dark:text-neutral-500">delivered</span>
+            <span className="text-[var(--adf-ui-text-subtle)]">delivered</span>
             <span className="text-neutral-600 dark:text-neutral-300 break-all">
               {entry.deliveredTo.map(shortPath).join(', ') || 'none'}
             </span>
-            <span className="text-neutral-400 dark:text-neutral-500">type</span>
+            <span className="text-[var(--adf-ui-text-subtle)]">type</span>
             <span className="text-neutral-600 dark:text-neutral-300">{entry.type}</span>
-            <span className="text-neutral-400 dark:text-neutral-500">id</span>
+            <span className="text-[var(--adf-ui-text-subtle)]">id</span>
             <span className="text-neutral-500 dark:text-neutral-400 break-all">{entry.messageId}</span>
           </div>
         </div>
@@ -354,11 +354,11 @@ function BusPanel({ debugInfo }: { debugInfo: MeshDebugInfo }) {
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-4">
       <section>
-        <h4 className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1.5">
+        <h4 className="text-[10px] font-semibold text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1.5">
           Bus registrations ({debugInfo.busRegistrations.length})
         </h4>
         {debugInfo.busRegistrations.length === 0 ? (
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 italic">
+          <p className="text-[10px] text-[var(--adf-ui-text-subtle)] italic">
             No agents registered on the bus
           </p>
         ) : (
@@ -383,11 +383,11 @@ function BusPanel({ debugInfo }: { debugInfo: MeshDebugInfo }) {
       </section>
 
       <section>
-        <h4 className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1.5">
+        <h4 className="text-[10px] font-semibold text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1.5">
           Agents ({debugInfo.backgroundAgents.length + debugInfo.foregroundAgents.length})
         </h4>
         {debugInfo.backgroundAgents.length === 0 && debugInfo.foregroundAgents.length === 0 ? (
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 italic">
+          <p className="text-[10px] text-[var(--adf-ui-text-subtle)] italic">
             No agents running
           </p>
         ) : (
@@ -397,7 +397,7 @@ function BusPanel({ debugInfo }: { debugInfo: MeshDebugInfo }) {
                 <StateDot state={a.state} />
                 <span className="text-neutral-700 dark:text-neutral-300 truncate">{a.name}</span>
                 <span className="ml-auto flex items-center gap-1 shrink-0">
-                  <span className="px-1.5 py-px rounded-full text-[9px] bg-neutral-100 dark:bg-neutral-800 text-neutral-400 dark:text-neutral-500 border border-neutral-200 dark:border-neutral-700">
+                  <span className="px-1.5 py-px rounded-full text-[9px] bg-neutral-100 dark:bg-neutral-800 text-[var(--adf-ui-text-subtle-on-fill)] border border-neutral-200 dark:border-neutral-700">
                     bg
                   </span>
                 </span>

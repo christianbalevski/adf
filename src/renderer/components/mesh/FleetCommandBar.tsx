@@ -30,7 +30,7 @@ function MoreItem({
       }`}
     >
       <span className="text-[11px] font-medium">{label}</span>
-      <span className="text-[9px] text-neutral-400 dark:text-neutral-500">{hint}</span>
+      <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">{hint}</span>
     </button>
   )
 }
@@ -64,8 +64,8 @@ function MoreSubmenu({
         className="w-full flex items-baseline gap-2 px-3 py-1 text-left whitespace-nowrap hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-700 dark:text-neutral-200"
       >
         <span className="text-[11px] font-medium">{label}</span>
-        <span className="text-[9px] text-neutral-400 dark:text-neutral-500">{hint}</span>
-        <span className="ml-auto pl-2 text-[10px] text-neutral-400 dark:text-neutral-500">▸</span>
+        <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">{hint}</span>
+        <span className="ml-auto pl-2 text-[10px] text-[var(--adf-ui-text-subtle)]">▸</span>
       </button>
       {/* bottom-anchored: the More menu rides the bottom command bar, so
           flyouts grow upward and never clip at the screen edge */}
@@ -310,7 +310,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       {orderNotice && (
         <div role="alert" className="flex items-center gap-1.5 px-2.5 py-1 rounded-2xl bg-white/95 dark:bg-neutral-900/95 border border-red-300 dark:border-red-800 shadow-lg max-w-[420px] text-[11px] text-red-600 dark:text-red-400">
           <span className="flex-1">{orderNotice}</span>
-          <button type="button" onClick={() => setOrderNotice(null)} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200" aria-label="Dismiss">&times;</button>
+          <button type="button" onClick={() => setOrderNotice(null)} className="text-[var(--adf-ui-text-subtle)] hover:text-neutral-700 dark:hover:text-neutral-200" aria-label="Dismiss">&times;</button>
         </div>
       )}
       {/* Group-name composer */}
@@ -326,7 +326,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
               if (e.key === 'Escape') { e.stopPropagation(); setGroupNameOpen(false) }
             }}
             placeholder={`Name this group of ${selection.length}…`}
-            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
+            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none text-neutral-700 dark:text-neutral-200 placeholder:text-[var(--adf-ui-text-subtle)]"
           />
           <button
             onClick={saveGroup}
@@ -351,7 +351,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
               if (e.key === 'Escape') { e.stopPropagation(); setMessageOpen(false) }
             }}
             placeholder={`Message ${selection.length} agent${selection.length !== 1 ? 's' : ''}…`}
-            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none resize-none text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
+            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none resize-none text-neutral-700 dark:text-neutral-200 placeholder:text-[var(--adf-ui-text-subtle)]"
           />
           {messageResult ? (
             <span className="text-[10px] text-green-600 dark:text-green-400 whitespace-nowrap px-1">{messageResult}</span>
@@ -518,7 +518,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       </div>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
       <span
-        className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden xl:flex items-center gap-1 whitespace-nowrap"
+        className="text-[10px] text-[var(--adf-ui-text-subtle)] select-none hidden xl:flex items-center gap-1 whitespace-nowrap"
         title={`M message · G start · ⇧S off · Space jump to selection · A select all running · ${MOD_KEY}1-9 assign group · 1-9 recall · arrows pan`}
       >
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">M</kbd> msg ·

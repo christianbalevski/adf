@@ -23,7 +23,7 @@ export function FreshnessStamp({ at, onRefresh, className = '' }: {
   }, [at, tick])
 
   return (
-    <span className={`inline-flex items-center gap-1 text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 ${className}`}>
+    <span className={`inline-flex items-center gap-1 text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0 ${className}`}>
       {at !== null && (
         <span className="tabular-nums" title={absoluteTime(at)}>Updated {ageInSeconds(at, now)}</span>
       )}

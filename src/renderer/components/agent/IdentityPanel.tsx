@@ -296,7 +296,7 @@ export function IdentityPanel() {
           </div>
         ) : (
           <div className="flex items-center gap-3">
-            <p className="text-xs text-neutral-400">No DID generated</p>
+            <p className="text-xs text-[var(--adf-ui-text-subtle)]">No DID generated</p>
             <button
               onClick={handleGenerateKeys}
               className="px-3 py-1 text-[11px] bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg"
@@ -367,7 +367,7 @@ export function IdentityPanel() {
                     className="w-full px-2 py-1 text-xs bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded"
                   />
                   {shareError && <p className="text-[10px] text-red-500">{shareError}</p>}
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     Lets someone you send this file to unlock its stored credentials (API keys) with
                     this password. Identity is never transferable — on their machine the agent gets a
                     new DID. Revoking access later means rotating the keys upstream.
@@ -391,7 +391,7 @@ export function IdentityPanel() {
                 Without a password slot there is nothing to type — the envelope is
                 ours but sealed until the seed phrase is imported. */}
             {envelope.credentials === 'locked' && !envelope.sharePasswordSet && (
-              <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
+              <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">
                 Sealed to your identity — import your seed phrase in Settings to unlock on this machine.
               </p>
             )}
@@ -417,7 +417,7 @@ export function IdentityPanel() {
             )}
 
             {envelope.credentials === 'foreign' && (
-              <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
+              <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">
                 Stored credentials are sealed to another owner and cannot be read on this machine.
               </p>
             )}
@@ -458,12 +458,12 @@ export function IdentityPanel() {
             </button>
           )}
         </div>
-        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
           Signed proofs of who owns and operates this agent. The badge shows whether they are published on the
           agent card (also toggleable in Config → Security).
         </p>
         {attestations.length === 0 ? (
-          <p className="text-xs text-neutral-400">No attestations</p>
+          <p className="text-xs text-[var(--adf-ui-text-subtle)]">No attestations</p>
         ) : (
           <div className="space-y-1">
             {attestations.map((att, i) => {
@@ -479,7 +479,7 @@ export function IdentityPanel() {
                       </span>
                     </Tooltip>
                     <Tooltip tip="Issued">
-                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                         {new Date(att.issued_at).toLocaleDateString()}
                       </span>
                     </Tooltip>
@@ -495,20 +495,20 @@ export function IdentityPanel() {
                     )}
                   </div>
                   {ROLE_SUBTITLES[att.role] && (
-                    <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                    <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                       {ROLE_SUBTITLES[att.role]}
                     </div>
                   )}
                   <Tooltip tip="Issuer — the identity that signed this attestation" className="block">
                     <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5">
-                      <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">by </span>
+                      <span className="font-sans text-[var(--adf-ui-text-subtle)] select-none">by </span>
                       {att.issuer}
                     </div>
                   </Tooltip>
                   {isLineage && att.scope && (
                     <Tooltip tip="The previous DID this identity replaced" className="block">
                       <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5">
-                        <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">over </span>
+                        <span className="font-sans text-[var(--adf-ui-text-subtle)] select-none">over </span>
                         {att.scope}
                       </div>
                     </Tooltip>
@@ -528,7 +528,7 @@ export function IdentityPanel() {
             <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">Password</h3>
             <DocsLink href={DOCS.sharingAgents} />
           </div>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
+          <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-1">
             Unlock to convert this to a share password.
           </p>
           <button
@@ -553,14 +553,14 @@ export function IdentityPanel() {
             + Add Key
           </button>
         </div>
-        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
           <span className="text-amber-500 dark:text-amber-400">Locked</span> = agent code cannot access &nbsp; <span className="text-neutral-500 dark:text-neutral-400">Unlocked</span> = agent code can read via get_identity
         </p>
         {revealNote && (
           <p className="text-[10px] text-amber-500 dark:text-amber-400 mb-2">{revealNote}</p>
         )}
         {entries.length === 0 ? (
-          <p className="text-xs text-neutral-400">No identity entries</p>
+          <p className="text-xs text-[var(--adf-ui-text-subtle)]">No identity entries</p>
         ) : (
           <div className="space-y-1">
             {entries.map((entry) => (
@@ -572,7 +572,7 @@ export function IdentityPanel() {
                   onClick={() => handleToggleCodeAccess(entry.purpose, entry.code_access)}
                   className={`shrink-0 transition-colors ${
                     entry.code_access
-                      ? 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
+                      ? 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'
                       : 'text-amber-500 dark:text-amber-400'
                   }`}
                   title={entry.code_access
@@ -594,7 +594,7 @@ export function IdentityPanel() {
                 <span className="flex-1 text-[11px] font-mono text-neutral-700 dark:text-neutral-300 truncate" title={entry.purpose}>
                   {entry.purpose}
                 </span>
-                <span className="text-[11px] text-neutral-400 dark:text-neutral-500 truncate max-w-[100px]">
+                <span className="text-[11px] text-[var(--adf-ui-text-subtle)] truncate max-w-[100px]">
                   {revealed[entry.purpose] !== undefined
                     ? revealed[entry.purpose]
                     : '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'}

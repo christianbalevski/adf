@@ -35,7 +35,7 @@ export interface ToolCallModalResult {
 }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-const SECTION_LABEL = 'text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1'
+const SECTION_LABEL = 'text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] mb-1'
 const KEY_CLS = 'font-mono text-[11px] font-semibold text-indigo-500 dark:text-indigo-400'
 const PRE_PLAIN = 'text-xs font-mono whitespace-pre-wrap break-all overflow-y-auto text-neutral-600 dark:text-neutral-300'
 
@@ -172,7 +172,7 @@ function DiffBlock({ oldText, newText }: { oldText?: string; newText?: string })
         }`}
       >
         <span className={`w-5 shrink-0 select-none text-center ${
-          unit.kind === 'del' ? 'text-red-400/80' : unit.kind === 'add' ? 'text-green-500/80' : 'text-neutral-300 dark:text-neutral-600'
+          unit.kind === 'del' ? 'text-red-400/80' : unit.kind === 'add' ? 'text-green-500/80' : 'text-[var(--adf-ui-text-subtle)]'
         }`}>
           {unit.kind === 'del' ? '-' : unit.kind === 'add' ? '+' : ' '}
         </span>
@@ -196,7 +196,7 @@ function DiffBlock({ oldText, newText }: { oldText?: string; newText?: string })
             {head.map((unit, k) => renderUnit(unit, `${segIndex}:h${k}`))}
             <button
               onClick={() => setExpanded((prev) => new Set(prev).add(segIndex))}
-              className="flex w-full items-center gap-1.5 px-5 py-0.5 bg-neutral-50 dark:bg-neutral-800/60 text-[11px] text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              className="flex w-full items-center gap-1.5 px-5 py-0.5 bg-neutral-50 dark:bg-neutral-800/60 text-[11px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             >
               <span aria-hidden>⋯</span>
               <span>{hidden} unchanged {hidden === 1 ? 'line' : 'lines'}</span>
@@ -253,7 +253,7 @@ function YamlArg({ argKey, value }: { argKey: string; value: unknown }) {
       <div className="leading-5">
         {keySpan}
         {value === ''
-          ? <span className="text-xs font-mono text-neutral-400 dark:text-neutral-500">""</span>
+          ? <span className="text-xs font-mono text-[var(--adf-ui-text-subtle)]">""</span>
           : <span className="text-[12.5px] text-neutral-700 dark:text-neutral-200 break-words">{value}</span>}
       </div>
     )
@@ -492,7 +492,7 @@ export const ToolCallModal = memo(function ToolCallModal({
               {toolName}
             </span>
             {target && (
-              <span className="min-w-0 truncate font-mono text-[11px] text-neutral-400 dark:text-neutral-500" title={target}>
+              <span className="min-w-0 truncate font-mono text-[11px] text-[var(--adf-ui-text-subtle)]" title={target}>
                 {target}
               </span>
             )}
@@ -500,7 +500,7 @@ export const ToolCallModal = memo(function ToolCallModal({
               {status.label}
             </span>
             {durationMs != null && (
-              <span className="text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500 shrink-0">
+              <span className="text-[11px] tabular-nums text-[var(--adf-ui-text-subtle)] shrink-0">
                 {formatCallDuration(durationMs)}
               </span>
             )}
@@ -518,7 +518,7 @@ export const ToolCallModal = memo(function ToolCallModal({
             {headerActions}
             <button
               onClick={onClose}
-              className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
+              className="w-7 h-7 flex items-center justify-center rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
               title="Close (Esc)"
               aria-label="Close"
             >
@@ -531,7 +531,7 @@ export const ToolCallModal = memo(function ToolCallModal({
             </div>
           )}
           {subtitle && (
-            <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate mt-0.5" title={subtitle}>
+            <div className="text-[10px] text-[var(--adf-ui-text-subtle)] truncate mt-0.5" title={subtitle}>
               {subtitle}
             </div>
           )}
@@ -549,7 +549,7 @@ export const ToolCallModal = memo(function ToolCallModal({
                 className={`absolute top-1.5 right-1.5 w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
                   rawCopied
                     ? 'text-green-600 dark:text-green-400'
-                    : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:bg-neutral-200/60 dark:hover:bg-neutral-800'
+                    : 'text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300 hover:bg-neutral-200/60 dark:hover:bg-neutral-800'
                 }`}
                 title={rawCopied ? 'Copied' : 'Copy raw JSON'}
               >
@@ -575,7 +575,7 @@ export const ToolCallModal = memo(function ToolCallModal({
                     {reason && (
                       <div className="leading-relaxed">
                         <span className={`font-mono text-[11px] font-semibold ${
-                          awaitingApproval ? 'text-amber-600 dark:text-amber-400' : 'text-neutral-400 dark:text-neutral-500'
+                          awaitingApproval ? 'text-amber-600 dark:text-amber-400' : 'text-[var(--adf-ui-text-subtle)]'
                         }`}>
                           reason:{' '}
                         </span>
@@ -592,7 +592,7 @@ export const ToolCallModal = memo(function ToolCallModal({
                             {message.to}
                           </span>
                           {message.threadId && (
-                            <span className="ml-auto shrink-0 font-mono text-[10px] text-neutral-400 dark:text-neutral-500" title={message.threadId}>
+                            <span className="ml-auto shrink-0 font-mono text-[10px] text-[var(--adf-ui-text-subtle)]" title={message.threadId}>
                               thread {message.threadId}
                             </span>
                           )}
@@ -630,7 +630,7 @@ export const ToolCallModal = memo(function ToolCallModal({
                       : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950/40'
                   }`}>
                     {!result ? (
-                      <p className="px-3 py-2 text-xs italic text-neutral-400 dark:text-neutral-500">
+                      <p className="px-3 py-2 text-xs italic text-[var(--adf-ui-text-subtle)]">
                         {overrideOutcome === 'approved'
                           ? 'Approved — the gated call ran inside the shell or code that requested it; its output is reported in that caller’s result.'
                           : overrideOutcome === 'denied'
@@ -661,7 +661,7 @@ export const ToolCallModal = memo(function ToolCallModal({
                             {shell.exit_code}
                           </span>
                           {!shell.stdout && !shell.stderr && shell.exit_code === 0 && (
-                            <span className="text-xs text-neutral-400 dark:text-neutral-500 italic">(no output)</span>
+                            <span className="text-xs text-[var(--adf-ui-text-subtle)] italic">(no output)</span>
                           )}
                         </div>
                       </div>
@@ -691,7 +691,7 @@ export const ToolCallModal = memo(function ToolCallModal({
         {/* Footer — meta line and, while pending approval, the decision bar */}
         {(approvalControls || startedAt || toolId || seq != null) && (
           <div className="flex items-center gap-3 px-4 py-2 border-t border-neutral-100 dark:border-neutral-800">
-            <span className="flex-1 min-w-0 truncate text-[10px] text-neutral-400 dark:text-neutral-500">
+            <span className="flex-1 min-w-0 truncate text-[10px] text-[var(--adf-ui-text-subtle)]">
               {startedAt ? new Date(startedAt).toLocaleTimeString() : ''}
               {toolId ? `${startedAt ? ' · ' : ''}${toolId}` : ''}
               {seq != null ? `${startedAt || toolId ? ' · ' : ''}S${seq}` : ''}

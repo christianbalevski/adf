@@ -235,7 +235,7 @@ export function StatusBar() {
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
-            : 'cursor-default text-neutral-300 dark:text-neutral-600'
+            : 'cursor-default text-[var(--adf-ui-text-disabled)]'
         }`}
       >
         <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">

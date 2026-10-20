@@ -205,11 +205,11 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
           {identity.fileOwnerDid && !identity.ownerIsYou && (
             <div className="mb-0.5">
               <p className="text-[10px] text-neutral-500 dark:text-neutral-400">From: another owner</p>
-              <p className="text-[9px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{identity.fileOwnerDid}</p>
+              <p className="text-[9px] text-[var(--adf-ui-text-subtle)] font-mono truncate">{identity.fileOwnerDid}</p>
             </div>
           )}
           {identity.agentDid && (
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">
               Agent: {identity.agentDid}
             </p>
           )}
@@ -352,7 +352,7 @@ function ModelPicker({ configuredLabel, providers, selected, onSelect }: {
         <div>
           <label className="block text-[11px] text-neutral-500 dark:text-neutral-400 mb-0.5">Model</label>
           {loadingModels ? (
-            <div className="px-2 py-1.5 text-xs text-neutral-400 dark:text-neutral-500">Loading models...</div>
+            <div className="px-2 py-1.5 text-xs text-[var(--adf-ui-text-subtle)]">Loading models...</div>
           ) : custom ? (
             <div className="flex gap-1">
               <TextInput
@@ -457,7 +457,7 @@ function ClaimContent({
               : 'Claiming gives this agent a fresh identity under your ownership. Its files, memory, and history are kept, and its previous identity is recorded as provenance.'}
         </p>
         {!templateMode && summary.willRelocate && (
-          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1">
+          <p className="text-[11px] text-[var(--adf-ui-text-subtle)] mt-1">
             It will be saved to {summary.relocateTo ?? 'Documents/adf-agents'}.
           </p>
         )}

@@ -24,7 +24,7 @@ export function AdapterLogs({ logs, onClose, adapterType }: AdapterLogsProps) {
         </span>
         <button
           onClick={onClose}
-          className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+          className="text-xs text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200"
         >
           Close
         </button>

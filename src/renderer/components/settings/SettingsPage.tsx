@@ -2999,7 +2999,7 @@ function StatusBadge({ status, index }: { status: StepStatus; index: number }) {
   if (status === 'in_progress')
     return <span className={`${base} bg-blue-500 text-white animate-pulse`}>{index}</span>
   if (status === 'blocked')
-    return <span className={`${base} bg-neutral-200 dark:bg-neutral-700 text-neutral-400 dark:text-neutral-500`}>{index}</span>
+    return <span className={`${base} bg-neutral-200 dark:bg-neutral-700 text-[var(--adf-ui-text-subtle-on-fill)]`}>{index}</span>
   return <span className={`${base} bg-neutral-300 dark:bg-neutral-600 text-neutral-600 dark:text-neutral-300`}>{index}</span>
 }
 
@@ -3214,7 +3214,7 @@ function PodmanStep({
         <span className="text-xs text-neutral-700 dark:text-neutral-300 flex-1">
           Install Podman
           {availability.available && availability.version && (
-            <span className="text-neutral-400 dark:text-neutral-500 ml-1">v{availability.version}</span>
+            <span className="text-[var(--adf-ui-text-subtle)] ml-1">v{availability.version}</span>
           )}
         </span>
         {needsInstall && status === 'pending' && autoMethod && (

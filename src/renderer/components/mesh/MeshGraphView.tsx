@@ -439,7 +439,7 @@ function FleetTopBar({
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300 truncate">Mesh</span>
             {agentCount != null && (
-              <span className="text-xs text-neutral-400 dark:text-neutral-500 shrink-0">
+              <span className="text-xs text-[var(--adf-ui-text-subtle)] shrink-0">
                 {agentCount} agent{agentCount !== 1 ? 's' : ''}
               </span>
             )}
@@ -505,7 +505,7 @@ export function MeshGraphView() {
         {/* Enable Mesh CTA */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center space-y-3">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-neutral-400">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-[var(--adf-ui-text-subtle)]">
               <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
             </svg>
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Mesh is not enabled</p>
@@ -706,9 +706,9 @@ function FoundingOverlay({
             if (e.key === 'Escape') onCancel()
           }}
           placeholder={site.ocean ? 'group-name/agent-name' : 'agent-name'}
-          className="w-full px-2 py-1 text-[12px] rounded-md bg-neutral-100 dark:bg-neutral-800 focus:outline-none focus:ring-1 focus:ring-violet-400 text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
+          className="w-full px-2 py-1 text-[12px] rounded-md bg-neutral-100 dark:bg-neutral-800 focus:outline-none focus:ring-1 focus:ring-violet-400 text-neutral-700 dark:text-neutral-200 placeholder:text-[var(--adf-ui-text-subtle)]"
         />
-        <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">
+        <div className="text-[10px] text-[var(--adf-ui-text-subtle)] truncate">
           {error
             ? <span className="text-red-500">{error}</span>
             : preview
@@ -2671,7 +2671,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
               <button
                 onClick={() => closeFile()}
                 aria-label="Close agent"
-                className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+                className="p-1 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                   <path d="M18 6L6 18M6 6l12 12" />
@@ -2946,8 +2946,8 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         {agentCount === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center">
-              <p className="text-sm text-neutral-400 dark:text-neutral-500">No agents found</p>
-              <p className="text-xs text-neutral-300 dark:text-neutral-600 mt-1">Add .adf files to tracked directories to see them here</p>
+              <p className="text-sm text-[var(--adf-ui-text-subtle)]">No agents found</p>
+              <p className="text-xs text-[var(--adf-ui-text-subtle)] mt-1">Add .adf files to tracked directories to see them here</p>
             </div>
           </div>
         )}

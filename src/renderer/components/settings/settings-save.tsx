@@ -177,7 +177,7 @@ export function SettingsToasts() {
           className="pointer-events-auto mx-3 flex items-center gap-2 rounded-lg border border-[var(--adf-ui-danger)]/40 bg-surface-0 px-3 py-2 text-xs text-[var(--adf-ui-danger)] shadow-lg"
         >
           <span className="min-w-0 flex-1 break-words">{t.message}</span>
-          <button type="button" onClick={() => dismiss(t.id)} aria-label="Dismiss" className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">&times;</button>
+          <button type="button" onClick={() => dismiss(t.id)} aria-label="Dismiss" className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200">&times;</button>
         </div>
       ))}
     </div>

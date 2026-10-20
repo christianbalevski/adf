@@ -40,7 +40,7 @@ export function DocsLink({
         openExternal(href)
       }}
       title={href}
-      className={`shrink-0 inline-flex items-center gap-0.5 text-[10px] font-normal normal-case tracking-normal text-neutral-400 hover:text-blue-500 dark:text-neutral-500 dark:hover:text-blue-400 transition-colors ${className}`}
+      className={`shrink-0 inline-flex items-center gap-0.5 text-[10px] font-normal normal-case tracking-normal text-[var(--adf-ui-text-subtle)] hover:text-blue-500 dark:hover:text-blue-400 transition-colors ${className}`}
     >
       {label}
       <span aria-hidden>↗</span>
@@ -85,7 +85,7 @@ export function InfoHint({
           strokeLinejoin="round"
           aria-label="More information"
           role="img"
-          className="ml-1 shrink-0 cursor-help text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400 transition-colors"
+          className="ml-1 shrink-0 cursor-help text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)] transition-colors"
         >
           <circle cx="12" cy="12" r="10" />
           <path d="M12 16v-4" />

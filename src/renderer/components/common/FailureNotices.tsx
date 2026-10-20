@@ -21,7 +21,7 @@ export function FailureNotices() {
             type="button"
             onClick={() => dismiss(n.id)}
             aria-label="Dismiss"
-            className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 text-xs leading-none"
+            className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 text-xs leading-none"
           >
             ×
           </button>

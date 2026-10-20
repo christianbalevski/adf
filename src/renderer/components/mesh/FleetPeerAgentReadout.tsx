@@ -31,7 +31,7 @@ const isMarkdownPath = (p: string): boolean => /\.(md|markdown)$/i.test(p)
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">{title}</div>
+      <div className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] mb-1">{title}</div>
       {children}
     </div>
   )
@@ -176,10 +176,10 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
             <div className="text-[15px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">
               {agent.handle}
               {fileView && (
-                <span className="font-normal text-neutral-400 dark:text-neutral-500"> / {fileView.path}</span>
+                <span className="font-normal text-[var(--adf-ui-text-subtle)]"> / {fileView.path}</span>
               )}
             </div>
-            <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
+            <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">
               remote agent · {peerHost}
             </div>
           </div>
@@ -201,7 +201,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
           )}
           <button
             onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            className="w-7 h-7 flex items-center justify-center rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             title="Close (Esc)"
           >
             ✕
@@ -212,7 +212,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
         {fileView ? (
           <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4">
             {fileView.loading && (
-              <div className="py-8 text-center text-[12px] text-neutral-400 dark:text-neutral-500">
+              <div className="py-8 text-center text-[12px] text-[var(--adf-ui-text-subtle)]">
                 fetching from {peerHost}…
               </div>
             )}
@@ -220,14 +220,14 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
               <div className="py-8 text-center">
                 <div className="text-[12px] text-red-500">{fileView.error}</div>
                 {fileView.error === 'HTTP 404' && (
-                  <div className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+                  <div className="mt-1 text-[11px] text-[var(--adf-ui-text-subtle)]">
                     The card lists this file, but the peer isn&apos;t serving it right now.
                   </div>
                 )}
               </div>
             )}
             {fileView.content && fileView.binary && (
-              <div className="py-8 text-center text-[12px] text-neutral-400 dark:text-neutral-500">
+              <div className="py-8 text-center text-[12px] text-[var(--adf-ui-text-subtle)]">
                 Binary file · {Math.round((fileView.size ?? 0) / 1024)} KB — use download.
               </div>
             )}
@@ -287,7 +287,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
               {/* Live status — untruncated */}
               {agent.status && (
                 <div className="px-4 py-3 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-100 dark:border-neutral-700/60">
-                  <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">status</div>
+                  <div className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] mb-1">status</div>
                   <div className="text-[13px] leading-relaxed text-neutral-700 dark:text-neutral-200 whitespace-pre-wrap">
                     {agent.status}
                   </div>
@@ -359,12 +359,12 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
                   {(agent.attested_owner_did || signedAt) && (
                     <div className="mt-1.5 space-y-0.5">
                       {agent.attested_owner_did && (
-                        <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate" title={agent.attested_owner_did}>
+                        <div className="text-[10px] text-[var(--adf-ui-text-subtle)] truncate" title={agent.attested_owner_did}>
                           owner: <span className="font-mono">{agent.attested_owner_did}</span>
                         </div>
                       )}
                       {signedAt && !isNaN(signedAt.getTime()) && (
-                        <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                        <div className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                           card signed {signedAt.toLocaleString()}
                         </div>
                       )}
@@ -379,7 +379,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
                 <div>
                   <button
                     onClick={() => setShowRoutes((v) => !v)}
-                    className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+                    className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300"
                   >
                     {showRoutes ? '▾' : '▸'} serves · {routes.length} route{routes.length === 1 ? '' : 's'}
                   </button>

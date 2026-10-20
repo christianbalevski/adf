@@ -234,7 +234,7 @@ function GhostStartButton({ filePath }: { filePath: string }) {
       // Muted at rest — dozens of these dot the map on ghost tiles, and a
       // solid green disc reads as an "online" status light from orbit. The
       // start-me green only shows itself under the cursor.
-      className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-white/70 dark:bg-neutral-800/70 border border-neutral-300/70 dark:border-neutral-600/70 text-neutral-400 dark:text-neutral-400 shadow-sm transition-colors hover:bg-green-500 hover:border-green-500 hover:text-white dark:hover:bg-green-500 dark:hover:border-green-500 dark:hover:text-white"
+      className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-white/70 dark:bg-neutral-800/70 border border-neutral-300/70 dark:border-neutral-600/70 text-[var(--adf-ui-text-subtle)] dark:text-neutral-400 shadow-sm transition-colors hover:bg-green-500 hover:border-green-500 hover:text-white dark:hover:bg-green-500 dark:hover:border-green-500 dark:hover:text-white"
     >
       <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
         <path d="M8 5v14l11-7z" />
@@ -352,7 +352,7 @@ function MeshGraphNodeFull({ data }: NodeProps) {
 export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: string; nameColor: string }> = {
   llm: { mark: '◈', markColor: 'text-indigo-400', nameColor: 'text-indigo-500 dark:text-indigo-400' },
   turn: { mark: '⏎', markColor: 'text-emerald-500', nameColor: 'text-neutral-500 dark:text-neutral-400' },
-  state: { mark: '→', markColor: 'text-neutral-400', nameColor: 'text-neutral-500 dark:text-neutral-400' },
+  state: { mark: '→', markColor: 'text-[var(--adf-ui-text-subtle)]', nameColor: 'text-neutral-500 dark:text-neutral-400' },
   error: { mark: '!', markColor: 'text-red-500', nameColor: 'text-red-500 dark:text-red-400' }
 }
 

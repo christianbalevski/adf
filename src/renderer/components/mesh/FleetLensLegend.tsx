@@ -25,7 +25,7 @@ function LegendRow({ swatch, label, hint }: { swatch: React.ReactNode; label: st
     <div className="flex items-center gap-2 min-w-0">
       {swatch}
       <span className="truncate text-[10px] text-neutral-600 dark:text-neutral-300">{label}</span>
-      {hint && <span className="ml-auto shrink-0 text-[9px] text-neutral-400 dark:text-neutral-500 tabular-nums">{hint}</span>}
+      {hint && <span className="ml-auto shrink-0 text-[9px] text-[var(--adf-ui-text-subtle)] tabular-nums">{hint}</span>}
     </div>
   )
 }
@@ -91,17 +91,17 @@ export const FleetLensLegend = memo(function FleetLensLegend({
                 />
               ))}
             </div>
-            <div className="flex justify-between text-[9px] text-neutral-400 dark:text-neutral-500">
+            <div className="flex justify-between text-[9px] text-[var(--adf-ui-text-subtle)]">
               <span>cold</span>
               <span>{maxBurn > 0 ? `${formatTokenCount(maxBurn)}/m` : 'hottest'}</span>
             </div>
-            <span className="text-[9px] text-neutral-400 dark:text-neutral-500">log scale · hottest tile pulses</span>
+            <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">log scale · hottest tile pulses</span>
           </>
         )
       }
       case 'model':
         return models.length === 0 ? (
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">no models reported</span>
+          <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">no models reported</span>
         ) : (
           <>
             {models.slice(0, 8).map(([model, count]) => (
@@ -113,7 +113,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
               />
             ))}
             {models.length > 8 && (
-              <span className="text-[9px] text-neutral-400 dark:text-neutral-500">+{models.length - 8} more</span>
+              <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">+{models.length - 8} more</span>
             )}
           </>
         )
@@ -132,13 +132,13 @@ export const FleetLensLegend = memo(function FleetLensLegend({
                 />
               ))}
             </div>
-            <div className="flex justify-between text-[9px] text-neutral-400 dark:text-neutral-500">
+            <div className="flex justify-between text-[9px] text-[var(--adf-ui-text-subtle)]">
               <span>root</span>
               <span>younger generations</span>
             </div>
             <LegendRow swatch={<HexSwatch fill={`hsla(220, 8%, ${dark ? 18 : 90}%, 0.4)`} stroke={`hsla(220, 8%, ${dark ? 34 : 65}%, 0.25)`} />} label="no family — solo agent" />
             <LegendRow swatch={<HexSwatch fill={`hsla(${h}, 52%, ${L(1)}%, 0.5)`} stroke={`hsla(${h}, 58%, ${dark ? 55 : 40}%, 0.7)`} dashed />} label="broken chain / shared DID / offline" />
-            <span className="text-[9px] text-neutral-400 dark:text-neutral-500">one hue per dynasty · darkest = founder</span>
+            <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">one hue per dynasty · darkest = founder</span>
           </>
         )
       }
@@ -168,14 +168,14 @@ export const FleetLensLegend = memo(function FleetLensLegend({
             <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200">{lens}</span>
             <svg
               width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-              className="text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-300"
+              className="text-[var(--adf-ui-text-subtle)] group-hover:text-neutral-600 dark:group-hover:text-neutral-300"
             >
               <path d="M17 2l4 4-4 4" />
               <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
               <path d="M7 22l-4-4 4-4" />
               <path d="M21 13v1a4 4 0 0 1-4 4H3" />
             </svg>
-            <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700 text-[9px] text-neutral-400 dark:text-neutral-500">L</kbd>
+            <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700 text-[9px] text-[var(--adf-ui-text-subtle)]">L</kbd>
           </button>
           <button
             onClick={() => setCollapsed(!collapsed)}
@@ -184,7 +184,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
           >
             <svg
               width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-              className={`text-neutral-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+              className={`text-[var(--adf-ui-text-subtle)] transition-transform ${collapsed ? '-rotate-90' : ''}`}
             >
               <path d="M6 9l6 6 6-6" />
             </svg>
@@ -196,7 +196,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
             at a glance regardless of the active metric. */}
         {!collapsed && foreignHubs.length > 0 && (
           <div className="pt-1.5 mt-0.5 border-t border-neutral-100 dark:border-neutral-800 space-y-1">
-            <span className="text-[9px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">foreign runtimes</span>
+            <span className="text-[9px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">foreign runtimes</span>
             {foreignHubs.slice(0, 4).map((h) => {
               const fh = factionHue(h.runtimeId)
               return (
@@ -208,7 +208,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
               )
             })}
             {foreignHubs.length > 4 && (
-              <span className="text-[9px] text-neutral-400 dark:text-neutral-500">+{foreignHubs.length - 4} more</span>
+              <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">+{foreignHubs.length - 4} more</span>
             )}
           </div>
         )}

@@ -182,7 +182,7 @@ function ToolVisibilityToggle({
           ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
           : visible
             ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300'
-            : 'text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400'
+            : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'
       }`}
     >
       <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -313,7 +313,7 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
                   r?.status === 'installed' ? 'text-green-600 dark:text-green-400' :
                   r?.status === 'error' ? 'text-red-500' :
                   r?.status === 'installing' ? 'text-blue-500' :
-                  'text-neutral-400'
+                  'text-[var(--adf-ui-text-subtle)]'
                 }`}>
                   {r?.status === 'installed' ? 'Installed' :
                    r?.status === 'error' ? (r.error?.slice(0, 40) ?? 'Failed') :
@@ -393,7 +393,7 @@ function LoopCard({
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           title={expanded ? 'Collapse' : 'Expand'}
-          className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+          className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300"
         >
           <svg
             width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -449,7 +449,7 @@ function LoopCard({
 
           {/* behaviour — how the loop starts and when its turns end */}
           <div>
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">Behaviour</span>
+            <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">Behaviour</span>
             <div className="mt-0.5 flex flex-wrap gap-x-4 gap-y-1">
               <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
                 <input
@@ -516,7 +516,7 @@ function LoopCard({
               agent's threshold when unset. */}
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">
                 Compaction threshold
               </span>
               <NumberInput
@@ -527,11 +527,11 @@ function LoopCard({
                 onChange={(v) => patchLoop({ compact_threshold: v > 0 ? v : undefined })}
                 className="field-input w-28"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {entry.compact_threshold ? `${entry.compact_threshold.toLocaleString()} tokens` : 'Inherited'}
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
               When this loop&apos;s context reaches this size it compacts. Defaults to the agent&apos;s threshold.
             </p>
           </div>
@@ -539,20 +539,20 @@ function LoopCard({
           {/* tools — allow-list, intersected with host-enabled at derive time */}
           <div>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 Tools ({selected.size === 0 ? 'none — a mute loop' : `${selected.size} selected`})
               </span>
               {selected.size > 0 && (
                 <button
                   onClick={() => patchLoop({ tools: undefined })}
-                  className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                  className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300"
                 >
                   Clear
                 </button>
               )}
             </div>
             {grantableTools.length === 0 ? (
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 No grantable host tools — enable some in the Tools section first.
               </p>
             ) : (
@@ -1256,7 +1256,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   if (!local) {
     return (
-      <div className="p-4 text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
+      <div className="p-4 text-sm text-[var(--adf-ui-text-subtle)] text-center mt-8">
         Open a file to view agent configuration.
       </div>
     )
@@ -1332,7 +1332,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             {nameError ? (
               <p className="text-[10px] text-red-400 mt-0.5">{nameError}</p>
             ) : (
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">Press Enter to rename.</p>
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">Press Enter to rename.</p>
             )}
           </Field>
           <Field label="Description">
@@ -1431,7 +1431,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       })
                     }
                   />
-                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     {local.limits?.max_active_turns ? `Suspends after ${local.limits.max_active_turns} turns` : '0 = unlimited'}
                   </span>
                 </div>
@@ -1449,7 +1449,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       })
                     }
                   />
-                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     {Math.round((local.limits?.suspend_timeout_ms ?? 1_200_000) / 60_000)} min
                   </span>
                 </div>
@@ -1520,7 +1520,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Field label="Model ID">
             {/* Runtime default: new agents get that provider's default model, so there is nothing to pick here. */}
             {template && !local.model.provider ? (
-              <span className="text-xs text-neutral-400 dark:text-neutral-500">The runtime default's model</span>
+              <span className="text-xs text-[var(--adf-ui-text-subtle)]">The runtime default's model</span>
             ) : (
               <ModelIdField
                 providerId={local.model.provider}
@@ -1557,7 +1557,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <option value="high">High</option>
                   <option value="xhigh">X-High</option>
                 </select>
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">effort</span>
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">effort</span>
               </div>
               {local.model.reasoning && (
                 <>
@@ -1574,7 +1574,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       }
                       className="field-input w-24"
                     />
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">max tokens (0 = derive from effort)</span>
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">max tokens (0 = derive from effort)</span>
                   </div>
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
@@ -1652,7 +1652,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             >
               <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}><path d="M6 3l5 5-5 5z" /></svg>
               <span>Advanced</span>
-              {!open && <span className="truncate text-[10px] text-neutral-400 dark:text-neutral-500">{summary}</span>}
+              {!open && <span className="truncate text-[10px] text-[var(--adf-ui-text-subtle)]">{summary}</span>}
             </button>
             {open && (
             <div className="mt-1.5 space-y-2 pl-4">
@@ -1678,7 +1678,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     onChange={(v) => save({ ...local, model: { ...local.model, max_tokens: v } })}
                     className="field-input !h-6 !px-1.5 !text-[11px] !w-20"
                   />
-                  {maxTokens === 0 && <span className="text-[10px] text-neutral-400 dark:text-neutral-500">model default</span>}
+                  {maxTokens === 0 && <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">model default</span>}
                 </label>
               </div>
             <div>
@@ -1736,7 +1736,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   ))}
                 </div>
               ) : (
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                   Override provider params for this file. Blank value = remove key.
                 </p>
               )}
@@ -1783,7 +1783,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }
                     className="field-input w-32"
                   />
-                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     consecutive failures before giving up
                   </span>
                 </div>
@@ -1803,7 +1803,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }
                     className="field-input w-32"
                   />
-                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     seconds — doubles each attempt, ±20% jitter
                   </span>
                 </div>
@@ -1823,7 +1823,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }
                     className="field-input w-32"
                   />
-                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     seconds max between retries (honors provider Retry-After)
                   </span>
                 </div>
@@ -1913,7 +1913,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {local.context?.compact_threshold ? `${local.context.compact_threshold.toLocaleString()} tokens` : 'Default: 100k'}
               </span>
             </div>
@@ -1930,7 +1930,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-20"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">files</span>
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">files</span>
               <NumberInput
                 min={0}
                 step={1}
@@ -1941,7 +1941,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-20"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">MB</span>
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">MB</span>
             </div>
           </Field>
           {(() => {
@@ -1993,7 +1993,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {(local.limits?.max_tool_result_tokens ?? 16000).toLocaleString()} tokens
               </span>
             </div>
@@ -2012,7 +2012,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {(local.limits?.max_tool_result_preview_chars ?? 5000).toLocaleString()} chars
               </span>
             </div>
@@ -2031,7 +2031,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {(local.limits?.max_file_read_tokens ?? 30000).toLocaleString()} tokens
               </span>
             </div>
@@ -2050,7 +2050,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {((local.limits?.max_file_write_bytes ?? 5000000) / 1024).toFixed(0)} KB
               </span>
             </div>
@@ -2069,7 +2069,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {((local.limits?.max_image_size_bytes ?? 5242880) / 1048576).toFixed(1)} MB
               </span>
             </div>
@@ -2088,7 +2088,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {((local.limits?.max_audio_size_bytes ?? 10485760) / 1048576).toFixed(1)} MB
               </span>
             </div>
@@ -2107,7 +2107,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
                 className="field-input w-32"
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {((local.limits?.max_video_size_bytes ?? 20971520) / 1048576).toFixed(1)} MB
               </span>
             </div>
@@ -2155,7 +2155,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 .map((group) => ({ group, tools: local.tools.filter((t) => group.tools.has(t.name) && toolMatchesFilter(t.name, group.label, toolFilter)) }))
                 .filter(({ tools }) => tools.length > 0)
               if (shownGroups.length === 0) {
-                return <p className="text-[10px] text-neutral-400 dark:text-neutral-500">No matches</p>
+                return <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">No matches</p>
               }
               return shownGroups.map(({ group, tools: groupTools }, gi) => {
               // Bulk toggles act on the rows shown (the filter narrows them).
@@ -2213,7 +2213,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <div key={group.label}>
                   {gi > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
                   <div className="flex items-center justify-between mb-0.5">
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                       {group.label}
                       {group.note && <span className="ml-1 italic">({group.note})</span>}
                     </p>
@@ -2232,7 +2232,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                 ? PERMISSION_ON_CLASS.approval
                                 : restrictedState === 'mixed'
                                   ? `${PERMISSION_ON_CLASS.approval} opacity-50`
-                                  : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
+                                  : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'
                           }`}
                         >
                           <ApprovalIcon filled={restrictedState !== 'none'} />
@@ -2252,7 +2252,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300'
                               : visibleState === 'mixed'
                                 ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 opacity-50'
-                                : 'text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400'
+                                : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'
                         }`}
                       >
                         <EyeIcon size={15} off={visibleState === 'none'} />
@@ -2287,7 +2287,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         >
                           <span className="flex min-w-0 items-center gap-1">
                             <span
-                              className={`font-mono cursor-pointer hover:underline truncate ${groupDisabled ? 'text-neutral-400 dark:text-neutral-500 hover:text-blue-400' : 'text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400'}`}
+                              className={`font-mono cursor-pointer hover:underline truncate ${groupDisabled ? 'text-[var(--adf-ui-text-subtle)] hover:text-blue-400' : 'text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400'}`}
                               onClick={() => setViewingTool(tool.name)}
                             >
                               {tool.name}
@@ -2301,7 +2301,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               disabled={groupDisabled}
                               aria-pressed={isLocked}
                               aria-label={isLocked ? 'Locked' : 'Lock'}
-                              className={`transition-colors ${isLocked ? PERMISSION_ON_CLASS.locked : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-neutral-300 dark:text-neutral-600 hover:!text-neutral-400 dark:hover:!text-neutral-500'}`}
+                              className={`transition-colors ${isLocked ? PERMISSION_ON_CLASS.locked : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-[var(--adf-ui-icon-muted)] hover:!text-[var(--adf-ui-text-subtle)]'}`}
                               title={`${PERMISSION_TIPS.locked} Click to ${isLocked ? 'unlock' : 'lock'}.`}
                               onClick={() => {
                                 const tools = [...local.tools]
@@ -2317,7 +2317,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                 disabled={groupDisabled}
                                 aria-pressed={isRestricted}
                                 aria-label="Needs approval"
-                                className={`flex items-center justify-center rounded transition-colors disabled:cursor-not-allowed ${isRestricted ? PERMISSION_ON_CLASS.approval : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                                className={`flex items-center justify-center rounded transition-colors disabled:cursor-not-allowed ${isRestricted ? PERMISSION_ON_CLASS.approval : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'}`}
                                 title={PERMISSION_TIPS.approval}
                                 onClick={() => {
                                   const tools = [...local.tools]
@@ -2393,7 +2393,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
             return (
               <>
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
                   Inner loops share this agent&apos;s body and identity but run their own stream,
                   model and tool allow-list. Each enabled loop gets its own tab in the loop panel.
                 </p>
@@ -2405,7 +2405,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     <span className="px-1.5 py-0.5 text-[10px] rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400">
                       host loop
                     </span>
-                    <span className="ml-auto text-[10px] text-neutral-400 dark:text-neutral-500">
+                    <span className="ml-auto text-[10px] text-[var(--adf-ui-text-subtle)]">
                       uses the sections above
                     </span>
                   </div>
@@ -2435,7 +2435,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 </div>
 
                 {loops.length === 0 && (
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                     No inner loops. The agent runs a single <span className="font-mono">main</span> stream.
                   </p>
                 )}
@@ -2494,7 +2494,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       type="button"
                       aria-pressed={isRestricted}
                       aria-label="Restricted"
-                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.restricted : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.restricted : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'}`}
                       title={PERMISSION_TIPS.restricted}
                       onClick={() => {
                         const updated = isRestricted
@@ -2558,7 +2558,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         type="button"
                       aria-pressed={isRestricted}
                       aria-label="Restricted"
-                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.restricted : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.restricted : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'}`}
                         title={PERMISSION_TIPS.restricted}
                         onClick={() => updateChatInfo({ restricted: !isRestricted || undefined })}
                       >
@@ -2576,14 +2576,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             })()}
           </div>
           <div className="border-t border-neutral-200 dark:border-neutral-700" />
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
+          <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-1">
             Sandbox permissions
           </p>
           <div className="space-y-0.5">
             <div className="flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50">
               <div>
                 <span className="font-mono text-neutral-700 dark:text-neutral-300">network</span>
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                   Allow fetch/http/https in code execution
                 </p>
               </div>
@@ -2614,7 +2614,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   })
                 }
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {Math.round((local.limits?.execution_timeout_ms ?? 60000) / 1000)}s
               </span>
             </div>
@@ -2624,7 +2624,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             <>
               <div className="border-t border-neutral-200 dark:border-neutral-700" />
               <div>
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-1">
                   Installed packages ({local.code_execution!.packages!.length})
                 </p>
                 <div className="space-y-0.5">
@@ -2634,7 +2634,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       className="flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50"
                     >
                       <span className="font-mono text-neutral-700 dark:text-neutral-300">
-                        {pkg.name}<span className="text-neutral-400 dark:text-neutral-500">@{pkg.version}</span>
+                        {pkg.name}<span className="text-[var(--adf-ui-text-subtle)]">@{pkg.version}</span>
                       </span>
                       <button
                         onClick={() => {
@@ -2721,7 +2721,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     />
                     <span className="min-w-0">
                       <span className="block text-xs text-neutral-700 dark:text-neutral-300">{option.label}</span>
-                      <span className="block truncate font-mono text-[9px] text-neutral-400 dark:text-neutral-500">{option.detail}</span>
+                      <span className="block truncate font-mono text-[9px] text-[var(--adf-ui-text-subtle)]">{option.detail}</span>
                     </span>
                   </label>
                 )
@@ -2736,18 +2736,18 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <div className="space-y-1 rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
                     {managedOptions.map(renderOption)}
                   </div>
-                  <p className="mt-1 text-[9px] text-neutral-400 dark:text-neutral-500">ADF manages lifecycle, assignment, workspaces, packages, and rebuilds.</p>
+                  <p className="mt-1 text-[9px] text-[var(--adf-ui-text-subtle)]">ADF manages lifecycle, assignment, workspaces, packages, and rebuilds.</p>
                 </div>
 
                 <details className="rounded-md border border-neutral-200 dark:border-neutral-700">
                   <summary className="flex cursor-pointer list-none items-center justify-between px-2 py-2 text-[10px] font-medium text-neutral-600 dark:text-neutral-400 [&::-webkit-details-marker]:hidden">
                     <span>Advanced · External containers and host</span>
-                    <span className="font-normal text-neutral-400">{advancedOptions.filter((option) => allowed.includes(option.id)).length} enabled</span>
+                    <span className="font-normal text-[var(--adf-ui-text-subtle)]">{advancedOptions.filter((option) => allowed.includes(option.id)).length} enabled</span>
                   </summary>
                   <div className="space-y-1 border-t border-neutral-200 p-2 dark:border-neutral-700">
                     {advancedOptions.map(renderOption)}
-                    {externalOptions.length === 0 && <p className="px-1 py-1 text-[9px] text-neutral-400">External containers can be registered in Settings &gt; Compute.</p>}
-                    <p className="px-1 pt-1 text-[9px] text-neutral-400 dark:text-neutral-500">External containers remain user-managed. Host access bypasses container isolation.</p>
+                    {externalOptions.length === 0 && <p className="px-1 py-1 text-[9px] text-[var(--adf-ui-text-subtle)]">External containers can be registered in Settings &gt; Compute.</p>}
+                    <p className="px-1 pt-1 text-[9px] text-[var(--adf-ui-text-subtle)]">External containers remain user-managed. Host access bypasses container isolation.</p>
                   </div>
                 </details>
 
@@ -2803,7 +2803,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               return (
                 <div className="mt-2">
                   <h4 className="text-[11px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">MCP servers run on</h4>
-                  <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mb-1">
+                  <p className="text-[11px] text-[var(--adf-ui-text-subtle)] mb-1">
                     Click a location to change this agent&apos;s choice. Restart the agent to apply.
                   </p>
                   <div className="space-y-1">
@@ -2864,9 +2864,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <div className="text-xs text-neutral-600 dark:text-neutral-400 font-mono">
                     {(local.compute?.packages?.pip ?? []).length > 0
                       ? (local.compute!.packages!.pip!).join(', ')
-                      : <span className="italic text-neutral-400 dark:text-neutral-500">none</span>}
+                      : <span className="italic text-[var(--adf-ui-text-subtle)]">none</span>}
                   </div>
-                  <p className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">JavaScript packages are configured separately under Code execution.</p>
+                  <p className="mt-1 text-[10px] text-[var(--adf-ui-text-subtle)]">JavaScript packages are configured separately under Code execution.</p>
                 </div>
 
                 {/* Container desktop (Computer tab) */}
@@ -3074,7 +3074,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                   ? PERMISSION_ON_CLASS.approval
                                   : restrictedState === 'mixed'
                                     ? `${PERMISSION_ON_CLASS.approval} opacity-50`
-                                    : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
+                                    : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'
                             }`}
                           >
                             <ApprovalIcon filled={restrictedState !== 'none'} />
@@ -3091,7 +3091,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                   ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300'
                                   : visibleState === 'mixed'
                                     ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 opacity-50'
-                                    : 'text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400'
+                                    : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'
                             }`}
                           >
                             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
@@ -3132,13 +3132,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         <McpServerLogs serverName={srv.name} logs={mcpLogs} onClose={() => setMcpLogsFor(null)} />
                       )}
                       {srv.npm_package && (
-                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{srv.npm_package}</p>
+                        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">{srv.npm_package}</p>
                       )}
                       {srv.pypi_package && (
-                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{srv.pypi_package}</p>
+                        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">{srv.pypi_package}</p>
                       )}
                       {srv.url && (
-                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{srv.url}</p>
+                        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">{srv.url}</p>
                       )}
                       {cachedTools.length > 0 ? (
                         <>
@@ -3186,7 +3186,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                     type="button"
                                     aria-pressed={mcpRestricted}
                                     aria-label="Needs approval"
-                                    className={`flex items-center justify-center rounded transition-colors ${mcpRestricted ? PERMISSION_ON_CLASS.approval : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                                    className={`flex items-center justify-center rounded transition-colors ${mcpRestricted ? PERMISSION_ON_CLASS.approval : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'}`}
                                     title={PERMISSION_TIPS.approval}
                                     onClick={() => {
                                       const tools = [...local.tools]
@@ -3224,7 +3224,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           )}
                         </>
                       ) : liveFailed ? null : (
-                        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 pl-2">
+                        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] pl-2">
                           Tools will be discovered when the agent connects.
                         </p>
                       )}
@@ -3233,7 +3233,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 })}
 
                 {myServers.length === 0 && (
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 italic">
+                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)] italic">
                     No MCP servers configured. Add from the registry below or use the mcp_install tool.
                   </p>
                 )}
@@ -3259,7 +3259,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             <div className="min-w-0">
                               <div className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">{srv.name}</div>
                               {(srv.npm_package || srv.pypi_package || srv.command) && (
-                                <div className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">
+                                <div className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">
                                   {srv.npm_package ?? srv.pypi_package ?? srv.command}
                                 </div>
                               )}
@@ -3314,7 +3314,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Section docs={DOCS.channels} hint="Connect channels under Settings → Channels. Switch them on here to bring outside messages into this agent." title="Channels">
             <div className="space-y-3">
               {template && (
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>
               )}
               {adapterRegistrations.map((reg) => {
                 const adapterConfig = local.adapters?.[reg.type]
@@ -3385,7 +3385,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         )}
                       </span>
                     </div>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">
+                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">
                       {reg.type}
                     </p>
                     {enabled && adapterConfig && reg.type === 'email' && (
@@ -3441,7 +3441,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       </div>
                     )}
                     {!enabled && (
-                      <p className="text-[10px] text-neutral-400 dark:text-neutral-500 pl-2">
+                      <p className="text-[10px] text-[var(--adf-ui-text-subtle)] pl-2">
                         Not enabled
                       </p>
                     )}
@@ -3502,7 +3502,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   }}
                 />
               </label>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {local.messaging?.inbox_mode
                   ? (local.autonomous
                       ? 'Messages are stored in an inbox. The agent is notified immediately when new messages arrive.'
@@ -3768,7 +3768,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </div>
             <div>
               {template && (
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">Tables exist per agent; the picker lists them once an agent is open.</p>
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-1">Tables exist per agent; the picker lists them once an agent is open.</p>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_auto] gap-1.5 mb-2">
                 <select
@@ -3831,7 +3831,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   ))}
                 </div>
               ) : (
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                   No protected local tables.
                 </p>
               )}
@@ -4098,7 +4098,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 className="field-input w-16"
                 disabled={!(local.limits?.hibernate_nudge?.enabled ?? true)}
               />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">hours</span>
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">hours</span>
             </div>
           </Field>
 
@@ -4189,7 +4189,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     <label className="flex items-center gap-1.5 text-xs cursor-pointer">
                       <span className="text-neutral-700 dark:text-neutral-300 font-medium">{label}</span>
                     </label>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">{desc}</p>
+                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">{desc}</p>
                   </div>
                   <div className="flex items-center gap-1.5">
                     {!isSectionLocked('triggers') && (
@@ -4219,7 +4219,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         <div key={targetKeys.keys[ti]} className={`rounded-md border p-2 space-y-1.5 ${target.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50'}`}>
                           {/* Target header: scope + lock + remove */}
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Scope</span>
+                            <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Scope</span>
                             <select
                               className="field-input text-[10px] w-20"
                               value={target.scope}
@@ -4251,7 +4251,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           {/* Target loop — only meaningful once side loops exist */}
                           {sideLoops.length > 0 && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Loop</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Loop</span>
                               <select
                                 className="field-input text-[10px] w-32"
                                 value={target.loop ?? 'main'}
@@ -4280,7 +4280,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           {target.scope === 'system' && key !== 'on_timer' && (
                             <>
                               <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Lambda</span>
+                                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Lambda</span>
                                 <input
                                   type="text"
                                   className="field-input text-[10px] flex-1"
@@ -4290,7 +4290,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                 />
                               </div>
                               <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Warm</span>
+                                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Warm</span>
                                 <label className="flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400 cursor-pointer">
                                   <input
                                     type="checkbox"
@@ -4307,7 +4307,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           {/* Filter fields — vary by trigger type */}
                           {key === 'on_inbox' && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Filter</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
                               <input
                                 type="text"
                                 className="field-input text-[10px] w-24"
@@ -4327,7 +4327,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_outbox' && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Filter</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
                               <input
                                 type="text"
                                 className="field-input text-[10px] flex-1"
@@ -4340,7 +4340,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_file_change' && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Watch</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Watch</span>
                               <input
                                 type="text"
                                 className="field-input text-[10px] flex-1"
@@ -4353,7 +4353,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_tool_call' && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Tools</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Tools</span>
                               <CommaSepInput
                                 className="field-input text-[10px] flex-1"
                                 placeholder="tool globs, comma-separated (e.g. fs_*, msg_send)"
@@ -4365,7 +4365,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_task_create' && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Tools</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Tools</span>
                               <CommaSepInput
                                 className="field-input text-[10px] flex-1"
                                 placeholder="tool globs, comma-separated (e.g. fs_*, msg_send)"
@@ -4377,7 +4377,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_task_complete' && (
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Filter</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
                               <CommaSepInput
                                 className="field-input text-[10px] w-36"
                                 placeholder="tools (comma-sep globs)"
@@ -4396,7 +4396,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_logs' && (
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Filter</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
                               <CommaSepInput
                                 className="field-input text-[10px] w-28"
                                 placeholder="level (comma-sep)"
@@ -4420,7 +4420,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                           {key === 'on_llm_call' && (
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Filter</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
                               <CommaSepInput
                                 className="field-input text-[10px] w-36"
                                 placeholder="sources (turn, compaction)"
@@ -4439,7 +4439,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           {/* Timing modifier */}
                           {showTiming && (
                             <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Timing</span>
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Timing</span>
                               <select
                                 className="field-input text-[10px] w-20"
                                 value={activeTimingModifier}
@@ -4476,7 +4476,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                     }}
                                     className="field-input w-16 text-[10px]"
                                   />
-                                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">ms</span>
+                                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">ms</span>
                                   {activeTimingModifier === 'batch' && (
                                     <>
                                       <input
@@ -4492,7 +4492,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                         className="field-input w-12 text-[10px]"
                                         title="Fire batch early when N events accumulate"
                                       />
-                                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500">count</span>
+                                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">count</span>
                                     </>
                                   )}
                                 </>
@@ -4572,7 +4572,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 </div>
                 {preLlmHookDraft.targetMode === 'all' ? (
                   <div className="flex items-center gap-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5">
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-12 shrink-0">Target</span>
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-12 shrink-0">Target</span>
                     <select
                       data-testid="pre-llm-hook-target-0"
                       value="__all_streams__"
@@ -4604,7 +4604,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     return (
                       <div key={`pre-llm-hook-target-${index}`} className="min-w-0 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5 space-y-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-12 shrink-0">Target</span>
+                          <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-12 shrink-0">Target</span>
                           <select
                             data-testid={`pre-llm-hook-target-${index}`}
                             value={selectValue}
@@ -4656,7 +4656,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   })
                 )}
                 {preLlmHookDraft.targetMode === 'targets' && preLlmHookDraft.targets.length === 0 && (
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">Add Main or an inner-loop target.</p>
+                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Add Main or an inner-loop target.</p>
                 )}
               </div>
             </Field>
@@ -4699,7 +4699,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   Remove hook
                 </button>
               )}
-              {!local.pre_llm_hook && <span className="text-[10px] text-neutral-400 dark:text-neutral-500">Not configured</span>}
+              {!local.pre_llm_hook && <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">Not configured</span>}
             </div>
           </div>
         </Section>
@@ -4719,7 +4719,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               placeholder={filePath ? filePath.replace(/.*[\\/]/, '').replace(/\.adf$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : 'agent'}
               className="field-input w-full"
             />
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
               URL slug — defaults to filename if blank
             </p>
           </Field>
@@ -4912,7 +4912,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         }}
                         className="rounded text-blue-500"
                       />
-                      <span className="text-[10px] text-neutral-400">Include on Agent Card</span>
+                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">Include on Agent Card</span>
                     </label>
                   </>
                 )}
@@ -4930,11 +4930,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           }}
                           className="rounded text-blue-500"
                         />
-                        <span className="text-[10px] text-neutral-400">warm</span>
+                        <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">warm</span>
                       </label>
                       {route.method === 'GET' && (
                         <label className="flex items-center gap-1 shrink-0">
-                          <span className="text-[10px] text-neutral-400">cache</span>
+                          <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">cache</span>
                           <input
                             type="number"
                             min={0}
@@ -4961,7 +4961,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                           }}
                           className="rounded text-blue-500"
                         />
-                        <span className="text-[10px] text-neutral-400">Include on Agent Card</span>
+                        <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">Include on Agent Card</span>
                       </label>
                     </div>
                     {/* Per-route list: its keys hang off the route's own row key. */}
@@ -4970,7 +4970,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     return (
                     <div>
                       <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-[10px] text-neutral-400">middleware</span>
+                        <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">middleware</span>
                         <button
                           onClick={() => {
                             const api = [...(local.serving?.api ?? [])]
@@ -5152,10 +5152,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     className="rounded text-blue-500"
                   />
-                  <span className="text-[10px] text-neutral-400">auto-reconnect</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">auto-reconnect</span>
                 </label>
                 <label className="flex items-center gap-1 shrink-0">
-                  <span className="text-[10px] text-neutral-400">reconnect</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">reconnect</span>
                   <input
                     type="number"
                     min={1000}
@@ -5170,10 +5170,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     placeholder="5000"
                     className="w-16 px-1 py-0.5 text-[10px] border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400"
                   />
-                  <span className="text-[10px] text-neutral-400">ms</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">ms</span>
                 </label>
                 <label className="flex items-center gap-1 shrink-0">
-                  <span className="text-[10px] text-neutral-400">keepalive</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">keepalive</span>
                   <input
                     type="number"
                     min={5000}
@@ -5188,7 +5188,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     placeholder="30000"
                     className="w-16 px-1 py-0.5 text-[10px] border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400"
                   />
-                  <span className="text-[10px] text-neutral-400">ms</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">ms</span>
                 </label>
               </div>
             </div>
@@ -5303,7 +5303,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
                 <div>
-                  <label className="block text-[10px] text-neutral-400 mb-0.5">a</label>
+                  <label className="block text-[10px] text-[var(--adf-ui-text-subtle)] mb-0.5">a</label>
                   <textarea
                     defaultValue={JSON.stringify(binding.a, null, 2)}
                     onBlur={(e) => {
@@ -5318,7 +5318,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   />
                 </div>
                 <div>
-                  <label className="block text-[10px] text-neutral-400 mb-0.5">b</label>
+                  <label className="block text-[10px] text-[var(--adf-ui-text-subtle)] mb-0.5">b</label>
                   <textarea
                     defaultValue={JSON.stringify(binding.b, null, 2)}
                     onBlur={(e) => {
@@ -5346,7 +5346,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     className="rounded text-blue-500"
                   />
-                  <span className="text-[10px] text-neutral-400">bidirectional</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">bidirectional</span>
                 </label>
                 <label className="flex items-center gap-1 cursor-pointer shrink-0">
                   <input
@@ -5359,10 +5359,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     className="rounded text-blue-500"
                   />
-                  <span className="text-[10px] text-neutral-400">reconnect</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">reconnect</span>
                 </label>
                 <label className="flex items-center gap-1 shrink-0">
-                  <span className="text-[10px] text-neutral-400">summary</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">summary</span>
                   <input
                     type="number"
                     min={100}
@@ -5383,7 +5383,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     placeholder="1000"
                     className="w-20 px-1 py-0.5 text-[10px] border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400"
                   />
-                  <span className="text-[10px] text-neutral-400">ms</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">ms</span>
                 </label>
               </div>
             </div>
@@ -5498,7 +5498,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     className="rounded text-blue-500"
                   />
-                  <span className="text-[10px] text-neutral-400">exclude own origin</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">exclude own origin</span>
                 </label>
                 <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Required if event_types uses '*' or bare-prefix (tool.*). Code-review signal.">
                   <input
@@ -5511,10 +5511,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     className="rounded text-blue-500"
                   />
-                  <span className="text-[10px] text-neutral-400">allow wildcard</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">allow wildcard</span>
                 </label>
                 <label className="flex items-center gap-1 shrink-0" title="Per-tap token bucket cap. Overruns are dropped and logged.">
-                  <span className="text-[10px] text-neutral-400">rate</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">rate</span>
                   <input
                     type="number"
                     min={1}
@@ -5528,7 +5528,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     className="w-16 px-1 py-0.5 text-[10px] border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400"
                   />
-                  <span className="text-[10px] text-neutral-400">/sec</span>
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">/sec</span>
                 </label>
               </div>
             </div>
@@ -5574,7 +5574,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               }}
               className="field-input w-24"
             />
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
               Ring buffer size. Set to 0 for unlimited.
             </p>
           </Field>
@@ -5656,7 +5656,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {/* Metadata (read-only) */}
         {!template && (
         <Section docs={DOCS.metadata} title="Metadata" defaultCollapsed>
-          <div className="text-xs text-neutral-400 dark:text-neutral-500 space-y-1">
+          <div className="text-xs text-[var(--adf-ui-text-subtle)] space-y-1">
             <div>Created: {new Date(local.metadata.created_at).toLocaleString()}</div>
             <div>Updated: {new Date(local.metadata.updated_at).toLocaleString()}</div>
             {local.metadata.author && <div>Author: {local.metadata.author}</div>}
@@ -5670,7 +5670,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         <Section docs={DOCS.metadata} title="Meta Keys" summary={`${metaEntries.length} keys`} defaultCollapsed>
           <div className="space-y-1">
             {metaEntries.length === 0 ? (
-              <p className="text-[11px] text-neutral-400 dark:text-neutral-500">No metadata entries.</p>
+              <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">No metadata entries.</p>
             ) : (
               <div className="border border-neutral-200 dark:border-neutral-700 rounded-md overflow-hidden">
                 {metaEntries.map((entry) => (
@@ -5680,7 +5680,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     className="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs hover:bg-neutral-50 dark:hover:bg-neutral-700/40 border-b border-neutral-100 dark:border-neutral-700 last:border-b-0 cursor-pointer"
                   >
                     <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate min-w-0 shrink-0" style={{ maxWidth: '40%' }}>{entry.key}</span>
-                    <span className="text-neutral-400 dark:text-neutral-500 truncate min-w-0 flex-1">{entry.value || '\u00A0'}</span>
+                    <span className="text-[var(--adf-ui-text-subtle)] truncate min-w-0 flex-1">{entry.value || '\u00A0'}</span>
                     <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${
                       entry.protection === 'readonly'
                         ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'
@@ -5705,7 +5705,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {/* Clear Agent State */}
         {!template && (
         <div className="border border-red-200 dark:border-red-900/50 rounded-lg p-3">
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+          <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
             Clears README.md (document), mind.md (memory), the loop (conversation history), and all inbox messages.
             Config, soul.md, identity, and other workspace files are kept. If audit is enabled, cleared loop and
             inbox data is archived to the audit log first.
@@ -5802,7 +5802,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             {/* Protection badge */}
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400 mb-3 pb-3 border-b border-neutral-200 dark:border-neutral-700">
               <span>
-                <span className="text-neutral-400 dark:text-neutral-500">Protection</span>{' '}
+                <span className="text-[var(--adf-ui-text-subtle)]">Protection</span>{' '}
                 <span className={
                   viewingMeta.protection === 'readonly'
                     ? 'text-red-600 dark:text-red-400'
@@ -5858,7 +5858,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 disabled={editingMetaValue === viewingMeta.value}
                 className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
                   editingMetaValue === viewingMeta.value
-                    ? 'text-neutral-300 dark:text-neutral-600 border border-neutral-200 dark:border-neutral-700 cursor-not-allowed'
+                    ? 'text-[var(--adf-ui-text-disabled)] border border-neutral-200 dark:border-neutral-700 cursor-not-allowed'
                     : 'text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 cursor-pointer'
                 }`}
               >
@@ -5944,7 +5944,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             disabled={!newMetaKey.trim()}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
               !newMetaKey.trim()
-                ? 'text-neutral-300 dark:text-neutral-600 border border-neutral-200 dark:border-neutral-700 cursor-not-allowed'
+                ? 'text-[var(--adf-ui-text-disabled)] border border-neutral-200 dark:border-neutral-700 cursor-not-allowed'
                 : 'text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 cursor-pointer'
             }`}
           >
@@ -6089,7 +6089,7 @@ function DidListPicker({
                 className="w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-700 flex items-center gap-2"
               >
                 <span className="font-medium text-neutral-700 dark:text-neutral-200">{agent.label}</span>
-                <span className="text-neutral-400 dark:text-neutral-500 font-mono text-[10px] truncate">{truncateDid(agent.did)}</span>
+                <span className="text-[var(--adf-ui-text-subtle)] font-mono text-[10px] truncate">{truncateDid(agent.did)}</span>
               </button>
             ))}
           </div>
@@ -6167,7 +6167,7 @@ function Section({
           <LockButton locked={!!locked} onClick={onToggleLock} />
         )}
         {collapsed && summary && (
-          <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-neutral-400 dark:text-neutral-500 truncate">{summary}</span>
+          <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-[var(--adf-ui-text-subtle)] truncate">{summary}</span>
         )}
         {docs && <DocsLink href={docs} className={collapsed && summary ? 'ml-2' : 'ml-auto'} />}
       </h4>

@@ -370,7 +370,7 @@ export function EditorPanel() {
       <div className="h-full flex flex-col">
         <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={handleCloseTab} chatTab={chatTab} />
         <div className="flex-1 flex flex-col items-center justify-center gap-3">
-          <span className="text-neutral-400 dark:text-neutral-500 text-sm">No file open</span>
+          <span className="text-[var(--adf-ui-text-subtle)] text-sm">No file open</span>
           <button
             onClick={restoreCoreFiles}
             className="px-3 py-1.5 text-xs font-medium rounded-md border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
@@ -443,7 +443,7 @@ export function EditorPanel() {
               className={`absolute top-1.5 right-4 z-10 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border transition-colors ${
                 lineWrap
                   ? 'bg-blue-50 dark:bg-blue-900/40 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-300'
-                  : 'bg-white/80 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
+                  : 'bg-white/80 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
               wrap
@@ -455,7 +455,7 @@ export function EditorPanel() {
             aria-label={`${activeTab.content.length.toLocaleString()} characters — token count is an estimate`}
             // Decoration only: it sits over CodeMirror's horizontal scrollbar, so
             // it must never swallow a drag on it.
-            className="pointer-events-none absolute bottom-1.5 right-4 z-10 select-none px-1.5 py-0.5 rounded text-[10px] font-mono bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-neutral-400 dark:text-neutral-500"
+            className="pointer-events-none absolute bottom-1.5 right-4 z-10 select-none px-1.5 py-0.5 rounded text-[10px] font-mono bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-[var(--adf-ui-text-subtle)]"
           >
             ~{formatTokenCount(estimateTokens(activeTab.content))} tokens
           </div>

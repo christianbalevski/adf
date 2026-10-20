@@ -172,7 +172,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
         >
           {/* While a call runs, its reason shimmers; between calls the last one stays, dimmed. */}
           <span className={heldText === liveText && !liveRunning
-            ? 'inline-block max-w-full truncate align-bottom text-neutral-400 dark:text-neutral-500'
+            ? 'inline-block max-w-full truncate align-bottom text-[var(--adf-ui-text-subtle)]'
             : 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity'}>
             {heldText ?? 'Thinking\u2026'}
           </span>

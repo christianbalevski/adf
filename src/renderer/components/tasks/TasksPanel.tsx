@@ -117,7 +117,7 @@ export function TasksPanel() {
 
         <div className="flex-1" />
 
-        <span className="text-neutral-400 dark:text-neutral-600 text-[10px]">{filtered.length} tasks</span>
+        <span className="text-[var(--adf-ui-text-subtle)] text-[10px]">{filtered.length} tasks</span>
       </div>
 
       {/* Task content */}
@@ -127,7 +127,7 @@ export function TasksPanel() {
         className="flex-1 overflow-auto font-mono text-[11px] leading-[18px] px-3 py-1"
       >
         {filtered.length === 0 ? (
-          <div className="text-neutral-400 dark:text-neutral-600 py-4 text-center">No tasks</div>
+          <div className="text-[var(--adf-ui-text-subtle)] py-4 text-center">No tasks</div>
         ) : (
           filtered.map((task) => (
             <TaskRow
@@ -164,7 +164,7 @@ function TaskRow({
         onClick={onToggle}
         className="flex gap-2 cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-900/50"
       >
-        <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none">
+        <span className="text-[var(--adf-ui-text-subtle)] shrink-0 select-none">
           [{formatTime(task.created_at)}]
         </span>
         <span className={`shrink-0 font-semibold uppercase ${statusColor}`}>
@@ -184,9 +184,9 @@ function TaskRow({
           </span>
         )}
         {duration && (
-          <span className="text-neutral-400 dark:text-neutral-600 shrink-0">({duration})</span>
+          <span className="text-[var(--adf-ui-text-subtle)] shrink-0">({duration})</span>
         )}
-        <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none ml-auto">
+        <span className="text-[var(--adf-ui-text-subtle)] shrink-0 select-none ml-auto">
           {expanded ? '\u25BC' : '\u25B6'}
         </span>
       </div>

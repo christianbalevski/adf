@@ -127,7 +127,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
     : detail?.ownerAlias
       ? detail.ownerVerified
         ? { text: `owned by ${detail.ownerAlias}`, tone: 'text-neutral-600 dark:text-neutral-300' }
-        : { text: `${detail.ownerAlias} · unverified`, tone: 'text-neutral-400 dark:text-neutral-500' }
+        : { text: `${detail.ownerAlias} · unverified`, tone: 'text-[var(--adf-ui-text-subtle)]' }
       : null
 
   const reachable = detail?.agentCount != null
@@ -159,14 +159,14 @@ export const FleetStationReadout = memo(function FleetStationReadout({
               {isPeer ? (
                 <>
                   <span className={`w-2 h-2 rounded-full shrink-0 ${reachable ? 'bg-green-400' : 'bg-amber-400'}`} />
-                  <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
+                  <span className="text-[11px] text-[var(--adf-ui-text-subtle)]">
                     {reachable ? `${detail?.agentCount} agent${detail?.agentCount === 1 ? '' : 's'}` : 'directory unreachable'}
                   </span>
                 </>
               ) : (
                 <>
                   <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[data.status] ?? 'bg-neutral-400'}`} />
-                  <span className="text-[11px] italic text-neutral-400 dark:text-neutral-500">{data.status}</span>
+                  <span className="text-[11px] italic text-[var(--adf-ui-text-subtle)]">{data.status}</span>
                 </>
               )}
             </div>
@@ -178,7 +178,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
+            className="w-7 h-7 flex items-center justify-center rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
             title="Close (Esc)"
           >
             ✕
@@ -190,13 +190,13 @@ export const FleetStationReadout = memo(function FleetStationReadout({
           <div className="space-y-1.5">
             {detail?.host && (
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 w-10 shrink-0">host</span>
+                <span className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] w-10 shrink-0">host</span>
                 <span className="font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate">{detail.host}</span>
               </div>
             )}
             {detail?.url && (
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 w-10 shrink-0">url</span>
+                <span className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] w-10 shrink-0">url</span>
                 <button
                   onClick={() => copy('url', detail.url!)}
                   className="flex-1 min-w-0 text-left font-mono text-[11px] text-neutral-600 dark:text-neutral-300 truncate hover:text-neutral-800 dark:hover:text-neutral-100"
@@ -209,7 +209,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
             )}
             {detail?.firstSeen && (
               <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 w-10 shrink-0">seen</span>
+                <span className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] w-10 shrink-0">seen</span>
                 <span className="text-[11px] text-neutral-500 dark:text-neutral-400">first discovered {ago(Date.now() - detail.firstSeen)}</span>
               </div>
             )}
@@ -218,7 +218,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
           {/* Its agents — click through to the full card readout */}
           {peerAgents.length > 0 && (
             <div>
-              <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] mb-1.5">
                 agents · {peerAgents.length}
               </div>
               <div className="grid grid-cols-2 gap-1.5">
@@ -232,7 +232,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
                     <PeerAvatar did={a.did} icon={a.icon} size={20} emojiSize={18} />
                     <span className="flex-1 min-w-0">
                       <span className="block text-[12px] font-medium text-neutral-700 dark:text-neutral-200 truncate">{a.handle}</span>
-                      {a.status && <span className="block text-[10px] italic text-neutral-400 dark:text-neutral-500 truncate">{a.status}</span>}
+                      {a.status && <span className="block text-[10px] italic text-[var(--adf-ui-text-subtle)] truncate">{a.status}</span>}
                     </span>
                     {a.card_verified && <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" title="card signature verified" />}
                   </button>
@@ -241,26 +241,26 @@ export const FleetStationReadout = memo(function FleetStationReadout({
             </div>
           )}
           {isPeer && peerAgents.length === 0 && (
-            <div className="py-2 text-center text-[11px] italic text-neutral-400 dark:text-neutral-500">
+            <div className="py-2 text-center text-[11px] italic text-[var(--adf-ui-text-subtle)]">
               {reachable ? 'No agents visible to this runtime.' : 'Directory unreachable — agent list unknown.'}
             </div>
           )}
 
           {/* Traffic with your fleet */}
           <div className="pt-1 border-t border-neutral-100 dark:border-neutral-800">
-            <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 pt-2">
+            <div className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] pt-2">
               {isPeer ? 'traffic with your fleet' : 'traffic through this station'}
             </div>
             <div className="flex items-center gap-3 text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums mt-1">
               <span>↓ {stats.inbound} {isPeer ? 'received from it' : 'in'}</span>
               <span>↑ {stats.outbound} {isPeer ? 'sent to it' : 'out'}</span>
               {stats.lastAt > 0 && (
-                <span className="text-neutral-400 dark:text-neutral-500 ml-auto">last {ago(Date.now() - stats.lastAt)}</span>
+                <span className="text-[var(--adf-ui-text-subtle)] ml-auto">last {ago(Date.now() - stats.lastAt)}</span>
               )}
             </div>
             {stats.top.length > 0 ? (
               <div className="mt-1.5 space-y-1">
-                <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <div className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                   {isPeer ? "Who's been talking to this runtime:" : 'Who uses this station:'}
                 </div>
                 {stats.top.map((t) =>
@@ -276,14 +276,14 @@ export const FleetStationReadout = memo(function FleetStationReadout({
                       <span className="text-[9px] px-1.5 py-px rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 shrink-0">
                         your agent
                       </span>
-                      <span className="text-[11px] text-neutral-400 dark:text-neutral-500 tabular-nums ml-auto shrink-0">
+                      <span className="text-[11px] text-[var(--adf-ui-text-subtle)] tabular-nums ml-auto shrink-0">
                         {t.count} msg{t.count === 1 ? '' : 's'}
                       </span>
                     </button>
                   ) : (
                     <div key={t.key} className="flex items-baseline gap-2 text-[11px] px-2">
                       <span className="text-neutral-700 dark:text-neutral-200 truncate">{t.handle}</span>
-                      <span className="text-neutral-400 dark:text-neutral-500 tabular-nums ml-auto shrink-0">
+                      <span className="text-[var(--adf-ui-text-subtle)] tabular-nums ml-auto shrink-0">
                         {t.count} msg{t.count === 1 ? '' : 's'}
                       </span>
                     </div>
@@ -291,7 +291,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
                 )}
               </div>
             ) : (
-              <div className="mt-1.5 text-[11px] italic text-neutral-400 dark:text-neutral-500">no traffic yet</div>
+              <div className="mt-1.5 text-[11px] italic text-[var(--adf-ui-text-subtle)]">no traffic yet</div>
             )}
           </div>
         </div>

@@ -198,14 +198,14 @@ function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        {group && <span className="text-neutral-400 dark:text-neutral-500">{group}</span>}
-        {group && <span className="text-neutral-300 dark:text-neutral-600">›</span>}
+        {group && <span className="text-[var(--adf-ui-text-subtle)]">{group}</span>}
+        {group && <span className="text-[var(--adf-ui-icon-muted)]">›</span>}
         <span className="truncate font-medium text-[var(--adf-ui-text)]">{current ?? 'Sections'}</span>
         <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-          className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden>
+          className={`shrink-0 text-[var(--adf-ui-text-subtle)] transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden>
           <polyline points="6 9 12 15 18 9" />
         </svg>
-        <kbd className="ml-auto rounded border border-hairline px-1 font-sans text-[10px] leading-4 text-neutral-400 dark:text-neutral-500">/</kbd>
+        <kbd className="ml-auto rounded border border-hairline px-1 font-sans text-[10px] leading-4 text-[var(--adf-ui-text-subtle)]">/</kbd>
       </button>
       {status}
       </div>
@@ -217,11 +217,11 @@ function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKey}
             placeholder="Jump to a section…"
-            className="w-full border-b border-hairline bg-transparent px-3 py-2 text-xs outline-none placeholder:text-neutral-400"
+            className="w-full border-b border-hairline bg-transparent px-3 py-2 text-xs outline-none placeholder:text-[var(--adf-ui-text-subtle)]"
           />
           <div ref={listRef} role="listbox" className="max-h-[60vh] overflow-y-auto py-1">
             {items.length === 0 && (
-              <p className="px-3 py-2 text-[11px] text-neutral-400 dark:text-neutral-500">No section matches.</p>
+              <p className="px-3 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">No section matches.</p>
             )}
             {items.map((it, i) => {
               const entry = entries.current.get(it.title)
@@ -229,7 +229,7 @@ function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
               return (
                 <div key={it.title}>
                   {showGroup && (
-                    <div className={`px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 ${i === 0 ? 'pt-1' : 'pt-2'}`}>
+                    <div className={`px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--adf-ui-text-subtle)] ${i === 0 ? 'pt-1' : 'pt-2'}`}>
                       {it.group}
                     </div>
                   )}
@@ -251,7 +251,7 @@ function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
                       </svg>
                     )}
                     {entry?.summary && (
-                      <span className="ml-auto min-w-0 truncate text-[10px] text-neutral-400 dark:text-neutral-500">{entry.summary}</span>
+                      <span className="ml-auto min-w-0 truncate text-[10px] text-[var(--adf-ui-text-subtle)]">{entry.summary}</span>
                     )}
                   </button>
                 </div>
