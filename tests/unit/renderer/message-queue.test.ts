@@ -567,7 +567,7 @@ describe('stale queues', () => {
     expect(main.invokeAgent).not.toHaveBeenCalled()
   })
 
-  it('drops the queue of a stopped agent on close, keeps a running one', async () => {
+  it('keeps the queue of a closed agent: a running one sends it at its turn end, a stopped one when it starts', async () => {
     main.agents.set(AGENT_2, { state: 'active' })
     await main.openFile(AGENT_2)
     queue(AGENT_2, 'still deliverable')
@@ -579,9 +579,13 @@ describe('stale queues', () => {
     main.agents.delete(AGENT_1)
     await main.openFile(AGENT_1)
     expect(useAgentStore.getState().state).toBe('off')
-    queue(AGENT_1, 'nothing will send this')
+    queue(AGENT_1, 'waits for a start')
     await main.closeFile()
-    expect(queued(AGENT_1)).toEqual([])
+    // Kept, not dropped without a word: it shows again when the agent is opened.
+    expect(queued(AGENT_1)).toHaveLength(1)
+    await main.openFile(AGENT_1)
+    expect(queued(AGENT_1).map((m) => m.text)).toEqual(['waits for a start'])
+    expect(main.invokeAgent).toHaveBeenCalledTimes(1)
   })
 
   it('keys one queue per file however its path is spelled', async () => {

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { approvalsBridge, useApprovalsStore } from '../stores/approvals.store'
+import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useMeshGraphStore, type PendingInteraction } from '../stores/mesh-graph.store'
 import { useJumpToAgent } from './useJumpToAgent'
@@ -128,7 +129,7 @@ export function useApprovalEvents() {
     const apply = (snapshot: NotificationsSnapshot): void => {
       hasAppliedPush.current = true
       const store = useApprovalsStore.getState()
-      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useDocumentStore.getState().filePath)) {
+      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useAppStore.getState().showHome ? null : useDocumentStore.getState().filePath)) {
         store.pushToast({
           id: n.id,
           kind: n.kind,

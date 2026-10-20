@@ -3,7 +3,6 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore, SIDEBAR_MAX_VW } from '../../stores/app.store'
 import { SIDEBAR_WIDTH_VAR } from './SidebarFrame'
-import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
@@ -13,33 +12,59 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { useOpenAgentOrbitalSeed } from '../orbital/useOrbitalSeed'
 import { getLiveStep } from '../../utils/loop-activity'
 import { agentWindowsAvailable, isAgentWindow, openAgentWindow } from '../../utils/window-kind'
+import { Tooltip } from '../common/Tooltip'
+import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
+import { SETTINGS_SHORTCUT } from '../../utils/shortcut-label'
 
-
-
+/** An icon-only nav control: its label shows as a tooltip (a native title never renders here). */
 function NavButton({
   title,
+  shortcut,
   active,
   onClick,
   children
 }: {
   title: string
+  shortcut?: string
   active?: boolean
   onClick: () => void
   children: React.ReactNode
 }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
-        active
-          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
-          : 'text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]'
-      }`}
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-    >
-      {children}
-    </button>
+    <Tooltip tip={title} shortcut={shortcut} className="flex">
+      <button
+        onClick={onClick}
+        aria-label={title}
+        aria-current={active ? 'page' : undefined}
+        className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+          active
+            ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
+            : 'text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]'
+        }`}
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        {children}
+      </button>
+    </Tooltip>
+  )
+}
+
+/**
+ * The open agent as a nav item: its avatar, lit while its views are on
+ * screen. From Home, Settings or the fleet map it returns to the agent.
+ * Renders null while no agent is open.
+ */
+export function OpenAgentNavButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  const filePath = useDocumentStore((s) => s.filePath)
+  const config = useAgentStore((s) => s.config)
+  const agentState = useAgentStore((s) => s.state)
+  const orbitalSeed = useOpenAgentOrbitalSeed()
+  if (!filePath || !config) return null
+  const name = config.name || agentNameOf(filePath)
+  return (
+    <NavButton title={name} active={active} onClick={onClick}>
+      <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} />
+    </NavButton>
   )
 }
 
@@ -106,7 +131,6 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       className={`pointer-events-auto flex items-center justify-center gap-1.5 min-w-0 max-w-full text-xs ${onActivate ? 'cursor-pointer' : ''}`}
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       onClick={onActivate}
-      title={onActivate ? 'The open agent — click to fly to its tile' : undefined}
     >
       <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} title={config.description || undefined} />
       <span
@@ -170,12 +194,13 @@ export function TitleBar() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const showHome = useAppStore((s) => s.showHome)
+  const setShowHome = useAppStore((s) => s.setShowHome)
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const agentState = useAgentStore((s) => s.state)
   const config = useAgentStore((s) => s.config)
   const setState = useAgentStore((s) => s.setState)
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
-  const { closeFile } = useAdfFile()
   const [localStarting, setStarting] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   // Starts driven from elsewhere (openFile's foreground re-attach, the sidebar
@@ -207,11 +232,15 @@ export function TitleBar() {
     }
   }, [])
 
-  const handleHome = useCallback(() => {
+  // Home only navigates: the open agent stays open (Close Agent closes it).
+  const handleHome = useCallback(() => setShowHome(true), [setShowHome])
+  const handleOpenAgent = useCallback(() => {
     setShowSettings(false)
     setShowMeshGraph(false)
-    if (filePath) closeFile()
-  }, [closeFile, filePath, setShowMeshGraph, setShowSettings])
+    setShowHome(false)
+  }, [setShowHome, setShowMeshGraph, setShowSettings])
+  // The open agent's views are on screen (not Home, Settings or the map).
+  const agentOnStage = !!filePath && !showHome && !showSettings && !showMeshGraph
 
   const handleStart = useCallback(async () => {
     setStarting(true)
@@ -222,8 +251,19 @@ export function TitleBar() {
     }
   }, [])
 
+  const [stopping, setStopping] = useState(false)
   const handleStop = useCallback(async () => {
-    await window.adfApi?.stopAgent()
+    const stoppingPath = filePath
+    setStopping(true)
+    try {
+      await window.adfApi?.stopAgent()
+    } catch (err) {
+      // The agent still runs: say so, and leave the state as it is.
+      reportFailure(`${config?.name || (stoppingPath ? agentNameOf(stoppingPath) : 'The agent')} did not stop`, err)
+      return
+    } finally {
+      setStopping(false)
+    }
     setState('off')
     addLogEntry({
       id: `system-${Date.now()}`,
@@ -231,7 +271,7 @@ export function TitleBar() {
       content: 'Agent stopped',
       timestamp: Date.now()
     })
-  }, [addLogEntry, setState])
+  }, [addLogEntry, setState, filePath, config])
 
   return (
     <div
@@ -264,7 +304,7 @@ export function TitleBar() {
         >
           <NavButton
             title="Home"
-            active={!filePath && !showSettings && !showMeshGraph}
+            active={!showSettings && !showMeshGraph && (showHome || !filePath)}
             onClick={handleHome}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -283,6 +323,7 @@ export function TitleBar() {
           </NavButton>
           <NavButton
             title="Settings"
+            shortcut={SETTINGS_SHORTCUT}
             active={showSettings}
             onClick={() => { setShowMeshGraph(false); setShowSettings(true) }}
           >
@@ -294,6 +335,12 @@ export function TitleBar() {
           {/* Global notifications — app-level surface, so it lives with the
               app-global nav cluster, not the per-agent controls. */}
           <ApprovalsMenu align="left" />
+          {filePath && config && (
+            <>
+              <span aria-hidden className="mx-1 h-3.5 border-l border-hairline" />
+              <OpenAgentNavButton active={agentOnStage} onClick={handleOpenAgent} />
+            </>
+          )}
         </nav>}
         {/* An agent window has no app nav, but other agents can still be waiting on you. */}
         {isAgentWindow && <ApprovalsMenu align="left" />}
@@ -304,8 +351,8 @@ export function TitleBar() {
       {/* An open agent's line changes every call, so it starts at the left
           edge (a centred cluster would shift the name each time); the static
           wordmark stays centred. */}
-      <div className={`flex-1 min-w-0 px-3 flex items-center ${filePath && config ? 'justify-start' : 'justify-center'} pointer-events-none`}>
-        {filePath && config ? (
+      <div className={`flex-1 min-w-0 px-3 flex items-center ${filePath && config && !showHome ? 'justify-start' : 'justify-center'} pointer-events-none`}>
+        {filePath && config && !showHome ? (
           <AgentTitleCluster />
         ) : (
           <span className="flex items-center gap-2">
@@ -325,21 +372,22 @@ export function TitleBar() {
             : 'calc(8px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
         } as React.CSSProperties}
       >
-        {filePath && config && agentWindowsAvailable && (
-          <button
-            onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name })}
-            title="Open in new window"
-            aria-label="Open in new window"
-            className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M15 3h6v6" />
-              <path d="M10 14 21 3" />
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-            </svg>
-          </button>
+        {filePath && config && !showHome && agentWindowsAvailable && (
+          <Tooltip tip="Open in new window" className="flex">
+            <button
+              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name })}
+              aria-label="Open in new window"
+              className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 3h6v6" />
+                <path d="M10 14 21 3" />
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              </svg>
+            </button>
+          </Tooltip>
         )}
-        {filePath && config && (
+        {filePath && config && !showHome && (
           agentState === 'off' ? (
             <Button
               onClick={handleStart}
@@ -368,6 +416,7 @@ export function TitleBar() {
           ) : (
             <Button
               onClick={handleStop}
+              loading={stopping}
               size="compact"
               variant="danger"
               className="text-[11px]"

@@ -59,7 +59,7 @@ The Studio window is organized into a few persistent areas:
 
 ### The Home view
 
-When no agent is selected, Studio shows a **Home** dashboard: a compact header plus a grid of status tiles (agents, messaging, compute/containers, and more) that load progressively and deep-link into the relevant **Settings** section when clicked. A **Networking** panel surfaces LAN discovery state. Container-backed tiles refresh on a short interval so they settle as services finish booting.
+When no agent is open, or after **Home** in the title bar, Studio shows a **Home** dashboard. Home does not close the open agent: its avatar in the title bar returns to it, and **Close Agent** (Cmd/Ctrl+Shift+W) closes it. The dashboard has a compact header plus a grid of status tiles (agents, messaging, compute/containers, and more) that load progressively and deep-link into the relevant **Settings** section when clicked. A **Networking** panel surfaces LAN discovery state. Container-backed tiles refresh on a short interval so they settle as services finish booting.
 
 ![The Home dashboard with an "All systems go" banner, status tiles for Providers, MCP Servers, Channels, Packages, Containers, Host Access, Agents, and Running counts, a Networking panel with Mesh, LAN Discovery, LAN Peers, and Tailnet tiles, and the tracked directories list.](assets/screenshots/home-dashboard.png)
 

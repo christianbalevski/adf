@@ -48,7 +48,9 @@ import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
 import { useDocumentStore } from '../../stores/document.store'
 import { isTypingElement, mapOwnsKey } from '../../utils/keyboard'
-import { AgentTitleCluster } from '../layout/TitleBar'
+import { AgentTitleCluster, OpenAgentNavButton } from '../layout/TitleBar'
+import { Tooltip } from '../common/Tooltip'
+import { SETTINGS_SHORTCUT, CLOSE_AGENT_SHORTCUT } from '../../utils/shortcut-label'
 import { ApprovalsMenu } from '../layout/ApprovalsMenu'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
@@ -316,27 +318,33 @@ function useOsFullscreen(): boolean {
 
 function MapNavButton({
   title,
+  shortcut,
   active,
   onClick,
   children
 }: {
   title: string
+  shortcut?: string
   active?: boolean
   onClick?: () => void
   children: React.ReactNode
 }) {
+  // A native title never renders in this window: the label is a tooltip.
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
-        active
-          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
-          : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
-      }`}
-    >
-      {children}
-    </button>
+    <Tooltip tip={title} shortcut={shortcut} className="flex">
+      <button
+        onClick={onClick}
+        aria-label={title}
+        aria-current={active ? 'page' : undefined}
+        className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+          active
+            ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+            : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+        }`}
+      >
+        {children}
+      </button>
+    </Tooltip>
   )
 }
 
@@ -352,6 +360,7 @@ function MapNavButton({
 function FleetTopBar({
   onHome,
   onSettings,
+  onOpenAgent,
   agentCount,
   agentCluster,
   reserveWindowControls = true,
@@ -359,6 +368,8 @@ function FleetTopBar({
 }: {
   onHome: () => void
   onSettings: () => void
+  /** Back to the open agent: leaves the map. */
+  onOpenAgent: () => void
   agentCount?: number
   /** Whether the native window controls sit over this bar's right edge (as
    *  opposed to over the agent dock, which reserves its own clearance). When
@@ -372,6 +383,7 @@ function FleetTopBar({
 }) {
   const isFullscreen = useOsFullscreen()
   const isMac = window.adfApi?.platform === 'darwin'
+  const hasOpenAgent = useDocumentStore((s) => s.filePath !== null)
   return (
     <div
       // data-map-chrome: the fullscreen edge-scroll ticker measures this bar
@@ -404,7 +416,7 @@ function FleetTopBar({
               <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
             </svg>
           </MapNavButton>
-          <MapNavButton title="Settings" onClick={onSettings}>
+          <MapNavButton title="Settings" shortcut={SETTINGS_SHORTCUT} onClick={onSettings}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
               <circle cx="12" cy="12" r="3" />
@@ -415,6 +427,12 @@ function FleetTopBar({
               toast's "Review" opens nothing (B9). Same app-global surface,
               left-aligned dropdown to match the map's top-left nav cluster. */}
           <ApprovalsMenu align="left" />
+          {hasOpenAgent && (
+            <>
+              <span aria-hidden className="mx-1 h-3.5 border-l border-neutral-200 dark:border-neutral-800" />
+              <OpenAgentNavButton active={false} onClick={onOpenAgent} />
+            </>
+          )}
         </nav>
         {agentCluster ?? (
           <div className="flex items-center gap-2 min-w-0">
@@ -459,7 +477,7 @@ export function MeshGraphView() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const resetStore = useMeshGraphStore((s) => s.reset)
   const resetFleetStore = useFleetStore((s) => s.reset)
-  const { closeFile } = useAdfFile()
+  const setShowHome = useAppStore((s) => s.setShowHome)
 
   const closeMap = useCallback(() => {
     persistFleetMapState()
@@ -468,11 +486,11 @@ export function MeshGraphView() {
     setShowMeshGraph(false)
   }, [resetStore, resetFleetStore, setShowMeshGraph])
 
+  // Home only navigates: the open agent stays open (Close Agent closes it).
   const handleHome = useCallback(() => {
     closeMap()
-    setShowSettings(false)
-    if (useDocumentStore.getState().filePath) closeFile()
-  }, [closeMap, setShowSettings, closeFile])
+    setShowHome(true)
+  }, [closeMap, setShowHome])
 
   const handleSettings = useCallback(() => {
     closeMap()
@@ -482,7 +500,7 @@ export function MeshGraphView() {
   if (!meshEnabled) {
     return (
       <div className="relative w-full h-full bg-neutral-50 dark:bg-neutral-950">
-        <FleetTopBar onHome={handleHome} onSettings={handleSettings} />
+        <FleetTopBar onHome={handleHome} onSettings={handleSettings} onOpenAgent={closeMap} />
         {/* Enable Mesh CTA */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center space-y-3">
@@ -504,7 +522,7 @@ export function MeshGraphView() {
 
   return (
     <ReactFlowProvider>
-      <MeshGraphCanvas onHome={handleHome} onSettings={handleSettings} />
+      <MeshGraphCanvas onHome={handleHome} onSettings={handleSettings} onOpenAgent={closeMap} />
     </ReactFlowProvider>
   )
 }
@@ -767,7 +785,7 @@ function isTypingTarget(e: KeyboardEvent): boolean {
   return isTypingElement(e.target)
 }
 
-function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSettings: () => void }) {
+function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => void; onSettings: () => void; onOpenAgent: () => void }) {
   // Subscribe to mesh graph events
   useMeshGraph()
 
@@ -2635,6 +2653,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         <FleetTopBar
           onHome={onHome}
           onSettings={onSettings}
+          onOpenAgent={onOpenAgent}
           agentCount={agentCount}
           // An expanded dock (open agent, not collapsed) sits over the native
           // window controls and reserves its own clearance, so the bar should
@@ -2647,15 +2666,17 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
               map. Map chrome (?, fullscreen, Log) lives on the map itself,
               in the bottom-left control stack. */}
           {docFilePath && (
-            <button
-              onClick={() => closeFile()}
-              className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-              title="Close this agent — the side panel and status bar return to the fleet"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
+            <Tooltip tip="Close agent" shortcut={CLOSE_AGENT_SHORTCUT} className="flex">
+              <button
+                onClick={() => closeFile()}
+                aria-label="Close agent"
+                className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </Tooltip>
           )}
         </FleetTopBar>
 

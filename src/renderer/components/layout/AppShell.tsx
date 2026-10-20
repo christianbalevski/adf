@@ -17,6 +17,7 @@ import { NetworkNoticeBanner } from '../common/NetworkNoticeBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
 import { ApprovalToasts } from './ApprovalsMenu'
+import { FailureNotices } from '../common/FailureNotices'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
@@ -78,7 +79,10 @@ export function AppShell() {
   // An agent window (agent-windows.md) shows its agent only: no Settings, no fleet map, no sidebar.
   const showSettings = useAppStore((s) => s.showSettings) && !isAgentWindow
   const showMeshGraph = useAppStore((s) => s.showMeshGraph) && !isAgentWindow
+  // Home with an agent still open: the agent's views step aside, nothing closes.
+  const showHome = useAppStore((s) => s.showHome) && !isAgentWindow
   const filePath = useDocumentStore((s) => s.filePath)
+  const agentOnStage = !!filePath && !showHome
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
     loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_STORED_MAX)
   )
@@ -203,7 +207,7 @@ export function AppShell() {
       {/* Unreviewed-agent banner — main content area, right below the title
           bar. Hidden in Settings and on the fleet map (both replace the main
           content area). */}
-      {!showMeshGraph && !showSettings && <AgentReviewBanner />}
+      {!showMeshGraph && !showSettings && !showHome && <AgentReviewBanner />}
       {!showMeshGraph && !showSettings && <IdentityRestoreBanner />}
       {/* W3-F: unsaved versions a quit left under a "changed elsewhere" notice. */}
       {!showMeshGraph && !isAgentWindow && <RecoveredEditsNotice />}
@@ -239,7 +243,7 @@ export function AppShell() {
                   <Suspense fallback={<ViewFallback />}>
                     {showSettings ? (
                       <SettingsPage />
-                    ) : filePath ? (
+                    ) : agentOnStage ? (
                       <EditorPanel />
                     ) : isAgentWindow ? (
                       <AgentWindowStatus />
@@ -248,17 +252,17 @@ export function AppShell() {
                     )}
                   </Suspense>
                 </div>
-                {showLogsPanel && filePath && !showSettings && <BottomPanel />}
+                {showLogsPanel && agentOnStage && !showSettings && <BottomPanel />}
               </div>
             )}
 
             {/* Right panel — visible in both mesh and editor views. In mesh view
                 the real titlebar is hidden, so the dock is the window's top-right
                 element and must clear the native window-controls overlay itself. */}
-            {filePath && !showSettings && rightPanelCollapsed && (
+            {agentOnStage && !showSettings && rightPanelCollapsed && (
               <RightDockIconBar reserveWindowControls={dockUnderWindowControls} />
             )}
-            {filePath && !showSettings && !rightPanelCollapsed && (
+            {agentOnStage && !showSettings && !rightPanelCollapsed && (
               <>
                 {/* Resize handle */}
                 <div
@@ -286,6 +290,7 @@ export function AppShell() {
           itself on the fleet map and in Settings too, not only in the editor. */}
       {/* An agent window shows its agent's requests in its chat; the main window has the toasts. */}
       {!isAgentWindow && <ApprovalToasts />}
+      <FailureNotices />
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
