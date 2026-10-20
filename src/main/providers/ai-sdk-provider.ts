@@ -1,10 +1,13 @@
 import { streamText, generateText, jsonSchema, type LanguageModel, type ToolSet } from 'ai'
+import { randomUUID } from 'node:crypto'
 import type { LLMProvider, CreateMessageOptions } from './provider.interface'
 import type { LLMResponse, ContentBlock, LLMMessage, ReasoningConfig, ReasoningStyle, ReasoningEffort } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
 import type { ProviderType } from '../../shared/constants/adf-defaults'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { logger } from '../utils/logger'
+import { withPromptCacheBreakpoints, type PromptCacheProvider } from './prompt-cache'
+import { connectorMedia, type MediaSupport } from './media-capabilities'
 
 /** Extract a human-readable message from any thrown error shape. */
 function extractErrorMessage(error: unknown): string {
@@ -297,84 +300,98 @@ function extractOpenRouterReasoningDetails(providerMetadata?: Record<string, unk
 }
 
 // ---------------------------------------------------------------------------
-// Video bypass: The AI SDK doesn't support video content parts. We work around
-// this by extracting video markers from CoreMessages before SDK validation,
-// then wrapping the LanguageModel to inject raw OpenAI-format video_url parts
-// into the HTTP request body at the provider level.
+// Video projection: keep conversion-cache messages immutable. Providers with a
+// request-body hook need temporary text placeholders; native providers receive
+// SDK file parts. Neither route changes a video's position in the history.
 // ---------------------------------------------------------------------------
 
-/**
- * Scan CoreMessages for __adf_video marker parts (injected by extractMediaParts).
- * Remove them so SDK validation passes; return the video URLs for later injection.
- */
-function extractAndStripVideoFromMessages(messages: CoreMessage[]): string[] {
-  const videoUrls: string[] = []
-  for (const msg of messages as any[]) {
-    if (msg.role !== 'user' || !Array.isArray(msg.content)) continue
-    const stripped: unknown[] = []
-    for (const part of msg.content) {
-      if (part?.type === '__adf_video') {
-        videoUrls.push(part.url)
-      } else {
-        stripped.push(part)
+function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel, media: MediaSupport): { messages: CoreMessage[]; model: LanguageModel } {
+  const target = model as Exclude<LanguageModel, string> & {
+    transformRequestBody?: (body: Record<string, unknown>) => Record<string, unknown>
+  }
+  // Anthropic and OpenAI models have a request-body hook too, but no video
+  // input: a raw video_url part there is a provider 400, not a video.
+  const noVideo = !media.video || /^(anthropic|openai)\./.test(target.provider)
+  const bypass = !noVideo && typeof target.transformRequestBody === 'function'
+  const videos = new Map<string, string>()
+  let hasVideo = false
+  const projected = messages.map(message => {
+    if (message.role !== 'user' || !Array.isArray(message.content)) return message
+    let changed = false
+    const content = message.content.map(part => {
+      const video = part as unknown as { type: string; url?: string }
+      if (video.type !== '__adf_video' || typeof video.url !== 'string') return part
+      changed = hasVideo = true
+      if (bypass) {
+        // The marker exists only during SDK validation and is replaced before
+        // HTTP serialization. A unique marker cannot match ordinary user text.
+        const marker = `__adf_video_${randomUUID()}__`
+        videos.set(marker, video.url)
+        return { type: 'text', text: marker, providerOptions: part.providerOptions }
       }
-    }
-    if (stripped.length !== msg.content.length) {
-      msg.content = stripped.length > 0 ? stripped : [{ type: 'text', text: '[video attached]' }]
+      return {
+        type: 'file',
+        data: /^https?:\/\//.test(video.url) ? new URL(video.url) : video.url,
+        mediaType: video.url.match(/^data:(video\/[^;,]+)/)?.[1] ?? 'video/mp4',
+        providerOptions: part.providerOptions,
+      }
+    })
+    return changed ? { ...message, content } as CoreMessage : message
+  })
+  if (!hasVideo) return { messages, model }
+  // The executor leaves history video out of turns for these providers
+  // (effectiveMediaSupport); a direct call such as model_invoke gets this
+  // plain error before anything is sent.
+  if (noVideo) throw new Error(`Video input is not supported by this provider (${target.provider}).`)
+  if (bypass) return { messages: projected, model: wrapModelWithVideo(model, videos) }
+
+  // OpenRouter accepts video URLs directly, but its supportedUrls declaration
+  // omits video. Avoid the SDK downloading a remote video before serialization.
+  if (target.provider === 'openrouter') {
+    return {
+      messages: projected,
+      model: new Proxy(target, {
+        get(current, prop, receiver) {
+          if (prop === 'supportedUrls') return { ...current.supportedUrls, 'video/*': [/^https?:\/\//] }
+          return Reflect.get(current, prop, receiver)
+        },
+      }),
     }
   }
-  return videoUrls
+  throw new Error(`Video input is not supported by this provider (${target.provider}).`)
 }
 
-/**
- * Wrap a LanguageModel to inject raw video_url parts into the HTTP request body.
- * The AI SDK doesn't support video content natively (the openai-compatible
- * provider throws on video/* media types). This wrapper intercepts
- * doGenerate/doStream by patching the model's transformRequestBody to inject
- * raw OpenAI-format video_url parts into the last user message before the
- * request is sent. This works for any provider that supports the OpenAI
- * chat completions format (OpenRouter, Gemini, etc.).
- */
-function wrapModelWithVideo(model: LanguageModel, videoUrls: string[]): LanguageModel {
-  const patchBody = (body: Record<string, unknown>): Record<string, unknown> => {
-    const messages = body.messages as Array<Record<string, unknown>> | undefined
-    if (!messages) return body
-    // Find the last user message and inject video parts
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        const msg = messages[i]
-        if (!Array.isArray(msg.content)) {
-          msg.content = [{ type: 'text', text: msg.content as string }]
-        }
-        for (const url of videoUrls) {
-          ;(msg.content as unknown[]).push({ type: 'video_url', video_url: { url } })
-        }
-        break
-      }
-    }
-    return body
+/** Replace placeholders on a call-local receiver, never patch the shared model. */
+function wrapModelWithVideo(model: LanguageModel, videos: ReadonlyMap<string, string>): LanguageModel {
+  const target = model as Exclude<LanguageModel, string> & {
+    transformRequestBody: (body: Record<string, unknown>) => Record<string, unknown>
   }
-
-  return new Proxy(model as any, {
-    get(target: any, prop, receiver) {
-      if (prop === 'doGenerate' || prop === 'doStream') {
-        const original = Reflect.get(target, prop, receiver) as Function
-        return async function(this: unknown, options: any) {
-          const origTransform = target.transformRequestBody
-          target.transformRequestBody = (body: Record<string, unknown>) => {
-            const transformed = origTransform ? origTransform.call(target, body) : body
-            return patchBody(transformed as Record<string, unknown>)
-          }
-          try {
-            return await original.call(target, options)
-          } finally {
-            target.transformRequestBody = origTransform
-          }
-        }
-      }
-      return Reflect.get(target, prop, receiver)
+  const requestModel = Object.create(target) as typeof target
+  requestModel.transformRequestBody = (body: Record<string, unknown>) => {
+    const transformed = target.transformRequestBody.call(requestModel, body)
+    const messages = transformed.messages as Array<Record<string, unknown>> | undefined
+    if (!messages) return transformed
+    return {
+      ...transformed,
+      messages: messages.map(message => {
+        if (message.role !== 'user') return message
+        const content = typeof message.content === 'string'
+          ? [{ type: 'text', text: message.content }]
+          : message.content
+        if (!Array.isArray(content)) return message
+        let changed = false
+        const replaced = content.map(part => {
+          const url = part.type === 'text' ? videos.get(part.text) : undefined
+          if (url === undefined) return part
+          changed = true
+          const { text: _text, ...rest } = part
+          return { ...rest, type: 'video_url', video_url: { url } }
+        })
+        return changed ? { ...message, content: replaced } : message
+      }),
     }
-  }) as LanguageModel
+  }
+  return requestModel
 }
 
 /**
@@ -398,6 +415,13 @@ export interface AiSdkProviderOptions {
   providerType?: ProviderType
   /** Merged into providerOptions on every call (e.g. { openai: { store: false } }) */
   defaultProviderOptions?: Record<string, Record<string, unknown>>
+  /** Explicit Claude cache breakpoints, placed before transient instructions. */
+  promptCaching?: PromptCacheProvider
+  /** The media this connector can carry (LLMProvider.media). Absent: all three. */
+  media?: MediaSupport
+  /** providerOptions namespace that takes CreateMessageOptions.promptCacheKey
+   *  as `promptCacheKey` (OpenAI and ChatGPT Responses: `prompt_cache_key`). */
+  promptCacheKeyOption?: 'openai'
   /** If set, merges CreateMessageOptions.providerParams into providerOptions[key] */
   forwardProviderParams?: string
   /** Called before each request with the system prompt — used by providers
@@ -432,6 +456,7 @@ export class AiSdkProvider implements LLMProvider {
   readonly providerId?: string
   readonly providerType?: ProviderType
   readonly modelId: string
+  readonly media?: MediaSupport
 
   private model: LanguageModel
   private requestDelayMs: number
@@ -443,12 +468,18 @@ export class AiSdkProvider implements LLMProvider {
     this.providerId = options?.providerId ?? name
     this.providerType = options?.providerType
     this.modelId = modelId
+    this.media = options?.media
     this.requestDelayMs = requestDelayMs
     this.options = options
   }
 
   async createMessage(options: CreateMessageOptions): Promise<LLMResponse> {
-    let messages = convertMessages(options.messages)
+    const cachedPrompt = withPromptCacheBreakpoints(
+      options.system || undefined,
+      convertMessages(options.messages),
+      options.oneShot ? undefined : this.options?.promptCaching,
+    )
+    let messages = cachedPrompt.messages
     // Append dynamic instructions as a trailing user message so the system
     // prompt stays stable and provider-side prompt caching is preserved.
     if (options.dynamicInstructions) {
@@ -459,15 +490,15 @@ export class AiSdkProvider implements LLMProvider {
     // Normalize reasoning config to this provider's native shape.
     const reasoningPlan = planReasoning(this.options?.reasoningStyle, options, options.maxTokens)
 
-    // Extract pending video parts from messages (AI SDK doesn't support video)
-    // and use a model wrapper to inject them as raw OpenAI-format parts.
-    const videoParts = extractAndStripVideoFromMessages(messages)
-    const model = videoParts.length > 0 ? wrapModelWithVideo(this.model, videoParts) : this.model
+    // Project video without mutating cached history or the shared model.
+    const videoRequest = prepareVideoMessages(messages, this.model, connectorMedia(this))
+    messages = videoRequest.messages
+    const model = videoRequest.model
 
     // Build common call settings
     const callSettings: Record<string, unknown> = {
       model,
-      system: options.system || undefined,
+      system: cachedPrompt.system,
       messages,
       maxRetries: 3
     }
@@ -512,6 +543,15 @@ export class AiSdkProvider implements LLMProvider {
       const ns = this.options.forwardProviderParams
       const existing = (callSettings.providerOptions ?? {}) as Record<string, Record<string, unknown>>
       existing[ns] = { ...options.providerParams, ...(existing[ns] ?? {}) }
+      callSettings.providerOptions = existing
+    }
+
+    // Route the requests of one conversation to one prompt cache. Options set
+    // above (provider_params) win over the default key.
+    const cacheKeyOption = this.options?.promptCacheKeyOption
+    if (cacheKeyOption && options.promptCacheKey && !options.oneShot) {
+      const existing = (callSettings.providerOptions ?? {}) as Record<string, Record<string, unknown>>
+      existing[cacheKeyOption] = { promptCacheKey: options.promptCacheKey, ...(existing[cacheKeyOption] ?? {}) }
       callSettings.providerOptions = existing
     }
 
@@ -759,8 +799,8 @@ function toSdkAudioMime(format: string): string {
 
 /**
  * Extract multimodal content blocks as AI SDK parts.
- * Video blocks are included as a marker type that will be extracted and
- * injected as raw OpenAI-format parts via the model wrapper (see wrapModelWithVideo).
+ * Video blocks stay as markers in the shared conversion cache and are projected
+ * into native file parts or request-body placeholders by prepareVideoMessages.
  */
 function extractMediaParts(content: ContentBlock[]): unknown[] {
   const parts: unknown[] = []
@@ -771,7 +811,7 @@ function extractMediaParts(content: ContentBlock[]): unknown[] {
     } else if (b.type === 'input_audio' && b.input_audio) {
       parts.push({ type: 'file', data: b.input_audio.data, mediaType: toSdkAudioMime(b.input_audio.format) })
     } else if (b.type === 'video_url' && b.video_url) {
-      // Marker: will be extracted by extractAndStripVideoFromMessages before SDK validation
+      // Marker: projected per request by prepareVideoMessages before SDK validation
       parts.push({ type: '__adf_video', url: b.video_url.url })
     }
   }

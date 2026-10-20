@@ -1,6 +1,7 @@
 import type { LLMMessage, LLMResponse, ReasoningConfig } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
 import type { ProviderType } from '../../shared/constants/adf-defaults'
+import type { MediaSupport } from '../../shared/types/media.types'
 
 export interface CreateMessageOptions {
   system: string
@@ -21,6 +22,14 @@ export interface CreateMessageOptions {
   dynamicInstructions?: string
   /** Provider-specific options forwarded as providerOptions to the AI SDK. */
   providerParams?: Record<string, unknown>
+  /** Stable id of the conversation this request continues (agent + loop).
+   *  OpenAI and ChatGPT send it as `prompt_cache_key`, so requests that share
+   *  a prefix reach the same cache. */
+  promptCacheKey?: string
+  /** A request whose prefix is not sent again (compaction summary,
+   *  model_invoke). It gets no cache breakpoints or cache key: a cache write
+   *  costs more than plain input and would never be read. */
+  oneShot?: boolean
 }
 
 /**
@@ -34,6 +43,10 @@ export interface LLMProvider {
    *  branch on provider semantics, since providerId is an opaque key. */
   readonly providerType?: ProviderType
   readonly modelId: string
+  /** The media this connector can carry to its provider, declared by the
+   *  connector itself (media-capabilities.ts connectorMedia reads it).
+   *  Absent: image, audio and video. */
+  readonly media?: MediaSupport
 
   createMessage(options: CreateMessageOptions): Promise<LLMResponse>
   validateConfig(): Promise<{ valid: boolean; error?: string }>

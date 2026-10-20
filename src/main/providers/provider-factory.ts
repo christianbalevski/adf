@@ -7,12 +7,13 @@ import type { LLMProvider } from './provider.interface'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentProviderKeySource, ProviderConfig } from '../../shared/types/ipc.types'
 import { AiSdkProvider } from './ai-sdk-provider'
+import { ALL_MEDIA, IMAGE_ONLY_MEDIA } from './media-capabilities'
 import { recordProviderOrigin } from './provider-origin'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { getChatGptAuthManager } from './chatgpt-subscription/auth-manager'
-import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
+import { CHATGPT_SUBSCRIPTION_MEDIA, createChatGPTSubscriptionProvider } from './chatgpt-subscription'
 import { getGrokAuthManager } from './grok-subscription/auth-manager'
-import { createGrokSubscriptionProvider } from './grok-subscription'
+import { GROK_SUBSCRIPTION_MEDIA, createGrokSubscriptionProvider } from './grok-subscription'
 import { createClaudeSubscriptionProvider } from './claude-subscription'
 
 /**
@@ -308,6 +309,9 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
     }
   }
   const hasExtraParams = Object.keys(extraParams).length > 0
+  // An explicit raw cache_control (including deletion) owns the caching policy.
+  // Do not add 5m block markers beside a caller's custom TTL or opt-out.
+  const useDefaultPromptCaching = !Object.hasOwn(extraParams, 'cache_control')
 
   if (cfg.type === 'anthropic') {
     // Pooled instance unless custom params require a request-scoped fetch injector.
@@ -315,7 +319,12 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       ? createAnthropic({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
       : getAnthropicProvider(cfg.apiKey)
     const model = anthropic(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'anthropic' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, {
+      providerId: providerKey, providerType: cfg.type, reasoningStyle: 'anthropic',
+      // Anthropic Messages: image input; no audio or video.
+      media: IMAGE_ONLY_MEDIA,
+      ...(useDefaultPromptCaching ? { promptCaching: 'anthropic' } : {}),
+    })
   }
 
   if (cfg.type === 'openai') {
@@ -323,7 +332,9 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       ? createOpenAI({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
       : getOpenAIProvider(cfg.apiKey)
     const model = openai(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openai' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openai', promptCacheKeyOption: 'openai',
+      // The Responses API: image input; no audio or video parts.
+      media: IMAGE_ONLY_MEDIA })
   }
 
   if (cfg.type === 'chatgpt-subscription') {
@@ -338,6 +349,8 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       providerType: cfg.type,
       reasoningStyle: 'openai',
       forwardProviderParams: 'openai',
+      promptCacheKeyOption: 'openai',
+      media: CHATGPT_SUBSCRIPTION_MEDIA,
       beginRequest,
       streamOnly: true,
       getResponseMeta
@@ -356,7 +369,8 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
     return new AiSdkProvider(model, displayName, modelId, delayMs, {
       providerId: providerKey,
       providerType: cfg.type,
-      reasoningStyle: 'xai'
+      reasoningStyle: 'xai',
+      media: GROK_SUBSCRIPTION_MEDIA
     })
   }
 
@@ -374,6 +388,11 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
   // control via reasoningStyle 'openrouter'. Reuses the param injector for
   // provider-routing / extra body params.
   if (cfg.type === 'openrouter') {
+    // OpenRouter carries image, audio and video (video as URLs); the model
+    // behind it decides what it understands, as the agent's toggles say.
+    const OPENROUTER_MEDIA = ALL_MEDIA
+    const promptCaching = useDefaultPromptCaching && /^~?anthropic\//.test(modelId)
+      ? 'openrouter' as const : undefined
     // Usage accounting: puts `usage: {include: true}` in the request body so
     // responses carry providerMetadata.openrouter.usage with the EXACT billed
     // cost (works on streams too — OpenRouter appends the usage block to the
@@ -387,11 +406,11 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
         fetch: createParamInjector(extraParams)
       })
       const model = provider(modelId, openrouterSettings) as LanguageModel
-      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter' })
+      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter', promptCaching, media: OPENROUTER_MEDIA })
     }
     const provider = getOpenRouterProvider(cfg.apiKey || undefined, cfg.baseUrl || undefined)
     const model = provider(modelId, openrouterSettings) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter', promptCaching, media: OPENROUTER_MEDIA })
   }
 
   // When extra params are needed, create a fresh provider with custom fetch

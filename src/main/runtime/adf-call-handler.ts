@@ -612,7 +612,9 @@ export class AdfCallHandler {
         maxTokens,
         temperature,
         topP,
-        providerParams: input.provider_params ?? this.config.model.provider_params
+        providerParams: input.provider_params ?? this.config.model.provider_params,
+        // One-shot: a cache write would cost more than plain input and is not read.
+        oneShot: true
       })
       const eventData = toLlmCallEventData(metadata, 'model_invoke')
       this.onLlmCall?.(eventData)

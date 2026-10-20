@@ -804,7 +804,7 @@ from Fastify as `{statusCode, code, error, message}`.
 
 | Status | Means | Common `code`s |
 |--------|-------|----------------|
-| `400` | Bad request body or query | `bad_request`, `invalid_mnemonic`, `passphrase_required`, `subscription_type`, `bad_type`, `api_key_required`, `password_required` |
+| `400` | Bad request body or query | `bad_request`, `invalid_mnemonic`, `passphrase_required`, `subscription_type`, `bad_type`, `api_key_required`, `password_required`, `media_unsupported` |
 | `401` | Missing or wrong token | `unauthorized` |
 | `403` | Refused by a guard or policy | `host_not_allowed`, `cross_origin`, `loopback_only`, `setting_not_writable`, `wrong_passphrase`, `wrong_password`, `AGENT_REVIEW_REQUIRED` |
 | `404` | Unknown agent (or not loaded), loop, task, file, template, ask | `not_found`, `ask_not_found`, `template_missing` |

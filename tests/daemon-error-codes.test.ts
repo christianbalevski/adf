@@ -26,6 +26,7 @@ vi.mock('electron', () => {
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
+import type { AgentConfig } from '../src/shared/types/adf-v02.types'
 
 const TOKEN = 'b'.repeat(43)
 const servers: Array<{ close: () => Promise<unknown> }> = []
@@ -131,5 +132,27 @@ describe('daemon error codes', () => {
     expect((await server.inject({ method: 'HEAD', url: '/health' })).statusCode).toBe(200)
     expect((await server.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200)
     expect((await server.inject({ method: 'HEAD', url: '/agents' })).statusCode).toBe(401)
+  })
+
+  it('chat content the model cannot take is 400 media_unsupported before anything is queued', async () => {
+    const { runtime, ref, server, auth } = setup()
+    const sendChat = vi.spyOn(runtime, 'sendChat').mockResolvedValue(undefined)
+    const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }
+    const payload = { content: [{ type: 'text', text: 'what is this?' }, image] }
+    // A new agent's model has image input off.
+    const refused = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, headers: auth, payload })
+    expect(refused.statusCode).toBe(400)
+    expect(refused.json()).toMatchObject({ code: 'media_unsupported', error: expect.stringContaining('Image input is off') })
+    expect(sendChat).not.toHaveBeenCalled()
+    // The status answers the same effective set, for clients to gate attachments on.
+    const status = await server.inject({ method: 'GET', url: `/agents/${ref.id}/status`, headers: auth })
+    expect(status.json().media.main).toMatchObject({ support: { image: false }, refusals: { image: expect.stringContaining('image input is off') } })
+    // Turned on, the same message is accepted.
+    const executor = (runtime as unknown as { requireAgent(id: string): { agent: { executor: { getConfig(): AgentConfig; updateConfig(c: AgentConfig): void } } } }).requireAgent(ref.id).agent.executor
+    const config = executor.getConfig()
+    executor.updateConfig({ ...config, model: { ...config.model, multimodal: { image: true } } })
+    const accepted = await server.inject({ method: 'POST', url: `/agents/${ref.id}/chat`, headers: auth, payload })
+    expect(accepted.statusCode).toBe(202)
+    await vi.waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
   })
 })
