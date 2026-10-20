@@ -10,7 +10,7 @@ Read with: [agent-windows.md](agent-windows.md) (window and session map, `ctxFor
 
 ### 1.1 Goals
 
-- Studio holds one connection per runtime in its runtime set: This computer, plus each remote the owner connected. Windows are views on those connections.
+- Studio holds one connection per runtime in its runtime set: This computer, plus each saved connection. Windows are views on those connections.
 - The main window shows the agents of every runtime. An agent window shows one agent of one runtime.
 - An unreachable runtime affects only its own agents and surfaces.
 - With This computer only, Studio is the Studio of today: same UI, same IPC traffic, same files.
@@ -25,7 +25,7 @@ Read with: [agent-windows.md](agent-windows.md) (window and session map, `ctxFor
 
 ### 1.3 Terms
 
-- **Runtime set**: the runtimes Studio connects to. Always This computer; plus each remote added with **Connect**. Stored in `studio-backend.json` `runtimes` (§3.1).
+- **Runtime set**: the runtimes Studio connects to: This computer, plus every saved connection (§3.1).
 - **Runtime id**: the connection id of settings-scopes.md §5.4: `local`, `remote:<name>` (a saved connection in `cli-remotes.json`) or `remote` (the one connection without a fingerprint in `studio-backend.json`).
 - **Multi-runtime**: the runtime set has more than one entry. A runtime in the set counts while it is down.
 - **Agent ref**: `{runtimeId, agentId, filePath}`. Two refs name the same agent when the runtime ids are equal and the agent ids are equal; when either agent id is null, when the file paths are equal under that runtime's path rule (`samePath(a, b, kind === 'remote')`).
@@ -40,16 +40,16 @@ Read with: [agent-windows.md](agent-windows.md) (window and session map, `ctxFor
 | Approvals bell, toasts, OS notifications | As today | One list; each row and notification carries its runtime's name (§6.1) |
 | Settings | Runtime pages unheaded | Group heading **Runtime** with a picker of runtime names (§6.3) |
 | Agent window title | Agent name | Agent name · runtime name |
-| Connections | One row, **Add** (SimpleConnections) | Rows per settings-scopes.md §5.1, with **Connect** adding a runtime and **Disconnect** in More (§6.5) |
-| Connect | n/a | No dialog, no restart |
+| Connections | One row, **Add** (SimpleConnections) | One row per runtime, found computers, **Add** (§6.5) |
+| Add | Pairs, then connects; no restart | Same |
 
-UI copy MUST NOT describe the runtime set as additive or explain that This computer stays connected. Labels are one word (**Add**, **Connect**, **Disconnect**, **Remove**, **Runtime**, **Runtimes**), with a tooltip at most.
+UI copy MUST NOT describe the runtime set as additive or explain that This computer stays connected. Labels are one word (**Add**, **Remove**, **Runtime**, **Runtimes**), with a tooltip at most.
 
 ### 1.5 Before and after
 
 Before: Studio runs agents on This computer or on one other computer. Choosing rawl-hub in Settings → Connections asks to switch, lists what stops, and restarts Studio. Afterwards the agents of this laptop are gone from Studio until the next switch and restart. To watch both, the owner runs a second Studio with `ADF_INSTANCE`.
 
-After: the owner pairs rawl-hub and presses **Connect**. Nothing restarts. The sidebar now shows two groups, This computer and rawl-hub, and the status bar shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
+After: the owner adds rawl-hub (**Add**, then the code shown on rawl-hub). Nothing restarts. The sidebar now shows two groups, This computer and rawl-hub, and the status bar shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
 
 An owner who never adds another computer sees no change.
 
@@ -57,7 +57,7 @@ An owner who never adds another computer sees no change.
 
 | # | Decision | Section |
 |---|---|---|
-| M1 | One `RuntimeConnection` per runtime in the set, created at launch or on Connect, disposed on Disconnect, Remove or quit. Each owns its connector, client, token source, pin check, sessions, bridges, exit watch and failure state. | §3 |
+| M1 | One `RuntimeConnection` per runtime in the set, created at launch or when a connection is saved, disposed on Remove or quit. Each owns its connector, client, token source, pin check, sessions, bridges, exit watch and failure state. | §3 |
 | M2 | Every runtime-scoped invoke, send and push carries a runtime tag as its first argument. No tag means `local`. Local traffic is never tagged. | §4.1 |
 | M3 | Handlers are registered once. The registrar strips the tag and serves the call with the context of (sender window, runtime). Handler code is unchanged. | §4.3 |
 | M4 | The main window has one client session per runtime in the set. An agent window has one session, on its agent's runtime. | §3.2 |
@@ -65,7 +65,7 @@ An owner who never adds another computer sees no change.
 | M6 | Approvals, notifications and the connection list are aggregated in main. Their pushes are untagged; each entry carries `runtimeId`, omitted for `local`. | §4.2, §6.1 |
 | M7 | Agent identity is the agent ref everywhere in the renderer and in main's window, queue, notice and restore maps. | §5 |
 | M8 | Names, tags, picker and grouping depend on one selector, `useMultiRuntime()`. | §5.1 |
-| M9 | Connect adds a runtime to the set; Disconnect takes it out. The switch-and-restart flow between This computer and a remote is removed. | §6.5, §7.1 |
+| M9 | Saving a connection (Studio's **Add**, `adf pair`) connects it; removing it (Studio's **Remove**, `adf remotes forget`) disconnects and forgets it. There is no saved-but-not-connected state. The switch-and-restart flow and `mode-switch.ts` are removed. | §3.1, §6.5, §7.1 |
 | M10 | Studio never stops a remote daemon. Background (`keepDaemonRunning`) is This computer's only. | §3.3 |
 | M11 | A local-only install's `studio-backend.json` and `studio-client-settings.json` are not rewritten by this change. | §7.3, §9.3 |
 
@@ -73,10 +73,9 @@ An owner who never adds another computer sees no change.
 
 ### 3.1 Runtime set
 
-- `studio-backend.json` gains `runtimes: string[]`: the runtime ids besides `local`, in the order added. Absent means `[]`. Studio writes it only on Connect, Disconnect and Remove, and on the migration of §7.3.
-- `local` is always in the set and MUST NOT be written to `runtimes`.
-- An id in `runtimes` whose connection is no longer saved (removed with `adf remotes forget`) is dropped from the set at the next read of `cli-remotes.json` (`SavedConnectionsCache` change), and its windows close.
-- A remote paired with `adf pair` is a Paired row with **Connect**. Studio MUST NOT add it to the set by itself.
+- The set is `local`, every connection in `cli-remotes.json`, and the `remote` slot of `studio-backend.json` when it holds a URL. Studio keeps no separate list of which connections to use.
+- `SavedConnectionsCache` follows `cli-remotes.json`. A connection that appears (`adf pair`, `adf remotes add`, Studio's **Add**) connects at once; one that disappears (`adf remotes forget`, Studio's **Remove**) disconnects, and its agent windows close.
+- Order is fixed: `local` first, then the remotes in the order Studio first saw them. `studio-backend.json` gains `runtimeOrder: string[]`, the remote ids in that order. A saved id missing from it is appended, in `pairedAt` order; an id no longer saved is dropped. It is written only when it changes, so it is never written while no remote is saved.
 
 ### 3.2 Connection manager
 
@@ -94,16 +93,16 @@ An owner who never adds another computer sees no change.
 | `ClientSettingsStore`, `ApprovalsUi`, `NoticeOwners`, menu, `adf-file` handler, quit | One | One, in `RuntimeManager` |
 | Local proof (`withLocalProof`), `sharedMnemonic`, `afterOwnerImport`, `reloadCredentials`, remote-access host IPC | Local mode | `local` only |
 
-`RuntimeManager` exposes `runtimes()`, `get(id)`, `add(id)`, `remove(id)`, `contextFor(windowId, runtimeId)` and `shutdown()`. `RuntimeConnection` exposes what `DaemonModeHandle` exposes today, for one runtime.
+`RuntimeManager` exposes `runtimes()`, `get(id)`, `sync(saved)` (connect what appeared, dispose what disappeared), `contextFor(windowId, runtimeId)` and `shutdown()`. `RuntimeConnection` exposes what `DaemonModeHandle` exposes today, for one runtime.
 
 ### 3.3 Lifecycle
 
 | Event | Result |
 |---|---|
-| Launch | `local` and every id in `runtimes` get a `RuntimeConnection`, started in parallel. The main window loads without waiting for any remote. |
-| Connect | The token is read (keychain, `savedConnectionTarget`), then the id is added to `runtimes` and the runtime connects. A keychain refusal ends the Connect with the existing sentence; nothing is saved. |
-| Disconnect | Agent windows of the runtime close and leave the saved list; its sessions end (bounded, `AGENT_SESSION_END_TIMEOUT_MS`); the id leaves `runtimes`. |
-| Remove | Disconnect, then `forgetConnection` (settings-scopes.md §5.3). |
+| Launch | Every runtime in the set gets a `RuntimeConnection`, started in parallel. The main window loads without waiting for any remote. |
+| Connection saved (Studio's **Add**, `adf pair` or `adf remotes add` while Studio runs) | It gets a `RuntimeConnection` and connects. |
+| A remote connects | Its token is read from the keychain (`savedConnectionTarget`). A refusal fails that runtime with the existing sentence ("The OS keychain did not give the token for <name>; ..."); the others connect. |
+| Remove (Studio's **Remove**, or `adf remotes forget`) | Agent windows of the runtime close and leave the saved list; its sessions end (bounded, `AGENT_SESSION_END_TIMEOUT_MS`); `forgetConnection` (settings-scopes.md §5.3); the `RuntimeConnection` is disposed. |
 | Agent window opened | Its session opens on its agent's runtime, as `DaemonWindows.open` today. |
 | Quit | Every runtime in parallel: agent-window sessions end first, then the main window's session. `local`: `quit(stopDaemon)` per `keepDaemonRunning` and the remote-access quit question, as today. Remote: `end()`, bounded by `AGENT_SESSION_END_TIMEOUT_MS`; the daemon expires a session that did not end. A remote daemon keeps running. |
 | Main window closed (Windows, Linux) | Quit |
@@ -176,10 +175,10 @@ A `local` channel that reads a runtime's state (a `local` entry with `reads`) is
 
 | Channel | Change |
 |---|---|
-| `CONNECTION_LIST` / `CONNECTION_CHANGED` | `ConnectionsView` gains `runtimes: RuntimeView[]` (`{id, kind, name, url, state}`, `local` first, then the order added). `current` stays: the sender's runtime (agent window), else `local`. `next` is removed (§7.1). |
-| `CONNECTION_USE {id}` | Adds the runtime (§3.3). `embedded` keeps the switch dialog and restart (§7.2). |
-| `CONNECTION_DISCONNECT {id}` | New, `studio` scope |
-| `CONNECTION_REMOVE {id}` | Disconnects first; no switch |
+| `CONNECTION_LIST` / `CONNECTION_CHANGED` | `ConnectionsView` gains `runtimes: RuntimeView[]` (`{id, kind, name, url, state}`, in the order of §3.1). `current` stays: the sender's runtime (agent window), else `local`. `next` names only a saved mode that differs from the running one (§7.2). |
+| `CONNECTION_ADD`, `REMOTE_PAIR_SUBMIT_CODE` | On success the connection is saved and connects (§3.3) |
+| `CONNECTION_USE {id}` | `local` or `embedded` only: saves the mode for the next launch (§7.2). Any other id: `not_found` |
+| `CONNECTION_REMOVE {id}` | Disconnects and forgets (§3.3); no switch |
 | `WINDOW_OPEN_AGENT` | Request gains `runtimeId?` |
 | `WINDOW_LIST_AGENTS` / `WINDOW_AGENTS_CHANGED` | Entries gain `runtimeId?` |
 | `WINDOW_OPEN_SETTINGS` | Request gains `runtimeId?`: the picker starts there (§6.3) |
@@ -200,7 +199,7 @@ A `local` channel that reads a runtime's state (a `local` entry with `reads`) is
 ### 5.1 Runtimes store
 
 - `runtimes.store.ts`: `runtimes: RuntimeView[]` from `CONNECTION_LIST` / `CONNECTION_CHANGED`.
-- `useMultiRuntime()`: `runtimes.length > 1`. It replaces `useRemoteConnectionsSaved()` for the Settings heading, the status bar, Kill's tooltip and every runtime name. `remoteConnectionsSaved()` stays only to choose the Connections layout (SimpleConnections or the list).
+- `useMultiRuntime()`: `runtimes.length > 1`. It replaces `useRemoteConnectionsSaved()` everywhere: the Settings heading, the status bar, Kill's tooltip, every runtime name and the Connections layout. A saved connection is always in the set, so the two conditions are the same.
 - `useRuntime(id)`, `runtimeName(id)`, `runtimeDown(id)`.
 
 ### 5.2 Agent refs
@@ -225,7 +224,7 @@ Selectors: `selectRuntimeSlice(state, id)`, `selectAllAgents(state)` (each with 
 ### 5.4 Grouping
 
 - Multi-runtime only. With one runtime the sidebar, Go to Agent and the Mesh view render as today.
-- Sidebar: one collapsible group per runtime, in `runtimes` order, headed with the runtime name; state while down. Tracked folders inside, as today. **Track Folder** acts on the group it is chosen from; the File menu's acts on This computer.
+- Sidebar: one collapsible group per runtime, in the order of §3.1, headed with the runtime name; state while down. Tracked folders inside, as today. **Track Folder** acts on the group it is chosen from; the File menu's acts on This computer.
 - Go to Agent: results show the runtime name after the agent name.
 - The Mesh view: §6.4.
 
@@ -276,13 +275,11 @@ Settings-scopes.md §5 stands, with these rows:
 | Row | State | Action | More menu |
 |---|---|---|---|
 | This computer | Connected (or the state while down) | none | Inside Studio (legacy) |
-| A runtime in the set | Connected, Connecting, Not connected, retrying, Not connected | none | Disconnect, Remove |
-| Saved, not in the set | Paired | Connect | Remove |
-| Found, not paired | Not paired | Pair | none |
+| A saved connection | Connected, Connecting, Not connected, retrying, Not connected | none | Remove |
+| Found on the network, not saved | Not paired | **Add** | none |
 
-- Connect: no dialog and no restart. The Pair and Add connection dialogs' **Connect** does the same.
-- Disconnect: no dialog unless the runtime has agent windows or unsaved editor text; then "Disconnect rawl-hub" with "Closes 2 agent windows." and **Disconnect** / **Cancel**.
-- Remove: "Removes the address and token from Studio and adf." The switch-first sentence goes.
+- **Add** below the list and **Add** on a found row open one dialog, titled "Add": today's Pair and Add connection flow (settings-scopes.md §5.3: address, fingerprint check, code or token). On success the connection is saved and connects; the dialog shows **Done** only.
+- Remove: "Removes the address and token from Studio and adf." When the runtime has agent windows or unsaved editor text, the dialog adds "Closes 2 agent windows." Buttons **Remove**, **Cancel**. The switch-first sentence goes.
 - With no remote saved the page is SimpleConnections, unchanged.
 
 ### 6.6 Menus
@@ -294,26 +291,32 @@ Settings-scopes.md §5 stands, with these rows:
 
 ### 7.1 The switch flow
 
-Removed between This computer and a remote: the switch dialog for those targets, Switch and Restart, Wait for Them to Finish, Finish switch now, Cancel switch, "Restart to connect to <name>.", `ConnectionsView.next`, `studio-switch-resume.json` entries for those targets, and `mode-switch.ts` paths that only serve them. A remote's turns are never interrupted by Connect or Disconnect: they run in its daemon.
+Phase 4 deletes the switch-and-restart flow for every target, and `mode-switch.ts`:
+
+- Removed: the switch dialog, Switch and Restart, Wait for Them to Finish, Stop Them Now, Finish switch now, Cancel switch, "Restart to connect to <name>.", `createModeSwitcher`, `resumeSwitchedAgents`, `resumesAgents`, `restartingMessage`, `SWITCH_DAEMON_EXIT_WAIT_MS`, `studio-switch-resume.json`, and the backend-settings hooks that call them (`confirmModeSwitch`, `applyModeSwitch`, `pendingSwitch`, `finishSwitchNow`, `cancelSwitch`, `restarting`).
+- Moved, unchanged, to `src/main/backend/boot-handover.ts`: what the boot and the embedded backend still use (`runBootHandover`, `showHandoverSummary`, `handoverDeps`, `studioSecretCodec`, `isObfuscationOnly`, `sessionBackendEnv`, `SESSION_BACKEND_ARG`, `runningDaemonOnSettings`, `askVersionMismatch`, `relaunchStudio`, `relaunchEmbeddedForSession`, `isRelaunching`, `notifyDaemonOfHandover`, `syncRuntimeEntryAfterImport`).
+- A remote's turns are never interrupted by adding or removing another runtime: they run in its daemon.
 
 ### 7.2 Inside Studio (legacy)
 
 - It stays where #171 put it: under Details in SimpleConnections, and in This computer's More menu.
-- It is a whole-Studio mode. Choosing it keeps today's switch dialog, handover and restart. In embedded mode the runtime set is not loaded; remote rows show Paired with Connect, which switches back to This computer (the switch dialog) and adds the remote at that launch.
-- When Embedded is deleted, `mode-switch.ts`, the handover's reverse direction and `studio-switch-resume.json` go with it (Q3).
+- It is a whole-Studio mode. The embedded backend code stays; its removal is a later PR.
+- Choosing it (or This computer while it runs) saves `mode` and shows "Saved. Applies at the next launch." (`ConnectionsView.next`). Studio does not restart and shows no switch dialog. The boot handover (`runBootHandover`) moves the credentials at the next launch, as it does today. Running agents are not carried across.
+- In embedded mode the runtime set is not loaded. Saved connections are listed with no state; they connect at the next launch in This computer mode.
 
 ### 7.3 `studio-backend.json`
 
 | Before | After |
 |---|---|
-| `mode: local` | Unchanged. `runtimes` absent. The file is not rewritten. |
-| `mode: remote`, `remote.name: X` | `mode: local`, `runtimes: ['remote:X']`, `remote.name` removed |
-| `mode: remote`, the `remote` slot | `mode: local`, `runtimes: ['remote']` |
-| `mode: embedded` | Unchanged; `runtimes` kept, unused while embedded |
+| `mode: local`, no saved connection | Unchanged. The file is not rewritten. |
+| `mode: local`, saved connections | `runtimeOrder` written (§3.1). Every saved connection connects, including ones paired with `adf pair` and never used by Studio |
+| `mode: remote`, `remote.name: X` | `mode: local`, `remote.name` removed, `runtimeOrder` written |
+| `mode: remote`, the `remote` slot | `mode: local`, `runtimeOrder` written |
+| `mode: embedded` | Unchanged |
 | `ADF_STUDIO_BACKEND=remote` | Read as `local` with the saved set; logged |
 
 - The migration runs once, at the first launch of this version, before any connector, and writes atomically.
-- On the first launch after migrating from `mode: remote`, This computer's daemon may start where it did not run before (Q1).
+- On the first launch after migrating from `mode: remote`, This computer's daemon starts, with its agents set to start automatically, as on any launch.
 - An older Studio reading the migrated file runs This computer only. The remotes stay saved in `cli-remotes.json`.
 
 ### 7.4 Client keys
@@ -369,20 +372,20 @@ Residual risk: one renderer serves every runtime. A script-injection bug in rend
 
 - Every existing scenario and recording runs unchanged against the refactored main process. Any diff fails: with This computer only, no tag and no `runtimeId` field appears in a step, push or recording.
 - `multiDaemonBackend()` (`tests/parity/harness/`): two built daemon bundles in fenced child processes, each with its own isolated root (`createParityEnv`) and its own loopback port from `env.allowPort`; never 7385. One is `local` (master token, local proof). The other is a remote: remote access on, a device token, a saved connection whose token is in `cli-remote-tokens.json` in the isolated root (`ADF_KEYCHAIN=0`, `ADF_SECRET_STORE=file`). The real keychain is never opened (`@napi-rs/keyring` refused, as today).
-- Scenarios under `tests/parity/multi/`: open and chat on each runtime, concurrently, with the mock LLM; approvals from both, answered from the merged list; kill the remote daemon: the local runtime's turn completes and its recording equals the single-runtime one; a 401 from the remote; a pin mismatch (another daemon with another fingerprint on the remote's port); Disconnect with an agent window open; quit with the remote unreachable stays within budget.
+- Scenarios under `tests/parity/multi/`: open and chat on each runtime, concurrently, with the mock LLM; approvals from both, answered from the merged list; kill the remote daemon: the local runtime's turn completes and its recording equals the single-runtime one; a 401 from the remote; a pin mismatch (another daemon with another fingerprint on the remote's port); a connection saved and one forgotten in `cli-remotes.json` while Studio runs (it connects; it disconnects); Remove with an agent window open; quit with the remote unreachable stays within budget.
 
 ### 9.2 Unit and backend tests
 
 - Tag parsing and the refusals of §4.3, for invoke and send; tagged and untagged pushes in the preload factory.
 - `channel-map.test.ts`: every entry has a `scope`; `studio` channels refuse a tag.
-- `RuntimeManager`: add, remove, failed-runtime recreate, quit order and bounds, per-runtime 401, per-kind handler choice.
+- `RuntimeManager`: `sync` on save and forget, fixed order, failed-runtime recreate, quit order and bounds, per-runtime 401, per-kind handler choice.
 - `ApprovalsAggregator` and `NoticeOwners` with refs; notification ids equal on two runtimes stay distinct.
 - Migrations of §7.3, §7.4, §7.5, including the downgrade read by the previous `parseSavedAgentWindows`.
 - Renderer: selectors; `agentKey`; sidebar, status bar, Settings nav and approvals rows rendered with one runtime equal today's snapshots.
 
 ### 9.3 "Local-only unchanged" checks
 
-- With `runtimes` absent: no runtime name, picker, group heading or tag in the DOM (sidebar, status bar, Settings, bell, toasts, titles, Go to Agent, Mesh view).
+- With no saved connection: no runtime name, picker, group heading or tag in the DOM (sidebar, status bar, Settings, bell, toasts, titles, Go to Agent, Mesh view).
 - `studio-backend.json` and `studio-client-settings.json` keep their bytes across a launch and quit of the new version (M11).
 - Connections is SimpleConnections.
 - `tests/backend/adf-file-window-header.test.ts` (real Electron) still passes.
@@ -394,10 +397,10 @@ Difficulty is on a 1-10 scale. Time is agent time.
 
 | Phase | Scope | Risk | Difficulty | Time |
 |---|---|---|---|---|
-| 1. Connection manager and runtime-aware IPC | `RuntimeManager` / `RuntimeConnection` split of daemon-mode/index.ts; registrar with tags and `ctxFor(window, runtime)`; per-kind handler choice; `ApprovalsAggregator`; channel-map `scope`; preload factory and `adfApi.runtime(id)`; `runtimes` read; `agentWindows` and recovery entries with `runtimeId`. No UI change; `runtimes` can only be set by hand. | High: quit, exit watch, revive, approvals and window routing all move. Parity recordings MUST stay identical. | 7 | 4 h |
+| 1. Connection manager and runtime-aware IPC | `RuntimeManager` / `RuntimeConnection` split of daemon-mode/index.ts; registrar with tags and `ctxFor(window, runtime)`; per-kind handler choice; `ApprovalsAggregator`; channel-map `scope`; preload factory and `adfApi.runtime(id)`; the runtime set from the saved connections, behind a development flag; `agentWindows` and recovery entries with `runtimeId`. No UI change. | High: quit, exit watch, revive, approvals and window routing all move. Parity recordings MUST stay identical. | 7 | 4 h |
 | 2. Renderer stores and grouping | `runtimes.store`, `useMultiRuntime`, `AgentRef` across stores and call sites (`apiFor`); sidebar groups, Go to Agent, agent window title, Mesh view regions and peer de-duplication; per-runtime client keys (§7.4) | Medium-high: wide renderer change; local-only snapshots guard it | 6 | 3 h |
-| 3. Per-runtime surfaces | Connect adds, Disconnect, Remove without switch; status-bar groups and **Runtimes** overflow; Settings picker; bell, toasts and OS notifications tagged; Help menu; multi-daemon parity scenarios | Medium | 5 | 2.5 h |
-| 4. Remove the switch flow | Delete §7.1; `studio-backend.json`, client-key and `agentWindows` migrations; guides (studio-backend.md, settings.md, remote-daemon.md), settings-scopes.md §5.3 and §10, user-testing MRT | Medium: migration of remote-mode installs | 4 | 1.5 h |
+| 3. Per-runtime surfaces | Saving a connection connects it; the **Add** dialog; Remove disconnects and forgets; flag removed; status-bar groups and **Runtimes** overflow; Settings picker; bell, toasts and OS notifications tagged; Help menu; multi-daemon parity scenarios | Medium | 5 | 2.5 h |
+| 4. Remove the switch flow | Delete the switch flow and `mode-switch.ts`, move the boot helpers (§7.1, §7.2); `studio-backend.json`, client-key and `agentWindows` migrations; guides (studio-backend.md, settings.md, remote-daemon.md), settings-scopes.md §5.3 and §10, user-testing MRT | Medium: migration of remote-mode installs | 4 | 1.5 h |
 
 Overall 7/10, about 11 hours of agent time. Each phase ships alone; phases 1 and 2 change nothing visible.
 
@@ -410,10 +413,12 @@ Out of scope here; this design does not block it:
 - A runtime that refuses an action under a future grant answers an ordinary error on a runtime-scoped call; surfaces already show per-runtime refusals (§6.4).
 - Studio never relays between runtimes (§1.2), so #148 open question 2 stays open.
 
-## 12. Open questions
+## 12. Decisions
 
-1. **Upgrade from Remote computer mode.** The migrated install starts This computer's daemon, which starts its agents set to start automatically; one of them may also run on the remote (two pollers of one bot). Hold autostart for that first launch, with one notice listing the held agents and **Start** (needs a daemon start option, also offered as an `adf daemon start` flag), or start normally? Recommended: hold.
-2. **Remotes paired in the terminal.** A remote paired with `adf pair` is a Paired row until **Connect** (§3.1). Keep that, or add it to the runtime set automatically? Recommended: keep.
-3. **Embedded removal order.** Delete Inside Studio (legacy) before phase 4, so phase 4 deletes `mode-switch.ts` whole, or keep its restart switch until its own PR? Recommended: delete first.
-4. **Kill.** One Kill per runtime only, or also one that stops every runtime? Recommended: per runtime only.
-5. **Order.** Runtime groups follow the order added, This computer first. Allow reordering (drag in Connections), or keep it fixed? Recommended: fixed.
+Owner answers, 2026-10-20:
+
+1. **Upgrade autostart.** No hold. The first launch after migrating from `mode: remote` starts This computer's daemon and its autostart agents as on any launch (§7.3). No new daemon start option.
+2. **Adding connects.** A connection saved by Studio's **Add** or by `adf pair` joins the runtime set and connects at once. **Remove** disconnects and forgets it. There is no Paired state and no Connect button (§3.1, §6.5).
+3. **Embedded.** Phase 4 deletes the switch-and-restart flow and `mode-switch.ts` (§7.1). The Inside Studio (legacy) backend code stays until a later PR (§7.2).
+4. **Kill** is per runtime only (§6.2).
+5. **Order** is fixed: This computer first, then the remotes in the order added (§3.1).
