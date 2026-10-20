@@ -10,6 +10,7 @@ import { PairingClient } from './remote-access/client'
 import { runMode, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { PinMismatchError } from './daemon-mode/connection'
+import { runtimeOrder, SLOT_RUNTIME } from './daemon-mode/runtime-manager'
 
 /**
  * Saved connections (docs/design/settings-scopes.md §5.2): one list for
@@ -338,13 +339,15 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
     removable: true,
   })
-  for (const name of Object.keys(input.saved).sort((a, b) => a.localeCompare(b))) {
-    const remote = input.saved[name]
-    saved.push(savedRow(`remote:${name}`, name, remote.url, remote.fingerprint))
-  }
   // The remote URL of studio-backend.json: one row, unless its paired fingerprint is a saved connection (runtimeSlot).
   const slot = runtimeSlot(input.configured, input.saved)
-  if (slot) saved.push(savedRow('remote', slot.name, slot.url, input.configured.remote.paired?.fingerprint ?? null))
+  // In the runtime set's order (§3.1): the order added, as the status bar and the Settings picker.
+  for (const id of runtimeOrder(input.configured.runtimeOrder ?? [], input.saved, slot)) {
+    if (id === SLOT_RUNTIME && slot) { saved.push(savedRow(SLOT_RUNTIME, slot.name, slot.url, input.configured.remote.paired?.fingerprint ?? null)); continue }
+    const name = id.slice('remote:'.length)
+    const remote = input.saved[name]
+    if (remote) saved.push(savedRow(id, name, remote.url, remote.fingerprint))
+  }
 
   const found: ConnectionRow[] = []
   for (const entry of input.discovery?.entries ?? []) {

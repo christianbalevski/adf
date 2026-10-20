@@ -381,6 +381,20 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
 })
 
 describe('the runtime set on the Connection page (multi-runtime.md §6.5)', () => {
+  it('saved rows are in the order added (runtimeOrder), not by name; the slot in its place', () => {
+    const saved = {
+      'zeta-hub': { url: HUB, fingerprint: 'ZZZZ-2345', deviceId: 'd', label: 'l', pairedAt: '2026-10-01T10:00:00Z' },
+      'alpha-hub': { url: 'https://alpha.example.com', fingerprint: 'AAAA-2345', deviceId: 'd', label: 'l', pairedAt: '2026-10-02T10:00:00Z' },
+    }
+    const configured: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: 'https://adf.example.com', token: 'safe:x', allowInsecureHttp: false }, runtimeOrder: ['remote', 'remote:zeta-hub', 'remote:alpha-hub'] }
+    const view = buildConnectionsView({ active: { mode: 'local' }, configured, daemon: null, saved, discovery: null })
+    expect(view.rows.map((r) => r.id)).toEqual(['local', 'remote', 'remote:zeta-hub', 'remote:alpha-hub'])
+    // No order saved yet: in the order paired, as the runtime set (runtimeOrder()).
+    const fresh = buildConnectionsView({ active: { mode: 'local' }, configured: { ...defaultBackendConfig() }, daemon: null, saved, discovery: null })
+    expect(fresh.rows.map((r) => r.id)).toEqual(['local', 'remote:zeta-hub', 'remote:alpha-hub'])
+  })
+
+
   const saved = { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: 'd', label: 'l', pairedAt: '' } }
   it('local mode: a saved connection shows its runtime state and no Connect; one not in the set yet is connecting', () => {
     const config = defaultBackendConfig()
