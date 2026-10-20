@@ -486,20 +486,20 @@ Agents can run in the background while you work on a different file in the foreg
 - Process triggers and messages
 - Maintain their state
 
-### Fleet Map
+### Mesh view
 
-ADF Studio includes the **fleet map** (accessible from the toolbar) — an RTS-style command surface with a real-time view of your agent network:
+ADF Studio includes the **Mesh view** (the **Mesh** button in the title bar) — an RTS-style command surface with a real-time view of your agent network:
 
 - **Territory map** — Each agent is a tile on a hex-territory map, grouped by directory, showing its name, state, and recent activity
 - **Live activity** — State changes, tool activity, and message flows between agents update in real time
 - **Command surface** — Select one or many agents to inspect them, issue commands, move them between directories, or handle pending approvals
 - **Interactive** — Click through from any tile to that agent's detail view (loop, inbox, files, config)
 
-See the [Fleet Map guide](fleet-map.md) for the full tour.
+See the [Mesh view guide](fleet-map.md) for the full tour.
 
 ### Fleet Activity Drawer
 
-The fleet map's activity drawer shows:
+The Mesh view's activity drawer shows:
 
 - Bus registrations (which agents are connected)
 - Running agents

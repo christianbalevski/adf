@@ -33,13 +33,13 @@ function accelerators(items: Item[]): string[] {
 beforeEach(() => { electronStub.calls.length = 0; electronStub.pushes.length = 0 })
 
 describe('application menu keyboard items', () => {
-  it('View: Go to Agent, Home, Age of Agents, Toggle Sidebar, Toggle Panel with their accelerators', () => {
+  it('View: Go to Agent, Home, Mesh, Toggle Sidebar, Toggle Panel with their accelerators', () => {
     initApplicationMenu(settings)
     const labels = (top('View')?.submenu ?? []).map((i) => i.label ?? i.role ?? `<${i.type}>`)
-    expect(labels.slice(0, 8)).toEqual(['Go to Agent…', '<separator>', 'Home', 'Age of Agents', '<separator>', 'Toggle Sidebar', 'Toggle Panel', '<separator>'])
+    expect(labels.slice(0, 8)).toEqual(['Go to Agent…', '<separator>', 'Home', 'Mesh', '<separator>', 'Toggle Sidebar', 'Toggle Panel', '<separator>'])
     expect(item('View', 'Go to Agent…')?.accelerator).toBe(ACCELERATORS.goToAgent)
     expect(item('View', 'Home')?.accelerator).toBe(ACCELERATORS.home)
-    expect(item('View', 'Age of Agents')?.accelerator).toBe(ACCELERATORS.fleetMap)
+    expect(item('View', 'Mesh')?.accelerator).toBe(ACCELERATORS.fleetMap)
     expect(item('View', 'Toggle Sidebar')?.accelerator).toBe(ACCELERATORS.toggleSidebar)
     expect(item('View', 'Toggle Panel')?.accelerator).toBe(ACCELERATORS.togglePanel)
   })
@@ -73,7 +73,7 @@ describe('application menu keyboard items', () => {
   it('each item sends its action to the page', () => {
     initApplicationMenu(settings, daemon)
     const clicks: Array<[string, string]> = [
-      ['View', 'Go to Agent…'], ['View', 'Home'], ['View', 'Age of Agents'], ['View', 'Toggle Sidebar'], ['View', 'Toggle Panel'],
+      ['View', 'Go to Agent…'], ['View', 'Home'], ['View', 'Mesh'], ['View', 'Toggle Sidebar'], ['View', 'Toggle Panel'],
       ['File', 'Close Tab'], ['File', 'Open in New Window'], ['help', 'Keyboard Shortcuts'],
     ]
     for (const [m, label] of clicks) item(m, label)!.click!()

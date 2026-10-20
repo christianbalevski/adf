@@ -1839,7 +1839,7 @@ function SettingsPageBody() {
             </SettingsRow>
             <SettingsRow
               label="Agent avatars"
-              description="Show each agent as its orbital or as its emoji in lists, the title bar and the fleet map."
+              description="Show each agent as its orbital or as its emoji in lists, the title bar and the Mesh view."
             >
               <SegmentedControl
                 value={agentAvatars}

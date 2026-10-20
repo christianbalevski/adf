@@ -306,7 +306,7 @@ export function buildApplicationMenu(): void {
         { label: 'Go to Agent…', accelerator: ACCELERATORS.goToAgent, click: () => sendMenuAction('go-to-agent') },
         { type: 'separator' },
         { label: 'Home', accelerator: ACCELERATORS.home, click: () => sendMenuAction('go-home') },
-        { label: 'Age of Agents', accelerator: ACCELERATORS.fleetMap, click: () => sendMenuAction('show-fleet-map') },
+        { label: 'Mesh', accelerator: ACCELERATORS.fleetMap, click: () => sendMenuAction('show-fleet-map') },
         { type: 'separator' },
         { label: 'Toggle Sidebar', accelerator: ACCELERATORS.toggleSidebar, click: () => sendMenuAction('toggle-sidebar') },
         { label: 'Toggle Panel', accelerator: ACCELERATORS.togglePanel, click: () => sendMenuAction('toggle-panel') },

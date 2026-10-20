@@ -1,15 +1,15 @@
 ---
 type: guide
-description: Operating the RTS-style fleet map — reading the world, selecting and commanding agents, moving, founding, and approvals
+description: Operating the RTS-style Mesh view — reading the world, selecting and commanding agents, moving, founding, and approvals
 see_also:
   - agent-states.md — the state model behind what the tiles show
 ---
 
-# Fleet Map
+# Mesh view
 
-The fleet map is ADF Studio's RTS-style command surface for your agent fleet. Every agent in your tracked directories appears as a unit on a hex-tile world: tracked folders become territories, subfolders become districts, messages travel visible traces between tiles, and the channels connecting your fleet to the outside world stand as stations on the perimeter. You select agents like units, command them with hotkeys, and answer their approval requests without leaving the map.
+The Mesh view is ADF Studio's RTS-style command surface for your agent fleet. Every agent in your tracked directories appears as a unit on a hex-tile world: tracked folders become territories, subfolders become districts, messages travel visible traces between tiles, and the channels connecting your fleet to the outside world stand as stations on the perimeter. You select agents like units, command them with hotkeys, and answer their approval requests without leaving the map.
 
-Open it with the hexagon button in the toolbar (currently titled **Age of Agents**). The map requires the mesh — if it isn't enabled yet you'll get an **Enable Mesh** button instead of the world.
+Open it with the hexagon button in the title bar, **Mesh**, or with View → Mesh. The view requires the mesh — if it isn't enabled yet you'll get an **Enable Mesh** button instead of the world.
 
 ## Overview
 
@@ -26,7 +26,7 @@ Press `?` at any time for the built-in keyboard command card.
 
 ## The map at a glance
 
-![The fleet map: two territories named squad and ops rendered as tinted hex landmasses with agent tiles and floating voice chips, an internet gateway station on the left, the terrain lens legend top right, map controls bottom left, and the minimap bottom right.](../assets/screenshots/fleet-map-overview.png)
+![The Mesh view: two territories named squad and ops rendered as tinted hex landmasses with agent tiles and floating voice chips, an internet gateway station on the left, the terrain lens legend top right, map controls bottom left, and the minimap bottom right.](../assets/screenshots/fleet-map-overview.png)
 
 | Element | What it is |
 |---------|------------|
@@ -236,7 +236,7 @@ Double-click empty land to found a new agent there — city-style. An inline nam
 
 Names may contain `/` anywhere to nest freely (`research/scout-1` creates `research/scout-1.adf` under the target folder).
 
-![Founding an agent on the fleet map: a violet dashed hex marks the clicked spot in open ocean, with an inline card reading "Create an agent in a new root folder" and a group-name/agent-name input beneath it.](../assets/screenshots/fleet-map-found-agent.png)
+![Founding an agent in the Mesh view: a violet dashed hex marks the clicked spot in open ocean, with an inline card reading "Create an agent in a new root folder" and a group-name/agent-name input beneath it.](../assets/screenshots/fleet-map-found-agent.png)
 
 ## Approvals on the map (HIL)
 
@@ -267,7 +267,7 @@ The modal is the map's tool inspector — the decision shouldn't be made off a t
 
 Closing the modal (Esc, ✕, click-away) does **not** resolve the approval — it just returns you to the map. With the modal open, `.` advances it to the next pending agent.
 
-![The full-context approval modal over a dimmed fleet map: the commander agent "wants to call sys_update_config" with an awaiting-approval badge, the agent's file path, the formatted arguments (path: serving.shared, value: ["reports/*.md"]), green Approve and red Reject buttons with dropdown variants, and an Open agent button.](../assets/screenshots/hil-approval-modal.png)
+![The full-context approval modal over a dimmed Mesh view: the commander agent "wants to call sys_update_config" with an awaiting-approval badge, the agent's file path, the formatted arguments (path: serving.shared, value: ["reports/*.md"]), green Approve and red Reject buttons with dropdown variants, and an Open agent button.](../assets/screenshots/hil-approval-modal.png)
 
 **Always approve** removes the HIL gate for that tool on that agent (the tool becomes enabled and unrestricted in its config), then approves the pending call. Use it when you've decided the tool no longer needs a human in the loop — it's a config change, not a one-off.
 

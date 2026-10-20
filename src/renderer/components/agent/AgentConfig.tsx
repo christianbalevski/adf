@@ -1347,7 +1347,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Field
             label="Icon"
             hint={agentAvatars === 'emoji'
-              ? "Shown in the sidebar, the header and on the fleet map. Also published on the agent's card."
+              ? "Shown in the sidebar, the header and in the Mesh view. Also published on the agent's card."
               : "Published on the agent's card. Studio shows the agent's orbital unless Settings > Agent avatars is set to Emoji."}
           >
             <IconPicker

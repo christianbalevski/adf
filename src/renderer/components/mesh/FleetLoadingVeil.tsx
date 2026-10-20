@@ -88,7 +88,7 @@ export const FleetLoadingVeil = memo(function FleetLoadingVeil({ visible }: { vi
         </svg>
 
         <div className="text-lg font-semibold tracking-wide text-neutral-700 dark:text-neutral-200">
-          Age of Agents
+          Mesh
         </div>
 
         <div className="h-4 text-[12px] italic text-neutral-500 dark:text-neutral-400" style={{ animation: 'meshFadeIn 400ms ease-out' }} key={line}>

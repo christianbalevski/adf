@@ -84,7 +84,7 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
     <div>
       <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-[12.5px] text-[var(--adf-ui-text-muted)]">
         <Segment loading={loading.agentStats}>
-          <Link onClick={() => setShowMeshGraph(true)} label="Open the fleet map">
+          <Link onClick={() => setShowMeshGraph(true)} label="Open Mesh">
             <strong className="font-semibold text-[var(--adf-ui-text)]">{total}</strong> {total === 1 ? 'agent' : 'agents'}
           </Link>
         </Segment>
@@ -137,7 +137,7 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
             <circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="8" r="2.5" /><circle cx="12" cy="18" r="2.5" />
             <path d="M8.3 7 15.6 8.5M7.5 8.2l3.2 7.6M16.6 10.2l-3.2 5.6" />
           </svg>
-          Fleet map
+          Mesh
         </button>
       </div>
       {detail && <AgentList rows={rows} kind={detail} currentFilePath={filePath} />}

@@ -69,7 +69,7 @@ export const SHORTCUT_SECTIONS: readonly ShortcutSection[] = [
     title: 'View',
     rows: [
       { keys: [ACCELERATORS.home], label: 'Home' },
-      { keys: [ACCELERATORS.fleetMap], label: 'Age of Agents' },
+      { keys: [ACCELERATORS.fleetMap], label: 'Mesh' },
       { keys: [ACCELERATORS.toggleSidebar], label: 'Toggle sidebar' },
       { keys: [ACCELERATORS.togglePanel], label: 'Toggle panel' },
       { keys: [ACCELERATORS.settings], label: 'Settings' },

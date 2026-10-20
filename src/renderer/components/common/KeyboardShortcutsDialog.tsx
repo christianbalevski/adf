@@ -17,7 +17,7 @@ export function KeyboardShortcutsDialog() {
             {SHORTCUT_SECTIONS.map((section) => <SectionView key={section.title} section={section} daemonMode={daemonMode} />)}
           </div>
           <div>
-            <h3 className="mb-2 text-[12px] font-semibold text-[var(--adf-ui-text)]">Age of Agents</h3>
+            <h3 className="mb-2 text-[12px] font-semibold text-[var(--adf-ui-text)]">Mesh</h3>
             <div className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2">
               {FLEET_MAP_SECTIONS.map((section) => <SectionView key={section.title} section={section} daemonMode={daemonMode} />)}
             </div>
