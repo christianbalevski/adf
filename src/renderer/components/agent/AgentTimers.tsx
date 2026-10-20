@@ -6,6 +6,9 @@ import { loopColor } from '../../utils/loop-color'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
+import { timersBlocked } from './config-panel-model'
+import { TimersBlockedNotice } from './config-panel-parts'
+import { openConfigSection } from '../../utils/open-config-section'
 
 interface Timer {
   id: number
@@ -166,7 +169,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
   const [cronEndAt, setCronEndAt] = useState('')
 
   // scope
-  const [scope, setScope] = useState<'system' | 'agent'>('system')
+  const [scope, setScope] = useState<'system' | 'agent'>('agent')
 
   // lambda, warm & payload
   const [lambda, setLambda] = useState('')
@@ -193,7 +196,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
     setCron('0 9 * * 1-5')
     setCronMaxRuns('')
     setCronEndAt('')
-    setScope('system')
+    setScope('agent')
     setLambda('')
     setWarm(false)
     setPayload('')
@@ -599,6 +602,8 @@ export function AgentTimers() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingTimer, setEditingTimer] = useState<Timer | undefined>()
   const [showExpired, setShowExpired] = useState(false)
+  // The on_timer trigger gates every timer (trigger-evaluator): off, none fire.
+  const blocked = useAgentStore((s) => timersBlocked(s.config))
 
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -658,6 +663,7 @@ export function AgentTimers() {
           + Add Timer
         </button>
       </div>
+      {blocked && <TimersBlockedNotice onJump={() => openConfigSection('Triggers')} />}
 
       {/* Timer list */}
       {activeTimers.length === 0 && expiredTimers.length === 0 ? (

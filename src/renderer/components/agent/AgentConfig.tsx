@@ -6,7 +6,7 @@ import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS, DEFAULT_NEW_LOOP_TOOLS } from '../../../shared/types/adf-v02.types'
-import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
+import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpToolInfo, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
@@ -21,6 +21,14 @@ import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-tar
 import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, PRE_LLM_HOOK_MAIN_TARGET, type PreLlmHookDraft } from './pre-llm-hook-config'
 import { classifyConfigSave } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice } from '../editor/ChangedElsewhereNotice'
+import { McpServerLogs } from '../mcp/McpServerLogs'
+import {
+  PERMISSION_TIPS, RESTRICTED_MIDDLEWARE_TIP, RESTRICTED_TABLE_TIP, tableProtectionLabel, toolRowGate, toolMatchesFilter, ASK_AUTONOMOUS_TIP,
+  approvalRemoved, restoreApproval, approvalRemovedMessage, saveFailureReason, type ConfigSaveStatus,
+} from './config-panel-model'
+import {
+  ApprovalIcon, ShieldIcon, LockIcon, EyeIcon, PERMISSION_ON_CLASS, PermissionLegend, LockBadge, RowWarning, McpStatusChip, SaveStatusLine, UndoToast,
+} from './config-panel-parts'
 
 /**
  * All tools this runtime supports. Any tool listed here will appear
@@ -103,8 +111,9 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_send', 'loop_list', 'loop_manage']) },
   { label: 'WebSocket', tools: new Set(['ws_connect', 'ws_disconnect', 'ws_connections', 'ws_send']) },
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
-  { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
-  { label: 'Inbox', tools: new Set(['msg_list', 'msg_read', 'msg_update', 'msg_delete']), note: 'Requires inbox mode' },
+  // Messaging and Inbox rows may be set from the Messaging section: see toolRowGate.
+  { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']) },
+  { label: 'Inbox', tools: new Set(['msg_list', 'msg_read', 'msg_update', 'msg_delete']) },
   // Note: chat_info is intentionally not grouped here — it's a sandbox-only
   // capability (hidden from the LLM schema) rendered in the Code Execution section.
   { label: 'Turn', tools: new Set(['say', 'ask', 'sys_set_state']) },
@@ -239,235 +248,6 @@ export function invalidateConfigCaches(): void {
   _cachedMcpRegistrations = null
   _cachedAdapterRegistrations = null
   invalidateProviderModels()
-}
-
-// ---------------------------------------------------------------------------
-// MCP Install Modal — configure & register an MCP server without leaving AgentConfig
-// ---------------------------------------------------------------------------
-
-interface McpInstallModalProps {
-  open: boolean
-  onClose: () => void
-  serverConfig: McpServerConfig | null
-  onInstalled: (reg: McpServerRegistration) => void
-}
-
-function McpInstallModal({ open, onClose, serverConfig, onInstalled }: McpInstallModalProps) {
-  const [npmPackage, setNpmPackage] = useState('')
-  const [customArgs, setCustomArgs] = useState('')
-  const [envVars, setEnvVars] = useState<{ key: string; value: string }[]>([])
-  const envVarKeys = useRowKeys(envVars, serverConfig)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ success: boolean; count?: number; error?: string } | null>(null)
-
-  // Pre-fill from ADF config when modal opens
-  useEffect(() => {
-    if (open && serverConfig) {
-      // Extract package name and custom args from args array: ["-y", "package", ...rest]
-      const args = serverConfig.args ?? []
-      const yIdx = args.indexOf('-y')
-      if (yIdx !== -1 && args.length > yIdx + 1) {
-        setNpmPackage(args[yIdx + 1])
-        // Everything after -y and package name = custom args
-        const rest = args.filter((_, i) => i !== yIdx && i !== yIdx + 1)
-        setCustomArgs(rest.join(' '))
-      } else {
-        // No -y flag — try the whole args as-is
-        setNpmPackage(args[0] ?? '')
-        setCustomArgs(args.slice(1).join(' '))
-      }
-
-      // Pre-fill env vars from identity keystore (if env_keys exist)
-      if (serverConfig.env_keys?.length && serverConfig.npm_package) {
-        Promise.all(
-          serverConfig.env_keys.map(async (key) => {
-            const val = await window.adfApi?.getIdentity(`mcp:${serverConfig.npm_package}:${key}`)
-            return { key, value: val ?? '' }
-          })
-        ).then(setEnvVars)
-      } else {
-        setEnvVars([])
-      }
-
-      setTesting(false)
-      setTestResult(null)
-    }
-  }, [open, serverConfig])
-
-  const handleTest = async () => {
-    if (!npmPackage) return
-    setTesting(true)
-    setTestResult(null)
-    try {
-      const envRecord: Record<string, string> = {}
-      for (const e of envVars) {
-        if (e.key) envRecord[e.key] = e.value
-      }
-      const result = await window.adfApi?.probeMcpServer({
-        command: 'npx',
-        args: ['-y', npmPackage, ...(customArgs ? customArgs.split(' ') : [])],
-        name: serverConfig?.name ?? '',
-        env: Object.keys(envRecord).length > 0 ? envRecord : undefined
-      })
-      if (result?.success) {
-        setTestResult({ success: true, count: result.tools.length })
-      } else {
-        setTestResult({ success: false, error: result?.error ?? 'Failed' })
-      }
-    } catch (err) {
-      setTestResult({ success: false, error: String(err) })
-    }
-    setTesting(false)
-  }
-
-  const handleSave = async () => {
-    if (!npmPackage || !testResult?.success) return
-
-    const reg: McpServerRegistration = {
-      id: 'mcp:' + Math.random().toString(36).slice(2, 8),
-      name: serverConfig?.name ?? '',
-      type: 'npm',
-      npmPackage,
-      args: customArgs ? customArgs.split(' ') : [],
-      env: envVars.filter((e) => e.key)
-    }
-
-    // Write env vars to identity keystore
-    for (const e of envVars) {
-      if (e.key) {
-        await window.adfApi?.setIdentity(`mcp:${npmPackage}:${e.key}`, e.value)
-      }
-    }
-
-    // Update ADF config: replace env with env_keys + npm_package
-    if (serverConfig) {
-      const envKeys = envVars.filter((e) => e.key).map((e) => e.key)
-      serverConfig.env_keys = envKeys.length > 0 ? envKeys : undefined
-      serverConfig.npm_package = npmPackage
-      delete serverConfig.env
-    }
-
-    // Save to global settings
-    const settings = await window.adfApi?.getSettings()
-    const existingServers = (settings?.mcpServers as McpServerRegistration[]) ?? []
-    await window.adfApi?.setSettings({
-      mcpServers: [...existingServers, reg]
-    })
-
-    // Bust caches so AgentConfig picks up the new registration
-    invalidateConfigCaches()
-    _cachedMcpRegistrations = [...existingServers, reg]
-
-    onInstalled(reg)
-    onClose()
-  }
-
-  return (
-    <Dialog lightDismiss={false} open={open} onClose={onClose} title={`Install MCP: ${serverConfig?.name ?? ''}`}>
-      <div className="space-y-3">
-        <div>
-          <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">npm Package</label>
-          <input
-            type="text"
-            value={npmPackage}
-            onChange={(e) => { setNpmPackage(e.target.value); setTestResult(null) }}
-            placeholder="e.g. mcp-telegram-claudecode"
-            className="w-full px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Custom Args (optional, space-separated)</label>
-          <input
-            type="text"
-            value={customArgs}
-            onChange={(e) => setCustomArgs(e.target.value)}
-            placeholder="--port 3000"
-            className="w-full px-2 py-1.5 text-sm font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-          />
-        </div>
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="block text-xs text-neutral-500 dark:text-neutral-400">Environment Variables</label>
-            <button
-              onClick={() => { envVarKeys.append(); setEnvVars([...envVars, { key: '', value: '' }]) }}
-              className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
-            >
-              + Add
-            </button>
-          </div>
-          {envVars.length > 0 && (
-            <div className="space-y-1.5">
-              {envVars.map((envVar, j) => (
-                <div key={envVarKeys.keys[j]} className="flex gap-1.5 items-center">
-                  <input
-                    type="text"
-                    value={envVar.key}
-                    onChange={(e) => {
-                      const next = [...envVars]
-                      next[j] = { ...next[j], key: e.target.value }
-                      setEnvVars(next)
-                    }}
-                    placeholder="KEY"
-                    className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                  />
-                  <input
-                    type="password"
-                    value={envVar.value}
-                    onChange={(e) => {
-                      const next = [...envVars]
-                      next[j] = { ...next[j], value: e.target.value }
-                      setEnvVars(next)
-                    }}
-                    placeholder="value"
-                    className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                  />
-                  <button
-                    onClick={() => { envVarKeys.removeAt(j); setEnvVars(envVars.filter((_, i) => i !== j)) }}
-                    className="text-xs text-red-400 hover:text-red-600 px-1"
-                  >
-                    &times;
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Test + Result */}
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            onClick={handleTest}
-            disabled={!npmPackage || testing}
-            className="px-2.5 py-1 text-xs bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 rounded-md hover:bg-neutral-300 dark:hover:bg-neutral-600 disabled:opacity-50"
-          >
-            {testing ? 'Testing...' : 'Test Connection'}
-          </button>
-          {testResult && (
-            <span className={`text-xs ${testResult.success ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
-              {testResult.success ? `${testResult.count} tools discovered` : testResult.error}
-            </span>
-          )}
-        </div>
-
-        {/* Actions */}
-        <div className="flex justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-700">
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!npmPackage || !testResult?.success}
-            className="px-3 py-1.5 text-sm bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Install
-          </button>
-        </div>
-      </div>
-    </Dialog>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -856,7 +636,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [mcpRegistrations, setMcpRegistrations] = useState<McpServerRegistration[]>([])
   const [mcpProbing, setMcpProbing] = useState<Record<string, boolean>>({})
   const [mcpProbeErrors, setMcpProbeErrors] = useState<Record<string, string>>({})
-  const [mcpInstallTarget, setMcpInstallTarget] = useState<McpServerConfig | null>(null) // server config for install modal
   /** Set of MCP server names that have identity keys stored in this ADF */
   const [mcpServersWithKeys, setMcpServersWithKeys] = useState<Set<string>>(new Set())
   const [unregMcpCollapsed, setUnregMcpCollapsed] = useState(true)
@@ -900,6 +679,20 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
    */
   const configConflict = useAgentStore((s) => s.configConflict)
   const setConfigConflict = useAgentStore((s) => s.setConfigConflict)
+  /** Header save line. A refused save keeps the draft and offers Retry. */
+  const [saveStatus, setSaveStatus] = useState<ConfigSaveStatus>({ kind: 'idle' })
+  /** The refused save Retry sends again; a later edit takes over its base. */
+  const failedSaveRef = useRef<{ config: AgentConfigType; owner: string | null; baseRevision?: number; baseConfig: AgentConfigType | null } | null>(null)
+  /** Write order: a later write carries the whole config, so an older refusal it outran is moot. */
+  const saveSeqRef = useRef(0)
+  const lastSavedSeqRef = useRef(0)
+  /** Undo for a bulk change that removed approval gates. */
+  const [approvalUndo, setApprovalUndo] = useState<{ names: string[]; owner: string | null } | null>(null)
+  const [toolFilter, setToolFilter] = useState('')
+  /** Live MCP server states for the open agent (status, last error). */
+  const [mcpStates, setMcpStates] = useState<Record<string, { status: McpServerStatus; error?: string }>>({})
+  const [mcpLogsFor, setMcpLogsFor] = useState<string | null>(null)
+  const [mcpLogs, setMcpLogs] = useState<McpServerLogEntry[]>([])
 
   useEffect(() => {
     if (savingRef.current) {
@@ -1118,7 +911,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       // backend switched to a different agent file) would otherwise leave the
       // panel showing state that was never persisted — e.g. a tool displayed
       // as enabled while the runtime's shell gate still sees it disabled.
-      // On failure, re-sync the panel from the backend's authoritative config.
+      // On failure the draft stays and the header says "Not saved" (Retry,
+      // Discard), so the edit is neither lost nor passed off as saved.
+      const seq = ++saveSeqRef.current
       void Promise.resolve(window.adfApi?.setAgentConfig(updated, baseRevision !== undefined ? { baseRevision } : undefined))
         .then((res) => {
           // W3-F: someone else saved the config since this edit started.
@@ -1139,18 +934,22 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             if (outcome.revision !== undefined) useAgentStore.getState().setConfigRevision(outcome.revision)
             // A later edit saved over the current config: an older notice no longer applies.
             setConfigConflict(null)
+            lastSavedSeqRef.current = Math.max(lastSavedSeqRef.current, seq)
+            failedSaveRef.current = null
+            // Still "Saving…" while a later edit waits for its own write.
+            if (!pendingSaveRef.current) setSaveStatus({ kind: 'saved' })
           }
-          if (res && (res as { success?: boolean }).success === false) {
-            return window.adfApi?.getAgentConfig().then((authoritative) => {
-              if (authoritative) setConfig(authoritative as AgentConfigType)
-            })
-          }
+          if (res && (res as { success?: boolean }).success === false) failSave(res)
         })
-        .catch(() => {
-          window.adfApi?.getAgentConfig().then((authoritative) => {
-            if (authoritative) setConfig(authoritative as AgentConfigType)
-          }).catch(() => { /* backend unreachable — nothing to re-sync from */ })
-        })
+        .catch((err) => failSave(err))
+
+      // Refused or failed: the panel keeps the draft and says so, with Retry.
+      // A re-sync from the backend here would silently drop the edit.
+      function failSave(answer: unknown): void {
+        if (owner !== useDocumentStore.getState().filePath || seq < lastSavedSeqRef.current) return
+        failedSaveRef.current = { config: updated, owner, baseRevision, baseConfig }
+        setSaveStatus({ kind: 'error', error: saveFailureReason(answer) })
+      }
 
       // Sync sidebar-visible fields to tracked dirs store so they
       // persist when this file is no longer the foreground agent
@@ -1178,6 +977,68 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const flushSaveRef = useRef(flushSave)
   flushSaveRef.current = flushSave
 
+  /** Send the refused save again, over the same base. */
+  const retrySave = useCallback(() => {
+    const failed = failedSaveRef.current
+    if (!failed) return
+    failedSaveRef.current = null
+    setSaveStatus({ kind: 'saving' })
+    persistConfig(failed.config, failed.owner, failed.baseRevision, failed.baseConfig)
+  }, [persistConfig])
+
+  /** Drop the refused draft: the panel shows the backend's config again. */
+  const discardFailedSave = useCallback(() => {
+    failedSaveRef.current = null
+    setSaveStatus({ kind: 'idle' })
+    void window.adfApi?.getAgentConfig().then((authoritative) => {
+      if (authoritative) setConfig(authoritative as AgentConfigType)
+    })
+  }, [setConfig])
+
+  // Status, undo and MCP views belong to one agent.
+  useEffect(() => {
+    failedSaveRef.current = null
+    setSaveStatus({ kind: 'idle' })
+    setApprovalUndo(null)
+    setMcpLogsFor(null)
+    setMcpLogs([])
+  }, [filePath])
+
+  // The undo offer stays a short while; it changes nothing on its own.
+  useEffect(() => {
+    if (!approvalUndo) return
+    const t = setTimeout(() => setApprovalUndo(null), 10_000)
+    return () => clearTimeout(t)
+  }, [approvalUndo])
+
+  // Live MCP status for the open agent: the snapshot, then pushes.
+  useEffect(() => {
+    if (template) return
+    let cancelled = false
+    setMcpStates({})
+    void Promise.resolve(window.adfApi?.getMcpServerStatus?.()).then((res) => {
+      if (cancelled || !res?.servers) return
+      const next: Record<string, { status: McpServerStatus; error?: string }> = {}
+      for (const st of res.servers) next[st.name] = { status: st.status, error: st.error }
+      setMcpStates(next)
+    }).catch(() => { /* no runtime for this agent: no status to show */ })
+    const unsub = window.adfApi?.onMcpServerStatusChanged?.((event) => {
+      setMcpStates((prev) => ({ ...prev, [event.name]: { status: event.status, error: event.error } }))
+    })
+    return () => { cancelled = true; unsub?.() }
+  }, [filePath])
+
+  // The open Logs view follows the server's status changes.
+  const mcpLogsStatus = mcpLogsFor ? mcpStates[mcpLogsFor]?.status : undefined
+  useEffect(() => {
+    if (!mcpLogsFor) return
+    let cancelled = false
+    void Promise.resolve(window.adfApi?.getMcpServerLogs?.({ name: mcpLogsFor })).then((res) => {
+      if (!cancelled) setMcpLogs(res?.logs ?? [])
+    }).catch(() => { if (!cancelled) setMcpLogs([]) })
+    return () => { cancelled = true }
+  }, [mcpLogsFor, mcpLogsStatus])
+
   // setAgentConfig is the heaviest IPC handler in the app (SQLite write plus a
   // side-loop and MCP reconcile). Every keystroke used to fire one. Local state
   // and the renderer store still update synchronously, so the panel and the
@@ -1190,12 +1051,17 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         templateRef.current.onChange(updated)
         return
       }
-      // The base of a burst of edits is the config before its first edit.
-      const previous = pendingSaveRef.current
+      // The base of a burst of edits is the config before its first edit. A
+      // refused save's draft is still unsaved: an edit over it keeps its base.
+      const previous = pendingSaveRef.current && pendingSaveRef.current.owner === filePath
+        ? pendingSaveRef.current
+        : failedSaveRef.current && failedSaveRef.current.owner === filePath ? failedSaveRef.current : null
+      failedSaveRef.current = null
       const agentStore = useAgentStore.getState()
-      const base = previous && previous.owner === filePath
+      const base = previous
         ? { baseRevision: previous.baseRevision, baseConfig: previous.baseConfig }
         : { baseRevision: agentStore.configRevision, baseConfig: agentStore.config }
+      setSaveStatus((st) => (st.kind === 'saving' ? st : { kind: 'saving' }))
       setConfig(updated)
       pendingSaveRef.current = { config: updated, owner: filePath, ...base }
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -1296,6 +1162,23 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     },
     [local, save]
   )
+
+  /** A bulk tools change. One that takes approval off tools offers Undo. */
+  const saveBulkTools = useCallback(
+    (tools: ToolDeclaration[]) => {
+      if (!local) return
+      const removed = approvalRemoved(local.tools, tools)
+      save({ ...local, tools })
+      if (removed.length > 0) setApprovalUndo({ names: removed, owner: filePath })
+    },
+    [local, save, filePath]
+  )
+
+  const undoApprovalRemoval = useCallback(() => {
+    if (!local || !approvalUndo || approvalUndo.owner !== filePath) return
+    save({ ...local, tools: restoreApproval(local.tools, approvalUndo.names) })
+    setApprovalUndo(null)
+  }, [local, approvalUndo, filePath, save])
 
   const setTableProtection = useCallback(
     (table: string, protection: TableProtectionLevel) => {
@@ -1401,7 +1284,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           }}
         />
       )}
-      <MaybeConfigNav enabled={!template} scrollRef={scrollRef}>
+      <MaybeConfigNav
+        enabled={!template}
+        scrollRef={scrollRef}
+        status={<SaveStatusLine status={saveStatus} onRetry={retrySave} onDiscard={discardFailedSave} />}
+      >
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
         <Section docs={DOCS.identity} title={template ? 'Startup' : 'Identity'}>
@@ -2200,31 +2087,40 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
         {/* Tools */}
         <Section docs={DOCS.tools} title="Tools" locked={isSectionLocked('tools')} onToggleLock={() => toggleSectionLock('tools')} summary={`${local.tools.filter(t => t.enabled).length}/${local.tools.length} enabled`}>
-          {/* Column legend */}
-          <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-1">
-            <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-            restricted
-            <InfoHint tip="Restricted tools are callable by authorized files only. Enable + restrict is the HIL combination — the agent can never toggle restricted itself. Visible controls the active LLM tool list." />
-          </p>
+          <PermissionLegend kinds={['approval', 'locked', 'visible']} />
+          <input
+            type="search"
+            value={toolFilter}
+            onChange={(e) => setToolFilter(e.target.value)}
+            placeholder="Filter"
+            aria-label="Filter tools"
+            className="field-input mb-1 text-xs"
+          />
           <div className="space-y-1.5">
-            {TOOL_GROUPS.map((group, gi) => {
-              const groupTools = local.tools.filter((t) => group.tools.has(t.name))
-              if (groupTools.length === 0) return null
+            {(() => {
+              const shownGroups = TOOL_GROUPS
+                .map((group) => ({ group, tools: local.tools.filter((t) => group.tools.has(t.name) && toolMatchesFilter(t.name, group.label, toolFilter)) }))
+                .filter(({ tools }) => tools.length > 0)
+              if (shownGroups.length === 0) {
+                return <p className="text-[10px] text-neutral-400 dark:text-neutral-500">No matches</p>
+              }
+              return shownGroups.map(({ group, tools: groupTools }, gi) => {
+              // Bulk toggles act on the rows shown (the filter narrows them).
+              const shown = new Set(groupTools.map((t) => t.name))
 
-              // Determine group-level disabled state
-              const isMessaging = group.label === 'Messaging'
-              const isInbox = group.label === 'Inbox'
+              // Rows set from another section show their stored values, are
+              // not editable here, and say why on a warning icon.
               const isTurn = group.label === 'Turn'
-              const groupDisabled = (isMessaging && !(local.triggers as TriggersConfigV3)?.on_inbox?.enabled) ||
-                (isInbox && !(local.messaging?.inbox_mode === true))
+              const gateOf = (name: string) => toolRowGate(name, group.label, local)
+              const jumpTo = (section: string) => (template ? undefined : () => useAppStore.getState().setPendingConfigSection(section))
 
-              // Section-level tristate computation (excluding locked tools)
-              const eligibleTools = groupTools.filter(t => !(t.locked ?? false))
+              // Section-level tristate computation (excluding locked and gated tools)
+              const eligibleTools = groupTools.filter(t => !(t.locked ?? false) && !gateOf(t.name))
               const eligibleEnabled = eligibleTools.filter(t => t.enabled)
               const enabledState = computeTriState(eligibleTools, t => t.enabled)
               const visibleState = computeTriState(eligibleEnabled, t => !!t.visible)
               const restrictedState = computeTriState(eligibleTools, t => !!t.restricted)
-              const sectionDisabled = groupDisabled || eligibleTools.length === 0
+              const sectionDisabled = eligibleTools.length === 0
               const visibleSectionDisabled = sectionDisabled || eligibleEnabled.length === 0
               const showSectionRestricted = !isTurn
 
@@ -2232,32 +2128,32 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 if (sectionDisabled) return
                 const target = enabledState !== 'all'
                 const tools = local.tools.map(t => {
-                  if (!group.tools.has(t.name)) return t
-                  if (t.locked) return t
+                  if (!shown.has(t.name)) return t
+                  if (t.locked || gateOf(t.name)) return t
                   return { ...t, enabled: target, visible: target ? true : t.visible }
                 })
-                save({ ...local, tools })
+                saveBulkTools(tools)
               }
               const onToggleSectionVisible = () => {
                 if (visibleSectionDisabled) return
                 const target = visibleState !== 'all'
                 const tools = local.tools.map(t => {
-                  if (!group.tools.has(t.name)) return t
-                  if (t.locked) return t
+                  if (!shown.has(t.name)) return t
+                  if (t.locked || gateOf(t.name)) return t
                   if (!t.enabled) return t
                   return { ...t, visible: target }
                 })
-                save({ ...local, tools })
+                saveBulkTools(tools)
               }
               const onToggleSectionRestricted = () => {
                 if (sectionDisabled) return
                 const target = restrictedState !== 'all'
                 const tools = local.tools.map(t => {
-                  if (!group.tools.has(t.name)) return t
-                  if (t.locked) return t
+                  if (!shown.has(t.name)) return t
+                  if (t.locked || gateOf(t.name)) return t
                   return { ...t, restricted: target || undefined }
                 })
-                save({ ...local, tools })
+                saveBulkTools(tools)
               }
 
               return (
@@ -2273,21 +2169,20 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         <button
                           type="button"
                           disabled={sectionDisabled}
-                          title="Toggle restricted for all tools in this section"
+                          title={`${PERMISSION_TIPS.approval} Toggles every tool in this group.`}
+                          aria-label="Needs approval for all tools in this group"
                           onClick={onToggleSectionRestricted}
                           className={`flex items-center justify-center rounded transition-colors ${
                             sectionDisabled
                               ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
                               : restrictedState === 'all'
-                                ? 'text-violet-600 dark:text-violet-400'
+                                ? PERMISSION_ON_CLASS.approval
                                 : restrictedState === 'mixed'
-                                  ? 'text-violet-600 dark:text-violet-400 opacity-50'
+                                  ? `${PERMISSION_ON_CLASS.approval} opacity-50`
                                   : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
                           }`}
                         >
-                          <svg width={14} height={14} viewBox="0 0 24 24" fill={restrictedState === 'none' ? 'none' : 'currentColor'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                          </svg>
+                          <ApprovalIcon filled={restrictedState !== 'none'} />
                         </button>
                       ) : (
                         <span className="w-[14px]" />
@@ -2295,7 +2190,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       <button
                         type="button"
                         disabled={visibleSectionDisabled}
-                        title="Toggle visibility for all enabled tools in this section"
+                        title="Toggle visibility for all enabled tools in this group"
                         onClick={onToggleSectionVisible}
                         className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
                           visibleSectionDisabled
@@ -2307,17 +2202,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                 : 'text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400'
                         }`}
                       >
-                        <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
-                          <circle cx="12" cy="12" r="3" />
-                          {visibleState === 'none' && <path d="M3 3l18 18" />}
-                        </svg>
+                        <EyeIcon size={15} off={visibleState === 'none'} />
                       </button>
                       <input
                         type="checkbox"
-                        title="Toggle enabled for all tools in this section"
-                        ref={el => { if (el) el.indeterminate = !sectionDisabled && enabledState === 'mixed' }}
-                        checked={!sectionDisabled && enabledState === 'all'}
+                        title="Toggle enabled for all tools in this group"
+                        ref={el => { if (el) el.indeterminate = eligibleTools.length > 0 && enabledState === 'mixed' }}
+                        checked={eligibleTools.length > 0 && enabledState === 'all'}
                         disabled={sectionDisabled}
                         onChange={onToggleSectionEnabled}
                       />
@@ -2325,61 +2216,70 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   </div>
                   {groupTools.map((tool) => {
                     const i = local.tools.findIndex((t) => t.name === tool.name)
-                    const disabled = groupDisabled
                     const showRestricted = !isTurn
                     const isRestricted = tool.restricted ?? false
                     const isLocked = tool.locked ?? false
+                    const gate = gateOf(tool.name)
+                    const groupDisabled = gate !== null
+                    const warning = gate
+                      ? <RowWarning tip={gate.tip} onJump={jumpTo(gate.section)} />
+                      : tool.name === 'ask' && tool.enabled && local.autonomous
+                        ? <RowWarning tip={ASK_AUTONOMOUS_TIP} />
+                        : null
 
                     return (
                       <div key={tool.name}>
                         <div
-                          className={`group flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isLocked ? 'bg-amber-50/60 dark:bg-amber-900/10 border-l-2 border-amber-400 dark:border-amber-600' : isRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'} ${disabled ? 'cursor-not-allowed' : ''}`}
+                          className={`group flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isLocked ? 'bg-amber-50/60 dark:bg-amber-900/10 border-l-2 border-amber-400 dark:border-amber-600' : isRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'} ${groupDisabled ? 'cursor-not-allowed' : ''}`}
                         >
-                          <span
-                            className={`font-mono cursor-pointer hover:underline truncate ${disabled ? 'text-neutral-400 dark:text-neutral-500 hover:text-blue-400' : 'text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400'}`}
-                            onClick={() => setViewingTool(tool.name)}
-                          >
-                            {tool.name}
+                          <span className="flex min-w-0 items-center gap-1">
+                            <span
+                              className={`font-mono cursor-pointer hover:underline truncate ${groupDisabled ? 'text-neutral-400 dark:text-neutral-500 hover:text-blue-400' : 'text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400'}`}
+                              onClick={() => setViewingTool(tool.name)}
+                            >
+                              {tool.name}
+                            </span>
+                            {warning}
                           </span>
                           <span className="flex items-center gap-3 shrink-0">
                             {/* Per-tool lock: visible when locked or on row hover */}
                             <button
-                              className={`transition-colors ${isLocked ? 'text-amber-500 dark:text-amber-400' : 'opacity-0 group-hover:opacity-100 text-neutral-300 dark:text-neutral-600 hover:!text-neutral-400 dark:hover:!text-neutral-500'}`}
-                              title={isLocked ? 'Locked: agent cannot modify this tool. Click to unlock.' : 'Unlocked: agent can modify this tool. Click to lock.'}
+                              type="button"
+                              disabled={groupDisabled}
+                              aria-pressed={isLocked}
+                              aria-label={isLocked ? 'Locked' : 'Lock'}
+                              className={`transition-colors ${isLocked ? PERMISSION_ON_CLASS.locked : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-neutral-300 dark:text-neutral-600 hover:!text-neutral-400 dark:hover:!text-neutral-500'}`}
+                              title={`${PERMISSION_TIPS.locked} Click to ${isLocked ? 'unlock' : 'lock'}.`}
                               onClick={() => {
                                 const tools = [...local.tools]
                                 tools[i] = { ...tools[i], locked: !isLocked || undefined }
                                 save({ ...local, tools })
                               }}
                             >
-                              <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                {isLocked ? (
-                                  <><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>
-                                ) : (
-                                  <><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></>
-                                )}
-                              </svg>
+                              <LockIcon size={12} open={!isLocked} />
                             </button>
                             {showRestricted ? (
                               <button
-                                className={`flex items-center justify-center rounded transition-colors ${isRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
-                                title="Restricted: requires trust. Only authorized code can call directly. If enabled, agent calls require human approval."
+                                type="button"
+                                disabled={groupDisabled}
+                                aria-pressed={isRestricted}
+                                aria-label="Needs approval"
+                                className={`flex items-center justify-center rounded transition-colors disabled:cursor-not-allowed ${isRestricted ? PERMISSION_ON_CLASS.approval : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                                title={PERMISSION_TIPS.approval}
                                 onClick={() => {
                                   const tools = [...local.tools]
                                   tools[i] = { ...tools[i], restricted: !isRestricted || undefined }
                                   save({ ...local, tools })
                                 }}
                               >
-                                <svg width={14} height={14} viewBox="0 0 24 24" fill={isRestricted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                                </svg>
+                                <ApprovalIcon filled={isRestricted} />
                               </button>
                             ) : (
                               <span className="w-[14px]" />
                             )}
                             <ToolVisibilityToggle
                               visible={tool.enabled && tool.visible}
-                              disabled={!tool.enabled || disabled || isLocked}
+                              disabled={!tool.enabled || groupDisabled}
                               onToggle={() => {
                                 const tools = [...local.tools]
                                 tools[i] = { ...tools[i], visible: !tool.visible }
@@ -2389,8 +2289,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             <input
                               type="checkbox"
                               title="Enabled: allowed to be used by the runtime and lambdas."
-                              checked={disabled ? false : tool.enabled}
-                              disabled={disabled || isLocked}
+                              checked={tool.enabled}
+                              disabled={groupDisabled}
                               onChange={(e) => {
                                 const enabled = e.target.checked
                                 const tools = [...local.tools]
@@ -2400,17 +2300,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             />
                           </span>
                         </div>
-                        {tool.name === 'ask' && tool.enabled && local.autonomous && (
-                          <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-1">
-                            Enabling ask in autonomous mode allows the agent to pause and request human input when critically blocked.
-                          </p>
-                        )}
                       </div>
                     )
                   })}
                 </div>
               )
-            })}
+              })
+            })()}
           </div>
         </Section>
 
@@ -2519,12 +2415,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
         {/* Code Execution */}
         <Section docs={DOCS.codeExecution} hint="Methods available to lambdas and sys_code via the adf proxy object." title="Code Execution" locked={isSectionLocked('code_execution')} onToggleLock={() => toggleSectionLock('code_execution')}>
-          {/* Column legend */}
-          <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-0.5">
-            <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-            restricted
-            <InfoHint tip="Restricted methods are callable by authorized files only. Enable + restrict is the HIL combination — the agent can never toggle restricted itself." />
-          </p>
+          <PermissionLegend kinds={['restricted']} />
           <div className="space-y-0.5">
             {(Object.keys(CODE_EXECUTION_DEFAULTS) as (keyof CodeExecutionConfig)[])
               .filter((k) => k !== 'network' && k !== 'packages' && k !== 'restricted_methods')
@@ -2537,7 +2428,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               return (
                 <div
                   key={method}
-                  className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}
+                  className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isRestricted ? 'bg-teal-50/60 dark:bg-teal-900/10 border-l-2 border-teal-400 dark:border-teal-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}
                 >
                   <span
                     className="font-mono cursor-pointer hover:underline text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400"
@@ -2547,8 +2438,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   </span>
                   <span className="flex items-center gap-3 shrink-0">
                     <button
-                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
-                      title="Restricted: only callable from authorized files."
+                      type="button"
+                      aria-pressed={isRestricted}
+                      aria-label="Restricted"
+                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.restricted : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                      title={PERMISSION_TIPS.restricted}
                       onClick={() => {
                         const updated = isRestricted
                           ? restrictedMethods.filter(m => m !== method)
@@ -2561,9 +2455,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         })
                       }}
                     >
-                      <svg width={14} height={14} viewBox="0 0 24 24" fill={isRestricted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                      </svg>
+                      <ShieldIcon filled={isRestricted} />
                     </button>
                     <input
                       type="checkbox"
@@ -2599,7 +2491,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               return (
                 <div>
                   <div
-                    className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}
+                    className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isRestricted ? 'bg-teal-50/60 dark:bg-teal-900/10 border-l-2 border-teal-400 dark:border-teal-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}
                   >
                     <span
                       className="font-mono cursor-pointer hover:underline text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400"
@@ -2610,13 +2502,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     <InfoHint tip="Chat lookup via channel adapters — auto-enabled at mesh registration, hidden from the LLM schema, callable as adf.chat_info" />
                     <span className="flex items-center gap-3 shrink-0">
                       <button
-                        className={`flex items-center justify-center rounded transition-colors ${isRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
-                        title="Restricted: only callable from authorized files."
+                        type="button"
+                      aria-pressed={isRestricted}
+                      aria-label="Restricted"
+                      className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.restricted : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                        title={PERMISSION_TIPS.restricted}
                         onClick={() => updateChatInfo({ restricted: !isRestricted || undefined })}
                       >
-                        <svg width={14} height={14} viewBox="0 0 24 24" fill={isRestricted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                        </svg>
+                        <ShieldIcon filled={isRestricted} />
                       </button>
                       <input
                         type="checkbox"
@@ -3051,11 +2944,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
           return (
             <Section docs={DOCS.mcp} title="MCP Servers" locked={isSectionLocked('mcp')} onToggleLock={() => toggleSectionLock('mcp')}>
-              <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-1.5">
-                <svg width={10} height={10} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-                HIL gate
-                <InfoHint tip="Enabled tools behind the HIL gate require human approval before they run. Server headers bulk-toggle HIL, visibility, and enabled state for everything under them." />
-              </p>
+              <PermissionLegend kinds={['approval', 'locked', 'visible']} />
               <label className="mb-2 flex items-center gap-1.5 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
                 <input
                   type="checkbox"
@@ -3067,7 +2956,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   className="rounded text-blue-500"
                 />
                 New tools need approval
-                <InfoHint tip="Tools discovered on a newly attached server start behind the HIL gate. Off, they run without approval as soon as the server connects. Tools already listed keep their setting. A tool whose schema changes is always disabled and gated until reviewed." />
+                <InfoHint tip="Tools found on a newly attached server start as Needs approval; a tool whose schema changes is disabled until reviewed." />
               </label>
               <div className="space-y-3">
                 {/* My Servers — from config.mcp.servers */}
@@ -3085,6 +2974,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   const restrictedState = computeTriState(eligibleTools, tool => !!tool.restricted)
                   const bulkDisabled = eligibleTools.length === 0
                   const visibilityBulkDisabled = enabledTools.length === 0
+                  /** Live status from the agent's MCP manager (absent while the agent is off). */
+                  const live = template ? undefined : mcpStates[srv.name]
+                  const liveFailed = live?.status === 'error'
 
                   const toggleServerEnabled = () => {
                     if (bulkDisabled) return
@@ -3093,7 +2985,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       if (!serverToolNames.has(tool.name) || tool.locked) return tool
                       return { ...tool, enabled: target, visible: target ? true : tool.visible }
                     })
-                    save({ ...local, tools })
+                    saveBulkTools(tools)
                   }
                   const toggleServerVisible = () => {
                     if (visibilityBulkDisabled) return
@@ -3102,7 +2994,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       if (!serverToolNames.has(tool.name) || tool.locked || !tool.enabled) return tool
                       return { ...tool, visible: target }
                     })
-                    save({ ...local, tools })
+                    saveBulkTools(tools)
                   }
                   const toggleServerRestricted = () => {
                     if (bulkDisabled) return
@@ -3111,7 +3003,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       if (!serverToolNames.has(tool.name) || tool.locked) return tool
                       return { ...tool, restricted: target || undefined }
                     })
-                    save({ ...local, tools })
+                    saveBulkTools(tools)
                   }
 
                   return (
@@ -3120,26 +3012,26 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         <span className="font-medium text-neutral-700 dark:text-neutral-200 flex min-w-0 items-center gap-1.5">
                           <span className="truncate">{srv.name}</span>
                           <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 rounded">{sourceBadge}</span>
+                          {!template && <McpStatusChip status={live?.status} />}
                         </span>
                         <span className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
                             disabled={bulkDisabled}
-                            title="Toggle human approval for all tools from this server"
+                            title={`${PERMISSION_TIPS.approval} Toggles every tool from this server.`}
+                            aria-label="Needs approval for all tools from this server"
                             onClick={toggleServerRestricted}
                             className={`flex items-center justify-center rounded transition-colors ${
                               bulkDisabled
                                 ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
                                 : restrictedState === 'all'
-                                  ? 'text-violet-600 dark:text-violet-400'
+                                  ? PERMISSION_ON_CLASS.approval
                                   : restrictedState === 'mixed'
-                                    ? 'text-violet-600 dark:text-violet-400 opacity-50'
+                                    ? `${PERMISSION_ON_CLASS.approval} opacity-50`
                                     : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
                             }`}
                           >
-                            <svg width={14} height={14} viewBox="0 0 24 24" fill={restrictedState === 'none' ? 'none' : 'currentColor'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                            </svg>
+                            <ApprovalIcon filled={restrictedState !== 'none'} />
                           </button>
                           <button
                             type="button"
@@ -3170,12 +3062,29 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             disabled={bulkDisabled}
                             onChange={toggleServerEnabled}
                           />
+                          {!template && (
+                            <button
+                              type="button"
+                              onClick={() => setMcpLogsFor(mcpLogsFor === srv.name ? null : srv.name)}
+                              aria-expanded={mcpLogsFor === srv.name}
+                              className="text-[10px] text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200 font-medium"
+                            >Logs</button>
+                          )}
                           <button
                             onClick={() => handleRemoveServer(srv.name)}
                             className="text-[10px] text-red-400 hover:text-red-600 font-medium"
                           >Remove</button>
                         </span>
                       </div>
+                      {!template && liveFailed && live?.error && (
+                        <p className="text-[10px] text-red-500 dark:text-red-400 break-words" role="alert">Error: {live.error}</p>
+                      )}
+                      {!template && live?.status === 'needs_sign_in' && live.error && (
+                        <p className="text-[10px] text-amber-700 dark:text-amber-400 break-words">{live.error}</p>
+                      )}
+                      {mcpLogsFor === srv.name && (
+                        <McpServerLogs serverName={srv.name} logs={mcpLogs} onClose={() => setMcpLogsFor(null)} />
+                      )}
                       {srv.npm_package && (
                         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{srv.npm_package}</p>
                       )}
@@ -3222,23 +3131,28 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                   {ct.name}
                                 </span>
                                 <span className="flex items-center gap-3 shrink-0">
+                                  {mcpLocked && (
+                                    <span className={PERMISSION_ON_CLASS.locked} title={PERMISSION_TIPS.locked} aria-label="Locked">
+                                      <LockIcon size={12} />
+                                    </span>
+                                  )}
                                   <button
-                                    disabled={mcpLocked}
-                                    className={`flex items-center justify-center rounded transition-colors ${mcpLocked ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700' : mcpRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
-                                    title="Restricted: requires trust. Only authorized code can call directly. If enabled, agent calls require human approval."
+                                    type="button"
+                                    aria-pressed={mcpRestricted}
+                                    aria-label="Needs approval"
+                                    className={`flex items-center justify-center rounded transition-colors ${mcpRestricted ? PERMISSION_ON_CLASS.approval : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                                    title={PERMISSION_TIPS.approval}
                                     onClick={() => {
                                       const tools = [...local.tools]
                                       tools[ti] = { ...tools[ti], restricted: !mcpRestricted || undefined }
                                       save({ ...local, tools })
                                     }}
                                   >
-                                    <svg width={14} height={14} viewBox="0 0 24 24" fill={mcpRestricted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                                    </svg>
+                                    <ApprovalIcon filled={mcpRestricted} />
                                   </button>
                                   <ToolVisibilityToggle
                                     visible={toolDecl.enabled && toolDecl.visible}
-                                    disabled={!toolDecl.enabled || mcpLocked}
+                                    disabled={!toolDecl.enabled}
                                     onToggle={() => {
                                       const tools = [...local.tools]
                                       tools[ti] = { ...tools[ti], visible: !toolDecl.visible }
@@ -3249,7 +3163,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                     type="checkbox"
                                     title="Enabled: allowed to be used by the runtime and lambdas."
                                     checked={toolDecl.enabled}
-                                    disabled={mcpLocked}
                                     onChange={(e) => {
                                       const enabled = e.target.checked
                                       const tools = [...local.tools]
@@ -3264,7 +3177,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         </div>
                           )}
                         </>
-                      ) : (
+                      ) : liveFailed ? null : (
                         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 pl-2">
                           Tools will be discovered when the agent connects.
                         </p>
@@ -3663,7 +3576,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               />
             )}
           </div>
-          <div className={isSectionLocked('security.level') ? 'opacity-60 pointer-events-none' : ''}>
+          <div>
             <div className="flex rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
               {([0, 1, 2] as const).map((lvl, i) => {
                 const labels = ['Open', 'Signed', 'Encrypted'] as const
@@ -3798,7 +3711,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           {/* Table permissions */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Table Permissions<InfoHint tip="Limit writes to selected local tables. Unlisted tables allow normal reads and writes." /></label>
+              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Table Permissions<InfoHint tip="Append-only blocks updates and deletes; Restricted lets only authorized code write." /></label>
               {!isSectionLocked('security') && (
                 <LockButton
                   locked={isSectionLocked('security.table_protections')}
@@ -3807,7 +3720,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 />
               )}
             </div>
-            <div className={isSectionLocked('security.table_protections') ? 'opacity-60 pointer-events-none' : ''}>
+            <div>
               {template && (
                 <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">Tables exist per agent; the picker lists them once an agent is open.</p>
               )}
@@ -3829,8 +3742,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   onChange={(e) => setNewTableProtection(e.target.value as TableProtectionLevel)}
                   className="w-full sm:w-28 px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
                 >
-                  <option value="append_only">Append-only</option>
-                  <option value="authorized">Authorized</option>
+                  <option value="append_only">{tableProtectionLabel('append_only')}</option>
+                  <option value="authorized" title={RESTRICTED_TABLE_TIP}>{tableProtectionLabel('authorized')}</option>
                 </select>
                 <button
                   disabled={!newProtectedTable}
@@ -3857,8 +3770,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         className="w-full sm:w-32 min-w-0 px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
                       >
                         {TABLE_PROTECTION_LEVELS.map((level) => (
-                          <option key={level} value={level}>
-                            {level === 'none' ? 'No protection' : level === 'append_only' ? 'Append-only' : 'Authorized'}
+                          <option key={level} value={level} title={level === 'authorized' ? RESTRICTED_TABLE_TIP : undefined}>
+                            {tableProtectionLabel(level)}
                           </option>
                         ))}
                       </select>
@@ -3891,7 +3804,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 />
               )}
             </div>
-            <div className={isSectionLocked('security.middleware') ? 'opacity-60 pointer-events-none' : ''}>
+            <div>
 
             {/* Inbox Middleware */}
             <div className="mb-2">
@@ -4010,7 +3923,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   )}
                 </div>
                 <button
-                  disabled={isSectionLocked('security.fetch_middleware')}
                   onClick={() => {
                     const mw = [...(local.security?.fetch_middleware ?? []), { lambda: '' }]
                     fetchMwKeys.append()
@@ -4024,7 +3936,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   + Add
                 </button>
               </div>
-              <div className={isSectionLocked('security.fetch_middleware') ? 'opacity-60 pointer-events-none' : ''}>
+              <div>
               {(local.security?.fetch_middleware ?? []).map((ref, i) => (
                 <div key={fetchMwKeys.keys[i]} className="flex gap-1 items-center mb-1">
                   <input
@@ -4064,7 +3976,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <span className="text-xs text-neutral-700 dark:text-neutral-300">Require middleware authorization<InfoHint tip="Skip middleware lambdas that are not from authorized files." /></span>
+                <span className="inline-flex items-center gap-1 text-xs text-neutral-700 dark:text-neutral-300" title={RESTRICTED_MIDDLEWARE_TIP}>
+                  <ShieldIcon size={12} filled className={PERMISSION_ON_CLASS.restricted} />
+                  Restricted
+                  <InfoHint tip="Middleware lambdas from files that are not authorized are skipped." />
+                </span>
               </div>
               <div className="flex items-center gap-1.5">
                 {!isSectionLocked('security') && (
@@ -4077,7 +3993,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <input
                   type="checkbox"
                   checked={local.security?.require_middleware_authorization ?? true}
-                  disabled={isSectionLocked('security.require_middleware_authorization')}
                   onChange={(e) => {
                     save({
                       ...local,
@@ -4152,7 +4067,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             { key: 'on_chat' as TriggerTypeV3, label: 'On user chat', desc: 'Fires when the user sends a chat message.' },
             { key: 'on_timer' as TriggerTypeV3, label: 'On timer', desc: 'Kill switch for timer-based triggers.' },
             { key: 'on_tool_call' as TriggerTypeV3, label: 'On tool call', desc: 'Fires after a matching tool executes (observational).' },
-            { key: 'on_task_create' as TriggerTypeV3, label: 'On task create', desc: 'Fires when a task is created (HIL approval, async dispatch).' },
+            { key: 'on_task_create' as TriggerTypeV3, label: 'On task create', desc: 'Fires when a task is created (approval request, async dispatch).' },
             { key: 'on_task_complete' as TriggerTypeV3, label: 'On task complete', desc: 'Fires when a matching async task completes.' },
             { key: 'on_logs' as TriggerTypeV3, label: 'On log entry', desc: 'Fires when a matching log entry is written.' },
             { key: 'on_llm_call' as TriggerTypeV3, label: 'On LLM call', desc: 'Fires after model calls with tokens, latency, model, and cost metadata.' }
@@ -4242,12 +4157,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       type="checkbox"
                       checked={triggerCfg.enabled}
                       onChange={(e) => updateTriggerCfg({ enabled: e.target.checked })}
-                      disabled={!!triggerCfg.locked}
                     />
                   </div>
                 </div>
                 {triggerCfg.enabled && (
-                  <div className={`pl-3 space-y-2 mt-1 ${triggerCfg.locked ? 'opacity-60 pointer-events-none' : ''}`}>
+                  <div className="pl-3 space-y-2 mt-1">
                     {(triggerCfg.targets ?? []).map((target, ti) => {
                       const activeTimingModifier = target.debounce_ms !== undefined ? 'debounce'
                         : target.interval_ms !== undefined ? 'interval'
@@ -4264,7 +4178,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               className="field-input text-[10px] w-20"
                               value={target.scope}
                               onChange={(e) => updateTarget(ti, { scope: e.target.value as TriggerScopeV3, lambda: e.target.value === 'agent' ? undefined : target.lambda, warm: e.target.value === 'agent' ? undefined : target.warm })}
-                              disabled={!!target.locked}
                             >
                               <option value="agent">Agent</option>
                               <option value="system">System</option>
@@ -4279,9 +4192,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               )}
                             </div>
                             <button
-                              className={`text-[10px] shrink-0 ${target.locked ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed' : 'text-red-400 hover:text-red-600 dark:hover:text-red-300'}`}
-                              onClick={() => !target.locked && removeTarget(ti)}
-                              title={target.locked ? 'Target is locked' : 'Remove target'}
+                              className="text-[10px] shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-300"
+                              onClick={() => {
+                                if (target.locked && !window.confirm('This target is locked. Remove it?')) return
+                                removeTarget(ti)
+                              }}
+                              title="Remove target"
                             >
                               ×
                             </button>
@@ -4294,7 +4210,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                 className="field-input text-[10px] w-32"
                                 value={target.loop ?? 'main'}
                                 onChange={(e) => updateTarget(ti, { loop: e.target.value === 'main' ? undefined : e.target.value })}
-                                disabled={!!target.locked}
                                 title="Cognition stream this target wakes. Main is the membrane-facing loop."
                               >
                                 <option value="main">main</option>
@@ -4885,7 +4800,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       save({ ...local, serving: { ...(local.serving ?? {}), api } })
                     }}
                     className="shrink-0 px-1.5 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                    disabled={!!route.locked}
                   >
                     {['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'WS'].map((m) => (
                       <option key={m} value={m}>{m}</option>
@@ -4901,7 +4815,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     }}
                     placeholder="/status"
                     className="flex-1 min-w-0 px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                    disabled={!!route.locked}
                   />
                   <LockButton
                     locked={!!route.locked}
@@ -4914,12 +4827,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   />
                   <button
                     onClick={() => {
-                      if (route.locked) return
+                      if (route.locked && !window.confirm('This route is locked. Remove it?')) return
                       const api = (local.serving?.api ?? []).filter((_, j) => j !== i)
                       apiRouteKeys.removeAt(i)
                       save({ ...local, serving: { ...(local.serving ?? {}), api: api.length > 0 ? api : undefined } })
                     }}
-                    className={`text-xs shrink-0 px-1 ${route.locked ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed' : 'text-red-400 hover:text-red-600'}`}
+                    className="text-xs shrink-0 px-1 text-red-400 hover:text-red-600"
                   >
                     &times;
                   </button>
@@ -5793,6 +5706,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         )}
       </div>
       </MaybeConfigNav>
+      {!template && approvalUndo && approvalUndo.owner === filePath && (
+        <UndoToast
+          message={approvalRemovedMessage(approvalUndo.names.length)}
+          onUndo={undoApprovalRemoval}
+          onDismiss={() => setApprovalUndo(null)}
+        />
+      )}
 
       {/* Tool definition modal */}
       <Dialog
@@ -5815,18 +5735,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           </button>
         </div>
       </Dialog>
-
-      {/* MCP Install Modal */}
-      <McpInstallModal
-        open={mcpInstallTarget !== null}
-        onClose={() => setMcpInstallTarget(null)}
-        serverConfig={mcpInstallTarget}
-        onInstalled={(reg) => {
-          // Update local registrations so the server transitions from
-          // "not installed" to "registered" immediately without a page reload
-          setMcpRegistrations((prev) => [...prev, reg])
-        }}
-      />
 
       {/* Sandbox Package Install Modal */}
       <SandboxInstallModal
@@ -6144,8 +6052,8 @@ function DidListPicker({
 }
 
 /** The quick nav belongs to the panel; the template editor embeds the same sections without it. */
-function MaybeConfigNav({ enabled, scrollRef, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; children: React.ReactNode }) {
-  return enabled ? <ConfigNavProvider scrollRef={scrollRef}>{children}</ConfigNavProvider> : <>{children}</>
+function MaybeConfigNav({ enabled, scrollRef, status, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; status?: React.ReactNode; children: React.ReactNode }) {
+  return enabled ? <ConfigNavProvider scrollRef={scrollRef} status={status}>{children}</ConfigNavProvider> : <>{children}</>
 }
 
 function Section({
@@ -6216,35 +6124,18 @@ function Section({
         {docs && <DocsLink href={docs} className={collapsed && summary ? 'ml-2' : 'ml-auto'} />}
       </h4>
       {!collapsed && (
-        <div className={`space-y-2 mt-2 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>{children}</div>
+        // Locked means the agent's own config edits are refused here; the
+        // owner still edits. The header badge says so — nothing is disabled.
+        <div className="space-y-2 mt-2">{children}</div>
       )}
     </div>
   )
 }
 
 function LockButton({ locked, onClick, size = 'sm' }: { locked: boolean; onClick: () => void; size?: 'sm' | 'xs' }) {
-  const px = size === 'xs' ? 12 : 14
   // Locks belong to a running agent; the template has none to show.
   if (useContext(TemplateModeContext)) return null
-  return (
-    <button
-      onClick={(e) => { e.stopPropagation(); onClick() }}
-      className={`shrink-0 transition-colors ${locked ? 'text-amber-500 dark:text-amber-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
-      title={locked ? 'Locked — click to unlock' : 'Unlocked — click to lock'}
-    >
-      {locked ? (
-        <svg width={px} height={px} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-        </svg>
-      ) : (
-        <svg width={px} height={px} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-          <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-        </svg>
-      )}
-    </button>
-  )
+  return <LockBadge locked={locked} onClick={onClick} size={size} />
 }
 
 /** Number input that allows empty field while typing; commits on blur. */

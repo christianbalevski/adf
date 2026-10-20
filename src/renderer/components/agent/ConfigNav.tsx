@@ -36,7 +36,12 @@ export function useConfigNavEntry(title: unknown, ref: RefObject<HTMLElement | n
 /** The space the sticky header covers; sections scroll to just below it. */
 export const CONFIG_NAV_OFFSET_CLASS = 'scroll-mt-11'
 
-export function ConfigNavProvider({ scrollRef, children }: { scrollRef: RefObject<HTMLElement | null>; children: React.ReactNode }) {
+export function ConfigNavProvider({ scrollRef, status, children }: {
+  scrollRef: RefObject<HTMLElement | null>
+  /** Right end of the sticky header (the panel's save status). */
+  status?: React.ReactNode
+  children: React.ReactNode
+}) {
   // Kept in a ref: summaries change on every edit and the nav only needs
   // them when the menu opens or the panel scrolls.
   const entries = useRef(new Map<string, NavEntry>())
@@ -53,16 +58,17 @@ export function ConfigNavProvider({ scrollRef, children }: { scrollRef: RefObjec
   }), [])
   return (
     <ConfigNavContext.Provider value={registry}>
-      <ConfigNavBar scrollRef={scrollRef} entries={entries} layoutTick={layoutTick} />
+      <ConfigNavBar scrollRef={scrollRef} entries={entries} layoutTick={layoutTick} status={status} />
       {children}
     </ConfigNavContext.Provider>
   )
 }
 
-function ConfigNavBar({ scrollRef, entries, layoutTick }: {
+function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
   scrollRef: RefObject<HTMLElement | null>
   entries: RefObject<Map<string, NavEntry>>
   layoutTick: number
+  status?: React.ReactNode
 }) {
   const barRef = useRef<HTMLDivElement>(null)
   const [current, setCurrent] = useState<string | null>(null)
@@ -184,10 +190,11 @@ function ConfigNavBar({ scrollRef, entries, layoutTick }: {
 
   return (
     <div ref={barRef} className="sticky top-0 z-20 border-b border-hairline bg-surface-0">
+      <div className="flex items-center">
       <button
         type="button"
         onClick={() => (open ? close() : setOpen(true))}
-        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[11px] hover:bg-[var(--adf-ui-accent-subtle)]"
+        className="flex min-w-0 flex-1 items-center gap-1.5 px-3 py-2 text-left text-[11px] hover:bg-[var(--adf-ui-accent-subtle)]"
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -200,6 +207,8 @@ function ConfigNavBar({ scrollRef, entries, layoutTick }: {
         </svg>
         <kbd className="ml-auto rounded border border-hairline px-1 font-sans text-[10px] leading-4 text-neutral-400 dark:text-neutral-500">/</kbd>
       </button>
+      {status}
+      </div>
       {open && (
         <div className="absolute inset-x-2 top-full mt-1 rounded-lg border border-hairline bg-surface-0 shadow-lg">
           <input

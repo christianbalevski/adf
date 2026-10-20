@@ -896,13 +896,17 @@ export class AgentRuntimeBuilder {
           if (result.toolsDiscovered > 0) {
             console.log(`[AgentRuntimeBuilder][MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
           } else if (result.error) {
+            // The manager already holds this failure (status error + reason).
             console.error(`[AgentRuntimeBuilder][MCP] Reconcile: "${name}" failed to connect — no tools available to agent: ${result.error}`)
           } else {
             console.warn(`[AgentRuntimeBuilder][MCP] Reconcile: "${name}" connected with no tools (may need credentials or a later reconnect)`)
           }
         } catch (err) {
           // One server's failure must not abort the others or the config save.
-          console.error(`[AgentRuntimeBuilder][MCP] Reconcile: connect failed for "${name}":`, err instanceof Error ? err.message : err)
+          // Recorded on the manager, so the server's status says why.
+          const message = err instanceof Error ? err.message : String(err)
+          console.error(`[AgentRuntimeBuilder][MCP] Reconcile: connect failed for "${name}":`, message)
+          manager.markFailed(serverCfg, message)
         }
       }
 
@@ -1040,6 +1044,7 @@ export class AgentRuntimeBuilder {
             return { name: serverCfg.name, skipped: false, attempted: true, connected: outcome.toolsDiscovered > 0 }
           } catch (err) {
             console.error(`[AgentRuntimeBuilder][MCP] connect failed for "${serverCfg.name}":`, err)
+            manager.markFailed(serverCfg, err instanceof Error ? err.message : String(err))
             return { name: serverCfg.name, skipped: false, attempted: true, connected: false }
           }
         }),
