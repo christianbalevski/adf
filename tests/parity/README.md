@@ -46,6 +46,8 @@ The daemon-side suites (`daemon.test.ts`, `daemon-reconnect.test.ts`) need the b
 - LLM requests: model, stream flag, tool names, system prompt, messages.
 - State once the scenario is done, before shutdown: file listing of the run root, every top-level JSON file in user data, and a table dump of every fixture `.adf`.
 
+The coalesced refetch hint WORKSPACE_DATA_CHANGED (one per scope per 250 ms, on a trailing timer in both backends) is the exception (rule R23, `recording.ts`): how many arrive and where they land depend on how far apart the writes were. A recording keeps the distinct scopes signalled, and leaves the hints out of timelines and watermarks. A hint after the scenario is done is not a quiet-window failure.
+
 Push times are recorded as well, but they are used only by the streaming assertions and never written to a recording.
 
 ## Isolation and fences

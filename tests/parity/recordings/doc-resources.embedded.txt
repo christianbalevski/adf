@@ -750,6 +750,10 @@
 > 29 shutdown
 < 29
 
+## push adf:workspace:data-changed (1)
+#1:
+  scope: "files"
+
 ## local calls (3)
 #1 Menu.setApplicationMenu:
   -

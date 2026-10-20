@@ -132,8 +132,60 @@ function attribute(raw: RawRecording): Map<string, { seq: number; line: string }
   return out
 }
 
-export function toComparable(raw: RawRecording): ComparableRecording {
-  const byChannel = new Map<string, unknown[]>()
+/**
+ * Rule R23 — coalesced refetch hints. WORKSPACE_DATA_CHANGED carries no data:
+ * both backends send it at most once per scope every 250 ms, on a trailing
+ * timer (ipc/index.ts attachWorkspaceDataForwarder; daemon/client-sessions.ts,
+ * "as Studio"). How many arrive and where they fall among the other pushes
+ * depends on how far apart the writes were, not on what the backend did: two
+ * writes 200 ms apart give one hint and 300 ms apart give two, and a write in
+ * the middle of a turn lands between whichever stream slices the timer
+ * straddles. The comparable recording keeps the scopes that were signalled
+ * (distinct, sorted) and leaves the hints out of timelines, push numbers and
+ * step watermarks. Hides: how many hints and when; never whether a scope was
+ * signalled.
+ */
+const COALESCED_HINT_CHANNELS: ReadonlySet<string> = new Set([IPC.WORKSPACE_DATA_CHANGED])
+
+/** Whether a push is a coalesced hint (R23): exempt from the quiet window too. */
+export function isCoalescedHint(channel: string): boolean {
+  return COALESCED_HINT_CHANNELS.has(channel)
+}
+
+function withoutHints(raw: RawRecording): { rest: RawRecording; hints: Map<string, unknown[]> } {
+  const hints = new Map<string, unknown[]>()
+  if (!raw.pushes.some((p) => isCoalescedHint(p.channel))) return { rest: raw, hints }
+  // keptUpTo[n]: kept pushes among the first n (a watermark or a seq maps through it).
+  const keptUpTo: number[] = [0]
+  const pushes: PushRecord[] = []
+  for (const push of raw.pushes) {
+    if (isCoalescedHint(push.channel)) {
+      const payload = push.args.length === 1 ? push.args[0] : push.args
+      const seen = hints.get(push.channel) ?? []
+      if (!seen.some((p) => JSON.stringify(p) === JSON.stringify(payload))) seen.push(payload)
+      hints.set(push.channel, seen)
+    } else {
+      pushes.push({ ...push, seq: pushes.length + 1 })
+    }
+    keptUpTo.push(pushes.length)
+  }
+  for (const [ch, list] of hints) hints.set(ch, [...list].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))
+  const at = (n: number) => keptUpTo[Math.max(0, Math.min(n, keptUpTo.length - 1))]
+  const steps = raw.steps.map((step): StepRecord => {
+    switch (step.kind) {
+      case 'invoke': case 'invoke-error': case 'shutdown':
+        return { ...step, pushes: { before: at(step.pushes.before), after: at(step.pushes.after) } } as StepRecord
+      case 'send': return { ...step, pushes: { before: at(step.pushes.before) } }
+      case 'wait': return { ...step, pushes: { matched: at(step.pushes.matched) } }
+      case 'wait-timeout': return { ...step, pushes: { at: at(step.pushes.at) } }
+    }
+  })
+  return { rest: { ...raw, steps, pushes }, hints }
+}
+
+export function toComparable(recorded: RawRecording): ComparableRecording {
+  const { rest: raw, hints } = withoutHints(recorded)
+  const byChannel = new Map<string, unknown[]>(hints)
   const seqByChannel = new Map<string, number[]>()
   for (const push of raw.pushes) {
     const list = byChannel.get(push.channel) ?? []
@@ -146,7 +198,8 @@ export function toComparable(raw: RawRecording): ComparableRecording {
   const pushSeq: Record<string, number[]> = {}
   for (const channel of [...byChannel.keys()].sort()) {
     pushes[channel] = byChannel.get(channel)!
-    pushSeq[channel] = seqByChannel.get(channel)!
+    // R23's hints keep no send order: R9 compares no instants against them.
+    if (seqByChannel.has(channel)) pushSeq[channel] = seqByChannel.get(channel)!
   }
 
   // Step markers: `> n channel` when a step starts, `< n` when it resolves,

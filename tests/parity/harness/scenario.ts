@@ -7,7 +7,7 @@ import { baseSettings, createFixtureAgents, IDENTITY, type FixtureAgent, type Fi
 import { diffRendered, renderRecording } from './format'
 import { defaultScript, recordedRequest, startMockLlm, type LlmRequestView, type LlmScript, type MockLlm, type StreamTiming } from './mock-llm'
 import { normalizeRecording, type NormalizationContext } from './normalize'
-import { toComparable, type ComparableRecording, type RawRecording, type StepRecord } from './recording'
+import { isCoalescedHint, toComparable, type ComparableRecording, type RawRecording, type StepRecord } from './recording'
 import { verifySignatures } from './signatures'
 import { dumpPersistedState, type PersistedState } from './state-dump'
 import { leaseKeyForCanonicalPath } from '../../../src/main/runtime/agent-lease'
@@ -212,12 +212,15 @@ export async function runScenario(scenario: ParityScenario, backend: ParityBacke
 
     await scenario.run(ctx)
 
-    // Declared done: anything that arrives now was not waited for.
+    // Declared done: anything that arrives now was not waited for, apart
+    // from a coalesced hint (R23, recording.ts): the trailing edge of the
+    // last write's 250 ms window is expected, and lands in the recording.
     const pushesAtDone = electron.pushes.length
     const requestsAtDone = llm.requests.length
     await sleep(scenario.quietMs)
-    if (electron.pushes.length > pushesAtDone || llm.requests.length > requestsAtDone) {
-      const late = electron.pushes.slice(pushesAtDone).map((p) => `${p.channel} ${JSON.stringify(p.args[0])?.slice(0, 120)}`)
+    const latePushes = electron.pushes.slice(pushesAtDone).filter((p) => !isCoalescedHint(p.channel))
+    if (latePushes.length > 0 || llm.requests.length > requestsAtDone) {
+      const late = latePushes.map((p) => `${p.channel} ${JSON.stringify(p.args[0])?.slice(0, 120)}`)
       if (opts.tolerant) {
         behaviour.push(`kept going after done: ${late.length} push(es) (${late.map((l) => l.split(' ')[0]).join(', ')}), ${llm.requests.length - requestsAtDone} LLM request(s)`)
       } else throw new Error([

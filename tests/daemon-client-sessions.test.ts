@@ -490,6 +490,42 @@ describe('client sessions: producers', () => {
     expect(sink.frames().length).toBe(frames.length + 3)
   })
 
+  it('an open document whose agent is not loaded gets workspace data; a load takes the slot, a stop gives it back, a close detaches', async () => {
+    const sessions = registry()
+    const workspace = fakeAgent().workspace
+    let open1 = true
+    const runtime = Object.assign(fakeRuntime(), {
+      getAgentWorkspaceByPath: (filePath: string) => (open1 && filePath === FILE_1 ? { agentId: AGENT_1, filePath, workspace } : undefined),
+    })
+    const unwire = wireRuntimeToClientSessions(sessions, runtime as never)
+    const { sink } = open(sessions, { focus: AGENT_1 })
+    const scopes = () => sink.frames().filter(f => f.kind === 'push' && f.topic === 'workspace_data').map(f => f.kind === 'push' && { agentId: f.agentId, filePath: f.filePath, payload: f.payload })
+
+    runtime.emit('document-opened', { agentId: AGENT_1, filePath: FILE_1 })
+    workspace.callback!('files')
+    workspace.callback!('files')
+    await new Promise(r => setTimeout(r, 300))
+    expect(scopes()).toEqual([{ agentId: AGENT_1, filePath: FILE_1, payload: { scope: 'files' } }]) // coalesced
+
+    // Started on the document's workspace: the loaded agent's watcher owns it; stopped: the document's again.
+    runtime.emit('agent-loaded', { agentId: AGENT_1, filePath: FILE_1, ref: {}, agent: { workspace } })
+    const loadedCallback = workspace.callback
+    runtime.emit('agent-unloaded', { agentId: AGENT_1, filePath: FILE_1 })
+    expect(workspace.callback).not.toBeNull()
+    expect(workspace.callback).not.toBe(loadedCallback)
+    workspace.callback!('files')
+    await new Promise(r => setTimeout(r, 300))
+    expect(scopes()).toHaveLength(2)
+
+    open1 = false
+    runtime.emit('document-closed', { agentId: AGENT_1, filePath: FILE_1, reason: 'released' })
+    expect(workspace.callback).toBeNull()
+    // An unload with no document open there watches nothing.
+    runtime.emit('agent-unloaded', { agentId: AGENT_1, filePath: FILE_1 })
+    expect(workspace.callback).toBeNull()
+    unwire()
+  })
+
   it('mesh, compute, approvals and the tracked-folder watcher', async () => {
     const sessions = registry()
     sessions.indexAgent(FILE_2, AGENT_2)

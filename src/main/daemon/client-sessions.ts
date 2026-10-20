@@ -64,6 +64,7 @@ import type {
   RuntimeAgentLoadedEvent,
   RuntimeAgentPathChangedEvent,
   RuntimeAgentUnloadedEvent,
+  RuntimeDocumentEvent,
   RuntimeLifecycleEvent,
   RuntimeLifecycleEventType,
   RuntimeService,
@@ -1415,13 +1416,32 @@ interface ManagerLike extends Emitter {
 /**
  * RuntimeService → executor, host and file frames, plus the per-agent
  * producers of a loaded agent (MCP and adapter status, adapter inbound,
- * workspace data, runtime config changes). Returns the unwire function.
+ * workspace data, runtime config changes), and workspace data for an open
+ * document whose agent is not loaded (Studio forwards it for whatever file
+ * is open, running or not). Returns the unwire function.
  */
 export function wireRuntimeToClientSessions(
   sessions: ClientSessionRegistry,
-  runtime: Pick<RuntimeService, 'listAgents'> & Emitter,
+  runtime: Pick<RuntimeService, 'listAgents'> & Partial<Pick<RuntimeService, 'getAgentWorkspaceByPath'>> & Emitter,
 ): () => void {
   const attached = new Map<string, () => void>()
+  /** Open documents' workspace-data watchers, by agent id: only while the agent is not loaded. */
+  const documentWatchers = new Map<string, { filePath: string; detach: () => void }>()
+  const watchDocument = (agentId: string, filePath: string) => {
+    documentWatchers.get(agentId)?.detach()
+    documentWatchers.delete(agentId)
+    // A loaded agent's own watcher covers the workspace the document shares.
+    if (attached.has(agentId)) return
+    const workspace = runtime.getAgentWorkspaceByPath?.(filePath)?.workspace as LoadedAgentParts['workspace'] | undefined
+    if (!workspace) return
+    const target = () => ({ agentId, filePath: sessions.pathForAgent(agentId) ?? filePath })
+    documentWatchers.set(agentId, { filePath, detach: watchWorkspaceData(sessions, workspace, target) })
+  }
+  const onDocumentOpened = (event: RuntimeDocumentEvent) => watchDocument(event.agentId, event.filePath)
+  const onDocumentClosed = (event: RuntimeDocumentEvent) => {
+    documentWatchers.get(event.agentId)?.detach()
+    documentWatchers.delete(event.agentId)
+  }
   for (const agent of runtime.listAgents()) sessions.indexAgent(agent.filePath, agent.id)
 
   const onEvent = (event: RuntimeAgentEvent) => sessions.publishExecutor(event)
@@ -1440,11 +1460,17 @@ export function wireRuntimeToClientSessions(
     sessions.indexAgent(event.filePath, event.agentId)
     attached.get(event.agentId)?.()
     attached.set(event.agentId, attachLoadedAgent(sessions, event))
+    // The loaded agent's watcher takes the slot; the document's goes.
+    documentWatchers.get(event.agentId)?.detach()
   }
   const onUnloaded = (event: RuntimeAgentUnloadedEvent) => {
     sessions.unindexAgent(event.filePath, event.agentId)
     attached.get(event.agentId)?.()
     attached.delete(event.agentId)
+    // Stop keeps a held document open (D4), opened before or while it ran:
+    // its workspace is watched again. Nothing is open there: nothing to watch.
+    const filePath = documentWatchers.get(event.agentId)?.filePath ?? event.filePath
+    if (filePath) watchDocument(event.agentId, filePath)
   }
 
   runtime.on('agent-event', onEvent)
@@ -1453,6 +1479,8 @@ export function wireRuntimeToClientSessions(
   runtime.on('agent-path-changed', onPathChanged)
   runtime.on('agent-loaded', onLoaded)
   runtime.on('agent-unloaded', onUnloaded)
+  runtime.on('document-opened', onDocumentOpened)
+  runtime.on('document-closed', onDocumentClosed)
   return () => {
     runtime.off('agent-event', onEvent)
     runtime.off('agent-lifecycle', onLifecycle)
@@ -1460,8 +1488,12 @@ export function wireRuntimeToClientSessions(
     runtime.off('agent-path-changed', onPathChanged)
     runtime.off('agent-loaded', onLoaded)
     runtime.off('agent-unloaded', onUnloaded)
+    runtime.off('document-opened', onDocumentOpened)
+    runtime.off('document-closed', onDocumentClosed)
     for (const detach of attached.values()) detach()
     attached.clear()
+    for (const doc of documentWatchers.values()) doc.detach()
+    documentWatchers.clear()
   }
 }
 

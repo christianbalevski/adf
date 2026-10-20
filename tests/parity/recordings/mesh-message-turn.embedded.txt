@@ -36,15 +36,15 @@
     sessionId: "session-<t>"
     success: true
 5. wait adf:background-agent:event-batch — agent-2 runs in the background  [matched push 3]
-6. invoke adf:agent:invoke  [pushes 5→24]
+6. invoke adf:agent:invoke  [pushes 5→23]
   args:
     -
       filePath: "<ROOT>/agents/agent-1.adf"
       userMessage: "Tell agent-2 hello."
   result:
     success: true
-7. wait adf:background-agent:event-batch — agent-2 answered the message  [matched push 26]
-8. shutdown  [pushes 26→28]
+7. wait adf:background-agent:event-batch — agent-2 answered the message  [matched push 25]
+8. shutdown  [pushes 25→27]
 
 ## timeline <ROOT>/agents/agent-1.adf
 > 1 adf:file:open
@@ -74,7 +74,6 @@
   adf:agent:event state_changed:thinking
   adf:agent:event response_metadata
   adf:agent:event text_delta_batch
-  [app] adf:workspace:data-changed
   adf:agent:event text_delta_batch
   adf:agent:event text_delta_batch
   adf:agent:event response_metadata
@@ -107,7 +106,6 @@
 < 4
 > 6 adf:agent:invoke
   [app] adf:mesh:event message_routed
-  [app] adf:workspace:data-changed
 < 6
   [app] adf:background-agent:event-batch agent_state_changed:active
   [app] adf:background-agent:event-batch response_metadata
