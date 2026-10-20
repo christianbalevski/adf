@@ -12,7 +12,7 @@ Open Settings with the gear in the title bar, Edit → Settings… (ADF Studio �
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
 - **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
-- The runtime this window uses: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. The group has no heading until a runtime on another computer is saved in Connections; then it is headed **Runtime · *name*** ("This computer", or a saved connection such as `rawl-hub`), and with a remote connection the settings are that computer's. Controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*."
+- The runtime's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. With This computer only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Runtime** with a picker of the runtime names ("This computer", and each saved connection such as `rawl-hub`), and the pages show the settings of the runtime picked there. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else This computer; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
 
 ## Saving
 
@@ -393,7 +393,7 @@ Before this release LAN mode bound `0.0.0.0`, every interface, also on a Public 
 
 ### Remote access
 
-Other devices use this computer's daemon: the toggle, the addresses, **Add device** (a code, or a token), and **Devices** with **Revoke**. With a remote runtime this group says "Change on *name*." See [Studio backend › Remote access](studio-backend.md#remote-access).
+Other devices use this computer's daemon: the toggle, the addresses, **Add device** (a code, or a token), and **Devices** with **Revoke**. With another computer picked in the **Runtime** picker, this group says "Change on *name*." See [Studio backend › Remote access](studio-backend.md#remote-access).
 
 ### Agent Endpoints
 
@@ -556,15 +556,24 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Connection
 
-**Studio → Connections** is last in the Studio group. Until a runtime on another computer is saved, it is one line, **Runtimes on other computers**, with **Add**, which starts the Add connection flow below. **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
+**Studio → Connections** is last in the Studio group. Until a runtime on another computer is saved, it is one line, **Runtimes on other computers**, with **Add**, which opens the [Add](studio-backend.md#add) dialog. **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
 
-Once a connection is saved, the page lists the runtimes this window can use: This computer, each saved connection (shared with `adf`), and the computers found on this network or the tailnet that are not paired. Each row has a state (Connected, Paired, Not paired) and one action: **Connect**, or **Pair**. **Add connection** takes an address, then the code or a token. **Connect** shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend › Connection](studio-backend.md#connection).
+Once a connection is saved, the page lists the runtimes Studio connects to:
+
+| Row | State | Action |
+|---|---|---|
+| This computer | Connected, or its state while it is not connected | None; **Inside Studio (legacy)** in its **More** menu (⋯) |
+| A saved connection (shared with `adf`) | Connected, Connecting, Not connected, retrying, or Not connected | None; **Remove** in its **More** menu |
+| A computer found on this network or the tailnet, not saved | Not paired | **Add** |
+
+**Add** on a found computer and **Add** below the list open one dialog, titled **Add**: the address (filled in for a found computer), then the code or a token. On success the connection is saved and connects at once; the dialog shows **Done**. Studio does not restart. **Remove** asks first: "Removes the address and token from Studio and adf.", and "Closes *N* agent windows." when that runtime has agent windows open, then "Still listed on *name*; revoke it there."; it then disconnects and forgets the connection. See [Studio backend › Connection](studio-backend.md#connection).
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
-| This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. |
-| A saved connection | `remote` | The ADF daemon on another computer. See [Remote daemon](../cli/remote-daemon.md). |
+| This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. Each saved connection is connected too. |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
+
+A `studio-backend.json` saved by an earlier release with `"mode": "remote"` still runs that one connection, as before; a later release moves it to `local`.
 
 Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
@@ -572,7 +581,7 @@ While This computer is in use, the page also shows **This computer**: the daemon
 
 - An address must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` address needs the confirmation that the token is sent unencrypted.
 - Tokens are in the OS keychain (shared with `adf`), sent only to their connection's address, and never shown again.
-- Once a connection is saved, the status bar shows a remote connection's name, and a connection that is not connected, right of the version; Kill's tooltip adds "on *name*". With none saved, only a problem shows, in the state's words.
+- Once a connection is saved, the status bar has one group per runtime, right of the version: its name, its state while it is not connected, its **Mesh** and its **Kill**, whose tooltip adds "on *name*". With none saved, only a problem shows, in the state's words.
 
 ### Go back to running agents inside Studio
 

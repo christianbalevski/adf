@@ -91,7 +91,7 @@ export const DOCS = {
 
   // Settings → Connections (docs/guides/studio-backend.md)
   backendConnection: guideUrl('studio-backend', 'connection'),
-  backendAddConnection: guideUrl('studio-backend', 'add-connection'),
+  backendAddConnection: guideUrl('studio-backend', 'add'),
   backendSwitch: guideUrl('studio-backend', 'switch-the-backend'),
   backendTurns: guideUrl('studio-backend', 'running-agents-and-turns-in-flight'),
   backendUpgrade: guideUrl('studio-backend', 'upgrading-from-07x'),

@@ -228,12 +228,12 @@ http needs the confirmation; use `serve` instead.
 
 ## ADF Studio
 
-Settings → Connections → Add connection takes the same URL and token (or
-pairs with a code). Studio checks the address, the token and the client API
-version before it saves the connection; **Connect** shows what moves (client
-settings only) and restarts Studio connected to it. A computer paired with
-`adf pair` is already in Studio's list: Studio and `adf` share
-`cli-remotes.json` and the keychain. Details and every message:
+Settings → Connections → **Add** takes the same URL and token (or pairs
+with a code). Studio checks the address, the token and the client API
+version before it saves the connection, then connects to it; Studio does not
+restart, and This computer's agents are listed next to the server's. A
+computer paired with `adf pair` is already in Studio's list and connected:
+Studio and `adf` share `cli-remotes.json` and the keychain. Details and every message:
 [Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).
 
 - Open agent…, New agent, Track folder and folder fields pick paths on
@@ -245,7 +245,8 @@ settings only) and restarts Studio connected to it. A computer paired with
   line, a second instance) is offered
   as an upload of a copy into a tracked folder or the agents folder on the
   server. Nothing is uploaded without your choice. Open Recent lists paths on
-  the server, and Studio adds none of them to the OS recent documents.
+  the server under its name, and Studio adds none of them to the OS recent
+  documents.
 - MCP OAuth sign-in: Studio asks before it opens the page, takes the
   browser's callback on this computer and hands it to the daemon
   (`POST /oauth/relay`). No port needs to be tunnelled.
