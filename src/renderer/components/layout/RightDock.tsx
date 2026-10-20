@@ -12,6 +12,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 import { useLayoutEffect, useRef } from 'react'
 import { dockStateKey, elementAtPath, elementPath, readDockState, writeDockState, type DockScroll } from '../../stores/dock-panel-state'
+import { Tooltip } from '../common/Tooltip'
 
 const DOCK_TABS: readonly RightPanel[] = ['overview', 'loop', 'inbox', 'files', 'agent']
 /** Center placement takes Loops off the dock; every other tab stays put. */
@@ -66,16 +67,17 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {/* Collapse sits on the INNER edge, like the sidebar's: the chevron
           points the way the panel slides away, at the seam it slides from. */}
       <div className="flex h-9 items-center border-b border-hairline pl-1">
-        <button
-          onClick={toggleRightPanel}
-          title="Collapse panel"
-          aria-label="Collapse panel"
-          className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors shrink-0"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        </button>
+        <Tooltip tip="Collapse panel" className="flex shrink-0">
+          <button
+            onClick={toggleRightPanel}
+            aria-label="Collapse panel"
+            className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors shrink-0"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+        </Tooltip>
         <div className="flex-1 flex justify-center gap-1 self-stretch">
           {(chatInCenter ? DOCK_TABS_CHAT_IN_CENTER : DOCK_TABS).map((tab) => (
             <button
@@ -199,19 +201,23 @@ function RightDockIconButton({
   onClick: () => void
   children: React.ReactNode
 }) {
+  // A native title never renders in this window: the label is a tooltip.
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`w-8 h-8 flex items-center justify-center rounded-md ${
-        active
-          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
-          : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
-      }`}
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-    >
-      {children}
-    </button>
+    <Tooltip tip={title} className="flex" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <button
+        onClick={onClick}
+        aria-label={title}
+        aria-pressed={active ?? false}
+        className={`w-8 h-8 flex items-center justify-center rounded-md ${
+          active
+            ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
+            : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+        }`}
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        {children}
+      </button>
+    </Tooltip>
   )
 }
 
