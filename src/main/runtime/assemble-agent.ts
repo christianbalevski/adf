@@ -30,6 +30,7 @@ import { currentResourceWriter, fileRevisionKey, inApiWrite, observeRevision } f
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
 import { runDispatchDropCompensation } from './system-dispatch-limits'
+import { killHostExecsFor } from '../services/host-exec.service'
 import { buildEffectiveRuntime, recordEffectiveRuntime, type EffectiveRuntimeSources } from './effective-runtime'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
@@ -962,6 +963,21 @@ export function assembleAgent<P extends AgentProfileName>(
     executor.removeAllListeners()
   }
 
+  /**
+   * An agent that turns off leaves no host shell behind: every compute_exec
+   * shell it started on this machine (any loop, async ones too) is
+   * tree-killed, and the agent's log says how many.
+   */
+  const killHostShells = async (): Promise<void> => {
+    if (!config.id) return
+    try {
+      const killed = await killHostExecsFor(config.id)
+      if (killed > 0) {
+        try { workspace.insertLog('info', 'runtime', 'host_shells_killed', null, `Agent turned off: ${killed} host shell${killed === 1 ? '' : 's'} terminated`) } catch { /* workspace may be closing */ }
+      }
+    } catch { /* continue teardown */ }
+  }
+
   let teardownPromise: Promise<void> | null = null
   const teardown = (): Promise<void> => {
     if (teardownPromise) return teardownPromise
@@ -972,6 +988,7 @@ export function assembleAgent<P extends AgentProfileName>(
       try { loopPool.dispose() } catch { /* continue teardown */ }
       try { executor.abort() } catch { /* continue teardown */ }
       try { triggerEvaluator.dispose() } catch { /* continue teardown */ }
+      await killHostShells()
       await stopResources()
       cleanupWiring()
     })()
@@ -1117,6 +1134,7 @@ export function assembleAgent<P extends AgentProfileName>(
       try { loopPool.dispose() } catch { /* continue teardown */ }
       try { executor.abort() } catch { /* continue teardown */ }
       try { triggerEvaluator.dispose() } catch { /* continue teardown */ }
+      if (config.id) void killHostExecsFor(config.id).catch(() => {})
       if (!resourcesStopped) {
         resourcesStopped = true
         for (const resource of [...resources].reverse()) {

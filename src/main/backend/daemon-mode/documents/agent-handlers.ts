@@ -117,6 +117,23 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     }
   }),
 
+  // The composer's Stop (and Esc): the daemon's interrupt, as the terminal app's Esc.
+  [IPC.AGENT_INTERRUPT]: async (ctx, _event, args?: { filePath?: string; loop?: string }) => {
+    const target = args?.filePath
+    const agentId = target && !samePath(target, ctx.session.filePath, ctx.mode === 'remote')
+      ? await ctx.runningAgentAt(target)
+      : (ctx.session.filePath ? ctx.session.agentId : null)
+    if (!agentId) return NOT_RUNNING
+    const client = await ctx.ready()
+    try {
+      const result = await client.interrupt(agentId, args?.loop)
+      return { success: true, interrupted: result.interrupted }
+    } catch (err) {
+      if (notRunning(err, agentId)) return NOT_RUNNING
+      return { success: false, error: errorMessage(err) }
+    }
+  },
+
   [IPC.AGENT_TOOL_APPROVAL_RESPOND]: async (ctx, _event, args: { requestId: string; approved: boolean; feedback?: string }) =>
     onRunningOpenAgent(ctx, async (client, agentId) => {
       try {

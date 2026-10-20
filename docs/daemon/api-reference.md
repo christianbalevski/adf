@@ -1360,7 +1360,7 @@ Example 200 (`application/json`):
 
 **Stop and unload an agent**
 
-Graceful: a running turn gets a 5 s grace period, then the agent is unloaded (its file stays on disk). No body.
+Immediate (the owner's Off): a running turn ends at once and starts no further tool, every host shell the agent started is killed, then the agent is unloaded (its file stays on disk). No body.
 
 Operation `stopAgent` · bearer token
 
@@ -1479,7 +1479,7 @@ Example 200 (`application/json`):
 
 **Interrupt the running turn and leave the loop idle**
 
-Ends main's (or the named loop's) running turn and sets that executor idle; it keeps accepting chats, triggers and timers. Unlike /abort it never stops the executor, and chats queued behind the turn are kept and run next. `interrupted` is false when nothing was running; 409 when the loop is stopped or errored.
+Ends main's (or the named loop's) running turn and sets that executor idle; it keeps accepting chats, triggers and timers. The model request is cancelled, running tools get the abort (host shells are killed, MCP requests cancelled), the turn's pending approval or question ends with no decision, every tool call without a result gets an interrupted one, and the loop shows "Turn interrupted". Unlike /abort it never stops the executor, and chats queued behind the turn are kept and run next. Studio's Stop and the terminal app's Esc call it. `interrupted` is false when nothing was running; 409 when the loop is stopped or errored.
 
 Operation `interruptAgent` · bearer token
 

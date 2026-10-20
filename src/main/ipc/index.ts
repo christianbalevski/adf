@@ -75,6 +75,7 @@ import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
+import { interruptLoopTurn } from '../runtime/interrupt-turn'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
 import { openSharedMnemonicStore } from '../services/owner-secret-store'
@@ -5044,7 +5045,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     currentAgentToolRegistry = null
 
     if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
-    if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
+    // Off: immediate, so the turn starts no tool in a grace window; the
+    // teardown kills the agent's host shells.
+    if (assembled) await assembled.disposeAsync({ mode: 'immediate' })
     await processAgentLeases().reconcile()
     // Teardown drains the executor's pending HIL (which unregisters each row);
     // this is the safety net so a dispose that failed part-way can never leave
@@ -5063,6 +5066,22 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!agentExecutor) return { success: false, error: 'Agent not running' }
     try {
       return await agentExecutor.compactNow('manual: studio /compact')
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // The composer's Stop (and Esc): end one loop's running turn, the agent
+  // stays on. The same runtime path as the daemon's POST /agents/:id/interrupt.
+  ipcMain.handle(IPC.AGENT_INTERRUPT, async (_event, args?: { filePath?: string; loop?: string }) => {
+    const targetFile = args?.filePath
+    const assembled = !targetFile || targetFile === currentFilePath
+      ? currentAssembledAgent
+      : backgroundAgentManager?.getAgent(targetFile)?.assembledAgent ?? null
+    if (!assembled) return { success: false, error: 'Agent not running' }
+    try {
+      const result = interruptLoopTurn(assembled.executor, assembled.loopPool, args?.loop)
+      return { success: true, interrupted: result.interrupted }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }

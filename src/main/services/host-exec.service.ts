@@ -15,6 +15,7 @@ import { trackChild, killTree } from '../utils/child-registry'
 
 const MAX_OUTPUT_BYTES = 512 * 1024 // 512 KB per stream — same as compute_exec
 const TIMEOUT_EXIT_CODE = 124       // GNU timeout convention
+const INTERRUPT_EXIT_CODE = 130     // 128 + SIGINT: the owner ended the turn
 const SPAWN_FAIL_EXIT_CODE = -1     // shell binary not found / permission denied
 const SIGKILL_GRACE_MS = 2000       // POSIX: SIGTERM → SIGKILL escalation window
 const PIPE_DRAIN_GRACE_MS = 1000    // settle this long after 'exit' if 'close' hasn't fired
@@ -95,6 +96,15 @@ function whichWindows(binary: string): string | null {
 
 /** Live host-exec children so shutdown can tree-kill stragglers. */
 const liveHostExecs = new Set<ChildProcess>()
+/** Live children by owner (the agent id whose workspace they run in). */
+const ownerOf = new Map<ChildProcess, string>()
+
+export interface HostExecOptions {
+  /** The agent the shell runs for; killHostExecsFor(owner) reaps it. */
+  owner?: string
+  /** Aborted (turn interrupt): the process tree is killed and the call settles at once. */
+  signal?: AbortSignal
+}
 
 /**
  * Tree-kill a host-exec child. Windows: taskkill /T /F takes the whole
@@ -143,8 +153,13 @@ export function hostExec(
   cwd: string,
   command: string,
   timeout: number,
+  options: HostExecOptions = {},
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const shell = resolveHostShell()
+  const { owner, signal } = options
+  if (signal?.aborted) {
+    return Promise.resolve({ stdout: '', stderr: 'compute_exec: not run, the turn was interrupted', code: INTERRUPT_EXIT_CODE })
+  }
   return new Promise((resolve) => {
     const child = spawn(shell.path, [...shell.args, command], {
       cwd,
@@ -155,6 +170,7 @@ export function hostExec(
     })
     trackChild(child)
     liveHostExecs.add(child)
+    if (owner) ownerOf.set(child, owner)
 
     let stdout = ''
     let stderr = ''
@@ -180,11 +196,21 @@ export function hostExec(
       terminateHostExec(child)
     }, timeout)
 
+    // Interrupt: kill the tree and answer now. A grandchild holding the
+    // pipes must not keep the turn waiting for 'close'.
+    const onAbort = (): void => {
+      terminateHostExec(child)
+      settle(INTERRUPT_EXIT_CODE, '\ncompute_exec: the turn was interrupted and the process tree was terminated')
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+
     const settle = (code: number, extraStderr = ''): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       liveHostExecs.delete(child)
+      ownerOf.delete(child)
       resolve({
         stdout: stdout.trim(),
         stderr: (stderr + extraStderr).trim(),
@@ -243,6 +269,34 @@ export async function killAllHostExecs(budgetMs = 3000): Promise<void> {
     Promise.allSettled(exits),
     new Promise<void>((resolveWait) => setTimeout(resolveWait, budgetMs).unref?.()),
   ])
+}
+
+/**
+ * Tree-kill every live host-exec child of one agent (it turned off), waiting
+ * up to budgetMs for exits. Returns how many were killed. Never throws.
+ */
+export async function killHostExecsFor(owner: string, budgetMs = 3000): Promise<number> {
+  const children = [...liveHostExecs].filter((c) => ownerOf.get(c) === owner)
+  if (children.length === 0) return 0
+  const exits = children.map(
+    (c) =>
+      new Promise<void>((resolveExit) => {
+        if (c.pid == null || c.exitCode !== null || c.signalCode !== null) return resolveExit()
+        c.once('exit', () => resolveExit())
+      }),
+  )
+  for (const c of children) terminateHostExec(c)
+  await Promise.race([
+    Promise.allSettled(exits),
+    new Promise<void>((resolveWait) => setTimeout(resolveWait, budgetMs).unref?.()),
+  ])
+  return children.length
+}
+
+/** Live host-exec children of one agent (tests, diagnostics). */
+export function liveHostExecCount(owner?: string): number {
+  if (owner === undefined) return liveHostExecs.size
+  return [...liveHostExecs].filter((c) => ownerOf.get(c) === owner).length
 }
 
 export function ensureHostWorkspace(agentId: string): string {

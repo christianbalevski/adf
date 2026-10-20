@@ -76,7 +76,13 @@ export const BUILTIN_COMMANDS: readonly SlashCommand[] = [
     key: 'stop',
     label: '/stop',
     kind: 'builtin',
-    description: 'Stop the running agent — the same teardown as the Stop button.'
+    description: 'Stop the running turn — the same as Stop in the composer. The agent stays on.'
+  },
+  {
+    key: 'off',
+    label: '/off',
+    kind: 'builtin',
+    description: 'Turn the agent off — the same teardown as Off in the title bar.'
   }
 ]
 

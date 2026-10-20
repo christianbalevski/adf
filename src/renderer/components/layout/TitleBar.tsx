@@ -252,15 +252,17 @@ export function TitleBar() {
     }
   }, [])
 
+  // Off: end the turn at once (no new tool starts), kill the agent's host
+  // shells and unload it. The composer's Stop only ends the turn.
   const [stopping, setStopping] = useState(false)
-  const handleStop = useCallback(async () => {
+  const handleOff = useCallback(async () => {
     const stoppingPath = filePath
     setStopping(true)
     try {
       await window.adfApi?.stopAgent()
     } catch (err) {
       // The agent still runs: say so, and leave the state as it is.
-      reportFailure(`${config?.name || (stoppingPath ? agentNameOf(stoppingPath) : 'The agent')} did not stop`, err)
+      reportFailure(`${config?.name || (stoppingPath ? agentNameOf(stoppingPath) : 'The agent')} did not turn off`, err)
       return
     } finally {
       setStopping(false)
@@ -269,7 +271,7 @@ export function TitleBar() {
     addLogEntry({
       id: `system-${Date.now()}`,
       type: 'system',
-      content: 'Agent stopped',
+      content: 'Agent off',
       timestamp: Date.now()
     })
   }, [addLogEntry, setState, filePath, config])
@@ -417,18 +419,21 @@ export function TitleBar() {
               )}
             </Button>
           ) : (
-            <Button
-              onClick={handleStop}
-              loading={stopping}
-              size="compact"
-              variant="danger"
-              className="text-[11px]"
-            >
-              <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
-                <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
-              </svg>
-              Stop
-            </Button>
+            <Tooltip tip="Turn the agent off" className="flex">
+              <Button
+                onClick={handleOff}
+                loading={stopping}
+                size="compact"
+                variant="danger"
+                className="text-[11px]"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                  <path d="M12 3v9" />
+                  <path d="M6.3 6.3a8 8 0 1 0 11.4 0" />
+                </svg>
+                Off
+              </Button>
+            </Tooltip>
           )
         )}
 

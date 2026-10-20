@@ -637,7 +637,8 @@ export class McpClientManager extends EventEmitter {
   async callTool(
     serverName: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    opts: { signal?: AbortSignal } = {}
   ): Promise<{ content: string; isError: boolean }> {
     const managed = this.servers.get(serverName)
     if (!managed?.client || managed.status !== 'connected') {
@@ -654,7 +655,7 @@ export class McpClientManager extends EventEmitter {
       const result = await managed.client.callTool(
         { name: toolName, arguments: args },
         undefined,
-        { timeout, resetTimeoutOnProgress: true }
+        { timeout, resetTimeoutOnProgress: true, ...(opts.signal ? { signal: opts.signal } : {}) }
       )
 
       // Extract all MCP content block types

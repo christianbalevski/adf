@@ -51,6 +51,30 @@ export function mapOwnsKey(target: unknown, root: { contains(node: unknown): boo
   return !(typeof el.closest === 'function' && el.closest(KEYBOARD_OWNER_SELECTOR) != null)
 }
 
+/**
+ * Whether Esc stops the loop's running turn (the composer's Stop). From the
+ * composer only while it is empty and no command palette is open, so Esc
+ * still closes the palette and never costs a draft. From anywhere else in
+ * the loop view (inside `root`) unless focus is in another field or in a
+ * surface that owns the keyboard (a dialog, a menu, a list).
+ */
+export function escStopsTurn(opts: {
+  turnRunning: boolean
+  target: unknown
+  composer: unknown
+  composerEmpty: boolean
+  paletteOpen: boolean
+  root: { contains(node: unknown): boolean } | null
+}): boolean {
+  if (!opts.turnRunning) return false
+  const { target } = opts
+  if (target != null && target === opts.composer) return opts.composerEmpty && !opts.paletteOpen
+  if (isTypingElement(target)) return false
+  if (!target || !opts.root || !opts.root.contains(target)) return false
+  const el = target as TargetLike
+  return !(typeof el.closest === 'function' && el.closest(KEYBOARD_OWNER_SELECTOR) != null)
+}
+
 /** Shift+F10 or the Menu key: open the focused item's context menu. */
 export function isContextMenuKey(e: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'ctrlKey' | 'metaKey' | 'altKey'>): boolean {
   if (e.ctrlKey || e.metaKey || e.altKey) return false

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { Tool, ToolCategory } from './tool.interface'
+import type { Tool, ToolCallContext, ToolCategory } from './tool.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../shared/types/tool.types'
 import type { McpClientManager } from '../services/mcp-client-manager'
@@ -36,11 +36,14 @@ export class McpTool implements Tool {
   getServerName(): string { return this.serverName }
   getMcpToolName(): string { return this.mcpToolName }
 
-  async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
+  async execute(input: unknown, _workspace: AdfWorkspace, context?: ToolCallContext): Promise<ToolResult> {
     const raw = (input ?? {}) as Record<string, unknown>
     // Strip internal metadata fields before forwarding to MCP server
     const { _reason: _, _async: __, ...args } = raw
-    return this.mcpManager.callTool(this.serverName, this.mcpToolName, args)
+    // The interrupt cancels the request (the SDK sends notifications/cancelled).
+    return context?.signal
+      ? this.mcpManager.callTool(this.serverName, this.mcpToolName, args, { signal: context.signal })
+      : this.mcpManager.callTool(this.serverName, this.mcpToolName, args)
   }
 
   toProviderFormat(): ToolProviderFormat {

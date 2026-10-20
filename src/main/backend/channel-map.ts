@@ -168,6 +168,9 @@ export const CHANNEL_MAP = {
     note: 'filePath may name a background agent; loop selects the stream. Sent echoed: the sending session alone skips the turn\'s trigger_message.',
   }),
   [IPC.AGENT_COMPACT]: proxied('invoke', ['POST /agents/:id/compact']),
+  [IPC.AGENT_INTERRUPT]: proxied('invoke', ['POST /agents/:id/interrupt'], {
+    note: 'filePath may name a background agent; loop selects the stream. The same interrupt as the terminal app\'s Esc.',
+  }),
   [IPC.AGENT_EVENT]: proxied('push', [], {
     frame: 'executor',
     note: 'Focused agent only. Mesh inter_agent_message and chat_updated outside the executor are synthesized onto this channel (§7).',

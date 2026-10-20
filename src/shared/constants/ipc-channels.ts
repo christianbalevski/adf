@@ -57,6 +57,8 @@ export const IPC = {
   AGENT_STATUS: 'adf:agent:status',
   AGENT_INVOKE: 'adf:agent:invoke',
   AGENT_COMPACT: 'adf:agent:compact',
+  /** End one loop's running turn; the agent stays on (the composer's Stop, Esc). */
+  AGENT_INTERRUPT: 'adf:agent:interrupt',
 
   // Agent events (main -> renderer)
   AGENT_EVENT: 'adf:agent:event',

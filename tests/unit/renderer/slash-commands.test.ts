@@ -178,7 +178,7 @@ describe('needsArgument / completionText', () => {
 
   it('lists the lifecycle built-ins and no skills mute commands', () => {
     const keys = BUILTIN_COMMANDS.map((c) => c.key)
-    expect(keys).toEqual(['compact', 'clear', 'skills', 'idle', 'hibernate', 'stop'])
+    expect(keys).toEqual(['compact', 'clear', 'skills', 'idle', 'hibernate', 'stop', 'off'])
   })
 })
 

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ZodTypeAny } from 'zod'
 import type { Tool } from './tool.interface'
 import type { ToolResult } from '../../shared/types/tool.types'
@@ -11,6 +12,18 @@ const INTERNAL_INPUT_FLAGS = ['_authorized', '_protection_override', '_full', '_
 
 /** Result content is truncated in umbilical payloads — taps are observers, not sinks. */
 const MAX_EVENT_RESULT_BYTES = 16_384
+
+/**
+ * The interrupt signal of the turn a tool call runs in. A call made from
+ * inside another call (adf_shell's `adf compute_exec`, sys_code's adf.*)
+ * inherits it, so an interrupt reaches the shell those start too.
+ */
+const callSignal = new AsyncLocalStorage<AbortSignal>()
+
+/** The interrupt signal of the tool call running now, if any. */
+export function currentToolSignal(): AbortSignal | undefined {
+  return callSignal.getStore()
+}
 
 /** Optional call metadata. `toolUseId` is the LLM `tool_use.id`; code-driven calls omit it. */
 export interface ToolExecutionContext {
@@ -28,6 +41,8 @@ export interface ToolExecutionContext {
    * still sees exactly one started + one terminal event per tool_use id.
    */
   suppressStarted?: boolean
+  /** Aborted when the owner interrupts the turn. Unset: the enclosing call's signal, if any. */
+  signal?: AbortSignal
 }
 
 /** Drop runtime-injected flags so tool.* payloads only carry what the caller asked for. */
@@ -163,8 +178,11 @@ export class ToolRegistry {
     }
 
     let result: ToolResult
+    const signal = context?.signal ?? callSignal.getStore()
     try {
-      result = await this.executeToolInner(name, input, workspace)
+      result = signal
+        ? await callSignal.run(signal, () => this.executeToolInner(name, input, workspace, signal))
+        : await this.executeToolInner(name, input, workspace)
     } catch (error) {
       // Thrown here means the failure escaped the per-tool catch (e.g. an abort
       // propagating mid-batch). Record it, then re-throw — callers depend on it.
@@ -219,7 +237,8 @@ export class ToolRegistry {
   private async executeToolInner(
     name: string,
     input: unknown,
-    workspace: AdfWorkspace
+    workspace: AdfWorkspace,
+    signal?: AbortSignal
   ): Promise<ToolResult> {
     const tool = this.tools.get(name)
     if (!tool) {
@@ -268,7 +287,7 @@ export class ToolRegistry {
     }
 
     try {
-      return await tool.execute(toolInput, workspace)
+      return await (signal ? tool.execute(toolInput, workspace, { signal }) : tool.execute(toolInput, workspace))
     } catch (error) {
       return {
         content: `Tool "${name}" execution failed: ${String(error)}`,

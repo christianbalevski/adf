@@ -91,6 +91,7 @@ export const SHORTCUT_SECTIONS: readonly ShortcutSection[] = [
     rows: [
       { keys: ['Enter'], label: 'Send' },
       { keys: ['Shift+Enter'], label: 'New line' },
+      { keys: ['Esc'], label: 'Stop the running turn' },
     ],
   },
   {
