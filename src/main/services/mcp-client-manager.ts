@@ -220,16 +220,21 @@ export class McpClientManager extends EventEmitter {
   async connect(serverConfig: McpServerConfig, options?: McpConnectOptions): Promise<McpToolInfo[] | null> {
     // Skip command check when an external transport is provided (e.g. container)
     // — the command is embedded in the transport, not in the server config
+    // Refused before any attempt: recorded as the server's error state, so
+    // the status and its reason reach clients, not only the console.
     if (!options?.externalTransport && serverConfig.transport === 'stdio' && !serverConfig.command) {
       console.warn(`[MCP] Missing command for stdio server "${serverConfig.name}"`)
+      this.markFailed(serverConfig, `No command to start "${serverConfig.name}"`)
       return null
     }
     if (!options?.externalTransport && serverConfig.transport === 'http' && !serverConfig.url) {
       console.warn(`[MCP] Missing URL for HTTP server "${serverConfig.name}"`)
+      this.markFailed(serverConfig, `No URL for "${serverConfig.name}"`)
       return null
     }
     if (!options?.externalTransport && serverConfig.transport !== 'stdio' && serverConfig.transport !== 'http') {
       console.warn(`[MCP] Unsupported transport for "${serverConfig.name}": ${serverConfig.transport}`)
+      this.markFailed(serverConfig, `Unsupported transport "${String(serverConfig.transport)}"`)
       return null
     }
 
@@ -836,6 +841,30 @@ export class McpClientManager extends EventEmitter {
       this.servers.set(config.name, managed)
     }
     managed.status = 'needs_sign_in'
+    managed.error = message
+    managed.autoRestart = false
+    this.clearRetryTimer(managed)
+    this.addLog(managed, 'system', message)
+    this.emitStatusChange(managed)
+  }
+
+  /**
+   * Record a connect that failed before or outside an attempt (a container
+   * that is not ready, a missing command) as the server's error state, so it
+   * shows in getServerStates() and the status-changed event like any other
+   * failure. A server not held yet is added in that state; a connected or
+   * connecting one is left alone (its own attempt reports its outcome).
+   */
+  markFailed(config: McpServerConfig, message: string): void {
+    let managed = this.servers.get(config.name)
+    if (managed?.status === 'connected' || managed?.status === 'connecting') return
+    if (!managed) {
+      // Name and transport only: this entry is a status record, never a
+      // spawn spec (a restart of it has nothing to start).
+      managed = { config: { name: config.name, transport: config.transport }, client: null, transport: null, status: 'error', tools: [], logs: [], restartCount: 0, autoRestart: false }
+      this.servers.set(config.name, managed)
+    }
+    managed.status = 'error'
     managed.error = message
     managed.autoRestart = false
     this.clearRetryTimer(managed)
