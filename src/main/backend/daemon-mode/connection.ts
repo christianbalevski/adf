@@ -231,7 +231,16 @@ export class DaemonConnection {
   }
 
   markDisconnected(error?: string): void {
-    if (this.disposed || this.status.state === 'failed' || this.status.state === 'disconnected') return
+    if (this.disposed || this.status.state === 'failed') return
+    if (this.status.state === 'disconnected') {
+      // A pinned connection that dropped again before it opened (the re-dial after the check failed too): whoever
+      // answers now may not be the computer that showed the fingerprint, so nothing is sent until it shows it again.
+      if (this.connector.pinCheck && this.endpoint && this.listenerVerified) {
+        this.listenerVerified = false
+        void this.verifyListenerLoop()
+      }
+      return
+    }
     if ((this.connector.verifyListener || this.connector.pinCheck) && this.endpoint) {
       // The daemon may be gone and another program on its port (local: no token until the pid file names the
       // listener again), or another computer at a pinned address (remote: no request until the fingerprint matches).
@@ -274,6 +283,9 @@ export class DaemonConnection {
   private verifyListenerLoop(): Promise<void> {
     this.verifying ??= (async () => {
       let lastRefusal: string | null = null
+      // Re-armed right after a check passed (the re-dial failed at once): at most one check a second.
+      const since = Date.now() - this.verifiedAt
+      if (since < 1_000) await this.pause(1_000 - since)
       while (!this.disposed && !this.listenerVerified && this.status.state !== 'failed') {
         try {
           let pid: number | null = null
@@ -281,6 +293,7 @@ export class DaemonConnection {
           else pid = await this.connector.verifyListener!()
           if (this.disposed || (this.status as ConnectionState).state === 'failed') break
           this.listenerVerified = true
+          this.verifiedAt = Date.now()
           this.log.log(pid === null
             ? `[Backend] ${this.baseUrl} shows the fingerprint pinned when it was paired; sending the token again`
             : `[Backend] The ADF daemon on ${this.baseUrl} is pid ${pid}, as its pid file says; sending the token again`)
@@ -297,15 +310,20 @@ export class DaemonConnection {
           if (message !== lastRefusal && !message.startsWith('Nothing answers')) this.log.warn(`[Backend] Not sending the daemon token: ${message}`)
           lastRefusal = message
           if (this.disposed) break
-          await new Promise<void>((r) => {
-            this.wakeVerification = r
-            this.verificationTimer = setTimeout(() => { this.verificationTimer = null; this.wakeVerification = null; r() }, 1_000)
-            this.verificationTimer.unref?.()
-          })
+          await this.pause(1_000)
         }
       }
     })().finally(() => { this.verifying = null })
     return this.verifying
+  }
+
+  /** The pause between checks; dispose ends it. */
+  private pause(ms: number): Promise<void> {
+    return new Promise<void>((r) => {
+      this.wakeVerification = r
+      this.verificationTimer = setTimeout(() => { this.verificationTimer = null; this.wakeVerification = null; r() }, ms)
+      this.verificationTimer.unref?.()
+    })
   }
 
   /** Local mode: the daemon's process is gone. Shown as such (status line, dialog or notice) until a daemon answers again. */

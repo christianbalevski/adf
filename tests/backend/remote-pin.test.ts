@@ -148,3 +148,34 @@ describe('the remote connector of a saved connection gives the connection its pi
     expect(remoteDaemonConnector({ ...defaultBackendConfig(), mode: 'remote', remote: { url: URL_, token: 'safe:x', allowInsecureHttp: false } }, codec).pinCheck).toBeUndefined()
   })
 })
+
+describe('a second drop before the stream opened again (A8)', () => {
+  it('re-arms the pin check: the token is withheld again until the fingerprint matches again', async () => {
+    let pinChecks = 0
+    let pinOk = false
+    const connector = Object.assign(async () => ({ baseUrl: 'http://127.0.0.1:47399', logFile: null, description: 'fake', source: { token: () => TOKEN } }), {
+      logFile: null,
+      pinCheck: async () => { pinChecks++; if (!pinOk) throw new Error('Nothing answers at the address') },
+    }) as unknown as DaemonConnector
+    const c = new DaemonConnection(connector, quiet, (async () => new Response('{}')) as typeof fetch)
+    const client = await c.client()
+    c.markConnected()
+    c.markDisconnected('the stream dropped')
+    expect(c.tokenAllowed).toBe(false)
+    pinOk = true
+    await until(() => c.tokenAllowed, 3_000)
+    const checks = pinChecks
+    // The re-dial after the check fails too (a proxy's 502): the connection is still down.
+    pinOk = false
+    c.markDisconnected('the re-dial failed')
+    expect(c.tokenAllowed).toBe(false)
+    expect(client.headers({}).Authorization).toBeUndefined()
+    // Checked again (at most once a second), and until it passes the token stays withheld.
+    await until(() => pinChecks > checks, 3_000)
+    expect(client.headers({}).Authorization).toBeUndefined()
+    pinOk = true
+    await until(() => c.tokenAllowed, 3_000)
+    expect(client.headers({}).Authorization).toBe(`Bearer ${TOKEN}`)
+    c.dispose()
+  })
+})
