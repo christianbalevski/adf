@@ -310,7 +310,7 @@ export class RuntimeManager {
    * sessions first, then the main window's. The primary follows
    * keepDaemonRunning; a remote's daemon keeps running.
    */
-  async shutdown(opts: { keepDaemonRunning?: boolean } = {}): Promise<void> {
+  async shutdown(opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> {
     this.disposed = true
     const others = [...this.remotes.values()]
     await Promise.all([

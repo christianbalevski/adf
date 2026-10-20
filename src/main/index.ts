@@ -161,6 +161,14 @@ let startupComplete = false
 // shutdowns shrink to a fast budget that still leaves room for app.exit.
 const SHUTDOWN_BUDGET_MS = 8_000
 const FAST_SHUTDOWN_BUDGET_MS = 3_000
+/**
+ * Restart with Inside Studio saved: the quit waits this long for This
+ * computer's daemon to exit, so embedded Studio can move the sign-ins back
+ * and start its agents (handover.ts toEmbedded refuses while it runs).
+ */
+const EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS = 22_000
+/** The mode studio-backend.json holds now (the next launch's), once the backend settings store exists. */
+let savedBackendMode: (() => string) | null = null
 let shutdownBudgetMs = SHUTDOWN_BUDGET_MS
 
 // Re-entrant-safe cleanup: the first caller starts cleanup and stores the
@@ -188,13 +196,15 @@ function runShutdownCleanup(): Promise<void> {
       // Daemon mode runs no agents here: quitting ends the client sessions and,
       // per keepDaemonRunning, stops the daemon Studio started (§8.3).
       remoteAccess?.dispose()
+      const toEmbedded = !!daemonMode && isRelaunching() && savedBackendMode?.() === 'embedded' && budget === SHUTDOWN_BUDGET_MS
       const cleanup = daemonMode
         ? daemonMode.shutdown({
           // "Keep Running" in the question about connected computers: this quit only.
           ...(remoteAccess?.quitGate.keepDaemonForThisQuit ? { keepDaemonRunning: true } : {}),
+          ...(toEmbedded ? { waitForDaemonExitMs: EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS } : {}),
         })
         : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
-      const { timedOut } = await withDeadline(cleanup, budget, () => {
+      const { timedOut } = await withDeadline(cleanup, toEmbedded ? EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS + 3_000 : budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
@@ -927,6 +937,8 @@ app.whenReady().then(async () => {
     daemonStatus: () => daemonMode?.status() ?? null,
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
+  const settingsStore = backendStore
+  savedBackendMode = () => settingsStore.config().mode
   remoteAccess = registerRemoteAccessHandlers({
     mode: backend.mode,
     daemon: () => daemonMode,

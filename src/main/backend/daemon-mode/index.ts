@@ -186,6 +186,8 @@ export interface DaemonModeDeps {
   sharedMnemonic?: () => SharedMnemonicStore | null
   /** Tests: whether the daemon's pid is alive (local mode exit detection). Default: process liveness. */
   processAlive?: (pid: number) => boolean
+  /** Tests: wait for the daemon's pid to exit (a restart into Inside Studio). Default: daemon-exit.ts waitForDaemonExit. */
+  waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Tests: the pause after the daemon exited before Studio starts it again, or shows the exit (default DAEMON_RESPAWN_DELAY_MS). */
   respawnDelayMs?: number
   /**
@@ -255,7 +257,7 @@ export interface DaemonModeHandle {
    * (remote-access.md §3.6). Every other runtime ends its sessions in
    * parallel; its daemon keeps running (multi-runtime.md §3.3).
    */
-  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number }): Promise<void>
   /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
   windows: DaemonWindows
   /** The runtime set (multi-runtime.md §3.2). */
@@ -611,7 +613,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (() => {
       const done = manager.shutdown(opts)
       approvals.dispose()

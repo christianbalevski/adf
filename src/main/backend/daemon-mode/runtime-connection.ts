@@ -21,7 +21,7 @@ import { DAEMON_MODE_HANDLERS } from './handlers'
 import { DaemonModeSession, samePath } from './session'
 import type { ClientSettingsStore } from './settings'
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
-import { readDaemonExitCause } from './daemon-exit'
+import { readDaemonExitCause, waitForDaemonExit } from './daemon-exit'
 import { processAlive } from '../../cli/daemon-control'
 import { daemonExitSentence } from './connection'
 import { InstallProgressRelay } from './mcp/install-progress'
@@ -165,7 +165,7 @@ export interface RuntimeConnection {
     send(id: number, channel: string, ...args: unknown[]): void
     stashed(id: number): void
   }
-  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number }): Promise<void>
 }
 
 const RESUME_HEALTH_TIMEOUT_MS = 3_000
@@ -1022,8 +1022,15 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     if (timedOut) log.warn(`[Backend] Quit: the client session did not end within ${AGENT_SESSION_END_TIMEOUT_MS} ms; the daemon expires it`)
   }
 
+  /** Resolves true once the daemon's process exited (its pid, not its /health, which closes first), false at the deadline. */
+  const waitDaemonGone = async (budgetMs: number): Promise<boolean> => {
+    const pid = versionInfo?.pid ?? connection.endpointInfo?.daemon?.pid
+    if (!pid) return true
+    return (deps.waitForExit ?? waitForDaemonExit)(pid, budgetMs)
+  }
+
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (shutdownOpts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (shutdownOpts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       stopExitWatch()
       if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
@@ -1058,6 +1065,13 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
         log.log(`[Backend] Quit: client session ended; ${answer.stopping ? 'the ADF daemon is stopping' : 'the ADF daemon keeps running'}: ${answer.reason}`)
       } else if (connection.current) {
         log.log(`[Backend] Quit: client session ended; the ADF daemon keeps running${remote ? ' (remote mode never stops it)' : ''}`)
+      }
+      // A restart into Inside Studio: embedded Studio moves the sign-ins back and starts its agents only once this
+      // daemon is gone (handover.ts toEmbedded), so the quit waits for its process, bounded.
+      if (kind === 'local' && answer?.stopping && shutdownOpts.waitForDaemonExitMs) {
+        log.log(`[Backend] Waiting up to ${Math.round(shutdownOpts.waitForDaemonExitMs / 1000)}s for the ADF daemon to stop its agents and exit`)
+        const gone = await waitDaemonGone(shutdownOpts.waitForDaemonExitMs)
+        log.log(gone ? '[Backend] The ADF daemon exited' : '[Backend] The ADF daemon is still stopping; Studio Inside Studio leaves the sign-ins with it until the next restart')
       }
     })()
     return shutdownPromise
