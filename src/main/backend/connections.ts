@@ -362,7 +362,7 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
   }
   return {
     current,
-    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? 'This computer' : 'Inside Studio' } : null,
+    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? 'This computer' : 'Inside Studio (legacy)' } : null,
     rows: [...rows, ...saved, ...found],
     discovery: input.discovery ? { browsing: input.discovery.browsing, problem: input.discovery.problem } : null,
   }

@@ -172,7 +172,7 @@ describe('the rows of the Connection page', () => {
   })
 
   it('the mode saved for the next launch is `next`; a remote is never the next one (multi-runtime.md §7.2)', () => {
-    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
     // An older remote-mode file not migrated yet (a launch Inside Studio): the next launch runs This computer.
     const legacy: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
@@ -214,7 +214,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     for (const mode of ['local', 'embedded'] as const) {
       const s = setup({ studioBackend: { v: 1, mode } })
       await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'A saved connection is connected while it is saved.' })
+      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'Already connected.' })
       expect(await s.connections.use('remote')).toMatchObject({ ok: false, code: 'not_found' })
       expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe(mode)
     }
@@ -227,8 +227,8 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.use(42)).toMatchObject({ ok: false, code: 'invalid' })
     expect(await s.connections.use('local')).toMatchObject({ ok: true, notices: [] })
     const legacy = await s.connections.use('embedded')
-    expect(legacy).toMatchObject({ ok: true, notices: ['Saved. Applies at the next launch.'] })
-    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(legacy).toMatchObject({ ok: true, notices: [] })
+    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('embedded')
     const back = await s.connections.use('local')
     expect(back).toMatchObject({ ok: true, notices: ['Saved.'] })

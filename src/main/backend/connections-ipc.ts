@@ -100,7 +100,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (typeof id !== 'string' || !id) return fail('invalid', 'No connection given.')
     if (id !== 'local' && id !== 'embedded') {
       if (id.startsWith('found:')) return fail('not_paired', 'Add it first.')
-      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'A saved connection is connected while it is saved.' : 'That connection is not saved.')
+      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'Already connected.' : 'That connection is not saved.')
     }
     log.log(`[Connection] ${id === 'local' ? 'This computer' : 'Inside Studio (legacy)'} chosen for the next launch`)
     const result = await deps.backend.set({ mode: id })

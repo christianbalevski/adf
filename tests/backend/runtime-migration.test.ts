@@ -45,7 +45,7 @@ describe('studio-backend.json (§7.3)', () => {
     const boot = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
     expect(boot.mode).toBe('local')
     const migration = await migrateRemoteMode(boot, { 'host-2': HOST_2, 'host-1': HOST_1 }, quiet)
-    expect(migration).toEqual({ runtime: { id: 'remote:host-1', name: 'host-1', fingerprint: 'ABCD-EFGH', inSet: true }, written: true, notice: 'host-1 is now listed alongside This computer.' })
+    expect(migration).toEqual({ runtime: { id: 'remote:host-1', name: 'host-1', fingerprint: 'ABCD-EFGH', inSet: true }, written: true, notice: 'host-1 is in Settings → Connections.' })
     // Fixed order (§12 item 5): the connection in use first, then the others in the order paired.
     expect(read(dir, 'studio-backend.json')).toEqual({ v: 1, mode: 'local', keepDaemonRunning: true, remote: { url: null, token: null, allowInsecureHttp: false }, runtimeOrder: ['remote:host-1', 'remote:host-2'] })
     expect(boot.config).toEqual(read(dir, 'studio-backend.json'))
@@ -77,7 +77,7 @@ describe('studio-backend.json (§7.3)', () => {
     const before = readFileSync(path)
     const boot = { ...resolveBootBackend(path, {}, quiet), writeBlocked: `${path} could not be read (EACCES).` }
     const migration = await migrateRemoteMode(boot, { 'host-1': HOST_1 }, quiet)
-    expect(migration).toMatchObject({ written: false, notice: 'host-1 is now listed alongside This computer.' })
+    expect(migration).toMatchObject({ written: false, notice: 'host-1 is in Settings → Connections.' })
     expect(boot.config.mode).toBe('local')
     expect(boot.notices?.join(' ')).toMatch(/still says remote/)
     expect(readFileSync(path).equals(before)).toBe(true)

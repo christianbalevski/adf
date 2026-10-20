@@ -22,6 +22,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, IconButton, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
 import { useSettingsSave } from './settings-save'
 import { Dialog } from '../common/Dialog'
+import { Tooltip } from '../common/Tooltip'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
@@ -377,7 +378,7 @@ export function SimpleConnections({ busy, message, onAdd, onLegacy, details, ext
 }) {
   return (
     <SettingsGroup>
-      <SettingsRow label="Runtimes on other computers" error={message?.kind === 'error' ? message.text : undefined} help={message?.kind === 'ok' ? message.text : undefined}>
+      <SettingsRow label={<Tooltip tip="Runtimes on other computers."><span>Remotes</span></Tooltip>} error={message?.kind === 'error' ? message.text : undefined} help={message?.kind === 'ok' ? message.text : undefined}>
         <Button disabled={busy} onClick={onAdd}>Add</Button>
       </SettingsRow>
       {extra}

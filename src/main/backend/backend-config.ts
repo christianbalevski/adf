@@ -457,7 +457,7 @@ export function applyBackendPatch(
 
   if (patch.mode !== undefined) {
     // multi-runtime.md §7.1: there is no remote mode; a saved connection is connected while it is saved.
-    if ((patch.mode as string) === 'remote') return fail('invalid_mode', 'A saved connection is connected while it is saved.')
+    if ((patch.mode as string) === 'remote') return fail('invalid_mode', 'Remote mode is gone; use Add in Settings → Connections.')
     if (!isMode(patch.mode)) return fail('invalid_mode', 'Unknown backend mode.')
     if (patch.mode !== current.mode) {
       next.mode = patch.mode
@@ -565,9 +565,6 @@ export function applyBackendPatch(
   return { ok: true, config: next, notices, changes }
 }
 
-/** A mode saved in Settings → Connections (multi-runtime.md §7.2): Studio does not restart. */
-export const SAVED_FOR_NEXT_LAUNCH = 'Saved. Applies at the next launch.'
-
 export interface BackendSettingsStore {
   get(): BackendSettingsView
   set(patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult>
@@ -628,8 +625,8 @@ export function createBackendSettingsStore(deps: {
       log.log(`[Backend] Settings → Connections saved: ${result.changes.join(', ')} (applies at the next launch)`)
     }
     const notices = [...result.notices]
-    // A mode chosen (multi-runtime.md §7.2): saved for the next launch; the one this launch runs is just saved.
-    if (result.config.mode !== previous.mode) notices.push(result.config.mode === deps.boot.mode ? 'Saved.' : SAVED_FOR_NEXT_LAUNCH)
+    // A mode chosen (multi-runtime.md §7.2): the page's "Next launch: <name>." with Restart says it; the one this launch runs is just saved.
+    if (result.config.mode !== previous.mode && result.config.mode === deps.boot.mode) notices.push('Saved.')
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
     return { ok: true, view: view(), notices }
   }

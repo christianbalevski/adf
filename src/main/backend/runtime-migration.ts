@@ -68,7 +68,7 @@ export interface RemoteModeMigration {
 /** The sentence of the first launch after the migration. */
 export function migrationNotice(runtime: RemoteModeRuntime | null): string | null {
   if (!runtime) return null
-  return runtime.inSet ? `${runtime.name} is now listed alongside This computer.` : `${runtime.name} is no longer saved; add it again in Settings → Connections.`
+  return runtime.inSet ? `${runtime.name} is in Settings → Connections.` : `${runtime.name} is no longer saved; add it again in Settings → Connections.`
 }
 
 /**
