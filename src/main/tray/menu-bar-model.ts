@@ -20,6 +20,8 @@ export interface MenuBarAgent {
   activeLoops?: number
   /** The agent open in the Studio window, as opposed to a background agent. */
   foreground?: boolean
+  /** Its runtime when it is not This computer's (multi-runtime.md §1.3): its path is on that computer. */
+  runtimeId?: string
 }
 
 export interface MenuBarSnapshot {
@@ -32,7 +34,7 @@ export interface MenuBarSnapshot {
 
 export type MenuBarAction =
   | { type: 'reveal'; notification: PendingNotification }
-  | { type: 'open-agent'; filePath: string }
+  | { type: 'open-agent'; filePath: string; runtimeId?: string }
   | { type: 'show' }
   | { type: 'settings' }
   | { type: 'quit' }
@@ -147,7 +149,7 @@ export function buildMenuBarModel(snap: MenuBarSnapshot): MenuBarModel {
         kind: 'action',
         label: agentLabel(agent),
         toolTip: agent.filePath,
-        action: { type: 'open-agent', filePath: agent.filePath }
+        action: { type: 'open-agent', filePath: agent.filePath, ...(agent.runtimeId ? { runtimeId: agent.runtimeId } : {}) }
       })
     }
     if (running.length > MENU_BAR_SECTION_MAX) {

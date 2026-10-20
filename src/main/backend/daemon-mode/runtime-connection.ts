@@ -149,8 +149,8 @@ export interface RuntimeConnection {
   client(): Promise<DaemonClient>
   setKeepDaemonRunning(keep: boolean): Promise<void>
   /** Running agents not focused in the main window, and the main window's foreground agent (menu bar). */
-  menuBarAgents(): Array<{ filePath: string; state: import('../../../shared/types/ipc.types').AgentState; activeLoops?: number }>
-  foreground(): { filePath: string; state: import('../../../shared/types/ipc.types').AgentState } | null
+  menuBarAgents(): Array<{ filePath: string; state: import('../../../shared/types/ipc.types').AgentState; activeLoops?: number; runtimeId?: string }>
+  foreground(): { filePath: string; state: import('../../../shared/types/ipc.types').AgentState; runtimeId?: string } | null
   tokensToday(): { input: number; output: number }
   windows: {
     open(target: WindowTarget): void
@@ -1137,11 +1137,11 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     setKeepDaemonRunning,
     menuBarAgents: () => runningAgents()
       .filter((a) => !session.isFocused(a.agentId, a.filePath))
-      .map((a) => ({ filePath: a.filePath, state: a.mapping.state, activeLoops: a.mapping.activeLoops })),
+      .map((a) => ({ filePath: a.filePath, state: a.mapping.state, activeLoops: a.mapping.activeLoops, ...(primary ? {} : { runtimeId: id }) })),
     foreground: () => {
       const agentId = session.agentId
       const agent = agentId ? runningAgents().find((a) => a.agentId === agentId) : undefined
-      return agent ? { filePath: agent.filePath, state: agent.mapping.state } : null
+      return agent ? { filePath: agent.filePath, state: agent.mapping.state, ...(primary ? {} : { runtimeId: id }) } : null
     },
     tokensToday: () => tokensToday,
     windows: {

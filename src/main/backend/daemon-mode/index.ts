@@ -409,6 +409,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     },
     showMainWindow: hooks.showMainWindow,
     openFile: hooks.openFile,
+    ...(hooks.openFileOn ? { openFileOn: hooks.openFileOn } : {}),
     log,
   })
 
