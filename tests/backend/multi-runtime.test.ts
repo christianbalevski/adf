@@ -397,6 +397,20 @@ describe('runtime-aware IPC routing (§4.3)', () => {
     expect(t.handle.windows.runtimeOf(WINDOW + 1)).toBeNull()
   })
 
+  it('a reloaded main window\'s session resync (no tag) asks the runtime of its open agent, and the answer names it', async () => {
+    const t = await connected()
+    const host = t.handle.runtimes.get('remote:host-1')!
+    await host.session.openFile(REMOTE_FILE_2, async () => null)
+    t.handle.runtimes.setMainOpenRuntime('remote:host-1')
+    expect(await t.invoke(IPC.FILE_GET_CURRENT, 1)).toEqual({ filePath: REMOTE_FILE_2, agentRunning: false, runtimeId: 'remote:host-1' })
+    // An agent window asks its own session, as before.
+    t.handle.windows.open({ id: WINDOW, send: () => {}, focused: () => false })
+    expect(await t.invoke(IPC.FILE_GET_CURRENT, WINDOW)).toEqual({ filePath: null, agentRunning: false })
+    // The open agent back on This computer: its answer has no runtime, as before.
+    t.handle.runtimes.setMainOpenRuntime('local')
+    expect(await t.invoke(IPC.FILE_GET_CURRENT, 1)).toEqual({ filePath: null, agentRunning: false })
+  })
+
   it('a send with a tag on a studio channel is dropped and logged', async () => {
     const t = await connected()
     // FILE_SHARE_DRAG_START is the one send channel (studio scope). Dropped: its handler (startDrag on the sender) never runs.
