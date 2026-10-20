@@ -381,7 +381,7 @@ export function TitleBar() {
         {filePath && config && !showHome && agentWindowsAvailable && (
           <Tooltip tip="Open in new window" className="flex">
             <button
-              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name })}
+              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name, runtimeId: useDocumentStore.getState().runtimeId })}
               aria-label="Open in new window"
               className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
             >

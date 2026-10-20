@@ -32,7 +32,8 @@ interface NotificationsBridge {
 export function approvalsBridge(runtimeId?: string): NotificationsBridge | undefined {
   const api = (globalThis as { adfApi?: NotificationsBridge & { runtimeId?: string; runtime?: (id: string) => NotificationsBridge } }).adfApi
   const target = runtimeId || 'local'
-  if (!api?.runtime || (api.runtimeId ?? 'local') === target) return api
+  const own = typeof api?.runtimeId === 'string' && api.runtimeId ? api.runtimeId : 'local'
+  if (own === target || typeof api?.runtime !== 'function') return api
   return api.runtime(target)
 }
 

@@ -5,7 +5,7 @@ import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store
 import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useJumpToAgent } from '../../hooks/useJumpToAgent'
-import { runtimeLabel, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
+import { runtimeDown, runtimeLabel, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
 import { apiFor } from '../../utils/runtime-api'
 import { noticeKey } from '../../../shared/runtime-tag'
 import { loopColor } from '../../utils/loop-color'
@@ -93,6 +93,8 @@ export function ApprovalRow({
 }) {
   // Its runtime's name while there is more than one runtime (multi-runtime.md §6.1).
   const runtimeLabel = useRuntimeLabel(approval.runtimeId)
+  // Its runtime is down: the row stays, its answers wait (§3.6).
+  const down = useRuntimesStore((s) => runtimeDown(approval.runtimeId, s.runtimes))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const colors = loopColor(approval.loop)
@@ -184,14 +186,14 @@ export function ApprovalRow({
           <>
             <button
               onClick={() => void respond(true)}
-              disabled={busy}
+              disabled={busy || down}
               className="h-6 px-2 rounded text-[11px] font-medium border border-transparent bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-50"
             >
               Approve
             </button>
             <button
               onClick={() => void respond(false)}
-              disabled={busy}
+              disabled={busy || down}
               className="h-6 px-2 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50"
             >
               Reject

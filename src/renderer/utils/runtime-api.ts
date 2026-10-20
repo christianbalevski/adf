@@ -6,14 +6,18 @@ import { isAgentWindow } from './window-kind'
 
 /**
  * How renderer code reaches a runtime (docs/design/multi-runtime.md §4.1):
- * `apiFor(runtimeId)` is `window.adfApi` for This computer and the surface
- * bound to that runtime otherwise. With This computer only, every call goes
- * through `window.adfApi` exactly as before.
+ * `apiFor(runtimeId)` (omitted: This computer) is `window.adfApi` when that
+ * is the window's own runtime, else the surface bound to `runtimeId`. With
+ * This computer only, every call goes through `window.adfApi` exactly as
+ * before. An agent window of another runtime reaches This computer through
+ * `apiFor('local')`, untagged.
  */
 export function apiFor(runtimeId?: RuntimeId | null): AdfApi {
   const api = window.adfApi
-  if (!runtimeId || runtimeId === LOCAL_RUNTIME || !api?.runtime) return api
-  return api.runtime(runtimeId)
+  const target = runtimeId || LOCAL_RUNTIME
+  const own = typeof api?.runtimeId === 'string' && api.runtimeId ? api.runtimeId : LOCAL_RUNTIME
+  if (own === target || typeof api?.runtime !== 'function') return api
+  return api.runtime(target)
 }
 
 /**

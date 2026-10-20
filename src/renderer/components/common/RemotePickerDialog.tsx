@@ -16,6 +16,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dialog } from './Dialog'
 import { Button, TextInput } from '../ui'
 import type { RemoteBrowseListing, RemotePickAnswer, RemotePickRequest } from '../../../shared/types/backend.types'
+import type { AdfApi } from '../../../preload/api'
+import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
+import { apiFor } from '../../utils/runtime-api'
+import { isAgentWindow, windowRuntime } from '../../utils/window-kind'
+import { useRuntimes } from '../../stores/runtimes.store'
 
 type Root = RemoteBrowseListing['roots'][number]
 type Entry = RemoteBrowseListing['entries'][number]
@@ -74,22 +79,32 @@ function UpIcon() {
 }
 
 export function RemotePickerHost() {
-  const [queue, setQueue] = useState<RemotePickRequest[]>([])
-  const request = queue[0] ?? null
+  // Each request with the runtime that asked (multi-runtime.md §4.5): it browses there and is answered there.
+  const [queue, setQueue] = useState<Array<{ request: RemotePickRequest; runtimeId: string }>>([])
+  const head = queue[0] ?? null
+  const request = head?.request ?? null
+  const runtimes = useRuntimes()
 
-  useEffect(() => window.adfApi?.onRemotePickerRequest?.((next) => setQueue((q) => [...q, next])), [])
+  useEffect(() => window.adfApi?.onRemotePickerRequest?.((next) => setQueue((q) => [...q, { request: next, runtimeId: windowRuntime }])), [])
+  // Every other runtime of the set asks through its own surface; none with This computer only.
+  const others = !isAgentWindow && runtimes.length > 1 ? JSON.stringify(runtimes.filter((r) => r.id !== LOCAL_RUNTIME).map((r) => r.id)) : ''
+  useEffect(() => {
+    if (!others) return
+    const offs = (JSON.parse(others) as string[]).map((id) => apiFor(id).onRemotePickerRequest?.((next) => setQueue((q) => [...q, { request: next, runtimeId: id }])))
+    return () => { for (const off of offs) off?.() }
+  }, [others])
 
   const finish = useCallback((answer: RemotePickAnswer | null) => {
-    if (!request) return
-    void window.adfApi.respondRemotePicker(request.requestId, answer).catch(() => {})
+    if (!head) return
+    void apiFor(head.runtimeId).respondRemotePicker(head.request.requestId, answer).catch(() => {})
     setQueue((q) => q.slice(1))
-  }, [request])
+  }, [head])
 
-  if (!request) return null
-  return <RemotePickerDialog key={request.requestId} request={request} onDone={finish} />
+  if (!head || !request) return null
+  return <RemotePickerDialog key={`${head.runtimeId} ${request.requestId}`} request={request} api={apiFor(head.runtimeId)} onDone={finish} />
 }
 
-function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; onDone: (answer: RemotePickAnswer | null) => void }) {
+function RemotePickerDialog({ request, api, onDone }: { request: RemotePickRequest; api: AdfApi; onDone: (answer: RemotePickAnswer | null) => void }) {
   const [listing, setListing] = useState<RemoteBrowseListing | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -117,7 +132,7 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
     setConfirmReplace(false)
     setCursor(0)
     try {
-      const result = await window.adfApi.browseRemoteFolder({ ...(path ? { path } : {}), showHidden })
+      const result = await api.browseRemoteFolder({ ...(path ? { path } : {}), showHidden })
       if (seq !== browseSeq.current) return
       if ('error' in result) {
         // Nothing stays listed, so Choose cannot answer the previous folder.
@@ -209,7 +224,7 @@ function RemotePickerDialog({ request, onDone }: { request: RemotePickRequest; o
     setFolderError(null)
     setCreating(true)
     try {
-      const made = await window.adfApi.createRemoteFolder({ parent: folder, name: newFolder.trim() })
+      const made = await api.createRemoteFolder({ parent: folder, name: newFolder.trim() })
       if ('error' in made) setFolderError(made.error)
       else { setNewFolder(null); await browse(made.path) }
     } finally {

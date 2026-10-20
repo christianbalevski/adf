@@ -11,6 +11,8 @@ export interface RunningAgentRow {
    * plain and only genuine collisions get a disambiguator.
    */
   folderHint?: string
+  /** The agent's runtime; omitted for This computer (docs/design/multi-runtime.md §5.4). */
+  runtimeId?: string
 }
 
 export interface RunningAgentsInput {
@@ -82,6 +84,8 @@ export interface RailAgent {
   dirPath?: string
   /** The open agent while it is not running: shown first, above a divider. */
   openOnly?: boolean
+  /** The agent's runtime; omitted for This computer. */
+  runtimeId?: string
 }
 
 function findEntry(entries: TrackedDirEntry[], filePath: string): TrackedDirEntry | null {
@@ -106,9 +110,10 @@ export function collectRailAgents(
   running: RunningAgentRow[],
   input: Pick<RunningAgentsInput, 'directories' | 'filesByDir' | 'currentFilePath'>
 ): RailAgent[] {
-  const rail: RailAgent[] = running.map((r) => ({ file: r.file, dirPath: r.dirPath }))
+  const rail: RailAgent[] = running.map((r) => ({ file: r.file, dirPath: r.dirPath, ...(r.runtimeId ? { runtimeId: r.runtimeId } : {}) }))
+  // `currentFilePath` is This computer's open agent: a row of another runtime is never it.
   const open = input.currentFilePath
-  if (!open || running.some((r) => r.file.filePath === open)) return rail
+  if (!open || running.some((r) => !r.runtimeId && r.file.filePath === open)) return rail
   for (const dirPath of input.directories) {
     const entry = findEntry(input.filesByDir[dirPath] ?? [], open)
     if (entry) return [{ file: entry, dirPath, openOnly: true }, ...rail]

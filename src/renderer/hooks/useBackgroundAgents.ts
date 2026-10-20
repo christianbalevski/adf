@@ -1,7 +1,6 @@
 import { useEffect } from 'react'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useAppStore } from '../stores/app.store'
-import { useDocumentStore } from '../stores/document.store'
 import { foldAgentStatuses } from '../utils/background-agent-statuses'
 import { deliverSettledBackgroundQueues } from '../utils/queued-delivery'
 import { sameAgentPath } from '../stores/message-queue.store'

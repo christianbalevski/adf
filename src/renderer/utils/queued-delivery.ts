@@ -1,6 +1,5 @@
 import { nanoid } from 'nanoid'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState } from '../stores/agent.store'
-import { useDocumentStore } from '../stores/document.store'
 import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, heldForOwner, MAX_AUTOMATIC_SENDS, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 import type { ContentBlock } from '../../shared/types/provider.types'

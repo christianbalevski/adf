@@ -14,6 +14,10 @@ export interface SwitcherAgent {
   running: boolean
   /** Pending approvals and questions. */
   needsYou: number
+  /** The agent's runtime; omitted for This computer (docs/design/multi-runtime.md §5.4). */
+  runtimeId?: string
+  /** Its runtime's name, shown after the agent's while there is more than one runtime. */
+  runtimeName?: string
 }
 
 export interface SwitcherMatch {

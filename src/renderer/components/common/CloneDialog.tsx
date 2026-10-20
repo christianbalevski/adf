@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from './Dialog'
 import { Button } from '../ui'
+import { apiFor } from '../../utils/runtime-api'
 
 interface TableInfo {
   name: string
@@ -12,13 +13,15 @@ interface CloneDialogProps {
   onClose: () => void
   filePath: string
   dirPath: string
+  /** The agent's runtime; omitted for This computer (docs/design/multi-runtime.md §5.2). */
+  runtimeId?: string
   onCloned: () => void
 }
 
 const REQUIRED_TABLES = new Set(['adf_config', 'adf_meta'])
 const IDENTITY_TABLE = 'adf_identity'
 
-export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: CloneDialogProps) {
+export function CloneDialog({ open, onClose, filePath, dirPath, runtimeId, onCloned }: CloneDialogProps) {
   const [tables, setTables] = useState<TableInfo[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -32,7 +35,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
     setLoading(true)
     setError(null)
     setWarnings([])
-    window.adfApi.listTables(filePath).then((result) => {
+    apiFor(runtimeId).listTables(filePath).then((result) => {
       if (result.error) {
         setError(result.error)
         setTables([])
@@ -82,7 +85,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
   const handleClone = async () => {
     setCloning(true)
     setError(null)
-    const result = await window.adfApi.cloneFile(filePath, Array.from(selected))
+    const result = await apiFor(runtimeId).cloneFile(filePath, Array.from(selected))
     setCloning(false)
     if (result.success) {
       onCloned()
