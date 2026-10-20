@@ -79,7 +79,7 @@ function Tag({ tone = 'neutral', children }: { tone?: 'neutral' | 'accent' | 'wa
     warning: 'border-[var(--adf-ui-warning)]/40 bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]',
   } as const
   return (
-    <span className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[10px] font-medium ${tones[tone]}`}>
+    <span className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[11px] font-medium ${tones[tone]}`}>
       {children}
     </span>
   )

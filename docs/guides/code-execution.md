@@ -233,7 +233,7 @@ Module resolution follows this order: Node built-ins → stdlib → runtime pack
 
 ### Runtime Packages
 
-Runtime packages are configured in **Settings > Packages** and are available to every agent. Use this for packages you want globally available (e.g., charting libraries, data processing tools). Agents can also promote their own packages to runtime via the **Make Runtime** button in Settings. Both surfaces are owner-only — instance-scoped, not agent config; ask your principal.
+Runtime packages are configured in **Settings > Packages** and are available to every agent. Use this for packages you want globally available (e.g., charting libraries, data processing tools). A package an agent installed can be made a runtime package with **Promote** under **Installed by agents** on the same page. Both surfaces are owner-only — instance-scoped, not agent config; ask your principal.
 
 ### Limits
 

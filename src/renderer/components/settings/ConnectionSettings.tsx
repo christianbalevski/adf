@@ -187,7 +187,7 @@ export function ConnectionRows({ rows, busy, onConnect, onPair, onRemove }: {
                   </span>
                 )}
                 {(row.kind === 'saved' || row.kind === 'found') && !row.encrypted && (
-                  <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text)]">Not encrypted</span>
+                  <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-text)]">Not encrypted</span>
                 )}
               </div>
               {detail && <div className="break-all text-[var(--adf-ui-text-muted)]">{detail}</div>}

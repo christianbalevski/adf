@@ -51,7 +51,7 @@ A user-owned, already-running container registered in Settings > Compute. ADF ma
 
 ### Host Machine
 
-Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Enable host access** in Settings > Compute (the Settings side is owner-only — not agent-writable; ask your principal).
+Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Host access** in Settings > Compute > Advanced (the Settings side is owner-only — not agent-writable; ask your principal).
 
 - **Scope:** Full host access with the user's OS privileges
 - **Workspace:** `~/.adf-studio/workspaces/{agentId}/` (default working directory for `compute_exec`)

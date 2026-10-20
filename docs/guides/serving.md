@@ -391,7 +391,7 @@ Default: `7295`. Override via:
 Default: `127.0.0.1` (localhost only). To allow access from other devices on your local network:
 
 - Environment variable: `MESH_HOST=0.0.0.0`
-- Settings: Toggle **Allow LAN access** in the Web tab (sets host to `0.0.0.0`)
+- Settings: turn on **LAN** in Networking → Server
 
 When LAN access is enabled, other devices can reach the server at `http://{your-ip}:{port}/agents/{handle}/`.
 

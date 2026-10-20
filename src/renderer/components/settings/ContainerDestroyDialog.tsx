@@ -71,7 +71,7 @@ export function ContainerDestroyDialog({
       </p>
 
       {failedRow && container.error && (
-        <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] p-3 font-mono text-[10px] text-[var(--adf-ui-text)] break-words">
+        <p className="mt-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] p-3 font-mono text-[11px] text-[var(--adf-ui-text)] break-words">
           {container.error}
         </p>
       )}
@@ -79,7 +79,7 @@ export function ContainerDestroyDialog({
       {!failedRow && <ul className="mt-3 space-y-1.5 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] p-3 text-[11px] text-[var(--adf-ui-text)]">
         <li>
           <span className="font-medium">Workspace files</span> — everything under{' '}
-          <code className="font-mono text-[10px]">/workspace</code>
+          <code className="font-mono text-[11px]">/workspace</code>
           {owner ? <> for {owner}</> : null}. It is a directory inside the container, not a folder on this machine, so nothing is recoverable.
         </li>
         <li><span className="font-medium">Installed packages</span> — apt, pip, and npm installs made since the container was created.</li>

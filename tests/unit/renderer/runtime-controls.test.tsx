@@ -1,7 +1,7 @@
 /**
  * The runtime's on/off controls: Kill in the status bar (its tooltip names
- * the runtime, and it says what it stopped), the one Mesh switch with "Start
- * with the runtime" in Settings → Networking, and the container "Rebuild
+ * the runtime, and it says what it stopped), the one Mesh switch with
+ * Autostart in Settings → Networking, and the container "Rebuild
  * available" badge (a destructive rebuild, not an update). Static checks.
  */
 import { readFileSync } from 'node:fs'
@@ -33,10 +33,10 @@ describe('Kill', () => {
 })
 
 describe('the Mesh controls', () => {
-  it('one switch for the live state and a Start with the runtime checkbox; no separate Disable or server Stop/Start', () => {
+  it('one switch for the live state and an Autostart switch; no separate Disable or server Stop/Start', () => {
     const page = settingsPage()
-    expect(page).toContain('aria-label="Mesh"')
-    expect(page).toContain('label="Start with the runtime"')
+    expect(page).toContain('<Switch label="Mesh"')
+    expect(page).toContain('<Switch label="Autostart"')
     expect(page).not.toContain("{meshAutoStart ? 'Disable' : 'Enable'}")
     expect(page).not.toContain("{meshServerStatus.running ? 'Stop' : 'Start'}")
   })

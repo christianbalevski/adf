@@ -117,34 +117,35 @@ type OwnerIdentityStatusView = {
   runtimeDelegationValid: boolean
 }
 
-/** Copyable monospace DID/URL row used across the Identity tab. */
-function DidRow({ label, value, hint, copied, onCopy }: {
-  label: string
+/** A copyable monospace DID or URL, as the control of a SettingsRow on the Identity page. */
+function DidValue({ copyKey, value, copied, onCopy }: {
+  copyKey: string
   value?: string
-  hint?: string
   copied: string | null
-  onCopy: (label: string, value?: string) => void
+  onCopy: (key: string, value?: string) => void
 }) {
   return (
-    <div>
-      <div className="flex items-center justify-between mb-0.5">
-        <span className="text-xs text-neutral-500 dark:text-neutral-400">{label}</span>
-        {value && (
-          <Button
-            onClick={() => onCopy(label, value)}
-            variant="ghost"
-            size="compact"
-          >
-            {copied === label ? 'Copied' : 'Copy'}
-          </Button>
-        )}
-      </div>
-      <div className="px-2 py-1.5 text-xs font-mono break-all rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-700 dark:text-neutral-300">
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="min-w-0 flex-1 break-all rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] px-2 py-1.5 font-mono text-[12px] text-[var(--adf-ui-text)]">
         {value ?? 'Not generated yet'}
-      </div>
-      {hint && <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">{hint}</p>}
+      </span>
+      {value && (
+        <Button onClick={() => onCopy(copyKey, value)} variant="ghost" size="compact">
+          {copied === copyKey ? 'Copied' : 'Copy'}
+        </Button>
+      )}
     </div>
   )
+}
+
+/** A small state badge (Backed up, Delegation valid). */
+function StateBadge({ tone, children }: { tone: 'ok' | 'warn' | 'bad'; children: React.ReactNode }) {
+  const tones = {
+    ok: 'bg-[var(--adf-ui-success-subtle)] text-[var(--adf-ui-success)]',
+    warn: 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]',
+    bad: 'bg-[var(--adf-ui-danger-subtle)] text-[var(--adf-ui-danger)]',
+  } as const
+  return <span className={`ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium ${tones[tone]}`}>{children}</span>
 }
 
 /**
@@ -257,198 +258,157 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
           never mint a replacement. */}
       {status?.restoreRequired && (
         <div data-settings-anchor="restore-identity">
-        <SettingsGroup className="p-4">
-          <p className="text-sm font-medium text-amber-700 dark:text-amber-400 mb-1">Restore your identity</p>
-          <p className="text-xs text-neutral-600 dark:text-neutral-300 mb-2">
-            This machine’s owner is <span className="font-mono break-all">{status.ownerDid}</span>, set up in the ADF
-            terminal, but Studio cannot read its seed phrase. Enter the same 12 words to use it here. Studio will not
-            create a new owner or restamp your agents.
-          </p>
-          {remote
-            ? <p className="text-xs text-neutral-500 dark:text-neutral-400">{changeOn(runtimeName)}</p>
-            : (
-              <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
-                Restore identity
-              </Button>
-            )}
-        </SettingsGroup>
+          <SettingsGroup
+            title="Restore identity"
+            description="Enter this owner's 12 words to use it here; Studio never creates a new owner or restamps your agents for this."
+            hint="This computer's owner was set up in the ADF terminal, and Studio cannot read its seed phrase."
+          >
+            <SettingsRow label="Owner" description={<span className="font-mono break-all">{status.ownerDid}</span>}>
+              {remote
+                ? <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{changeOn(runtimeName)}</span>
+                : (
+                  <Button variant="primary" onClick={() => { setImportMode('restore'); setImportOpen(true); setImportResult(null) }}>
+                    Restore identity
+                  </Button>
+                )}
+            </SettingsRow>
+          </SettingsGroup>
         </div>
       )}
 
       {/* Owner identity */}
-      <SettingsGroup className="p-4">
-        <div className="flex items-center justify-between mb-1">
-          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Owner Identity
-            <InfoHint tip="Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on another computer to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents." />
-          </label>
-          {status && status.hasMnemonic && (
-            status.backupConfirmed ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-                Seed backed up
-              </span>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
-                Seed not backed up
-              </span>
-            )
-          )}
-        </div>
-        {status && !status.safeStorageAvailable && (
-          <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
-            OS keychain encryption is unavailable on this system — the seed phrase is stored unencrypted in app settings.
-          </p>
-        )}
-        <DidRow label="Owner DID" value={status?.ownerDid} copied={copied} onCopy={handleCopy} />
+      <SettingsGroup
+        title="Owner identity"
+        hint="Who you are. Rooted in a 12-word seed phrase generated on first launch; import the same phrase on another computer to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents."
+        docs={DOCS.settingsIdentity}
+      >
+        <SettingsRow
+          label="DID"
+          stacked
+          error={status && !status.safeStorageAvailable ? 'The OS keychain is unavailable, so the seed phrase is stored unencrypted in app settings.' : undefined}
+          help={status && status.legacyOwnerDids.length > 0 ? <>Previous: <span className="font-mono break-all">{status.legacyOwnerDids.join(', ')}</span></> : undefined}
+        >
+          <DidValue copyKey="owner" value={status?.ownerDid} copied={copied} onCopy={handleCopy} />
+        </SettingsRow>
 
         {/* Owner alias — a friendly name for you, keyed to the DID. Display
             only: allow/block and trust always use the DID, never the alias. */}
-        <div className="mt-3">
-          <label htmlFor="owner-alias" className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Owner alias</label>
+        <SettingsRow separator label={<>Alias<InfoHint tip="A name peers see for you. Display only: trust and allow lists always use the DID." /></>}>
           <TextInput
-            id="owner-alias"
+            aria-label="Owner alias"
             type="text"
             value={ownerAlias}
             maxLength={40}
             onChange={(e) => setOwnerAlias(e.target.value)}
             onBlur={() => commitAlias('owner', ownerAlias)}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-            placeholder="a name peers will see"
-            className="text-xs"
+            placeholder="A name peers will see"
+            className="!w-64 !text-[12px]"
           />
-          <label className="flex items-center gap-2 mt-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={shareOwner}
-              onChange={(e) => { const next = e.target.checked; setShareOwner(next); void commit({ shareOwnerIdentity: next }, () => setShareOwner(!next)) }}
-              className="rounded"
-            />
-            <span className="text-xs text-neutral-600 dark:text-neutral-300">
-              Share owner identity on the mesh
-              <InfoHint tip="Off by default. When on, discoverable peers can see your owner alias and cryptographically verify that your runtimes share one owner — so several machines you own read as yours, and a shared tailnet shows each person’s runtimes under their own name. Publicly links your runtimes together." />
-            </span>
-          </label>
-        </div>
-        {status && status.legacyOwnerDids.length > 0 && (
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2">
-            Previous owner DID{status.legacyOwnerDids.length > 1 ? 's' : ''} (migrated — files stamped with these are
-            restamped to the current DID when found):{' '}
-            <span className="font-mono break-all">{status.legacyOwnerDids.join(', ')}</span>
-          </p>
-        )}
-        {/* Host-only with a remote runtime (settings-scopes.md §7): changed on that computer. */}
-        {remote ? (
-          <p className="mt-3 text-xs text-neutral-500 dark:text-neutral-400">{changeOn(runtimeName)}</p>
-        ) : (
-          <div className="flex gap-2 mt-3">
-            <Button
-              onClick={openBackup}
-              disabled={!status?.hasMnemonic}
-              variant="primary"
-            >
-              Back up seed phrase
-            </Button>
-            <Button
-              onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}
-            >
-              Import identity
-            </Button>
-          </div>
-        )}
+        </SettingsRow>
+        <SettingsRow
+          separator
+          label={<>Sharing<InfoHint tip="Off by default. On: discoverable peers see your owner alias and can verify that your runtimes share one owner, so several computers you own read as yours. This links your runtimes together publicly." /></>}
+          description="Share the owner identity on the mesh."
+        >
+          <Switch
+            label="Sharing"
+            checked={shareOwner}
+            onChange={(next) => { setShareOwner(next); void commit({ shareOwnerIdentity: next }, () => setShareOwner(!next)) }}
+          />
+        </SettingsRow>
+        <SettingsRow
+          separator
+          label={<>Seed phrase{status?.hasMnemonic && (status.backupConfirmed ? <StateBadge tone="ok">Backed up</StateBadge> : <StateBadge tone="warn">Not backed up</StateBadge>)}</>}
+        >
+          {/* Host-only with a remote runtime (settings-scopes.md §7): changed on that computer. */}
+          {remote ? (
+            <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{changeOn(runtimeName)}</span>
+          ) : (
+            <div className="flex gap-2">
+              <Button onClick={openBackup} disabled={!status?.hasMnemonic} variant="primary">
+                Back up seed phrase
+              </Button>
+              <Button onClick={() => { setImportMode('import'); setImportOpen(true); setImportResult(null) }}>
+                Import identity
+              </Button>
+            </div>
+          )}
+        </SettingsRow>
       </SettingsGroup>
 
       {/* Runtime identity */}
-      <SettingsGroup className="p-4">
-        <div className="flex items-center justify-between mb-1">
-          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Runtime key
-            <InfoHint tip="Identifies this computer to other computers." />
-          </label>
-          {status && (
-            status.runtimeDelegationValid ? (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-                Delegation valid
-              </span>
-            ) : (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
-                No valid delegation
-              </span>
-            )
-          )}
-        </div>
-        <div className="space-y-3">
-          <DidRow label="Runtime DID" value={status?.runtimeDid} copied={copied} onCopy={handleCopy} />
+      <SettingsGroup title="Runtime key" hint="Identifies this computer to other computers; two computers never share one.">
+        <SettingsRow
+          label={<>DID{status && (status.runtimeDelegationValid ? <StateBadge tone="ok">Delegation valid</StateBadge> : <StateBadge tone="bad">No valid delegation</StateBadge>)}</>}
+          stacked
+          help={status?.runtimeDelegation || (status && status.legacyRuntimeDids.length > 0) ? <>
+            {status?.runtimeDelegation && <>Delegation signed by <span className="font-mono break-all">{status.runtimeDelegation.issuer}</span> on {new Date(status.runtimeDelegation.issued_at).toLocaleDateString()}. </>}
+            {status && status.legacyRuntimeDids.length > 0 && <>Previous: <span className="font-mono break-all">{status.legacyRuntimeDids.join(', ')}</span></>}
+          </> : undefined}
+        >
+          <DidValue copyKey="runtime" value={status?.runtimeDid} copied={copied} onCopy={handleCopy} />
+        </SettingsRow>
 
-          {/* Runtime alias — the name this install shows as on the mesh map,
-              in place of the hostname mDNS/Tailscale would otherwise share. */}
-          <div>
-            <label htmlFor="runtime-alias" className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Runtime alias</label>
-            <TextInput
-              id="runtime-alias"
-              type="text"
-              value={runtimeAlias}
-              maxLength={40}
-              onChange={(e) => setRuntimeAlias(e.target.value)}
-              onBlur={() => commitAlias('runtime', runtimeAlias)}
-              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-              placeholder="a name for this runtime"
-              className="text-xs"
-            />
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-              Shown to peers when this runtime is discoverable (Networking → LAN / Tailscale). Falls back to the
-              hostname if blank.
-            </p>
-          </div>
-          {status?.runtimeDelegation && (
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-              Delegation signed by <span className="font-mono break-all">{status.runtimeDelegation.issuer}</span>{' '}
-              on {new Date(status.runtimeDelegation.issued_at).toLocaleDateString()}
-            </p>
-          )}
-          {status && status.legacyRuntimeDids.length > 0 && (
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-              Previous runtime DID{status.legacyRuntimeDids.length > 1 ? 's' : ''} (migrated):{' '}
-              <span className="font-mono break-all">{status.legacyRuntimeDids.join(', ')}</span>
-            </p>
-          )}
-          {/* A remote runtime's loopback address is not this computer's: hidden (settings-scopes.md §7). */}
-          {!remote && <DidRow
-            label="Agent directory URL"
-            value={directoryUrl}
-            hint={meshServer?.running
-              ? 'Lists the agent cards served by this runtime, filtered by each requester’s visibility scope. Other runtimes fetch this to discover your agents.'
-              : 'Mesh server is not running — start it in Networking to serve agent cards.'}
-            copied={copied}
-            onCopy={handleCopy}
-          />}
-        </div>
+        {/* Runtime alias — the name this install shows as on the mesh map,
+            in place of the hostname mDNS/Tailscale would otherwise share. */}
+        <SettingsRow
+          separator
+          label={<>Alias<InfoHint tip="Shown to peers when this runtime is discoverable (Networking, LAN or Tailscale). Blank: the hostname." /></>}
+        >
+          <TextInput
+            aria-label="Runtime alias"
+            type="text"
+            value={runtimeAlias}
+            maxLength={40}
+            onChange={(e) => setRuntimeAlias(e.target.value)}
+            onBlur={() => commitAlias('runtime', runtimeAlias)}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+            placeholder="A name for this runtime"
+            className="!w-64 !text-[12px]"
+          />
+        </SettingsRow>
+        {/* A remote runtime's loopback address is not this computer's: hidden (settings-scopes.md §7). */}
+        {!remote && (
+          <SettingsRow
+            separator
+            stacked
+            label={<>Directory<InfoHint tip="Lists the agent cards this runtime serves, filtered by each requester's visibility scope. Other runtimes fetch it to discover your agents." /></>}
+            help={meshServer?.running ? undefined : 'The mesh server is not running; start it in Networking to serve agent cards.'}
+          >
+            <DidValue copyKey="directory" value={directoryUrl} copied={copied} onCopy={handleCopy} />
+          </SettingsRow>
+        )}
       </SettingsGroup>
 
       {/* Agent identity pointers */}
-      <SettingsGroup className="p-4">
-        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-          Agent Identities
-          <InfoHint tip={'Each .adf agent has its own DID and keystore, separate from the identities above. Manage an agent’s keys and view its ownership attestations in the Agent panel → Identity tab.\n\nTo let mesh peers verify you own an agent, enable Publish owner attestation in its Config → Security section — off by default, so agents can’t be linked to you by card inspection.'} />
-          <DocsLink href={DOCS.identity} className="ml-2" />
-        </label>
+      <SettingsGroup
+        title="Agent identities"
+        description="Each agent has its own DID and keys, in its Identity tab."
+        hint="To let mesh peers verify you own an agent, turn on Publish owner attestation in its Config → Security. It is off by default, so agents cannot be linked to you by card inspection."
+        docs={DOCS.identity}
+      >
+        <span />
       </SettingsGroup>
 
+      {confirmDialog}
+
       {/* Seed phrase reveal dialog */}
-      <Dialog open={backupOpen} onClose={() => { setBackupOpen(false); setMnemonic(null) }} title="Back Up Seed Phrase">
-        <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
-          Write these 12 words down and store them somewhere safe. Anyone with this phrase can act as you;
-          without it, your owner identity cannot be recovered if this machine is lost.
+      <Dialog open={backupOpen} onClose={() => { setBackupOpen(false); setMnemonic(null) }} title="Back up seed phrase">
+        <p className="text-sm text-[var(--adf-ui-text-muted)] mb-3">
+          Write these 12 words down and keep them somewhere safe. Anyone with them can act as you;
+          without them, your owner identity cannot be recovered if this computer is lost.
         </p>
         {mnemonic ? (
           <div className="grid grid-cols-3 gap-1.5 mb-4">
             {mnemonic.split(' ').map((word, i) => (
-              <div key={i} className="px-2 py-1.5 text-sm font-mono rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-800 dark:text-neutral-200">
-                <span className="text-[10px] text-neutral-400 mr-1.5 select-none">{i + 1}</span>{word}
+              <div key={i} className="px-2 py-1.5 text-sm font-mono rounded bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)]">
+                <span className="text-[11px] text-[var(--adf-ui-text-subtle)] mr-1.5 select-none">{i + 1}</span>{word}
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-sm text-red-500 mb-4">{mnemonicReason ?? 'No seed phrase available.'}</p>
+          <p className="text-sm text-[var(--adf-ui-danger)] mb-4">{mnemonicReason ?? 'No seed phrase available.'}</p>
         )}
         <div className="flex items-center justify-between gap-2">
           <Button
@@ -459,36 +419,28 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             {copied === 'mnemonic' ? 'Copied' : 'Copy phrase'}
           </Button>
           <div className="flex gap-2">
-            <Button
-              onClick={() => { setBackupOpen(false); setMnemonic(null) }}
-            >
+            <Button onClick={() => { setBackupOpen(false); setMnemonic(null) }}>
               Cancel
             </Button>
-            <Button
-              onClick={confirmBackup}
-              disabled={!mnemonic}
-              variant="primary"
-            >
+            <Button onClick={confirmBackup} disabled={!mnemonic} variant="primary">
               I have written it down
             </Button>
           </div>
         </div>
       </Dialog>
 
-      {confirmDialog}
-
       {/* Import identity dialog */}
-      <Dialog lightDismiss={false} open={importOpen} onClose={() => setImportOpen(false)} title={importMode === 'restore' ? 'Restore Identity' : 'Import Identity'}>
+      <Dialog lightDismiss={false} open={importOpen} onClose={() => setImportOpen(false)} title={importMode === 'restore' ? 'Restore identity' : 'Import identity'}>
         {importMode === 'restore' ? (
-          <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
-            Enter the 12-word seed phrase of <span className="font-mono break-all">{status?.ownerDid}</span> — the
+          <p className="text-sm text-[var(--adf-ui-text-muted)] mb-3">
+            Enter the 12-word seed phrase of <span className="font-mono break-all">{status?.ownerDid}</span>, the
             words shown when it was created in the ADF terminal (<span className="font-mono">adf identity new</span>).
             A phrase for a different owner is refused.
           </p>
         ) : (
-          <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
-            Enter the 12-word seed phrase from another computer. Your owner DID will change to the imported
-            identity, and local agent files you own will be restamped to it.
+          <p className="text-sm text-[var(--adf-ui-text-muted)] mb-3">
+            Enter the 12-word seed phrase from another computer. Your owner DID changes to the imported
+            identity, and agent files you own on this computer are restamped to it.
           </p>
         )}
         <Textarea
@@ -500,14 +452,12 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
           className="mb-2 font-mono text-sm resize-none"
         />
         {importResult && (
-          <p className={`text-xs mb-2 ${importResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+          <p className={`text-xs mb-2 ${importResult.ok ? 'text-[var(--adf-ui-success)]' : 'text-[var(--adf-ui-danger)]'}`}>
             {importResult.message}
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <Button
-            onClick={() => setImportOpen(false)}
-          >
+          <Button onClick={() => setImportOpen(false)}>
             Close
           </Button>
           <Button
@@ -611,7 +561,7 @@ function SkillsTab() {
                   {source}
                 </span>
                 {source === ADF_SKILLS_REGISTRY_URL && (
-                  <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text-subtle)]">
+                  <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
                     Default
                   </span>
                 )}
@@ -876,22 +826,22 @@ function PackagesTab({
 function LanAgentsList({ agents }: { agents: MeshAgentStatus[] }) {
   const lanAgents = agents.filter((a) => a.visibility === 'lan')
   return (
-    <div className="mt-2 ml-5 text-[10px]">
+    <div className="text-[11px]">
       {lanAgents.length === 0 ? (
-        <p className="text-neutral-400 dark:text-neutral-500">
-          No agents are set to <code>lan</code> visibility. The runtime will bind to loopback unless this toggle forces LAN binding.
+        <p className="text-[var(--adf-ui-text-subtle)]">
+          No agent has <code>lan</code> visibility, so the server listens on loopback unless LAN is on.
         </p>
       ) : (
         <>
-          <p className="text-neutral-500 dark:text-neutral-400 mb-1">
+          <p className="mb-1 text-[var(--adf-ui-text-muted)]">
             {lanAgents.length === 1 ? '1 agent is' : `${lanAgents.length} agents are`} exposed on the LAN:
           </p>
           <ul className="space-y-0.5">
             {lanAgents.map((a) => (
-              <li key={a.filePath} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
+              <li key={a.filePath} className="flex items-center gap-2 font-mono text-[var(--adf-ui-text)]">
                 <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} icon={a.icon} iconSeed={a.agentId || a.filePath} size={14} emojiSize={12} />
                 <span>{a.handle}</span>
-                <span className="text-neutral-400 dark:text-neutral-500 truncate">{a.filePath}</span>
+                <span className="truncate text-[var(--adf-ui-text-subtle)]">{a.filePath}</span>
               </li>
             ))}
           </ul>
@@ -953,7 +903,7 @@ function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boo
         setNote('Firewall rule added.')
         await check()
       } else if (res.declined) {
-        setNote('Elevation was declined — the rule was not added.')
+        setNote('Elevation was declined; the rule was not added.')
       } else {
         setNote(res.error ?? 'Could not add the firewall rule.')
       }
@@ -964,20 +914,18 @@ function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boo
 
   if (!enabled) return null
   // A remote runtime's firewall is its own computer's (settings-scopes.md §7).
-  if (hostName) return <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-2 ml-5">{changeOn(hostName)}</p>
+  if (hostName) return <p className="text-[11px] text-[var(--adf-ui-text-muted)]">{changeOn(hostName)}</p>
 
   // First check hasn't resolved yet — a bare "checking" beats flashing a scare.
   if (!fw) {
-    return (
-      <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 ml-5">Checking LAN reachability…</p>
-    )
+    return <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">Checking LAN reachability…</p>
   }
 
   if (fw.verified) {
     return (
-      <div className="mt-2 ml-5 flex items-center gap-2 text-[11px] text-green-600 dark:text-green-400">
+      <div className="flex items-center gap-2 text-[11px] text-[var(--adf-ui-success)]">
         <span>✓ Visible on LAN</span>
-        {fw.lanIp && <span className="font-mono text-neutral-400 dark:text-neutral-500">{fw.lanIp}:{fw.port}</span>}
+        {fw.lanIp && <span className="font-mono text-[var(--adf-ui-text-subtle)]">{fw.lanIp}:{fw.port}</span>}
       </div>
     )
   }
@@ -986,9 +934,9 @@ function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boo
   let message: string
   let showFix = false
   if (!fw.serverLanBound) {
-    message = 'Mesh server isn\'t LAN-bound yet — it may still be starting.'
+    message = 'The mesh server is not LAN-bound yet; it may still be starting.'
   } else if (fw.supported && fw.ruleConfigured === false) {
-    message = 'A firewall rule is needed so peers can fetch this runtime\'s agents. Without it, other machines see the runtime but list 0 agents.'
+    message = 'Peers see this runtime but list 0 agents until a firewall rule lets them fetch its agents.'
     showFix = true
   } else if (fw.supported && fw.ruleConfigured === null) {
     message = fw.detail
@@ -996,24 +944,24 @@ function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boo
   } else if (!fw.supported) {
     message = fw.detail
   } else {
-    message = `Firewall rule is present but the server didn't answer on ${fw.lanIp ?? 'the LAN address'} — confirm this network is set to Private, not Public.`
+    message = `The firewall rule is there, but the server did not answer on ${fw.lanIp ?? 'the LAN address'}; check that this network is Private, not Public.`
   }
 
   return (
-    <div className="mt-2 ml-5">
-      <p className="text-[11px] text-amber-600 dark:text-amber-400">⚠ {message}</p>
+    <div>
+      <p className="text-[11px] text-[var(--adf-ui-warning)]">⚠ {message}</p>
       {showFix && (
         <Button
           onClick={() => void apply()}
           disabled={applying}
           loading={applying}
           size="compact"
-          className="mt-1 text-[11px] text-[var(--adf-ui-warning)]"
+          className="mt-1 text-[var(--adf-ui-warning)]"
         >
           {applying ? 'Requesting permission…' : 'Enable in firewall'}
         </Button>
       )}
-      {note && <p className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">{note}</p>}
+      {note && <p className="mt-1 text-[11px] text-[var(--adf-ui-text-muted)]">{note}</p>}
     </div>
   )
 }
@@ -1035,11 +983,13 @@ interface DiscoveredRuntime {
 }
 
 /**
- * Read-only list of ADF runtimes discovered via mDNS. Updates live via
- * MESH_EVENT. Sits directly below LanAgentsList in the Networking tab — the
- * matched pair is "what you expose" above / "what you can see" below.
+ * Settings → Networking → Discovery: the runtimes found (mDNS, the tailnet
+ * sweep, the manual list; live via MESH_EVENT), the Tailscale sweep switch,
+ * and the manual peer list. Manual entries accept "host:port" (or a bare
+ * host, which uses the mesh port) and are probed on the same cycle as the
+ * tailnet sweep; matches appear in the list within seconds.
  */
-function DiscoveredRuntimesList() {
+function DiscoveryGroup() {
   const [peers, setPeers] = useState<DiscoveredRuntime[]>([])
   const [rechecking, setRechecking] = useState(false)
   const refresh = useCallback(async () => {
@@ -1069,78 +1019,51 @@ function DiscoveredRuntimesList() {
   }, [refresh])
 
   return (
-    <div className="mt-3">
-      <div className="flex items-center gap-2 mb-1">
-        <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium">Discovered runtimes</p>
-        <Button
-          onClick={() => void recheck()}
-          disabled={rechecking}
-          loading={rechecking}
-          size="compact"
-          className="text-[10px]"
-          title="Re-probe tailnet and manual peers now, then refetch each runtime's directory"
-        >
-          {rechecking ? 'rechecking…' : '↻ recheck'}
-        </Button>
-      </div>
-      <div className="ml-5 text-[10px]">
-        {peers.length === 0 ? (
-          <p className="text-neutral-400 dark:text-neutral-500">
-            No other ADF runtimes visible on your network.
-          </p>
-        ) : (
-          <ul className="space-y-0.5">
-            {peers.map((p) => (
-              <li key={p.runtime_id} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
-                <span>{p.host}</span>
-                {/* Every row states its route: LAN = heard via mDNS on the
-                    broadcast domain; TAILNET = swept via the tailscale CLI;
-                    MANUAL = from the peer list below. */}
-                <span
-                  className={`px-1 rounded text-[9px] uppercase tracking-wide ${
-                    (p.source ?? 'mdns') === 'mdns'
-                      ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
-                      : p.source === 'tailnet'
-                        ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'
-                        : 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400'
-                  }`}
-                >
-                  {(p.source ?? 'mdns') === 'mdns' ? 'lan' : p.source}
-                </span>
-                {p.url && (
-                  <span className="text-neutral-400 dark:text-neutral-500 normal-case">
-                    {p.url.replace(/^https?:\/\//, '')}
+    <SettingsGroup title="Discovery" hint="Agent counts are fetched live from each peer's directory. Tier changes apply to inbox enforcement at once.">
+      <SettingsRow
+        label="Runtimes"
+        stacked
+      >
+        <div className="flex items-start justify-between gap-3">
+          {peers.length === 0 ? (
+            <p className="text-[12px] text-[var(--adf-ui-text-subtle)]">No other ADF runtimes visible on your network.</p>
+          ) : (
+            <ul className="min-w-0 space-y-1">
+              {peers.map((p) => (
+                <li key={p.runtime_id} className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-[var(--adf-ui-text)]">
+                  <span>{p.host}</span>
+                  {/* Every row states its route: LAN = heard via mDNS on the
+                      broadcast domain; TAILNET = swept via the tailscale CLI;
+                      MANUAL = from the peer list below. */}
+                  <span className="rounded bg-[var(--adf-ui-surface-hover)] px-1 text-[11px] uppercase tracking-wide text-[var(--adf-ui-text-muted)]">
+                    {(p.source ?? 'mdns') === 'mdns' ? 'lan' : p.source}
                   </span>
-                )}
-                {p.agent_count === undefined ? (
-                  <span className="text-amber-500 dark:text-amber-400" title="The runtime announced itself but its directory endpoint didn't answer — firewall, wrong interface, or the mesh server is down">
-                    directory unreachable
-                  </span>
-                ) : (
-                  <span className="text-neutral-400 dark:text-neutral-500">
-                    {p.agent_count} {p.agent_count === 1 ? 'agent' : 'agents'}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="mt-1 text-neutral-400 dark:text-neutral-500">
-          Tier changes take effect immediately for inbox enforcement. Agent counts are fetched live from each peer's directory.
-        </p>
-        <ManualPeersEditor />
-      </div>
-    </div>
+                  {p.url && <span className="text-[var(--adf-ui-text-subtle)]">{p.url.replace(/^https?:\/\//, '')}</span>}
+                  {p.agent_count === undefined ? (
+                    <Tooltip tip="The runtime announced itself but its directory did not answer: a firewall, the wrong interface, or its mesh server is down.">
+                      <span className="text-[var(--adf-ui-warning)]">Directory unreachable</span>
+                    </Tooltip>
+                  ) : (
+                    <span className="text-[var(--adf-ui-text-subtle)]">{p.agent_count} {p.agent_count === 1 ? 'agent' : 'agents'}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <Tooltip tip="Probe the tailnet and manual peers now, then refetch each runtime's directory">
+            <Button onClick={() => void recheck()} disabled={rechecking} loading={rechecking} size="compact">
+              {rechecking ? 'Rechecking…' : 'Recheck'}
+            </Button>
+          </Tooltip>
+        </div>
+      </SettingsRow>
+      <ManualPeersRows />
+    </SettingsGroup>
   )
 }
 
-/**
- * Discovery beyond the broadcast domain: the Tailscale sweep toggle and the
- * manual peer list. Manual entries accept "host:port" (or a bare host —
- * defaults to the mesh port) and are probed on the same cycle as the tailnet
- * sweep; matches appear in the Discovered list above within seconds.
- */
-function ManualPeersEditor() {
+/** The Tailscale sweep switch and the manual peer list, as rows of Discovery. */
+function ManualPeersRows() {
   const [peers, setPeers] = useState<string[]>([])
   const [tailnetOn, setTailnetOn] = useState(true)
   const [draft, setDraft] = useState('')
@@ -1171,30 +1094,26 @@ function ManualPeersEditor() {
   }, [draft, peers, save])
 
   return (
-    <div className="mt-3 space-y-2">
-      <label className="flex items-center gap-2 text-neutral-600 dark:text-neutral-300">
-        <input
-          type="checkbox"
+    <>
+      <SettingsRow separator label={<>Tailscale<InfoHint tip="Probe the computers on your tailnet for ADF runtimes." /></>}>
+        <Switch
+          label="Tailscale"
           checked={tailnetOn}
-          onChange={(e) => {
-            const next = e.target.checked
+          onChange={(next) => {
             setTailnetOn(next)
             void commit({ tailnetDiscovery: next }, () => setTailnetOn(!next))
           }}
         />
-        Discover peers over Tailscale
-        <span className="text-neutral-400 dark:text-neutral-500">— probes machines on your tailnet for ADF runtimes</span>
-      </label>
-      <div>
-        <p className="text-neutral-500 dark:text-neutral-400 font-medium">Manual peers</p>
-        <p className="text-neutral-400 dark:text-neutral-500 mb-1">
-          Any runtime reachable by address — LAN, tailnet, or a publicly exposed server. Probed on the same
-          cycle as discovery; matches appear in the list above.
-        </p>
+      </SettingsRow>
+      <SettingsRow
+        separator
+        stacked
+        label={<>Peers<InfoHint tip="Any runtime reachable by address: on the LAN, the tailnet, or a public server. Probed on the same cycle as discovery; matches appear under Runtimes." /></>}
+      >
         {peers.length > 0 && (
-          <ul className="space-y-0.5 mb-1">
+          <ul className="mb-2 space-y-1">
             {peers.map((p) => (
-              <li key={p} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
+              <li key={p} className="flex items-center gap-2 font-mono text-[12px] text-[var(--adf-ui-text)]">
                 <span>{p}</span>
                 <IconButton
                   onClick={() => {
@@ -1203,7 +1122,7 @@ function ManualPeersEditor() {
                   }}
                   aria-label={`Remove peer ${p}`}
                   variant="danger"
-                  title="Remove peer"
+                  title="Remove"
                 >
                   ✕
                 </IconButton>
@@ -1213,22 +1132,20 @@ function ManualPeersEditor() {
         )}
         <div className="flex items-center gap-1.5">
           <TextInput
-            aria-label="Manual peer address"
+            aria-label="Peer address"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
-            placeholder="host:port (e.g. 100.101.102.103:7295)"
-            className="!w-64 !text-[11px]"
+            placeholder="host:port, e.g. 100.101.102.103:7295"
+            spellCheck={false}
+            className="!w-72 font-mono !text-[12px]"
           />
-          <Button
-            onClick={() => void add()}
-            size="compact"
-          >
-            Add peer
+          <Button onClick={() => void add()} size="compact">
+            Add
           </Button>
         </div>
-      </div>
-    </div>
+      </SettingsRow>
+    </>
   )
 }
 
@@ -1322,7 +1239,7 @@ function SettingsPageBody() {
   const { enableMesh, disableMesh } = useMesh()
   const [meshSwitching, setMeshSwitching] = useState(false)
   const [meshSwitchError, setMeshSwitchError] = useState<string | null>(null)
-  /** The Mesh switch: the mesh and its server together, now; "Start with the runtime" is separate (meshEnabled). */
+  /** The Mesh switch: the mesh and its server together, now; Autostart is separate (meshEnabled). */
   const switchMesh = async (on: boolean) => {
     setMeshSwitching(true)
     setMeshSwitchError(null)
@@ -1813,7 +1730,7 @@ function SettingsPageBody() {
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Settings sections">
           {visibleNavGroups.length > 0 ? visibleNavGroups.map((group, groupIndex) => (
             <div key={group.scope} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-[var(--adf-ui-separator)]' : 'mt-1'} data-settings-scope={group.scope}>
-              <div className="mb-1 truncate px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>
+              <div className="mb-1 truncate px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>
                 {group.label}
               </div>
               <div className="space-y-0.5">
@@ -2274,47 +2191,29 @@ function SettingsPageBody() {
               help={MESH_OFF_NOTE}
               error={meshSwitchError ?? undefined}
             >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  aria-label="Mesh"
-                  checked={meshEnabled}
-                  disabled={meshSwitching}
-                  onChange={(e) => void switchMesh(e.target.checked)}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{meshEnabled ? 'On' : 'Off'}</span>
-              </label>
+              <Switch label="Mesh" checked={meshEnabled} disabled={meshSwitching} onChange={(next) => void switchMesh(next)} />
             </SettingsRow>
-            <SettingsRow separator label="Start with the runtime">
-              <Switch label="Start with the runtime" checked={meshAutoStart} onChange={(next) => void persist({ meshEnabled: next }, setMeshAutoStart, next, meshAutoStart)} />
+            <SettingsRow separator label={<>Autostart<InfoHint tip="Start the mesh when the runtime starts. The Mesh switch above does not change this." /></>}>
+              <Switch label="Autostart" checked={meshAutoStart} onChange={(next) => void persist({ meshEnabled: next }, setMeshAutoStart, next, meshAutoStart)} />
             </SettingsRow>
           </SettingsGroup>
 
-          {/* Server Status */}
-          <SettingsGroup className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className={`w-2 h-2 rounded-full ${meshServerStatus.running ? 'bg-green-500' : 'bg-red-400'}`} />
-              <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                {meshServerStatus.running
-                  ? `Server running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}`
-                  : 'Server stopped'}
-              </label>
-            </div>
-            {meshServerStatus.running && (
-              <p className="text-xs text-neutral-400 dark:text-neutral-500 font-mono">
-                http://{meshServerStatus.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'}:{meshServerStatus.port}
-              </p>
-            )}
-
-            {/* The server's default endpoint: which port, and whether it binds
-                beyond loopback. The discovery lists below hang off this. */}
-            {/* Port */}
-            <label className="flex items-center gap-2 mt-3">
-              <span className="text-xs text-neutral-600 dark:text-neutral-300">Port</span>
+          {/* The server: its state, port and LAN binding; what it exposes. */}
+          <SettingsGroup title="Server">
+            <SettingsRow
+              label="Status"
+              description={meshServerStatus.running
+                ? `Running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}`
+                : 'Stopped'}
+              help={meshServerStatus.running
+                ? <span className="font-mono">http://{meshServerStatus.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'}:{meshServerStatus.port}</span>
+                : undefined}
+            >
+              <span aria-hidden="true" className={`block size-2 rounded-full ${meshServerStatus.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-danger)]'}`} />
+            </SettingsRow>
+            <SettingsRow separator label="Port" description="The server restarts when you leave the field.">
               <TextInput
-                aria-label="Mesh server port"
+                aria-label="Port"
                 type="number"
                 min={1}
                 max={65535}
@@ -2331,165 +2230,120 @@ function SettingsPageBody() {
                     await restartMeshServer()
                   }
                 }}
-                className="w-20 text-xs"
+                className="!w-24 !text-[12px]"
               />
-            </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-0">
-              Server restarts when you leave the field.
-            </p>
-            {/* LAN Access toggle */}
-            <label className="flex items-center gap-2 cursor-pointer mt-3">
-              <input
-                type="checkbox"
+            </SettingsRow>
+            <SettingsRow
+              separator
+              label={<>LAN<InfoHint tip={'Listen on private networks and Tailscale too, never on a Public network. Also on while an agent has messaging.visibility = "lan".'} /></>}
+              description={meshRestarting ? 'Restarting…' : 'Reachable from other devices on your network.'}
+              help={<LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} hostName={remote ? runtimeName : null} />}
+            >
+              <Switch
+                label="LAN"
                 checked={meshLan}
                 disabled={meshRestarting}
-                onChange={async (e) => {
-                  const lan = e.target.checked
+                onChange={async (lan) => {
                   const saved = await persist({ meshLan: lan }, setMeshLan, lan, meshLan)
                   if (saved && meshServerStatus.running) await restartMeshServer()
                 }}
-                className="rounded text-blue-500"
               />
-              <span className="text-xs text-neutral-600 dark:text-neutral-300">Allow LAN access</span>
-              {meshRestarting && (
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">restarting…</span>
-              )}
-            </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-5">
-              Listens on private networks and Tailscale too, never on a Public network. Also on when an agent has <code>messaging.visibility = "lan"</code>.
-            </p>
+            </SettingsRow>
 
             {/* LAN addresses — reachable URLs when bound to 0.0.0.0 */}
             {lanInfo.addresses.length > 0 && (
-              <div className="mt-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
-                    LAN addresses
-                  </span>
-                  {lanInfo.hostname && (
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono">
-                      {lanInfo.hostname}
-                    </span>
-                  )}
-                </div>
-                {!meshLan && (
-                  <p className="text-[10px] text-amber-600 dark:text-amber-400 mb-1">
-                    Server is bound to 127.0.0.1; turn on Allow LAN access to reach these from other devices.
-                  </p>
-                )}
+              <SettingsRow
+                separator
+                stacked
+                label="Addresses"
+                description={lanInfo.hostname ? <span className="font-mono">{lanInfo.hostname}</span> : undefined}
+                help={!meshLan ? 'The server listens on 127.0.0.1; turn on LAN to reach these from other devices.' : undefined}
+              >
                 <div className="space-y-1">
                   {lanInfo.addresses.map((addr) => {
                     const display = addr.family === 'IPv6' ? `[${addr.address}]` : addr.address
                     const url = `http://${display}:${meshServerStatus.port}`
                     return (
                       <div key={`${addr.iface}-${addr.address}`} className="flex items-center gap-2">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 font-mono truncate max-w-[140px]" title={addr.iface}>
+                        <span className="max-w-[140px] truncate rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--adf-ui-text-muted)]" title={addr.iface}>
                           {addr.iface}
                         </span>
-                        <span className="text-[10px] text-neutral-400 dark:text-neutral-500 uppercase">
-                          {addr.family}
-                        </span>
+                        <span className="text-[11px] uppercase text-[var(--adf-ui-text-subtle)]">{addr.family}</span>
                         {meshServerStatus.running && meshLan ? (
-                          <a
-                            href={url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-blue-500 hover:text-blue-700 font-mono truncate"
-                          >
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="truncate font-mono text-xs text-[var(--adf-ui-accent)] hover:underline">
                             {url}
                           </a>
                         ) : (
-                          <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono truncate">
-                            {addr.address}
-                          </span>
+                          <span className="truncate font-mono text-xs text-[var(--adf-ui-text-muted)]">{addr.address}</span>
                         )}
                         <button
                           onClick={() => navigator.clipboard?.writeText(meshServerStatus.running && meshLan ? url : addr.address)}
-                          className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 ml-auto"
+                          className="ml-auto text-[11px] text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-text)]"
                           title="Copy"
                         >
-                          copy
+                          Copy
                         </button>
                       </div>
                     )
                   })}
                 </div>
-              </div>
+              </SettingsRow>
             )}
 
-
-            {/* Verify the runtime is actually reachable (server bound + firewall open). */}
-            <LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} hostName={remote ? runtimeName : null} />
-
             {/* Agents by visibility (the LanAgentsList predicate), then the LAN ones. */}
-            <p className="mt-3 text-xs text-neutral-600 dark:text-neutral-300">{meshVisibilityLine(meshAgents)}</p>
-            <LanAgentsList agents={meshAgents} />
-
-            {/* Remote runtimes discovered via mDNS. Updates live via MESH_EVENT. */}
-            <DiscoveredRuntimesList />
-
+            <SettingsRow separator stacked label="Visibility" description={meshVisibilityLine(meshAgents)}>
+              <LanAgentsList agents={meshAgents} />
+            </SettingsRow>
           </SettingsGroup>
 
-          {/* Agent Endpoints: loopback URLs of the runtime's computer, so not with a remote runtime. */}
+          {/* Other runtimes: found on the network, the tailnet sweep, the manual list. */}
+          <DiscoveryGroup />
+
+          {/* Agent endpoints: loopback URLs of the runtime's computer, so not with a remote runtime. */}
           {meshEnabled && !remote && (
-          <SettingsGroup className="p-4">
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-3">
-              Agent Endpoints ({meshAgents.length})
-            </label>
+          <SettingsGroup title="Agent endpoints" description={`${meshAgents.length} serving.`}>
             {meshAgents.length === 0 ? (
-              <p className="text-xs text-neutral-400 dark:text-neutral-500">
+              <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">
                 No agents serving. Start agents in a tracked directory to see them here.
               </p>
             ) : (
-              <div className="space-y-2">
+              <ul className="border-t border-[var(--adf-ui-separator)]">
                 {meshAgents.map((agent) => {
                   const url = meshServerStatus.running
                     ? `http://127.0.0.1:${meshServerStatus.port}/agents/${agent.handle ?? ''}`
                     : null
                   return (
-                    <div
-                      key={agent.filePath}
-                      className="flex items-center justify-between gap-2 p-2 rounded-lg border border-neutral-100 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900/50"
-                    >
+                    <li key={agent.filePath} className="flex items-center justify-between gap-2 border-b border-[var(--adf-ui-separator)] px-4 py-2 last:border-b-0">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} icon={agent.icon} iconSeed={agent.agentId || agent.filePath} size={16} emojiSize={14} />
-                          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
-                            {agent.handle}
-                          </span>
+                          <span className="truncate text-[13px] font-medium text-[var(--adf-ui-text)]">{agent.handle}</span>
                         </div>
                         {url && (
-                          <a
-                            href={url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[10px] text-blue-500 hover:text-blue-700 font-mono truncate block"
-                          >
+                          <a href={url} target="_blank" rel="noopener noreferrer" className="block truncate font-mono text-[11px] text-[var(--adf-ui-accent)] hover:underline">
                             {url}
                           </a>
                         )}
                       </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="flex shrink-0 items-center gap-1.5">
                         {agent.publicEnabled && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                            public
-                          </span>
+                          <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-success)]">Public</span>
                         )}
                         {(agent.apiRouteCount ?? 0) > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                          <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-accent)]">
                             {agent.apiRouteCount} route{agent.apiRouteCount !== 1 ? 's' : ''}
                           </span>
                         )}
                         {(agent.sharedCount ?? 0) > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                          <span className="rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-text-muted)]">
                             {agent.sharedCount} shared
                           </span>
                         )}
                       </div>
-                    </div>
+                    </li>
                   )
                 })}
-              </div>
+              </ul>
             )}
           </SettingsGroup>
           )}
@@ -2696,23 +2550,20 @@ function ComputeTab({
 
   return (
     <div className="flex flex-col gap-5">
-    <SettingsGroup className="p-4">
-      <div className="mb-1 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
-          Managed Podman containers
-          <InfoHint tip={'ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.\n\nMCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation. Installed packages and dedicated containers persist across agent restarts.'} />
-        </h3>
-        <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-[var(--adf-ui-success)]">Recommended</span>
-      </div>
-
+    <SettingsGroup
+      title="Containers"
+      description="Podman containers that ADF sets up and manages; the recommended way to run agent code."
+      hint={'ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.\n\nMCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation. Installed packages and dedicated containers persist across agent restarts.'}
+      docs={DOCS.settingsCompute}
+    >
+      <div className="px-4 pb-4">
       {/* Container inventory */}
       <div className="mb-4">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h4 className="text-xs font-semibold text-[var(--adf-ui-text)]">Containers</h4>
-            <p className="text-[10px] text-[var(--adf-ui-text-muted)]">{containers.filter((container) => container.running).length} running · {containers.length} total</p>
+            <p className="text-[11px] text-[var(--adf-ui-text-muted)]">{containers.filter((container) => container.running).length} running · {containers.length} total</p>
             {(computeEnvStatus.leftRunning ?? []).map((kept) => (
-              <p key={kept.name} className="text-[10px] text-[var(--adf-ui-text-muted)]">{kept.name} was left running: {kept.reason}.</p>
+              <p key={kept.name} className="text-[11px] text-[var(--adf-ui-text-muted)]">{kept.name} was left running: {kept.reason}.</p>
             ))}
           </div>
           <div className="flex items-center gap-2">
@@ -2731,7 +2582,7 @@ function ComputeTab({
         </div>
 
         <div className="overflow-visible rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)]">
-          <div className="grid grid-cols-[minmax(180px,1.5fr)_105px_minmax(110px,1fr)_88px] gap-3 border-b border-[var(--adf-ui-separator)] px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">
+          <div className="grid grid-cols-[minmax(180px,1.5fr)_105px_minmax(110px,1fr)_88px] gap-3 border-b border-[var(--adf-ui-separator)] px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">
             <span>Container</span><span>Status</span><span>Assigned to</span><span className="text-right">Actions</span>
           </div>
           {containers.filter((container) => containerFilter === 'all' || (containerFilter === 'running' ? container.running : !container.running)).map((c) => {
@@ -2744,7 +2595,7 @@ function ComputeTab({
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text-muted)]"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9"/></svg></span>
                   <span className="min-w-0">
                     <span className="block truncate text-xs font-medium text-[var(--adf-ui-text)]">{c.name}</span>
-                    <span className="block truncate font-mono text-[10px] text-[var(--adf-ui-text-muted)]">{c.image || 'Image unavailable'}</span>
+                    <span className="block truncate font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{c.image || 'Image unavailable'}</span>
                   </span>
                 </button>
                 <span>
@@ -2755,10 +2606,10 @@ function ComputeTab({
                   ) : (
                     <span className="flex items-center gap-1.5 text-[11px] text-[var(--adf-ui-text)]"><span className={`size-1.5 rounded-full ${c.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-text-subtle)]'}`} />{c.running ? 'Running' : 'Stopped'}</span>
                   )}
-                  <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">{isShared ? 'Shared' : c.scope === 'legacy' ? 'Legacy' : 'Dedicated'}</span>
+                  <span className="mt-0.5 block text-[11px] text-[var(--adf-ui-text-muted)]">{isShared ? 'Shared' : c.scope === 'legacy' ? 'Legacy' : 'Dedicated'}</span>
                   {c.managed && c.outdated && (
                     <Tooltip tip={OUTDATED_CONTAINER_ADVISORY}>
-                      <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-text-muted)]">
+                      <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-text-muted)]">
                         <span className="size-1 rounded-full bg-[var(--adf-ui-text-subtle)]" aria-hidden="true" />Rebuild available
                       </span>
                     </Tooltip>
@@ -2766,7 +2617,7 @@ function ComputeTab({
                 </span>
                 <span className="min-w-0 text-[11px] text-[var(--adf-ui-text-muted)]">
                   <span className="block truncate">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
-                  {c.users && c.users.length > 0 && <span className="block truncate text-[10px]">Also used by {c.users.join(', ')}</span>}
+                  {c.users && c.users.length > 0 && <span className="block truncate text-[11px]">Also used by {c.users.join(', ')}</span>}
                 </span>
                 <div className="relative flex justify-end gap-1">
                   <Tooltip tip={failed ? 'Setup failed: rebuild to retry' : c.managed ? (c.running ? 'Stop' : 'Start') : 'Legacy container: rebuild to migrate before managing'}>
@@ -2820,10 +2671,10 @@ function ComputeTab({
       {/* Status messages — for post-setup container operations (Rebuild etc).
           During setup, the wizard shows its own status block, so avoid duplication. */}
       {ready && setupLog && (
-        <p className={`mb-3 text-[10px] font-mono ${setupLogTone(setupLog)}`}>{setupLog}</p>
+        <p className={`mb-3 text-[11px] font-mono ${setupLogTone(setupLog)}`}>{setupLog}</p>
       )}
       {ready && setupError && (
-        <p className="mb-3 text-[10px] text-red-600 dark:text-red-400 font-mono">{setupError}</p>
+        <p className="mb-3 text-[11px] text-red-600 dark:text-red-400 font-mono">{setupError}</p>
       )}
 
       {/* Setup wizard — shown when Podman needs installation or setup */}
@@ -2845,23 +2696,121 @@ function ComputeTab({
 
       {/* Podman status */}
       {ready && (
-        <p className="mb-3 text-[10px] text-green-700 dark:text-green-400">
+        <p className="text-[11px] text-[var(--adf-ui-success)]">
           Podman v{availability?.version} ready
         </p>
       )}
-
+      </div>
     </SettingsGroup>
 
-    <SettingsGroup className={`${advancedOpen ? 'order-[4] -mt-5 !rounded-none !border-y-0' : 'hidden'} p-4`}>
-      <p className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">Custom Docker/Podman containers</p>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h4 className="text-xs font-semibold text-[var(--adf-ui-text)]">User-managed execution targets</h4>
-          <p className="mt-1 text-[11px] text-[var(--adf-ui-text-muted)]">
-            Use this when an existing Docker or Podman container must remain under your control.
-            ADF executes commands but never starts, stops, provisions, rebuilds, or removes these targets.
-          </p>
-        </div>
+      {/* Container configuration: each field commits on Enter or when it loses focus. */}
+    <SettingsGroup
+      title="Default container"
+      description="Applies to new containers and rebuilds."
+      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows; on Linux, containers use this computer's resources."
+    >
+      <SettingsRow label="Image">
+        <CommitInput
+          aria-label="Image"
+          value={containerImage}
+          onCommit={(v) => setContainerImage(v.trim())}
+          check={(v) => (v.trim() ? null : 'Enter an image.')}
+          spellCheck={false}
+          className="!w-72 font-mono !text-[12px]"
+          placeholder="docker.io/library/node:20-alpine"
+        />
+      </SettingsRow>
+      <SettingsRow separator label={<>Packages<InfoHint tip="System packages, comma-separated." /></>}>
+        <CommitInput
+          aria-label="Packages"
+          value={containerPackages}
+          onCommit={setContainerPackages}
+          spellCheck={false}
+          className="!w-72 font-mono !text-[12px]"
+          placeholder="python3, python3-pip, git, curl"
+        />
+      </SettingsRow>
+      <SettingsRow separator label="CPUs">
+        <CommitInput
+          aria-label="CPUs"
+          inputMode="numeric"
+          value={String(machineCpus)}
+          onCommit={(v) => { const r = checkWholeNumber(v, 1, 16); if (r.ok) setMachineCpus(r.value) }}
+          check={(v) => { const r = checkWholeNumber(v, 1, 16); return r.ok ? null : r.error }}
+          className="!w-24 !text-[12px]"
+        />
+      </SettingsRow>
+      <SettingsRow separator label={<>Memory<InfoHint tip="In megabytes." /></>}>
+        <CommitInput
+          aria-label="Memory"
+          inputMode="numeric"
+          value={String(machineMemoryMb)}
+          onCommit={(v) => { const r = checkWholeNumber(v, 512, 32768); if (r.ok) setMachineMemoryMb(r.value) }}
+          check={(v) => { const r = checkWholeNumber(v, 512, 32768); return r.ok ? null : r.error }}
+          className="!w-24 !text-[12px]"
+        />
+      </SettingsRow>
+    </SettingsGroup>
+
+    <SettingsGroup className="overflow-hidden">
+      <button
+        type="button"
+        aria-expanded={advancedOpen}
+        onClick={() => setAdvancedOpen((open) => !open)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+      >
+        <span>
+          <span className="block text-[13px] font-semibold text-[var(--adf-ui-text)]">Advanced</span>
+          <span className="mt-0.5 block text-[12px] text-[var(--adf-ui-text-muted)]">Host access and custom Docker or Podman containers.</span>
+        </span>
+        <span className="flex items-center gap-2 text-[11px] text-[var(--adf-ui-text-muted)]">
+          {executionTargets.length > 0 || computeHostAccessEnabled ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0)} configured` : 'Configure'}
+          <svg className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </span>
+      </button>
+    </SettingsGroup>
+
+    {advancedOpen && <>
+    {/* Host access: the runtime-wide switch and the servers approved to run on the host. */}
+    <SettingsGroup title="Host">
+      <SettingsRow
+        label={<>Host access<InfoHint tip="An agent also needs its own compute.host_access, or an approved MCP server, before anything runs on the host." /></>}
+        description="Host execution bypasses container isolation."
+      >
+        <Switch label="Host access" checked={computeHostAccessEnabled} onChange={(next) => void switchHostAccess(next)} />
+      </SettingsRow>
+      {computeHostAccessEnabled && (
+        <SettingsRow
+          separator
+          stacked
+          label={<>Approved servers<InfoHint tip="MCP servers allowed to run on the host for agents without host access. A server chosen to run on the host in Settings → MCP servers is added here." /></>}
+        >
+          {computeHostApproved.length === 0 ? (
+            <p className="text-[12px] text-[var(--adf-ui-text-subtle)]">None.</p>
+          ) : (
+            <ul className="space-y-1">
+              {computeHostApproved.map((name) => (
+                <li key={name} className="flex items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] px-2 py-1">
+                  <span className="font-mono text-[12px] text-[var(--adf-ui-text)]">{name}</span>
+                  <Button onClick={() => void confirmRevoke(name)} variant="danger" size="compact">
+                    Revoke
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </SettingsRow>
+      )}
+    </SettingsGroup>
+
+    {/* Containers you manage: ADF only runs commands in them. */}
+    <SettingsGroup
+      title="Custom containers"
+      description="Docker or Podman containers you keep under your own control."
+      hint="ADF runs commands in these and never starts, stops, provisions, rebuilds or removes them."
+    >
+      <div className="px-4 pb-4">
+      <div className="flex items-start justify-end gap-3">
         <Button size="compact" onClick={() => { setShowTargetForm((value) => !value); setTargetMessage(null) }}>
           {showTargetForm ? 'Cancel' : 'Add target'}
         </Button>
@@ -2877,9 +2826,9 @@ function ComputeTab({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-xs font-medium text-[var(--adf-ui-text)]">{target.name}</span>
-                  <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-accent)]">{target.engine}</span>
+                  <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-accent)]">{target.engine}</span>
                 </div>
-                <p className="truncate font-mono text-[10px] text-[var(--adf-ui-text-muted)]">{alias} · {target.containerRef} · {target.workdir}</p>
+                <p className="truncate font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{alias} · {target.containerRef} · {target.workdir}</p>
               </div>
               <Button
                 size="compact"
@@ -2930,7 +2879,7 @@ function ComputeTab({
           </div>
           <label className="mt-3 flex items-center gap-2 text-[11px] text-[var(--adf-ui-text-muted)]">
             <input type="checkbox" checked={targetDraft.pinId} onChange={(event) => setTargetDraft((draft) => ({ ...draft, pinId: event.target.checked }))} />
-            Pin the exact container ID instead of following this name when it is recreated
+            Pin this container ID; do not follow the name when the container is recreated
           </label>
           {targetMessage && (
             <p className={`mt-2 text-[11px] ${targetMessage.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-success)]'}`}>{targetMessage.text}</p>
@@ -2973,122 +2922,9 @@ function ComputeTab({
           </div>
         </div>
       )}
-    </SettingsGroup>
-
-      {/* Container configuration: each field commits on Enter or when it loses focus. */}
-    <SettingsGroup
-      className="order-[2]"
-      title="Default container"
-      description="Applies to new containers and rebuilds."
-      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows; on Linux, containers use this computer's resources."
-    >
-      <SettingsRow label="Image">
-        <CommitInput
-          aria-label="Image"
-          value={containerImage}
-          onCommit={(v) => setContainerImage(v.trim())}
-          check={(v) => (v.trim() ? null : 'Enter an image.')}
-          spellCheck={false}
-          className="!w-72 font-mono !text-[12px]"
-          placeholder="docker.io/library/node:20-alpine"
-        />
-      </SettingsRow>
-      <SettingsRow separator label={<>Packages<InfoHint tip="System packages, comma-separated." /></>}>
-        <CommitInput
-          aria-label="Packages"
-          value={containerPackages}
-          onCommit={setContainerPackages}
-          spellCheck={false}
-          className="!w-72 font-mono !text-[12px]"
-          placeholder="python3, python3-pip, git, curl"
-        />
-      </SettingsRow>
-      <SettingsRow separator label="CPUs">
-        <CommitInput
-          aria-label="CPUs"
-          inputMode="numeric"
-          value={String(machineCpus)}
-          onCommit={(v) => { const r = checkWholeNumber(v, 1, 16); if (r.ok) setMachineCpus(r.value) }}
-          check={(v) => { const r = checkWholeNumber(v, 1, 16); return r.ok ? null : r.error }}
-          className="!w-24 !text-[12px]"
-        />
-      </SettingsRow>
-      <SettingsRow separator label={<>Memory<InfoHint tip="In megabytes." /></>}>
-        <CommitInput
-          aria-label="Memory"
-          inputMode="numeric"
-          value={String(machineMemoryMb)}
-          onCommit={(v) => { const r = checkWholeNumber(v, 512, 32768); if (r.ok) setMachineMemoryMb(r.value) }}
-          check={(v) => { const r = checkWholeNumber(v, 512, 32768); return r.ok ? null : r.error }}
-          className="!w-24 !text-[12px]"
-        />
-      </SettingsRow>
-    </SettingsGroup>
-
-    <SettingsGroup className={`order-[3] overflow-hidden p-0 ${advancedOpen ? '!rounded-b-none' : ''}`}>
-      <button
-        type="button"
-        aria-expanded={advancedOpen}
-        onClick={() => setAdvancedOpen((open) => !open)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-      >
-        <span>
-          <span className="block text-xs font-semibold text-[var(--adf-ui-text)]">Advanced</span>
-          <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">Host access and custom Docker/Podman containers</span>
-        </span>
-        <span className="flex items-center gap-2 text-[10px] text-[var(--adf-ui-text-muted)]">
-          {executionTargets.length > 0 || computeHostAccessEnabled ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0)} configured` : 'Configure'}
-          <svg className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </span>
-      </button>
-    </SettingsGroup>
-
-      {/* Host access toggle */}
-    <SettingsGroup className={`${advancedOpen ? 'order-[5] -mt-5 !rounded-t-none !border-t-[var(--adf-ui-separator)]' : 'hidden'} p-4`}>
-      <p className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">Host</p>
-      <div>
-        <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={computeHostAccessEnabled}
-            onChange={(e) => void switchHostAccess(e.target.checked)}
-            className="rounded text-blue-500"
-          />
-          <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Enable host access</span>
-        </label>
-        <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1 ml-5">
-          Host execution bypasses container isolation. The global switch and per-agent authorization must both be enabled.
-        </p>
       </div>
-
-      {/* Approved servers list */}
-      {computeHostAccessEnabled && (
-        <div className="mt-3 border-t border-neutral-200 dark:border-neutral-700 pt-3">
-          <h4 className="text-xs font-medium text-neutral-600 dark:text-neutral-400 mb-2">Approved Host Servers</h4>
-          {computeHostApproved.length === 0 ? (
-            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 italic">
-              No servers approved for host access. Servers requesting host access will appear here when agents use them.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {computeHostApproved.map((name) => (
-                <div key={name} className="flex items-center justify-between py-1 px-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
-                  <span className="text-xs text-neutral-700 dark:text-neutral-300 font-mono">{name}</span>
-                  <Button
-                    onClick={() => void confirmRevoke(name)}
-                    variant="danger"
-                    size="compact"
-                    className="text-[10px]"
-                  >
-                    Revoke
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </SettingsGroup>
+    </>}
 
       {/* Container detail modal */}
       {selectedContainer && (() => {
@@ -3115,7 +2951,7 @@ function ComputeTab({
 type StepStatus = 'done' | 'pending' | 'blocked' | 'in_progress' | 'failed'
 
 function StatusBadge({ status, index }: { status: StepStatus; index: number }) {
-  const base = 'w-4 h-4 shrink-0 rounded-full text-[10px] flex items-center justify-center font-semibold'
+  const base = 'w-4 h-4 shrink-0 rounded-full text-[11px] flex items-center justify-center font-semibold'
   if (status === 'done') return <span className={`${base} bg-green-500 text-white`}>{'\u2713'}</span>
   if (status === 'failed') return <span className={`${base} bg-red-500 text-white`}>{'\u00d7'}</span>
   if (status === 'in_progress')
@@ -3182,19 +3018,19 @@ function SetupWizard({
   return (
     <div className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] p-3">
       <div className="flex items-center justify-between mb-2">
-        <h4 className="text-xs font-semibold text-amber-800 dark:text-amber-300">Setup Required</h4>
+        <h4 className="text-xs font-semibold text-amber-800 dark:text-amber-300">Setup required</h4>
         <Button
           onClick={onRefresh}
           variant="ghost"
           size="compact"
-          className="text-[10px] text-[var(--adf-ui-warning)]"
+          className="text-[11px] text-[var(--adf-ui-warning)]"
           disabled={setupBusy}
           title="Re-check the environment (use after installing WSL + reboot, etc.)"
         >
           Re-check
         </Button>
       </div>
-      <p className="text-[10px] text-amber-700 dark:text-amber-400 mb-3">
+      <p className="text-[11px] text-amber-700 dark:text-amber-400 mb-3">
         The compute environment runs MCP servers and agent code inside containers.
         {availability.machineRequired && ' On macOS/Windows, a lightweight Linux VM is also required.'}
       </p>
@@ -3243,11 +3079,11 @@ function SetupWizard({
 
       {/* Status / error */}
       {setupLog && (
-        <p className={`mt-2 text-[10px] font-mono ${setupLogTone(setupLog)}`}>{setupLog}</p>
+        <p className={`mt-2 text-[11px] font-mono ${setupLogTone(setupLog)}`}>{setupLog}</p>
       )}
       {setupError && (
         <div className="mt-2 p-2 rounded bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
-          <p className="text-[10px] text-red-700 dark:text-red-400 font-mono break-words">{setupError}</p>
+          <p className="text-[11px] text-red-700 dark:text-red-400 font-mono break-words">{setupError}</p>
         </div>
       )}
     </div>
@@ -3274,13 +3110,13 @@ function PrerequisiteRow({
         </span>
         {status !== 'done' && prereq.installCommand && (
           <div className="flex items-center gap-1">
-            <code className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
+            <code className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
               {prereq.installCommand}
             </code>
             <Button
               onClick={() => onCopy(prereq.installCommand!)}
               size="compact"
-              className="text-[10px]"
+              className="text-[11px]"
             >
               Copy
             </Button>
@@ -3288,7 +3124,7 @@ function PrerequisiteRow({
         )}
       </div>
       {status !== 'done' && (
-        <div className="ml-6 text-[10px] text-amber-700 dark:text-amber-400 space-y-0.5">
+        <div className="ml-6 text-[11px] text-amber-700 dark:text-amber-400 space-y-0.5">
           {prereq.description && <p>{prereq.description}</p>}
           {prereq.requiresReboot && (
             <p className="font-semibold">Reboot required after installation, then click Re-check above.</p>
@@ -3346,7 +3182,7 @@ function PodmanStep({
             loading={setupBusy}
             variant="primary"
             size="compact"
-            className="text-[10px]"
+            className="text-[11px]"
           >
             {setupBusy ? 'Installing...' : autoMethod.label}
           </Button>
@@ -3356,25 +3192,25 @@ function PodmanStep({
         <div className="ml-6 space-y-1">
           {manualMethods.map((m) => m.url ? (
             <div key={m.url} className="flex items-center gap-1">
-              <span className="text-[10px] text-neutral-600 dark:text-neutral-400">{m.label}</span>
+              <span className="text-[11px] text-neutral-600 dark:text-neutral-400">{m.label}</span>
               <Button
                 // main routes window.open to the OS browser (setWindowOpenHandler)
                 onClick={() => window.open(m.url, '_blank', 'noopener,noreferrer')}
                 size="compact"
-                className="text-[10px]"
+                className="text-[11px]"
               >
                 Open
               </Button>
             </div>
           ) : (
             <div key={m.command} className="flex items-center gap-1">
-              <code className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
+              <code className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
                 {m.command}
               </code>
               <Button
                 onClick={() => onCopy(m.command)}
                 size="compact"
-                className="text-[10px]"
+                className="text-[11px]"
               >
                 Copy
               </Button>
@@ -3383,7 +3219,7 @@ function PodmanStep({
         </div>
       )}
       {status === 'blocked' && (
-        <p className="ml-6 text-[10px] text-neutral-500 dark:text-neutral-400">
+        <p className="ml-6 text-[11px] text-neutral-500 dark:text-neutral-400">
           Complete the prerequisite above first.
         </p>
       )}
@@ -3415,7 +3251,7 @@ function MachineInitStep({
           loading={setupBusy}
           variant="primary"
           size="compact"
-          className="text-[10px]"
+          className="text-[11px]"
         >
           {setupBusy ? 'Initializing...' : 'Initialize'}
         </Button>
@@ -3448,7 +3284,7 @@ function MachineStartStep({
           loading={setupBusy}
           variant="primary"
           size="compact"
-          className="text-[10px]"
+          className="text-[11px]"
         >
           {setupBusy ? 'Starting...' : 'Start'}
         </Button>
@@ -3511,8 +3347,8 @@ function ContainerDetailPanel({ container, onClose }: { container: ContainerSumm
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="truncate text-base font-semibold text-[var(--adf-ui-text)]">{container.name}</h3>
-                <span className={`rounded px-1.5 py-0.5 text-[10px] ${container.running ? 'bg-[var(--adf-ui-success-subtle)] text-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text-muted)]'}`}>{container.running ? 'Running' : 'Stopped'}</span>
-                <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-accent)]">{container.scope === 'dedicated' ? 'Dedicated' : container.scope === 'legacy' ? 'Legacy' : 'Shared'}</span>
+                <span className={`rounded px-1.5 py-0.5 text-[11px] ${container.running ? 'bg-[var(--adf-ui-success-subtle)] text-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text-muted)]'}`}>{container.running ? 'Running' : 'Stopped'}</span>
+                <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-accent)]">{container.scope === 'dedicated' ? 'Dedicated' : container.scope === 'legacy' ? 'Legacy' : 'Shared'}</span>
               </div>
               <p className="truncate font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{overview?.image || container.image}</p>
             </div>
@@ -3574,7 +3410,7 @@ function ContainerDetailPanel({ container, onClose }: { container: ContainerSumm
                   <div key={`${e.timestamp}-${i}`} className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] p-3">
                     <div className="mb-1 flex items-center gap-2">
                       <span className={`size-1.5 rounded-full ${e.exitCode === 0 ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-danger)]'}`} />
-                      <span className="font-mono text-[10px] text-[var(--adf-ui-text-muted)]">{new Date(e.timestamp).toLocaleTimeString()} · {e.durationMs}ms{e.exitCode !== 0 ? ` · exit ${e.exitCode}` : ''}</span>
+                      <span className="font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{new Date(e.timestamp).toLocaleTimeString()} · {e.durationMs}ms{e.exitCode !== 0 ? ` · exit ${e.exitCode}` : ''}</span>
                     </div>
                     <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-[var(--adf-ui-text)]">$ {e.command}</pre>
                     {e.stdout && <pre className="mt-2 whitespace-pre-wrap border-l border-[var(--adf-ui-border)] pl-2 font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{e.stdout}</pre>}

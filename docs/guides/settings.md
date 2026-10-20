@@ -42,7 +42,7 @@ The first-party skill catalog is a default entry in **Settings → Skills**, fet
 
 The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#the-three-identities) for the full model.
 
-### Owner Identity
+### Owner identity
 
 Your user identity as a `did:key` DID, derived from a 12-word seed phrase generated on first launch:
 
@@ -60,7 +60,7 @@ This computer's runtime DID. It identifies this computer to other computers; two
 - A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
 - The **agent directory URL** (`http://<host>:<port>/agents`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
 
-### Agent Identities
+### Agent identities
 
 Per-agent DIDs and keystores are managed separately in the **Agent panel → Identity** tab; attestation publishing is toggled per agent in **Config → Security**.
 
@@ -363,7 +363,7 @@ The **Web** tab shows the status of the mesh HTTP server and all agents currentl
 
 ![Settings → Networking showing the Mesh startup card with a Disable button, the mesh server running on loopback with its port, the Allow LAN access checkbox, per-interface LAN addresses with copy links, and the Discovered runtimes list with a recheck button and the Discover peers over Tailscale option.](../assets/screenshots/settings-networking.png)
 
-The tab has, in this order: the network status line, **Mesh** (the controls below) and **Remote access**.
+The tab has, in this order: the network status line, **Mesh**, **Server** (status, **Port**, **LAN**, addresses, agent visibility), **Discovery** (runtimes found, **Tailscale**, manual **Peers**), **Agent endpoints** and **Remote access**.
 
 ### Network status
 
@@ -378,11 +378,11 @@ One line at the top of the tab: the networks, the LAN address, Tailscale, and th
 
 ### Mesh
 
-The **Mesh** switch turns the mesh and its server on or off now. Turning it off stops agent-to-agent messaging, agent websites and `serving.api` routes, and peer runtimes' delivery until it is on again. **Start with the runtime** decides whether the mesh starts when the runtime starts (`meshEnabled`); the switch does not change it. **Kill** in the status bar also turns the mesh off. The switch, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
+The **Mesh** switch turns the mesh and its server on or off now. Turning it off stops agent-to-agent messaging, agent websites and `serving.api` routes, and peer runtimes' delivery until it is on again. **Autostart** decides whether the mesh starts when the runtime starts (`meshEnabled`); the Mesh switch does not change it. **Kill** in the status bar also turns the mesh off. The switch, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
 
 ### LAN Access
 
-Toggle **Allow LAN access** to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It listens only on networks you allowed (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
+Turn on **LAN** (Networking → Server) to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It listens only on networks you allowed (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
 
 A server restart is required after changing this setting. The `MESH_HOST` environment variable overrides this setting.
 

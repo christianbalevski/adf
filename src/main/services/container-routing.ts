@@ -104,7 +104,7 @@ export function hostDenialReason(
   if (effectiveRunLocation(serverConfig) !== 'host') return null
   if (!shouldContainerize(serverName, serverConfig, agentConfig, settings)) return null
   if (!settings.hostAccessEnabled) {
-    return 'host access is disabled app-wide — your principal must turn on "Enable host access" in ADF Studio → Settings → Compute, then call mcp_restart to reconnect on the host'
+    return 'host access is disabled app-wide — your principal must turn on "Host access" in ADF Studio → Settings → Compute, then call mcp_restart to reconnect on the host'
   }
   const recorded = settings.hostApprovedSources?.[serverName]
   if (settings.hostApproved.includes(serverName) && recorded) {

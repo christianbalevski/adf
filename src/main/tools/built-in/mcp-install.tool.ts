@@ -40,7 +40,7 @@ const InputSchema = z.object({
   url: z.string().url().optional().describe('Streamable HTTP MCP URL. Required when type=http.'),
   name: z.string().optional().describe('Server name. Auto-derived from package if not provided. Required for custom type.'),
   args: z.array(z.string()).optional().describe('Command arguments (mainly for custom type)'),
-  host: z.boolean().optional().describe('Run on host instead of container. Default false. Requires agent compute.host_access AND the app-wide "Enable host access" toggle (ADF Studio → Settings → Compute).'),
+  host: z.boolean().optional().describe('Run on host instead of container. Default false. Requires agent compute.host_access AND the app-wide "Host access" switch (ADF Studio → Settings → Compute).'),
   env_keys: z.array(z.string()).optional().describe('Environment variable names the server needs (e.g. ["GITHUB_PERSONAL_ACCESS_TOKEN"])'),
   env: z.record(z.string()).optional().describe('Credential values to store in agent identity (e.g. { "API_KEY": "sk-..." }). Stored as mcp:<name>:<key>. Values reach the server process VERBATIM — ~ is NOT expanded inside env values (unlike credential_files paths). When a value is a file path that must match a credential_files entry, declare BOTH as the same absolute runtime path.'),
   headers: z.record(z.string()).optional().describe('Static HTTP headers for type=http. Do not include secret values unless they should be stored in agent config.'),
@@ -283,7 +283,7 @@ export class McpInstallTool implements Tool {
         error: 'Host access not enabled for this agent (compute.host_access is false). ' +
           'Options: (a) install without host=true — the server runs in the compute container instead; ' +
           '(b) grant yourself host access via sys_update_config by setting compute.host_access to true (your principal will see an approval prompt). ' +
-          'Host execution additionally requires the app-wide "Enable host access" toggle in ADF Studio → Settings → Compute, which only your principal can turn on. ' +
+          'Host execution additionally requires the app-wide "Host access" switch in ADF Studio → Settings → Compute, which only your principal can turn on. ' +
           `Compute guide: ${DOCS_GUIDES_URL}/compute.md`,
       }), isError: true }
     }

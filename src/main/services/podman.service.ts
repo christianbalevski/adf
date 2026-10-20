@@ -1034,7 +1034,7 @@ export class PodmanService extends EventEmitter {
         'Podman is not installed (or not on PATH). Containers need Podman: your principal can install it ' +
         'from https://podman.io/docs/installation (macOS: `brew install podman`), then start the compute ' +
         'environment in ADF Studio → Settings → Compute. Container-free alternatives: HTTP-transport MCP ' +
-        'servers, or host execution (agent compute.host_access plus the Studio "Enable host access" toggle).',
+        'servers, or host execution (agent compute.host_access plus the Studio "Host access" switch).',
       )
     }
 

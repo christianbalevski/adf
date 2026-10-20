@@ -750,7 +750,7 @@ token, or your Allow during a pairing window, to do anything.
 | Firewall | Blocked: the sentence under the line says how to allow ADF Studio |
 
 **Allowed networks** lists every network you allowed. **Remove** closes its
-listeners at once. When remote access or **Allow LAN access** is on and you
+listeners at once. When remote access or **LAN** (Networking → Server) is on and you
 join a network you have not allowed, a strip under the title bar says
 "Remote access paused on *network*." with **Allow on this network** and
 **Not now**. It does not block the window, and it shows once per network

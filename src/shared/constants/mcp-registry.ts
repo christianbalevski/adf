@@ -113,7 +113,7 @@ export interface McpRegistryEntry {
    *    entries stay on the host. (mcp-settings-modal.test.ts enforces this.)
    *
    * A `'host'` entry still passes through both host gates at routing time
-   * (app-wide "Enable host access" + agent `compute.host_access` or the
+   * (app-wide "Host access" + agent `compute.host_access` or the
    * approved-name list); it is a *request*, never a grant. `'shared'` is
    * accepted for completeness but should not be needed — it PINS the server
    * to the shared container, overriding an agent's own isolated container.
