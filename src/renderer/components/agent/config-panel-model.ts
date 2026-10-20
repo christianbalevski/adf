@@ -14,6 +14,7 @@ import type { AgentConfig, McpServerStatus, ToolDeclaration, TriggersConfigV3 } 
 
 export type PermissionKind = 'approval' | 'locked' | 'restricted' | 'visible'
 
+/** Owner-chosen label for the approval gate (kept as given). */
 export const PERMISSION_LABELS: Record<PermissionKind, string> = {
   approval: 'Needs approval',
   locked: 'Locked',
@@ -44,27 +45,39 @@ export function tableProtectionLabel(level: string): string {
 // Tool groups switched off by something outside the Tools section.
 // ---------------------------------------------------------------------------
 
-export interface ToolGroupGate {
-  /** Shown inline under the group header. */
-  text: string
-  /** Config section title the jump link opens (pendingConfigSection). */
+/**
+ * Tools the executor drops while Receive messages is off (agent-executor.ts
+ * MSG_TOOLS). They stay in the list, shown as stored and not editable.
+ */
+export const RECEIVE_GATED_TOOLS: ReadonlySet<string> = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
+
+export interface ToolRowGate {
+  /** Tooltip on the row's warning icon: one short phrase. */
+  tip: string
+  /** Config section title the icon jumps to (pendingConfigSection). */
   section: string
 }
 
 /**
- * A tool group whose rows are set from another section. Only Inbox: its
- * tools follow the Messaging section's Inbox mode switch, which rewrites
- * their flags. Messaging (msg_send, agent_discover) is never gated here: the
- * On inbox message trigger only decides whether the agent wakes on a message,
- * and an agent that sends but never wakes on its inbox is a valid setup
- * (owner decision).
+ * A tool row set from another section: shown as stored, not editable here.
+ * Receive messages off drops the messaging tools at runtime; the Inbox group
+ * follows the Messaging section's Inbox mode switch, which rewrites its flags.
+ * The On inbox message trigger never gates anything here: it only decides
+ * whether the agent wakes on a message, and an agent that sends but never
+ * wakes on its inbox is a valid setup (owner decision).
  */
-export function toolGroupGate(groupLabel: string, config: Pick<AgentConfig, 'messaging'>): ToolGroupGate | null {
+export function toolRowGate(toolName: string, groupLabel: string, config: Pick<AgentConfig, 'messaging'>): ToolRowGate | null {
+  if (RECEIVE_GATED_TOOLS.has(toolName) && config.messaging?.receive !== true) {
+    return { tip: 'Off: Receive messages is off', section: 'Messaging' }
+  }
   if (groupLabel === 'Inbox' && config.messaging?.inbox_mode !== true) {
-    return { text: 'Needs Inbox mode', section: 'Messaging' }
+    return { tip: 'Set by Inbox mode', section: 'Messaging' }
   }
   return null
 }
+
+/** Tooltip for `ask` while the agent is autonomous. */
+export const ASK_AUTONOMOUS_TIP = 'Autonomous: ask pauses the agent for your input'
 
 // ---------------------------------------------------------------------------
 // Tool filter.
@@ -108,7 +121,7 @@ export function mcpStatusView(status: McpServerStatus | undefined): { label: str
     case 'connected': return { label: 'Connected', tone: 'ok' }
     case 'connecting': return { label: 'Connecting', tone: 'pending' }
     case 'installing': return { label: 'Installing', tone: 'pending' }
-    case 'needs_sign_in': return { label: 'Sign-in needed', tone: 'pending' }
+    case 'needs_sign_in': return { label: 'Sign-in', tone: 'pending' }
     case 'error': return { label: 'Failed', tone: 'failed' }
     case 'stopped': return { label: 'Stopped', tone: 'idle' }
     default: return null

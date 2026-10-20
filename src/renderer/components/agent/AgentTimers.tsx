@@ -169,7 +169,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
   const [cronEndAt, setCronEndAt] = useState('')
 
   // scope
-  const [scope, setScope] = useState<'system' | 'agent'>('system')
+  const [scope, setScope] = useState<'system' | 'agent'>('agent')
 
   // lambda, warm & payload
   const [lambda, setLambda] = useState('')
@@ -196,7 +196,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
     setCron('0 9 * * 1-5')
     setCronMaxRuns('')
     setCronEndAt('')
-    setScope('system')
+    setScope('agent')
     setLambda('')
     setWarm(false)
     setPayload('')

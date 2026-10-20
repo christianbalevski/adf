@@ -23,11 +23,11 @@ import { classifyConfigSave } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice } from '../editor/ChangedElsewhereNotice'
 import { McpServerLogs } from '../mcp/McpServerLogs'
 import {
-  PERMISSION_TIPS, RESTRICTED_MIDDLEWARE_TIP, RESTRICTED_TABLE_TIP, tableProtectionLabel, toolGroupGate, toolMatchesFilter,
+  PERMISSION_TIPS, RESTRICTED_MIDDLEWARE_TIP, RESTRICTED_TABLE_TIP, tableProtectionLabel, toolRowGate, toolMatchesFilter, ASK_AUTONOMOUS_TIP,
   approvalRemoved, restoreApproval, approvalRemovedMessage, saveFailureReason, type ConfigSaveStatus,
 } from './config-panel-model'
 import {
-  ApprovalIcon, ShieldIcon, LockIcon, EyeIcon, PERMISSION_ON_CLASS, PermissionLegend, LockBadge, GateNote, McpStatusChip, SaveStatusLine, UndoToast,
+  ApprovalIcon, ShieldIcon, LockIcon, EyeIcon, PERMISSION_ON_CLASS, PermissionLegend, LockBadge, RowWarning, McpStatusChip, SaveStatusLine, UndoToast,
 } from './config-panel-parts'
 
 /**
@@ -111,8 +111,8 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_send', 'loop_list', 'loop_manage']) },
   { label: 'WebSocket', tools: new Set(['ws_connect', 'ws_disconnect', 'ws_connections', 'ws_send']) },
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
+  // Messaging and Inbox rows may be set from the Messaging section: see toolRowGate.
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']) },
-  // Inbox follows the Messaging section's Inbox mode: see toolGroupGate.
   { label: 'Inbox', tools: new Set(['msg_list', 'msg_read', 'msg_update', 'msg_delete']) },
   // Note: chat_info is intentionally not grouped here — it's a sandbox-only
   // capability (hidden from the LLM schema) rendered in the Code Execution section.
@@ -2092,7 +2092,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             type="search"
             value={toolFilter}
             onChange={(e) => setToolFilter(e.target.value)}
-            placeholder="Filter tools"
+            placeholder="Filter"
             aria-label="Filter tools"
             className="field-input mb-1 text-xs"
           />
@@ -2102,25 +2102,25 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 .map((group) => ({ group, tools: local.tools.filter((t) => group.tools.has(t.name) && toolMatchesFilter(t.name, group.label, toolFilter)) }))
                 .filter(({ tools }) => tools.length > 0)
               if (shownGroups.length === 0) {
-                return <p className="text-[10px] text-neutral-400 dark:text-neutral-500">No tools match.</p>
+                return <p className="text-[10px] text-neutral-400 dark:text-neutral-500">No matches</p>
               }
               return shownGroups.map(({ group, tools: groupTools }, gi) => {
               // Bulk toggles act on the rows shown (the filter narrows them).
               const shown = new Set(groupTools.map((t) => t.name))
 
-              // A group set from another section shows its stored values and
-              // names that switch; its rows are edited there.
+              // Rows set from another section show their stored values, are
+              // not editable here, and say why on a warning icon.
               const isTurn = group.label === 'Turn'
-              const gate = toolGroupGate(group.label, local)
-              const groupDisabled = gate !== null
+              const gateOf = (name: string) => toolRowGate(name, group.label, local)
+              const jumpTo = (section: string) => (template ? undefined : () => useAppStore.getState().setPendingConfigSection(section))
 
-              // Section-level tristate computation (excluding locked tools)
-              const eligibleTools = groupTools.filter(t => !(t.locked ?? false))
+              // Section-level tristate computation (excluding locked and gated tools)
+              const eligibleTools = groupTools.filter(t => !(t.locked ?? false) && !gateOf(t.name))
               const eligibleEnabled = eligibleTools.filter(t => t.enabled)
               const enabledState = computeTriState(eligibleTools, t => t.enabled)
               const visibleState = computeTriState(eligibleEnabled, t => !!t.visible)
               const restrictedState = computeTriState(eligibleTools, t => !!t.restricted)
-              const sectionDisabled = groupDisabled || eligibleTools.length === 0
+              const sectionDisabled = eligibleTools.length === 0
               const visibleSectionDisabled = sectionDisabled || eligibleEnabled.length === 0
               const showSectionRestricted = !isTurn
 
@@ -2129,7 +2129,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 const target = enabledState !== 'all'
                 const tools = local.tools.map(t => {
                   if (!shown.has(t.name)) return t
-                  if (t.locked) return t
+                  if (t.locked || gateOf(t.name)) return t
                   return { ...t, enabled: target, visible: target ? true : t.visible }
                 })
                 saveBulkTools(tools)
@@ -2139,7 +2139,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 const target = visibleState !== 'all'
                 const tools = local.tools.map(t => {
                   if (!shown.has(t.name)) return t
-                  if (t.locked) return t
+                  if (t.locked || gateOf(t.name)) return t
                   if (!t.enabled) return t
                   return { ...t, visible: target }
                 })
@@ -2150,7 +2150,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 const target = restrictedState !== 'all'
                 const tools = local.tools.map(t => {
                   if (!shown.has(t.name)) return t
-                  if (t.locked) return t
+                  if (t.locked || gateOf(t.name)) return t
                   return { ...t, restricted: target || undefined }
                 })
                 saveBulkTools(tools)
@@ -2214,30 +2214,38 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       />
                     </span>
                   </div>
-                  {gate && (
-                    <GateNote text={gate.text} section={gate.section} onJump={template ? undefined : () => useAppStore.getState().setPendingConfigSection(gate.section)} />
-                  )}
                   {groupTools.map((tool) => {
                     const i = local.tools.findIndex((t) => t.name === tool.name)
                     const showRestricted = !isTurn
                     const isRestricted = tool.restricted ?? false
                     const isLocked = tool.locked ?? false
+                    const gate = gateOf(tool.name)
+                    const groupDisabled = gate !== null
+                    const warning = gate
+                      ? <RowWarning tip={gate.tip} onJump={jumpTo(gate.section)} />
+                      : tool.name === 'ask' && tool.enabled && local.autonomous
+                        ? <RowWarning tip={ASK_AUTONOMOUS_TIP} />
+                        : null
 
                     return (
                       <div key={tool.name}>
                         <div
                           className={`group flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isLocked ? 'bg-amber-50/60 dark:bg-amber-900/10 border-l-2 border-amber-400 dark:border-amber-600' : isRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'} ${groupDisabled ? 'cursor-not-allowed' : ''}`}
                         >
-                          <span
-                            className={`font-mono cursor-pointer hover:underline truncate ${groupDisabled ? 'text-neutral-400 dark:text-neutral-500 hover:text-blue-400' : 'text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400'}`}
-                            onClick={() => setViewingTool(tool.name)}
-                          >
-                            {tool.name}
+                          <span className="flex min-w-0 items-center gap-1">
+                            <span
+                              className={`font-mono cursor-pointer hover:underline truncate ${groupDisabled ? 'text-neutral-400 dark:text-neutral-500 hover:text-blue-400' : 'text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400'}`}
+                              onClick={() => setViewingTool(tool.name)}
+                            >
+                              {tool.name}
+                            </span>
+                            {warning}
                           </span>
                           <span className="flex items-center gap-3 shrink-0">
                             {/* Per-tool lock: visible when locked or on row hover */}
                             <button
                               type="button"
+                              disabled={groupDisabled}
                               aria-pressed={isLocked}
                               aria-label={isLocked ? 'Locked' : 'Lock'}
                               className={`transition-colors ${isLocked ? PERMISSION_ON_CLASS.locked : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-neutral-300 dark:text-neutral-600 hover:!text-neutral-400 dark:hover:!text-neutral-500'}`}
@@ -2253,9 +2261,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             {showRestricted ? (
                               <button
                                 type="button"
+                                disabled={groupDisabled}
                                 aria-pressed={isRestricted}
                                 aria-label="Needs approval"
-                                className={`flex items-center justify-center rounded transition-colors ${isRestricted ? PERMISSION_ON_CLASS.approval : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                                className={`flex items-center justify-center rounded transition-colors disabled:cursor-not-allowed ${isRestricted ? PERMISSION_ON_CLASS.approval : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
                                 title={PERMISSION_TIPS.approval}
                                 onClick={() => {
                                   const tools = [...local.tools]
@@ -2291,11 +2300,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             />
                           </span>
                         </div>
-                        {tool.name === 'ask' && tool.enabled && local.autonomous && (
-                          <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-1">
-                            Enabling ask in autonomous mode allows the agent to pause and request human input when critically blocked.
-                          </p>
-                        )}
                       </div>
                     )
                   })}
@@ -3073,7 +3077,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         </span>
                       </div>
                       {!template && liveFailed && live?.error && (
-                        <p className="text-[10px] text-red-500 dark:text-red-400 break-words" role="alert">Last error: {live.error}</p>
+                        <p className="text-[10px] text-red-500 dark:text-red-400 break-words" role="alert">Error: {live.error}</p>
                       )}
                       {!template && live?.status === 'needs_sign_in' && live.error && (
                         <p className="text-[10px] text-amber-700 dark:text-amber-400 break-words">{live.error}</p>
@@ -3974,7 +3978,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <div>
                 <span className="inline-flex items-center gap-1 text-xs text-neutral-700 dark:text-neutral-300" title={RESTRICTED_MIDDLEWARE_TIP}>
                   <ShieldIcon size={12} filled className={PERMISSION_ON_CLASS.restricted} />
-                  Restricted middleware
+                  Restricted
                   <InfoHint tip="Middleware lambdas from files that are not authorized are skipped." />
                 </span>
               </div>

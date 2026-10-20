@@ -3,10 +3,10 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
   PERMISSION_LABELS, PERMISSION_TIPS, approvalRemoved, approvalRemovedMessage, mcpStatusView, restoreApproval,
-  saveFailureReason, saveStatusText, tableProtectionLabel, timersBlocked, toolGroupGate, toolMatchesFilter,
+  saveFailureReason, saveStatusText, tableProtectionLabel, timersBlocked, toolRowGate, toolMatchesFilter, ASK_AUTONOMOUS_TIP,
 } from '../../../src/renderer/components/agent/config-panel-model'
 import {
-  LockBadge, McpStatusChip, PermissionLegend, SaveStatusLine, TimersBlockedNotice, UndoToast, GateNote,
+  LockBadge, McpStatusChip, PermissionLegend, SaveStatusLine, TimersBlockedNotice, UndoToast, RowWarning, TIMERS_BLOCKED_TIP,
 } from '../../../src/renderer/components/agent/config-panel-parts'
 import { AgentConfig } from '../../../src/renderer/components/agent/AgentConfig'
 import { DEFAULT_AGENT_CONFIG } from '../../../src/shared/constants/adf-defaults'
@@ -61,19 +61,36 @@ describe('permission vocabulary', () => {
   })
 })
 
-describe('tool groups', () => {
-  it('Messaging is never gated, even with the On inbox message trigger off (owner decision)', () => {
-    const off = config({ triggers: { on_inbox: { enabled: false, targets: [] } } as AgentConfigType['triggers'] })
-    expect(toolGroupGate('Messaging', off)).toBeNull()
+describe('tool rows set from another section', () => {
+  const messaging = (patch: Record<string, unknown>) => ({ receive: true, mode: 'respond_only', inbox_mode: true, ...patch }) as AgentConfigType['messaging']
+
+  it('Messaging is never gated by the On inbox message trigger (owner decision)', () => {
+    const off = config({ triggers: { on_inbox: { enabled: false, targets: [] } } as AgentConfigType['triggers'], messaging: messaging({}) })
+    expect(toolRowGate('msg_send', 'Messaging', off)).toBeNull()
+    expect(toolRowGate('agent_discover', 'Messaging', off)).toBeNull()
   })
 
-  it('Inbox follows Inbox mode and names the switch', () => {
-    expect(toolGroupGate('Inbox', config({ messaging: { receive: true, mode: 'respond_only', inbox_mode: false } as AgentConfigType['messaging'] })))
-      .toEqual({ text: 'Needs Inbox mode', section: 'Messaging' })
-    expect(toolGroupGate('Inbox', config({ messaging: { receive: true, mode: 'respond_only', inbox_mode: true } as AgentConfigType['messaging'] }))).toBeNull()
-    const html = renderToStaticMarkup(<GateNote text="Needs Inbox mode" section="Messaging" onJump={() => {}} />)
-    expect(html).toContain('Needs Inbox mode')
-    expect(html).toContain('Messaging ›')
+  it('Receive messages off: the msg_* tools say why, in one short phrase, and jump to Messaging', () => {
+    const c = config({ messaging: messaging({ receive: false }) })
+    for (const name of ['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update']) {
+      expect(toolRowGate(name, name.startsWith('msg_l') || name === 'msg_read' || name === 'msg_update' ? 'Inbox' : 'Messaging', c))
+        .toEqual({ tip: 'Off: Receive messages is off', section: 'Messaging' })
+    }
+    expect(toolRowGate('fs_read', 'Filesystem', c)).toBeNull()
+  })
+
+  it('Inbox follows Inbox mode', () => {
+    expect(toolRowGate('msg_delete', 'Inbox', config({ messaging: messaging({ inbox_mode: false }) }))).toEqual({ tip: 'Set by Inbox mode', section: 'Messaging' })
+    expect(toolRowGate('msg_delete', 'Inbox', config({ messaging: messaging({}) }))).toBeNull()
+  })
+
+  it('one row-warning component: an icon with the reason as its tooltip, a button when it can jump', () => {
+    const jump = renderToStaticMarkup(<RowWarning tip="Off: Receive messages is off" onJump={() => {}} />)
+    expect(jump).toContain('<button')
+    expect(jump).toContain('title="Off: Receive messages is off"')
+    const plain = renderToStaticMarkup(<RowWarning tip={ASK_AUTONOMOUS_TIP} />)
+    expect(plain).not.toContain('<button')
+    expect(plain).toContain(`title="${ASK_AUTONOMOUS_TIP}"`)
   })
 
   it('filters by tool name or group label, case-insensitive', () => {
@@ -146,7 +163,8 @@ describe('Timers notice', () => {
     expect(timersBlocked(config({ triggers: { on_timer: { enabled: true, targets: [] } } as AgentConfigType['triggers'] }))).toBe(false)
     expect(timersBlocked(null)).toBe(false)
     const html = renderToStaticMarkup(<TimersBlockedNotice onJump={() => {}} />)
-    expect(html).toContain('Timers won&#x27;t fire')
+    expect(html).toContain(`title="${TIMERS_BLOCKED_TIP}"`)
+    expect(html).toContain('>Off<')
     expect(html).toContain('Triggers ›')
   })
 })
@@ -160,22 +178,42 @@ describe('the Config panel (template mode render)', () => {
     return box?.[0] ?? ''
   }
 
-  it('Messaging tools stay editable and show the stored value with On inbox message off', () => {
-    const c = config({
-      triggers: { on_inbox: { enabled: false, targets: [] } } as AgentConfigType['triggers'],
-    })
+  const withMsgSend = (c: AgentConfigType) => {
     c.tools = [...c.tools.filter((t) => t.name !== 'msg_send'), { name: 'msg_send', enabled: true, visible: true }]
-    const html = render(c)
+    return c
+  }
+
+  it('Messaging tools stay editable and show the stored value with On inbox message off', () => {
+    const html = render(withMsgSend(config({
+      triggers: { on_inbox: { enabled: false, targets: [] } } as AgentConfigType['triggers'],
+      messaging: { receive: true, mode: 'respond_only' } as AgentConfigType['messaging'],
+    })))
     const box = checkboxFor(html, 'msg_send')
     expect(box).toContain('checked')
     expect(box).not.toContain('disabled')
     expect(html).not.toContain('Requires messaging')
   })
 
+  it('Receive messages off: msg_send stays listed, shown as stored, not editable, with the reason on an icon', () => {
+    const html = render(withMsgSend(config({ messaging: { receive: false, mode: 'respond_only' } as AgentConfigType['messaging'] })))
+    const box = checkboxFor(html, 'msg_send')
+    expect(box).toContain('checked')
+    expect(box).toContain('disabled')
+    expect(html).toContain('title="Off: Receive messages is off"')
+  })
+
+  it('ask in autonomous mode: an icon with a tooltip, no paragraph', () => {
+    const c = config({ autonomous: true })
+    c.tools = [...c.tools.filter((t) => t.name !== 'ask'), { name: 'ask', enabled: true, visible: true }]
+    const html = render(c)
+    expect(html).toContain(`title="${ASK_AUTONOMOUS_TIP}"`)
+    expect(html).not.toContain('Enabling ask in autonomous mode')
+  })
+
   it('shows the Tools legend and filter, and no old vocabulary', () => {
     const html = render(config())
     expect(html).toContain('Needs approval')
-    expect(html).toContain('placeholder="Filter tools"')
+    expect(html).toContain('placeholder="Filter"')
     expect(html).not.toMatch(/HIL gate|>restricted</)
   })
 })

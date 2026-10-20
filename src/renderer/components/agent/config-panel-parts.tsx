@@ -109,18 +109,30 @@ export function LockBadge({ locked, onClick, size = 'sm' }: { locked: boolean; o
   )
 }
 
-/** Why a group is set from elsewhere, with a jump to the section that holds the switch. */
-export function GateNote({ text, section, onJump }: { text: string; section: string; onJump?: () => void }) {
+export function WarningIcon({ size = 12, className }: { size?: number; className?: string }) {
   return (
-    <p className="mb-0.5 text-[10px] text-amber-700 dark:text-amber-400">
-      {text}
-      {onJump && (
-        <button type="button" onClick={onJump} className="ml-1.5 text-blue-500 hover:underline dark:text-blue-400">
-          {section} ›
-        </button>
-      )}
-    </p>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="7" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
   )
+}
+
+/**
+ * Row warning: an exclamation icon whose tooltip says why. With `onJump` it
+ * is a button that opens the section holding the switch.
+ */
+export function RowWarning({ tip, onJump }: { tip: string; onJump?: () => void }) {
+  const cls = 'inline-flex shrink-0 items-center text-amber-500 dark:text-amber-400'
+  if (onJump) {
+    return (
+      <button type="button" title={tip} aria-label={tip} onClick={onJump} className={`${cls} hover:text-amber-600 dark:hover:text-amber-300`}>
+        <WarningIcon />
+      </button>
+    )
+  }
+  return <span title={tip} aria-label={tip} role="img" className={cls}><WarningIcon /></span>
 }
 
 const MCP_TONE_CLASS = {
@@ -169,11 +181,14 @@ export function UndoToast({ message, onUndo, onDismiss }: { message: string; onU
 }
 
 /** Timers panel: the on_timer trigger is off, so nothing here fires. */
+export const TIMERS_BLOCKED_TIP = 'Off: On timer trigger is off'
+
 export function TimersBlockedNotice({ onJump }: { onJump: () => void }) {
   return (
-    <p role="status" className="mx-3 mb-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-      Timers won&apos;t fire: the On timer trigger is off.
-      <button type="button" onClick={onJump} className="ml-1.5 text-blue-500 hover:underline dark:text-blue-400">Triggers ›</button>
+    <p role="status" title={TIMERS_BLOCKED_TIP} className="mx-3 mb-1 flex items-center gap-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+      <WarningIcon />
+      <span>Off</span>
+      <button type="button" onClick={onJump} className="ml-auto text-blue-500 hover:underline dark:text-blue-400">Triggers ›</button>
     </p>
   )
 }
