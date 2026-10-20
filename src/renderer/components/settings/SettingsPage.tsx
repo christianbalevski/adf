@@ -2145,7 +2145,7 @@ function SettingsPageBody() {
             <AgentTemplatesTab
               providers={providers}
               defaultProviderId={defaultProviderId}
-              onDefaultProviderChange={setDefaultProviderId}
+              onOpenProviders={() => setActiveTab('providers')}
             />
           )}
 

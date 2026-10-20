@@ -234,7 +234,7 @@ import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapte
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
 import { invalidateProviderModels } from '../../hooks/useProviderModels'
-import { AgentProvidersList, ModelIdField, ProviderOptions } from './AgentProviders'
+import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
 
 // Module-level caches to avoid redundant IPC calls on every tab switch
 let _cachedProviders: ProviderConfig[] | null = null
@@ -664,6 +664,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [missingPackages, setMissingPackages] = useState<CodeExecutionPackage[]>([])
   const [showPkgInstallModal, setShowPkgInstallModal] = useState(false)
   const [runtimeHostEnabled, setRuntimeHostEnabled] = useState(false)
+  /** settings.defaultProviderId: what a template's empty Provider falls back to. */
+  const [runtimeDefaultProviderId, setRuntimeDefaultProviderId] = useState<string | undefined>(undefined)
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
   const nameInputRef = useRef<HTMLInputElement>(null)
   const savingRef = useRef(false)
@@ -724,6 +726,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     window.adfApi?.getSettings().then((s) => {
       setRuntimeHostEnabled(s?.compute?.hostAccessEnabled ?? false)
       setExecutionTargets(s.compute?.executionTargets ?? [])
+      setRuntimeDefaultProviderId((s?.defaultProviderId as string | undefined) || undefined)
     })
     if (_cachedProviders && _cachedMcpRegistrations && _cachedAdapterRegistrations) {
       setProviders(_cachedProviders)
@@ -1452,6 +1455,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               value={local.model.provider}
               onChange={async (e) => {
                 const newProvider = e.target.value
+                // A template's empty Provider: new agents get the runtime default.
+                if (template && !newProvider) {
+                  save({ ...local, model: { ...local.model, provider: '', model_id: '', params: undefined } })
+                  return
+                }
                 // A provider stored on the agent uses the agent's own copy
                 const adfMatch = (local.providers ?? []).find(p => p.id === newProvider)
                 if (adfMatch) {
@@ -1487,7 +1495,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               }}
               className="field-input w-full"
             >
-              {!(local.providers ?? []).some((p) => p.id === local.model.provider) && !providers.some((p) => p.id === local.model.provider) && (
+              {/* Precedence: the agent's own provider, then its template's, then the runtime default. */}
+              {template && (
+                <option value="">{runtimeDefaultLabel(providers, runtimeDefaultProviderId)}</option>
+              )}
+              {!(template && !local.model.provider) && !(local.providers ?? []).some((p) => p.id === local.model.provider) && !providers.some((p) => p.id === local.model.provider) && (
                 <option value={local.model.provider}>
                   {local.model.provider || '— Select a provider —'}
                 </option>

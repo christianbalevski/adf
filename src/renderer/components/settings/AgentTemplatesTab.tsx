@@ -11,6 +11,7 @@ import { useAppStore } from '../../stores/app.store'
 import { AgentConfig } from '../agent/AgentConfig'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { Dialog } from '../common/Dialog'
+import { InfoHint } from '../common/DocsLink'
 import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import { useSettingsSave } from './settings-save'
 
@@ -27,6 +28,9 @@ import { useSettingsSave } from './settings-save'
 
 /** Shown first, in this order, whatever the folder listing says. */
 const SHIPPED_ORDER: ShippedTemplateId[] = ['standard', 'sandboxed', 'full-access']
+
+/** Which provider a new agent gets, in order. */
+export const PROVIDER_PRECEDENCE = 'An agent uses its own provider, else its template\'s, else the runtime default.'
 
 /** The rule instantiate follows, printed for the user verbatim. */
 const INSTANTIATE_RULE = 'New agents get everything in a template except its identity and history.'
@@ -100,12 +104,12 @@ function TemplateGlyph({ name, icon }: { name: string; icon?: string }) {
 
 interface AgentTemplatesTabProps {
   providers: ProviderConfig[]
-  /** settings.defaultProviderId — persisted by SettingsPage's auto-save. */
+  /** settings.defaultProviderId: the runtime default, set in Settings → Providers. */
   defaultProviderId: string | undefined
-  onDefaultProviderChange: (id: string | undefined) => void
+  onOpenProviders: () => void
 }
 
-export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProviderChange }: AgentTemplatesTabProps) {
+export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProviders }: AgentTemplatesTabProps) {
   const { templates, folder, defaultId, migrated, loaded } = useTemplates()
   const sorted = useMemo(() => sortTemplates(templates), [templates])
 
@@ -846,22 +850,16 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
         </SettingsRow>
       </SettingsGroup>
 
-      <SettingsGroup title="Default provider" description="Used when the template leaves Provider unset. Its default model fills Model ID.">
-        <SettingsRow label="Default provider">
-          {providers.length === 0 ? (
-            <span className="text-[12px] text-[var(--adf-ui-text-subtle)]">No providers configured.</span>
-          ) : (
-            <Select
-              aria-label="Default provider"
-              className="w-64"
-              value={defaultProviderId ?? ''}
-              onChange={(e) => onDefaultProviderChange(e.target.value || undefined)}
-            >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name || p.type}</option>
-              ))}
-            </Select>
-          )}
+      <SettingsGroup title="Provider" description={PROVIDER_PRECEDENCE}>
+        <SettingsRow
+          label={<>Runtime default<InfoHint tip="A template whose Provider is Runtime default gives new agents this provider, with its default model as Model ID. Set it with Make default in Settings → Providers." /></>}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+              {providers.length === 0 ? 'None set up' : (providers.find((p) => p.id === defaultProviderId) ?? providers[0]).name || 'Unnamed'}
+            </span>
+            <Button onClick={onOpenProviders} size="compact">Providers</Button>
+          </div>
         </SettingsRow>
       </SettingsGroup>
 

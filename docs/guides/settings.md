@@ -67,6 +67,8 @@ Per-agent DIDs and keystores are managed separately in the **Agent panel → Ide
 
 Providers are the LLM services that power your agents. You need at least one configured provider before agents can think. The `providers` config section is on [`sys_update_config`](tools.md#sys_update_config)'s immutable deny list — agents can never write it, not even via approval; provider setup is always the owner's (agents can still set their own `model.provider` and `model.model_id`).
 
+An agent uses its own provider, else its template's, else the runtime default. The runtime default is the provider marked **Default** on this page (**Make default for new agents** in its dialog), or the first one. In an agent's Config, the Provider list groups the providers stored on the agent (**On this agent**) and the ones set up here but not stored on it (**Runtime**; they do not go with the file).
+
 ### Adding a Provider
 
 1. Go to **Settings > Providers**
