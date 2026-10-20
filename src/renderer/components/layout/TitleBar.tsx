@@ -14,7 +14,8 @@ import { getLiveStep } from '../../utils/loop-activity'
 import { agentWindowsAvailable, isAgentWindow, openAgentWindow } from '../../utils/window-kind'
 import { Tooltip } from '../common/Tooltip'
 import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
-import { SETTINGS_SHORTCUT } from '../../utils/shortcut-label'
+import { ACCELERATORS, formatKey } from '../../../shared/constants/keyboard-shortcuts'
+import { IS_MAC } from '../../utils/platform'
 
 /** An icon-only nav control: its label shows as a tooltip (a native title never renders here). */
 function NavButton({
@@ -304,6 +305,7 @@ export function TitleBar() {
         >
           <NavButton
             title="Home"
+            shortcut={formatKey(ACCELERATORS.home, IS_MAC)}
             active={!showSettings && !showMeshGraph && (showHome || !filePath)}
             onClick={handleHome}
           >
@@ -314,6 +316,7 @@ export function TitleBar() {
           </NavButton>
           <NavButton
             title="Age of Agents"
+            shortcut={formatKey(ACCELERATORS.fleetMap, IS_MAC)}
             active={showMeshGraph}
             onClick={() => { setShowSettings(false); setShowMeshGraph(true) }}
           >
@@ -323,7 +326,7 @@ export function TitleBar() {
           </NavButton>
           <NavButton
             title="Settings"
-            shortcut={SETTINGS_SHORTCUT}
+            shortcut={formatKey(ACCELERATORS.settings, IS_MAC)}
             active={showSettings}
             onClick={() => { setShowMeshGraph(false); setShowSettings(true) }}
           >

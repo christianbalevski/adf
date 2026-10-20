@@ -19,7 +19,8 @@ import { Tooltip } from '../common/Tooltip'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
 import { Button } from '../ui'
-import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
+import { IS_MAC, REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
+import { ACCELERATORS, formatKey } from '../../../shared/constants/keyboard-shortcuts'
 import { collectRunningAgents, collectRailAgents, type RunningAgentRow } from '../../utils/running-agents'
 import { useApprovalsStore } from '../../stores/approvals.store'
 import { reportFailure, agentNameOf, failureReason } from '../../stores/failure-notices.store'
@@ -603,7 +604,7 @@ export function Sidebar() {
   if (collapsed) {
     return (
       <div className="w-10 bg-surface-2 border-r border-hairline flex flex-col items-center py-2 gap-1 min-h-0">
-        <Tooltip tip="Expand sidebar" className="flex shrink-0">
+        <Tooltip tip="Expand sidebar" shortcut={formatKey(ACCELERATORS.toggleSidebar, IS_MAC)} className="flex shrink-0">
           <button
             onClick={toggleSidebar}
             aria-label="Expand sidebar"
@@ -667,7 +668,7 @@ export function Sidebar() {
             className="w-full h-6 text-[11px] pl-6 pr-2 border border-[var(--adf-ui-border)] rounded bg-[var(--adf-ui-surface)] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] outline-none focus:border-[var(--adf-ui-accent)] min-w-0 disabled:opacity-50 disabled:bg-transparent"
           />
         </div>
-        <Tooltip tip="New agent" className="flex">
+        <Tooltip tip="New agent" shortcut={formatKey(ACCELERATORS.newAgent, IS_MAC)} className="flex">
           <button
             onClick={handleCreateFile}
             aria-label="New agent"
@@ -692,7 +693,7 @@ export function Sidebar() {
             </svg>
           </button>
         </Tooltip>
-        <Tooltip tip="Collapse sidebar" className="flex">
+        <Tooltip tip="Collapse sidebar" shortcut={formatKey(ACCELERATORS.toggleSidebar, IS_MAC)} className="flex">
           <button
             onClick={toggleSidebar}
             aria-label="Collapse sidebar"

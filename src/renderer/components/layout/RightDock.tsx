@@ -13,6 +13,8 @@ import { useInboxStore } from '../../stores/inbox.store'
 import { useLayoutEffect, useRef } from 'react'
 import { dockStateKey, elementAtPath, elementPath, readDockState, writeDockState, type DockScroll } from '../../stores/dock-panel-state'
 import { Tooltip } from '../common/Tooltip'
+import { IS_MAC } from '../../utils/platform'
+import { ACCELERATORS, formatKey } from '../../../shared/constants/keyboard-shortcuts'
 
 const DOCK_TABS: readonly RightPanel[] = ['overview', 'loop', 'inbox', 'files', 'agent']
 /** Center placement takes Loops off the dock; every other tab stays put. */
@@ -67,7 +69,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {/* Collapse sits on the INNER edge, like the sidebar's: the chevron
           points the way the panel slides away, at the seam it slides from. */}
       <div className="flex h-9 items-center border-b border-hairline pl-1">
-        <Tooltip tip="Collapse panel" className="flex shrink-0">
+        <Tooltip tip="Collapse panel" shortcut={formatKey(ACCELERATORS.togglePanel, IS_MAC)} className="flex shrink-0">
           <button
             onClick={toggleRightPanel}
             aria-label="Collapse panel"

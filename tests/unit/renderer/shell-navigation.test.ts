@@ -13,7 +13,6 @@ const { useAppStore } = await import('../../../src/renderer/stores/app.store')
 const { useFailureNoticesStore, failureReason, agentNameOf, reportFailure, MAX_FAILURE_NOTICES } = await import('../../../src/renderer/stores/failure-notices.store')
 const { isInAgentWindow } = await import('../../../src/renderer/stores/open-agent-windows.store')
 const { useTrackedDirsStore } = await import('../../../src/renderer/stores/tracked-dirs.store')
-const { shortcutLabel } = await import('../../../src/renderer/utils/shortcut-label')
 
 const AGENT_1 = '6f1c2a4e-1b3d-4c5e-8f70-9a1b2c3d4e5f'
 const AGENT_2 = '0d9e8f7a-6b5c-4d3e-9f21-0a9b8c7d6e5f'
@@ -126,14 +125,5 @@ describe('sidebar row markers', () => {
     // No change, no new state.
     useTrackedDirsStore.getState().updateFileEntry(FILE_2, { reviewed: true })
     expect(useTrackedDirsStore.getState().filesByDir['/agents']).toBe(after)
-  })
-})
-
-describe('shortcut labels', () => {
-  it('as each platform writes them', () => {
-    expect(shortcutLabel(',', { mod: true }, false)).toBe('Ctrl+,')
-    expect(shortcutLabel('W', { mod: true, shift: true }, false)).toBe('Ctrl+Shift+W')
-    expect(shortcutLabel(',', { mod: true }, true)).toBe('⌘,')
-    expect(shortcutLabel('W', { mod: true, shift: true }, true)).toBe('⇧⌘W')
   })
 })

@@ -228,11 +228,9 @@ export default function App() {
           useKeyboardStore.getState().setShortcutsOpen(true)
           break
         // Home, the fleet map and the sidebar are the main window's (main sends these there).
+        // Home only navigates: the open agent stays open (Close Agent closes it).
         case 'go-home':
-          if (isAgentWindow) break
-          setShowSettings(false)
-          setShowMeshGraph(false)
-          if (useDocumentStore.getState().filePath) await closeFile()
+          if (!isAgentWindow) useAppStore.getState().setShowHome(true)
           break
         case 'show-fleet-map':
           if (isAgentWindow) break

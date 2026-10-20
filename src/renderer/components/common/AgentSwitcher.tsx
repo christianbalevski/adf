@@ -83,6 +83,7 @@ function SwitcherBody({ onDone }: { onDone: () => void }) {
     const app = useAppStore.getState()
     if (app.showSettings) app.setShowSettings(false)
     if (app.showMeshGraph) app.setShowMeshGraph(false)
+    if (app.showHome) app.setShowHome(false)
     if (useDocumentStore.getState().filePath === target) return
     void openFile(target)
   }, [onDone, openFile])
