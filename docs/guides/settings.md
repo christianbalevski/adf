@@ -16,7 +16,7 @@ The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
 ## Saving
 
-Settings save as you change them. There is no Save button, except in a dialog that creates something (a provider, an MCP server, a connection) and in the prompt editors (see [Prompts](#prompts)).
+Settings save as you change them. There is no Save button, except in a dialog that creates something (a provider, an MCP server, a connection) and in the prompt editors (see [System Prompt](#system-prompt)).
 
 - A text or number field saves when you press Enter or leave it. Escape puts the saved value back.
 - A field that refuses a value says why under it, and nothing is written. Numbers are never clamped or replaced with 0.
@@ -417,7 +417,7 @@ The base prompt applies to all agents by default, prepended before each agent's 
 - Setting global behavioral rules
 - Providing context that all agents should have
 
-Edit the prompt text directly — changes are auto-saved with a short debounce delay. Existing customized prompts are not overwritten when the default evolves. There's a **Reset to Default** button to restore the current standard base prompt.
+Each prompt editor holds a draft: typing changes nothing until **Save**, and **Revert** puts the saved text back. Agents read the saved prompts when they start. **Reset** shows while the saved prompt differs from the default; it saves the default at once and offers **Undo**. **Reset all** does the same for every prompt on the page. **Auto-update** replaces every prompt with the new defaults whenever an update ships them; off, customized prompts are not overwritten when the default evolves.
 
 **Per-agent composition.** Each agent's Instructions section has a *System Prompt* select with three settings. Each option shows its approximate token count (measured with `{{path}}` placeholders resolved, the same figures as the status-bar context breakdown), and the label shows the size of the system prompt as currently sent:
 
@@ -433,7 +433,7 @@ A section whose text you blank in Settings is skipped entirely rather than emitt
 
 ### Tool Instructions
 
-Below the base prompt, the **Tool Instructions** section lists conditional prompt blocks that are injected based on the agent's enabled tools and features. Each section has an expandable textarea and a per-section **Reset to Default** button. A "modified" badge appears when the user has customized a section.
+Below the base prompt, the **Tool Instructions** section lists conditional prompt blocks that are injected based on the agent's enabled tools and features. Each section has an expandable editor with the same Save, Revert and Reset as the base prompt. **Modified** marks a saved section that differs from the default; **Unsaved** marks a draft.
 
 | Section | Injected When |
 |---------|---------------|

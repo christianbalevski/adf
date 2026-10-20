@@ -31,6 +31,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useMesh } from '../../hooks/useMesh'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
 import { CommitInput, checkPeerAddress, checkWholeNumber } from './settings-inputs'
+import { PromptEditor, PromptSectionRows } from './PromptEditor'
 import { SaveIndicator, SettingsSaveProvider, SettingsToasts, settingsWriteOutcome, useSettingsSave } from './settings-save'
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
@@ -91,83 +92,6 @@ function SettingsNavIcon({ section }: { section: SettingsTab }) {
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {paths[section]}
     </svg>
-  )
-}
-
-/**
- * Collapsible editable prompt rows, shared by the Tool Instructions and
- * Dynamic Instructions groups. Both groups read and write the same
- * `toolPrompts` settings record — they differ only in which default/label/
- * condition tables drive the rows.
- */
-function PromptSectionRows({ defaults, labels, conditions, values, onChange, expandedKey, onToggle }: {
-  defaults: Record<string, string>
-  labels: Record<string, string>
-  conditions: Record<string, string>
-  values: Record<string, string>
-  onChange: (next: Record<string, string>) => void
-  expandedKey: string | null
-  onToggle: (key: string | null) => void
-}) {
-  return (
-    <div className="space-y-1">
-      {Object.keys(defaults).map((key) => {
-        const label = labels[key] ?? key
-        const condition = conditions[key]
-        const isExpanded = expandedKey === key
-        const currentValue = values[key] ?? defaults[key] ?? ''
-        const isDefault = currentValue === (defaults[key] ?? '')
-
-        return (
-          <div key={key} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
-            <button
-              onClick={() => onToggle(isExpanded ? null : key)}
-              className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                  {isExpanded ? '▼' : '▶'}
-                </span>
-                <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">
-                  {label}
-                </span>
-                {!isDefault && (
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                    modified
-                  </span>
-                )}
-              </div>
-            </button>
-            {isExpanded && (
-              <div className="px-3 pb-3 border-t border-neutral-100 dark:border-neutral-700">
-                {condition && (
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
-                    {condition}
-                  </p>
-                )}
-                <Textarea
-                  aria-label={`${label} tool instruction`}
-                  value={currentValue}
-                  onChange={(e) => onChange({ ...values, [key]: e.target.value })}
-                  rows={10}
-                  className="mt-2 font-mono text-xs resize-y"
-                />
-                {!isDefault && (
-                  <Button
-                    onClick={() => onChange({ ...values, [key]: defaults[key] ?? '' })}
-                    variant="ghost"
-                    size="compact"
-                    className="mt-1"
-                  >
-                    Reset to Default
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-        )
-      })}
-    </div>
   )
 }
 
@@ -1295,7 +1219,7 @@ export function SettingsPage() {
 }
 
 function SettingsPageBody() {
-  const { commit, track } = useSettingsSave()
+  const { commit, track, offerUndo } = useSettingsSave()
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   // Lists that render from settings show a placeholder until the first load
   // lands, so an empty state never flashes before the real rows.
@@ -1305,6 +1229,12 @@ function SettingsPageBody() {
   const [compactionPrompt, setCompactionPrompt] = useState('')
   const [toolPrompts, setToolPrompts] = useState<Record<string, string>>({})
   const [expandedPromptKey, setExpandedPromptKey] = useState<string | null>(null)
+  /** Unsaved prompt text by editor ('global', 'compaction', or a toolPrompts key); kept while Settings is open. */
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({})
+  const setPromptDraft = (key: string, next: string | undefined) => setPromptDrafts((drafts) => {
+    const { [key]: _old, ...rest } = drafts
+    return next === undefined ? rest : { ...rest, [key]: next }
+  })
   const [autoApplyPromptUpdates, setAutoApplyPromptUpdates] = useState(false)
   const [mcpServers, setMcpServers] = useState<McpServerRegistration[]>([])
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
@@ -1611,9 +1541,6 @@ function SettingsPageBody() {
       defaultProviderId: lists.defaultProviderId,
       mcpServers: lists.mcpServers,
       adapters: lists.adapters,
-      globalSystemPrompt: systemPrompt,
-      compactionPrompt,
-      toolPrompts,
       })
       const outcome = settingsWriteOutcome(result)
       if (!outcome.ok) throw new Error(outcome.error)
@@ -1649,7 +1576,7 @@ function SettingsPageBody() {
     // Re-arm the debounce whenever a persisted value changes; the payload itself
     // is read from pendingSave, which every render refreshes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts])
+  }, [providers, defaultProviderId, mcpServers, adapterRegistrations])
 
   // Flush pending save on unmount so changes aren't lost
   useEffect(() => {
@@ -1733,12 +1660,35 @@ function SettingsPageBody() {
     void persist({ agentsFolder: '' }, setAgentsFolder, '', agentsFolder)
   }
 
-  const handleResetPrompt = () => {
-    setSystemPrompt(DEFAULT_BASE_PROMPT)
+  /** Save a prompt (Save in its editor). Agents read prompts when they start. */
+  const savePrompt = (key: 'globalSystemPrompt' | 'compactionPrompt', next: string) => {
+    const set = key === 'globalSystemPrompt' ? setSystemPrompt : setCompactionPrompt
+    const prev = key === 'globalSystemPrompt' ? systemPrompt : compactionPrompt
+    invalidateConfigCaches()
+    return persist({ [key]: next }, set, next, prev)
   }
 
-  const handleResetCompactionPrompt = () => {
-    setCompactionPrompt(DEFAULT_COMPACTION_PROMPT)
+  /** One tool or dynamic instruction, written as the whole toolPrompts record. */
+  const toolPromptsRef = useRef(toolPrompts)
+  toolPromptsRef.current = toolPrompts
+  const saveToolPrompt = (key: string, next: string) => {
+    const prev = toolPromptsRef.current
+    const record = { ...prev, [key]: next }
+    toolPromptsRef.current = record
+    invalidateConfigCaches()
+    return persist({ toolPrompts: record }, (value: Record<string, string>) => { toolPromptsRef.current = value; setToolPrompts(value) }, record, prev)
+  }
+
+  /** Reset saves the default now; Undo saves the text it replaced. */
+  const resetPrompt = (key: 'globalSystemPrompt' | 'compactionPrompt', label: string) => {
+    const prev = key === 'globalSystemPrompt' ? systemPrompt : compactionPrompt
+    const fallback = key === 'globalSystemPrompt' ? DEFAULT_BASE_PROMPT : DEFAULT_COMPACTION_PROMPT
+    void savePrompt(key, fallback).then((saved) => { if (saved) offerUndo(`${label} reset to the default.`, () => void savePrompt(key, prev)) })
+  }
+  const resetToolPrompt = (key: string, label: string) => {
+    const prev = toolPromptsRef.current[key]
+    const fallback = DEFAULT_TOOL_PROMPTS[key] ?? DEFAULT_DYNAMIC_PROMPTS[key] ?? ''
+    void saveToolPrompt(key, fallback).then((saved) => { if (saved && prev !== undefined) offerUndo(`${label} reset to the default.`, () => void saveToolPrompt(key, prev)) })
   }
 
   /**
@@ -1748,10 +1698,20 @@ function SettingsPageBody() {
    * saved under older defaults until reset.
    */
   const handleResetAllPrompts = () => {
-    if (!window.confirm('Reset the system prompt, compaction prompt, and every tool/dynamic instruction to the current defaults? Any customizations will be lost.')) return
-    setSystemPrompt(DEFAULT_BASE_PROMPT)
-    setCompactionPrompt(DEFAULT_COMPACTION_PROMPT)
-    setToolPrompts({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })
+    const prev = { globalSystemPrompt: systemPrompt, compactionPrompt, toolPrompts: toolPromptsRef.current }
+    const defaults = { globalSystemPrompt: DEFAULT_BASE_PROMPT, compactionPrompt: DEFAULT_COMPACTION_PROMPT, toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS } }
+    const show = (p: typeof prev) => {
+      setSystemPrompt(p.globalSystemPrompt)
+      setCompactionPrompt(p.compactionPrompt)
+      toolPromptsRef.current = p.toolPrompts
+      setToolPrompts(p.toolPrompts)
+    }
+    show(defaults)
+    setPromptDrafts({})
+    invalidateConfigCaches()
+    void commit(defaults, () => show(prev)).then((saved) => {
+      if (saved) offerUndo('Every prompt reset to the default.', () => { show(prev); void commit(prev, () => show(defaults)); invalidateConfigCaches() })
+    })
   }
 
   /**
@@ -1768,8 +1728,10 @@ function SettingsPageBody() {
     const defaults = currentPromptDefaults()
     const prev = { auto: autoApplyPromptUpdates, systemPrompt, compactionPrompt, toolPrompts }
     setAutoApplyPromptUpdates(true)
+    setPromptDrafts({})
     setSystemPrompt(defaults.globalSystemPrompt)
     setCompactionPrompt(defaults.compactionPrompt)
+    toolPromptsRef.current = defaults.toolPrompts
     setToolPrompts(defaults.toolPrompts)
     await commit({
       ...defaults,
@@ -2087,77 +2049,40 @@ function SettingsPageBody() {
           {activeTab === 'agents' && <>
           <SettingsGroup title="Prompts" description="Applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
           <SettingsRow
-            label="Apply prompt updates automatically"
-            description="When an update ships new default prompts, replace every prompt below with them. Off = your prompts stay as they are; use Reset All Prompts to pick up new defaults."
+            label={<>Auto-update<InfoHint tip="When an update ships new default prompts, replace every prompt on this page with them. Off: your prompts stay as they are; Reset all picks up the new defaults." /></>}
           >
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoApplyPromptUpdates}
-                onChange={(e) => { void handleAutoApplyPromptUpdates(e.target.checked) }}
-                className="rounded text-blue-500"
-              />
-              <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                {autoApplyPromptUpdates ? 'On' : 'Off'}
-              </span>
-            </label>
+            <Switch label="Auto-update" checked={autoApplyPromptUpdates} onChange={(next) => { void handleAutoApplyPromptUpdates(next) }} />
           </SettingsRow>
-          <div className="flex justify-end px-4 pt-3">
+          <SettingsRow separator label="Defaults">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
-              Reset All Prompts to Defaults
+              Reset all
             </Button>
-          </div>
-          <SettingsRow label="Global System Prompt" stacked>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-[var(--adf-ui-text-subtle)]">Applied before per-file instructions.</span>
-              <Button
-                onClick={handleResetPrompt}
-                variant="ghost"
-                size="compact"
-              >
-                Reset to Default
-              </Button>
-            </div>
-            <Textarea
-              id="global-system-prompt"
-              aria-label="Global System Prompt"
+          </SettingsRow>
+          <SettingsRow label="System prompt" description="Applied before per-file instructions." stacked separator>
+            <PromptEditor
+              label="System prompt"
               value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
+              defaultValue={DEFAULT_BASE_PROMPT}
+              draft={promptDrafts.global}
+              onDraft={(next) => setPromptDraft('global', next)}
+              onSave={(next) => savePrompt('globalSystemPrompt', next)}
+              onReset={() => resetPrompt('globalSystemPrompt', 'System prompt')}
               rows={12}
-              className="font-mono text-xs resize-y"
             />
-            <p className="mt-1 text-xs text-[var(--adf-ui-text-subtle)]">
-              Applied to every .adf agent before its per-file instructions. Explains the
-              ADF paradigm to the model.
-            </p>
           </SettingsRow>
 
           {/* Compaction Prompt */}
-          <SettingsRow label="Compaction Prompt" stacked separator>
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-[var(--adf-ui-text-subtle)]">Used when conversation history is compacted.</span>
-              {compactionPrompt !== DEFAULT_COMPACTION_PROMPT && (
-                <Button
-                  onClick={handleResetCompactionPrompt}
-                  variant="ghost"
-                  size="compact"
-                >
-                  Reset to Default
-                </Button>
-              )}
-            </div>
-            <Textarea
-              id="compaction-prompt"
-              aria-label="Compaction Prompt"
+          <SettingsRow label="Compaction prompt" description="Used when conversation history is compacted." stacked separator>
+            <PromptEditor
+              label="Compaction prompt"
               value={compactionPrompt}
-              onChange={(e) => setCompactionPrompt(e.target.value)}
+              defaultValue={DEFAULT_COMPACTION_PROMPT}
+              draft={promptDrafts.compaction}
+              onDraft={(next) => setPromptDraft('compaction', next)}
+              onSave={(next) => savePrompt('compactionPrompt', next)}
+              onReset={() => resetPrompt('compactionPrompt', 'Compaction prompt')}
               rows={8}
-              className="font-mono text-xs resize-y"
             />
-            <p className="mt-1 text-xs text-[var(--adf-ui-text-subtle)]">
-              System prompt used when compacting conversation history. Controls how the
-              loop_compact tool summarizes context.
-            </p>
           </SettingsRow>
           </SettingsGroup>
 
@@ -2174,7 +2099,10 @@ function SettingsPageBody() {
                 labels={TOOL_PROMPT_LABELS}
                 conditions={TOOL_PROMPT_CONDITIONS}
                 values={toolPrompts}
-                onChange={setToolPrompts}
+                drafts={promptDrafts}
+                onDraft={setPromptDraft}
+                onSave={saveToolPrompt}
+                onReset={(key) => resetToolPrompt(key, TOOL_PROMPT_LABELS[key] ?? key)}
                 expandedKey={expandedPromptKey}
                 onToggle={setExpandedPromptKey}
               />
@@ -2194,7 +2122,10 @@ function SettingsPageBody() {
                 labels={DYNAMIC_PROMPT_LABELS}
                 conditions={DYNAMIC_PROMPT_CONDITIONS}
                 values={toolPrompts}
-                onChange={setToolPrompts}
+                drafts={promptDrafts}
+                onDraft={setPromptDraft}
+                onSave={saveToolPrompt}
+                onReset={(key) => resetToolPrompt(key, DYNAMIC_PROMPT_LABELS[key] ?? key)}
                 expandedKey={expandedPromptKey}
                 onToggle={setExpandedPromptKey}
               />
