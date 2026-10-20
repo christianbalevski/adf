@@ -170,11 +170,11 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
                 {agent.handle}
               </span>
               <span className={`w-2 h-2 rounded-full shrink-0 ${isGhost ? 'border border-dashed border-neutral-400' : STATE_DOT[agent.state] ?? 'bg-neutral-400'}`} />
-              <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[11px] text-[var(--adf-ui-text-subtle)]">
                 {isGhost ? 'not started' : STATE_LABEL[agent.state] ?? agent.state}
               </span>
             </div>
-            <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate" title={agent.filePath}>
+            <div className="text-[10px] text-[var(--adf-ui-text-subtle)] truncate" title={agent.filePath}>
               {agent.filePath}
             </div>
           </div>
@@ -197,7 +197,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           )}
           <button
             onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
+            className="w-7 h-7 flex items-center justify-center rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
             title="Close (Esc)"
           >
             ✕
@@ -212,7 +212,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
                 {agent.status}
               </div>
               {agent.statusSince && (
-                <div className="mt-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
+                <div className="mt-1.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
                   status set {ago(Date.now() - agent.statusSince)}
                 </div>
               )}
@@ -255,7 +255,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
             <div className="px-4 py-3 rounded-xl bg-violet-50/60 dark:bg-violet-900/15 border border-violet-100 dark:border-violet-900/40">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] uppercase tracking-wide text-violet-500/80 dark:text-violet-400/80">last reply</span>
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
                   {ago(Date.now() - lastSay!.timestamp)}
                 </span>
               </div>
@@ -276,7 +276,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           {/* Family */}
           {(parent || children.length > 0) && (
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">family</span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">family</span>
               {parent && relative(parent, 'parent')}
               {children.map((c) => relative(c, 'child'))}
             </div>
@@ -293,7 +293,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           )}
           {agent.did && (
             <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 shrink-0">did</span>
+              <span className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] shrink-0">did</span>
               <button
                 onClick={() => copy('did', agent.did!)}
                 className="flex-1 min-w-0 text-left font-mono text-[10px] text-neutral-500 dark:text-neutral-400 truncate hover:text-neutral-700 dark:hover:text-neutral-200"
@@ -308,7 +308,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           {/* Recent activity — deeper than the hover card's five */}
           {recent.length > 0 && (
             <div>
-              <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)] mb-1">
                 recent activity
               </div>
               <div className="rounded-xl border border-neutral-100 dark:border-neutral-800 divide-y divide-neutral-50 dark:divide-neutral-800/60">
@@ -317,13 +317,13 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
                   const prefix = act.toolName.split('_')[0]
                   const color = typeMark?.nameColor ?? TOOL_COLORS[prefix] ?? 'text-neutral-500 dark:text-neutral-400'
                   const mark = typeMark?.mark ?? (act.type === 'message_sent' ? '>' : act.type === 'message_recv' ? '<' : act.isError === true ? '✗' : act.isError === false ? '✓' : '~')
-                  const markColor = typeMark?.markColor ?? (act.isError === true ? 'text-red-500' : act.isError === false ? 'text-green-500' : 'text-neutral-400')
+                  const markColor = typeMark?.markColor ?? (act.isError === true ? 'text-red-500' : act.isError === false ? 'text-green-500' : 'text-[var(--adf-ui-text-subtle)]')
                   return (
                     <div key={act.id} className="flex items-center gap-1.5 text-[11px] leading-tight px-2.5 py-1.5">
                       <span className={`font-mono shrink-0 w-3 text-center ${markColor}`}>{mark}</span>
                       <span className={`font-medium shrink-0 ${color}`}>{act.toolName}</span>
                       <span className="flex-1 min-w-0 text-neutral-500 dark:text-neutral-400 truncate">{act.args ?? ''}</span>
-                      <span className="shrink-0 text-[9px] text-neutral-300 dark:text-neutral-600 tabular-nums">
+                      <span className="shrink-0 text-[9px] text-[var(--adf-ui-text-subtle)] tabular-nums">
                         {ago(Date.now() - act.timestamp)}
                       </span>
                     </div>
@@ -333,7 +333,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
             </div>
           )}
           {recent.length === 0 && (
-            <div className="py-3 text-center text-[11px] text-neutral-400 dark:text-neutral-500">
+            <div className="py-3 text-center text-[11px] text-[var(--adf-ui-text-subtle)]">
               No activity recorded this session.
             </div>
           )}

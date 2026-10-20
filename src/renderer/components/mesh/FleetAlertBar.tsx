@@ -161,7 +161,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           </span>
         )}
         {counts.offline > 0 && (
-          <span className="flex items-center gap-1 text-[11px] text-neutral-400 dark:text-neutral-500" title="Offline agents (not started)">
+          <span className="flex items-center gap-1 text-[11px] text-[var(--adf-ui-text-subtle)]" title="Offline agents (not started)">
             <span className="w-1.5 h-1.5 rounded-full border border-dashed border-neutral-400" />
             {counts.offline}
           </span>
@@ -179,7 +179,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
               Σ {formatBurn(fleetBurn.totalTokens)}
               {fleetBurn.tokensPerMin > 0 && (
                 <>
-                  <span className="text-neutral-400 dark:text-neutral-500">↑{formatBurn(fleetBurn.inPerMin ?? 0)}</span>
+                  <span className="text-[var(--adf-ui-text-subtle)]">↑{formatBurn(fleetBurn.inPerMin ?? 0)}</span>
                   <span className="text-orange-400/90 dark:text-orange-500/90">↓{formatBurn(fleetBurn.outPerMin ?? 0)}/m</span>
                 </>
               )}
@@ -244,11 +244,11 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                       title={`Select ${members.length} agent${members.length !== 1 ? 's' : ''}`}
                     >
                       {name}
-                      <span className="text-[10px] text-neutral-400">{members.length}</span>
+                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">{members.length}</span>
                     </button>
                     <button
                       onClick={() => deleteGroup(name)}
-                      className="w-3.5 h-3.5 shrink-0 flex items-center justify-center rounded-full text-neutral-300 dark:text-neutral-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30"
+                      className="w-3.5 h-3.5 shrink-0 flex items-center justify-center rounded-full text-[var(--adf-ui-icon-muted)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30"
                       title="Forget group"
                     >
                       <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -280,11 +280,11 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                 title={`Select ${members.length} agent${members.length !== 1 ? 's' : ''}`}
               >
                 {name}
-                <span className="text-[10px] text-neutral-400">{members.length}</span>
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">{members.length}</span>
               </button>
               <button
                 onClick={() => deleteGroup(name)}
-                className="w-3.5 h-3.5 flex items-center justify-center rounded-full text-neutral-300 dark:text-neutral-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 opacity-0 group-hover:opacity-100"
+                className="w-3.5 h-3.5 flex items-center justify-center rounded-full text-[var(--adf-ui-icon-muted)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 opacity-0 group-hover:opacity-100"
                 title="Forget group"
               >
                 <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -306,7 +306,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap text-[11px] font-medium transition-colors ${
           voicesOn
             ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
-            : 'bg-white/60 dark:bg-neutral-900/60 border-dashed border-neutral-300 dark:border-neutral-700 text-neutral-400 dark:text-neutral-600 hover:text-neutral-600 dark:hover:text-neutral-300'
+            : 'bg-white/60 dark:bg-neutral-900/60 border-dashed border-neutral-300 dark:border-neutral-700 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300'
         }`}
         title="Voices — group status chips over the plots. On by default for terrain, hidden on diagnostic lenses. Press V to toggle."
       >
@@ -404,7 +404,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
               )}
             </div>
           )}
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 select-none whitespace-nowrap hidden sm:inline">
+          <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0 select-none whitespace-nowrap hidden sm:inline">
             press <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">.</kbd> to cycle
           </span>
         </div>

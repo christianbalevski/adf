@@ -123,7 +123,7 @@ export function AboutTab() {
         <h3 className="text-lg font-semibold text-neutral-800 dark:text-neutral-100">
           Agent Document Format
         </h3>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+        <p className="text-xs text-[var(--adf-ui-text-subtle)] mt-1">
           An open standard for portable AI agents
         </p>
       </div>

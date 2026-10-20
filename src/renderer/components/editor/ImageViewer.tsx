@@ -178,7 +178,7 @@ export function ImageViewer({ filePath, mime }: Props) {
             />
           </div>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-neutral-400 dark:text-neutral-500">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-[var(--adf-ui-text-subtle)]">
             {state.status === 'loading' && <span className="text-xs">Loading image</span>}
             {state.status === 'missing' && <span className="text-xs">File not found: {filePath}</span>}
             {state.status === 'failed' && (

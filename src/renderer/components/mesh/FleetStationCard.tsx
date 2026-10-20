@@ -130,7 +130,7 @@ export const FleetStationCard = memo(function FleetStationCard({
               {station.label}
             </span>
             <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[station.status] ?? 'bg-neutral-400'}`} />
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 italic shrink-0">
+            <span className="text-[10px] text-[var(--adf-ui-text-subtle)] italic shrink-0">
               {station.status}
             </span>
           </div>
@@ -178,7 +178,7 @@ export const FleetStationCard = memo(function FleetStationCard({
           <span title="Messages from the outside world into the fleet">↓ {stats.inbound} in</span>
           <span title="Messages from the fleet out through this station">↑ {stats.outbound} out</span>
           {stats.lastAt > 0 && (
-            <span className="text-neutral-400 dark:text-neutral-500 ml-auto">{ago(Date.now() - stats.lastAt)}</span>
+            <span className="text-[var(--adf-ui-text-subtle)] ml-auto">{ago(Date.now() - stats.lastAt)}</span>
           )}
         </div>
         {stats.top.length > 0 ? (
@@ -186,14 +186,14 @@ export const FleetStationCard = memo(function FleetStationCard({
             {stats.top.map((t) => (
               <div key={t.handle} className="flex items-baseline gap-2 text-[11px]">
                 <span className="text-neutral-700 dark:text-neutral-200 truncate">{t.handle}</span>
-                <span className="text-neutral-400 dark:text-neutral-500 tabular-nums ml-auto shrink-0">
+                <span className="text-[var(--adf-ui-text-subtle)] tabular-nums ml-auto shrink-0">
                   {t.count} msg{t.count === 1 ? '' : 's'}
                 </span>
               </div>
             ))}
           </div>
         ) : (
-          <div className="mt-1.5 text-[11px] italic text-neutral-400 dark:text-neutral-500">no traffic yet</div>
+          <div className="mt-1.5 text-[11px] italic text-[var(--adf-ui-text-subtle)]">no traffic yet</div>
         )}
       </div>
     </div>

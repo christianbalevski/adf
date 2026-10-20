@@ -139,7 +139,7 @@ export const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string;
   neutral: {
     dot: 'bg-neutral-400/70 dark:bg-neutral-500/80',
     rail: 'border-neutral-300/60 dark:border-neutral-600/60',
-    name: 'text-neutral-400 dark:text-neutral-500',
+    name: 'text-[var(--adf-ui-text-subtle)]',
     text: 'text-neutral-600 dark:text-neutral-300',
   },
 }
@@ -226,7 +226,7 @@ export function highlightCode(code: string): React.ReactNode {
 
     const [text, comment, blockComment, str, num, keyword] = match
     let cls = ''
-    if (comment || blockComment) cls = 'text-neutral-400 dark:text-neutral-500 italic'
+    if (comment || blockComment) cls = 'text-[var(--adf-ui-text-subtle)] italic'
     else if (str) cls = 'text-green-600 dark:text-green-400'
     else if (num) cls = 'text-amber-600 dark:text-amber-400'
     else if (keyword) cls = 'text-blue-600 dark:text-blue-400 font-semibold'

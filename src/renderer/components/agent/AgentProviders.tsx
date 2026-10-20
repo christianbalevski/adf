@@ -66,7 +66,7 @@ export function ModelIdField({ providerId, filePath, value, onChange, className 
   const sorted = [...models].sort((a, b) => a.localeCompare(b))
 
   if (loading) {
-    return <div className={`${className} text-neutral-400 dark:text-neutral-500 text-xs flex items-center`}>Loading models...</div>
+    return <div className={`${className} text-[var(--adf-ui-text-subtle)] text-xs flex items-center`}>Loading models...</div>
   }
   return (
     <div className="min-w-0 flex-1">
@@ -232,7 +232,7 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
   return (
     <div className="space-y-1.5">
       {carried.length === 0 && (
-        <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+        <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
           None. The agent uses the app&apos;s providers, which don&apos;t go with the file.
         </p>
       )}
@@ -248,7 +248,7 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
                 <div className="truncate text-xs text-neutral-700 dark:text-neutral-200">{labelOf(p)}</div>
                 {filePath && source && (
                   <Tooltip tip={SOURCE_TIP[source]}>
-                    <span className={`text-[10px] ${source === 'none' ? 'text-red-500' : source === 'locked' ? 'text-amber-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
+                    <span className={`text-[10px] ${source === 'none' ? 'text-red-500' : source === 'locked' ? 'text-amber-500' : 'text-[var(--adf-ui-text-subtle)]'}`}>
                       {SOURCE_TEXT[source]}
                     </span>
                   </Tooltip>

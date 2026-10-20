@@ -24,7 +24,7 @@ function Row({ keys, label }: { keys: string[]; label: string }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">{title}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--adf-ui-text-subtle)]">{title}</div>
       {children}
     </div>
   )
@@ -48,7 +48,7 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
       >
         <div className="col-span-2 flex items-baseline justify-between">
           <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">Keyboard commands</span>
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">? toggles · Esc closes</span>
+          <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">? toggles · Esc closes</span>
         </div>
         {FLEET_MAP_SECTIONS.map((section) => (
           <Section key={section.title} title={section.title}>

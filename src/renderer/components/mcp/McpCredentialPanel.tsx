@@ -402,7 +402,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
             Per-agent (ADF)
           </button>
         </div>
-        <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-1">
+        <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-1">
           {storageMode === 'app'
             ? 'Credentials stored in app settings, shared by all agents using this server.'
             : 'Credentials stored inside each ADF file. Different agents can have different keys.'}
@@ -464,7 +464,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
               })}
             </div>
           ) : (
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
               No environment variables. Click + Add to configure.
             </p>
           )}
@@ -487,7 +487,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
               </button>
               <button
                 onClick={loadAdfFiles}
-                className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+                className="text-[11px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200"
                 disabled={loadingFiles}
               >
                 {loadingFiles ? 'Scanning...' : 'Refresh'}
@@ -496,7 +496,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
           </div>
 
           {allEnvKeys.length > 0 && (
-            <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-1.5">
+            <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mb-1.5">
               Keys: {allEnvKeys.join(', ')}
               {requiredKeys.length > 0 && (
                 <span className="text-amber-500"> (required: {requiredKeys.join(', ')})</span>
@@ -506,7 +506,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
 
           {allAdfFiles.length === 0 && pendingRows.length === 0 ? (
             <div className="text-center py-3">
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {loadingFiles
                   ? 'Scanning tracked directories...'
                   : 'No ADF files found. Use + Add ADF to select a file.'}
@@ -550,13 +550,13 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
                             <span className="text-[9px] ml-0.5">{file.populatedKeys.length}</span>
                           </span>
                         ) : (
-                          <span className="text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                          <span className="text-[9px] text-[var(--adf-ui-text-subtle)] shrink-0">
                             No keys
                           </span>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-neutral-400">
+                        <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                           {isEditing ? 'Hide' : 'Edit'}
                         </span>
                         <span
@@ -572,7 +572,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
                     {/* Credential form */}
                     {isEditing && (
                       <div className="px-2.5 pb-2 border-t border-neutral-100 dark:border-neutral-700">
-                        <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-1.5 mb-1 truncate" title={file.filePath}>
+                        <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-1.5 mb-1 truncate" title={file.filePath}>
                           {file.filePath}
                         </p>
                         <div className="space-y-1.5">

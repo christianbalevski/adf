@@ -73,7 +73,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
           <button
             onClick={toggleRightPanel}
             aria-label="Collapse panel"
-            className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors shrink-0"
+            className="w-7 h-7 flex items-center justify-center rounded-md text-[var(--adf-ui-text-subtle)] hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors shrink-0"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="9 18 15 12 9 6" />
@@ -117,7 +117,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
               className={`flex-1 px-2 py-1.5 text-[11px] font-medium ${
                 agentSubTab === sub
                   ? 'text-[var(--adf-ui-text)] bg-[var(--adf-ui-accent-subtle)]'
-                  : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
+                  : 'text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
               {sub === 'identity' ? 'Identity' : sub === 'timers' ? 'Timers' : sub === 'skills' ? 'Skills' : 'Config'}

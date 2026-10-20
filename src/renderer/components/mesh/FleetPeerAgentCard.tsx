@@ -58,12 +58,12 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
             <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">
               {agent.handle}
             </span>
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">@ {peerHost}</span>
+            <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">@ {peerHost}</span>
           </div>
           {agent.status ? (
             <div className="text-[11px] text-neutral-500 dark:text-neutral-400 italic truncate">{agent.status}</div>
           ) : (
-            <div className="text-[11px] text-neutral-400 dark:text-neutral-500 italic">remote agent</div>
+            <div className="text-[11px] text-[var(--adf-ui-text-subtle)] italic">remote agent</div>
           )}
         </div>
       </div>
@@ -75,7 +75,7 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
             ✓ signed card
           </span>
         ) : (
-          <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-400 dark:text-neutral-500">
+          <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-[var(--adf-ui-text-subtle-on-fill)]">
             unverified
           </span>
         )}
@@ -119,14 +119,14 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
       {/* DID */}
       {didShort && (
         <div className="px-3.5 pb-1.5 pt-1">
-          <span className="font-mono text-[9px] text-neutral-400 dark:text-neutral-500 break-all" title={agent.did}>
+          <span className="font-mono text-[9px] text-[var(--adf-ui-text-subtle)] break-all" title={agent.did}>
             {didShort}
           </span>
         </div>
       )}
 
       {/* Teaser → full card */}
-      <div className="px-3.5 pb-2 text-[9px] text-neutral-300 dark:text-neutral-600">
+      <div className="px-3.5 pb-2 text-[9px] text-[var(--adf-ui-text-subtle)]">
         click tile for the full card
       </div>
     </div>

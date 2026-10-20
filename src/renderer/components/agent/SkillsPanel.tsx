@@ -379,7 +379,7 @@ export function SkillsPanel() {
 
   if (!filePath || !config) {
     return (
-      <div className="p-4 text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
+      <div className="p-4 text-sm text-[var(--adf-ui-text-subtle)] text-center mt-8">
         Open a file to view agent skills.
       </div>
     )
@@ -419,7 +419,7 @@ export function SkillsPanel() {
         {showNothingInstalled && (
           <div className="text-center py-8">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">No skills installed.</p>
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+            <p className="text-xs text-[var(--adf-ui-text-subtle)] mt-1">
               Every <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> in this agent is
               indexed and kept in its prompt. Skills are instructions, never authority.
             </p>
@@ -433,7 +433,7 @@ export function SkillsPanel() {
         )}
 
         {showNotGenerated && (
-          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 py-8 text-center">
+          <p className="text-[11px] text-[var(--adf-ui-text-subtle)] py-8 text-center">
             The catalog hasn&apos;t been generated yet — it appears on the next workspace write.
           </p>
         )}
@@ -478,11 +478,11 @@ export function SkillsPanel() {
                       : <span className="italic">no description</span>}
                   </p>
                 ) : (
-                  <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1 italic">
+                  <p className="text-[11px] text-[var(--adf-ui-text-subtle)] mt-1 italic">
                     muted — description removed from context
                   </p>
                 )}
-                <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 font-mono truncate" title={skill.path}>
+                <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1 font-mono truncate" title={skill.path}>
                   {sanitizeDisplayText(skill.path)}
                 </div>
                 {rowErrors[skill.name] && (
@@ -503,7 +503,7 @@ export function SkillsPanel() {
                   onChange={(e) => void handleToggle(skill.name, e.target.checked)}
                   className="rounded text-blue-500"
                 />
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                   {skill.enabled ? 'on' : 'off'}
                 </span>
               </label>
@@ -545,7 +545,7 @@ export function SkillsPanel() {
       {/* Footer */}
       <div className="shrink-0 border-t border-neutral-200 dark:border-neutral-700 px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+          <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
             {skills.length} skill{skills.length !== 1 ? 's' : ''}, {disabledCount} muted
             {registryBytes > 0 && ` · ~${estimateTokens(registryBytes)} tokens`}
           </span>
@@ -561,7 +561,7 @@ export function SkillsPanel() {
           )}
         </div>
         {registryBytes > 0 && (
-          <div className="text-[10px] text-neutral-400 dark:text-neutral-500 text-right mt-0.5">
+          <div className="text-[10px] text-[var(--adf-ui-text-subtle)] text-right mt-0.5">
             runtime-generated — edits are overwritten
           </div>
         )}
@@ -836,7 +836,7 @@ function CatalogDialog({
               />
 
               <div className="mt-2 flex items-center gap-2">
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                   {query ? `${visible.length} of ${merged.length}` : merged.length} skill
                   {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
                   {sourceCount !== 1 ? 's' : ''}
@@ -1009,7 +1009,7 @@ function CatalogDialog({
         </div>
 
         <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+          <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
             Installing writes files under skills/&lt;name&gt;/ — no tools, files, or approvals are granted.
           </span>
           <div className="flex-1" />
@@ -1107,7 +1107,7 @@ function SkillPreview({
         >
           ← Catalog
         </button>
-        <span className="text-neutral-300 dark:text-neutral-600">/</span>
+        <span className="text-[var(--adf-ui-icon-muted)]">/</span>
         <span className="min-w-0 truncate font-mono text-neutral-600 dark:text-neutral-300">
           {sanitizeDisplayText(entry.name)}
         </span>
@@ -1157,7 +1157,7 @@ function SkillPreview({
             ) : (
               <span
                 title={entry.raw_url}
-                className="min-w-0 truncate font-mono text-neutral-400 dark:text-neutral-500"
+                className="min-w-0 truncate font-mono text-[var(--adf-ui-text-subtle)]"
               >
                 {sanitizeDisplayText(elideMiddle(entry.raw_url, 68))}
               </span>
@@ -1190,7 +1190,7 @@ function SkillPreview({
       {/* What Install writes beside SKILL.md, straight from the catalog entry. */}
       {files.length > 0 && (
         <div className="mt-2 shrink-0 rounded-lg border border-neutral-200 dark:border-neutral-700 px-2.5 py-2">
-          <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
+          <div className="text-[10px] text-[var(--adf-ui-text-subtle)]">
             Also installs {files.length} file{files.length !== 1 ? 's' : ''} under{' '}
             <span className="font-mono">skills/{entry.name}/</span>
           </div>
@@ -1217,7 +1217,7 @@ function SkillPreview({
             <p className="text-sm text-neutral-500 dark:text-neutral-400">
               Could not read this skill: {sanitizeDisplayText(state.error)}
             </p>
-            <p className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+            <p className="mt-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
               A package over {Math.round(MAX_SKILL_FILE_BYTES / 1024)} KB, or one that is not text,
               is refused before it is fetched — the same bound the indexer enforces.
             </p>
@@ -1234,7 +1234,7 @@ function SkillPreview({
               <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 px-2.5 py-2">
                 {parsed.fields.map((field) => (
                   <Fragment key={field.key}>
-                    <dt className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+                    <dt className="font-mono text-[10px] text-[var(--adf-ui-text-subtle)]">
                       {sanitizeDisplayText(field.key)}
                     </dt>
                     <dd className="min-w-0 break-words text-[11px] text-neutral-600 dark:text-neutral-300">
@@ -1252,7 +1252,7 @@ function SkillPreview({
                 dangerouslySetInnerHTML={{ __html: bodyHtml }}
               />
             ) : (
-              <p className="m-auto py-6 text-center text-[11px] italic text-neutral-400 dark:text-neutral-500">
+              <p className="m-auto py-6 text-center text-[11px] italic text-[var(--adf-ui-text-subtle)]">
                 This SKILL.md has no body — only frontmatter.
               </p>
             )}

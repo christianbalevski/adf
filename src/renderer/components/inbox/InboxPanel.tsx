@@ -62,7 +62,7 @@ export function InboxPanel() {
           onKeyDown={(e) => { if (e.key === 'Escape') setSearch('') }}
           placeholder="Search…"
           aria-label="Search messages"
-          className="w-full h-6 text-xs px-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
+          className="w-full h-6 text-xs px-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-[var(--adf-ui-text-subtle)] outline-none focus:border-blue-400 min-w-0"
         />
         <div className="flex items-center gap-2">
           <div className="flex-1 flex rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
@@ -88,7 +88,7 @@ export function InboxPanel() {
         {filter === 'outbox' ? (
           sortedOutbox.length === 0 ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-xs text-neutral-400 dark:text-neutral-500">
+              <p className="text-xs text-[var(--adf-ui-text-subtle)]">
                 {outboxMessages.length > 0 && searching ? 'No sent messages match.' : 'No sent messages yet.'}
               </p>
             </div>
@@ -101,7 +101,7 @@ export function InboxPanel() {
           )
         ) : sorted.length === 0 ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="text-xs text-[var(--adf-ui-text-subtle)]">
               {messages.length === 0 ? 'No messages yet.' : searching ? 'No messages match.' : 'No messages match this filter.'}
             </p>
           </div>
@@ -186,7 +186,7 @@ const MessageRow = memo(function MessageRow({ message, onClick }: { message: Inb
         )}
         <StatusBadge status={message.status} />
         <VerificationBadge meta={message.meta} />
-        <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0" title={absoluteTime(message.received_at)}>
+        <span className="ml-auto text-[9px] text-[var(--adf-ui-text-subtle)] shrink-0" title={absoluteTime(message.received_at)}>
           {formatTime(message.received_at)}
         </span>
       </div>
@@ -222,7 +222,7 @@ const OutboxRow = memo(function OutboxRow({ message, onClick }: { message: Rende
             {message.status_code}
           </span>
         )}
-        <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0" title={absoluteTime(message.created_at)}>
+        <span className="ml-auto text-[9px] text-[var(--adf-ui-text-subtle)] shrink-0" title={absoluteTime(message.created_at)}>
           {formatTime(message.created_at)}
         </span>
       </div>
@@ -261,7 +261,7 @@ const OutboxDetail = memo(function OutboxDetail({ message }: { message: Renderer
         <MetaRow label="Reply-To" value={message.reply_to} mono />
         <MetaRow label="Subject" value={message.subject} />
 
-        <span className="text-neutral-400 dark:text-neutral-500">Status</span>
+        <span className="text-[var(--adf-ui-text-subtle)]">Status</span>
         <span className="flex items-center gap-1.5">
           <OutboxStatusBadge status={message.status} />
         </span>
@@ -275,7 +275,7 @@ const OutboxDetail = memo(function OutboxDetail({ message }: { message: Renderer
       </div>
 
       <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3">
-        <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label className="block text-[10px] text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1">
           Content
         </label>
         <pre className="whitespace-pre-wrap overflow-auto max-h-[50vh] text-xs font-mono text-neutral-800 dark:text-neutral-200 bg-neutral-50 dark:bg-neutral-900 rounded-lg p-3 border border-neutral-200 dark:border-neutral-700">
@@ -290,7 +290,7 @@ const MetaRow = memo(function MetaRow({ label, value, mono }: { label: string; v
   if (value == null || value === '') return null
   return (
     <>
-      <span className="text-neutral-400 dark:text-neutral-500">{label}</span>
+      <span className="text-[var(--adf-ui-text-subtle)]">{label}</span>
       <span className={`text-neutral-700 dark:text-neutral-300 ${mono ? 'font-mono text-[10px]' : ''}`}>
         {typeof value === 'number' ? new Date(value).toLocaleString() : value}
       </span>
@@ -311,7 +311,7 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
             show that as the working address when the two differ. */}
         {message.return_path && message.return_path !== message.reply_to ? (
           <>
-            <span className="text-neutral-400 dark:text-neutral-500">Reply-To</span>
+            <span className="text-[var(--adf-ui-text-subtle)]">Reply-To</span>
             <span className="font-mono text-[10px] text-neutral-700 dark:text-neutral-300">
               {message.return_path}
               <span className="ml-1.5 font-sans text-[9px] px-1.5 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400">
@@ -327,12 +327,12 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
         <MetaRow label="Source" value={message.source} />
         <MetaRow label="Network" value={message.network} />
 
-        <span className="text-neutral-400 dark:text-neutral-500">Status</span>
+        <span className="text-[var(--adf-ui-text-subtle)]">Status</span>
         <StatusBadge status={message.status} />
 
         {(message.meta?.message_verified != null || message.meta?.payload_verified != null || message.meta?.identity_verified != null || message.meta?.payload_encrypted != null) && (
           <>
-            <span className="text-neutral-400 dark:text-neutral-500">Security</span>
+            <span className="text-[var(--adf-ui-text-subtle)]">Security</span>
             <span className="flex items-center gap-1.5 flex-wrap">
               <VerificationBadge meta={message.meta} />
               {message.meta?.payload_encrypted === true && (
@@ -344,10 +344,10 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
                 </span>
               )}
               {message.meta?.message_verified === true && message.meta?.payload_verified !== true && (
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">message only</span>
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">message only</span>
               )}
               {message.meta?.message_verified === true && message.meta?.payload_verified === true && (
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">message + payload</span>
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">message + payload</span>
               )}
             </span>
           </>
@@ -363,7 +363,7 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
       {/* Source context */}
       {message.source_context && Object.keys(message.source_context).length > 0 && (
         <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3">
-          <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          <label className="block text-[10px] text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1">
             Source Context
           </label>
           <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
@@ -377,13 +377,13 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
       {/* Attachments */}
       {message.attachments && message.attachments.length > 0 && (
         <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3">
-          <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+          <label className="block text-[10px] text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1">
             Attachments ({message.attachments.length})
           </label>
           <div className="space-y-1">
             {message.attachments.map((att, i) => (
               <div key={i} className="text-xs text-neutral-700 dark:text-neutral-300 font-mono bg-neutral-50 dark:bg-neutral-800 rounded px-2 py-1">
-                {att.filename} <span className="text-neutral-400 dark:text-neutral-500">({att.content_type}{att.size_bytes != null ? `, ${formatSize(att.size_bytes)}` : ''})</span>
+                {att.filename} <span className="text-[var(--adf-ui-text-subtle)]">({att.content_type}{att.size_bytes != null ? `, ${formatSize(att.size_bytes)}` : ''})</span>
               </div>
             ))}
           </div>
@@ -392,7 +392,7 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
 
       {/* Content */}
       <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3">
-        <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
+        <label className="block text-[10px] text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1">
           Content
         </label>
         <pre className="whitespace-pre-wrap overflow-auto max-h-[50vh] text-xs font-mono text-neutral-800 dark:text-neutral-200 bg-neutral-50 dark:bg-neutral-900 rounded-lg p-3 border border-neutral-200 dark:border-neutral-700">
@@ -418,7 +418,7 @@ const RawMessageSection = memo(function RawMessageSection({ rawMessage }: { rawM
     <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-[10px] text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1 hover:text-neutral-600 dark:hover:text-neutral-300"
+        className="flex items-center gap-1 text-[10px] text-[var(--adf-ui-text-subtle)] uppercase tracking-wider mb-1 hover:text-neutral-600 dark:hover:text-neutral-300"
       >
         <span className="text-[8px]">{expanded ? '\u25BC' : '\u25B6'}</span>
         Raw Message
@@ -487,7 +487,7 @@ const VerificationBadge = memo(function VerificationBadge({ meta }: { meta?: Rec
   }
   return (
     <span
-      className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-neutral-100 dark:bg-neutral-700 text-neutral-400 dark:text-neutral-500 font-medium"
+      className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-neutral-100 dark:bg-neutral-700 text-[var(--adf-ui-text-subtle-on-fill)] font-medium"
       title="No signature"
     >
       unsigned

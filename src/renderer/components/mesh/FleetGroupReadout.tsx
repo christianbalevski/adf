@@ -116,7 +116,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
   const stat = (value: string, name: string, accent?: string): ReactElement => (
     <div className="flex flex-col items-center px-4 py-2">
       <span className={`text-lg font-semibold tabular-nums ${accent ?? 'text-neutral-800 dark:text-neutral-100'}`}>{value}</span>
-      <span className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">{name}</span>
+      <span className="text-[10px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">{name}</span>
     </div>
   )
 
@@ -142,14 +142,14 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
           <div className="flex-1 min-w-0">
             <div className="text-[15px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">{label}</div>
             {voice && (
-              <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
+              <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">
                 {steward ? '♛ steward' : 'voice'} · {voice.handle}
               </div>
             )}
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            className="w-7 h-7 flex items-center justify-center rounded-full text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800"
             title="Close (Esc)"
           >
             ✕
@@ -163,7 +163,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
               {voice.status}
             </div>
             {voice.statusSince && (
-              <div className="mt-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
+              <div className="mt-1.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
                 status set {ago(Date.now() - voice.statusSince)}
               </div>
             )}
@@ -208,7 +208,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
             </button>
           ))}
           {members.length === 0 && (
-            <div className="py-6 text-center text-[12px] text-neutral-400 dark:text-neutral-500">
+            <div className="py-6 text-center text-[12px] text-[var(--adf-ui-text-subtle)]">
               No agents in this group.
             </div>
           )}

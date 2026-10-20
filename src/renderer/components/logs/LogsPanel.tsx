@@ -245,7 +245,7 @@ export function LogsPanel() {
           onKeyDown={(e) => { if (e.key === 'Escape') setTextFilter('') }}
           placeholder="Filter…"
           aria-label="Filter logs"
-          className={`${PANEL_SELECT_CLASS} w-40 min-w-0 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 focus:border-blue-400`}
+          className={`${PANEL_SELECT_CLASS} w-40 min-w-0 placeholder:text-[var(--adf-ui-text-subtle)] focus:border-blue-400`}
         />
 
         {/* Live toggle */}
@@ -285,7 +285,7 @@ export function LogsPanel() {
         className="flex-1 overflow-auto font-mono text-[11px] leading-[18px] px-3 py-1"
       >
         {filtered.length === 0 ? (
-          <div className="text-neutral-400 dark:text-neutral-600 py-4 text-center">
+          <div className="text-[var(--adf-ui-text-subtle)] py-4 text-center">
             {logs.length > 0 && filtering ? 'No entries match' : 'No log entries'}
           </div>
         ) : (
@@ -313,7 +313,7 @@ export function LogsPanel() {
 
       {/* Footer: how much of the log is loaded */}
       {total > 0 && (
-        <div className="flex items-center gap-2 px-3 py-0.5 text-[10px] text-neutral-400 dark:text-neutral-500 border-t border-neutral-200 dark:border-white/5 shrink-0">
+        <div className="flex items-center gap-2 px-3 py-0.5 text-[10px] text-[var(--adf-ui-text-subtle)] border-t border-neutral-200 dark:border-white/5 shrink-0">
           <span className="tabular-nums">
             {filtering ? `${filtered.length.toLocaleString()} match · ` : ''}{showingLabel(logs.length, total)}
           </span>
@@ -353,7 +353,7 @@ function LogRow({
         onClick={hasData ? onToggle : undefined}
         className={`flex gap-2 ${hasData ? 'cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-900/50' : ''}`}
       >
-        <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none" title={new Date(entry.created_at).toLocaleString()}>
+        <span className="text-[var(--adf-ui-text-subtle)] shrink-0 select-none" title={new Date(entry.created_at).toLocaleString()}>
           [{formatTime(entry.created_at)}]
         </span>
         <span className={`shrink-0 font-semibold ${LEVEL_COLORS[level] || 'text-neutral-500'}`}>
@@ -369,7 +369,7 @@ function LogRow({
           {entry.origin || entry.event ? '— ' : ''}{entry.message}
         </span>
         {hasData && (
-          <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none">
+          <span className="text-[var(--adf-ui-text-subtle)] shrink-0 select-none">
             {expanded ? '▼' : '▶'}
           </span>
         )}

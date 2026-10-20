@@ -139,7 +139,7 @@ export function ApprovalRow({
             </span>
           )}
           {isProtection && <OverrideBadge />}
-          <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+          <span className="ml-auto shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
             {relativeAge(approval.requestedAt, now)}
           </span>
         </div>
@@ -205,7 +205,7 @@ const OUTCOME_APPEARANCE: Record<NotificationOutcome, { label: string; tone: str
   answered: { label: 'answered', tone: 'text-[var(--status-info)]' },
   // No one decided — the agent stopped, the turn was interrupted, or the
   // auto-deny timer fired. Reading that as "rejected" would be a lie.
-  expired: { label: 'expired', tone: 'text-neutral-400 dark:text-neutral-500' },
+  expired: { label: 'expired', tone: 'text-[var(--adf-ui-text-subtle)]' },
   // The runtime ended it: the work the request waited on finished.
   completed: { label: 'completed', tone: 'text-[var(--status-info)]' },
 }
@@ -223,7 +223,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
   return (
     <div className="px-3 py-1.5 border-b border-hairline last:border-b-0 opacity-55">
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
+        <span className="shrink-0 text-[var(--adf-ui-text-subtle)]">
           {isAsk ? <AskIcon /> : <ShieldIcon />}
         </span>
         <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300 truncate">
@@ -235,7 +235,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
           </span>
         )}
         <span className={`shrink-0 text-[10px] font-medium ${outcome.tone}`}>{outcome.label}</span>
-        <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+        <span className="ml-auto shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
           {relativeAge(entry.resolvedAt, now)} ago
         </span>
       </div>
@@ -358,7 +358,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
               )}
               {history.length > 0 && (
                 <>
-                  <div className="px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                  <div className="px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
                     Recent
                   </div>
                   {history.map((entry) => (
@@ -574,7 +574,7 @@ export function ApprovalToasts() {
             <button
               onClick={() => dismissToast(toast.id)}
               aria-label="Dismiss"
-              className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 text-xs leading-none"
+              className="shrink-0 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 text-xs leading-none"
             >
               ×
             </button>

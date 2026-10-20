@@ -100,7 +100,7 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
           <span className="text-[14px] font-semibold text-neutral-800 dark:text-neutral-100 truncate max-w-40">
             {agent?.handle ?? filePath.split('/').pop()?.replace(/\.adf$/, '')}
           </span>
-          <span className="text-[12px] text-neutral-400 dark:text-neutral-500 shrink-0">wants to call</span>
+          <span className="text-[12px] text-[var(--adf-ui-text-subtle)] shrink-0">wants to call</span>
         </span>
       }
       headerActions={onOpenAgent && (

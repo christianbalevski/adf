@@ -21,7 +21,7 @@ export function ShutdownOverlay() {
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-white/80 dark:bg-neutral-900/85 backdrop-blur-sm">
       <div className="flex flex-col items-center gap-4">
         <svg
-          className="h-8 w-8 animate-spin text-neutral-400 dark:text-neutral-500"
+          className="h-8 w-8 animate-spin text-[var(--adf-ui-text-subtle)]"
           xmlns="http://www.w3.org/2000/svg"
           fill="none"
           viewBox="0 0 24 24"

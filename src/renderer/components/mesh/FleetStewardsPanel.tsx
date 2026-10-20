@@ -96,7 +96,7 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
         </span>
         <svg
           width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-          className={`text-neutral-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+          className={`text-[var(--adf-ui-text-subtle)] transition-transform ${collapsed ? '-rotate-90' : ''}`}
         >
           <path d="M6 9l6 6 6-6" />
         </svg>
@@ -121,7 +121,7 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
                     <span className="truncate text-[11px] font-medium text-neutral-700 dark:text-neutral-200">
                       {r.label}
                     </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] truncate">
                       ♛ {r.agent.handle}
                     </span>
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ml-auto ${
@@ -141,7 +141,7 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
                       {r.agent.status || (isGhost ? 'not started' : 'no status reported')}
                     </span>
                     {age && (
-                      <span className="shrink-0 text-[9px] tabular-nums text-neutral-400 dark:text-neutral-500">
+                      <span className="shrink-0 text-[9px] tabular-nums text-[var(--adf-ui-text-subtle)]">
                         {age}
                       </span>
                     )}

@@ -81,7 +81,7 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
         </span>
         <svg
           width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-          className={`text-neutral-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+          className={`text-[var(--adf-ui-text-subtle)] transition-transform ${collapsed ? '-rotate-90' : ''}`}
         >
           <path d="M6 9l6 6 6-6" />
         </svg>
@@ -107,14 +107,14 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
                       {a.handle}
                     </span>
                     {sched && (
-                      <span className={`shrink-0 text-[9px] px-1 py-px rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-400 dark:text-neutral-500 ${
+                      <span className={`shrink-0 text-[9px] px-1 py-px rounded bg-neutral-100 dark:bg-neutral-800 text-[var(--adf-ui-text-subtle)] ${
                         a.nextWakeSchedule?.mode === 'cron' ? 'font-mono' : ''
                       }`}>
                         {sched}
                       </span>
                     )}
                     {a.nextWakeScope === 'system' && (
-                      <span className="shrink-0 text-[9px] text-neutral-400 dark:text-neutral-500" title="Runs a system lambda, not the agent loop">
+                      <span className="shrink-0 text-[9px] text-[var(--adf-ui-text-subtle)]" title="Runs a system lambda, not the agent loop">
                         λ
                       </span>
                     )}
@@ -125,7 +125,7 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
                 </span>
                 <span
                   className={`shrink-0 font-mono text-[10px] tabular-nums ${
-                    i === 0 ? 'text-sky-600 dark:text-sky-400 font-semibold' : 'text-neutral-400 dark:text-neutral-500'
+                    i === 0 ? 'text-sky-600 dark:text-sky-400 font-semibold' : 'text-[var(--adf-ui-text-subtle)]'
                   }`}
                 >
                   {formatEta(a.nextWakeAt! - now)}

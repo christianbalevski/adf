@@ -492,7 +492,7 @@ export function AgentFiles() {
 
       {/* Single header row: title · search · actions */}
       <div className="shrink-0 flex items-center gap-2 px-3 pt-2 pb-2">
-        <div className="shrink-0 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
+        <div className="shrink-0 text-[10px] uppercase tracking-wider text-[var(--adf-ui-text-subtle)] font-medium">
           Files ({filtering ? `${visibleFiles.length}/${files.length}` : files.length})
         </div>
         <div className="relative flex-1 min-w-0">
@@ -505,7 +505,7 @@ export function AgentFiles() {
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className="absolute left-1.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 pointer-events-none"
+            className="absolute left-1.5 top-1/2 -translate-y-1/2 text-[var(--adf-ui-text-subtle)] pointer-events-none"
           >
             <circle cx="11" cy="11" r="7" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -518,7 +518,7 @@ export function AgentFiles() {
             }}
             placeholder="Search…"
             aria-label="Search files"
-            className="w-full h-6 text-xs pl-6 pr-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
+            className="w-full h-6 text-xs pl-6 pr-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-[var(--adf-ui-text-subtle)] outline-none focus:border-blue-400 min-w-0"
           />
         </div>
         <div className="flex items-center shrink-0">
@@ -610,11 +610,11 @@ export function AgentFiles() {
                 <span className="text-xs truncate flex-1 min-w-0 text-neutral-700 dark:text-neutral-300">
                   {displayName}
                 </span>
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">
                   {formatSize(file.size)}
                 </span>
                 <span
-                  className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 tabular-nums"
+                  className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0 tabular-nums"
                   title={`Modified ${absoluteTime(toEpochMs(file.updated_at))}`}
                 >
                   {relativeTime(toEpochMs(file.updated_at), now)}
@@ -654,10 +654,10 @@ export function AgentFiles() {
                     className="flex items-center gap-1.5 px-2 py-1"
                     style={{ paddingLeft: `${8 + depth * 16}px` }}
                   >
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-3 text-center shrink-0">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-3 text-center shrink-0">
                       {isCollapsed ? '\u25B6' : '\u25BC'}
                     </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">
                       {isCollapsed ? '\uD83D\uDCC1' : '\uD83D\uDCC2'}
                     </span>
                     <input
@@ -676,7 +676,7 @@ export function AgentFiles() {
                   >
                     <button
                       onClick={() => toggleDir(node.path)}
-                      className="text-[10px] text-neutral-400 dark:text-neutral-500 w-3 text-center shrink-0 hover:text-neutral-600 dark:hover:text-neutral-300 cursor-pointer"
+                      className="text-[10px] text-[var(--adf-ui-text-subtle)] w-3 text-center shrink-0 hover:text-neutral-600 dark:hover:text-neutral-300 cursor-pointer"
                     >
                       {isCollapsed ? '\u25B6' : '\u25BC'}
                     </button>
@@ -685,14 +685,14 @@ export function AgentFiles() {
                       onDoubleClick={() => startFolderRename(node.path)}
                       title="Double-click to rename folder"
                     >
-                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">
                         {isCollapsed ? '\uD83D\uDCC1' : '\uD83D\uDCC2'}
                       </span>
                       <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400 truncate">
                         {node.name}
                       </span>
                     </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 ml-auto">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0 ml-auto">
                       {fileCount}
                     </span>
                   </div>
@@ -708,21 +708,21 @@ export function AgentFiles() {
         })()}
         {files.length === 0 && (
           <div className="text-center py-2">
-            <p className="text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="text-xs text-[var(--adf-ui-text-subtle)]">
               No files yet. <DocsLink href={DOCS.files} className="!text-xs" />
             </p>
           </div>
         )}
         {onlySeededFiles && !filtering && (
           <div className="text-center pt-3 pb-1">
-            <p className="text-xs text-neutral-400 dark:text-neutral-500">
+            <p className="text-xs text-[var(--adf-ui-text-subtle)]">
               Drop files or folders here to give the agent more to work with. <DocsLink href={DOCS.files} className="!text-xs" />
             </p>
           </div>
         )}
         {files.length > 0 && visibleFiles.length === 0 && (
           <div className="text-center py-2">
-            <p className="text-xs text-neutral-400 dark:text-neutral-500">No files match "{fileFilter.trim()}".</p>
+            <p className="text-xs text-[var(--adf-ui-text-subtle)]">No files match "{fileFilter.trim()}".</p>
           </div>
         )}
       </div>
@@ -730,7 +730,7 @@ export function AgentFiles() {
       {/* Tables section */}
       {tables.length > 0 && (
         <div className="px-3 pb-3 space-y-1 border-t border-neutral-200 dark:border-neutral-700 pt-3 min-w-0">
-          <div className="text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium mb-1">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--adf-ui-text-subtle)] font-medium mb-1">
             Tables ({tables.length})
           </div>
           {tables.map((table) => {
@@ -742,13 +742,13 @@ export function AgentFiles() {
                     onClick={() => toggleTable(table.name)}
                     className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded hover:bg-neutral-50 dark:hover:bg-neutral-800 text-left min-w-0"
                   >
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                       {isExpanded ? '\u25BC' : '\u25B6'}
                     </span>
                     <span className="text-xs text-neutral-700 dark:text-neutral-300 flex-1 truncate font-mono">
                       {table.name}
                     </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">
                       {table.row_count} row{table.row_count !== 1 ? 's' : ''}
                     </span>
                   </button>
@@ -765,7 +765,7 @@ export function AgentFiles() {
                 {isExpanded && (
                   <div className="mt-1 mb-2 mx-1 overflow-x-auto rounded border border-neutral-200 dark:border-neutral-700">
                     {tableData.columns.length === 0 ? (
-                      <div className="px-3 py-2 text-xs text-neutral-400 dark:text-neutral-500">Empty table</div>
+                      <div className="px-3 py-2 text-xs text-[var(--adf-ui-text-subtle)]">Empty table</div>
                     ) : (
                       <table className="w-max text-[11px]">
                         <thead>
@@ -801,7 +801,7 @@ export function AgentFiles() {
                       </table>
                     )}
                     {table.row_count > 50 && (
-                      <div className="px-2 py-1 text-[10px] text-neutral-400 dark:text-neutral-500 bg-neutral-50 dark:bg-neutral-800 border-t border-neutral-200 dark:border-neutral-700">
+                      <div className="px-2 py-1 text-[10px] text-[var(--adf-ui-text-subtle)] bg-neutral-50 dark:bg-neutral-800 border-t border-neutral-200 dark:border-neutral-700">
                         Showing first 50 of {table.row_count} rows
                       </div>
                     )}
@@ -866,17 +866,17 @@ export function AgentFiles() {
             {/* Metadata bar */}
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-neutral-500 dark:text-neutral-400 mb-3 pb-3 border-b border-neutral-200 dark:border-neutral-700">
               <span>
-                <span className="text-neutral-400 dark:text-neutral-500">Size</span>{' '}
+                <span className="text-[var(--adf-ui-text-subtle)]">Size</span>{' '}
                 <span className="text-neutral-700 dark:text-neutral-300">{formatSize(viewingFile.meta.size)}</span>
               </span>
               {viewingFile.meta.mime_type && (
                 <span>
-                  <span className="text-neutral-400 dark:text-neutral-500">Type</span>{' '}
+                  <span className="text-[var(--adf-ui-text-subtle)]">Type</span>{' '}
                   <span className="text-neutral-700 dark:text-neutral-300 font-mono">{viewingFile.meta.mime_type}</span>
                 </span>
               )}
               <span>
-                <span className="text-neutral-400 dark:text-neutral-500">Protection</span>{' '}
+                <span className="text-[var(--adf-ui-text-subtle)]">Protection</span>{' '}
                 <span className={
                   viewingFile.meta.protection === 'read_only'
                     ? 'text-red-600 dark:text-red-400'
@@ -886,17 +886,17 @@ export function AgentFiles() {
                 }>{viewingFile.meta.protection === 'read_only' ? 'read-only' : viewingFile.meta.protection === 'no_delete' ? 'no-delete' : 'none'}</span>
               </span>
               <span>
-                <span className="text-neutral-400 dark:text-neutral-500">Authorized</span>{' '}
+                <span className="text-[var(--adf-ui-text-subtle)]">Authorized</span>{' '}
                 <span className={viewingFile.meta.authorized ? 'text-green-600 dark:text-green-400' : 'text-neutral-700 dark:text-neutral-300'}>
                   {viewingFile.meta.authorized ? 'yes' : 'no'}
                 </span>
               </span>
               <span>
-                <span className="text-neutral-400 dark:text-neutral-500">Created</span>{' '}
+                <span className="text-[var(--adf-ui-text-subtle)]">Created</span>{' '}
                 <span className="text-neutral-700 dark:text-neutral-300">{formatDate(viewingFile.meta.created_at)}</span>
               </span>
               <span>
-                <span className="text-neutral-400 dark:text-neutral-500">Modified</span>{' '}
+                <span className="text-[var(--adf-ui-text-subtle)]">Modified</span>{' '}
                 <span className="text-neutral-700 dark:text-neutral-300">{formatDate(viewingFile.meta.updated_at)}</span>
               </span>
             </div>
@@ -967,7 +967,7 @@ export function AgentFiles() {
                   disabled={viewingFile.meta.protection !== 'none'}
                   className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
                     viewingFile.meta.protection !== 'none'
-                      ? 'text-neutral-300 dark:text-neutral-600 border border-neutral-200 dark:border-neutral-700 cursor-not-allowed'
+                      ? 'text-[var(--adf-ui-text-disabled)] border border-neutral-200 dark:border-neutral-700 cursor-not-allowed'
                       : 'text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-900/30 cursor-pointer'
                   }`}
                   title={viewingFile.meta.protection !== 'none' ? 'Cannot delete protected files' : 'Delete file'}

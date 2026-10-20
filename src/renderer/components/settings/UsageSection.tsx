@@ -244,7 +244,7 @@ export function TokenUsageSection() {
       </div>
 
       {allDates.length === 0 ? (
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
+        <p className="text-xs text-[var(--adf-ui-text-subtle)]">
           No token usage recorded yet.
         </p>
       ) : (

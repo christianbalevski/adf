@@ -343,7 +343,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                     <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
                       {reg.name || '(unnamed)'}
                     </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                       {STATUS_LABELS[status] ?? status}{state?.toolCount ? ` · ${state.toolCount} tools` : ''}
                     </span>
                     {/* Chip slot 1: placement */}
@@ -413,7 +413,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                       </span>
                     ) : !reg.lastVerifiedAt ? (
                       <Tooltip tip="This server has not completed a successful Connect yet — open it and use Connect to verify.">
-                        <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-400 dark:text-neutral-500 rounded">
+                        <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-[var(--adf-ui-text-subtle-on-fill)] rounded">
                           Not verified
                         </span>
                       </Tooltip>
@@ -424,7 +424,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                       <Tooltip tip="Sign out — clears the stored token (re-sign-in is one click).">
                         <button
                           onClick={(e) => { e.stopPropagation(); handleOAuthSignOut(reg) }}
-                          className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+                          className="p-1 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200"
                           aria-label="Sign out"
                         >
                           <svg
@@ -442,7 +442,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                       <button
                         onClick={(e) => { e.stopPropagation(); handleReconnect(reg) }}
                         disabled={reconnect?.loading || !reg.name}
-                        className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 disabled:opacity-40"
+                        className="p-1 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 disabled:opacity-40"
                       >
                         <svg
                           width="14" height="14" viewBox="0 0 24 24" fill="none"

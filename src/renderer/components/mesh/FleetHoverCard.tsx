@@ -184,7 +184,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
             const prefix = act.toolName.split('_')[0]
             const color = typeMark?.nameColor ?? TOOL_COLORS[prefix] ?? 'text-neutral-500 dark:text-neutral-400'
             const mark = typeMark?.mark ?? (act.type === 'message_sent' ? '>' : act.type === 'message_recv' ? '<' : act.isError === true ? '✗' : act.isError === false ? '✓' : '~')
-            const markColor = typeMark?.markColor ?? (act.isError === true ? 'text-red-500' : act.isError === false ? 'text-green-500' : 'text-neutral-400')
+            const markColor = typeMark?.markColor ?? (act.isError === true ? 'text-red-500' : act.isError === false ? 'text-green-500' : 'text-[var(--adf-ui-text-subtle)]')
             return (
               <div key={act.id} className="flex items-center gap-1 text-[10px] leading-tight px-1.5">
                 <span className={`font-mono shrink-0 w-3 text-center ${markColor}`}>{mark}</span>
@@ -196,7 +196,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
         </div>
       )}
 
-      <div className="px-3.5 py-1.5 text-[9px] text-neutral-400 dark:text-neutral-600 border-t border-neutral-100 dark:border-neutral-800">
+      <div className="px-3.5 py-1.5 text-[9px] text-[var(--adf-ui-text-subtle)] border-t border-neutral-100 dark:border-neutral-800">
         click for details · double-click tile to open
       </div>
     </div>

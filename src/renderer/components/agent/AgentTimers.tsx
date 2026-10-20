@@ -448,7 +448,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
                 onChange={(e) => setCron(e.target.value)}
                 className={inputClass + ' font-mono'}
               />
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                 min hour dom month dow
               </p>
             </div>
@@ -495,7 +495,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
               </button>
             ))}
           </div>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+          <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
             System executes a lambda. Agent wakes the LLM loop.
           </p>
         </div>
@@ -521,7 +521,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
                 <option value={loop}>{loop} (not declared)</option>
               )}
             </select>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
               {isEdit
                 ? 'A timer’s target loop is fixed at creation.'
                 : 'Which cognition stream this timer wakes.'}
@@ -540,7 +540,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
               onChange={(e) => setLambda(e.target.value)}
               className={inputClass + ' font-mono text-xs'}
             />
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
               System scope handler. File path and exported function in adf_files.
             </p>
             <label className="flex items-center gap-1.5 text-sm text-neutral-700 dark:text-neutral-300 cursor-pointer mt-2">
@@ -672,7 +672,7 @@ export function AgentTimers() {
             <p className="text-sm text-neutral-500 dark:text-neutral-400">
               No timers scheduled.
             </p>
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+            <p className="text-xs text-[var(--adf-ui-text-subtle)] mt-1">
               Add a timer or use the sys_set_timer tool.
             </p>
           </div>
@@ -680,7 +680,7 @@ export function AgentTimers() {
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
           {activeTimers.length === 0 && (
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 py-2">
+            <p className="text-xs text-[var(--adf-ui-text-subtle)] py-2">
               No active timers.
             </p>
           )}
@@ -694,7 +694,7 @@ export function AgentTimers() {
                   <div className="text-xs font-medium text-neutral-700 dark:text-neutral-300">
                     {new Date(timer.next_wake_at).toLocaleString()}
                   </div>
-                  <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                  <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                     {formatRelative(timer.next_wake_at)}
                   </div>
                   {timer.payload && (
@@ -715,12 +715,12 @@ export function AgentTimers() {
                     )}
                   </div>
                   {timer.lambda && (
-                    <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 font-mono truncate" title={timer.lambda}>
+                    <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1 font-mono truncate" title={timer.lambda}>
                       {timer.lambda}
                     </div>
                   )}
                   {timer.schedule.mode !== 'once' && (
-                    <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                    <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                       Fired {timer.run_count} time{timer.run_count !== 1 ? 's' : ''}
                       {timer.last_fired_at && (
                         <> &middot; last {formatRelative(timer.last_fired_at)}</>
@@ -731,7 +731,7 @@ export function AgentTimers() {
                     ('end_at' in timer.schedule && timer.schedule.end_at) ||
                     ('max_runs' in timer.schedule && timer.schedule.max_runs)
                   ) && (
-                    <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                    <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                       {('end_at' in timer.schedule && timer.schedule.end_at) && (
                         <>Ends {new Date(timer.schedule.end_at).toLocaleString()}</>
                       )}
@@ -742,7 +742,7 @@ export function AgentTimers() {
                       )}
                     </div>
                   )}
-                  <div className="text-[10px] text-neutral-400/60 dark:text-neutral-600 mt-1">
+                  <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                     Created {new Date(timer.created_at).toLocaleString()}
                   </div>
                 </div>
@@ -752,7 +752,7 @@ export function AgentTimers() {
                     className={`px-2 py-1 text-[10px] rounded ${
                       timer.locked
                         ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/30'
-                        : 'text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+                        : 'text-[var(--adf-ui-text-subtle)] hover:bg-neutral-100 dark:hover:bg-neutral-700'
                     }`}
                     title={timer.locked ? 'Unlock timer' : 'Lock timer'}
                   >
@@ -763,7 +763,7 @@ export function AgentTimers() {
                     disabled={timer.locked}
                     className={`px-2 py-1 text-[10px] rounded ${
                       timer.locked
-                        ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
+                        ? 'text-[var(--adf-ui-text-disabled)] cursor-not-allowed'
                         : 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30'
                     }`}
                     title={timer.locked ? 'Unlock to edit' : 'Edit timer'}
@@ -775,7 +775,7 @@ export function AgentTimers() {
                     disabled={timer.locked}
                     className={`px-2 py-1 text-[10px] rounded ${
                       timer.locked
-                        ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
+                        ? 'text-[var(--adf-ui-text-disabled)] cursor-not-allowed'
                         : 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30'
                     }`}
                     title={timer.locked ? 'Unlock to delete' : 'Delete timer'}
@@ -792,7 +792,7 @@ export function AgentTimers() {
             <div className="pt-2">
               <button
                 onClick={() => setShowExpired((v) => !v)}
-                className="flex w-full items-center gap-1.5 text-[11px] text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+                className="flex w-full items-center gap-1.5 text-[11px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300"
               >
                 <span className="text-[9px]">{showExpired ? '▼' : '▶'}</span>
                 <span className="font-medium uppercase tracking-wider">Expired</span>
@@ -829,11 +829,11 @@ export function AgentTimers() {
                             )}
                           </div>
                           {timer.lambda && (
-                            <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 font-mono truncate" title={timer.lambda}>
+                            <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1 font-mono truncate" title={timer.lambda}>
                               {timer.lambda}
                             </div>
                           )}
-                          <div className="text-[10px] text-neutral-400/60 dark:text-neutral-600 mt-1">
+                          <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
                             {timer.run_count > 0 && <>Fired {timer.run_count} time{timer.run_count !== 1 ? 's' : ''} &middot; </>}
                             Created {new Date(timer.created_at).toLocaleString()}
                           </div>
@@ -843,7 +843,7 @@ export function AgentTimers() {
                           disabled={timer.locked}
                           className={`shrink-0 px-2 py-1 text-[10px] rounded ${
                             timer.locked
-                              ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
+                              ? 'text-[var(--adf-ui-text-disabled)] cursor-not-allowed'
                               : 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30'
                           }`}
                           title={timer.locked ? 'Unlock to delete' : 'Delete expired timer'}

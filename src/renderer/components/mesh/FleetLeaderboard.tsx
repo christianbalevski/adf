@@ -50,7 +50,7 @@ function radioLine(r: RankedAgent): { mark: string; markColor: string; text: str
     if (a.type === 'tool_start') {
       return {
         mark: '·',
-        markColor: a.isError ? 'text-red-400' : 'text-neutral-400',
+        markColor: a.isError ? 'text-red-400' : 'text-[var(--adf-ui-text-subtle)]',
         text: a.args ? `${a.toolName} — ${a.args}` : a.toolName
       }
     }
@@ -58,16 +58,16 @@ function radioLine(r: RankedAgent): { mark: string; markColor: string; text: str
     if (a.type === 'message_recv') return { mark: '<', markColor: 'text-purple-400', text: a.args ? `msg from ${a.args}` : 'msg received' }
     return {
       mark: typeMark?.mark ?? '·',
-      markColor: typeMark?.markColor ?? 'text-neutral-400',
+      markColor: typeMark?.markColor ?? 'text-[var(--adf-ui-text-subtle)]',
       text: a.args ?? a.toolName
     }
   }
-  if (r.agent.status) return { mark: '·', markColor: 'text-neutral-400', text: r.agent.status }
+  if (r.agent.status) return { mark: '·', markColor: 'text-[var(--adf-ui-text-subtle)]', text: r.agent.status }
   if (a) {
     // State entry args already carry the arrow ('→ active') — no extra mark
-    return { mark: '→', markColor: 'text-neutral-400', text: (a.args ?? '').replace(/^→\s*/, '') || r.agent.state }
+    return { mark: '→', markColor: 'text-[var(--adf-ui-text-subtle)]', text: (a.args ?? '').replace(/^→\s*/, '') || r.agent.state }
   }
-  return { mark: '·', markColor: 'text-neutral-400', text: r.agent.state }
+  return { mark: '·', markColor: 'text-[var(--adf-ui-text-subtle)]', text: r.agent.state }
 }
 
 /**
@@ -165,7 +165,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
           </span>
           <svg
             width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-            className={`text-neutral-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+            className={`text-[var(--adf-ui-text-subtle)] transition-transform ${collapsed ? '-rotate-90' : ''}`}
           >
             <path d="M6 9l6 6 6-6" />
           </svg>
@@ -189,7 +189,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                     ? `${r.agent.handle} — burn is >${DEVIATION_FACTOR}× its usual rate`
                     : `${r.agent.handle} — ${r.events} events / 5 min`)}
                 >
-                  <span className="w-5 shrink-0 text-right font-mono text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
+                  <span className="w-5 shrink-0 text-right font-mono text-[11px] tabular-nums text-[var(--adf-ui-text-subtle)]">
                     {i + 1}
                   </span>
                   <span className="w-3 shrink-0 text-[9px] font-mono">
@@ -218,12 +218,12 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                       }`}
                       title="↑ input / ↓ output tokens per minute (5-min window)"
                     >
-                      <span className={r.deviant ? '' : 'text-neutral-400 dark:text-neutral-500'}>↑{formatBurn(r.inBurn)}</span>
+                      <span className={r.deviant ? '' : 'text-[var(--adf-ui-text-subtle)]'}>↑{formatBurn(r.inBurn)}</span>
                       <span className={r.deviant ? '' : 'text-orange-500/80 dark:text-orange-400/80'}>↓{formatBurn(r.outBurn)}</span>
                     </span>
                   ) : (
                     <span
-                      className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500"
+                      className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--adf-ui-text-subtle)]"
                       title="Events in the last 5 min"
                     >
                       {r.events}

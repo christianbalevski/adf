@@ -671,7 +671,7 @@ const LogEntryRow = memo(({
         // streamed string on every render, so this ran O(n²) over a turn (B15).
         if (entry.content.length === 0 || !/\S/.test(entry.content)) {
           return (
-            <div className="px-1 py-1 text-[11px] italic leading-5 text-neutral-400 dark:text-neutral-500">
+            <div className="px-1 py-1 text-[11px] italic leading-5 text-[var(--adf-ui-text-subtle)]">
               ended quietly (no output)
               {entry.timestamp > 0 && (
                 <span className="ml-1.5 not-italic">{formatLoopTime(entry.timestamp)}</span>
@@ -968,7 +968,7 @@ const LogEntryRow = memo(({
               </span>
             </div>
             {entry.timestamp > 0 && (
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 {formatLoopTime(entry.timestamp)}
               </span>
             )}

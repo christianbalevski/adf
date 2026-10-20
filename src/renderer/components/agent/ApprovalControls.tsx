@@ -200,7 +200,7 @@ export function ApprovalControls({
               return { className: `${p.className} w-64 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] shadow-float p-2`, style: p.style }
             })()}
           >
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-subtle)] mb-1">
               Reject with feedback
             </div>
             <textarea
@@ -217,7 +217,7 @@ export function ApprovalControls({
               className="w-full text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200 p-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-red-400"
             />
             <div className="flex items-center justify-between mt-1.5">
-              <span className="text-[9px] text-neutral-400 dark:text-neutral-500">Enter to submit · Esc to cancel</span>
+              <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">Enter to submit · Esc to cancel</span>
               <button
                 type="button"
                 onClick={submitFeedback}
