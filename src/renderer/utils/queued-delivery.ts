@@ -76,9 +76,9 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
     if (previousState && slice.state === 'active') agentStore.setState(previousState, loop)
   }
 
-  const pending = window.adfApi?.invokeAgent(combined, filePath, content, loop)
+  const pending = invokeOrThrown(() => window.adfApi?.invokeAgent(combined, filePath, content, loop))
   if (!pending) {
-    fail('Studio is not connected to the agent runtime')
+    fail(NOT_CONNECTED)
     return
   }
   void Promise.resolve(pending).then(
@@ -93,6 +93,22 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
     },
     (error: unknown) => fail(error instanceof Error ? error.message : String(error))
   )
+}
+
+/** The "Not sent" reason of a send with no agent runtime to take it. */
+const NOT_CONNECTED = 'Studio is not connected to the agent runtime'
+
+/**
+ * The invoke call, with a call that throws before it answers turned into a
+ * rejected send: the caller's refusal path then keeps the message (a queue
+ * already taken would otherwise be lost).
+ */
+function invokeOrThrown<T>(call: () => T): T | Promise<never> {
+  try {
+    return call()
+  } catch (error) {
+    return Promise.reject(error)
+  }
 }
 
 /** The "Not sent" reason of a message whose daemon exited before its turn ended. */
@@ -145,8 +161,7 @@ export function sendFleetOrders(filePath: string, who: string, text: string, not
  * own business.
  */
 export function sendOwnerMessage(filePath: string | null, loop: string, text: string, content: ContentBlock[], imagePreviewUrls: string[] = []): void {
-  const pending = window.adfApi?.invokeAgent(text, filePath ?? undefined, content, loop)
-  if (!pending) return
+  const pending = invokeOrThrown(() => window.adfApi?.invokeAgent(text, filePath ?? undefined, content, loop))
   const refused = (error: string, showInChat: boolean): void => {
     console.warn(`[chat] Message to ${filePath ?? 'the open agent'} (${loop}) was not sent: ${error}`)
     if (filePath && !sameAgentPath(useDocumentStore.getState().filePath, filePath)) {
@@ -158,6 +173,10 @@ export function sendOwnerMessage(filePath: string | null, loop: string, text: st
     const agentStore = useAgentStore.getState()
     agentStore.addLogEntry({ id: nanoid(), type: 'error', content: `Not sent: ${error}`, timestamp: Date.now() }, loop)
     if (selectLoopSlice(agentStore, loop).state === 'active') agentStore.setState('idle', loop)
+  }
+  if (!pending) {
+    refused(NOT_CONNECTED, true)
+    return
   }
   void Promise.resolve(pending).then(
     (result) => {
@@ -179,9 +198,9 @@ export function sendOwnerMessage(filePath: string | null, loop: string, text: st
  * running, or a send that failed). The new message then joins it and the
  * agent is started with `start`, the composer's own start-before-send (review
  * gate, provider sheet, errors shown in the chat); once it runs the queue
- * goes, oldest first. A start that did not happen leaves the queue as it is,
- * the reason shown by `start`, as the composer's direct path leaves its
- * message unsent.
+ * goes, oldest first. A start that did not happen leaves the queue where it
+ * is, the reason shown by `start` (the composer's marks each message "Not
+ * sent" with it), as the composer's direct path queues its message too.
  *
  * False: nothing is queued, the caller sends it directly.
  */

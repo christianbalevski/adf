@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { directSendOutcome, restoreDraft, sendIsQueued } from '../../../src/renderer/utils/send-recovery'
+import { directSendOutcome, restoreDraft } from '../../../src/renderer/utils/send-recovery'
 import type { AgentLogEntry } from '../../../src/renderer/stores/agent.store'
 
 const entry = (id: string, type: AgentLogEntry['type'], content = id): AgentLogEntry => ({ id, type, content, timestamp: 1 })
@@ -28,14 +28,5 @@ describe('restored draft', () => {
     expect(restoreDraft('  ', 'hello')).toBe('hello')
     expect(restoreDraft('more', 'hello')).toBe('hello\n\nmore')
     expect(restoreDraft('more', '')).toBe('more')
-  })
-})
-
-describe('queued send', () => {
-  it('queues mid-turn or behind waiting messages, and only with an agent file', () => {
-    expect(sendIsQueued('/agents/agent-1.adf', 'active', 0)).toBe(true)
-    expect(sendIsQueued('/agents/agent-1.adf', 'idle', 2)).toBe(true)
-    expect(sendIsQueued('/agents/agent-1.adf', 'idle', 0)).toBe(false)
-    expect(sendIsQueued(null, 'active', 3)).toBe(false)
   })
 })

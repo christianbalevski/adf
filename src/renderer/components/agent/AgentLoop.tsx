@@ -7,14 +7,14 @@ import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppStat
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
-import { ATTACHMENT_ONLY_TEXT, sendComposerMessage } from '../../utils/composer-send'
+import { ATTACHMENT_ONLY_TEXT, sendComposerMessage, type SendRoute } from '../../utils/composer-send'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { loopColor } from '../../utils/loop-color'
 import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../utils/loop-activity'
 import { LOOP_ERROR_ACTION_LABELS, actionableErrorId, errorAction, isMissingProvider, type LoopErrorAction } from '../../utils/loop-error'
-import { directSendOutcome, restoreDraft, sendIsQueued } from '../../utils/send-recovery'
+import { restoreDraft, sendWithRecovery } from '../../utils/send-recovery'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
 import {
   buildSlashCommands,
@@ -1718,9 +1718,9 @@ function LoopStream({ loop }: { loop: string }) {
    * target agent and the loop's states are captured at submit time, so
    * navigation can't redirect the message. Callers clear the composer first.
    */
-  const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]) => {
+  const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]): Promise<SendRoute> => {
     pinToBottom()
-    await sendComposerMessage({ filePath, loop, loopState: state, agentState }, message, content, previews)
+    return sendComposerMessage({ filePath, loop, loopState: state, agentState }, message, content, previews)
   }
 
   // A failed send puts what the owner wrote back in the composer (this tab's
@@ -1740,28 +1740,12 @@ function LoopStream({ loop }: { loop: string }) {
   }
 
   /**
-   * Watch a send that went straight to the agent until the chat decides it.
-   * sendComposerMessage reports nothing back: a start that did not happen
-   * leaves the agent off, and a refused send ends in its "Not sent" row.
-   * A queued send needs none of this; the queue keeps it.
+   * Send what the owner wrote, and give it back to this composer only when
+   * nothing else holds it (sendWithRecovery): a queued or not-started send
+   * lives in the queue, a refused or thrown one comes back here.
    */
-  const watchDirectSend = (before: ReadonlySet<string>, text: string, items: PendingAttachment[], startedFromOff: boolean) => {
-    const path = filePath
-    const stillHere = () => useDocumentStore.getState().filePath === path
-    if (startedFromOff && stillHere() && useAgentStore.getState().state === 'off') {
-      restoreFailedSend(text, items)
-      return
-    }
-    const settle = (): boolean => {
-      if (!stillHere()) return true
-      const outcome = directSendOutcome(selectLoopSlice(useAgentStore.getState(), loop).log, before)
-      if (outcome === 'pending') return false
-      if (outcome === 'failed') restoreFailedSend(text, items)
-      return true
-    }
-    if (settle()) return
-    const unsubscribe = useAgentStore.subscribe(() => { if (settle()) unsubscribe() })
-  }
+  const sendFromComposer = (text: string, content: ContentBlock[], previews: string[], items: PendingAttachment[]) =>
+    sendWithRecovery(filePath, loop, () => sendUserMessage(text, content, previews), () => restoreFailedSend(text, items))
 
   // A message typed into the home composer arrives here once the agent it
   // created is the open one and its config has loaded. It goes through
@@ -1791,7 +1775,8 @@ function LoopStream({ loop }: { loop: string }) {
         if (references.length > 0) text = text ? `${text}\n\n${references.join('\n')}` : references.join('\n')
       }
       const previews = items.filter((i) => i.kind === 'image').map((i) => adfFileUrl(i.path))
-      await sendUserMessage(text, buildContentBlocks(text, items), previews)
+      // Unsent, it comes back as this composer would hold it: text with its file references, and the files.
+      await sendWithRecovery(filePath, loop, () => sendUserMessage(text, buildContentBlocks(text, items), previews), () => restoreFailedSend(text, items))
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMainLoop, filePath, config, starting, pendingFirstMessage])
@@ -1821,8 +1806,9 @@ function LoopStream({ loop }: { loop: string }) {
       const message = composeSkillMessage(name, parsed, args)
       const content = buildSubmitContent(message)
       const previews = imagePreviewUrls
+      const items = attachments
       setAttachments([])
-      await sendUserMessage(message, content, previews)
+      await sendFromComposer(message, content, previews, items)
       return
     }
 
@@ -1894,18 +1880,9 @@ function LoopStream({ loop }: { loop: string }) {
     const content = buildSubmitContent(message)
     const previews = imagePreviewUrls
     const sentAttachments = attachments
-    const queued = sendIsQueued(filePath, state, messageQueue.length)
-    const before = new Set(log.map((entry) => entry.id))
     setInput('')
     setAttachments([])
-    try {
-      await sendUserMessage(message, content, previews)
-    } catch (error) {
-      console.warn('[AgentLoop] Send failed:', error)
-      restoreFailedSend(message, sentAttachments)
-      return
-    }
-    if (!queued) watchDirectSend(before, message, sentAttachments, agentState === 'off')
+    await sendFromComposer(message, content, previews, sentAttachments)
   }
 
   // An error row's action. Each is the owner's click, and each is visible:
