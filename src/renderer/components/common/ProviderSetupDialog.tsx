@@ -14,9 +14,11 @@ import { useOwnedProviderList } from '../providers/useOwnedProviderList'
  * modal, the same picker and form, driven by the same manager hook, over a
  * copy of the providers list that this dialog persists itself.
  *
- * Done (only enabled once a default model is set) points the blocked agent
- * at the new provider and resolves true, so the start retries. Escape, X,
- * or dismissing the picker resolves false and removes the provider added
+ * Done (only enabled once the provider has a key or a sign-in and a default
+ * model) points the blocked agent at the new provider and resolves with its
+ * id, so the start retries. Home asks with 'no_provider' and no agent: Done
+ * then only hands the id back. Escape, X, or dismissing the picker resolves
+ * null and removes the provider added
  * during this request: nothing half-configured is left in Settings, and
  * nothing pretends to be connected. The key lives in app settings, never in
  * the agent file.
@@ -64,7 +66,7 @@ export function ProviderSetupDialog() {
     } else {
       closeModal()
     }
-    resolveProviderSetup(false)
+    resolveProviderSetup(null)
   }, [closeModal, defaultProviderId, providers, remove, resolveProviderSetup])
 
   /** Done: the provider is saved; point the blocked agent at it and let the start retry. */
@@ -72,7 +74,7 @@ export function ProviderSetupDialog() {
     const provider = m.editing
     if (!provider) { await cancel(); return }
     const model = (provider.defaultModel ?? '').trim()
-    if (!model) { setError('Set a default model first.'); return }
+    if (!model) { setError('Pick a model first.'); return }
     setError(null)
     try {
       await flushSave()
@@ -87,7 +89,7 @@ export function ProviderSetupDialog() {
       }
       addedIdRef.current = null
       closeModal()
-      resolveProviderSetup(true)
+      resolveProviderSetup(provider.id)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -95,10 +97,13 @@ export function ProviderSetupDialog() {
 
   if (!request) return null
 
-  const who = agentName ?? 'This agent'
+  const forNewAgent = request.reason === 'no_provider'
+  const who = forNewAgent ? 'The new agent' : agentName ?? 'This agent'
   const foreground = useDocumentStore.getState().filePath
-  const fresh = request.filePath === foreground && !agentProvider
-  const reason = fresh
+  const fresh = forNewAgent || (request.filePath === foreground && !agentProvider)
+  const reason = forNewAgent
+    ? 'Agents need a model to run.'
+    : fresh
     ? `${who} needs a model to run.`
     : request.reason === 'provider_unconfigured'
       ? `${who}'s provider has no API key on this computer.`
@@ -111,7 +116,7 @@ export function ProviderSetupDialog() {
       onClose={() => { void cancel() }}
       onPick={onPick}
       onDone={() => { void done() }}
-      requireDefaultModel={`Becomes ${who}'s model.`}
+      requireDefaultModel={forNewAgent ? 'New agents start on this model.' : `Becomes ${who}'s model.`}
       intro={
         <>
           {reason} Credentials are stored in app settings, not in the agent file.

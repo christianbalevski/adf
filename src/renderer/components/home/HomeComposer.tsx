@@ -3,6 +3,7 @@ import { useAdfFile } from '../../hooks/useAdfFile'
 import { useAppStore } from '../../stores/app.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { SuggestionRows } from './SuggestionRows'
+import { insertSuggestion } from './suggestions'
 import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './HomePickers'
 import { useHomeProviders } from './HomeProviders'
 import { useTemplatesStore } from '../../hooks/useTemplates'
@@ -30,9 +31,9 @@ function saveSuggestionsOn(on: boolean): void {
  * as the agent's first user message. Every send is a new agent; existing
  * ones are reached from the sidebar.
  *
- * The box always takes input. With no provider connected the send still
- * creates the agent; the provider sheet opens on the first start, from the
- * same path every start uses.
+ * The box always takes input. When the provider the chip shows has no
+ * credential or no model, Send opens the provider sheet first and keeps the
+ * draft; the agent is made only once a provider is connected, on it.
  */
 export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
   /** The next agent's identity draft, owned by HomeScreen (its orbital shows there). */
@@ -51,7 +52,7 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
   // The provider the chip shows: an explicit pick, else the app default.
   // The create call gets exactly that, so what the user sees is what the
   // agent starts on (the settings template's provider never wins silently).
-  const { selectedId: providerId } = useHomeProviders()
+  const { selectedId: providerId, selectedReady, loaded: providersLoaded, openPicker: connectProvider } = useHomeProviders()
   // The template the agent is built from, and the model the chip settled on.
   // Both go to main as chosen here; main resolves a null template to the
   // default one itself.
@@ -153,13 +154,21 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
   const send = useCallback(async () => {
     const message = text.trim()
     if (!message || busy) return
-    setBusy(true)
     setError(null)
+    // Nothing to run on yet: connect a provider first (the sheet is modal).
+    // The draft stays in the box; cancelling the sheet makes no agent.
+    let startOn = { providerId: providerId ?? undefined, modelId: homeModelId ?? undefined }
+    if (providersLoaded && !selectedReady) {
+      const connected = await connectProvider()
+      if (!connected) { setError('Not sent: no provider connected.'); return }
+      startOn = { providerId: connected, modelId: undefined }
+    }
+    setBusy(true)
     try {
       const result = await createQuickAgent(message, {
-        providerId: providerId ?? undefined,
+        providerId: startOn.providerId,
         templateId: homeTemplateId ?? undefined,
-        modelId: homeModelId ?? undefined,
+        modelId: startOn.modelId,
         folder: homeFolder ?? undefined,
         name: homeName ?? undefined,
         identityDraftId: currentIdentity()?.draftId,
@@ -211,7 +220,7 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
     } finally {
       setBusy(false)
     }
-  }, [busy, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, onCreated, openTemplateReview, providerId, refuseName, renewIdentity, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
+  }, [busy, connectProvider, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, onCreated, openTemplateReview, providerId, providersLoaded, refuseName, renewIdentity, selectedReady, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
   sendRef.current = send
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -221,8 +230,9 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
     }
   }
 
+  // A chip fills an empty box; with a draft typed it goes on a new line under it.
   const fill = (suggestion: string) => {
-    setText(suggestion)
+    setText(insertSuggestion(useAppStore.getState().homeDraft, suggestion))
     setError(null)
     requestAnimationFrame(() => {
       const el = textareaRef.current

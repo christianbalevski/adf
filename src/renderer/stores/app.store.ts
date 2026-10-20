@@ -140,13 +140,15 @@ export type SettingsSection =
   | 'agents' | 'template' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'files' | 'identity' | 'networking' | 'compute' | 'usage'
   | 'general' | 'backend'
 
-export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured'
+/** Main's start codes, or 'no_provider': Home has no provider ready for the next new agent. */
+export type ProviderSetupReason = 'provider_missing' | 'provider_unconfigured' | 'no_provider'
 
 export interface ProviderSetupRequest {
   reason: ProviderSetupReason
-  /** The agent whose start was blocked (null when unknown). */
+  /** The agent whose start was blocked (null when unknown, or no agent exists yet). */
   filePath: string | null
-  resolve: (connected: boolean) => void
+  /** The id of the provider connected, or null when the sheet was cancelled. */
+  resolve: (providerId: string | null) => void
 }
 
 export interface AppState {
@@ -300,7 +302,10 @@ export interface AppState {
   resetAgentReview: () => void
   /** Open the provider setup sheet; resolves when it closes (true = connected). */
   requestProviderSetup: (reason: ProviderSetupReason, filePath: string | null) => Promise<boolean>
-  resolveProviderSetup: (connected: boolean) => void
+  /** The same sheet; resolves with the connected provider's id, or null when cancelled. */
+  connectProvider: (reason: ProviderSetupReason, filePath: string | null) => Promise<string | null>
+  /** The sheet closed: the provider connected, or null (cancelled). */
+  resolveProviderSetup: (providerId: string | null) => void
   openShareDialog: (filePath?: string) => void
   setPendingFirstMessage: (pending: { filePath: string; text: string; files?: File[] } | null) => void
   /** Claim the pending message for this file; null if it belongs to another file or was taken. */
@@ -537,18 +542,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   setFileMoveWarning: (msg) => set({ fileMoveWarning: msg }),
   resetAgentReview: () =>
     set({ agentReviewDialogOpen: false, agentReviewSummary: null, agentNeedsReview: false, fileMoveWarning: null }),
-  requestProviderSetup: (reason, filePath) =>
-    new Promise<boolean>((resolve) => {
+  requestProviderSetup: (reason, filePath) => get().connectProvider(reason, filePath).then((id) => id !== null),
+  connectProvider: (reason, filePath) =>
+    new Promise<string | null>((resolve) => {
       set((s) => {
         // A second request while one is up loses: resolve it as cancelled
         // rather than stacking two sheets.
-        s.providerSetupRequest?.resolve(false)
+        s.providerSetupRequest?.resolve(null)
         return { providerSetupRequest: { reason, filePath, resolve } }
       })
     }),
-  resolveProviderSetup: (connected) =>
+  resolveProviderSetup: (providerId) =>
     set((s) => {
-      s.providerSetupRequest?.resolve(connected)
+      s.providerSetupRequest?.resolve(providerId)
       return { providerSetupRequest: null }
     }),
   openShareDialog: (filePath) => set({ shareDialogFilePath: filePath ?? '' }),

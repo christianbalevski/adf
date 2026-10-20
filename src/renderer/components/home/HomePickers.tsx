@@ -189,12 +189,12 @@ export function TemplatePickerChip() {
  * in a scrolling list with a filter box once the list is long (some
  * providers list hundreds). Clicking another provider selects it on its
  * default model and expands it in place; clicking the expanded one folds it.
- * Then "Add provider…" (the Settings picker, in place) and a gear that opens
+ * Then "Add provider…" (the provider sheet, in place) and a gear that opens
  * Settings → Providers. A provider's models are fetched the first time it is
  * expanded; until they arrive the group offers the default model alone. The
- * list and the modal belong to HomeProvidersProvider, shared with the
- * connect card. With nothing configured the chip reads "Connect a provider"
- * and opens the picker straight away.
+ * list belongs to HomeProvidersProvider, shared with the connect card. With
+ * nothing configured the chip reads "Connect a provider" and opens the sheet
+ * straight away.
  */
 export function ProviderPickerChip() {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
@@ -242,7 +242,7 @@ export function ProviderPickerChip() {
       <>
         <button
           type="button"
-          onClick={openPicker}
+          onClick={() => { void openPicker() }}
           className="inline-flex h-6 items-center gap-1 rounded-full border border-[var(--adf-ui-accent)] bg-[var(--adf-ui-accent-subtle)] px-2 text-[11.5px] font-medium text-[var(--adf-ui-accent)] transition-colors hover:bg-[var(--adf-ui-accent)] hover:text-[var(--adf-ui-on-accent)]"
         >
           <PlusIcon />
@@ -322,7 +322,7 @@ export function ProviderPickerChip() {
         <MenuRule />
         <div className="flex items-center gap-1">
           <div className="min-w-0 flex-1">
-            <MenuItem muted onClick={() => { closeMenu(); openPicker() }}>
+            <MenuItem muted onClick={() => { closeMenu(); void openPicker() }}>
               <PlusIcon />
               Add provider…
             </MenuItem>
