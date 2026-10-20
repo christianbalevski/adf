@@ -14,7 +14,7 @@ function config(patch: Partial<AgentConfig> = {}): AgentConfig {
 
 const ok = <T extends { ok: boolean }>(r: T) => { if (!r.ok) throw new Error(`expected ok: ${JSON.stringify(r)}`); return r as Extract<T, { ok: true }> }
 const tool = (c: AgentConfig, name: string) => c.tools.find(t => t.name === name)!
-/** No on_inbox trigger, no inbox mode: Studio greys out the Messaging and Inbox groups. */
+/** No on_inbox trigger, no inbox mode: Studio greys out the Inbox group only (Messaging stays editable). */
 const blocked = (c: AgentConfig): AgentConfig => ({ ...c, triggers: { ...(c.triggers as object), on_inbox: { enabled: false, targets: [] } } as never, messaging: { ...(c.messaging ?? { receive: true, mode: 'respond_only' }), inbox_mode: false } })
 
 describe('settings model: tools', () => {
@@ -30,9 +30,12 @@ describe('settings model: tools', () => {
     expect(groups.at(-1)).toBe('MCP github')
     const mcp = rows.find((r): r is ToolRow => r.kind === 'tool' && r.name === 'mcp_github_search')!
     expect(mcp).toMatchObject({ label: 'search', mcpServer: 'github', restricted: true, description: 'Search issues' })
-    // Messaging needs the on_inbox trigger, like Studio's disabled group.
-    const messaging = buildToolRows(blocked(c)).find((r): r is GroupRow => r.kind === 'group' && r.id === 'messaging')
-    expect(messaging?.blocked ?? '').toMatch(/messaging/)
+    // Messaging is never blocked by the on_inbox trigger (owner decision); Inbox follows inbox mode.
+    const blockedRows = buildToolRows(blocked(c))
+    const messaging = blockedRows.find((r): r is GroupRow => r.kind === 'group' && r.id === 'messaging')
+    expect(messaging?.blocked).toBeUndefined()
+    const inbox = blockedRows.find((r): r is GroupRow => r.kind === 'group' && r.id === 'inbox')
+    expect(inbox?.blocked ?? '').toMatch(/inbox mode/)
     // A catalog tool the config does not declare shows up disabled.
     const withCatalog = buildToolRows(c, [{ name: 'brand_new', enabled: false, visible: false, restricted: false, locked: false, source: 'builtin', description: 'New tool', schema: {}, restrictions: { restricted: false, locked: false } }])
     expect(withCatalog.find(r => r.kind === 'tool' && r.name === 'brand_new')).toMatchObject({ enabled: false, description: 'New tool' })
@@ -69,11 +72,19 @@ describe('settings model: tools', () => {
 
   it('refuses enable/show in a blocked group and locks on MCP tools', () => {
     const c = blocked(config())
-    expect(toggleToolEnabled(c, 'msg_send')).toMatchObject({ ok: false, error: expect.stringMatching(/needs messaging/) })
+    expect(toggleToolEnabled(c, 'msg_list')).toMatchObject({ ok: false, error: expect.stringMatching(/needs inbox mode/) })
     c.mcp = { servers: [{ name: 'gh', transport: 'stdio', available_tools: [{ name: 'x' }] }] } as unknown as AgentConfig['mcp']
     c.tools.push({ name: 'mcp_gh_x', enabled: true, visible: true, locked: true })
     expect(toggleToolRestricted(c, 'mcp_gh_x')).toMatchObject({ ok: false })
     expect(toggleToolLock(c, 'mcp_gh_x')).toMatchObject({ ok: false })
+  })
+
+  it('Messaging stays editable with the On inbox message trigger off (owner decision)', () => {
+    const c = blocked(config())
+    const before = c.tools.find(t => t.name === 'msg_send')?.enabled ?? false
+    const toggled = ok(toggleToolEnabled(c, 'msg_send'))
+    expect(tool(toggled.config, 'msg_send').enabled).toBe(!before)
+    expect(toggleGroup(c, 'messaging', 'enabled')).toMatchObject({ ok: true })
   })
 
   it('bulk-toggles a group, skipping locked tools', () => {

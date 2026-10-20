@@ -106,9 +106,9 @@ function triState<T>(items: T[], pred: (item: T) => boolean): TriState {
 }
 
 function groupBlocked(config: AgentConfig, groupId: string): string | undefined {
-  // Studio: Messaging needs the on_inbox trigger, Inbox needs inbox mode.
-  const triggers = config.triggers as { on_inbox?: { enabled?: boolean } } | undefined
-  if (groupId === 'messaging' && !triggers?.on_inbox?.enabled) return 'needs messaging (the on_inbox trigger)'
+  // Studio: Inbox follows inbox mode. Messaging is never blocked: the on_inbox
+  // trigger only decides whether the agent wakes on a message, and an agent
+  // that sends but never wakes on its inbox is a valid setup (owner decision).
   if (groupId === 'inbox' && config.messaging?.inbox_mode !== true) return 'needs inbox mode (Settings › Inbox mode)'
   return undefined
 }
