@@ -221,6 +221,48 @@ describe('turn interrupt', () => {
     }
   })
 
+  it('with an attachment: the partial reply follows the multi-part message, its file reference intact, and the next request is valid', async () => {
+    const { agent, provider, workspace } = await buildAgent('file-ref')
+    try {
+      const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+      const config = agent.executor.getConfig()
+      agent.executor.updateConfig({ ...config, model: { ...config.model, multimodal: { image: true, audio: false, video: false } } })
+      const path = workspace.writeFileBufferUnique('loop-upload/photo.png', PNG, 'image/png')
+      const ref: ContentBlock = { type: 'file_ref', file_ref: { path, mime_type: 'image/png', size: PNG.length } }
+      provider.steps = [{ kind: 'hang' }]
+      const turn = agent.executor.executeTurn(createDispatch(createEvent({
+        type: 'chat',
+        source: 'test',
+        data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text: 'describe this' }, ref], created_at: Date.now() } },
+      }), { scope: 'agent' }))
+      await waitFor(() => provider.requests.length === 1)
+      interruptLoopTurn(agent.executor, agent.loopPool)
+      await turn
+
+      const loop = workspace.getLoop()
+      const userRow = loop.find(r => r.role === 'user' && (r.content_json as ContentBlock[]).some(b => b.type === 'file_ref'))!
+      expect((userRow.content_json as ContentBlock[]).find(b => b.type === 'file_ref')?.file_ref).toEqual({ path, mime_type: 'image/png', size: PNG.length })
+      // After the multi-part message (and the context rows its turn wrote), before the notice.
+      const partial = loop.at(-2)!
+      expect(loop.indexOf(partial)).toBeGreaterThan(loop.indexOf(userRow))
+      expect(partial.role).toBe('assistant')
+      expect((partial.content_json as ContentBlock[]).find(b => b.type === 'text')).toEqual({ type: 'text', text: 'The essay begins', interrupted: true })
+      expect(rowText(loop.at(-1)!.content_json)).toBe(TURN_INTERRUPTED_NOTICE)
+
+      provider.steps = [{ kind: 'text', text: 'It is a tiny image.' }]
+      await agent.executor.executeTurn(chat('go on'))
+      const next = provider.requests.at(-1)!
+      expectPaired(next)
+      const at = next.findIndex(m => m.role === 'assistant' && rowText(m.content) === 'The essay begins')
+      expect(next[at - 1].role).toBe('user')
+      // The attachment still reaches the model with the message before the partial reply.
+      expect(next.slice(0, at).some(m => /image_url|file_ref/.test(JSON.stringify(m.content)))).toBe(true)
+      expect(rowText(next[at + 1].content)).toBe(TURN_INTERRUPTED_NOTICE)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
   it('mid-tool: the host shell is killed and every call of the batch gets a result', async () => {
     const { agent, provider, workspace, owner, shell, events, counted } = await buildAgent('shell')
     try {
