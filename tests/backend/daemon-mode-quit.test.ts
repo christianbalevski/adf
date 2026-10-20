@@ -28,7 +28,7 @@ const versionInfo = (over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo =
   localProof: { available: false, problem: 'the local proof file could not be written or protected: icacls failed' }, ...over,
 })
 
-async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>; pending?: unknown[]; onRemoteAccessEvent?: (payload: unknown) => void; proof?: string }) {
+async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; pending?: unknown[]; onRemoteAccessEvent?: (payload: unknown) => void; proof?: string }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-quit-'))
   dirs.push(dir)
   if (opts.proof) writeFileSync(localProofPath(dir, 47385), opts.proof)
@@ -57,7 +57,6 @@ async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => b
     createSession: () => session,
     keepDaemonRunning: opts.keep,
     reloadCredentials: opts.reloadCredentials,
-    waitForExit: opts.waitForExit,
     onRemoteAccessEvent: opts.onRemoteAccessEvent,
     log,
   })
@@ -102,14 +101,6 @@ describe('daemon-mode quit (§8.3)', () => {
     expect(session.ended).toBe(true)
   })
 
-  it('a switch to embedded waits for the daemon process to exit (its pid, not /health, which closes first)', async () => {
-    const waits: Array<[number, number]> = []
-    const { handle, logs } = await boot({ keep: false, waitForExit: async (pid, budget) => { waits.push([pid, budget]); return true } })
-    await handle.shutdown({ waitForDaemonExitMs: 4_000 })
-    expect(waits).toEqual([[4242, 4_000]])
-    expect(logs).toContain('[Backend] The ADF daemon exited')
-  })
-
   it('keepDaemonRunning changed in Settings: the session follows it, for the crash path', async () => {
     const { handle, daemon, session } = await boot({ keep: false })
     ;(session as { sessionId: string | null }).sessionId = 's-1'
@@ -138,12 +129,6 @@ describe('after a handover, and Settings → Connections', () => {
       connection: 'connected', url: BASE, pid: 4242, version: '0.8.0', startedBy: 'studio', how: 'spawned',
       localProof: { available: false, problem: expect.stringContaining('icacls') },
     })
-  })
-
-  it('agentActivity(): an agent waiting on an approval is marked, for the switch dialog (DMN-02)', async () => {
-    const pending = [{ id: 'C:/agents/agent-1.adf|main|t1', kind: 'approval', requestId: 't1', filePath: 'C:/agents/agent-1.adf', agentName: 'agent-1', loop: 'main', createdAt: 1 }]
-    const { handle } = await boot({ keep: false, pending })
-    expect(handle.agentActivity()).toEqual([{ filePath: 'C:/agents/agent-1.adf', busy: true, waiting: true }])
   })
 
   it('status(): after `adf daemon restart` the row names the new daemon and who started it, not "started by this Studio" (DMN-14)', async () => {

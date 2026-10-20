@@ -1,7 +1,7 @@
 import { app, dialog, shell, type BrowserWindow, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'
-import type { BackendDefaultSwitch, StudioBackendMode } from '../../shared/types/backend.types'
+import type { BackendDefaultSwitch, StudioRunMode } from '../../shared/types/backend.types'
 import { guideUrl } from '../../shared/constants/docs-links'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { showWindowlessMessageBox } from '../utils/windowless-dialog'
@@ -9,7 +9,7 @@ import { CLIENT_API_VERSION } from '../daemon/routes/meta-routes'
 import { persistDefaultBackend, type BootBackend } from './backend-config'
 import { DaemonProcessController, decideAttach, type DaemonDetection } from './daemon-process'
 import type { HandoverItemResult, HandoverReport } from './handover'
-import { showHandoverSummary } from './mode-switch'
+import { showHandoverSummary } from './boot-handover'
 
 /**
  * The first launch of the release that made Local daemon the default (owner
@@ -127,7 +127,7 @@ export async function guardBoot(boot: BootBackend, userDataDir: string, deps: Bo
     if (boot.fileProblem && boot.source === 'file') {
       log(`[Backend] ${boot.configPath} cannot be used (${boot.fileProblem}); asking which backend to use before anything moves`)
       const { response } = await ask(`which backend to use (${boot.configPath} cannot be used)`, fileProblemOptions(boot))
-      const mode: StudioBackendMode = response === 1 ? 'embedded' : 'local'
+      const mode: StudioRunMode = response === 1 ? 'embedded' : 'local'
       boot.mode = mode
       if (boot.writeBlocked) {
         boot.source = 'session'
@@ -178,9 +178,9 @@ let quitTracked = false
 let quitSeen = false
 
 /**
- * Note when Studio starts to quit or restart (a switch, "Use Embedded Mode
- * for This Session" after a version mismatch, which can come before the
- * main window is ready): the first-launch notice then waits for a launch
+ * Note when Studio starts to quit or restart ("Use Embedded Mode for This
+ * Session" after a version mismatch, which can come before the main window
+ * is ready): the first-launch notice then waits for a launch
  * that stays. Called from settleDefaultBackend, early in boot.
  */
 function trackQuit(): void {
@@ -333,15 +333,18 @@ export function firstLaunchNoticeOptions(notice: FirstLaunchNotice, connected: b
 }
 
 /**
- * Once the main window is ready: the guard's dialog, then the first-launch
- * notice (after `ready`, the daemon connection, settles) and its record, or
- * the handover summary. Every dialog is parented to `window`. Never throws.
+ * Once the main window is ready: the guard's dialog, the migration's one
+ * sentence (docs/design/multi-runtime.md §7.3), then the first-launch notice
+ * (after `ready`, the daemon connection, settles) and its record, or the
+ * handover summary. Every dialog is parented to `window`. Never throws.
  */
 export async function showBootNotices(opts: {
   report: HandoverReport | null
-  mode: StudioBackendMode
+  mode: StudioRunMode
   notice: FirstLaunchNotice | null
   guard: GuardNotice | null
+  /** The first launch after an older Studio's remote mode was migrated: one sentence (runtime-migration.ts). */
+  migration?: string | null
   window: BrowserWindow
   /** Daemon mode: resolves true once connected, false when no daemon could be reached. */
   ready?: Promise<boolean>
@@ -356,6 +359,10 @@ export async function showBootNotices(opts: {
   const quitting = opts.quitting ?? (() => quitSeen)
   if (opts.guard) {
     await dialog.showMessageBox(window, { ...opts.guard, buttons: ['OK'], noLink: true }).catch((err) => log(`[Backend] The boot dialog could not be shown: ${errorText(err)}`))
+  }
+  if (opts.migration && !window.isDestroyed()) {
+    log(`[Backend] Migration notice: ${opts.migration}`)
+    await dialog.showMessageBox(window, { type: 'info', title: 'Connections', message: opts.migration, buttons: ['OK'], noLink: true }).catch((err) => log(`[Backend] The migration notice could not be shown: ${errorText(err)}`))
   }
   if (opts.notice) {
     const connected = opts.ready ? await opts.ready.catch(() => false) : true

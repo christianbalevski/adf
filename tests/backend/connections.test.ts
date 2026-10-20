@@ -89,13 +89,13 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
     expect(remoteNameFor('rawl hub', loadRemotes(env).remotes)).toBe('rawl-hub-3')
   })
 
-  it('a remote `adf pair` saved shows in Studio as Paired, and Studio reads its token', async () => {
+  it('a remote `adf pair` saved shows in Studio with its runtime state, and Studio reads its token', async () => {
     const env = sharedEnv()
     // What adf pair writes (pair.ts): the list entry and the keychain account.
     saveRemotes({ v: 1, default: 'desk', remotes: { desk: { url: HUB, fingerprint: 'DESK-2345', deviceId: 'dev9', label: 'laptop', pairedAt: '2026-10-18T10:00:00Z', hostName: 'desk' } } }, env)
     await storeRemoteToken('DESK-2345', TOKEN, env)
-    const view = buildConnectionsView({ active: { mode: 'local', remoteName: null, config: defaultBackendConfig() }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved: savedConnections(env), discovery: null })
-    expect(view.rows.find((r) => r.id === 'remote:desk')).toMatchObject({ name: 'desk', state: 'paired', action: 'connect', fingerprint: 'DESK-2345', encrypted: true, removable: true })
+    const view = buildConnectionsView({ active: { mode: 'local' }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved: savedConnections(env), discovery: null, runtimeStates: { local: 'connected', 'remote:desk': 'connected' } })
+    expect(view.rows.find((r) => r.id === 'remote:desk')).toMatchObject({ name: 'desk', state: 'connected', action: null, fingerprint: 'DESK-2345', encrypted: true, removable: true })
     expect((await savedConnectionTarget(defaultBackendConfig(), 'desk', env)).token).toBe(TOKEN)
   })
 
@@ -135,22 +135,24 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
 describe('the rows of the Connection page', () => {
   const saved = { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: 'd', label: 'l', pairedAt: '' } }
   const entry = (over: Partial<RemoteDiscoveryEntry> = {}): RemoteDiscoveryEntry => ({ fingerprint: 'ABCD-EFGH', name: 'rawl-hub', url: HUB, address: '100.101.102.103', kind: 'tailnet', encrypted: true, pairingOpen: false, alreadyPaired: true, ...over })
+  /** This computer's launch: the runtime set's states (none connected yet: connecting). */
   const local = (over: Partial<Parameters<typeof buildConnectionsView>[0]> = {}) => buildConnectionsView({
-    active: { mode: 'local', remoteName: null, config: defaultBackendConfig() }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved, discovery: null, ...over,
+    active: { mode: 'local' }, configured: defaultBackendConfig(), daemon: daemonStatus('connected'), saved, discovery: null, runtimeStates: { local: 'connected' }, ...over,
   })
 
-  it('This computer in use: Connected, no action; a saved remote: Paired, Connect; no Inside Studio row', async () => {
+  it('This computer in use: Connected, no action; a saved remote: its runtime state, no action; no Inside Studio row', async () => {
     const view = local()
     expect(view.current).toEqual({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' })
-    expect(view.rows.map((r) => [r.id, r.state, r.action])).toEqual([['local', 'connected', null], ['remote:rawl-hub', 'paired', 'connect']])
+    expect(view.rows.map((r) => [r.id, r.state, r.action])).toEqual([['local', 'connected', null], ['remote:rawl-hub', 'connecting', null]])
+    expect(view.next).toBeNull()
   })
 
   it('a paired computer found on the network is its saved row, never a second row with Pair; one not paired is Not paired with Pair', async () => {
     const view = local({ discovery: { browsing: true, problem: null, entries: [entry({ pairingOpen: true }), entry({ fingerprint: 'NEWW-2345', name: 'desk', url: LAN, address: '192.168.1.20', kind: 'lan', encrypted: false, alreadyPaired: false })] } })
-    expect(view.rows.filter((r) => r.fingerprint === 'ABCD-EFGH')).toEqual([expect.objectContaining({ id: 'remote:rawl-hub', state: 'paired', action: 'connect', pairingOpen: true })])
+    expect(view.rows.filter((r) => r.fingerprint === 'ABCD-EFGH')).toEqual([expect.objectContaining({ id: 'remote:rawl-hub', state: 'connecting', action: null, pairingOpen: true })])
     expect(view.rows.at(-1)).toMatchObject({ id: `found:NEWW-2345@${LAN}`, kind: 'found', name: 'desk', state: 'not-paired', action: 'pair', address: '192.168.1.20' })
     expect(view.discovery).toEqual({ browsing: true, problem: null })
-    expect(view.rows.some((r) => r.state === 'paired' && r.action === 'pair')).toBe(false)
+    expect(view.rows.some((r) => r.kind === 'saved' && r.action === 'pair')).toBe(false)
   })
 
   it('one fingerprint at two addresses: separate Not paired rows; when saved, only the saved row', async () => {
@@ -161,38 +163,25 @@ describe('the rows of the Connection page', () => {
     expect(view.rows.filter((r) => r.fingerprint === 'ABCD-EFGH').map((r) => r.id)).toEqual(['remote:rawl-hub'])
   })
 
-  it('a remote in use: its row shows the link state and no action, and is removable (Remove switches first); This computer offers Connect', async () => {
-    const config: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
-    const view = buildConnectionsView({ active: { mode: 'remote', remoteName: 'rawl-hub', config }, configured: config, daemon: daemonStatus('disconnected'), saved, discovery: null })
-    expect(view.current).toEqual({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub', url: HUB, state: 'retrying' })
-    expect(view.rows.map((r) => [r.id, r.state, r.action, r.removable])).toEqual([['local', null, 'connect', false], ['remote:rawl-hub', 'retrying', null, true]])
-  })
-
-  it('the remote URL of studio-backend.json is one row; with a saved twin, the saved row shows unless the URL is in use', async () => {
+  it('the remote URL of studio-backend.json is one row; with a saved twin, only the saved row', async () => {
     const slot: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: 'https://adf.example.com', token: 'safe:x', allowInsecureHttp: false, paired: { fingerprint: 'SLOT-2345', name: 'office', deviceId: 'd', label: 'l' } } }
-    expect(local({ configured: slot }).rows.find((r) => r.id === 'remote')).toMatchObject({ name: 'office', state: 'paired', action: 'connect', address: 'adf.example.com' })
+    expect(local({ configured: slot, runtimeStates: { local: 'connected', remote: 'retrying' } }).rows.find((r) => r.id === 'remote')).toMatchObject({ name: 'office', state: 'retrying', action: null, address: 'adf.example.com', removable: true })
     const twin: StudioBackendConfig = { ...slot, remote: { ...slot.remote, paired: { ...slot.remote.paired!, fingerprint: 'ABCD-EFGH' } } }
     expect(local({ configured: twin }).rows.map((r) => r.id)).toEqual(['local', 'remote:rawl-hub'])
-    const inUse: StudioBackendConfig = { ...twin, mode: 'remote' }
-    const view = buildConnectionsView({ active: { mode: 'remote', remoteName: null, config: inUse }, configured: inUse, daemon: daemonStatus('connected'), saved, discovery: null })
-    expect(view.rows.map((r) => [r.id, r.state])).toEqual([['local', null], ['remote', 'connected']])
-    expect(currentConnection({ active: { mode: 'remote', remoteName: null, config: { ...inUse, remote: { ...inUse.remote, paired: null } } }, daemon: null, saved })).toMatchObject({ name: 'adf.example.com', state: 'connecting' })
+    expect(currentConnection({ active: { mode: 'local' }, daemon: null })).toMatchObject({ id: 'local', state: 'connecting' })
   })
 
-  it('a saved connection other than the running one is the next one, remote to remote too (review item 7)', () => {
-    const running: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
-    const desk = { ...saved, desk: { url: 'https://desk.example.com', fingerprint: 'DESK-2345', deviceId: 'd', label: 'l', pairedAt: '' } }
-    const configured: StudioBackendConfig = { ...running, remote: { ...running.remote, name: 'desk' } }
-    expect(buildConnectionsView({ active: { mode: 'remote', remoteName: 'rawl-hub', config: running }, configured, daemon: daemonStatus('connected'), saved: desk, discovery: null }).next).toEqual({ id: 'remote:desk', name: 'desk' })
-    expect(buildConnectionsView({ active: { mode: 'remote', remoteName: 'rawl-hub', config: running }, configured: running, daemon: daemonStatus('connected'), saved: desk, discovery: null }).next).toBeNull()
+  it('the mode saved for the next launch is `next`; a remote is never the next one (multi-runtime.md §7.2)', () => {
     expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
+    // An older remote-mode file not migrated yet (a launch Inside Studio): the next launch runs This computer.
+    const legacy: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
+    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: legacy, daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
   })
 
-  it('Inside Studio (legacy) is a row only while it runs or is saved; the saved next connection is removable (Remove switches first)', async () => {
-    expect(buildConnectionsView({ active: { mode: 'embedded', remoteName: null, config: defaultBackendConfig() }, configured: { ...defaultBackendConfig(), mode: 'embedded' }, daemon: null, saved, discovery: null }).rows.slice(0, 2).map((r) => [r.id, r.state, r.action]))
-      .toEqual([['local', null, 'connect'], ['embedded', 'connected', null]])
-    const next: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
-    expect(local({ configured: next }).rows.find((r) => r.id === 'remote:rawl-hub')).toMatchObject({ action: 'connect', removable: true })
+  it('Inside Studio (legacy) is a row only while it runs or is saved; there, saved connections have no state (§7.2)', async () => {
+    const view = buildConnectionsView({ active: { mode: 'embedded' }, configured: { ...defaultBackendConfig(), mode: 'embedded' }, daemon: null, saved, discovery: null })
+    expect(view.rows.map((r) => [r.id, r.state, r.action, r.removable])).toEqual([['local', null, 'connect', false], ['embedded', 'connected', null, false], ['remote:rawl-hub', null, null, true]])
   })
 })
 
@@ -203,13 +192,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     const path = join(dir, 'studio-backend.json')
     writeFileSync(path, JSON.stringify(opts.studioBackend ?? { v: 1, mode: 'local' }))
     const boot = resolveBootBackend(path, {}, quiet)
-    const switches: string[] = []
-    const store = createBackendSettingsStore({
-      boot, codec, log: quiet,
-      savedRemote: (name) => savedConnections(env)[name] ?? null,
-      confirmModeSwitch: async (target) => { switches.push(target); return true },
-      applyModeSwitch: () => 'Studio restarts now.',
-    })
+    const store = createBackendSettingsStore({ boot, codec, log: quiet })
     const confirms: Array<{ message: string; detail: string }> = []
     const pushes: unknown[] = []
     const daemon = opts.daemon ?? fakeDaemon()
@@ -224,47 +207,32 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
       ...(opts.agentWindowsOn ? { agentWindowsOn: opts.agentWindowsOn } : {}),
       ...(opts.slotChanged ? { slotChanged: opts.slotChanged } : {}),
     })
-    return { env, path, store, connections, confirms, pushes, switches, daemon }
+    return { env, path, store, connections, confirms, pushes, daemon }
   }
-  /** A remote-mode install (until phase 4 moves it to local, multi-runtime.md §7.3): the switch flow still runs there. */
-  const remoteMode = { v: 1, mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'desk' } }
 
-  it('local mode: a saved connection is connected while saved; Connect to it is refused (multi-runtime.md §4.5)', async () => {
+  it('a saved connection is connected while saved; Connect to it is refused, here and Inside Studio (multi-runtime.md §4.5)', async () => {
+    for (const mode of ['local', 'embedded'] as const) {
+      const s = setup({ studioBackend: { v: 1, mode } })
+      await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'A saved connection is connected while it is saved.' })
+      expect(await s.connections.use('remote')).toMatchObject({ ok: false, code: 'not_found' })
+      expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe(mode)
+    }
+  })
+
+  it('Connect refuses a computer not saved and an unknown id; This computer or Inside Studio is saved for the next launch, with no restart (§7.2)', async () => {
     const s = setup()
-    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-    expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'A saved connection is connected while it is saved.' })
-    expect(await s.connections.use('remote')).toMatchObject({ ok: false, code: 'not_found' })
-    expect(s.switches).toEqual([])
-    expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('local')
-  })
-
-  it('remote mode: Connect to another saved connection reads its token first, then saves it as the connection and restarts (the switch dialog)', async () => {
-    const s = setup({ studioBackend: remoteMode })
-    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-    const result = await s.connections.use('remote:rawl-hub')
-    expect(result).toMatchObject({ ok: true, notices: ['Studio restarts now.'] })
-    expect(s.switches).toEqual(['remote'])
-    expect(JSON.parse(readFileSync(s.path, 'utf8'))).toMatchObject({ mode: 'remote', remote: { name: 'rawl-hub' } })
-    expect(s.store.get().configured).toMatchObject({ mode: 'remote', remoteName: 'rawl-hub' })
-    expect(s.pushes.length).toBeGreaterThan(0)
-  })
-
-  it('remote mode: Connect with a token the keychain does not give: the sentence, nothing saved, no restart', async () => {
-    const s = setup({ studioBackend: remoteMode })
-    saveRemotes({ v: 1, default: null, remotes: { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: '', label: '', pairedAt: '' } } }, s.env)
-    expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'keychain', error: keychainSentence('rawl-hub') })
-    expect(s.switches).toEqual([])
-    expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('remote')
-  })
-
-  it('Connect refuses a computer not paired and an unknown id; Connect to This computer while it runs is a plain save', async () => {
-    const s = setup()
-    expect(await s.connections.use(`found:NEWW-2345@${LAN}`)).toEqual({ ok: false, code: 'not_paired', error: 'Pair first.' })
+    expect(await s.connections.use(`found:NEWW-2345@${LAN}`)).toEqual({ ok: false, code: 'not_paired', error: 'Add it first.' })
     expect(await s.connections.use('remote:nobody')).toMatchObject({ ok: false, code: 'not_found' })
-    expect(await setup({ studioBackend: remoteMode }).connections.use('remote:nobody')).toMatchObject({ ok: false, code: 'not_configured' })
     expect(await s.connections.use(42)).toMatchObject({ ok: false, code: 'invalid' })
-    expect(await s.connections.use('local')).toMatchObject({ ok: true })
-    expect(s.switches).toEqual([])
+    expect(await s.connections.use('local')).toMatchObject({ ok: true, notices: [] })
+    const legacy = await s.connections.use('embedded')
+    expect(legacy).toMatchObject({ ok: true, notices: ['Saved. Applies at the next launch.'] })
+    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('embedded')
+    const back = await s.connections.use('local')
+    expect(back).toMatchObject({ ok: true, notices: ['Saved.'] })
+    expect(back.ok && back.view.next).toBeNull()
   })
 
   it('Add connection with a token: hello pins the fingerprint before the token is sent; saved like a pairing; plain LAN http is recorded for that origin', async () => {
@@ -355,14 +323,6 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(loadRemotes(s.env).remotes).toEqual({})
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBeNull()
 
-    // A remote-mode install whose connection is in use (e.g. no longer connecting): Remove switches to This computer first, in the same question.
-    const next = setup({ studioBackend: { ...remoteMode, remote: { ...remoteMode.remote, name: 'rawl-hub' } } })
-    await saveConnection(next.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-    const switched = await next.connections.remove('remote:rawl-hub')
-    expect(next.confirms.at(-1)).toEqual({ message: 'Remove rawl-hub', detail: 'Switches to This computer, then removes the address and token from Studio and adf.\nStill listed on rawl-hub; revoke it there.', ok: 'Remove' })
-    expect(switched).toMatchObject({ ok: true, notices: expect.arrayContaining(['Removed rawl-hub.']) })
-    expect(next.store.config().mode).toBe('local')
-    expect(loadRemotes(next.env).remotes).toEqual({})
     const kept = setup({ confirm: false })
     await saveConnection(kept.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     expect(await kept.connections.remove('remote:rawl-hub')).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
@@ -400,7 +360,7 @@ describe('the runtime set on the Connection page (multi-runtime.md §6.5)', () =
   it('local mode: a saved connection shows its runtime state and no Connect; one not in the set yet is connecting', () => {
     const config = defaultBackendConfig()
     const view = buildConnectionsView({
-      active: { mode: 'local', remoteName: null, config }, configured: config, daemon: daemonStatus('connected'),
+      active: { mode: 'local' }, configured: config, daemon: daemonStatus('connected'),
       saved: { ...saved, desk: { url: 'https://desk.example.com', fingerprint: 'DESK-2345', deviceId: 'd', label: 'l', pairedAt: '' } },
       discovery: null,
       runtimeStates: { local: 'connected', 'remote:rawl-hub': 'retrying' },

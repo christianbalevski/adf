@@ -16,7 +16,6 @@ import {
   type StudioBackendConfig,
 } from '../../src/main/backend/backend-config'
 import { checkRemoteDaemonUrl } from '../../src/shared/utils/remote-backend-url'
-import type { StudioBackendMode } from '../../src/shared/types/backend.types'
 
 const TOKEN = 'tok_3f9b2c7e1a5d4f60b8e2c9a7d1f3e5b7'
 
@@ -188,16 +187,11 @@ describe('normalizeBackendConfig', () => {
 })
 
 describe('Settings → Connections store', () => {
-  function store(opts: {
-    codec?: SecretCodec
-    path?: string
-    confirmModeSwitch?: (target: StudioBackendMode) => Promise<boolean>
-    applyModeSwitch?: (target: StudioBackendMode) => void
-  } = {}) {
+  function store(opts: { codec?: SecretCodec; path?: string } = {}) {
     const path = opts.path ?? embeddedConfigPath()
     const rec = recordingLog()
     const boot = resolveBootBackend(path, {}, rec.log)
-    const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), log: rec.log, confirmModeSwitch: opts.confirmModeSwitch, applyModeSwitch: opts.applyModeSwitch })
+    const s = createBackendSettingsStore({ boot, codec: opts.codec ?? fakeCodec(), log: rec.log })
     return { path, s, lines: rec.lines }
   }
 
@@ -209,126 +203,22 @@ describe('Settings → Connections store', () => {
     expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'local', source: 'file' })
   })
 
-  it('switching to local asks first (the switch dialog), then saves and restarts; cancel writes nothing (W4-A)', async () => {
-    const asked: string[] = []
-    const restarted: string[] = []
-    let answer = false
-    const { path, s } = store({ confirmModeSwitch: async (target) => { asked.push(target); return answer }, applyModeSwitch: (target) => { restarted.push(target) } })
-    expect(await s.set({ mode: 'local' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
-    expect(readFileSync(path, 'utf-8')).toBe(JSON.stringify({ v: 1, mode: 'embedded' }))
-    expect(restarted).toEqual([])
-    answer = true
-    const result = await s.set({ mode: 'local' })
-    expect(result.ok && result.view.configured.mode).toBe('local')
-    expect(asked).toEqual(['local', 'local'])
-    expect(restarted).toEqual(['local'])
+  it('a mode chosen is saved for the next launch: no dialog, no restart (multi-runtime.md §7.2)', async () => {
+    const { path, s } = store()
+    expect(await s.set({ mode: 'local' })).toMatchObject({ ok: true, notices: ['Saved. Applies at the next launch.'] })
     expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('local')
+    // The mode this launch runs, chosen again: saved, nothing to apply.
+    expect(await s.set({ mode: 'embedded' })).toMatchObject({ ok: true, notices: ['Saved.'] })
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toEqual({ v: 1, mode: 'embedded', keepDaemonRunning: false, remote: { url: null, token: null, allowInsecureHttp: false } })
+    // Unchanged: nothing written, nothing said.
+    expect(await s.set({ mode: 'embedded' })).toMatchObject({ ok: true, notices: [] })
   })
 
-  it('Cancel switch on a waiting switch saves the running mode again; Finish switch now restarts (W4-A)', async () => {
-    let waiting: 'local' | null = null
-    const restarted: string[] = []
-    const path = embeddedConfigPath()
-    const rec = recordingLog()
-    const boot = resolveBootBackend(path, {}, rec.log)
-    const s = createBackendSettingsStore({
-      boot, codec: fakeCodec(), log: rec.log,
-      confirmModeSwitch: async () => true,
-      applyModeSwitch: (target) => { waiting = target as 'local'; return 'Studio restarts once the turns in flight finish (agent-1).' },
-      pendingSwitch: () => (waiting ? { target: waiting, waitingFor: ['agent-1'], gaveUp: true } : null),
-      finishSwitchNow: () => { if (!waiting) return null; restarted.push(waiting); waiting = null; return 'Studio restarts now.' },
-      cancelSwitch: () => { const t = waiting; waiting = null; return t },
-    })
-    await s.set({ mode: 'local' })
-    expect(s.get().pendingSwitch).toEqual({ target: 'local', waitingFor: ['agent-1'], gaveUp: true })
-    const cancelled = await s.set({ switchAction: 'cancel' })
-    expect(cancelled).toMatchObject({ ok: true, notices: ['Switch cancelled; Studio stays in this mode.'] })
-    expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('embedded')
-    expect(s.get().pendingSwitch).toBeNull()
-    await s.set({ mode: 'local' })
-    expect(await s.set({ switchAction: 'finish-now' })).toMatchObject({ ok: true, notices: ['Studio restarts now.'] })
-    expect(restarted).toEqual(['local'])
-  })
-
-  it.each(['env', 'session'] as const)('Cancel switch in a launch the %s source made embedded writes back the mode the file had (review 4300792088)', async (source) => {
-    let waiting: 'remote' | null = null
-    const path = tempConfigPath()
-    writeFileSync(path, JSON.stringify({ v: 1, mode: 'local' }))
-    const rec = recordingLog()
-    const boot = source === 'env'
-      ? resolveBootBackend(path, { ADF_STUDIO_BACKEND: 'embedded' }, rec.log)
-      : { ...resolveBootBackend(path, {}, rec.log), mode: 'embedded' as const, source: 'session' as const, sessionReason: 'daemon version mismatch' }
-    expect(boot).toMatchObject({ mode: 'embedded', source, config: { mode: 'local' } })
-    const s = createBackendSettingsStore({
-      boot, codec: fakeCodec(), log: rec.log,
-      confirmModeSwitch: async () => true,
-      applyModeSwitch: (target) => { waiting = target as 'remote'; return 'Studio restarts once the turns in flight finish (agent-1).' },
-      pendingSwitch: () => (waiting ? { target: waiting, waitingFor: ['agent-1'], gaveUp: false } : null),
-      cancelSwitch: () => { const t = waiting; waiting = null; return t },
-    })
-    expect(await s.set({ remoteUrl: 'https://daemon.example.com', remoteToken: TOKEN })).toMatchObject({ ok: true })
-    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: true })
-    expect(JSON.parse(readFileSync(path, 'utf-8')).mode).toBe('remote')
-    expect(await s.set({ switchAction: 'cancel' })).toMatchObject({ ok: true })
-    expect(JSON.parse(readFileSync(path, 'utf-8')).mode).toBe('local')
-    expect(resolveBootBackend(path, {}, recordingLog().log)).toMatchObject({ mode: 'local', source: 'file' })
-  })
-
-  it('choosing the running mode while a switch waits cancels that switch, as the latest choice (W5-F)', async () => {
-    let waiting: 'local' | null = null
-    const path = embeddedConfigPath()
-    const rec = recordingLog()
-    const s = createBackendSettingsStore({
-      boot: resolveBootBackend(path, {}, rec.log), codec: fakeCodec(), log: rec.log,
-      confirmModeSwitch: async () => true,
-      applyModeSwitch: (target) => { waiting = target as 'local'; return 'Studio restarts once the turns in flight finish (agent-1).' },
-      pendingSwitch: () => (waiting ? { target: waiting, waitingFor: ['agent-1'], gaveUp: false } : null),
-      cancelSwitch: () => { const t = waiting; waiting = null; return t },
-    })
-    await s.set({ mode: 'local' })
-    expect(waiting).toBe('local')
-    expect(await s.set({ mode: 'embedded' })).toMatchObject({ ok: true, notices: ['Switch cancelled; Studio stays in this mode.'] })
-    expect(waiting).toBeNull()
-    expect(s.get().pendingSwitch).toBeNull()
-    expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('embedded')
-  })
-
-  it('once a switch\'s restart has started, a mode change or a switch action is refused and nothing is saved (W5-F)', async () => {
-    let restarting: string | null = null
-    const cancels: string[] = []
-    const path = embeddedConfigPath()
-    const rec = recordingLog()
-    const s = createBackendSettingsStore({
-      boot: resolveBootBackend(path, {}, rec.log), codec: fakeCodec(), log: rec.log,
-      confirmModeSwitch: async () => true,
-      applyModeSwitch: (target) => { restarting = `Studio is restarting into ${target}. Nothing changed.` },
-      cancelSwitch: () => { cancels.push('cancel'); return null },
-      restarting: () => restarting,
-    })
-    await s.set({ mode: 'local' })
-    expect(await s.set({ mode: 'embedded' })).toEqual({ ok: false, code: 'restarting', error: 'Studio is restarting into local. Nothing changed.' })
-    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: false, code: 'restarting' })
-    expect(await s.set({ switchAction: 'cancel' })).toMatchObject({ ok: false, code: 'restarting' })
-    expect(await s.set({ switchAction: 'finish-now' })).toMatchObject({ ok: false, code: 'restarting' })
-    expect(cancels).toEqual([])
-    expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('local')
-    // Other settings still save.
-    expect(await s.set({ keepDaemonRunning: true })).toMatchObject({ ok: true })
-  })
-
-  it('a switch to remote goes through the switch dialog and the restart, as every switch (W4-B on W4-A)', async () => {
-    const asked: string[] = []
-    const restarted: string[] = []
-    let answer = false
-    const { path, s } = store({ confirmModeSwitch: async (t) => { asked.push(t); return answer }, applyModeSwitch: (t) => { restarted.push(t) } })
+  it('there is no remote mode to choose: a saved connection is connected while it is saved (§7.1)', async () => {
+    const { path, s } = store()
     await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })
-    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: false, code: 'switch_cancelled' })
+    expect(await s.set({ mode: 'remote' as 'local' })).toEqual({ ok: false, code: 'invalid_mode', error: 'A saved connection is connected while it is saved.' })
     expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('embedded')
-    answer = true
-    expect(await s.set({ mode: 'remote' })).toMatchObject({ ok: true })
-    expect(asked).toEqual(['remote', 'remote'])
-    expect(restarted).toEqual(['remote'])
-    expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('remote')
   })
 
   it('always allows going back to embedded', async () => {
@@ -449,23 +339,29 @@ describe('review fixes', () => {
     expect(samePath.ok && samePath.config.remote.allowInsecureHttp).toBe(true)
   })
 
-  it('never hands out the token for an unconfirmed plain-http URL from the file; boots remote (no silent embedded autostart) and says so', () => {
+  it('never hands out the token for an unconfirmed plain-http URL from the file; an older remote-mode file runs This computer (multi-runtime.md §7.3)', () => {
     const path = tempConfigPath()
     writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc' } }))
     const { lines, log } = recordingLog()
     const boot = resolveBootBackend(path, {}, log)
-    // W4-B review: remote, so the connector refuses with a dialog; embedded would autostart this computer's agents.
-    expect(boot.mode).toBe('remote')
+    expect(boot.mode).toBe('local')
     // Kept (Settings shows it, a save keeps it), never used.
     expect(boot.config.remote).toEqual({ url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false })
     expect(readRemoteToken(boot.config, fakeCodec())).toBeNull()
     expect(lines.some((l) => l.includes('not used until confirmed'))).toBe(true)
-    expect(lines.some((l) => l.includes('mode is remote'))).toBe(true)
-    // W0-E follow-up: the refusal is visible in Settings → Connections (and the connector's dialog).
+    expect(lines.some((l) => l.includes('says remote (an older Studio)'))).toBe(true)
+    // W0-E follow-up: the refusal is visible in Settings → Connections; the slot's runtime fails with it.
     const view = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log }).get()
-    expect(view.active.notices.join(' ')).toMatch(/remote daemon cannot be used.*192\.168\.1\.5/)
     expect(view.remoteUrlProblem).toMatch(/not confirmed/)
-    expect(view.configured).toMatchObject({ mode: 'remote', remoteUrl: 'http://192.168.1.5:7385', remoteTokenSaved: true, allowInsecureHttp: false })
+    expect(view.configured).toMatchObject({ mode: 'local', remoteUrl: 'http://192.168.1.5:7385', remoteTokenSaved: true, allowInsecureHttp: false })
+  })
+
+  it('ADF_STUDIO_BACKEND=remote is read as local, logged', () => {
+    const path = tempConfigPath()
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'local' }))
+    const { lines, log } = recordingLog()
+    expect(resolveBootBackend(path, { ADF_STUDIO_BACKEND: 'remote' }, log)).toMatchObject({ mode: 'local', source: 'env' })
+    expect(lines.some((l) => l.includes('ADF_STUDIO_BACKEND=remote is read as local'))).toBe(true)
   })
 
   it('an unrelated save keeps the unconfirmed URL and the mode in the file', async () => {
@@ -479,9 +375,9 @@ describe('review fixes', () => {
 
   it('the save that leaves out fields the boot read ignored says so, once', async () => {
     const path = tempConfigPath()
-    writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { url: 'ftp://adf.example.com' } }))
+    writeFileSync(path, JSON.stringify({ v: 1, mode: 'local', remote: { url: 'ftp://adf.example.com' } }))
     const boot = resolveBootBackend(path, {}, recordingLog().log)
-    expect(boot.mode).toBe('remote')
+    expect(boot.mode).toBe('local')
     const s = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log })
     expect(s.get().active.notices.join(' ')).toMatch(/ignored the remote daemon URL/)
     const first = await s.set({ keepDaemonRunning: true })
@@ -503,17 +399,9 @@ describe('review fixes', () => {
     expect(again.ok && again.config.remote.allowInsecureHttp).toBe(true)
   })
 
-  it('switches to remote once a usable URL and its token are saved', () => {
-    const switchOpts = opts
-    const none = defaultBackendConfig()
-    expect(applyBackendPatch(none, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
-    const urlOnly: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: null, allowInsecureHttp: false } }
-    expect(applyBackendPatch(urlOnly, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'remote_not_configured' })
-    const unconfirmed: StudioBackendConfig = { ...none, remote: { url: 'http://192.168.1.5:7385', token: 'safe:abc', allowInsecureHttp: false } }
-    expect(applyBackendPatch(unconfirmed, { mode: 'remote' }, switchOpts)).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
-    const ready: StudioBackendConfig = { ...none, remote: { url: 'https://adf.example.com', token: 'safe:abc', allowInsecureHttp: false } }
-    const switched = applyBackendPatch(ready, { mode: 'remote' }, switchOpts)
-    expect(switched.ok && switched.config.mode).toBe('remote')
+  it('never saves remote mode, whatever is saved (multi-runtime.md §7.1)', () => {
+    const ready: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: 'https://adf.example.com', token: 'safe:abc', allowInsecureHttp: false } }
+    expect(applyBackendPatch(ready, { mode: 'remote' as 'local' }, opts)).toMatchObject({ ok: false, code: 'invalid_mode' })
   })
 
   it('does not block unrelated saves on a stored unconfirmed URL', () => {
@@ -595,27 +483,14 @@ describe('review fixes', () => {
 })
 
 describe('the saved connection in use (settings-scopes.md §5.2)', () => {
-  const saved = (name: string) => (name === 'rawl-hub' ? { url: 'http://100.101.102.103:7385' } : null)
-
-  it('remote.name and insecureHttpOrigins are read back; a bad name or origin is dropped and said so', () => {
+  it('remote.name (an older remote-mode file, for the migration) and insecureHttpOrigins are read back; a bad name or origin is dropped and said so', () => {
     const ok = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'rawl-hub' }, insecureHttpOrigins: ['http://192.168.1.20:7385', 'not a url', 'http://192.168.1.20:7385/path'] })
     expect(ok.config.remote.name).toBe('rawl-hub')
     expect(ok.config.insecureHttpOrigins).toEqual(['http://192.168.1.20:7385'])
-    // A saved connection needs no remote URL: no warning about one.
-    expect(ok.warnings.filter((w) => w.includes('no usable remote.url'))).toEqual([])
+    expect(ok.warnings).toEqual([])
     const bad = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'a\nb' } })
     expect(bad.config.remote.name).toBeUndefined()
     expect(bad.dropped).toContain('the saved connection name, which was not valid')
-  })
-
-  it('remoteName must name a saved connection; switching to it needs no remote URL; null goes back to the URL', () => {
-    const current = defaultBackendConfig()
-    expect(applyBackendPatch(current, { mode: 'remote', remoteName: 'nobody' }, { codec: fakeCodec(), savedRemote: saved })).toMatchObject({ ok: false, code: 'remote_not_configured', error: 'No saved connection named "nobody".' })
-    const result = applyBackendPatch(current, { mode: 'remote', remoteName: 'rawl-hub' }, { codec: fakeCodec(), savedRemote: saved })
-    expect(result.ok && result.config).toMatchObject({ mode: 'remote', remote: { name: 'rawl-hub', url: null } })
-    const back = applyBackendPatch((result as { config: StudioBackendConfig }).config, { remoteName: null }, { codec: fakeCodec(), savedRemote: saved })
-    expect(back.ok && back.config.remote.name).toBeUndefined()
-    expect(applyBackendPatch(current, { remoteName: 'rawl-hub' }, { codec: fakeCodec() })).toMatchObject({ ok: false, code: 'remote_not_configured' })
   })
 
   it('trustInsecureOrigin records an origin once; anything but an origin is refused', () => {
@@ -624,24 +499,5 @@ describe('the saved connection in use (settings-scopes.md §5.2)', () => {
     const twice = applyBackendPatch((once as { config: StudioBackendConfig }).config, { trustInsecureOrigin: 'http://192.168.1.20:7385' }, { codec: fakeCodec() })
     expect(twice.ok && twice.changes).toEqual([])
     expect(applyBackendPatch(defaultBackendConfig(), { trustInsecureOrigin: 'http://192.168.1.20:7385/x' }, { codec: fakeCodec() })).toMatchObject({ ok: false, code: 'invalid_patch' })
-  })
-
-  it('remote to another saved connection is a switch (dialog, restart); back to the running one is a plain save', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'adf-backend-'))
-    const path = join(dir, BACKEND_CONFIG_FILE)
-    writeFileSync(path, JSON.stringify({ v: 1, mode: 'remote', remote: { name: 'rawl-hub' } }))
-    const boot = resolveBootBackend(path, {}, recordingLog().log)
-    const asked: StudioBackendMode[] = []
-    const store = createBackendSettingsStore({
-      boot, codec: fakeCodec(), log: recordingLog().log,
-      savedRemote: (name) => (name === 'rawl-hub' || name === 'desk' ? { url: 'https://x.example.com' } : null),
-      confirmModeSwitch: async (target) => { asked.push(target); return true },
-      applyModeSwitch: () => 'Studio restarts now.',
-    })
-    expect(await store.set({ remoteName: 'desk' })).toMatchObject({ ok: true, notices: ['Studio restarts now.'] })
-    expect(asked).toEqual(['remote'])
-    expect(await store.set({ remoteName: 'rawl-hub' })).toMatchObject({ ok: true })
-    expect(asked).toEqual(['remote'])
-    expect(JSON.parse(readFileSync(path, 'utf8')).remote.name).toBe('rawl-hub')
   })
 })

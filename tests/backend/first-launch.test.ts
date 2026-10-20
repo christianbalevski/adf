@@ -49,7 +49,6 @@ process.env.ADF_KEYCHAIN = '0'
 
 const { backendConfigPath, resolveBootBackend } = await import('../../src/main/backend/backend-config')
 const { runHandover } = await import('../../src/main/backend/handover')
-const { resumeSwitchedAgents } = await import('../../src/main/backend/mode-switch')
 const {
   DEFAULT_SWITCH_FILE,
   guardBoot,
@@ -319,12 +318,9 @@ describe('upgrade from 0.7.x', () => {
     expect(h.dialogs[0].detail).toMatch(/adf identity trust-daemon/)
   })
 
-  it('agents that ran under 0.7.x: no switch record, so nothing is started twice; the daemon autostarts them from the same tracked folders', async () => {
+  it('agents that ran under 0.7.x: Studio starts none itself; the daemon autostarts them from the same tracked folders', async () => {
     write07xUserData({ identity: false })
     await boot()
-    const started: string[] = []
-    await resumeSwitchedAgents('local', dir, async (filePath) => { started.push(filePath); return { success: true } })
-    expect(started).toEqual([])
     expect(h.notifications).toEqual([])
     expect(readJson(settingsPath).trackedDirectories).toEqual(['C:/agents'])
   })

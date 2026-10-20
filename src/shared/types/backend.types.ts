@@ -9,6 +9,13 @@
 
 export type StudioBackendMode = 'embedded' | 'local' | 'remote'
 
+/**
+ * The modes a launch runs (docs/design/multi-runtime.md §7.3). `remote` is
+ * only a value an older `studio-backend.json` may hold: the first launch of
+ * this version migrates it to `local`, with that connection in the runtime set.
+ */
+export type StudioRunMode = Exclude<StudioBackendMode, 'remote'>
+
 /** Where the running Studio's mode came from. */
 export type StudioBackendSource =
   /** No `studio-backend.json`: the default, Local daemon (owner decision 2026-10-16); the first boot saves it to the file. */
@@ -24,14 +31,14 @@ export type StudioBackendSource =
   | 'session'
 
 export interface BackendSettingsView {
-  /** The backend this Studio process booted with. Fixed until restart. */
+  /** The backend this Studio process booted with. Fixed until the next launch. */
   active: {
-    mode: StudioBackendMode
+    mode: StudioRunMode
     source: StudioBackendSource
     /**
-     * What this launch could not do as configured, token-free: Studio started
-     * embedded because the remote daemon may not be used, or fields of
-     * studio-backend.json were ignored.
+     * What this launch could not do as configured, token-free: fields of
+     * studio-backend.json were ignored, or the migration of a `mode: remote`
+     * file could not be saved.
      */
     notices: string[]
     /** Source `session` set by boot (W5-I): why this launch runs its mode for one session. */
@@ -41,7 +48,7 @@ export interface BackendSettingsView {
   remoteUrlProblem: string | null
   /** What `studio-backend.json` holds now (what the next launch uses, unless overridden). */
   configured: {
-    mode: StudioBackendMode
+    mode: StudioRunMode
     keepDaemonRunning: boolean
     remoteUrl: string | null
     /** True when an encrypted remote token is saved. The token itself is never returned. */
@@ -50,17 +57,9 @@ export interface BackendSettingsView {
     allowInsecureHttp: boolean
     /** The saved token came from pairing with this computer (remote-access.md §9.3); null for a pasted one. */
     remotePaired?: { fingerprint: string; name: string; label: string } | null
-    /** The saved connection (`cli-remotes.json`) remote mode uses; null: the remote URL above. */
-    remoteName?: string | null
   }
-  /** The daemon this Studio uses, in local or remote mode (null in embedded mode). */
+  /** This computer's daemon (null in embedded mode). */
   daemon?: BackendDaemonStatus | null
-  /**
-   * A switch saved but waiting for turns in flight to finish ("Wait for Them
-   * to Finish"); `gaveUp` once the wait limit passed. Settings → Connections
-   * offers Finish switch now and Cancel switch.
-   */
-  pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
   /** The launch that switched this install from Embedded to the new default, Local daemon; null when none did. */
   defaultSwitch?: BackendDefaultSwitch | null
   /** OS keychain encryption (safeStorage) works; a token cannot be saved without it. */
@@ -108,7 +107,8 @@ export interface BackendDaemonStatus {
 }
 
 export interface BackendSettingsPatch {
-  mode?: StudioBackendMode
+  /** Saved for the next launch (multi-runtime.md §7.2); Studio does not restart. */
+  mode?: StudioRunMode
   keepDaemonRunning?: boolean
   /** `null` or `''` clears the remote URL and the token saved for it. */
   remoteUrl?: string | null
@@ -121,17 +121,11 @@ export interface BackendSettingsPatch {
    * counts for a new address only when this names that address's origin.
    */
   insecureHttpOrigin?: string
-  /** Remote mode uses this saved connection of `cli-remotes.json`; null: the remote URL (settings-scopes.md §5.2). */
-  remoteName?: string | null
   /** Main only: the user confirmed plain HTTP to this origin for a saved connection. */
   trustInsecureOrigin?: string
-  /** A switch waiting for turns in flight: restart now (`finish-now`), or stay in this mode (`cancel`). */
-  switchAction?: 'finish-now' | 'cancel'
 }
 
 export type BackendSettingsErrorCode =
-  /** The user cancelled the switch dialog; nothing changed. */
-  | 'switch_cancelled'
   | 'invalid_mode'
   | 'invalid_url'
   | 'insecure_url_unconfirmed'
@@ -142,8 +136,6 @@ export type BackendSettingsErrorCode =
   | 'file_unreadable'
   | 'write_failed'
   | 'remote_not_configured'
-  /** A switch's restart has started: no mode change or switch action is taken. */
-  | 'restarting'
 
 export type BackendSettingsSaveResult =
   | { ok: true; view: BackendSettingsView; notices: string[] }

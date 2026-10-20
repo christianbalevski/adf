@@ -25,7 +25,7 @@ import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manag
 import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
 
-export { RECOVERY_HINT, REMOTE_RECOVERY_HINT, remoteWaitingNotice } from './hints'
+export { RECOVERY_HINT, remoteWaitingNotice } from './hints'
 export {
   AGENT_SESSION_END_TIMEOUT_MS,
   AGENT_WINDOW_STASH_WAIT_MS,
@@ -39,8 +39,8 @@ export { RuntimeManager, RuntimeRouteError } from './runtime-manager'
 
 /**
  * Daemon-mode IPC registration (design D1, §3): the alternative to
- * `registerAllIpcHandlers` when `studio-backend.json` selects `local` or
- * `remote`. The renderer and preload are the same in both modes.
+ * `registerAllIpcHandlers` when `studio-backend.json` selects `local` (This
+ * computer). The renderer and preload are the same in both modes.
  *
  * Every channel of the channel map (channel-map.ts) gets its handler here,
  * except the ones main/index.ts and the services register in both modes
@@ -124,6 +124,13 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
 const MAIN_OPEN_CHANNELS: ReadonlySet<string> = new Set([IPC.FILE_OPEN, IPC.FILE_CREATE, IPC.FILE_CREATE_QUICK])
 
 export interface DaemonModeDeps {
+  /**
+   * The primary runtime's kind. Studio's boot always passes `local` (This
+   * computer; multi-runtime.md §7.1). `remote` is a test seam only: the
+   * harness of the remote handler variants (tests/parity/remote,
+   * tests/backend/daemon-mode-remote*.test.ts) runs one remote daemon as
+   * the primary; no Studio launch reaches it.
+   */
   mode: Exclude<StudioBackendMode, 'embedded'>
   /** Finds or starts the daemon (local: daemon-process.ts; remote: URL + token). */
   connect: DaemonConnector
@@ -169,8 +176,6 @@ export interface DaemonModeDeps {
   remoteOAuth?: { bindHost?: string; allowPage?: (url: URL) => boolean }
   /** The shared owner-phrase keychain entry (tests: a stand-in). Default: the OS keychain's. */
   sharedMnemonic?: () => SharedMnemonicStore | null
-  /** Tests: waits for the daemon's pid to exit (default: process liveness). */
-  waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Tests: whether the daemon's pid is alive (local mode exit detection). Default: process liveness. */
   processAlive?: (pid: number) => boolean
   /** Tests: the pause after the daemon exited before Studio starts it again, or shows the exit (default DAEMON_RESPAWN_DELAY_MS). */
@@ -183,25 +188,20 @@ export interface DaemonModeDeps {
   powerMonitor?: Pick<Electron.PowerMonitor, 'on' | 'removeListener'> | null
   /** Local mode: rewrite Studio's runtime identity entry after an owner import (DaemonModeContext.afterOwnerImport). */
   afterOwnerImport?: (phrase: string) => Promise<string>
-  /** Tests: Studio's restarts after a failed launch. Default: relaunchStudio / relaunchEmbeddedForSession (mode-switch.ts). */
+  /** Tests: Studio's restarts after This computer's daemon failed. Default: relaunchStudio / relaunchEmbeddedForSession (boot-handover.ts). */
   relaunch?: { reconnect(reason: string): void; embeddedForSession(reason: string): void }
   /** How long a restart waits for the window to keep its unsaved editors and restart itself. Default 15 s. */
   stashWaitMs?: number
   /** The daemon's `remote_access` push (remote-access.md §8), for Settings → Networking → Remote access. */
   onRemoteAccessEvent?: (payload: unknown) => void
-  /** Remote mode: the connection's name, for "Stored on <name>." and "Open on <name>." (settings-scopes.md §7). */
+  /** A remote primary (tests only): the connection's name, for "Stored on <name>." and "Open on <name>." (settings-scopes.md §7). */
   runtimeName?: () => string | null
-  /**
-   * The primary runtime's id (multi-runtime.md §1.3): `local` in local mode;
-   * in remote mode `remote:<name>` for a saved connection, `remote` for the
-   * slot of studio-backend.json (the default).
-   */
+  /** A remote primary's id (tests only; multi-runtime.md §1.3): `remote:<name>`, or `remote` (the default). */
   runtimeId?: RuntimeId
   /**
-   * The saved connections as runtimes (§3.1): local mode. The caller calls
+   * The saved connections as runtimes (§3.1). The caller calls
    * `runtimes.sync(saved, slot)` at launch and whenever the saved
-   * connections change. Absent: the runtime set is the primary runtime only
-   * (remote mode until phase 4 migrates it, §13 item 1).
+   * connections change. Absent (tests): the runtime set is the primary only.
    */
   runtimeSet?: {
     /** The connector of a saved connection (remote/connector.ts with `remote.name`). */
@@ -238,22 +238,16 @@ export interface DaemonModeHandle {
   client(): Promise<DaemonClient>
   /** keepDaemonRunning changed in Settings: the session's crash behaviour follows it (exitDaemonWhenClosed). */
   setKeepDaemonRunning(keep: boolean): Promise<void>
-  /** The gated background start (BACKGROUND_AGENT_START): resumes an agent a switch carried over. */
-  startBackgroundAgent(filePath: string): Promise<{ success: boolean; error?: string; code?: string }>
-  /** Agents running in the daemon, whether a turn is in flight, and whether one waits on an approval or a question (the switch dialog). */
-  agentActivity(): Array<{ filePath: string; busy: boolean; waiting: boolean }>
   /**
-   * Studio's quit path in daemon mode (§8.3): end the client session; in
-   * local mode with `keepDaemonRunning` off, the daemon stops when Studio
+   * Studio's quit path in daemon mode (§8.3): end the client session; with
+   * `keepDaemonRunning` off, This computer's daemon stops when Studio
    * started it and no other client session is open (the daemon decides,
-   * POST /client/sessions/:id/quit). `waitForDaemonExitMs`: a switch to
-   * embedded waits for that daemon to exit, so embedded Studio can start
-   * the agents it ran. `keepDaemonRunning`: this quit only, the answer to
-   * the quit question about connected computers (remote-access.md §3.6).
-   * Every other runtime ends its sessions in parallel; its daemon keeps
-   * running (multi-runtime.md §3.3).
+   * POST /client/sessions/:id/quit). `keepDaemonRunning`: this quit only,
+   * the answer to the quit question about connected computers
+   * (remote-access.md §3.6). Every other runtime ends its sessions in
+   * parallel; its daemon keeps running (multi-runtime.md §3.3).
    */
-  shutdown(opts?: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
   /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
   windows: DaemonWindows
   /** The runtime set (multi-runtime.md §3.2). */
@@ -604,7 +598,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (opts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
     shutdownPromise ??= (() => {
       const done = manager.shutdown(opts)
       approvals.dispose()
@@ -626,8 +620,6 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     status: primary.status,
     client: primary.client,
     setKeepDaemonRunning: primary.setKeepDaemonRunning,
-    startBackgroundAgent: primary.startBackgroundAgent,
-    agentActivity: primary.agentActivity,
     shutdown,
     runtimes: manager,
     windows: {

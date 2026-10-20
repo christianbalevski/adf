@@ -270,11 +270,7 @@ export default function App() {
           }
           break
         }
-        // Daemon mode: a remote daemon could not be reached at launch (Help, or the failure dialog).
-        case 'open-settings-backend':
-          useAppStore.getState().openSettingsAt('connection')
-          break
-        // Daemon mode: main restarts Studio after the connection failed; keep unsaved editors first.
+        // Daemon mode: main restarts Studio after This computer's daemon connection failed; keep unsaved editors first.
         case 'stash-edits-and-reconnect':
         case 'stash-edits-and-use-embedded':
           await stashUnsavedEditors()

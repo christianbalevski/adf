@@ -52,7 +52,7 @@ class JsonFileKeychain implements SecretBackend {
 
 export interface DaemonSecretsChoice {
   backend: SecretBackend | null
-  /** Why `backend` is null, as the switch dialog states it. */
+  /** Why `backend` is null, as the handover report states it. */
   unavailable?: string
 }
 

@@ -3,21 +3,22 @@ import { BrowserWindow } from 'electron'
 import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
-import type { BackendDaemonStatus, BackendSettingsPatch } from '../../shared/types/backend.types'
+import type { BackendDaemonStatus } from '../../shared/types/backend.types'
 import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimeView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
-import { buildConnectionsView, ConnectionError, forgetConnection, SavedConnectionsCache, saveConnection, savedConnectionTarget } from './connections'
+import { buildConnectionsView, forgetConnection, SavedConnectionsCache, saveConnection } from './connections'
 import { KEYCHAIN_FILE_COPY } from '../cli/remotes'
 import { remoteHandshake } from './daemon-mode/remote/connector'
 import { PairingClient } from './remote-access/client'
 
 /**
- * Settings → Connections in Studio main (docs/design/settings-scopes.md §5):
- * the list, Connect, Add connection with a token, Remove. Pairing with a
- * code is REMOTE_PAIR_* (remote-access-ipc.ts). Every answer is for the
- * window that asked (#149: the connection becomes per window); today one
- * connection serves every window.
+ * Settings → Connections in Studio main (docs/design/settings-scopes.md §5,
+ * docs/design/multi-runtime.md §6.5): the list, Add with a token, Remove,
+ * and the choice of This computer or Inside Studio (legacy), saved for the
+ * next launch. Pairing with a code is REMOTE_PAIR_* (remote-access-ipc.ts).
+ * Saving a connection connects it; Remove disconnects and forgets it. There
+ * is no switch and no restart.
  *
  * Tokens never reach the renderer, and none is logged.
  */
@@ -72,12 +73,12 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   // The list and every push read the cache; an action reads the file again first (async), and after it writes.
   const saved = () => cache.get()
   const fresh = () => cache.refresh().catch(() => cache.get())
-  /** Local mode: saved connections are runtimes of the set (multi-runtime.md §3.1); remote mode and Inside Studio keep one runtime. */
+  /** This computer's launch: saved connections are runtimes of the set (multi-runtime.md §3.1); Inside Studio has none (§7.2). */
   const runtimeSet = deps.boot.mode === 'local'
   const view = (): ConnectionsView => {
     const runtimes = deps.runtimes?.() ?? []
     const built = buildConnectionsView({
-      active: { mode: deps.boot.mode, remoteName: deps.boot.mode === 'remote' ? deps.boot.config.remote.name ?? null : null, config: deps.boot.config },
+      active: { mode: deps.boot.mode },
       configured: deps.backend.config(),
       daemon: deps.daemonStatus(),
       saved: saved(),
@@ -93,34 +94,16 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     return n > 0 ? `\nCloses ${n} agent window${n === 1 ? '' : 's'}.` : ''
   }
   const changed = () => deps.push(view())
-  const configuredId = () => {
-    const c = deps.backend.config()
-    return c.mode === 'remote' ? (c.remote.name ? `remote:${c.remote.name}` : 'remote') : c.mode
-  }
 
+  /** §4.5: `local` or `embedded` is saved as the mode of the next launch; Studio does not restart (§7.2). */
   const use = async (id: unknown): Promise<ConnectionResult> => {
     if (typeof id !== 'string' || !id) return fail('invalid', 'No connection given.')
-    await fresh()
-    if (id.startsWith('found:')) return fail('not_paired', 'Pair first.')
-    let patch: BackendSettingsPatch
-    if (id === 'local' || id === 'embedded') patch = { mode: id }
-    // Local mode: a saved connection is connected while it is saved (§4.5); there is nothing to switch to.
-    else if (runtimeSet && (id === 'remote' || id.startsWith('remote:'))) return fail('not_found', 'A saved connection is connected while it is saved.')
-    else if (id === 'remote') {
-      if (!deps.backend.config().remote.url) return fail('not_found', 'That connection is not saved.')
-      patch = { mode: 'remote', remoteName: null }
-    } else if (id.startsWith('remote:')) {
-      const name = id.slice('remote:'.length)
-      // Read the token now, so a keychain that refuses says so before Studio restarts.
-      try {
-        await savedConnectionTarget(deps.backend.config(), name, deps.env, { log: (line) => log.log(line) })
-      } catch (err) {
-        return fail(err instanceof ConnectionError ? err.code : 'failed', err instanceof Error ? err.message : String(err))
-      }
-      patch = { mode: 'remote', remoteName: name }
-    } else return fail('not_found', 'That connection is not saved.')
-    log.log(`[Connection] Connect: ${id}`)
-    const result = await deps.backend.set(patch)
+    if (id !== 'local' && id !== 'embedded') {
+      if (id.startsWith('found:')) return fail('not_paired', 'Add it first.')
+      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'A saved connection is connected while it is saved.' : 'That connection is not saved.')
+    }
+    log.log(`[Connection] ${id === 'local' ? 'This computer' : 'Inside Studio (legacy)'} chosen for the next launch`)
+    const result = await deps.backend.set({ mode: id })
     changed()
     return result.ok ? { ok: true, view: view(), notices: result.notices } : fail(result.code, result.error)
   }
@@ -197,40 +180,28 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     return { ok: true, view: view(), notices: ['Saved without a fingerprint; identity not checked.'], id: 'remote' }
   }
 
+  /** §6.5: Remove disconnects and forgets a saved connection (§3.3); its agent windows close. */
   const remove = async (id: unknown): Promise<ConnectionResult> => {
     if (typeof id !== 'string') return fail('invalid', 'No connection given.')
     await fresh()
-    const current = view().current
-    const inUse = id === current.id || id === configuredId()
-    if (inUse && (id === 'local' || id === 'embedded')) return fail('in_use', 'In use.')
-    // The connection in use (or saved as the next one), e.g. one that no longer connects:
-    // Studio switches to This computer first, in the same Remove question, then removes it.
-    const switchFirst = inUse ? 'Switches to This computer, then removes' : 'Removes'
+    if (id === 'local') return fail('in_use', 'In use.')
     if (id === 'remote') {
       const slot = deps.backend.config().remote
       if (!slot.url) return fail('not_found', 'That connection is not saved.')
       const name = slot.paired?.name ?? hostOf(slot.url)
-      if (!await deps.confirm({ message: `Remove ${name}`, detail: `${switchFirst} the address and token from Studio.${inUse ? '' : closesWindows('remote')}\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
-      const result = await deps.backend.set(inUse ? { mode: 'local', remoteUrl: null } : { remoteUrl: null })
+      if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio.${closesWindows('remote')}\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+      const result = await deps.backend.set({ remoteUrl: null })
       if (!result.ok) return fail(result.code, result.error)
-      log.log(`[Connection] Removed ${name}${inUse ? ' (switched to This computer)' : ''}`)
+      log.log(`[Connection] Removed ${name}`)
       // Removing disconnects (§12 item 2).
       deps.slotChanged?.()
       changed()
-      return { ok: true, view: view(), notices: [`Removed ${name}.`, ...(inUse ? result.notices : [])] }
+      return { ok: true, view: view(), notices: [`Removed ${name}.`] }
     }
     if (!id.startsWith('remote:')) return fail('not_found', 'That connection is not saved.')
     const name = id.slice('remote:'.length)
     if (!saved()[name]) return fail('not_found', 'That connection is not saved.')
-    if (!await deps.confirm({ message: `Remove ${name}`, detail: `${switchFirst} the address and token from Studio and adf.${inUse ? '' : closesWindows(id)}\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
-    // Switch first: a switch cancelled in its dialog removes nothing.
-    let switched: string[] = []
-    if (inUse) {
-      const result = await deps.backend.set({ mode: 'local' })
-      if (!result.ok) return fail(result.code, result.error)
-      switched = result.notices
-      log.log(`[Connection] Switched to This computer to remove ${name}`)
-    }
+    if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio and adf.${closesWindows(id)}\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
     try {
       await forgetConnection(deps.env, name)
       await fresh()
@@ -239,7 +210,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     }
     log.log(`[Connection] Removed ${name}`)
     changed()
-    return { ok: true, view: view(), notices: [`Removed ${name}.`, ...switched] }
+    return { ok: true, view: view(), notices: [`Removed ${name}.`] }
   }
 
   return { view, use, add, remove, changed }

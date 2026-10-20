@@ -13,7 +13,7 @@ import type { WindowView } from './windows'
 
 /**
  * The runtime set of one Studio (docs/design/multi-runtime.md §3): the
- * primary runtime (`local` in local mode), one RuntimeConnection per saved
+ * primary runtime (This computer, `local`), one RuntimeConnection per saved
  * connection, and one for the remote slot of studio-backend.json while it
  * holds a URL.
  *
@@ -278,7 +278,7 @@ export class RuntimeManager {
    * sessions first, then the main window's. The primary follows
    * keepDaemonRunning; a remote's daemon keeps running.
    */
-  async shutdown(opts: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean } = {}): Promise<void> {
+  async shutdown(opts: { keepDaemonRunning?: boolean } = {}): Promise<void> {
     this.disposed = true
     const others = [...this.remotes.values()]
     await Promise.all([

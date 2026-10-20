@@ -11,7 +11,7 @@ import { openSharedMnemonicStore } from '../../services/owner-secret-store'
 import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../../daemon/local-access'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
 import { initApplicationMenu, recordRecentFile, recordRuntimeRecentFile, renameRuntimeRecentFile, type MenuRuntime } from '../../menu'
-import { relaunchEmbeddedForSession, relaunchStudio } from '../mode-switch'
+import { relaunchEmbeddedForSession, relaunchStudio } from '../boot-handover'
 import type { ApprovalsUi } from './approvals-ui'
 import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
 import { DaemonConnection, type DaemonConnector, type DaemonEndpoint } from './connection'
@@ -21,7 +21,7 @@ import { DAEMON_MODE_HANDLERS } from './handlers'
 import { DaemonModeSession, samePath } from './session'
 import type { ClientSettingsStore } from './settings'
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
-import { readDaemonExitCause, waitForDaemonExit } from './daemon-exit'
+import { readDaemonExitCause } from './daemon-exit'
 import { processAlive } from '../../cli/daemon-control'
 import { daemonExitSentence } from './connection'
 import { InstallProgressRelay } from './mcp/install-progress'
@@ -34,7 +34,7 @@ import { uploadFile, type RemoteServices } from './remote/services'
 import type { BridgeOutput, TurnOutcome } from './event-bridge'
 import type { WindowView } from './windows'
 import type { DaemonModeDeps, WindowTarget } from './index'
-import { RECOVERY_HINT, REMOTE_RECOVERY_HINT, remoteWaitingNotice } from './hints'
+import { RECOVERY_HINT, remoteWaitingNotice } from './hints'
 
 /**
  * One runtime of the runtime set (docs/design/multi-runtime.md §3.2): its
@@ -42,10 +42,11 @@ import { RECOVERY_HINT, REMOTE_RECOVERY_HINT, remoteWaitingNotice } from './hint
  * bridge, batcher and client session, its agent windows' sessions, its
  * exit watch and its failure state.
  *
- * The primary runtime (the one the saved mode selects; `local` in local
- * mode) is exactly what registerDaemonModeHandlers ran before the split:
- * same logs, same dialogs, same pushes. Its traffic is untagged. Every other
- * runtime (a saved connection, behind the development flag in phase 1):
+ * The primary runtime (This computer, `local`) is exactly what
+ * registerDaemonModeHandlers ran before the split: same logs, same dialogs,
+ * same pushes. Its traffic is untagged. A remote primary exists only in tests
+ * (the remote-variant harness; DaemonModeDeps.mode). Every other runtime (a
+ * saved connection, or the remote slot of studio-backend.json):
  *
  * - tags its runtime-scoped pushes with `{ $runtime: id }` (§4.1);
  * - prefixes its log lines with its id;
@@ -95,7 +96,7 @@ export interface RuntimeShared {
 export interface RuntimeConnectionOptions {
   id: RuntimeId
   kind: RuntimeKind
-  /** The runtime the saved mode selects: untagged traffic, the menu, the dialogs, the client lease. */
+  /** This computer (tests: a remote primary): untagged traffic, the menu, the dialogs, the client lease. */
   primary: boolean
   /** The runtime's name, for notices ("rawl-hub"). */
   name: () => string
@@ -142,8 +143,6 @@ export interface RuntimeConnection {
   status(): BackendDaemonStatus
   client(): Promise<DaemonClient>
   setKeepDaemonRunning(keep: boolean): Promise<void>
-  startBackgroundAgent(filePath: string): Promise<{ success: boolean; error?: string; code?: string }>
-  agentActivity(): Array<{ filePath: string; busy: boolean; waiting: boolean }>
   /** Running agents not focused in the main window, and the main window's foreground agent (menu bar). */
   menuBarAgents(): Array<{ filePath: string; state: import('../../../shared/types/ipc.types').AgentState; activeLoops?: number }>
   foreground(): { filePath: string; state: import('../../../shared/types/ipc.types').AgentState } | null
@@ -161,7 +160,7 @@ export interface RuntimeConnection {
     send(id: number, channel: string, ...args: unknown[]): void
     stashed(id: number): void
   }
-  shutdown(opts?: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
 }
 
 const RESUME_HEALTH_TIMEOUT_MS = 3_000
@@ -530,7 +529,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       void dialog.showMessageBox({
         type: 'info',
         message: 'Studio is still connecting to the ADF daemon.',
-        detail: `It connects when the daemon answers. ${remote ? REMOTE_RECOVERY_HINT : RECOVERY_HINT}`,
+        detail: `It connects when the daemon answers. ${RECOVERY_HINT}`,
         buttons: ['OK'],
       }).catch(() => {})
       return
@@ -557,12 +556,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       restartKeepingEdits('embedded-session', clientSession ? 'the ADF daemon connection failed during the session' : 'no ADF daemon could be reached at launch')
     })
   } : undefined
-  /** Remote mode, after a failed launch: Settings → Connections, where the URL and token are fixed and tested. */
-  const openBackendSettings = primary && remote ? (): void => {
-    log.log('[Backend] Opening Settings → Connections after a failed connection to the remote ADF daemon')
-    const win = hooks.showMainWindow?.() ?? BrowserWindow.getAllWindows()[0] ?? null
-    if (win && !win.isDestroyed()) win.webContents.send(IPC.MENU_ACTION, 'open-settings-backend')
-  } : undefined
   const problem = (): string | null => connectionProblem(connection.state, connection.baseUrl)
   const canReconnect = (): boolean => connection.state.state === 'disconnected' || connection.state.state === 'failed'
   if (primary) {
@@ -573,7 +566,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       openLog: () => { void openDaemonLog(connection.logFile, log) },
       reconnect,
       useEmbeddedForSession,
-      openBackendSettings,
       launchFailed: () => connection.state.state === 'failed',
       remoteRecents: remote,
       runtimes: () => shared.menuRuntimes(),
@@ -584,9 +576,8 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   const statusUi: ConnectionStatusUi | null = !primary ? null : new ConnectionStatusUi(connection, {
     reconnect,
     useEmbeddedForSession,
-    openBackendSettings,
     openLog: () => { void openDaemonLog(connection.logFile, log) },
-    recoveryHint: remote ? REMOTE_RECOVERY_HINT : RECOVERY_HINT,
+    recoveryHint: RECOVERY_HINT,
     reviving: () => reviving !== null,
   }, log)
 
@@ -653,7 +644,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       },
       onReattached: (info) => {
         log.log(`[Backend] Client stream reattached${info.epochChanged ? ' (new session)' : ''}: re-sending the focus and the held documents`)
-        // The daemon may have restarted (another pid, version or launcher): Settings → Connections and the switch dialog read this.
+        // The daemon may have restarted (another pid, version or launcher): Settings → Connections reads this.
         refreshVersion(client)
         return session.reattach()
       },
@@ -995,13 +986,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     }
   }
 
-  /** Resolves true once the daemon's process exited (its pid, not its /health), false at the deadline. */
-  const waitDaemonGone = async (budgetMs: number): Promise<boolean> => {
-    const pid = versionInfo?.pid ?? connection.endpointInfo?.daemon?.pid
-    if (!pid) return true
-    return (deps.waitForExit ?? waitForDaemonExit)(pid, budgetMs)
-  }
-
   /** A non-primary runtime's main session ends within this budget (§3.3); its daemon expires a session that did not. */
   const endBounded = async (end: Promise<void>): Promise<void> => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -1014,7 +998,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   }
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (shutdownOpts: { waitForDaemonExitMs?: number; keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (shutdownOpts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       stopExitWatch()
       if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
@@ -1049,11 +1033,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
         log.log(`[Backend] Quit: client session ended; ${answer.stopping ? 'the ADF daemon is stopping' : 'the ADF daemon keeps running'}: ${answer.reason}`)
       } else if (connection.current) {
         log.log(`[Backend] Quit: client session ended; the ADF daemon keeps running${remote ? ' (remote mode never stops it)' : ''}`)
-      }
-      if (answer?.stopping && shutdownOpts.waitForDaemonExitMs) {
-        log.log(`[Backend] Waiting up to ${Math.round(shutdownOpts.waitForDaemonExitMs / 1000)}s for the ADF daemon to stop its agents and exit`)
-        const gone = await waitDaemonGone(shutdownOpts.waitForDaemonExitMs)
-        log.log(gone ? '[Backend] The ADF daemon exited' : '[Backend] The ADF daemon is still stopping; embedded Studio reports any agent it still holds as running in the daemon')
       }
     })()
     return shutdownPromise
@@ -1113,18 +1092,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     }
   }
 
-  const agentActivity = () => {
-    const pendingNow = new Set(approvals.pendingFilePaths(primary ? undefined : id))
-    const running = bridge.runningAgents().map((a) => ({
-      filePath: a.filePath,
-      busy: a.mapping.state === 'active' || a.mapping.activeLoops > 0 || (a.lastForegroundState !== undefined && a.lastForegroundState !== 'idle' && a.lastForegroundState !== 'stopped' && a.lastForegroundState !== 'error'),
-      waiting: pendingNow.has(a.filePath),
-    }))
-    // An approval names its agent even when the running list has not caught up.
-    for (const filePath of pendingNow) if (!running.some((a) => a.filePath === filePath)) running.push({ filePath, busy: true, waiting: true })
-    return running
-  }
-
   return {
     id,
     kind,
@@ -1143,8 +1110,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     status,
     client: () => started.then(sessionClient),
     setKeepDaemonRunning,
-    startBackgroundAgent,
-    agentActivity,
     menuBarAgents: () => runningAgents()
       .filter((a) => !session.isFocused(a.agentId, a.filePath))
       .map((a) => ({ filePath: a.filePath, state: a.mapping.state, activeLoops: a.mapping.activeLoops })),

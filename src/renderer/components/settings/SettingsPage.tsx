@@ -19,7 +19,7 @@ import { ConnectionSettings } from './ConnectionSettings'
 import { SettingsRuntimeProvider, useSettingsApi } from './settings-runtime'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
 import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
-import { runtimeDown, runtimeGroupLabel, useCurrentConnection } from '../../stores/connection.store'
+import { runtimeDown, useCurrentConnection } from '../../stores/connection.store'
 import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
 import { initialSettingsRuntime, useSettingsRuntimeStore } from '../../stores/settings-runtime.store'
 import { apiFor } from '../../utils/runtime-api'
@@ -1241,9 +1241,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
   const runtime = multi ? runtimes.find((r) => r.id === runtimeId) ?? null : connection
   const remote = runtime?.kind === 'remote'
   const runtimeName = runtime?.name ?? 'the runtime'
-  // Runtime names show with more than one runtime, or while the one runtime is another computer (remote mode).
-  const named = multi || connection?.kind === 'remote'
-  const navGroups = settingsNavGroups(runtimeGroupLabel(connection), named && !multi)
+  // Runtime names show with more than one runtime (§6.3); the picker is the heading then.
+  const navGroups = settingsNavGroups()
   const pickedMesh = runtimeId === LOCAL_RUNTIME ? undefined : runtimeId
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
@@ -1890,7 +1889,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
 
           {runtimeUnreachable && runtime && (
             <p role="status" className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-              {named ? `Not connected to ${runtime.name}.` : `${CONNECTION_STATE_LABELS[runtime.state]}.`}
+              {multi ? `Not connected to ${runtime.name}.` : `${CONNECTION_STATE_LABELS[runtime.state]}.`}
             </p>
           )}
           <fieldset disabled={runtimeUnreachable} className="contents">

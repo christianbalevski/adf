@@ -41,25 +41,17 @@ export function useCurrentConnection(): ConnectionCurrent | null {
 }
 
 /**
- * At least one runtime on another computer is saved (or in use). Until then
- * Connections is one line with Add (settings-scopes.md §4,
- * multi-runtime.md §6.5). Runtime names follow useMultiRuntime().
+ * At least one runtime on another computer is saved. Until then Connections
+ * is one line with Add (settings-scopes.md §4, multi-runtime.md §6.5).
+ * Runtime names follow useMultiRuntime().
  */
-export function remoteConnectionsSaved(view: Pick<ConnectionsView, 'current' | 'rows'> | null): boolean {
-  if (!view) return false
-  return view.current.kind === 'remote' || view.rows.some((r) => r.kind === 'saved')
+export function remoteConnectionsSaved(view: Pick<ConnectionsView, 'rows'> | null): boolean {
+  return !!view && view.rows.some((r) => r.kind === 'saved')
 }
 
 /** The runtime is not reachable now (connecting, retrying, failed). */
 export function runtimeDown(current: ConnectionCurrent | null): boolean {
   return !!current && current.state !== 'connected'
-}
-
-/** The sidebar group label: "Runtime · rawl-hub", plus the state while it is not connected. */
-export function runtimeGroupLabel(current: ConnectionCurrent | null): string {
-  if (!current) return 'Runtime'
-  const base = `Runtime · ${current.name}`
-  return runtimeDown(current) ? `${base} · ${CONNECTION_STATE_LABELS[current.state]}` : base
 }
 
 /**

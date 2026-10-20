@@ -57,12 +57,13 @@ export const RUNTIME_NAV_ITEMS: SettingsNavItem[] = [
 
 /**
  * The sidebar: Studio, then the runtime's pages (settings-scopes.md §4),
- * headed "Runtime · <name>" only when `remoteSaved`; otherwise unheaded.
+ * unheaded. With more than one runtime the Runtime picker heads them
+ * (multi-runtime.md §6.3).
  */
-export function settingsNavGroups(runtimeLabel: string, remoteSaved: boolean): SettingsNavGroup[] {
+export function settingsNavGroups(): SettingsNavGroup[] {
   return [
     { scope: 'studio', label: 'Studio', items: STUDIO_NAV_ITEMS },
-    { scope: 'runtime', label: remoteSaved ? runtimeLabel : '', items: RUNTIME_NAV_ITEMS },
+    { scope: 'runtime', label: '', items: RUNTIME_NAV_ITEMS },
   ]
 }
 
