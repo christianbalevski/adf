@@ -17,6 +17,19 @@ function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: 
   return `${formatTokens(current)} / ${formatTokens(threshold)} tokens\nclick for details`
 }
 
+/** What Kill reports once it has stopped everything, so the action is never silent. */
+export function killResultLabel(result: { success: boolean; stoppedAgents?: number } | null | undefined): string {
+  if (result && result.success === false) return 'Partial stop'
+  const n = result?.stoppedAgents
+  const agents = n === undefined ? 'Stopped all agents' : `Stopped ${n} agent${n === 1 ? '' : 's'}`
+  return `${agents} · Mesh off`
+}
+
+/** Kill's tooltip names the runtime it acts on: the name the runtime indicator shows. */
+export function killTooltip(current: ConnectionCurrent | null): string {
+  return `Stops all agents and mesh on ${current?.name ?? 'This computer'}`
+}
+
 function MeshIcon() {
   return (
     <svg
@@ -46,6 +59,13 @@ export function StatusBar() {
   const tokenEstimate = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenEstimate)
   const filePath = useDocumentStore((s) => s.filePath)
   const [breakdownOpen, setBreakdownOpen] = useState(false)
+  // Kill's result line, shown beside it for a few seconds.
+  const [killResult, setKillResult] = useState<string | null>(null)
+  useEffect(() => {
+    if (!killResult) return
+    const timer = setTimeout(() => setKillResult(null), 6000)
+    return () => clearTimeout(timer)
+  }, [killResult])
   const [appVersion, setAppVersion] = useState('')
   useEffect(() => {
     window.adfApi?.getAppVersion().then(setAppVersion).catch(() => {})
@@ -84,6 +104,7 @@ export function StatusBar() {
   const handleEmergencyStop = async () => {
     try {
       const result = await window.adfApi.emergencyStop()
+      setKillResult(killResultLabel(result))
       // A partial stop (daemon mode) may leave agents running: their own state events say which.
       if (result && result.success === false) return
     } catch (err) {
@@ -183,33 +204,44 @@ export function StatusBar() {
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
       <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
       <RuntimeIndicator current={connection} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
-      <span
+      {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
+      <Tooltip tip={meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off'} className="flex">
+      <button
         role="status"
+        onClick={() => useAppStore.getState().openSettingsAt('networking')}
+        aria-label={meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off'}
         className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
             meshEnabled
               ? 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]'
-              : 'text-[var(--adf-ui-text-subtle)]'
+              : 'text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-text)]'
         }`}
-        title={meshEnabled ? `Mesh is running with ${activeAgentCount} participating agents` : 'Mesh is off; manage it in Settings > Networking'}
       >
         <MeshIcon />
         {meshEnabled ? `Mesh (${activeAgentCount})` : 'Mesh off'}
-      </span>
+      </button>
+      </Tooltip>
+      {killResult && (
+        <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">
+          {killResult}
+        </span>
+      )}
+      <Tooltip tip={isAnythingRunning ? killTooltip(connection) : 'Nothing running'} className="flex">
       <button
         onClick={isAnythingRunning ? handleEmergencyStop : undefined}
         disabled={!isAnythingRunning}
+        aria-label={isAnythingRunning ? killTooltip(connection) : 'Kill: nothing running'}
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
             : 'cursor-default text-neutral-300 dark:text-neutral-600'
         }`}
-        title={isAnythingRunning ? 'Stop all agents and disable mesh' : 'Nothing running'}
       >
         <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
           <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
         </svg>
         Kill
       </button>
+      </Tooltip>
       </div>
     </div>
   )

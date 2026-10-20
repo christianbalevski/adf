@@ -22,6 +22,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, SettingsGroup, SettingsRow, TextInput } from '../ui'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
+import { Tooltip } from '../common/Tooltip'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { NetworkStatusView, RemoteAccessView, RemoteDiscoveryEntry, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
@@ -37,6 +38,11 @@ export function remoteStatusLine(status: RemoteAccessStatus): string {
     return listening.length > 0 ? `Listening on ${listening.join(', ')}.` : 'On.'
   }
   return status.message || status.problem || 'Off.'
+}
+
+/** Add device needs a listener: on but paused (or with no address), no device could reach the code. */
+export function canAddDevice(status: RemoteAccessStatus | null): boolean {
+  return !!status && status.enabled && status.state === 'on'
 }
 
 /** The status line at the top of Settings → Networking. */
@@ -374,7 +380,9 @@ export function RemoteAccessGroup({ onKeepRunning }: { onKeepRunning: () => Prom
             )}
           </SettingsRow>
           <SettingsRow stacked separator label="Devices" description={<>Devices that use this computer&apos;s agents.<LearnMore href={DOCS.remoteAccessPair} /></>}>
-            <Button size="compact" variant="primary" disabled={busy} onClick={() => setAdding(true)}>Add device</Button>
+            <Tooltip tip={canAddDevice(status) ? 'Show a code to enter on the device' : remoteStatusLine(status)}>
+              <Button size="compact" variant="primary" disabled={busy || !canAddDevice(status)} onClick={() => setAdding(true)}>Add device</Button>
+            </Tooltip>
             <div className="mt-2">
               <RemoteDeviceList
                 devices={status.devices}

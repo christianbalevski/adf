@@ -253,7 +253,7 @@ describe('POST /runtime/emergency-stop', () => {
     await runtime.loadAgent(seedAgent(dir, 2).filePath)
 
     const res = await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })
-    expect(res.json()).toEqual({ success: true })
+    expect(res.json()).toEqual({ success: true, stoppedAgents: 2 })
     expect(RuntimeGate.stopped).toBe(true)
     expect(RuntimeGate.tearingDown).toBe(false) // resumable
     expect(mesh.isEnabled()).toBe(false)
@@ -298,7 +298,7 @@ describe('POST /runtime/emergency-stop: partial stops and the daemon wiring', ()
     const gaps = daemonGapRouteDeps({ codeSandboxService: sandbox, meshServer, uvManager: new UvManager() })
     const { dir, runtime, server } = setup({ mesh: fakeMesh([]), computeService: compute(), routes: { gaps } })
     await runtime.loadAgent(seedAgent(dir, 1).filePath)
-    expect((await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })).json()).toEqual({ success: true })
+    expect((await server.inject({ method: 'POST', url: '/runtime/emergency-stop' })).json()).toEqual({ success: true, stoppedAgents: 1 })
     expect(destroyAll).toHaveBeenCalled()
     expect(stop).toHaveBeenCalled()
     expect(runtime.listAgents()).toEqual([])

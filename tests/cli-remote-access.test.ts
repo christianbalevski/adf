@@ -230,6 +230,20 @@ describe('adf daemon remote allow-network / forget-network (owner decision 2026-
     expect(await h.run('remote', 'forget-network')).toBe(2)
     expect(await h.run('remote', 'trust')).toBe(2)
   })
+
+  it('adf daemon pair refuses while paused (no window opens), and pairs once the network is allowed', async () => {
+    const h = await host({ allowed: false })
+    expect(await h.run('remote', 'on')).toBe(0)
+    h.err.length = 0
+    expect(await h.run('pair')).toBe(1)
+    expect(h.err.join('')).toBe('Remote access is paused on eth0 (192.168.77.0/24); allow this network first: adf daemon remote allow-network\n')
+    h.out.length = 0
+    expect(await h.run('remote', 'status', '--json')).toBe(0)
+    expect(JSON.parse(h.out.join(''))).toMatchObject({ state: 'paused', pairing: null })
+    expect(await h.run('remote', 'allow-network')).toBe(0)
+    const opened = await fetch(`${h.target.url}/remote-access/pairing`, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'x-adf-local-proof': PROOF } })
+    expect(opened.status).toBe(201)
+  })
 })
 
 describe('adf daemon remote / devices (host)', () => {

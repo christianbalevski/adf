@@ -39,6 +39,7 @@
 6. invoke adf:emergency-stop  [pushes 5→7]
   args: []
   result:
+    stoppedAgents: 2
     success: true
 7. invoke adf:agent:status  [pushes 7→7]
   args: []

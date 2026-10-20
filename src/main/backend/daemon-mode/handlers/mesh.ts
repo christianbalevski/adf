@@ -135,7 +135,7 @@ function fleetStatusView(answer: FleetStatusResult, overlay: ClientOverlay): Fle
   return view
 }
 
-interface EmergencyStopResult { success: boolean; error?: string; skipped?: string[]; failed?: string[] }
+interface EmergencyStopResult { success: boolean; error?: string; skipped?: string[]; failed?: string[]; stoppedAgents?: number }
 
 /**
  * After a partial stop the open agent was detached, so the window saw none
@@ -180,7 +180,7 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   [IPC.MESH_ENABLE]: async (ctx) => {
     const client = await ctx.ready()
     try {
-      await client.request('POST', '/network/mesh/enable')
+      await client.request('POST', '/network/mesh/enable', { query: { persist: 0 } })
       return { success: true }
     } catch (error) {
       return { success: false, error: errorString(error) }
@@ -192,7 +192,7 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
   [IPC.MESH_DISABLE]: async (ctx) => {
     const client = await ctx.ready()
     try {
-      await client.request('POST', '/network/mesh/disable')
+      await client.request('POST', '/network/mesh/disable', { query: { persist: 0 } })
       return { success: true }
     } catch (error) {
       return { success: false, error: errorString(error) }

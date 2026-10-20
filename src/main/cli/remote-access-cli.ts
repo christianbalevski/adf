@@ -227,6 +227,15 @@ async function pairCommand(io: HostCliIo, target: HostTarget): Promise<number> {
       io.stderr('Remote access is off. Turn it on first: adf daemon remote on\n')
       return 1
     }
+    // On, but listening nowhere: no other computer could reach the window.
+    if (err instanceof ManageError && err.code === 'remote_access_paused') {
+      io.stderr(`${err.message.replace(/\.$/, '')}: adf daemon remote allow-network\n`)
+      return 1
+    }
+    if (err instanceof ManageError && err.code === 'remote_access_not_listening') {
+      io.stderr(`${err.message} See: adf daemon remote status\n`)
+      return 1
+    }
     throw err
   }
   const status = await call<RemoteAccessStatus>(io, target, 'GET', '/remote-access')

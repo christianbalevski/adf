@@ -269,8 +269,11 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
       if (mesh.disableMesh) mesh.disableMesh()
       else skipped.push('mesh')
     })
-    await Promise.all(runtime.listAgents().map((agent) =>
+    const agents = runtime.listAgents()
+    await Promise.all(agents.map((agent) =>
       step(`agent ${agent.id}`, () => runtime.unloadAgent(agent.id, { mode: 'immediate' }))))
+    // What the Kill button reports back ("Stopped N agents"): the ones that did stop.
+    const stoppedAgents = agents.length - failed.filter((name) => name.startsWith('agent ')).length
     await step('ws connections', () => (options.wsService as Stoppable | undefined)?.stopAll?.())
     await step('mesh server', async () => {
       if (deps.meshServer) await deps.meshServer.stop()
@@ -291,7 +294,7 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
     })
     if (skipped.length === 0 && failed.length === 0) {
       console.log('[EmergencyStop] All agents stopped, mesh disabled.')
-      return { success: true }
+      return { success: true, stoppedAgents }
     }
     const parts = [
       skipped.length ? `not wired on this daemon, left running: ${skipped.join(', ')}` : '',
@@ -301,6 +304,7 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
     return {
       success: false,
       error: `Emergency stop was partial — ${parts}.`,
+      stoppedAgents,
       ...(skipped.length ? { skipped } : {}),
       ...(failed.length ? { failed } : {}),
     }

@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
+  canAddDevice,
   changeOn,
   AddDeviceDialog,
   addedDeviceLine,
@@ -56,6 +57,16 @@ const status = (over: Partial<RemoteAccessStatus> = {}): RemoteAccessStatus => (
 const device = (over: Partial<RemoteDevice> = {}): RemoteDevice => ({
   id: 'k3j9q2m7xa', label: 'agent-2 laptop', origin: 'paired', createdAt: '2026-10-18T09:12:03Z', createdBy: 'studio',
   lastSeenAt: null, lastSeenAddress: null, connected: false, connections: 0, sessions: 0, ...over,
+})
+
+describe('Add device', () => {
+  it('is enabled only while remote access listens: never while off or paused on a network not allowed', () => {
+    expect(canAddDevice(status())).toBe(true)
+    expect(canAddDevice(status({ state: 'paused', message: 'Paused on Wi-Fi.' }))).toBe(false)
+    expect(canAddDevice(status({ state: 'no_address' }))).toBe(false)
+    expect(canAddDevice(status({ enabled: false, state: 'off' }))).toBe(false)
+    expect(canAddDevice(null)).toBe(false)
+  })
 })
 
 describe('status line', () => {

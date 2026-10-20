@@ -5691,10 +5691,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   }
 
+  // The Mesh switch changes the live state only; "Start with the runtime"
+  // (Settings → Networking) writes meshEnabled (daemon parity: persist=0).
   ipcMain.handle(IPC.MESH_ENABLE, async () => {
-    // Persist so an explicit enable survives restart (boot auto-enables
-    // unless meshEnabled === false).
-    settings.set('meshEnabled', true)
     return enableMeshInMain()
   })
 
@@ -5704,9 +5703,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.MESH_DISABLE, async () => {
     try {
-      // Persist first: boot auto-enables mesh when meshEnabled !== false, so
-      // without this a user's disable would not survive restart.
-      settings.set('meshEnabled', false)
       await stopMdnsAndCleanup()
       if (wsConnectionManager) {
         wsConnectionManager.stopAll()
@@ -8102,9 +8098,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.EMERGENCY_STOP, async () => {
     console.log('[EmergencyStop] Shutting down everything...')
+    // What the Kill button reports back ("Stopped N agents"): foreground plus background.
+    const stoppedAgents = (currentAssembledAgent ? 1 : 0) + (backgroundAgentManager?.getAgentCount() ?? 0)
     await teardownRuntime({ disposeMode: 'emergency' })
     console.log('[EmergencyStop] All agents stopped, mesh disabled.')
-    return { success: true }
+    return { success: true, stoppedAgents }
   })
 
   // =========================================================================

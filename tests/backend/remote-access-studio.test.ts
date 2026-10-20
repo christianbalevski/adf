@@ -385,7 +385,7 @@ describe('pairing from Settings → Connection', () => {
   it('a saved connection\'s pinned fingerprint (trust on first use): another one at its address is refused (security review 4)', async () => {
     const p = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: TAILNET, fingerprint: 'QQQQ-QQQQ' }] })
     expect(await p.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'fingerprint_mismatch' })
-    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when rawl-hub was paired; Studio sent nothing.')
+    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when rawl-hub was paired; Studio sent nothing, and if it was set up again, remove rawl-hub and pair again.')
     expect(p.replaces).toEqual([])
     expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
   })

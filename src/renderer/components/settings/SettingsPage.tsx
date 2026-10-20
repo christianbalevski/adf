@@ -28,18 +28,28 @@ import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
+import { useMesh } from '../../hooks/useMesh'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
 
 /**
- * Hover copy for the "Update available" advisory shown on managed containers
- * that predate the current feature set (they lack network isolation). Rebuilding
- * is optional and destructive — it must be the owner's choice, never automatic.
+ * Hover copy for the "Rebuild available" badge on managed containers that
+ * predate the current feature set (they lack network isolation). Rebuilding is
+ * optional and destructive (not an update): it must be the owner's choice,
+ * never automatic.
  */
-const OUTDATED_CONTAINER_ADVISORY =
-  'This container was built before newer features. Rebuilding it adds network isolation from other agents.\n\nRebuilding erases its workspace files, installed packages, and any saved browser session, so it is optional and up to you. Use Rebuild in the More actions menu when you choose to.'
+export const OUTDATED_CONTAINER_ADVISORY =
+  'Rebuilding adds network isolation from other agents. It erases this container\'s workspace files, installed packages and saved browser session; Rebuild is in the More actions menu.'
+
+/** Setup and container messages: progress ("…ing...") in the muted tone, a finished step in the success color. */
+export function setupLogTone(log: string): string {
+  return log.endsWith('...') ? 'text-[var(--adf-ui-text-muted)]' : 'text-[var(--adf-ui-success)]'
+}
+
+/** The Mesh switch's note: what turning it off interrupts. */
+export const MESH_OFF_NOTE = 'Off stops agent messaging, agent websites and APIs, and delivery from peer runtimes.'
 
 /** Mesh events that change what the Networking tab shows. `message_routed`
  *  fires per message and is deliberately absent. */
@@ -1362,6 +1372,30 @@ export function SettingsPage() {
     }
   }
   const meshEnabled = useMeshStore((s) => s.enabled)
+  const { enableMesh, disableMesh } = useMesh()
+  const [meshSwitching, setMeshSwitching] = useState(false)
+  const [meshSwitchError, setMeshSwitchError] = useState<string | null>(null)
+  /** The Mesh switch: the mesh and its server together, now; "Start with the runtime" is separate (meshEnabled). */
+  const switchMesh = async (on: boolean) => {
+    setMeshSwitching(true)
+    setMeshSwitchError(null)
+    try {
+      const result = on ? await enableMesh() : await disableMesh()
+      if (!result.success) {
+        setMeshSwitchError(result.error ?? `Mesh ${on ? 'start' : 'stop'} failed.`)
+        return
+      }
+      const server = on ? await window.adfApi?.startMeshServer() : await window.adfApi?.stopMeshServer()
+      if (server) {
+        setMeshServerStatus({ running: server.running ?? false, port: server.port ?? meshServerStatus.port, host: server.host ?? meshServerStatus.host })
+        if (!server.success && server.error) setMeshSwitchError(server.error)
+      }
+    } catch (err) {
+      setMeshSwitchError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setMeshSwitching(false)
+    }
+  }
   const [sandboxPackages, setSandboxPackages] = useState<Array<{ name: string; version: string }>>([])
   /** 0 = automatic (CPU-derived). The main process applies it to the sandbox
    *  service the moment the debounced save lands — no restart needed. */
@@ -2323,29 +2357,39 @@ export function SettingsPage() {
           {activeTab === 'networking' && <>
           {/* This computer's network, which the mesh and remote access follow (lan-reach.ts); not a remote runtime's. */}
           {!remote && <NetworkStatusLine />}
-          {/* Mesh auto-start */}
+          {/* Mesh: one switch for the live state (mesh and its server), and whether it starts with the runtime. */}
           <SettingsGroup title="Mesh" docs={DOCS.lanDiscovery}>
             <SettingsRow
               label="Mesh"
-              description={<>
-                  The agent network: agents on this runtime discover and message each other, serve their cards and
-                  APIs over HTTP, and reach peer runtimes on your LAN, tailnet, or by address. The fleet map,
-                  agent-to-agent messaging, and cross-runtime delivery all run on it.
-                <span className="mt-1 block text-[var(--adf-ui-text-subtle)]">
-                  {meshAutoStart ? 'Enabled automatically on startup.' : 'Currently disabled on startup.'}
-                </span>
-              </>}
+              description="Agents on this runtime message each other and peer runtimes, and serve their cards and APIs."
+              help={MESH_OFF_NOTE}
+              error={meshSwitchError ?? undefined}
             >
-              <Button
-                onClick={async () => {
-                  const next = !meshAutoStart
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  aria-label="Mesh"
+                  checked={meshEnabled}
+                  disabled={meshSwitching}
+                  onChange={(e) => void switchMesh(e.target.checked)}
+                  className="rounded text-blue-500"
+                />
+                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{meshEnabled ? 'On' : 'Off'}</span>
+              </label>
+            </SettingsRow>
+            <SettingsRow separator label="Start with the runtime">
+              <input
+                type="checkbox"
+                aria-label="Start with the runtime"
+                checked={meshAutoStart}
+                onChange={async (e) => {
+                  const next = e.target.checked
                   setMeshAutoStart(next)
                   await window.adfApi?.setSettings({ meshEnabled: next })
                 }}
-                variant={meshAutoStart ? 'danger' : 'secondary'}
-              >
-                {meshAutoStart ? 'Disable' : 'Enable'}
-              </Button>
+                className="rounded text-blue-500"
+              />
             </SettingsRow>
           </SettingsGroup>
 
@@ -2358,21 +2402,6 @@ export function SettingsPage() {
                   ? `Server running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}`
                   : 'Server stopped'}
               </label>
-              <Button
-                onClick={async () => {
-                  const res = meshServerStatus.running
-                    ? await window.adfApi?.stopMeshServer()
-                    : await window.adfApi?.startMeshServer()
-                  if (res) {
-                    setMeshServerStatus({ running: res.running ?? false, port: res.port ?? meshServerStatus.port, host: res.host ?? meshServerStatus.host })
-                  }
-                }}
-                variant={meshServerStatus.running ? 'danger' : 'primary'}
-                size="compact"
-                className="ml-auto"
-              >
-                {meshServerStatus.running ? 'Stop' : 'Start'}
-              </Button>
             </div>
             {meshServerStatus.running && (
               <p className="text-xs text-neutral-400 dark:text-neutral-500 font-mono">
@@ -2447,7 +2476,7 @@ export function SettingsPage() {
                 </div>
                 {!meshLan && (
                   <p className="text-[10px] text-amber-600 dark:text-amber-400 mb-1">
-                    Server is bound to 127.0.0.1 — enable "Allow LAN access" below to reach these from other devices.
+                    Server is bound to 127.0.0.1; turn on Allow LAN access to reach these from other devices.
                   </p>
                 )}
                 <div className="space-y-1">
@@ -2808,8 +2837,8 @@ function ComputeTab({
                   <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">{isShared ? 'Shared' : c.scope === 'legacy' ? 'Legacy' : 'Dedicated'}</span>
                   {c.managed && c.outdated && (
                     <Tooltip tip={OUTDATED_CONTAINER_ADVISORY}>
-                      <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-warning)]">
-                        <span className="size-1 rounded-full bg-[var(--adf-ui-warning)]" aria-hidden="true" />Update available
+                      <span className="mt-0.5 inline-flex items-center gap-1 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-text-muted)]">
+                        <span className="size-1 rounded-full bg-[var(--adf-ui-text-subtle)]" aria-hidden="true" />Rebuild available
                       </span>
                     </Tooltip>
                   )}
@@ -2870,7 +2899,7 @@ function ComputeTab({
       {/* Status messages — for post-setup container operations (Rebuild etc).
           During setup, the wizard shows its own status block, so avoid duplication. */}
       {ready && setupLog && (
-        <p className="mb-3 text-[10px] text-amber-600 dark:text-amber-400 font-mono">{setupLog}</p>
+        <p className={`mb-3 text-[10px] font-mono ${setupLogTone(setupLog)}`}>{setupLog}</p>
       )}
       {ready && setupError && (
         <p className="mb-3 text-[10px] text-red-600 dark:text-red-400 font-mono">{setupError}</p>
@@ -3315,7 +3344,7 @@ function SetupWizard({
 
       {/* Status / error */}
       {setupLog && (
-        <p className="mt-2 text-[10px] text-amber-600 dark:text-amber-400 font-mono">{setupLog}</p>
+        <p className={`mt-2 text-[10px] font-mono ${setupLogTone(setupLog)}`}>{setupLog}</p>
       )}
       {setupError && (
         <div className="mt-2 p-2 rounded bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
@@ -3606,9 +3635,9 @@ function ContainerDetailPanel({ container, onClose }: { container: ContainerSumm
           {loading && !detail && <div className="py-12 text-center text-[11px] text-[var(--adf-ui-text-muted)]">Loading container details…</div>}
 
           {tab === 'summary' && detail && container.managed && container.outdated && (
-            <div className="mb-3 flex items-start gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
-              <span className="mt-1 size-1.5 shrink-0 rounded-full bg-[var(--adf-ui-warning)]" aria-hidden="true" />
-              <span className="leading-snug">Update available — rebuilding adds network isolation from other agents. It also erases this container&apos;s workspace files, installed packages, and any saved browser session, so it is optional and up to you.</span>
+            <div className="mb-3 flex items-start gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-hover)] px-3 py-2 text-[11px] text-[var(--adf-ui-text-muted)]">
+              <span className="mt-1 size-1.5 shrink-0 rounded-full bg-[var(--adf-ui-text-subtle)]" aria-hidden="true" />
+              <span className="leading-snug">Rebuild available: it adds network isolation from other agents and erases this container&apos;s workspace files, installed packages and saved browser session.</span>
             </div>
           )}
           {tab === 'summary' && detail && (

@@ -720,7 +720,8 @@ export interface AdfApi {
   orbitalCachePut: (req: OrbitalCacheRequest, bytes: Uint8Array) => Promise<boolean>
 
   // Emergency stop
-  emergencyStop: () => Promise<{ success: boolean; error?: string }>
+  /** `stoppedAgents`: how many agents the stop ended (the Kill button reports it). */
+  emergencyStop: () => Promise<{ success: boolean; error?: string; stoppedAgents?: number }>
 
   // Settings → Connection (studio-backend.json; applies at next launch)
   /** The view never contains the remote token, only whether one is saved. */

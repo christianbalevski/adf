@@ -175,6 +175,9 @@ describe('fleet map (W1-D routes)', () => {
     expect(await invoke(IPC.MESH_ENABLE)).toEqual({ success: true })
     daemon.routes.set('POST /network/mesh/disable', () => ({ status: 500, body: { error: 'boom' } }))
     expect(await invoke(IPC.MESH_DISABLE)).toEqual({ success: false, error: 'Error: boom' })
+    // The live Mesh switch: "Start with the runtime" (meshEnabled) is a separate setting.
+    expect(requests('POST', '/network/mesh/enable').map((r) => r.query)).toEqual([{ persist: '0' }])
+    expect(requests('POST', '/network/mesh/disable').map((r) => r.query)).toEqual([{ persist: '0' }])
   })
 })
 

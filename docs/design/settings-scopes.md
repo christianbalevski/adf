@@ -161,7 +161,7 @@ Title "Connection". Help: "The runtime this window uses."
 - A row has a name, its state, and one detail line: address and fingerprint for a remote. "Pairing open" is added when the host's window is open.
 - A found host whose fingerprint is saved is the saved row. It is never a second row, so a Paired row never shows Pair.
 - Rows that share a fingerprint and do not merge (§8) stay separate Not paired rows, one per address, with no warning. If that fingerprint is saved, only the saved row is shown.
-- Remove is in the row's More menu (⋯), for saved remotes that are not in use. Inside Studio (legacy) is also in This computer's More menu while it is not shown as a row.
+- Remove is in the row's More menu (⋯), for every saved remote. On the one in use (or saved as the next one) it switches to This computer first. Inside Studio (legacy) is also in This computer's More menu while it is not shown as a row.
 - Below the list: one button, **Add connection**.
 - When This computer is in use, two rows follow the list: the daemon line (pid, started by) with Details, as `daemonLine` today; and **Keep running after quit**, "Agents on this computer keep running after you quit Studio." Neither is shown when a remote is in use.
 - Notices (switch waiting, Default changed, `ADF_STUDIO_BACKEND`, session-only launch) stay as one status band at the top.
@@ -188,7 +188,7 @@ Title "Connection". Help: "The runtime this window uses."
 3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint; identity not checked." The token goes to the `remote` slot. If the slot holds a connection, the dialog says "Replaces <name>." first.
 4. On success: **Done** and **Connect**.
 
-**Remove connection.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot. The connection in use cannot be removed.
+**Remove connection.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot. For the connection in use (or saved as the next one) the dialog reads "Switches to This computer, then removes the address and token from Studio and adf."; main saves This computer first (the switch dialog follows when Studio restarts) and removes the entry only after that switch is confirmed.
 
 ### 5.4 IPC
 

@@ -136,7 +136,7 @@ export class PairingFlow {
       const saved = this.deps.savedConnections?.() ?? []
       const pinned = saved.find((s) => s.fingerprint && originOf(s.url) === originOf(check.url) && s.fingerprint !== hello.fingerprint)
       if (pinned) {
-        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${pinned.fingerprint} as when ${pinned.name} was paired; Studio sent nothing.`)
+        return this.fail('fingerprint_mismatch', `${new URL(check.url).hostname} now answers with fingerprint ${hello.fingerprint}, not ${pinned.fingerprint} as when ${pinned.name} was paired; Studio sent nothing, and if it was set up again, remove ${pinned.name} and pair again.`)
       }
       // Never move a saved connection to another address without asking.
       const moved = saved.find((s) => s.fingerprint === hello.fingerprint && originOf(s.url) !== originOf(check.url))
