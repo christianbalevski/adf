@@ -186,7 +186,7 @@ describe('the rows of the Connection page', () => {
 })
 
 describe('Connect, Add connection and Remove (Studio main)', () => {
-  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void } = {}) {
+  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void; forgetRuntimeKeys?: (id: string) => void } = {}) {
     const dir = tempDir()
     const env = sharedEnv(dir)
     const path = join(dir, 'studio-backend.json')
@@ -206,6 +206,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
       log: quiet,
       ...(opts.agentWindowsOn ? { agentWindowsOn: opts.agentWindowsOn } : {}),
       ...(opts.slotChanged ? { slotChanged: opts.slotChanged } : {}),
+      ...(opts.forgetRuntimeKeys ? { forgetRuntimeKeys: opts.forgetRuntimeKeys } : {}),
     })
     return { env, path, store, connections, confirms, pushes, daemon }
   }
@@ -352,6 +353,30 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.remove('remote')).toMatchObject({ ok: true })
     expect(changes).toBe(2)
     expect(s.store.config().remote.url).toBeNull()
+  })
+
+  it('multi-runtime.md §7.4: Remove of a saved connection, Remove of the remote slot and a slot replaced by another address forget the keys of that runtime', async () => {
+    const forgotten: string[] = []
+    const s = setup({ forgetRuntimeKeys: (id) => { forgotten.push(id) } })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    expect(await s.connections.remove('remote:rawl-hub')).toMatchObject({ ok: true })
+    expect(forgotten).toEqual(['remote:rawl-hub'])
+
+    const slot: string[] = []
+    const old = { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } }
+    const replaced = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: old, forgetRuntimeKeys: (id) => { slot.push(id) } })
+    expect(await replaced.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toMatchObject({ ok: true, id: 'remote' })
+    expect(slot).toEqual(['remote'])
+    expect(await replaced.connections.remove('remote')).toMatchObject({ ok: true })
+    expect(slot).toEqual(['remote', 'remote'])
+
+    // Cancelled or refused: nothing is forgotten.
+    const kept: string[] = []
+    const declined = setup({ confirm: false, forgetRuntimeKeys: (id) => { kept.push(id) } })
+    await saveConnection(declined.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await declined.connections.remove('remote:rawl-hub')
+    await declined.connections.remove('local')
+    expect(kept).toEqual([])
   })
 })
 

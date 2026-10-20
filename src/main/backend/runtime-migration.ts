@@ -1,6 +1,6 @@
 import { promises as fsp } from 'node:fs'
-import type { SavedRemote } from '../cli/remotes'
-import type { RuntimeId } from '../../shared/runtime-tag'
+import { remotesFilePath, type SavedRemote } from '../cli/remotes'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { AGENT_WINDOWS_KEY, type SavedAgentWindow } from './agent-windows'
 import type { BootBackend, StudioBackendConfig } from './backend-config'
@@ -282,4 +282,137 @@ export function relinkSavedAgentWindows(raw: unknown, saved: Record<string, Pick
     return { ...entry, runtimeId: savedRuntimeId(name) }
   })
   return changed ? { runtime: raw.runtime, windows } : null
+}
+
+/** The client keys held per runtime other than This computer (§7.4). */
+export const RUNTIME_KEYS = ['runtimeRecentFiles', 'runtimeFleet'] as const
+export type RuntimeKey = (typeof RUNTIME_KEYS)[number]
+
+/**
+ * §7.4: the keys of a runtime that is no longer in the set go, so a computer
+ * saved later under that id does not get them. One renamed (`moves`: the same
+ * computer under another id) takes them to its new id, unless that id has
+ * its own. Pure; null when nothing changed, so a file without such a runtime
+ * is never rewritten.
+ */
+export function relinkRuntimeKeys(values: Partial<Record<RuntimeKey, unknown>>, keep: (id: string) => boolean, moves: ReadonlyMap<string, string> = new Map()): Partial<Record<RuntimeKey, Record<string, unknown>>> | null {
+  const patch: Partial<Record<RuntimeKey, Record<string, unknown>>> = {}
+  for (const key of RUNTIME_KEYS) {
+    const held = values[key]
+    if (!isObject(held)) continue
+    const next = { ...held }
+    let changed = false
+    for (const id of Object.keys(held)) {
+      if (keep(id)) continue
+      const to = moves.get(id)
+      if (to && keep(to) && !(to in next)) next[to] = held[id]
+      delete next[id]
+      changed = true
+    }
+    if (changed) patch[key] = next
+  }
+  return Object.keys(patch).length > 0 ? patch : null
+}
+
+/**
+ * At launch: the ids whose computer is now saved under another name, by
+ * fingerprint. From the saved agent windows (an entry of an id not in the
+ * set whose fingerprint is a saved connection's, as relinkSavedAgentWindows
+ * moves it), and the remote slot whose pairing became a saved connection.
+ */
+export function renamedRuntimes(windows: unknown, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>, slot: { inSet: boolean; fingerprint: string | null }): Map<string, string> {
+  const byFingerprint = (fp: string | null | undefined): string | null => {
+    const name = fp ? Object.entries(saved).find(([, r]) => r.fingerprint === fp)?.[0] : undefined
+    return name ? savedRuntimeId(name) : null
+  }
+  const moves = new Map<string, string>()
+  if (!slot.inSet) {
+    const to = byFingerprint(slot.fingerprint)
+    if (to) moves.set(SLOT_RUNTIME, to)
+  }
+  const entries = isObject(windows) && Array.isArray(windows.windows) ? windows.windows : []
+  for (const raw of entries) {
+    if (!isObject(raw) || typeof raw.runtimeId !== 'string' || !raw.runtimeId.startsWith('remote:')) continue
+    if (saved[raw.runtimeId.slice('remote:'.length)] || moves.has(raw.runtimeId)) continue
+    const to = byFingerprint(typeof raw.fingerprint === 'string' ? raw.fingerprint : null)
+    if (to) moves.set(raw.runtimeId, to)
+  }
+  return moves
+}
+
+/**
+ * While Studio runs, cli-remotes.json changed (`adf pair`, `adf remotes
+ * forget`, Studio's Add and Remove): a name gone whose fingerprint is now
+ * under another name moved there; a name that now holds another fingerprint
+ * is another computer (replaced).
+ */
+export function savedConnectionChanges(before: Record<string, Pick<SavedRemote, 'fingerprint'>>, after: Record<string, Pick<SavedRemote, 'fingerprint'>>): { moves: Map<string, string>; replaced: Set<string> } {
+  const moves = new Map<string, string>()
+  const replaced = new Set<string>()
+  for (const [name, remote] of Object.entries(before)) {
+    const now = after[name]
+    if (now) {
+      if (now.fingerprint !== remote.fingerprint) replaced.add(savedRuntimeId(name))
+      continue
+    }
+    const to = Object.entries(after).find(([other, r]) => r.fingerprint === remote.fingerprint && !before[other])?.[0]
+    if (to) moves.set(savedRuntimeId(name), savedRuntimeId(to))
+  }
+  return { moves, replaced }
+}
+
+/**
+ * The names in cli-remotes.json, read strictly: no file is no connection;
+ * a file that cannot be read or parsed is null (unknown), and then no key is
+ * forgotten. A malformed entry still counts as a name. (The cache reads such
+ * a file as no connection.)
+ */
+export async function savedConnectionNames(env: NodeJS.ProcessEnv): Promise<Set<string> | null> {
+  let text: string
+  try {
+    text = await fsp.readFile(remotesFilePath(env), 'utf-8')
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? new Set() : null
+  }
+  try {
+    const raw = JSON.parse(text.replace(/^﻿/, '')) as unknown
+    return isObject(raw) && raw.v === 1 && isObject(raw.remotes) ? new Set(Object.keys(raw.remotes)) : null
+  } catch {
+    return null
+  }
+}
+
+type RuntimeKeyStore = { get(key: string): unknown; patch(values: Record<string, unknown>): void }
+
+function runtimeKeyValues(settings: RuntimeKeyStore): Partial<Record<RuntimeKey, unknown>> {
+  return Object.fromEntries(RUNTIME_KEYS.map((key) => [key, settings.get(key)]))
+}
+
+/** Remove, or another computer in the remote slot: the keys of `id` go now (§7.4). */
+export function forgetRuntimeKeysOf(settings: RuntimeKeyStore, id: string, log: Log = console): void {
+  const patch = relinkRuntimeKeys(runtimeKeyValues(settings), (other) => other !== id)
+  if (!patch) return
+  log.log(`[Connection] Open Recent and Mesh view keys of ${id} removed (${Object.keys(patch).join(', ')})`)
+  settings.patch(patch)
+}
+
+/**
+ * At launch and whenever cli-remotes.json changes: the keys of each runtime
+ * not in the set go, or move to its new id (`moves`); an id in `replaced`
+ * is another computer now. Nothing goes while cli-remotes.json cannot be
+ * read or parsed (said in the log). Never throws.
+ */
+export async function forgetGoneRuntimeKeys(settings: RuntimeKeyStore, env: NodeJS.ProcessEnv, slotInSet: () => boolean, changes: { moves?: ReadonlyMap<string, string>; replaced?: ReadonlySet<string> } = {}, log: Log = console): Promise<void> {
+  const values = runtimeKeyValues(settings)
+  if (!RUNTIME_KEYS.some((key) => isObject(values[key]) && Object.keys(values[key] as object).length > 0)) return
+  const names = await savedConnectionNames(env)
+  if (!names) {
+    log.warn(`[Connection] ${remotesFilePath(env)} could not be read; the Open Recent and Mesh view keys of every runtime are kept`)
+    return
+  }
+  const keep = (id: string): boolean => id === LOCAL_RUNTIME || (id === SLOT_RUNTIME ? slotInSet() : id.startsWith('remote:') && names.has(id.slice('remote:'.length)) && !changes.replaced?.has(id))
+  const patch = relinkRuntimeKeys(runtimeKeyValues(settings), keep, changes.moves)
+  if (!patch) return
+  log.log(`[Connection] Open Recent and Mesh view keys of runtimes no longer in the set removed, or moved to the new name of the same computer (${Object.keys(patch).join(', ')})`)
+  settings.patch(patch)
 }

@@ -39,7 +39,9 @@ import {
   syncRuntimeEntryAfterImport,
 } from './backend/boot-handover'
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
-import { migrateRemoteModeInstall, relinkSavedAgentWindows, type RemoteModeMigration } from './backend/runtime-migration'
+import {
+  forgetGoneRuntimeKeys, forgetRuntimeKeysOf, migrateRemoteModeInstall, relinkSavedAgentWindows, renamedRuntimes, savedConnectionChanges, type RemoteModeMigration,
+} from './backend/runtime-migration'
 import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
@@ -744,11 +746,19 @@ app.whenReady().then(async () => {
     const saved = savedCache.get()
     daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved))
   }
+  // §7.4: the Open Recent and Mesh view keys of a connection forgotten, renamed or now another computer follow it.
+  // Set once the client settings exist (This computer's launch).
+  let runtimeKeysFollow: ((changes: ReturnType<typeof savedConnectionChanges>) => void) | null = null
+  let lastSaved: ReturnType<SavedConnectionsCache['get']> | null = null
   const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
     connections?.changed()
     syncRuntimes()
+    const before = lastSaved
+    lastSaved = savedCache.get()
+    if (before) runtimeKeysFollow?.(savedConnectionChanges(before, lastSaved))
   })
   await savedCache.refresh().catch(() => {})
+  lastSaved = savedCache.get()
   savedCache.watch()
   app.once('before-quit', () => savedCache.dispose())
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
@@ -815,11 +825,17 @@ app.whenReady().then(async () => {
     syncRuntimes()
     // §7.5: a saved agent window of a runtime no longer in the set moves to the saved connection with its fingerprint.
     // Never rewritten when nothing moves (a list of This computer only keeps its bytes).
-    const relinked = relinkSavedAgentWindows(handle.clientSettings.get(AGENT_WINDOWS_KEY), savedCache.get(), !!runtimeSlot(backend.config, savedCache.get()))
+    const savedWindows = handle.clientSettings.get(AGENT_WINDOWS_KEY)
+    const slotInSet = (): boolean => !!runtimeSlot(backendStore?.config() ?? backend.config, savedCache.get())
+    const renamed = renamedRuntimes(savedWindows, savedCache.get(), { inSet: slotInSet(), fingerprint: backend.config.remote.paired?.fingerprint ?? null })
+    const relinked = relinkSavedAgentWindows(savedWindows, savedCache.get(), slotInSet())
     if (relinked) {
       console.log('[AgentWindows] Saved agent windows of a renamed connection moved to it (same fingerprint)')
       handle.clientSettings.set(AGENT_WINDOWS_KEY, relinked)
     }
+    // §7.4: the same for Open Recent and the Mesh view; a runtime no longer saved loses them. Never rewritten when nothing goes.
+    runtimeKeysFollow = (changes) => { void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, changes) }
+    void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, { moves: renamed })
     agentWindows = new AgentWindows({
       create: createAgentWindow,
       current: (id) => handle.windows.current(id),
@@ -960,6 +976,8 @@ app.whenReady().then(async () => {
     agentWindowsOn: (id) => daemonMode?.runtimes.get(id)?.windows.ids().length ?? 0,
     // The remote slot was added, replaced or removed: it joins or leaves the set at once.
     slotChanged: syncRuntimes,
+    // Remove, or another computer in the remote slot: that runtime's Open Recent and Mesh view keys go (§7.4).
+    forgetRuntimeKeys: (id) => { if (daemonMode) forgetRuntimeKeysOf(daemonMode.clientSettings, id) },
   })
   registerConnectionHandlers(connections)
   daemonMode?.connection.onState(() => connections?.changed())

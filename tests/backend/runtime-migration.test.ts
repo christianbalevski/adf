@@ -16,7 +16,8 @@ import { resolveBootBackend } from '../../src/main/backend/backend-config'
 import { AGENT_WINDOWS_KEY, AgentWindows, parseSavedAgentWindows, type AgentWindowHandle, type SavedAgentWindow } from '../../src/main/backend/agent-windows'
 import { CLIENT_SETTINGS_FILE } from '../../src/main/backend/daemon-mode/settings'
 import {
-  migrateRemoteMode, migrateRemoteModeClientFile, migrateRemoteModeClientKeys, migrateRemoteModeInstall, migrationNotice, relinkSavedAgentWindows, remoteModeRuntime,
+  migrateRemoteMode, migrateRemoteModeClientFile, migrateRemoteModeClientKeys, migrateRemoteModeInstall, migrationNotice, relinkRuntimeKeys, relinkSavedAgentWindows,
+  remoteModeRuntime, renamedRuntimes, savedConnectionChanges, savedConnectionNames,
 } from '../../src/main/backend/runtime-migration'
 import type { SavedRemote } from '../../src/main/cli/remotes'
 
@@ -283,3 +284,50 @@ describe('write order: the client keys first, then studio-backend.json', () => {
   })
 })
 
+describe('the client keys of a runtime that went (§7.4)', () => {
+  const RECENTS = { 'remote:host-1': ['/srv/a.adf'], 'remote:old-name': ['/srv/b.adf'], 'remote:gone': ['/srv/c.adf'], remote: ['/srv/d.adf'] }
+  const FLEET = { 'remote:gone': { fleetGroups: { '/srv': ['/srv/c.adf'] } }, 'remote:old-name': { fleetStewards: { '/srv': 'did:key:z6Mk-steward' } } }
+
+  it('a runtime not in the set loses its keys; one renamed (same fingerprint) takes them to its new id; nothing else changes', () => {
+    const inSet = (id: string) => id === 'remote:host-1'
+    expect(relinkRuntimeKeys({ runtimeRecentFiles: RECENTS, runtimeFleet: FLEET }, inSet, new Map([['remote:old-name', 'remote:host-1']]))).toEqual({
+      // host-1 has its own recent files: they stay, the old name's go.
+      runtimeRecentFiles: { 'remote:host-1': ['/srv/a.adf'] },
+      runtimeFleet: { 'remote:host-1': { fleetStewards: { '/srv': 'did:key:z6Mk-steward' } } },
+    })
+    // Every id in the set, or no keys: null, never rewritten (a local-only file keeps its bytes).
+    expect(relinkRuntimeKeys({ runtimeRecentFiles: { 'remote:host-1': ['/srv/a.adf'] } }, inSet)).toBeNull()
+    expect(relinkRuntimeKeys({}, inSet)).toBeNull()
+  })
+
+  it('renamed at launch: an agent window of an id not in the set whose fingerprint is saved, and the slot whose pairing is now a saved connection', () => {
+    const windows = { runtime: 'local', windows: [
+      { agentId: AGENT_1, filePath: 'C:/agents/agent-1.adf' },
+      { agentId: AGENT_2, filePath: '/srv/b.adf', runtimeId: 'remote:old-name', fingerprint: 'ABCD-EFGH' },
+      { agentId: AGENT_2, filePath: '/srv/c.adf', runtimeId: 'remote:gone', fingerprint: 'NONE-2345' },
+    ] }
+    expect([...renamedRuntimes(windows, { 'host-1': HOST_1 }, { inSet: false, fingerprint: 'WXYZ-2345' })]).toEqual([['remote:old-name', 'remote:host-1']])
+    expect([...renamedRuntimes(undefined, { 'host-2': HOST_2 }, { inSet: false, fingerprint: 'WXYZ-2345' })]).toEqual([['remote', 'remote:host-2']])
+    expect([...renamedRuntimes(undefined, { 'host-2': HOST_2 }, { inSet: true, fingerprint: 'WXYZ-2345' })]).toEqual([])
+  })
+
+  it('while Studio runs: a name gone whose fingerprint is under another name moved; a name now another computer was replaced', () => {
+    const before = { 'old-name': HOST_1, 'host-2': HOST_2 }
+    const after = { 'host-1': HOST_1, 'host-2': { ...HOST_2, fingerprint: 'NEWW-2345' } }
+    expect(savedConnectionChanges(before, after)).toEqual({ moves: new Map([['remote:old-name', 'remote:host-1']]), replaced: new Set(['remote:host-2']) })
+    expect(savedConnectionChanges(before, before)).toEqual({ moves: new Map(), replaced: new Set() })
+  })
+
+  it('cli-remotes.json read strictly: missing is no connection; unreadable or not parsed is unknown, so nothing is forgotten', async () => {
+    const dir = userData({})
+    const env = { ADF_DAEMON_SETTINGS: join(dir, 'adf-settings.json') }
+    expect(await savedConnectionNames(env)).toEqual(new Set())
+    writeFileSync(join(dir, 'cli-remotes.json'), JSON.stringify({ v: 1, default: null, remotes: { 'host-1': HOST_1, broken: { url: 1 } } }))
+    // A malformed entry is still a name: its keys are not forgotten.
+    expect(await savedConnectionNames(env)).toEqual(new Set(['host-1', 'broken']))
+    writeFileSync(join(dir, 'cli-remotes.json'), '{"v":1,"remotes":')
+    expect(await savedConnectionNames(env)).toBeNull()
+    writeFileSync(join(dir, 'cli-remotes.json'), JSON.stringify({ v: 2, remotes: {} }))
+    expect(await savedConnectionNames(env)).toBeNull()
+  })
+})
