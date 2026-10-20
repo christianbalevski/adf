@@ -1,3 +1,4 @@
+import { IMAGE_ONLY_MEDIA } from '../media-capabilities'
 import { createOpenAI } from '@ai-sdk/openai'
 import { repairStringsDeep } from '../../../shared/utils/well-formed'
 
@@ -407,6 +408,9 @@ export function createChatGPTSubscriptionProvider(authManager: {
     }
   }
 }
+
+/** What this connector carries: the Responses API has image input, no audio or video parts. */
+export const CHATGPT_SUBSCRIPTION_MEDIA = IMAGE_ONLY_MEDIA
 
 /** Known subscription models — returned by the hardcoded model list. */
 export const CHATGPT_SUBSCRIPTION_MODELS = [

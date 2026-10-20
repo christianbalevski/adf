@@ -132,7 +132,8 @@ export interface AdfApi {
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean; code?: 'daemon_exited' }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
-  getAgentStatus: () => Promise<AgentStatusResult>
+  /** `mediaFor`: also answer that loop's effective media (the composer's attachment gate). */
+  getAgentStatus: (opts?: { mediaFor?: string }) => Promise<AgentStatusResult>
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
   /** Approve all pending gated (restricted) tool approvals at once; protection overrides are excluded server-side. */

@@ -1,6 +1,7 @@
 import type { LLMMessage, LLMResponse, ReasoningConfig } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
 import type { ProviderType } from '../../shared/constants/adf-defaults'
+import type { MediaSupport } from '../../shared/types/media.types'
 
 export interface CreateMessageOptions {
   system: string
@@ -42,6 +43,10 @@ export interface LLMProvider {
    *  branch on provider semantics, since providerId is an opaque key. */
   readonly providerType?: ProviderType
   readonly modelId: string
+  /** The media this connector can carry to its provider, declared by the
+   *  connector itself (media-capabilities.ts connectorMedia reads it).
+   *  Absent: image, audio and video. */
+  readonly media?: MediaSupport
 
   createMessage(options: CreateMessageOptions): Promise<LLMResponse>
   validateConfig(): Promise<{ valid: boolean; error?: string }>

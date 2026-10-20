@@ -8,6 +8,8 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
 import { ATTACHMENT_ONLY_TEXT, sendComposerMessage, type SendRoute } from '../../utils/composer-send'
+import { composerMedia, gateAttachments, type RefusedAttachment } from '../../utils/attachment-gate'
+import type { LoopMedia } from '../../../shared/types/media.types'
 import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -1108,6 +1110,10 @@ function LoopStream({ loop }: { loop: string }) {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const [draggingOverInput, setDraggingOverInput] = useState(false)
   const [uploadingFiles, setUploadingFiles] = useState(false)
+  /** Files refused before upload, with the reason: shown until dismissed or the next pick. */
+  const [refusedFiles, setRefusedFiles] = useState<Array<RefusedAttachment & { id: string }>>([])
+  /** This loop's effective media from the runtime; null before the agent runs. */
+  const [loopMedia, setLoopMedia] = useState<LoopMedia | null>(null)
   const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
   // Center stage with both side panels collapsed spans the whole window; the
   // `comfortable` default caps the stream + composer to a reading column. The
@@ -1550,11 +1556,23 @@ function LoopStream({ loop }: { loop: string }) {
   const setState = useAgentStore((s) => s.setState)
   const setSessionId = useAgentStore((s) => s.setSessionId)
 
-  const mediaSupport = useMemo(() => ({
+  // The connector's media narrowed by the toggles, asked of the runtime (no
+  // copy of the connector table here). Re-asked when the config, the loop or
+  // its state changes: a model switch rebuilds the connector.
+  useEffect(() => {
+    let cancelled = false
+    void Promise.resolve(window.adfApi?.getAgentStatus({ mediaFor: loop }))
+      .then((status) => { if (!cancelled) setLoopMedia(status?.media ?? null) })
+      .catch(() => { if (!cancelled) setLoopMedia(null) })
+    return () => { cancelled = true }
+  }, [config, loop, state, filePath])
+
+  const media = useMemo(() => composerMedia(loopMedia, {
     image: config?.model.multimodal?.image ?? config?.model.vision ?? false,
     audio: config?.model.multimodal?.audio ?? false,
     video: config?.model.multimodal?.video ?? false,
-  }), [config])
+  }), [config, loopMedia])
+  const mediaSupport = media.support
 
   const mediaLimits = useMemo(() => ({
     image: config?.limits?.max_image_size_bytes ?? DEFAULT_MEDIA_LIMITS.image,
@@ -1659,7 +1677,11 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [mediaLimits, mediaSupport])
 
-  const handleFilesSelected = useCallback(async (files: File[]) => {
+  const handleFilesSelected = useCallback(async (picked: File[]) => {
+    if (picked.length === 0) return
+    // Refused before upload: a media type this loop's model cannot take.
+    const { accepted: files, refused } = gateAttachments(picked, (file) => uploadKind(inferMimeType(file)), media)
+    setRefusedFiles(refused.map((item) => ({ ...item, id: nanoid() })))
     if (files.length === 0) return
     setUploadingFiles(true)
     try {
@@ -1677,7 +1699,7 @@ function LoopStream({ loop }: { loop: string }) {
     } finally {
       setUploadingFiles(false)
     }
-  }, [buildAttachment, input, setInput])
+  }, [buildAttachment, input, setInput, media])
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((current) => {
@@ -2467,6 +2489,28 @@ function LoopStream({ loop }: { loop: string }) {
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_srgb,var(--tint)_92%,transparent)] text-sm font-medium text-[var(--ink)]">
                   Drop to attach
+                </div>
+              )}
+              {refusedFiles.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 px-3 pt-2" role="alert">
+                  {refusedFiles.map((item) => (
+                    <span
+                      key={item.id}
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--adf-ui-danger)] bg-[var(--paper-sunken)] px-2 py-1 text-[11px] text-[var(--adf-ui-danger)]"
+                      title={item.reason}
+                    >
+                      <span className="truncate max-w-[10rem]">{item.name}</span>
+                      <span className="truncate max-w-[20rem]">{item.reason}</span>
+                      <button
+                        type="button"
+                        onClick={() => setRefusedFiles((current) => current.filter((other) => other.id !== item.id))}
+                        className="shrink-0 hover:text-[var(--ink)]"
+                        title="Dismiss"
+                      >
+                        &times;
+                      </button>
+                    </span>
+                  ))}
                 </div>
               )}
               {attachments.length > 0 && (

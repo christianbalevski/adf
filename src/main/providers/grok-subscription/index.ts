@@ -1,8 +1,12 @@
+import { IMAGE_ONLY_MEDIA } from '../media-capabilities'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 
 // OAuth access tokens are accepted by the normal xAI API (api:access scope) —
 // same base URL as API-key usage. Never send the OAuth bearer anywhere else.
 const BASE_URL = 'https://api.x.ai/v1'
+
+/** What this connector carries: xAI takes image input, not audio or video. */
+export const GROK_SUBSCRIPTION_MEDIA = IMAGE_ONLY_MEDIA
 
 export function createGrokSubscriptionProvider(authManager: {
   getValidAccessToken: () => Promise<string>

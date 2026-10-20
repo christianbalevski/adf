@@ -5261,11 +5261,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { success: false, error: 'Agent not running' }
   })
 
-  ipcMain.handle(IPC.AGENT_STATUS, async () => {
-    return {
-      running: agentExecutor !== null,
-      state: agentExecutor?.getState() ?? 'stopped'
-    }
+  ipcMain.handle(IPC.AGENT_STATUS, async (_event, opts?: { mediaFor?: string }) => {
+    const status = { running: agentExecutor !== null, state: agentExecutor?.getState() ?? 'stopped' }
+    if (!opts?.mediaFor || !currentAssembledAgent) return status
+    // The composer's attachment gate: the loop's connector media narrowed by the toggles.
+    const executor = opts.mediaFor === MAIN_LOOP ? currentAssembledAgent.executor : currentAssembledAgent.loopPool.getRuntime(opts.mediaFor)?.executor
+    return executor ? { ...status, media: executor.getLoopMedia() } : status
   })
 
   // --- Models ---

@@ -71,9 +71,11 @@ and `ChatGPT not signed in — /login chatgpt` in Chat.
 
 ## Media when changing models
 
-Set `model.multimodal.image`, `.audio`, and `.video` to match the selected
-model's input capabilities. These are explicit settings, not automatic
-capability detection. They can only narrow what the provider carries:
+The table below is what ADF can send to each provider. It says nothing about
+whether a model understands that media. That is your choice: set
+`model.multimodal.image`, `.audio`, and `.video` per agent to match the
+model you selected. ADF does not detect model capabilities. The toggles can
+only narrow the table, never widen it:
 
 | Provider | Image | Audio | Video |
 | --- | --- | --- | --- |
@@ -84,7 +86,9 @@ capability detection. They can only narrow what the provider carries:
 
 A new chat message with an attachment the model cannot take is refused with
 the reason (`400 media_unsupported` on `POST /agents/:id/chat`). It is never
-sent without the attachment.
+sent without the attachment. Studio's composer refuses such a file before
+upload and shows the reason. `GET /agents/:id/status` answers each loop's
+effective set as `media`.
 
 Attachments already in history that the model cannot take are replaced by a
 stable text placeholder in the outgoing request only. The first request of a

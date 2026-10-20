@@ -1,4 +1,5 @@
 import type { AgentConfig, AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { LoopMedia } from './media.types'
 import type { AgentRegistryEntry } from '../schemas/agent-registry.schema'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
@@ -102,6 +103,8 @@ export interface FileOperationResult {
 export interface AgentStatusResult {
   running: boolean
   state: string
+  /** Asked for with `mediaFor`: that loop's effective media (absent while not running). */
+  media?: LoopMedia
 }
 
 export interface ProviderConfig {

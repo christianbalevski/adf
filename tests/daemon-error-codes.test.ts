@@ -144,6 +144,9 @@ describe('daemon error codes', () => {
     expect(refused.statusCode).toBe(400)
     expect(refused.json()).toMatchObject({ code: 'media_unsupported', error: expect.stringContaining('Image input is off') })
     expect(sendChat).not.toHaveBeenCalled()
+    // The status answers the same effective set, for clients to gate attachments on.
+    const status = await server.inject({ method: 'GET', url: `/agents/${ref.id}/status`, headers: auth })
+    expect(status.json().media.main).toMatchObject({ support: { image: false }, refusals: { image: expect.stringContaining('image input is off') } })
     // Turned on, the same message is accepted.
     const executor = (runtime as unknown as { requireAgent(id: string): { agent: { executor: { getConfig(): AgentConfig; updateConfig(c: AgentConfig): void } } } }).requireAgent(ref.id).agent.executor
     const config = executor.getConfig()

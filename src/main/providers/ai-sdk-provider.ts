@@ -7,7 +7,7 @@ import type { ProviderType } from '../../shared/constants/adf-defaults'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { logger } from '../utils/logger'
 import { withPromptCacheBreakpoints, type PromptCacheProvider } from './prompt-cache'
-import { providerMediaSupport } from './media-capabilities'
+import { connectorMedia, type MediaSupport } from './media-capabilities'
 
 /** Extract a human-readable message from any thrown error shape. */
 function extractErrorMessage(error: unknown): string {
@@ -305,13 +305,13 @@ function extractOpenRouterReasoningDetails(providerMetadata?: Record<string, unk
 // SDK file parts. Neither route changes a video's position in the history.
 // ---------------------------------------------------------------------------
 
-function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel, providerType: ProviderType | undefined): { messages: CoreMessage[]; model: LanguageModel } {
+function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel, media: MediaSupport): { messages: CoreMessage[]; model: LanguageModel } {
   const target = model as Exclude<LanguageModel, string> & {
     transformRequestBody?: (body: Record<string, unknown>) => Record<string, unknown>
   }
   // Anthropic and OpenAI models have a request-body hook too, but no video
   // input: a raw video_url part there is a provider 400, not a video.
-  const noVideo = providerType ? !providerMediaSupport(providerType).video : /^(anthropic|openai)\./.test(target.provider)
+  const noVideo = !media.video || /^(anthropic|openai)\./.test(target.provider)
   const bypass = !noVideo && typeof target.transformRequestBody === 'function'
   const videos = new Map<string, string>()
   let hasVideo = false
@@ -417,6 +417,8 @@ export interface AiSdkProviderOptions {
   defaultProviderOptions?: Record<string, Record<string, unknown>>
   /** Explicit Claude cache breakpoints, placed before transient instructions. */
   promptCaching?: PromptCacheProvider
+  /** The media this connector can carry (LLMProvider.media). Absent: all three. */
+  media?: MediaSupport
   /** providerOptions namespace that takes CreateMessageOptions.promptCacheKey
    *  as `promptCacheKey` (OpenAI and ChatGPT Responses: `prompt_cache_key`). */
   promptCacheKeyOption?: 'openai'
@@ -454,6 +456,7 @@ export class AiSdkProvider implements LLMProvider {
   readonly providerId?: string
   readonly providerType?: ProviderType
   readonly modelId: string
+  readonly media?: MediaSupport
 
   private model: LanguageModel
   private requestDelayMs: number
@@ -465,6 +468,7 @@ export class AiSdkProvider implements LLMProvider {
     this.providerId = options?.providerId ?? name
     this.providerType = options?.providerType
     this.modelId = modelId
+    this.media = options?.media
     this.requestDelayMs = requestDelayMs
     this.options = options
   }
@@ -487,7 +491,7 @@ export class AiSdkProvider implements LLMProvider {
     const reasoningPlan = planReasoning(this.options?.reasoningStyle, options, options.maxTokens)
 
     // Project video without mutating cached history or the shared model.
-    const videoRequest = prepareVideoMessages(messages, this.model, this.providerType)
+    const videoRequest = prepareVideoMessages(messages, this.model, connectorMedia(this))
     messages = videoRequest.messages
     const model = videoRequest.model
 

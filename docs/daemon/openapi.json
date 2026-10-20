@@ -18762,6 +18762,17 @@
                   "type": "string"
                 },
                 "description": "GET /agents/{id}/status of a running agent: each inner loop's display state (active, idle, suspended, error, off), keyed by loop name. Main is not in it (runtimeState is main's). A loop that accepted a dispatch but has not started thinking reads active."
+              },
+              "media": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "support": { "type": "object", "properties": { "image": { "type": "boolean" }, "audio": { "type": "boolean" }, "video": { "type": "boolean" } } },
+                    "refusals": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Why each modality not in support is refused, keyed image, audio or video." }
+                  }
+                },
+                "description": "GET /agents/{id}/status of a running agent: each loop's effective media (main and live inner loops, keyed by loop name): what its provider connector carries, narrowed by the agent's model.multimodal toggles. POST /agents/{id}/chat refuses the rest with 400 media_unsupported."
               }
             }
           }

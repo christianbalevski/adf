@@ -1,3 +1,4 @@
+import { IMAGE_ONLY_MEDIA } from '../media-capabilities'
 import { createHash } from 'node:crypto'
 import type { LLMProvider, CreateMessageOptions } from '../provider.interface'
 import type { ContentBlock, LLMMessage, LLMResponse, ReasoningEffort } from '../../../shared/types/provider.types'
@@ -197,6 +198,8 @@ export class ClaudeSubscriptionProvider implements LLMProvider {
   readonly providerId: string
   readonly providerType: ProviderType = 'claude-subscription' as ProviderType
   readonly modelId: string
+  /** Claude Code takes images; audio and video become text notes (transcript.ts). */
+  readonly media = IMAGE_ONLY_MEDIA
   private readonly requestDelayMs: number
 
   constructor(opts: ClaudeSubscriptionProviderOptions) {

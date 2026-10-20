@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import type { LoopMedia } from '../../shared/types/media.types'
 import { mcpConnectorFor } from './mcp-connectors'
 import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'node:fs'
 import { readdir, realpath } from 'node:fs/promises'
@@ -279,6 +280,12 @@ export interface RuntimeTargetStatus extends RuntimeAgentStatus {
    * watching mid-stream needs before each loop's next `state_changed`.
    */
   loopStates?: Record<string, DisplayAgentState>
+  /**
+   * A running agent's effective media per loop (main and live side loops):
+   * what its connector carries narrowed by the agent's toggles, and why the
+   * rest is refused. Studio's composer gates attachments on it.
+   */
+  media?: Record<string, LoopMedia>
 }
 
 /** Studio's DOC_GET_HEADER: what the header shows, read in one call. */
@@ -2190,7 +2197,10 @@ export class RuntimeService extends EventEmitter {
     const target = this.resolveTarget(identifier)
     if (!target) return undefined
     if (target.managed) {
-      return { ...this.toStatus(target.managed), running: true, sessionId: target.managed.agent.session.getSessionId(), loopStates: target.managed.agent.loopPool.sideLoopStates() }
+      const agent = target.managed.agent
+      const media: Record<string, LoopMedia> = { [MAIN_LOOP]: agent.executor.getLoopMedia() }
+      for (const runtime of agent.loopPool.getRuntimes()) media[runtime.name] = runtime.executor.getLoopMedia()
+      return { ...this.toStatus(target.managed), running: true, sessionId: agent.session.getSessionId(), loopStates: agent.loopPool.sideLoopStates(), media }
     }
     const config = target.config
     return {

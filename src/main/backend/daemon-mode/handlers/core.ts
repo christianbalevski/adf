@@ -1,4 +1,5 @@
 import { dialog } from 'electron'
+import type { LoopMedia } from '../../../../shared/types/media.types'
 import { basename, dirname } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type AgentStatus, type ChatHistory } from '../../../../shared/daemon-client'
@@ -51,7 +52,7 @@ function mapChat(history: ChatHistory['chatHistory']): { version: number; uiLog:
 }
 
 /** GET /agents/:id/status: answers an open document too (`running: false`). */
-type TargetStatus = AgentStatus & { running?: boolean; sessionId?: string; loopStates?: Record<string, string> }
+type TargetStatus = AgentStatus & { running?: boolean; sessionId?: string; loopStates?: Record<string, string>; media?: Record<string, LoopMedia> }
 
 /** The agent's status while it runs in the daemon; null for an open document that is not running, or an unknown id. */
 async function agentStatus(ctx: DaemonModeContext, agentId: string | null): Promise<TargetStatus | null> {
@@ -235,9 +236,11 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     return { content: buf.toString('base64'), binary: true, ...info }
   },
 
-  [IPC.AGENT_STATUS]: async (ctx) => {
+  [IPC.AGENT_STATUS]: async (ctx, _event, opts?: { mediaFor?: string }) => {
     const status = await agentStatus(ctx, ctx.session.agentId)
-    return status ? { running: true, state: status.runtimeState } : { running: false, state: 'stopped' }
+    if (!status) return { running: false, state: 'stopped' }
+    const media = opts?.mediaFor ? status.media?.[opts.mediaFor] : undefined
+    return { running: true, state: status.runtimeState, ...(media ? { media } : {}) }
   },
 
   [IPC.AGENT_START]: async (ctx, _event, args?: { filePath?: string; hasUserMessage?: boolean }) => {

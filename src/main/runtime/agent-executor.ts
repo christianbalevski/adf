@@ -6,7 +6,8 @@ import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
-import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
+import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, mediaRefusals, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
+import type { LoopMedia } from '../../shared/types/media.types'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent, ApprovalEndedBy, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
@@ -4626,7 +4627,12 @@ export class AgentExecutor extends EventEmitter {
    */
   /** Media this agent's model takes: the provider's, narrowed by the model toggles. */
   private mediaSupport(): MediaSupport {
-    return effectiveMediaSupport(this.config.model, this.provider?.providerType)
+    return effectiveMediaSupport(this.config.model, this.provider)
+  }
+
+  /** This loop's effective media and why the rest is refused (Studio's composer gates on it). */
+  getLoopMedia(): LoopMedia {
+    return { support: this.mediaSupport(), refusals: mediaRefusals(this.config.model, this.provider) }
   }
 
   /** Whether a modality reaches the model (toggle on and the provider carries it). */
@@ -4640,7 +4646,7 @@ export class AgentExecutor extends EventEmitter {
    * attachments.
    */
   mediaInputError(content: readonly ContentBlock[] | undefined): string | null {
-    return unsupportedMediaInput(content, this.config.model, this.provider?.providerType)
+    return unsupportedMediaInput(content, this.config.model, this.provider)
   }
 
   /** The dispatch whose turn already showed the media notice. */
@@ -4652,7 +4658,7 @@ export class AgentExecutor extends EventEmitter {
     this.mediaNoticeDispatch = dispatch
     const parts = MEDIA_KINDS.filter(kind => omitted[kind]).map(kind => {
       const count = omitted[kind]!
-      return `${count} ${kind}${count === 1 ? '' : 's'} (${mediaOmissionReason(kind, this.config.model, this.provider?.providerType)})`
+      return `${count} ${kind}${count === 1 ? '' : 's'} (${mediaOmissionReason(kind, this.config.model, this.provider)})`
     })
     const notice = `[System] Not sent to this model: ${parts.join(', ')}. The originals stay in history.`
     const seq = this.session.appendContextEntry('System', notice)

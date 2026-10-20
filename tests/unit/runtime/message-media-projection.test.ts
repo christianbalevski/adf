@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mediaPlaceholder, projectMessageMedia } from '../../../src/main/runtime/message-media-projection'
-import { effectiveMediaSupport, unsupportedMediaInput } from '../../../src/main/providers/media-capabilities'
+import { ALL_MEDIA, IMAGE_ONLY_MEDIA, effectiveMediaSupport, unsupportedMediaInput } from '../../../src/main/providers/media-capabilities'
 import type { ContentBlock, LLMMessage } from '../../../src/shared/types/provider.types'
 
 const media: ContentBlock[] = [
@@ -10,8 +10,11 @@ const media: ContentBlock[] = [
 ]
 
 type Toggles = Parameters<typeof effectiveMediaSupport>[0]
-const project = (messages: LLMMessage[], toggles: Toggles, type?: Parameters<typeof effectiveMediaSupport>[1]) =>
-  projectMessageMedia(messages, effectiveMediaSupport(toggles, type)).messages
+const project = (messages: LLMMessage[], toggles: Toggles, connector?: Parameters<typeof effectiveMediaSupport>[1]) =>
+  projectMessageMedia(messages, effectiveMediaSupport(toggles, connector)).messages
+/** Connectors as they declare themselves (LLMProvider.media). */
+const anthropicLike = { name: 'Anthropic', media: IMAGE_ONLY_MEDIA }
+const openrouterLike = { name: 'OpenRouter', media: ALL_MEDIA }
 
 describe('request media projection', () => {
   it('keeps history intact across capable → text-only → capable model switches', () => {
@@ -65,20 +68,20 @@ describe('request media projection', () => {
   it('narrows toggles by what the provider carries, never widens them', () => {
     const messages: LLMMessage[] = [{ role: 'user', content: [...media] }]
     const all = { multimodal: { image: true, audio: true, video: true } }
-    const anthropic = projectMessageMedia(messages, effectiveMediaSupport(all, 'anthropic'))
+    const anthropic = projectMessageMedia(messages, effectiveMediaSupport(all, anthropicLike))
     expect(anthropic.omitted).toEqual({ audio: 1, video: 1 })
     expect((anthropic.messages[0].content as ContentBlock[]).map(b => b.type)).toEqual(['image_url', 'text', 'text'])
-    expect(project(messages, all, 'openrouter')).toBe(messages)
-    expect(effectiveMediaSupport({}, 'openrouter')).toEqual({ image: false, audio: false, video: false })
+    expect(project(messages, all, openrouterLike)).toBe(messages)
+    expect(effectiveMediaSupport({}, openrouterLike)).toEqual({ image: false, audio: false, video: false })
   })
 
   it('names why new input is refused', () => {
     const video = [media[2]]
-    expect(unsupportedMediaInput(video, { multimodal: { video: true } }, 'anthropic')).toBe(
+    expect(unsupportedMediaInput(video, { multimodal: { video: true } }, anthropicLike)).toBe(
       'Anthropic does not accept video input. Remove the attachment, or change the model settings.')
-    expect(unsupportedMediaInput([media[0]], {}, 'openai-compatible')).toBe(
+    expect(unsupportedMediaInput([media[0]], {}, { name: 'Local' })).toBe(
       "Image input is off in this agent's model settings. Remove the attachment, or change the model settings.")
-    expect(unsupportedMediaInput([media[0]], { vision: true }, 'anthropic')).toBeNull()
+    expect(unsupportedMediaInput([media[0]], { vision: true }, anthropicLike)).toBeNull()
     expect(unsupportedMediaInput([{ type: 'text', text: 'hi' }], {}, undefined)).toBeNull()
   })
 })
