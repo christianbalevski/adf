@@ -202,11 +202,21 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const name = id.slice('remote:'.length)
     if (!saved()[name]) return fail('not_found', 'That connection is not saved.')
     if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio and adf.${closesWindows(id)}\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+    const fingerprint = saved()[name].fingerprint
     try {
       await forgetConnection(deps.env, name)
       await fresh()
     } catch (err) {
       return fail('save_failed', `Studio could not remove ${name}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    // The remote slot paired with the same computer is this connection too (runtimeSlot hid it): it goes with it,
+    // token included, or it would join the set again and connect with that token.
+    const slot = deps.backend.config().remote
+    if (slot.url && slot.paired?.fingerprint === fingerprint && !Object.values(saved()).some((r) => r.fingerprint === fingerprint)) {
+      const result = await deps.backend.set({ remoteUrl: null })
+      if (!result.ok) return fail(result.code, result.error)
+      log.log(`[Connection] Removed the remote URL ${slot.url} of studio-backend.json too: it was paired with ${name}`)
+      deps.slotChanged?.()
     }
     log.log(`[Connection] Removed ${name}`)
     changed()

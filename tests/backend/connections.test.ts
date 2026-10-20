@@ -352,6 +352,25 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.remove('remote')).toMatchObject({ ok: true })
     expect(changes).toBe(2)
     expect(s.store.config().remote.url).toBeNull()
+    // Its token goes with it: nothing is left to connect with.
+    expect(s.store.config().remote.token).toBeNull()
+  })
+
+  it('Remove of a saved connection also clears its twin in studio-backend.json (same paired fingerprint): it does not come back with its token (A7)', async () => {
+    let changes = 0
+    const studioBackend = { v: 1, mode: 'local', remote: { url: HUB, token: codec.encrypt(TOKEN), allowInsecureHttp: false, paired: { fingerprint: 'ABCD-EFGH', name: 'rawl-hub', deviceId: 'd', label: 'l' } } }
+    const s = setup({ studioBackend, slotChanged: () => { changes++ } })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    expect(await s.connections.remove('remote:rawl-hub')).toMatchObject({ ok: true, notices: ['Removed rawl-hub.'] })
+    expect(s.store.config().remote.url).toBeNull()
+    expect(s.store.config().remote.token).toBeNull()
+    expect(changes).toBe(1)
+    expect(s.connections.view().rows.map((r) => r.id)).toEqual(['local'])
+    // Another computer in the slot stays.
+    const other = setup({ studioBackend: { ...studioBackend, remote: { ...studioBackend.remote, paired: { ...studioBackend.remote.paired, fingerprint: 'OTHR-2345' } } } })
+    await saveConnection(other.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await other.connections.remove('remote:rawl-hub')
+    expect(other.store.config().remote.url).toBe(HUB)
   })
 })
 
