@@ -1518,12 +1518,17 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </select>
           </Field>
           <Field label="Model ID">
-            <ModelIdField
-              providerId={local.model.provider}
-              filePath={carriedFilePath(local.model.provider)}
-              value={local.model.model_id}
-              onChange={(modelId) => save({ ...local, model: { ...local.model, model_id: modelId } })}
-            />
+            {/* Runtime default: new agents get that provider's default model, so there is nothing to pick here. */}
+            {template && !local.model.provider ? (
+              <span className="text-xs text-neutral-400 dark:text-neutral-500">The runtime default's model</span>
+            ) : (
+              <ModelIdField
+                providerId={local.model.provider}
+                filePath={carriedFilePath(local.model.provider)}
+                value={local.model.model_id}
+                onChange={(modelId) => save({ ...local, model: { ...local.model, model_id: modelId } })}
+              />
+            )}
           </Field>
           <Field label="Providers on this agent" hint="Stored on the agent, so they go with the file. A key is only stored when you set one.">
             <AgentProvidersList filePath={filePath} config={local} appProviders={providers} save={save} />
