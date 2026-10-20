@@ -138,7 +138,7 @@ describe('Reconnect and Remove close a runtime\'s agent windows (§3.3, §3.4)',
   it('Reconnect keeps them saved (keep); Remove drops them', async () => {
     const t = manager({ windowsOf: { 'remote:host-1': [7, 8] } })
     t.m.sync({ 'host-1': remote('2026-10-20T12:00:00Z') })
-    await t.m.replace('remote:host-1')
+    await t.m.replace('remote:host-1', t.m.get('remote:host-1')!)
     expect(t.closed).toEqual([[7, true], [8, true]])
     expect(t.created).toEqual(['remote:host-1=host-1', 'remote:host-1=host-1'])
     t.m.sync({})

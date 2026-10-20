@@ -412,16 +412,20 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     log,
   })
 
+  /** `from` is the connection of runtime `runtimeId` in the set (not one that retires or was replaced). The primary's constructor runs before the manager exists. */
+  const current = (runtimeId: RuntimeId, from: DaemonConnection): boolean => !manager ? runtimeId === primaryId : manager.get(runtimeId)?.connection === from
   const shared: RuntimeShared = {
     clientSettings,
     approvals,
     hooks,
     firstWindow,
-    approvalsIn: (runtimeId, snapshot) => {
+    approvalsIn: (runtimeId, snapshot, from) => {
+      if (!current(runtimeId, from)) return
       aggregator.set(runtimeId, snapshot)
       applyMerged()
     },
-    publishApprovals: (runtimeId, snapshot) => {
+    publishApprovals: (runtimeId, snapshot, from) => {
+      if (!current(runtimeId, from)) return
       aggregator.set(runtimeId, snapshot)
       publishApprovals(aggregator.merged())
     },
@@ -477,7 +481,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           ...set.overrides?.(name),
         },
         shared,
-        recreate: () => { void manager.replace(id) },
+        recreate: () => { void manager.replace(id, runtime) },
       })
       // Its state shows in the runtime list (CONNECTION_CHANGED, §4.5) and the Help menu (§6.6).
       let connected = false
