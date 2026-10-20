@@ -1,6 +1,6 @@
 # Multi-runtime Studio
 
-Status: design for step 2 of [#149](https://github.com/christianbalevski/adf/issues/149) (phase 1 of [#148](https://github.com/christianbalevski/adf/issues/148)). Not built. Step 1 is [agent-windows.md](agent-windows.md).
+Status: design for step 2 of [#149](https://github.com/christianbalevski/adf/issues/149) (phase 1 of [#148](https://github.com/christianbalevski/adf/issues/148)). Phase 1 (§10) is built; §13 records how it meets the code. Step 1 is [agent-windows.md](agent-windows.md).
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 
@@ -422,3 +422,21 @@ Owner answers, 2026-10-20:
 3. **Embedded.** Phase 4 deletes the switch-and-restart flow and `mode-switch.ts` (§7.1). The Inside Studio (legacy) backend code stays until a later PR (§7.2).
 4. **Kill** is per runtime only (§6.2).
 5. **Order** is fixed: This computer first, then the remotes in the order added (§3.1).
+
+## 13. Phase 1 notes
+
+Choices made where this design met the code. Each is the simplest option consistent with §12.
+
+1. **Primary runtime.** Until phase 4 migrates `mode: remote`, an untagged call is served by the runtime the saved mode selects: `local` in local mode, the saved remote in remote mode. Its pushes are untagged. In remote mode the runtime set is that remote only.
+2. **Flag.** `ADF_MULTI_RUNTIME=1` puts every connection in `cli-remotes.json` into the runtime set, in local mode only. Without it the set is the primary runtime only. Phase 3 removes the flag.
+3. **Order.** Kept in memory for the launch: the primary first, then remotes in the order first seen, those seen together by `pairedAt`, then name (`runtimeOrder`, runtime-manager.ts). `studio-backend.json` is not written in phase 1; `runtimeOrder` is written from phase 3.
+4. **Scopes.** `REMOTE_PICKER_REQUEST` and `REMOTE_PICKER_RESPOND` are `runtime`: the request is tagged (§4.5) and the answer settles that runtime's picker. The reviewed `local` entries with `reads`, `MESH_FIREWALL_CHECK` and `MESH_FIREWALL_APPLY`, act on This computer's firewall and stay `studio`. Counts: `runtime` 233 invoke and 17 push; `studio` 59 invoke, 11 push and 1 send; `aggregate` 4 push.
+5. **Studio calls outside the registrar.** The `studio` channels that main/index.ts, the Connections, remote-access, recovery, updater, spellcheck and orbital-cache code register go through `studio-ipc.ts`, which refuses a tag. `channel-map.test.ts` checks this. The embedded backend (ipc/index.ts) reads no tag; it never runs with a runtime set (§7.2).
+6. **Preload.** A surface bound to a runtime other than `local` delivers its own tagged pushes and every untagged `studio` or `aggregate` push. It tells them apart with `RUNTIME_PUSH_CHANNELS` (src/shared/constants), which `channel-map.test.ts` keeps equal to the map. An agent window of This computer gets no `runtime=` in its page query, so it loads the URL it loaded before.
+7. **Notices.** `NoticeOwners` keys a notice by `<runtime id>
+<id>`, the plain id for the primary runtime. The `notify` list of `APPROVALS_CHANGED` holds these keys.
+8. **Main window's open runtime.** `mainOpenRuntime` moves to a runtime when a main-window `FILE_OPEN`, `FILE_CREATE` or `FILE_CREATE_QUICK` on it resolves. Closing the open file on the previous runtime first is the renderer's step (`useAdfFile.openFile`, phase 2).
+9. **Agent windows.** Restore runs at the primary runtime's first connect, as before. An entry of another runtime is checked on that runtime: kept and not opened while it is not connected, dropped when it is not in the set. Opening such entries when their runtime first connects is phase 3; the fingerprint move of §7.5 is phase 4.
+10. **A runtime other than the primary.** It keeps no recent files (local-open grants are This computer's, §8.3), and the fleet map's saved burn totals are not handed to it (per-runtime keys are §7.4, phase 2). Its connector stops when it leaves the set. Reconnect on it when failed replaces its `RuntimeConnection` after its agent windows kept their unsaved text; those windows close, and phase 3 reopens them.
+11. **Recovery copies.** A copy of another runtime's agent is kept in a folder whose hash covers the runtime id, with `<folder>.runtime` next to it holding the id.
+12. **Harness.** `multiDaemonBackend()` and the `tests/parity/multi/` scenarios come with phase 3, which §10 gives the multi-daemon parity scenarios. Phase 1 tests two and three runtimes against fake daemons (tests/backend/multi-runtime.test.ts); the existing parity recordings are unchanged.
