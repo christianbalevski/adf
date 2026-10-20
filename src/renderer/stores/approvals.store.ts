@@ -17,6 +17,8 @@ interface NotificationsBridge {
     approved: boolean,
     feedback?: string
   ) => Promise<{ success: boolean; error?: string }>
+  /** The raw tool input of one pending approval (the snapshot carries none). */
+  getApprovalInput?: (filePath: string, approvalId: string) => Promise<unknown>
   onPendingNotificationsChanged?: (callback: (snapshot: NotificationsSnapshot) => void) => () => void
   setBadgeCount?: (count: number) => Promise<void>
 }
