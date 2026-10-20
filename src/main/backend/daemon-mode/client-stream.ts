@@ -255,6 +255,13 @@ export interface DaemonClientSessionOptions {
 }
 
 const isGone = (err: unknown): boolean => err instanceof DaemonError && err.status === 404
+/**
+ * A proxy in front of the daemon (a TLS proxy, `tailscale serve`, the other
+ * computer's gateway) answers 502, 503 or 504 while the daemon behind it is
+ * down or restarting: the daemon is unreachable for now, so the open is
+ * retried, as for a refused connection.
+ */
+const gatewayDown = (err: unknown): boolean => err instanceof DaemonError && (err.status === 502 || err.status === 503 || err.status === 504)
 /** The session itself is gone (`session_not_found`), not a file or document it names. */
 const sessionGone = (err: unknown): boolean => isGone(err) && ((err as DaemonError).body as { code?: unknown } | null)?.code === 'session_not_found'
 
@@ -263,7 +270,8 @@ const sessionGone = (err: unknown): boolean => isGone(err) && ((err as DaemonErr
  *
  * - Opening: GET /version must report `clientApiVersion` ===
  *   SUPPORTED_CLIENT_API_VERSION, else `onFatal` with an "update the daemon"
- *   message (no fallback stream). An unreachable daemon is retried.
+ *   message (no fallback stream). An unreachable daemon is retried, and so is
+ *   a proxy's 502, 503 or 504 for a daemon behind it that is down.
  * - A 404 on reconnect (the session expired, or the daemon restarted) opens
  *   a new session: the focus and the documents are sent again (awaited
  *   `onReattached`), then its stream starts and the bridge resyncs.
@@ -296,7 +304,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
         return created.sessionId
       } catch (err) {
         if (ended) return null
-        if (err instanceof DaemonError && err.unreachable) {
+        if (err instanceof DaemonError && (err.unreachable || gatewayDown(err))) {
           listener?.onConnection({ state: 'reconnecting', error: err.message })
           await new Promise<void>((r) => { retryTimer = setTimeout(r, options.retryMs ?? 2_000); retryTimer.unref?.() })
           continue

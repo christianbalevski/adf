@@ -53,6 +53,21 @@ describe('Studio client session (W2-B)', () => {
     await session.end()
   })
 
+  it('a proxy\'s 502, 503 or 504 while the daemon behind it is down is retried, never fatal; the session opens once it answers', async () => {
+    const daemon = createFakeDaemon(BASE)
+    const gateway = [502, 503, 504]
+    daemon.routes.set('GET /version', () => (gateway.length ? { status: gateway.shift(), raw: 'Bad Gateway' } : { version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION }))
+    daemon.routes.set('POST /client/sessions', () => ({ sessionId: 's-1', epoch: 'e1', expiresInMs: 60_000 }))
+    daemon.routes.set('GET /client/sessions/s-1/events', () => sse())
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1.0.0', exitDaemonWhenClosed: false, log: quiet, retryMs: 5 })
+    const r = recorder()
+    session.start(r.listener)
+    await waitFor(() => daemon.requests.some((q) => q.path === '/client/sessions'), 'the session opened')
+    expect(gateway).toEqual([])
+    expect(r.fatal).toEqual([])
+    await session.end()
+  })
+
   it('opens a session with exitDaemonWhenClosed, sends focus and holds under it, reads frames and turn ends, and a 404 on reconnect opens a new session', async () => {
     const daemon = createFakeDaemon(BASE)
     let created = 0
