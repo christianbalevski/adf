@@ -120,6 +120,14 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.MENU_ACTION_TAKE_PENDING,
 ]
 
+/**
+ * The approvals list's calls (§6.1): a window answers a request of any
+ * runtime, so a tag names the asking runtime even from an agent window of
+ * another one (`local` included). Untagged, an agent window's call is its
+ * own runtime's, as every call.
+ */
+const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
+
 /** Main-window calls that open a file on their runtime: that runtime holds the main window's open agent (§4.3). */
 const MAIN_OPEN_CHANNELS: ReadonlySet<string> = new Set([IPC.FILE_OPEN, IPC.FILE_CREATE, IPC.FILE_CREATE_QUICK])
 
@@ -502,7 +510,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[IPC] ${channelKey(channel)} was called with a runtime tag (${runtimeId}); it is a Studio call and has no runtime`)
       throw new RuntimeRouteError(NO_RUNTIME_SENTENCE)
     }
-    return { ctx: manager.contextFor(event?.sender?.id, runtimeId), args }
+    return { ctx: manager.contextFor(event?.sender?.id, runtimeId, { anyRuntime: ANY_RUNTIME_CHANNELS.has(channel) }), args }
   }
   const isAgentWindow = (event: { sender?: { id?: number } } | undefined): boolean => {
     const id = event?.sender?.id

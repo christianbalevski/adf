@@ -171,7 +171,7 @@ export class RuntimeManager {
    * with `runtimeId` (null: no tag). Throws RuntimeRouteError with the
    * refusal sentence.
    */
-  contextFor(windowId: number | undefined, runtimeId: RuntimeId | null): DaemonModeContext {
+  contextFor(windowId: number | undefined, runtimeId: RuntimeId | null, opts: { anyRuntime?: boolean } = {}): DaemonModeContext {
     if (windowId !== undefined && this.opts.closedWindows.has(windowId)) throw new RuntimeRouteError(CLOSED_WINDOW_SENTENCE)
     const target = runtimeId === null ? this.opts.primary : this.get(runtimeId)
     if (!target) throw new RuntimeRouteError(notConnectedSentence(runtimeId ?? LOCAL_RUNTIME))
@@ -179,6 +179,8 @@ export class RuntimeManager {
     if (bound === undefined) return target.ctx
     const own = this.get(bound)
     if (!own) throw new RuntimeRouteError(CLOSED_WINDOW_SENTENCE)
+    // `anyRuntime` (the approvals list, §6.1): a tag, `local` included, names the runtime that asked, whichever window answers.
+    if (runtimeId !== null && own !== target && opts.anyRuntime) return target.ctx
     if (runtimeId !== null && own !== target) throw new RuntimeRouteError(otherRuntimeSentence(own.name()))
     const ctx = own.windows.ctx(windowId!)
     if (!ctx) throw new RuntimeRouteError(CLOSED_WINDOW_SENTENCE)
