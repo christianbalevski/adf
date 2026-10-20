@@ -1,6 +1,6 @@
 # Agent windows
 
-Status: step 1 of [#149](https://github.com/christianbalevski/adf/issues/149), on branch `feat/agent-windows`. Daemon mode (Local or a remote runtime) only.
+Status: step 1 of [#149](https://github.com/christianbalevski/adf/issues/149), on branch `feat/agent-windows`. Daemon mode (Local or a remote runtime) only. Step 2, several runtimes at once: [multi-runtime.md](multi-runtime.md).
 
 ## 1. Scope
 
@@ -115,6 +115,6 @@ Not offered. The main window's page has no `agentWindows=1` query, so the menu i
 
 ## 10. Known limits
 
-- Several runtimes at once is step 2.
+- Several runtimes at once is step 2: [multi-runtime.md](multi-runtime.md).
 - Settings writes the providers list (and the default), MCP servers and channel adapters whole. Every such save, the provider setup dialog's and the picker's too, is applied onto the lists stored when it starts (`rebaseById`, `rebaseSettingsLists`), and the page then shows what was written with any edit made meanwhile on top, so a change made in another window is kept and a removal made there is not undone. Two saves of one list from two windows within the same moment can still race.
 - Queued messages of agent windows open at quit are not kept, as the main window's are not.
