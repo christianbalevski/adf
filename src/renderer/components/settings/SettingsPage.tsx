@@ -26,7 +26,7 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
-import { DOCS, guideUrl } from '../../../shared/constants/docs-links'
+import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMesh } from '../../hooks/useMesh'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
@@ -340,7 +340,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Owner Identity
-            <InfoHint tip="Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on another Studio to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents." />
+            <InfoHint tip="Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on another computer to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents." />
           </label>
           {status && status.hasMnemonic && (
             status.backupConfirmed ? (
@@ -420,8 +420,8 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
       <SettingsGroup className="p-4">
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Runtime Identity
-            <InfoHint tip="This install. Each Studio has its own runtime keypair — two machines never share a runtime DID, even with the same owner. The owner key signs a delegation certificate proving this runtime acts on your behalf." />
+            Runtime key
+            <InfoHint tip="Identifies this computer to other computers." />
           </label>
           {status && (
             status.runtimeDelegationValid ? (
@@ -543,7 +543,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
           </p>
         ) : (
           <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
-            Enter the 12-word seed phrase from another Studio. Your owner DID will change to the imported
+            Enter the 12-word seed phrase from another computer. Your owner DID will change to the imported
             identity, and local agent files you own will be restamped to it.
           </p>
         )}
@@ -824,7 +824,7 @@ function PackagesTab({
           </span>
         </div>
         <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">
-          Packages installed here are available to every agent on this Studio instance. Pure JS only — no native addons.
+          Packages installed here are available to every agent. Pure JS only — no native addons.
         </p>
         {sandboxPackages.length > 0 && (
           <div className="space-y-1 mb-4">
@@ -924,17 +924,18 @@ function PackagesTab({
                   <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
                     {pkg.size_mb} MB
                   </span>
-                  <Button
-                    onClick={() => {
-                      setSandboxPackages([...sandboxPackages, { name: pkg.name, version: pkg.version }])
-                    }}
-                    variant="ghost"
-                    size="compact"
-                    className="whitespace-nowrap text-[10px]"
-                    title="Make available to all agents"
-                  >
-                    Make Runtime
-                  </Button>
+                  <Tooltip tip="Install for every agent">
+                    <Button
+                      onClick={() => {
+                        setSandboxPackages([...sandboxPackages, { name: pkg.name, version: pkg.version }])
+                      }}
+                      variant="ghost"
+                      size="compact"
+                      className="whitespace-nowrap text-[10px]"
+                    >
+                      Promote
+                    </Button>
+                  </Tooltip>
                 </div>
               </div>
             ))}
@@ -2036,7 +2037,7 @@ export function SettingsPage() {
 
           {activeTab === 'privacy' && <>
           <SettingsGroup title="Privacy" description="Studio sends no telemetry." docs={DOCS.settingsGeneral}>
-            <SettingsRow label="Network traffic" description="docs/NETWORK.md lists every connection Studio and the runtime make." />
+            <SettingsRow label="Network traffic" description={<>Every connection Studio and the runtime make.<DocsLink href={NETWORK_DOCS} className="ml-1.5 !text-[11px]" /></>} />
             {window.adfApi?.platform === 'linux' && (
               <SettingsRow
                 label="Spell-check dictionaries"
@@ -2255,8 +2256,8 @@ export function SettingsPage() {
           {/* Providers tab */}
           {activeTab === 'providers' && <SettingsGroup title="Provider checks">
             <SettingsRow
-              label="Check provider connections"
-              description="Test each configured provider (a GET /models with its key) when Home, the provider list, or an agent review opens. Off = providers are only contacted when you click Test or an agent runs."
+              label={<>Models<InfoHint tip="Sends GET /models with each provider's key. Off = providers are contacted only when you click Test or an agent runs." /></>}
+              description="Test each configured provider when Home, the provider list, or an agent review opens."
             >
               <label className="flex items-center gap-2 cursor-pointer">
                 <input

@@ -341,7 +341,7 @@ daemon while Studio runs (DMN-17).
 | COMP-04 | Test an external container target. | Probe result shown. | [ ] | [ ] | [ ] |
 | COMP-05 | Host access on; agent runs `compute_exec` `hostname`. | Runs. Remote: prints the daemon host's name. | [ ] | [ ] | [ ] |
 | COMP-06 | Computer tab / browser viewer for an isolated agent; start/stop/resume Chromium. | noVNC desktop loads; browser controls work. Remote: the viewer shows "The browser viewer needs the daemon on this computer: the container's noVNC port is on the remote server's loopback." and, when the agent opens a browser, a notification "<agent> opened a browser in its container on the daemon host. Its viewer is on that host's loopback, …". Never a blank viewer. | [ ] | [ ] | [ ] |
-| COMP-07 | Settings → Packages: add, list, remove; agent Make Runtime. | Install progress; listed with size and installer. | [ ] | [ ] | [ ] |
+| COMP-07 | Settings → Packages: add, list, remove; agent Promote. | Install progress; listed with size and installer. | [ ] | [ ] | [ ] |
 | COMP-08 | Container base image, system packages, VM CPUs/memory, max sandbox workers. | Saved; effective after the documented restart. | [ ] | [ ] | [ ] |
 | COMP-09 | Two runtimes on this machine use one container: Studio (E) with agent-6's MCP server in a container, plus a daemon on other settings (`$env:ADF_DAEMON_SETTINGS='<other>\adf-settings.json'; $env:ADF_DAEMON_PORT='7395'; adf daemon start`) running an agent with an MCP server in a container. In L the second runtime is an embedded Studio `--instance=2`. Settings → Compute; Stop `adf-mcp`, Cancel; Rebuild, Cancel. | The `adf-mcp` row says "Also used by daemon pid N" (L: "studio-embedded pid N"). Stop asks "Stop adf-mcp? daemon pid N also uses this container; its agents lose it until it starts again."; Cancel leaves it running. The Rebuild dialog names the other runtime too (W5-D3). Stop the second runtime: the row loses the line. | [ ] | [ ] | N/A |
 
@@ -390,7 +390,7 @@ daemon while Studio runs (DMN-17).
 | SET-01 | Theme light/dark/system. | Applies; system follows OS. | [ ] | [ ] | [ ] |
 | SET-02 | Font family, custom font, UI scale, chat width, agent avatars (orbital/emoji). | Applies immediately; orbitals cached (fast on relaunch). | [ ] | [ ] | [ ] |
 | SET-03 | Notifications: system notifications; menu bar icon. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Toggles toasts and tray icon (toasts alone: HIL-15). | [ ] | [ ] | [ ] |
-| SET-04 | Studio → Updates → Automatic checks; Runtime → Providers → Check provider connections; Runtime → MCP servers → Live catalogs; Studio → Privacy → Spell-check dictionaries (Linux). | Each disables its network calls. | [ ] | [ ] | [ ] |
+| SET-04 | Studio → Updates → Automatic checks; Runtime → Providers → Models; Runtime → MCP servers → Live catalogs; Studio → Privacy → Spell-check dictionaries (Linux). | Each disables its network calls. | [ ] | [ ] | [ ] |
 | SET-05 | Runtime → Files: agents folder (picker), max scan depth. | Saved; composer default folder follows. Remote: daemon-host path. | [ ] | [ ] | [ ] |
 | SET-06 | Prompts: global system prompt, compaction prompt, tool instructions (modified badge, reset), apply updates automatically, dynamic instructions. | Auto-saved; running agents use it next turn. | [ ] | [ ] | [ ] |
 | SET-07 | Settings search. | Finds sections by keyword. | [ ] | [ ] | [ ] |

@@ -157,7 +157,8 @@ port). Only `adf` and Studio on the daemon's machine send it. If the daemon
 cannot restrict that file to your user (Windows `icacls` failure), it runs
 without a proof and those routes answer `403 loopback_only`.
 `adf daemon status` then prints `proof     unavailable: …`, and Studio's
-Settings → Connection says "The daemon runs without its local proof …". Fix the
+Settings → Connection says "Reveal and identity import are refused." and names
+the problem under **Details** ("Local proof: unavailable (…)"). Fix the
 data folder's permissions (or move it into your user profile) and run
 `adf daemon restart`.
 

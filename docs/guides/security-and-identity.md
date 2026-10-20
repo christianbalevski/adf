@@ -29,7 +29,7 @@ The owner identity also derives a separate **X25519 encryption key** (at the sib
 
 ### Runtime DID — this install
 
-Each Studio generates its own Ed25519 runtime keypair — deliberately *not* derived from the seed, so the seed stays cold after setup. Two machines never share a runtime DID, even with the same owner. The owner key signs a **runtime delegation certificate** proving the runtime acts on the owner's behalf; its validity is shown in Settings → Identity. The runtime also holds its own X25519 encryption key for day-to-day envelope unlocking.
+Each computer's runtime generates its own Ed25519 runtime keypair — deliberately *not* derived from the seed, so the seed stays cold after setup. Two machines never share a runtime DID, even with the same owner. The owner key signs a **runtime delegation certificate** proving the runtime acts on the owner's behalf; its validity is shown in Settings → Identity. The runtime also holds its own X25519 encryption key for day-to-day envelope unlocking.
 
 Nothing should ever anchor trust or allow-lists on a runtime DID — it is operational metadata ("which install is operating this file"). The owner attestation is the trust root. Reinstalls mint a new runtime DID; recovery goes through the seed phrase, after which files re-wrap and restamp automatically.
 

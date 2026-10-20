@@ -527,7 +527,7 @@ Grouped by area, then category.
 - **WASM auto-init** — Packages exporting `initWasm()` (e.g. `@resvg/resvg-wasm`) auto-initialized on import.
 - **Shared install directory** — `~/.adf-studio/sandbox-packages/`; multiple agents sharing a package share one install.
 - **SandboxPackagesService** — Flat shared `node_modules`, per-agent import allowlist via `code_execution.packages`, 50MB/200MB/50-pkg limits.
-- **Make Runtime promotion** — Agents can promote their own installed package to instance-wide runtime scope.
+- **Promote** — Agents can promote their own installed package to instance-wide runtime scope.
 
 ### WASM Userland (Shell)
 - **jq-wasm adapter** — Real jq 1.8.2 compiled to WASM; full jq language (def, foreach, label/break, @base64, NDJSON).
@@ -1031,7 +1031,7 @@ Grouped by area, then category.
 
 ### Settings — Identity & Providers
 - **Owner Identity (`did:key`)** — derived from a 12-word seed phrase; backup/confirm flow, seed-not-backed-up badge, import identity to re-stamp local `.adf` ownership.
-- **Runtime Identity** — per-machine DID, delegation-valid badge, agent directory URL for mesh discovery.
+- **Runtime key** — per-machine DID, delegation-valid badge, agent directory URL for mesh discovery.
 - **Add Provider wizard** — tile picker prefills base URL and a default incrementable name.
 
 ### Settings — MCP / Channels / Networking
@@ -1295,7 +1295,7 @@ Grouped by area, then category.
 - **Owner Identity card** — did:key DID, seed-phrase backup flow with confirmation, Import Identity (restamps owned files).
 - **Seed-not-backed-up badge** — nags until backup is confirmed.
 - **Migrated-DID history list** — shows previously used owner DIDs.
-- **Runtime Identity card** — per-machine DID, Delegation-valid badge, agent-directory URL.
+- **Runtime key card** — per-machine DID, Delegation-valid badge, agent-directory URL.
 - **Password/local-lock dialog** — manual password protection for the local install, forgot-password flow.
 - **Owner-mismatch dialog** — prompts to claim a foreign-owned agent file on open.
 - **Agent review dialog/banner** — unreviewed-agent warning strip and full review dialog summarizing config changes before accepting.
@@ -1330,7 +1330,7 @@ Grouped by area, then category.
 ### Settings — Packages / Compute / Containers
 
 - **Sandbox packages manager** — shared runtime packages installed to `~/.adf-studio/sandbox-packages/`.
-- **Make Runtime promotion** — agents can promote their own packages to the shared store.
+- **Promote** — agents can promote their own packages to the shared store.
 - **Container list & detail view** — shared/isolated/external container status and phase.
 - **Container destroy dialog** — confirms rebuild vs remove, warns about interrupted active agents.
 - **Container rebuild/start/stop actions**.

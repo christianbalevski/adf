@@ -81,16 +81,18 @@ export function daemonLine(daemon: BackendDaemonStatus): string {
   if (daemon.pid) parts.push(`pid ${daemon.pid}`)
   if (daemon.startedBy) parts.push(daemon.how === 'spawned' ? 'started by this Studio' : `started by ${daemon.startedBy === 'studio' ? 'Studio' : daemon.startedBy === 'cli' ? 'the ADF CLI' : 'a service'}`)
   // K12 (no OS keychain): the owner's trust in the daemon's key, set with adf identity trust-daemon.
-  if (daemon.trust?.state === 'not-trusted') parts.push('daemon key not trusted (adf identity trust-daemon)')
+  if (daemon.trust?.state === 'not-trusted') parts.push('daemon key not trusted')
   return parts.join(' · ')
 }
 
-/** The daemon row's Details: URL, version, a trusted key. */
+/** The daemon row's Details: URL, version, the key's trust and how to set it, a missing local proof. */
 export function daemonDetails(daemon: BackendDaemonStatus): string[] {
   const lines: string[] = []
   if (daemon.url) lines.push(`URL: ${daemon.url}`)
   if (daemon.version) lines.push(`Version: ${daemon.version}`)
   if (daemon.trust?.state === 'trusted') lines.push('Daemon key: trusted by the owner')
+  if (daemon.trust?.state === 'not-trusted') lines.push('Daemon key: trust it with adf identity trust-daemon')
+  if (daemon.localProof && !daemon.localProof.available) lines.push(`Local proof: unavailable (${daemon.localProof.problem ?? 'unknown reason'})`)
   return lines
 }
 
@@ -486,7 +488,7 @@ export function ConnectionSettings() {
               </> : undefined}
               error={[
                 backend.daemon.localProof && !backend.daemon.localProof.available
-                  ? `The daemon runs without its local proof (${backend.daemon.localProof.problem ?? 'unknown reason'}), so reveal and identity import are refused. Fix the file's permissions, then restart the daemon.`
+                  ? 'Reveal and identity import are refused. Fix the permissions of the daemon\'s data folder, then restart the daemon.'
                   : null,
                 backend.daemon.keychainProblem,
               ].filter(Boolean).join(' ') || undefined}
