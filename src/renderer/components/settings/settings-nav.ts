@@ -39,7 +39,7 @@ export const STUDIO_NAV_ITEMS: SettingsNavItem[] = [
 
 /** Runtime: the connected daemon's settings (backend keys). */
 export const RUNTIME_NAV_ITEMS: SettingsNavItem[] = [
-  { id: 'agents', label: 'Prompts', description: 'Applies to every agent now.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
+  { id: 'agents', label: 'Prompts', description: 'Agents read these when they start.', keywords: 'prompts instructions system prompt tool prompts compaction defaults', docs: DOCS.settingsSystemPrompt },
   { id: 'template', label: 'Agent templates', description: 'What new agents start from.', keywords: 'defaults template templates model tools limits new agent files readme mind sandboxed full access', docs: DOCS.agentTemplates },
   { id: 'providers', label: 'Providers', description: 'Models, keys, and subscriptions', keywords: 'anthropic claude claude code openai chatgpt grok xai openrouter gemini groq ollama lm studio local models api keys provider checks', docs: DOCS.settingsProviders },
   { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },

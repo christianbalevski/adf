@@ -63,3 +63,19 @@ describe('a prompt editor', () => {
     expect(html.match(/>Unsaved</g)).toHaveLength(1)
   })
 })
+
+describe('the Prompts page copy', () => {
+  it('one sentence that matches the composition modes, and no contradicting line', async () => {
+    const { PROMPTS_COMPOSITION } = await import('../../../src/renderer/components/settings/SettingsPage')
+    const { RUNTIME_NAV_ITEMS } = await import('../../../src/renderer/components/settings/settings-nav')
+    expect(PROMPTS_COMPOSITION.split(/[.!]\s/)).toHaveLength(1)
+    expect(PROMPTS_COMPOSITION).toMatch(/before its own instructions/)
+    expect(PROMPTS_COMPOSITION).toMatch(/No base prompt or Bare/)
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
+    expect(page).not.toContain('unless its file provides more specific instructions')
+    expect(page).not.toContain('Applied before per-file instructions')
+    expect(RUNTIME_NAV_ITEMS.find((i) => i.id === 'agents')?.description).toBe('Agents read these when they start.')
+  }, 30_000)
+})

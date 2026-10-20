@@ -51,6 +51,13 @@ export function setupLogTone(log: string): string {
   return log.endsWith('...') ? 'text-[var(--adf-ui-text-muted)]' : 'text-[var(--adf-ui-success)]'
 }
 
+/**
+ * Where the global prompts go (agent-executor.ts buildSystemPrompt): Full puts
+ * the system prompt and the tool instructions before the agent's own
+ * instructions; No base prompt and Bare leave both out.
+ */
+export const PROMPTS_COMPOSITION = 'Every agent gets the system prompt and tool instructions before its own instructions, unless its System prompt setting is No base prompt or Bare.'
+
 /** The Mesh switch's note: what turning it off interrupts. */
 export const MESH_OFF_NOTE = 'Off stops agent messaging, agent websites and APIs, and delivery from peer runtimes.'
 
@@ -2047,7 +2054,7 @@ function SettingsPageBody() {
 
           {/* Agent defaults tab */}
           {activeTab === 'agents' && <>
-          <SettingsGroup title="Prompts" description="Applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
+          <SettingsGroup title="Prompts" description={PROMPTS_COMPOSITION} docs={DOCS.settingsSystemPrompt}>
           <SettingsRow
             label={<>Auto-update<InfoHint tip="When an update ships new default prompts, replace every prompt on this page with them. Off: your prompts stay as they are; Reset all picks up the new defaults." /></>}
           >
@@ -2058,7 +2065,7 @@ function SettingsPageBody() {
               Reset all
             </Button>
           </SettingsRow>
-          <SettingsRow label="System prompt" description="Applied before per-file instructions." stacked separator>
+          <SettingsRow label="System prompt" stacked separator>
             <PromptEditor
               label="System prompt"
               value={systemPrompt}

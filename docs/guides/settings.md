@@ -411,7 +411,7 @@ The system prompt is assembled dynamically from two parts: a **base prompt** and
 
 ### Base Prompt (Global System Prompt)
 
-The base prompt applies to all agents by default, prepended before each agent's individual instructions. It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. Use the base prompt for:
+Every agent gets the base prompt and the tool instructions before its own instructions, unless its System prompt setting is No base prompt or Bare (see the table below). It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. Use the base prompt for:
 
 - Explaining the ADF paradigm to models that may not be familiar with it
 - Setting global behavioral rules
