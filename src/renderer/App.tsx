@@ -16,6 +16,7 @@ import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
 import { useAgentStore } from './stores/agent.store'
+import { reportFailure } from './stores/failure-notices.store'
 import { agentWindowFile, agentWindowsAvailable, isAgentWindow, openAgentWindow } from './utils/window-kind'
 import { openWindowAgent, startQueueHandover, startQueueMirror } from './utils/agent-window'
 import { IS_MAC } from './utils/platform'
@@ -206,7 +207,7 @@ export default function App() {
           break
         }
         case 'add-directory':
-          await addDirectory()
+          await addDirectory().catch((err: unknown) => reportFailure('Folder not tracked', err))
           break
         case 'save':
           saveActiveDocument()

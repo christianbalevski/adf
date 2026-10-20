@@ -6,6 +6,7 @@ import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
 import { MOD_KEY } from '../../utils/platform'
 import { sendFleetOrders } from '../../utils/queued-delivery'
+import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
 
 function MoreItem({
   label,
@@ -255,17 +256,26 @@ If you are later relieved of stewardship, delete that timer and return your stat
     if (targets.length === 0 || busy) return
     setBusy(kind)
     if (kind === 'start') markStarting(targets.map((a) => a.filePath))
+    // A failure does not stop the batch; the failures are shown once at its end.
+    const failures: Array<{ name: string; reason: unknown }> = []
     try {
       for (const agent of targets) {
+        const name = agent.handle || agentNameOf(agent.filePath)
         try {
           if (kind === 'start') {
-            await window.adfApi.startBackgroundAgent(agent.filePath)
+            const result = await window.adfApi.startBackgroundAgent(agent.filePath)
+            if (!result?.success) failures.push({ name, reason: result?.error })
           } else {
             await window.adfApi.stopBackgroundAgent(agent.filePath)
           }
-        } catch { /* per-agent failure shouldn't stop the batch */ }
+        } catch (err) {
+          failures.push({ name, reason: err })
+        }
       }
     } finally {
+      const verb = kind === 'start' ? 'start' : 'stop'
+      if (failures.length === 1) reportFailure(`${failures[0].name} did not ${verb}`, failures[0].reason)
+      else if (failures.length > 1) reportFailure(`${failures.length} agents did not ${verb}: ${failures.map((f) => f.name).join(', ')}`)
       setBusy(null)
       onDone()
     }
