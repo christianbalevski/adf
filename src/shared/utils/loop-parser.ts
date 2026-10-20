@@ -302,7 +302,7 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             type: 'text',
             content: block.text,
             timestamp,
-            metadata: { seq: entry.seq, model: entry.model }
+            metadata: { seq: entry.seq, model: entry.model, ...(block.interrupted ? { interrupted: true } : {}) }
           })
         } else if (block.type === 'tool_use') {
           // Track tool_use_id -> name for result matching
@@ -330,6 +330,7 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             timestamp,
             metadata: {
               seq: entry.seq,
+              ...(block.interrupted ? { interrupted: true } : {}),
               model: entry.model,
               ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
               ...(preserved ? { preservedReasoning: true } : {}),
@@ -560,7 +561,7 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             type: 'text',
             content: block.text,
             timestamp,
-            metadata: { seq: entry.seq, model: entry.model }
+            metadata: { seq: entry.seq, model: entry.model, ...(block.interrupted ? { interrupted: true } : {}) }
           })
         } else if (block.type === 'tool_use' && block.id) {
           const toolEntry: DisplayEntry = {
@@ -586,6 +587,7 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             timestamp,
             metadata: {
               seq: entry.seq,
+              ...(block.interrupted ? { interrupted: true } : {}),
               model: entry.model,
               ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
               ...(preserved ? { preservedReasoning: true } : {}),

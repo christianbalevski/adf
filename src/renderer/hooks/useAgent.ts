@@ -10,7 +10,7 @@ import { parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
 import { findApprovalTargetEntry } from './approval-target'
-import { pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
+import { interruptedBlockIndexes, pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
 import { deliverQueuedMessages } from '../utils/queued-delivery'
 
 /**
@@ -379,11 +379,22 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       }
 
       case 'turn_complete': {
-        const turnPayload = event.payload as { targetState?: string; seq?: number }
+        const turnPayload = event.payload as { targetState?: string; seq?: number; interrupted?: boolean; partial?: boolean }
 
-        // No tool call closed this assistant row, so this is where the
-        // text/thinking blocks it streamed get their adf_loop seq.
-        stampStreamedBlocks(turnPayload.seq, loop)
+        if (turnPayload.interrupted && turnPayload.partial && typeof turnPayload.seq === 'number') {
+          // The interrupted call's streamed text was saved as its own row
+          // (before the interrupt notice): stamp it and label it, as a reload shows it.
+          const partialSeq = turnPayload.seq
+          for (const index of interruptedBlockIndexes(selectLoopSlice(useAgentStore.getState(), loop).log)) {
+            agentStore.updateEntryAt(index, (entry) => {
+              entry.metadata = { ...entry.metadata, seq: partialSeq, interrupted: true }
+            }, loop)
+          }
+        } else {
+          // No tool call closed this assistant row, so this is where the
+          // text/thinking blocks it streamed get their adf_loop seq.
+          stampStreamedBlocks(turnPayload.seq, loop)
+        }
 
         // A turn that produced NOTHING visible — no text, no tool call.
         // Reasoning alone does not count: a model that thinks and then
@@ -402,7 +413,8 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         let tailIdx = currentLog.length - 1
         while (tailIdx >= 0 && currentLog[tailIdx].type === 'thinking') tailIdx--
         const lastEntry = tailIdx >= 0 ? currentLog[tailIdx] : undefined
-        const producedOutput = !lastEntry
+        // An interrupted turn ends on its interrupt notice, not quietly.
+        const producedOutput = !lastEntry || turnPayload.interrupted === true
           || (lastEntry.type !== 'user' && lastEntry.type !== 'trigger' && lastEntry.type !== 'context')
         if (!producedOutput) {
           // Tagged so a subsequent turn's deltas can't merge into this empty

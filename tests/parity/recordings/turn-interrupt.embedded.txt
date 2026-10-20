@@ -714,7 +714,7 @@
           timestamp: "<t>"
           type: "context"
         -
-          content: "[System] Turn interrupted by the owner."
+          content: "[System] Turn interrupted by user."
           id: "loop-3-0"
           metadata:
             category: "System"
@@ -1044,7 +1044,7 @@
 #4:
   payload:
     category: "System"
-    content: "[System] Turn interrupted by the owner."
+    content: "[System] Turn interrupted by user."
     seq: 3
   timestamp: "<t>"
   type: "context_injected"
@@ -1069,7 +1069,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 10645
+      input: 10644
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -1189,7 +1189,7 @@
           label: "Home"
         -
           accelerator: "CmdOrCtrl+Shift+M"
-          label: "Age of Agents"
+          label: "Mesh"
         -
           type: "separator"
         -
@@ -1311,7 +1311,7 @@
           label: "Home"
         -
           accelerator: "CmdOrCtrl+Shift+M"
-          label: "Age of Agents"
+          label: "Mesh"
         -
           type: "separator"
         -
@@ -1646,7 +1646,7 @@
       text: "[<t>] [S1] Long task."
     -
       role: "user"
-      text: "[<t>] [S3] [System] Turn interrupted by the owner."
+      text: "[<t>] [S3] [System] Turn interrupted by user."
     -
       role: "user"
       text: "[<t>] [S4] Are you there?"
@@ -2412,7 +2412,7 @@ hosts/<pid:this-process>.json:
   seq: 2
   tokens: null
 #3:
-  content_json: "[{\"type\":\"text\",\"text\":\"[System] Turn interrupted by the owner.\"}]"
+  content_json: "[{\"type\":\"text\",\"text\":\"[System] Turn interrupted by user.\"}]"
   created_at: "<t>"
   loop: "main"
   model: null

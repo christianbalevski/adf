@@ -679,12 +679,19 @@ const LogEntryRow = memo(({
             </div>
           )
         }
+        // Output the model streamed before the turn was stopped: kept, and labelled.
+        const interrupted = entry.metadata?.interrupted === true
         return (
           <div>
             <MarkdownEntry content={entry.content} />
-            {entry.timestamp > 0 && (
-              <div className="mt-0.5 px-1 text-[10px] text-[var(--ink-faint)]">
-                {formatLoopTime(entry.timestamp)}
+            {(entry.timestamp > 0 || interrupted) && (
+              <div className="mt-0.5 flex items-center gap-1.5 px-1 text-[10px] text-[var(--ink-faint)]">
+                {entry.timestamp > 0 && <span>{formatLoopTime(entry.timestamp)}</span>}
+                {interrupted && (
+                  <Tooltip tip="Cut off when the turn was stopped" className="flex">
+                    <span data-interrupted className="rounded-[var(--radius-sm)] border border-[var(--rule)] px-1 text-[var(--ink-muted)]">Interrupted</span>
+                  </Tooltip>
+                )}
               </div>
             )}
           </div>

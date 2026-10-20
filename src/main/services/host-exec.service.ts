@@ -98,6 +98,8 @@ function whichWindows(binary: string): string | null {
 const liveHostExecs = new Set<ChildProcess>()
 /** Live children by owner (the agent id whose workspace they run in). */
 const ownerOf = new Map<ChildProcess, string>()
+/** Resolves when the call of that child has answered (its promise settled). */
+const answeredOf = new Map<ChildProcess, Promise<void>>()
 
 export interface HostExecOptions {
   /** The agent the shell runs for; killHostExecsFor(owner) reaps it. */
@@ -171,6 +173,8 @@ export function hostExec(
     trackChild(child)
     liveHostExecs.add(child)
     if (owner) ownerOf.set(child, owner)
+    let answered = (): void => {}
+    answeredOf.set(child, new Promise<void>((r) => { answered = r }))
 
     let stdout = ''
     let stderr = ''
@@ -211,6 +215,8 @@ export function hostExec(
       signal?.removeEventListener('abort', onAbort)
       liveHostExecs.delete(child)
       ownerOf.delete(child)
+      answeredOf.delete(child)
+      answered()
       resolve({
         stdout: stdout.trim(),
         stderr: (stderr + extraStderr).trim(),
@@ -278,13 +284,8 @@ export async function killAllHostExecs(budgetMs = 3000): Promise<void> {
 export async function killHostExecsFor(owner: string, budgetMs = 3000): Promise<number> {
   const children = [...liveHostExecs].filter((c) => ownerOf.get(c) === owner)
   if (children.length === 0) return 0
-  const exits = children.map(
-    (c) =>
-      new Promise<void>((resolveExit) => {
-        if (c.pid == null || c.exitCode !== null || c.signalCode !== null) return resolveExit()
-        c.once('exit', () => resolveExit())
-      }),
-  )
+  // Each call has answered (not only exited): its shell is no longer live.
+  const exits = children.map((c) => answeredOf.get(c) ?? Promise.resolve())
   for (const c of children) terminateHostExec(c)
   await Promise.race([
     Promise.allSettled(exits),

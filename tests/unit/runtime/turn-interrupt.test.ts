@@ -26,6 +26,7 @@ import { INTERRUPTED_TOOL_RESULT, TURN_INTERRUPTED_NOTICE } from '../../../src/m
 import { interruptLoopTurn, InterruptRefusedError } from '../../../src/main/runtime/interrupt-turn'
 import { hostExec, killAllHostExecs, liveHostExecCount } from '../../../src/main/services/host-exec.service'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
+import { parseLoopToDisplay } from '../../../src/shared/utils/loop-parser'
 import type { CreateMessageOptions, LLMProvider } from '../../../src/main/providers/provider.interface'
 import type { ContentBlock, LLMMessage, LLMResponse } from '../../../src/shared/types/provider.types'
 import type { Tool, ToolCallContext } from '../../../src/main/tools/tool.interface'
@@ -42,7 +43,7 @@ async function waitFor(cond: () => boolean, ms = 10_000): Promise<void> {
   }
 }
 
-type Step = { kind: 'text'; text: string } | { kind: 'tools'; calls: Array<{ id: string; name: string; input?: Record<string, unknown> }> } | { kind: 'hang' }
+type Step = { kind: 'text'; text: string } | { kind: 'tools'; text?: string; calls: Array<{ id: string; name: string; input?: Record<string, unknown> }> } | { kind: 'hang' }
 
 /**
  * Plays one step per model call. `hang` streams a delta and then waits until
@@ -60,7 +61,8 @@ class ScriptedProvider implements LLMProvider {
     this.requests.push(structuredClone(opts.messages))
     const step = this.steps.shift() ?? { kind: 'text', text: 'done' }
     if (step.kind === 'hang') {
-      opts.onTextDelta?.('partial ')
+      opts.onThinkingDelta?.('Planning the essay.')
+      opts.onTextDelta?.('The essay begins')
       await new Promise<void>((_resolve, reject) => {
         const onAbort = () => { this.abortedCalls++; reject(Object.assign(new Error('Request aborted'), { name: 'AbortError' })) }
         if (opts.signal?.aborted) return onAbort()
@@ -70,7 +72,10 @@ class ScriptedProvider implements LLMProvider {
     if (step.kind === 'tools') {
       return {
         id: `r${this.requests.length}`,
-        content: step.calls.map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input ?? {} }) as ContentBlock),
+        content: [
+          ...(step.text ? [{ type: 'text', text: step.text } as ContentBlock] : []),
+          ...step.calls.map(c => ({ type: 'tool_use', id: c.id, name: c.name, input: c.input ?? {} }) as ContentBlock),
+        ],
         stop_reason: 'tool_use',
         usage: { input_tokens: 100, output_tokens: 10 },
       }
@@ -182,16 +187,35 @@ describe('turn interrupt', () => {
       expect(agent.executor.isTurnActive()).toBe(false)
       const loop = workspace.getLoop()
       expect(rowText(loop.at(-1)!.content_json)).toBe(TURN_INTERRUPTED_NOTICE)
-      // The cut-off reply was never committed as an assistant row.
-      expect(loop.some(r => r.role === 'assistant')).toBe(false)
+      // What the model had streamed is its own output, saved before the notice and marked.
+      const partial = loop.at(-2)!
+      expect(partial.role).toBe('assistant')
+      expect(partial.content_json).toEqual([
+        { type: 'thinking', thinking: 'Planning the essay.', interrupted: true },
+        { type: 'text', text: 'The essay begins', interrupted: true },
+      ])
       expect(events.some(e => e.type === 'context_injected' && (e.payload as { content?: string }).content === TURN_INTERRUPTED_NOTICE)).toBe(true)
-      expect(events.some(e => e.type === 'turn_complete' && (e.payload as { interrupted?: boolean }).interrupted === true)).toBe(true)
+      expect(events.find(e => e.type === 'turn_complete')?.payload).toMatchObject({ interrupted: true, partial: true, seq: partial.seq })
+
+      // A reload shows the partial text with its label (the parser Studio and the TUI use).
+      const shown = parseLoopToDisplay(loop).filter(d => d.type === 'text' || d.type === 'thinking')
+      expect(shown.map(d => [d.type, d.content, d.metadata?.interrupted])).toEqual([
+        ['thinking', 'Planning the essay.', true],
+        ['text', 'The essay begins', true],
+      ])
 
       // Nothing running: a second interrupt is a no-op, and the agent still takes work.
       expect(interruptLoopTurn(agent.executor, agent.loopPool)).toEqual({ interrupted: false, loop: 'main' })
       provider.steps = [{ kind: 'text', text: 'hello again' }]
       await agent.executor.executeTurn(chat('are you there?'))
       expect(rowText(workspace.getLoop().at(-1)!.content_json)).toBe('hello again')
+      // The next call sees the partial text as its own prior output, roles alternating.
+      const next = provider.requests.at(-1)!
+      const at = next.findIndex(m => m.role === 'assistant' && rowText(m.content) === 'The essay begins')
+      expect(at).toBeGreaterThan(0)
+      expect(next[at - 1].role).toBe('user')
+      expect(next[at + 1].role).toBe('user')
+      expect(rowText(next[at + 1].content)).toBe(TURN_INTERRUPTED_NOTICE)
     } finally {
       await agent.disposeAsync()
     }
@@ -200,7 +224,7 @@ describe('turn interrupt', () => {
   it('mid-tool: the host shell is killed and every call of the batch gets a result', async () => {
     const { agent, provider, workspace, owner, shell, events, counted } = await buildAgent('shell')
     try {
-      provider.steps = [{ kind: 'tools', calls: [{ id: 'tu_shell', name: 'test_shell' }, { id: 'tu_count', name: 'test_count' }] }]
+      provider.steps = [{ kind: 'tools', text: 'Starting the build now.', calls: [{ id: 'tu_shell', name: 'test_shell' }, { id: 'tu_count', name: 'test_count' }] }]
       const turn = agent.executor.executeTurn(chat('run the build'))
       await waitFor(() => liveHostExecCount(owner) === 1)
 
@@ -218,6 +242,10 @@ describe('turn interrupt', () => {
       expect(counted()).toBe(0)
 
       const loop = workspace.getLoop()
+      // The text the model wrote before its tool calls stays, as a finished row (no marker).
+      const assistantRows = loop.filter(r => r.role === 'assistant')
+      expect(assistantRows).toHaveLength(1)
+      expect((assistantRows[0].content_json as ContentBlock[])[0]).toEqual({ type: 'text', text: 'Starting the build now.' })
       const results = loop.flatMap(r => (Array.isArray(r.content_json) ? r.content_json as ContentBlock[] : []).filter(b => b.type === 'tool_result'))
       expect(results.map(r => [r.tool_use_id, r.content])).toEqual([
         ['tu_shell', INTERRUPTED_TOOL_RESULT],

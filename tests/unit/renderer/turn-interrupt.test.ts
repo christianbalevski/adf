@@ -10,6 +10,11 @@ import { escStopsTurn } from '../../../src/renderer/utils/keyboard'
 import { BUILTIN_COMMANDS } from '../../../src/renderer/utils/slash-commands'
 import { SHORTCUT_SECTIONS } from '../../../src/shared/constants/keyboard-shortcuts'
 import { IPC } from '../../../src/shared/constants/ipc-channels'
+import { parseLoopToDisplay, parseLoopWithToolPairs } from '../../../src/shared/utils/loop-parser'
+import { interruptedBlockIndexes } from '../../../src/renderer/hooks/live-seq'
+import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
+import { useAgentStore } from '../../../src/renderer/stores/agent.store'
+import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 
 const src = (rel: string) => readFileSync(join(__dirname, '../../../src', rel), 'utf-8')
 
@@ -108,5 +113,42 @@ describe('the title bar\'s Off', () => {
   it('unloads at once: no grace in which the turn could start a tool', () => {
     expect(src('main/ipc/index.ts')).toContain("assembled.disposeAsync({ mode: 'immediate' })")
     expect(src('main/runtime/runtime-service.ts')).toContain("await this.unloadAgent(agentId, { mode: 'immediate' })")
+  })
+})
+
+describe('interrupted output', () => {
+  const agentLoop = src('renderer/components/agent/AgentLoop.tsx')
+
+  it('a reload shows the partial text with the one-word label', () => {
+    const rows = [
+      { seq: 1, role: 'user' as const, content_json: [{ type: 'text' as const, text: 'Write an essay.' }], created_at: 1 },
+      { seq: 2, role: 'assistant' as const, content_json: [{ type: 'text' as const, text: 'The essay begins', interrupted: true }], created_at: 2 },
+      { seq: 3, role: 'user' as const, content_json: [{ type: 'text' as const, text: '[System] Turn interrupted by user.' }], created_at: 3 },
+    ]
+    const shown = parseLoopToDisplay(rows as never)
+    expect(shown.find((d) => d.type === 'text')?.metadata).toMatchObject({ seq: 2, interrupted: true })
+    expect(parseLoopWithToolPairs(rows as never).find((d) => d.type === 'text')?.metadata?.interrupted).toBe(true)
+    expect(agentLoop).toContain("const interrupted = entry.metadata?.interrupted === true")
+    expect(agentLoop).toMatch(/<Tooltip tip="Cut off when the turn was stopped"[^>]*>\s*<span[^>]*>Interrupted<\/span>/)
+  })
+
+  it('live: the streamed text before the interrupt notice gets the row\'s seq and the label, and no quiet marker', () => {
+    const g = globalThis as { window?: unknown }
+    const before = g.window
+    g.window = { adfApi: new Proxy({}, { get: () => async () => ({}) }) }
+    try {
+      useAgentStore.getState().reset()
+      const store = useAgentStore.getState()
+      store.addLogEntry({ id: 'u', type: 'user', content: 'Write an essay.', timestamp: 1, metadata: { seq: 1 } })
+      store.addLogEntry({ id: 't', type: 'text', content: 'The essay begins', timestamp: 2 })
+      store.addLogEntry({ id: 'n', type: 'context', content: '[System] Turn interrupted by user.', timestamp: 3, metadata: { seq: 3, category: 'System' } })
+      createAgentEventHandler()({ type: 'turn_complete', payload: { content: [], interrupted: true, partial: true, seq: 2 }, timestamp: 4 } as AgentExecutionEvent)
+      const log = useAgentStore.getState().log
+      expect(log.find((e) => e.id === 't')?.metadata).toMatchObject({ seq: 2, interrupted: true })
+      expect(log.some((e) => e.metadata?.quietTurn)).toBe(false)
+      expect(interruptedBlockIndexes(log)).toEqual([])
+    } finally {
+      g.window = before
+    }
   })
 })

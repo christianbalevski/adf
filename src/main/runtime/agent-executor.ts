@@ -138,7 +138,7 @@ const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
 /** The tool_result of a call the owner's interrupt (or a restarting chat) cut off or never ran. */
 export const INTERRUPTED_TOOL_RESULT = '[Tool execution cancelled — user interrupted the turn]'
 /** The loop row an owner interrupt (Stop, Esc, POST /interrupt) leaves. */
-export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by the owner.'
+export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by user.'
 
 const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
@@ -641,6 +641,9 @@ export class AgentExecutor extends EventEmitter {
   // Why the owner ended the turn: 'interrupt' (Stop, Esc, POST /interrupt)
   // writes "Turn interrupted"; a fleet state set names the state it went to.
   private _ownerTransitionReason: 'interrupt' | null = null
+  // What the in-flight model call has streamed so far (text, thinking). An
+  // interrupt saves it to the loop as the model's own output; null between calls.
+  private inFlightOutput: { text: string; thinking: string } | null = null
   private _skipNextTriggerEvent = false
   private _isMessageTriggered = false
   // True while an image-content provider error is being recovered. Suppresses
@@ -993,9 +996,9 @@ export class AgentExecutor extends EventEmitter {
     this._ownerTransitionReason = opts?.reason ?? null
     // Mirror the chat-interrupt teardown (executeTurnImpl's chat branch),
     // minus _interruptRestart. Queued chats are kept: the turn's finally
-    // replays them after the transition.
-    if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
-    this.deltaQueue.length = 0
+    // replays them after the transition. Text already streamed is shown in
+    // full (flushed, not dropped): the turn saves exactly that to the loop.
+    this.flushDeltaBuffer()
     // An interrupt ends the turn's own waits; an approval raised beside the
     // turn (a lambda's) is not the turn's and stays open.
     if (opts?.reason === 'interrupt') this.drainPendingHilTasks({ keepBesideTurn: true, endedBy: 'interrupt' })
@@ -2678,6 +2681,9 @@ export class AgentExecutor extends EventEmitter {
           requestMediaLimit(this.config.context),
         )
         if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
+        const callSignal = this.abortController?.signal
+        const inFlight = { text: '', thinking: '' }
+        this.inFlightOutput = inFlight
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
           messages: files.messages,
@@ -2687,19 +2693,25 @@ export class AgentExecutor extends EventEmitter {
           maxTokens: request.options.maxTokens,
           temperature: request.options.temperature,
           topP: request.options.topP,
-          signal: this.abortController?.signal,
+          signal: callSignal,
           thinkingBudget: request.options.thinkingBudget,
           reasoning: request.options.reasoning,
           providerParams: request.options.providerParams,
           onTextDelta: (delta: string) => {
+            // After the abort nothing more is the model's output for this call.
+            if (callSignal?.aborted) return
+            inFlight.text += delta
             this.deltaQueue.push({ type: 'text', text: delta })
             this.scheduleDeltaFlush()
           },
           onThinkingDelta: (delta: string) => {
+            if (callSignal?.aborted) return
+            inFlight.thinking += delta
             this.deltaQueue.push({ type: 'thinking', text: delta })
             this.scheduleDeltaFlush()
           }
         }, turnId ? { turn_id: turnId } : undefined)
+        this.inFlightOutput = null
 
         // A successful provider call ends the current outage: the recovery
         // counter tracks CONSECUTIVE failures, so it resets here rather than
@@ -3606,6 +3618,13 @@ export class AgentExecutor extends EventEmitter {
         }
       }
     } catch (error) {
+      // A model call cut off by an interrupt, an owner state change or a
+      // stop: what it already streamed is the model's output and is kept.
+      const cutOff = this.inFlightOutput
+      this.inFlightOutput = null
+      if (cutOff && (this._interruptRestart || this._ownerStateTransitionRequested || this.getState() === 'stopped')) {
+        this.interruptedOutputSeq = this.saveInterruptedOutput(cutOff)
+      }
       // Intentional abort from user interrupt — not a real error
       if (this._interruptRestart) {
         // Fall through to finally block which handles the restart
@@ -3887,9 +3906,11 @@ export class AgentExecutor extends EventEmitter {
         this._ownerStateTransitionRequested = false
         this._ownerTransitionReason = null
         this._lastTargetState = null
+        const restartPartialSeq = this.interruptedOutputSeq
+        this.interruptedOutputSeq = undefined
         this.emitEvent({
           type: 'turn_complete',
-          payload: { content: [], interrupted: true },
+          payload: { content: [], interrupted: true, ...(restartPartialSeq !== undefined ? { partial: true, seq: restartPartialSeq } : {}) },
           timestamp: Date.now()
         })
         // The cut-short request is in history and the replay answers it too:
@@ -3910,13 +3931,16 @@ export class AgentExecutor extends EventEmitter {
         this._ownerStateTransitionRequested = false
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
+        const partialSeq = this.interruptedOutputSeq
+        this.interruptedOutputSeq = undefined
         this.addRuntimeNotice(this._ownerTransitionReason === 'interrupt'
           ? TURN_INTERRUPTED_NOTICE
           : `[System] Turn ended by owner; state set to ${this._lastTargetState ?? 'idle'}.`)
         this._ownerTransitionReason = null
         this.emitEvent({
           type: 'turn_complete',
-          payload: { content: [], interrupted: true },
+          // partial: the streamed text above was saved (row `seq`) as interrupted output.
+          payload: { content: [], interrupted: true, ...(partialSeq !== undefined ? { partial: true, seq: partialSeq } : {}) },
           timestamp: Date.now()
         })
       }
@@ -5198,6 +5222,34 @@ export class AgentExecutor extends EventEmitter {
     } catch { /* overhead measurement must never break the loop */ }
     return (this.systemPromptCache?.promptTokens ?? 0) +
       (this.toolSnapshotCache?.toolsTotalTokens ?? 0)
+  }
+
+  /** adf_loop seq of the interrupted output the current turn saved, until its turn_complete names it. */
+  private interruptedOutputSeq: number | undefined = undefined
+
+  /**
+   * Save what a cut-off model call streamed as the model's own assistant
+   * message, each block marked `interrupted`, so the loop shows it after a
+   * reload and the next call sees what it already said. It never holds a
+   * tool_use (those exist only in a finished response), so the pairing is
+   * untouched; the runtime notice that follows keeps the roles alternating.
+   * A partial thinking block has no provider signature: providers drop it
+   * when they send history, as they drop any unsigned thinking. Returns the
+   * row's seq, or undefined when nothing was streamed.
+   */
+  private saveInterruptedOutput(partial: { text: string; thinking: string }): number | undefined {
+    const content: ContentBlock[] = []
+    if (partial.thinking.trim()) content.push({ type: 'thinking', thinking: partial.thinking, interrupted: true })
+    if (partial.text.trim()) content.push({ type: 'text', text: partial.text, interrupted: true })
+    if (content.length === 0) return undefined
+    try {
+      const message: LLMMessage = { role: 'assistant', content }
+      this.session.addMessage(message, { model: this.provider?.modelId ?? this.config.model.model_id })
+      return message.seq
+    } catch {
+      // A closing workspace (stop) must not turn the save into a turn error.
+      return undefined
+    }
   }
 
   /**

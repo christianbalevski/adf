@@ -105,7 +105,7 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
         items.push({ ...base, kind: 'error', text: entry.content })
         break
       case 'text':
-        items.push({ ...base, kind: 'assistant', text: entry.content, streaming: false, model: typeof meta.model === 'string' ? meta.model : undefined })
+        items.push({ ...base, kind: 'assistant', text: entry.content, streaming: false, model: typeof meta.model === 'string' ? meta.model : undefined, ...(meta.interrupted === true ? { interrupted: true } : {}) })
         break
       case 'thinking':
         items.push({ ...base, kind: 'thinking', text: entry.content, streaming: false })
@@ -247,6 +247,11 @@ export function finalizeStreaming(items: TranscriptItem[]): TranscriptItem[] {
   return changed ? next : items
 }
 
+/** The streaming assistant item, cut off by an interrupt. */
+function markInterrupted(items: TranscriptItem[]): TranscriptItem[] {
+  return items.map(item => (item.kind === 'assistant' && item.streaming ? { ...item, interrupted: true } : item))
+}
+
 function cap(items: TranscriptItem[]): TranscriptItem[] {
   return items.length > MAX_TRANSCRIPT_ITEMS ? items.slice(items.length - MAX_TRANSCRIPT_ITEMS) : items
 }
@@ -374,7 +379,8 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
       return next
     }
     case 'turn.completed': {
-      const closed = finalizeStreaming(items)
+      // An interrupted call's streamed text was saved to the loop: it reads as on a reload.
+      const closed = finalizeStreaming(p.interrupted === true && p.partial === true ? markInterrupted(items) : items)
       const content = str(p.content)?.trim()
       if (!content) return closed
       let lastUser = -1

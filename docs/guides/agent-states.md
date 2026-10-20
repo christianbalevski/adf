@@ -182,7 +182,7 @@ To end the running turn and keep the agent on, interrupt it:
 
 The interrupt applies to one loop (main by default). The runtime:
 
-- cancels the in-flight model request;
+- cancels the in-flight model request. Text (and thinking) the model had already streamed is kept: it is saved to the loop as the model's own reply, labelled **Interrupted**, and the next model call sees it as what it already said;
 - signals the running tools to stop: host `compute_exec` shells are killed with their process tree, and MCP requests are cancelled. A tool that cannot stop finishes in the background; the turn does not wait for it;
 - ends the turn's pending approval, question or suspend with no decision;
 - writes an interrupted result for every tool call of the turn that has no result, so the loop never holds a tool call without one;

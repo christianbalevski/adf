@@ -60,6 +60,12 @@ export interface ContentBlock {
    * tool-call turn. See [[project_openrouter_first_class]].
    */
   reasoning_details?: unknown[]
+  /**
+   * Text or thinking the model streamed before the owner interrupted the
+   * call (or it stopped): its own output, cut short. Shown with an
+   * "Interrupted" label; providers send the text like any other.
+   */
+  interrupted?: boolean
   // Multimodal: image data as data URI (OpenAI-compatible format)
   image_url?: { url: string }
   // Multimodal: audio data with format hint (OpenAI-compatible format)

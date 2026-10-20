@@ -69,6 +69,8 @@ export interface AssistantItem extends ItemBase {
   text: string
   streaming: boolean
   model?: string
+  /** Streamed before the turn was interrupted: kept in the loop, cut short. */
+  interrupted?: boolean
 }
 
 export interface ThinkingItem extends ItemBase {
