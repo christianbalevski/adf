@@ -1,4 +1,6 @@
-import type { AgentLogEntry } from '../stores/agent.store'
+import { useAgentStore, selectLoopSlice, type AgentLogEntry } from '../stores/agent.store'
+import { useDocumentStore } from '../stores/document.store'
+import type { SendRoute } from './composer-send'
 
 /**
  * What the chat says about a message sent straight to an idle loop, judged
@@ -24,10 +26,35 @@ export function restoreDraft(current: string, text: string): string {
 }
 
 /**
- * Whether the composer's send goes to the loop's queue rather than straight
- * to the agent: the loop is mid-turn, or older messages still wait. Mirrors
- * `queueOwnerMessage`; a queued message is never lost, it shows in the queue.
+ * Send from a composer and give the message back to it (`restore`) when it
+ * was not sent and nothing else holds it. Each unsent message has exactly one
+ * home, so the composer is refilled only when the queue does not have it:
+ * - `queued` (queued, or a start that did not happen, marked "Not sent" with
+ *   the reason): the queue entry is its home; the composer is left alone.
+ * - `direct`: the chat decides. A "Not sent" row (a refused send) refills
+ *   the composer; anything else from the agent means it was delivered. A
+ *   refusal after the owner switched agents goes into that agent's queue
+ *   (sendOwnerMessage), so it is not refilled here either.
+ * - a thrown send: nothing took it, so the composer gets it back.
  */
-export function sendIsQueued(filePath: string | null, loopState: string, queueLength: number): boolean {
-  return filePath !== null && (loopState === 'active' || queueLength > 0)
+export async function sendWithRecovery(filePath: string | null, loop: string, send: () => Promise<SendRoute>, restore: () => void): Promise<void> {
+  const before = new Set(selectLoopSlice(useAgentStore.getState(), loop).log.map((entry) => entry.id))
+  let route: SendRoute
+  try {
+    route = await send()
+  } catch (error) {
+    console.warn('[chat] Send failed:', error)
+    restore()
+    return
+  }
+  if (route === 'queued') return
+  const settle = (): boolean => {
+    if (useDocumentStore.getState().filePath !== filePath) return true
+    const outcome = directSendOutcome(selectLoopSlice(useAgentStore.getState(), loop).log, before)
+    if (outcome === 'pending') return false
+    if (outcome === 'failed') restore()
+    return true
+  }
+  if (settle()) return
+  const unsubscribe = useAgentStore.subscribe(() => { if (settle()) unsubscribe() })
 }

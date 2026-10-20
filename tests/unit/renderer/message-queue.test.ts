@@ -15,6 +15,7 @@ import type { ContentBlock } from '../../../src/shared/types/provider.types'
 import { queueOwnerMessage, sendOwnerMessage, sendProblem, sendFleetOrders, DAEMON_EXITED } from '../../../src/renderer/utils/queued-delivery'
 import { startForegroundAgent } from '../../../src/renderer/utils/start-agent'
 import { sendComposerMessage } from '../../../src/renderer/utils/composer-send'
+import { sendWithRecovery } from '../../../src/renderer/utils/send-recovery'
 import { createOpenFileHarness, type OpenFileHarness } from './open-file-harness'
 
 /**
@@ -727,5 +728,177 @@ describe('fleet map orders (a steward appointment)', () => {
     ])
     expect(main.invokeAgent).toHaveBeenCalledWith('You are the steward.', AGENT_1)
     warn.mockRestore()
+  })
+})
+
+/**
+ * An unsent message lives in exactly one place: the loop's queue, marked "Not
+ * sent" with the reason, or the composer it was typed into (`restore`). Never
+ * both, never neither. Both composers (the agent loop's and the Home
+ * composer's first message) send through sendWithRecovery(sendComposerMessage).
+ */
+describe('an unsent message lives in one place', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+  const adfApi = () => (window as unknown as { adfApi: Record<string, unknown> }).adfApi
+  const submit = async (text: string, restore: () => void) => {
+    const store = useAgentStore.getState()
+    const target = { filePath: AGENT_1, loop: 'main', loopState: selectLoopSlice(store, 'main').state, agentState: store.state }
+    await sendWithRecovery(AGENT_1, 'main', () => sendComposerMessage(target, text, [{ type: 'text', text }], []), restore)
+    await settle()
+  }
+  const userBubble = (text: string) => useAgentStore.getState().log.some((e) => e.type === 'user' && e.content === text)
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'info').mockImplementation(() => {})
+  })
+
+  describe('agent off, nothing queued: the queue holds it', () => {
+    beforeEach(async () => {
+      main.agents.delete(AGENT_1)
+      await main.openFile(AGENT_1)
+      expect(useAgentStore.getState().state).toBe('off')
+    })
+
+    it('a refused start: queued "Not sent" with the reason, no bubble, composer not refilled', async () => {
+      adfApi().startAgent = async () => ({ success: false, error: 'No model configured' })
+      const restore = vi.fn()
+      await submit('hello', restore)
+      expect(queued(AGENT_1)).toMatchObject([{ text: 'hello', error: 'No model configured' }])
+      expect(restore).not.toHaveBeenCalled()
+      expect(userBubble('hello')).toBe(false)
+      expect(main.invokeAgent).not.toHaveBeenCalled()
+    })
+
+    it('a cancelled provider sheet: queued with the reason, composer not refilled', async () => {
+      adfApi().startAgent = async () => ({ success: false, code: 'provider_missing', error: 'No provider is connected' })
+      const restore = vi.fn()
+      const sent = submit('hello', restore)
+      await vi.waitFor(() => expect(useAppStore.getState().providerSetupRequest).not.toBeNull())
+      useAppStore.getState().resolveProviderSetup(null)
+      await sent
+      expect(queued(AGENT_1)).toMatchObject([{ text: 'hello', error: 'No provider is connected' }])
+      expect(restore).not.toHaveBeenCalled()
+    })
+
+    it('review pending: queued with the reason, composer not refilled', async () => {
+      adfApi().checkAgentReview = async () => ({ needsReview: true, configSummary: {} })
+      const restore = vi.fn()
+      await submit('hello', restore)
+      expect(queued(AGENT_1)).toMatchObject([{ text: 'hello', error: 'Agent needs review' }])
+      expect(restore).not.toHaveBeenCalled()
+    })
+
+    it("the Home composer's first message to a new agent: the same one place", async () => {
+      // AgentLoop sends a pending first message through the same sendWithRecovery path.
+      adfApi().startAgent = async () => ({ success: false, error: 'No model configured' })
+      const restore = vi.fn()
+      await submit('first words', restore)
+      expect(queued(AGENT_1).map((m) => m.text)).toEqual(['first words'])
+      expect(restore).not.toHaveBeenCalled()
+    })
+
+    it('a start that succeeds sends it once: nothing left queued or refilled', async () => {
+      const restore = vi.fn()
+      await submit('hello', restore)
+      expect(main.invokeAgent).toHaveBeenCalledTimes(1)
+      expect(queued(AGENT_1)).toEqual([])
+      expect(restore).not.toHaveBeenCalled()
+    })
+  })
+
+  it('agent off with older messages queued, start refused: every queued message shows "Not sent" with the reason', async () => {
+    main.agents.delete(AGENT_1)
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'older')
+    adfApi().checkAgentReview = async () => ({ needsReview: true, configSummary: {} })
+    const restore = vi.fn()
+    await submit('newer', restore)
+    expect(queued(AGENT_1).map((m) => [m.text, m.error])).toEqual([['older', 'Agent needs review'], ['newer', 'Agent needs review']])
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  it('a queued delivery main refuses goes back to the queue only', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'older')
+    main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+    const restore = vi.fn()
+    await submit('newer', restore)
+    expect(queued(AGENT_1).map((m) => [m.text, m.error])).toEqual([['older', 'Agent not running'], ['newer', 'Agent not running']])
+    expect(restore).not.toHaveBeenCalled()
+    expect(userBubble('older\n\nnewer')).toBe(false)
+  })
+
+  it('a queued delivery whose call throws before it answers is kept in the queue, not lost', async () => {
+    main.agents.set(AGENT_1, { state: 'idle' })
+    await main.openFile(AGENT_1)
+    queue(AGENT_1, 'older')
+    main.invokeAgent.mockImplementationOnce(() => { throw new Error('IPC closed') })
+    const restore = vi.fn()
+    await submit('newer', restore)
+    expect(queued(AGENT_1).map((m) => [m.text, m.error])).toEqual([['older', 'IPC closed'], ['newer', 'IPC closed']])
+    expect(restore).not.toHaveBeenCalled()
+  })
+
+  describe('agent idle, nothing queued: the composer gets it back', () => {
+    beforeEach(async () => {
+      main.agents.set(AGENT_1, { state: 'idle' })
+      await main.openFile(AGENT_1)
+    })
+
+    it('a refused send: a "Not sent" row with the reason, composer refilled once, nothing queued', async () => {
+      main.invokeAgent.mockResolvedValueOnce({ success: false, error: 'Agent not running' })
+      const restore = vi.fn()
+      await submit('hello', restore)
+      expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'Not sent: Agent not running' })
+      expect(restore).toHaveBeenCalledTimes(1)
+      expect(queued(AGENT_1)).toEqual([])
+    })
+
+    it('an invoke that throws before it answers: "Not sent" with the reason, composer refilled once', async () => {
+      main.invokeAgent.mockImplementationOnce(() => { throw new Error('IPC closed') })
+      const restore = vi.fn()
+      await submit('hello', restore)
+      expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'Not sent: IPC closed' })
+      expect(restore).toHaveBeenCalledTimes(1)
+      expect(queued(AGENT_1)).toEqual([])
+    })
+
+    it('no agent runtime: "Not sent" with the reason, composer refilled', async () => {
+      ;(window as unknown as { adfApi?: unknown }).adfApi = undefined
+      const restore = vi.fn()
+      await submit('hello', restore)
+      expect(useAgentStore.getState().log.at(-1)).toMatchObject({ type: 'error', content: 'Not sent: Studio is not connected to the agent runtime' })
+      expect(restore).toHaveBeenCalledTimes(1)
+    })
+
+    it("a refusal after the owner switched agents: its own agent's queue holds it, the composer is not refilled", async () => {
+      let answer: (value: unknown) => void = () => {}
+      main.invokeAgent.mockReturnValueOnce(new Promise((resolve) => { answer = resolve }))
+      const restore = vi.fn()
+      await submit('hello', restore)
+      await main.openFile(AGENT_2)
+      answer({ success: false, error: 'Agent not running' })
+      await settle()
+      expect(queued(AGENT_1)).toMatchObject([{ text: 'hello', error: 'Agent not running' }])
+      expect(restore).not.toHaveBeenCalled()
+    })
+
+    it('a delivered send is never refilled, not even by a later "Not sent" row', async () => {
+      const restore = vi.fn()
+      await submit('hello', restore)
+      useAgentStore.getState().addLogEntry({ id: 'reply-1', type: 'text', content: 'hi', timestamp: 1 })
+      useAgentStore.getState().addLogEntry({ id: 'later-1', type: 'error', content: 'Not sent: something else', timestamp: 2 })
+      expect(restore).not.toHaveBeenCalled()
+    })
+  })
+
+  it('a thrown send: nothing took it, so the composer gets it back', async () => {
+    await main.openFile(AGENT_1)
+    const restore = vi.fn()
+    await sendWithRecovery(AGENT_1, 'main', async () => { throw new Error('boom') }, restore)
+    expect(restore).toHaveBeenCalledTimes(1)
+    expect(queued(AGENT_1)).toEqual([])
   })
 })
