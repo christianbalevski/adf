@@ -9,9 +9,26 @@ import {
   type MeshGraphState
 } from '../stores/mesh-graph.store'
 import { useMeshStore } from '../stores/mesh.store'
-import { useDocumentStore } from '../stores/document.store'
 import { MAIN_LOOP } from '../stores/agent.store'
+import { useRuntimesStore } from '../stores/runtimes.store'
+import { apiFor, openAgentKey, openApi, useOpenRuntime } from '../utils/runtime-api'
+import { agentKey, isRemoteAgentKey, parseAgentKey } from '../../shared/types/agent-ref'
 import type { MeshEvent, AgentExecutionEvent, RendererBackgroundAgentEvent, AgentState, ResponseMetadataPayload } from '../../shared/types/ipc.types'
+
+/** A remote runtime's mesh event with its paths as map keys (multi-runtime.md §6.4). */
+function keyedMeshEvent(runtimeId: string, event: MeshEvent): MeshEvent {
+  if (event.type !== 'message_routed') return event
+  const payload = event.payload as { filePath?: string; toFilePaths?: string[] }
+  const key = (fp: string) => (fp.startsWith('station:') ? fp : agentKey({ runtimeId, filePath: fp }))
+  return {
+    ...event,
+    payload: {
+      ...event.payload,
+      ...(payload.filePath ? { filePath: key(payload.filePath) } : {}),
+      ...(payload.toFilePaths ? { toFilePaths: payload.toFilePaths.map(key) } : {}),
+    },
+  } as MeshEvent
+}
 
 let activityIdCounter = 0
 function nextId(): string {
@@ -136,6 +153,9 @@ export function useMeshGraph() {
   const store = useMeshGraphStore
   const meshStore = useMeshStore
   const cleanupRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // The open agent's runtime, and the other runtimes of the set (a JSON list, empty with This computer only).
+  const openRuntime = useOpenRuntime()
+  const remoteIds = useRuntimesStore((s) => (s.runtimes.length > 1 ? JSON.stringify(s.runtimes.filter((r) => r.id !== 'local').map((r) => r.id)) : '[]'))
 
   useEffect(() => {
     const unsubscribers: (() => void)[] = []
@@ -395,7 +415,18 @@ export function useMeshGraph() {
       }
 
       if (Object.keys(graphChanges).length > 0) store.setState(graphChanges)
-      if (Object.keys(stateFlips).length > 0) meshStore.getState().updateAgentStates(stateFlips)
+      if (Object.keys(stateFlips).length > 0) {
+        // Keys of another runtime flip that runtime's slice, by its own paths.
+        if (!Object.keys(stateFlips).some(isRemoteAgentKey)) meshStore.getState().updateAgentStates(stateFlips)
+        else {
+          const byRt: Record<string, Record<string, AgentState>> = {}
+          for (const [key, state] of Object.entries(stateFlips)) {
+            const { runtimeId, filePath } = isRemoteAgentKey(key) ? parseAgentKey(key) : { runtimeId: 'local', filePath: key }
+            ;(byRt[runtimeId] ??= {})[filePath] = state
+          }
+          for (const [runtimeId, states] of Object.entries(byRt)) meshStore.getState().updateAgentStates(states, runtimeId === 'local' ? undefined : runtimeId)
+        }
+      }
     }
 
     // rAF stalls while the window is hidden — cap the buffer so a minimized
@@ -420,15 +451,16 @@ export function useMeshGraph() {
     }
 
     // 2. AGENT_EVENT — foreground agent tool calls, ask/approval, state changes
-    if (window.adfApi?.onAgentEvent) {
+    // (from the open agent's runtime; its map id is its agent key)
+    if (openApi()?.onAgentEvent) {
       unsubscribers.push(
-        window.adfApi.onAgentEvent((event: AgentExecutionEvent) => {
+        openApi().onAgentEvent((event: AgentExecutionEvent) => {
           // The map tile is the AGENT's state (= main's, §6.3). A side loop's
           // state_changed / tool churn must never flip the tile or multiply the
           // activity feed (~6x), so drop non-main events at the door — mirroring
           // background-agent-manager's own MAIN_LOOP filter (B7).
           if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
-          const foregroundFilePath = useDocumentStore.getState().filePath
+          const foregroundFilePath = openAgentKey()
           if (!foregroundFilePath) return
           enqueue({ kind: 'agent', event, filePath: foregroundFilePath })
         })
@@ -446,6 +478,19 @@ export function useMeshGraph() {
           }
         })
       )
+    }
+
+    // 4. Every other runtime of the set: its mesh traffic and background
+    // agents, under the map's keys (multi-runtime.md §6.4). None with This computer only.
+    for (const runtimeId of JSON.parse(remoteIds) as string[]) {
+      const api = apiFor(runtimeId)
+      unsubscribers.push(api.onMeshEvent((event: MeshEvent) => enqueue({ kind: 'mesh', event: keyedMeshEvent(runtimeId, event) })))
+      unsubscribers.push(api.onBackgroundAgentEvents((events: RendererBackgroundAgentEvent[]) => {
+        for (const event of events) {
+          if (!event.payload.filePath) continue
+          enqueue({ kind: 'bg', event, filePath: agentKey({ runtimeId, filePath: event.payload.filePath }) })
+        }
+      }))
     }
 
     // Timer for animation cleanup only
@@ -466,5 +511,5 @@ export function useMeshGraph() {
         cleanupRef.current = null
       }
     }
-  }, [])
+  }, [openRuntime, remoteIds])
 }

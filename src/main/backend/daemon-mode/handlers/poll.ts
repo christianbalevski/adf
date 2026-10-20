@@ -92,7 +92,8 @@ export function fleetState(ctx: DaemonModeContext): FleetClientState {
 }
 
 /**
- * Lifetime burn totals are the client key fleetMapState.burnTotals (§4.1):
+ * Lifetime burn totals are the client key fleetMapState.burnTotals (§4.1;
+ * another runtime: runtimeFleet[<id>].fleetMapState.burnTotals, multi-runtime.md §7.4):
  * the renderer saves them, the daemon's rolling counters start empty. Handed
  * over once per daemon connection, before the first burn read (route notes
  * from W1-D). The daemon keeps the larger of each pair, so a second hand-over
@@ -101,14 +102,13 @@ export function fleetState(ctx: DaemonModeContext): FleetClientState {
 export async function hydrateBurn(ctx: DaemonModeContext, client: DaemonClient): Promise<void> {
   const state = fleetState(ctx)
   if (state.hydrated === client) return
-  if (ctx.runtime && !ctx.runtime.primary) {
-    // The saved totals are the primary runtime's (multi-runtime.md §7.4 keys them per runtime in phase 2): never handed to another runtime.
-    ctx.log.log('[Backend] The fleet map\'s saved token totals are not handed to this runtime')
-    state.hydrated = client
-    return
-  }
+  // The primary runtime's totals are fleetMapState's; another runtime's are its own,
+  // runtimeFleet[<runtime id>].fleetMapState (multi-runtime.md §7.4). Never one runtime's to another.
+  const other = ctx.runtime && !ctx.runtime.primary ? ctx.runtime.id : null
   state.hydrating ??= (async () => {
-    const saved = ctx.clientSettings.get('fleetMapState') as { burnTotals?: Record<string, number> } | undefined
+    const saved = other === null
+      ? ctx.clientSettings.get('fleetMapState') as { burnTotals?: Record<string, number> } | undefined
+      : (ctx.clientSettings.get('runtimeFleet') as Record<string, { fleetMapState?: { burnTotals?: Record<string, number> } }> | undefined)?.[other]?.fleetMapState
     const burnTotals = saved?.burnTotals
     if (burnTotals && typeof burnTotals === 'object' && Object.keys(burnTotals).length > 0) {
       try {

@@ -4,6 +4,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { isDarkMode, modelHue } from './FleetTerrainNode'
 import { factionHue } from './FleetStationNode'
 import { formatTokenCount } from '../../utils/token-estimate'
+import { selectMapAgents } from './runtime-fleet'
 
 /** Small hex swatch matching the map's tile shape. */
 function HexSwatch({ fill, stroke, dashed }: { fill: string; stroke: string; dashed?: boolean }) {
@@ -45,7 +46,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
   const lens = useFleetStore((s) => s.lens)
   const cycleLens = useFleetStore((s) => s.cycleLens)
   const burn = useFleetStore((s) => s.burn)
-  const agents = useMeshStore((s) => s.agents)
+  const agents = useMeshStore((s) => selectMapAgents(s))
   const dark = isDarkMode()
   const [collapsed, setCollapsed] = useState(false)
 

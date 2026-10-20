@@ -61,6 +61,12 @@ import { useMesh } from '../../hooks/useMesh'
 import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
+import { selectMapAgents, mapTarget, mergeBurn, mergePeers, runtimeOfRegion, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { useRuntimesStore, runtimeHeader } from '../../stores/runtimes.store'
+import { apiFor, useOpenAgentKey } from '../../utils/runtime-api'
+import { reportFailure } from '../../stores/failure-notices.store'
+import type { FleetBurnResult } from '../../../shared/types/ipc.types'
+import type { RuntimeView } from '../../../shared/types/connection.types'
 
 const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode, terrainLabelNode: FleetTerrainLabelNode, stationNode: FleetStationNode }
 const edgeTypes = { meshEdge: MeshGraphEdge }
@@ -248,6 +254,76 @@ function buildEdges(
   return edges
 }
 
+/** The fleet polls of the runtimes other than This computer (multi-runtime.md §6.4). */
+interface RemotePollState {
+  /** Message-log cursor per runtime: only the tail comes down (the map draws this computer's log). */
+  seq: Record<string, number>
+  /** The last refusal said per runtime, so a failing poll is said once, not every 5 s. */
+  errors: Record<string, string>
+  /** Runtime DID per runtime of the set (a peer with one of these is that runtime's region). */
+  dids: Record<string, string | null>
+}
+
+/**
+ * One poll of every connected runtime other than This computer: its agents
+ * go to its mesh slice, its burn and peers come back. With This computer
+ * only there are none and nothing is called.
+ */
+async function pollRuntimes(state: RemotePollState): Promise<Array<{ runtimeId: string; burn: FleetBurnResult | null; peers: unknown[] }>> {
+  const runtimes = useRuntimesStore.getState().runtimes
+  if (runtimes.length < 2) return []
+  const others = runtimes.filter((r) => r.id !== 'local' && r.state === 'connected')
+  const results = await Promise.all(others.map(async (rt) => {
+    try {
+      const poll = await apiFor(rt.id).getMeshMapPoll(state.seq[rt.id] ?? 0)
+      state.seq[rt.id] = typeof poll.debug?.logSeq === 'number' ? poll.debug.logSeq : 0
+      delete state.errors[rt.id]
+      if (poll.fleet.agents.length > 0) useMeshStore.getState().setAgents(poll.fleet.agents, rt.id)
+      return { runtimeId: rt.id, burn: poll.burn, peers: poll.peers ?? [] }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (state.errors[rt.id] !== message) {
+        state.errors[rt.id] = message
+        reportFailure(`${rt.name}: fleet map not updated`, err)
+      }
+      return null
+    }
+  }))
+  return results.filter((r): r is NonNullable<typeof r> => r !== null)
+}
+
+/** The runtime DIDs of the set, read once per runtime (GET /identity there). */
+async function setRuntimeDids(state: RemotePollState): Promise<Set<string>> {
+  const runtimes = useRuntimesStore.getState().runtimes
+  await Promise.all(runtimes.filter((r) => !(r.id in state.dids) && r.state === 'connected').map(async (rt) => {
+    try {
+      const status = await apiFor(rt.id).getOwnerIdentityStatus()
+      state.dids[rt.id] = status?.runtimeDid || null
+    } catch (err) {
+      console.warn(`[Fleet] ${rt.name}: its runtime DID was not read; its peer station stays on the map:`, err)
+    }
+  }))
+  return new Set(runtimes.map((r) => state.dids[r.id]).filter((d): d is string => !!d))
+}
+
+/** Region labels and greying for the runtimes other than This computer; undefined with This computer only. */
+function regionDecor(runtimes: readonly RuntimeView[]): { label: (dirPath: string) => string | undefined; muted: (dirPath: string) => boolean } | undefined {
+  if (runtimes.length < 2) return undefined
+  const byId = new Map(runtimes.map((r) => [r.id, r]))
+  return {
+    label: (dirPath) => {
+      const id = runtimeOfRegion(dirPath)
+      if (!id) return undefined
+      const rt = byId.get(id)
+      return rt ? runtimeHeader(rt) : id.replace(/^remote:/, '')
+    },
+    muted: (dirPath) => {
+      const id = runtimeOfRegion(dirPath)
+      return !!id && byId.get(id)?.state !== 'connected'
+    },
+  }
+}
+
 /**
  * Persist the map's accumulated telemetry — trace heat/topology and burn
  * totals — so the world survives shutdowns. State capture is synchronous;
@@ -280,16 +356,38 @@ function persistFleetMapState(): void {
         if (e.totalTokens > 0) burnTotals[fp] = e.totalTokens
       }
     }
-    void window.adfApi.setSettings({
-      fleetMapState: {
-        heat,
-        routes,
-        streets,
-        burnTotals,
-        placement,
-        savedAt: Date.now()
+    // This computer's world as before; another runtime's burn totals and
+    // placement go under runtimeFleet with its own paths (multi-runtime.md §7.4).
+    // Trace heat touching another runtime's agents is kept for the session only.
+    const localOnly = <V,>(record: Record<string, V>): Record<string, V> => splitRecord(record).local
+    const totals = splitRecord(burnTotals)
+    const origins = splitRecord(placement.regionOrigins)
+    const pins = splitRecord(placement.cellPins)
+    const anchors = splitRecord(placement.districtAnchors ?? {})
+    const savedAt = Date.now()
+    const parts: Record<string, Partial<RuntimeFleetEntry>> = {}
+    for (const id of new Set([...Object.keys(totals.remote), ...Object.keys(origins.remote), ...Object.keys(pins.remote), ...Object.keys(anchors.remote)])) {
+      parts[id] = {
+        fleetMapState: {
+          burnTotals: totals.remote[id] ?? {},
+          placement: { regionOrigins: origins.remote[id] ?? {}, cellPins: pins.remote[id] ?? {}, districtAnchors: anchors.remote[id] ?? {} },
+          savedAt
+        }
       }
-    })
+    }
+    const localPlacement = origins.local === placement.regionOrigins && pins.local === placement.cellPins && anchors.local === (placement.districtAnchors ?? {})
+      ? placement
+      : { ...placement, regionOrigins: origins.local, cellPins: pins.local, ...(placement.districtAnchors ? { districtAnchors: anchors.local } : {}) }
+    void window.adfApi.setSettings(fleetSettingsPatch({
+      fleetMapState: {
+        heat: localOnly(heat),
+        routes: localOnly(routes),
+        streets,
+        burnTotals: totals.local,
+        placement: localPlacement,
+        savedAt
+      }
+    }, parts, useRuntimesStore.getState().runtimes))
   } catch { /* next save cycle */ }
 }
 
@@ -803,7 +901,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // changes when ITS slice of the fleet changes — and callbacks read the
   // live array via getState(). Live per-node fields flow through the
   // patchLiveFields subscription below, never through a render of this tree.
-  const agentCount = useMeshStore((s) => s.agents.length)
+  const agentCount = useMeshStore((s) => selectMapAgents(s).length)
   const setAgents = useMeshStore((s) => s.setAgents)
   const showLogDrawer = useMeshGraphStore((s) => s.showLogDrawer)
   const setShowLogDrawer = useMeshGraphStore((s) => s.setShowLogDrawer)
@@ -814,11 +912,17 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const revealRightPanel = useAppStore((s) => s.revealRightPanel)
   const setShowMeshGraph = useAppStore((s: AppState) => s.setShowMeshGraph)
-  const { openFile, closeFile } = useAdfFile()
+  const { openFile: openDocFile, closeFile } = useAdfFile()
+  // Map ids are agent keys: an agent of another runtime opens on its runtime (multi-runtime.md §5.2).
+  const openFile = useCallback((key: string) => {
+    const target = mapTarget(key)
+    return openDocFile(target.filePath, target.runtimeId)
+  }, [openDocFile])
   const reactFlow = useReactFlow()
   const rfStoreApi = useStoreApi()
 
-  const docFilePath = useDocumentStore((s) => s.filePath)
+  // The open agent's map id (agentKey): its path on This computer, as before.
+  const docFilePath = useOpenAgentKey()
   const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
@@ -975,6 +1079,9 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   const MESH_LOG_LIMIT = 200
   const logSeqRef = useRef(0)
 
+  // The polls of the runtimes other than This computer: cursors, last errors and runtime DIDs.
+  const remotePolls = useRef<RemotePollState>({ seq: {}, errors: {}, dids: {} })
+
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
   // ONE round-trip: main assembles every slice from the same handler bodies the
@@ -1015,13 +1122,23 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       const nextPeers = ((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? []
       setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(nextPeers) ? prev : nextPeers))
       if (fleet.agents.length > 0) setAgents(fleet.agents)
-      if (burn) setBurn(burn)
+      // Every other runtime of the set: its own poll, into its slice (multi-runtime.md §6.4).
+      const remote = await pollRuntimes(remotePolls.current)
+      if (remote.length === 0) {
+        if (burn) setBurn(burn)
+      } else {
+        const merged = mergeBurn(burn, remote.map((r) => ({ runtimeId: r.runtimeId, burn: r.burn })))
+        if (merged) setBurn(merged)
+        const peerLists = [peersOverride ? nextPeers : (peers as typeof nextPeers), ...remote.map((r) => r.peers as typeof nextPeers)]
+        const dedup = mergePeers(peerLists, await setRuntimeDids(remotePolls.current))
+        setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(dedup) ? prev : dedup))
+      }
       // Boot animations end when the poll confirms the agent is up — or
       // after 30s if the start silently failed (button reappears)
       const { starting, clearStarting } = useFleetStore.getState()
       const startingPaths = Object.keys(starting)
       if (startingPaths.length > 0) {
-        const online = new Set(fleet.agents.filter((a) => a.online).map((a) => a.filePath))
+        const online = new Set(selectMapAgents(useMeshStore.getState()).filter((a) => a.online).map((a) => a.filePath))
         const now = Date.now()
         const done = startingPaths.filter((p) => online.has(p) || now - starting[p] > 30_000)
         if (done.length > 0) clearStarting(done)
@@ -1051,6 +1168,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   useEffect(() => {
     window.adfApi.getSettings().then((settings) => {
       const s = settings as unknown as {
+        runtimeFleet?: RuntimeFleetStore
         fleetGroups?: Record<string, string[]>
         fleetStewards?: Record<string, string>
         fleetMapState?: {
@@ -1065,8 +1183,19 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
           }
         }
       }
-      if (s.fleetGroups) setNamedGroups(s.fleetGroups)
-      if (s.fleetStewards) setStewards(s.fleetStewards)
+      // Another runtime's groups, stewards and world, under the map's keys (multi-runtime.md §7.4).
+      setStoredRuntimeFleet(s.runtimeFleet)
+      const rf: RuntimeFleetStore = s.runtimeFleet && typeof s.runtimeFleet === 'object' ? s.runtimeFleet : {}
+      const rfIds = Object.keys(rf)
+      if (rfIds.length === 0) {
+        if (s.fleetGroups) setNamedGroups(s.fleetGroups)
+        if (s.fleetStewards) setStewards(s.fleetStewards)
+      } else {
+        setNamedGroups(mergeGroups(s.fleetGroups ?? {}, rf))
+        setStewards(mergeStewards(s.fleetStewards ?? {}, rf))
+      }
+      const remotePlacement = (field: 'regionOrigins' | 'cellPins' | 'districtAnchors') =>
+        Object.assign({}, ...rfIds.map((id) => prefixRecord(id, rf[id]?.fleetMapState?.placement?.[field] as Record<string, { q: number; r: number }> | undefined)))
       if (s.fleetMapState?.heat || s.fleetMapState?.streets) {
         useMeshGraphStore.getState().hydrateGraphState(
           s.fleetMapState.heat ?? {},
@@ -1076,9 +1205,9 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       }
       // Frozen geography — non-null placement also unlocks persistence
       useFleetStore.getState().setPlacement({
-        regionOrigins: s.fleetMapState?.placement?.regionOrigins ?? {},
-        cellPins: s.fleetMapState?.placement?.cellPins ?? {},
-        districtAnchors: s.fleetMapState?.placement?.districtAnchors ?? {},
+        regionOrigins: rfIds.length === 0 ? s.fleetMapState?.placement?.regionOrigins ?? {} : { ...(s.fleetMapState?.placement?.regionOrigins ?? {}), ...remotePlacement('regionOrigins') },
+        cellPins: rfIds.length === 0 ? s.fleetMapState?.placement?.cellPins ?? {} : { ...(s.fleetMapState?.placement?.cellPins ?? {}), ...remotePlacement('cellPins') },
+        districtAnchors: rfIds.length === 0 ? s.fleetMapState?.placement?.districtAnchors ?? {} : { ...(s.fleetMapState?.placement?.districtAnchors ?? {}), ...remotePlacement('districtAnchors') },
         stationPins: s.fleetMapState?.placement?.stationPins ?? {}
       })
     }).catch(() => {
@@ -1101,11 +1230,11 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // pipes — truthiness only: a 2nd connection is still one channel edge) so
   // state/status churn never rebuilds them.
   const edgeAgentsKey = useMeshStore((s) =>
-    s.agents.map((a) => `${a.filePath}|${a.handle}|${a.wsConnections ? 1 : 0}`).join('\n')
+    selectMapAgents(s).map((a) => `${a.filePath}|${a.handle}|${a.wsConnections ? 1 : 0}`).join('\n')
   )
   const edgeCacheRef = useRef<EdgeCache>({ map: new Map(), last: [] })
   const messageEdges = useMemo(
-    () => buildEdges(useMeshStore.getState().agents, debugInfo, liveRoutes, edgeCacheRef.current),
+    () => buildEdges(selectMapAgents(useMeshStore.getState()), debugInfo, liveRoutes, edgeCacheRef.current),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [edgeAgentsKey, debugInfo, liveRoutes]
   )
@@ -1121,7 +1250,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // that structure so the 5s poll doesn't re-plan every territory to repaint
   // one status; live fields are decorated onto the frozen nodes downstream.
   const structKey = useMeshStore((s) =>
-    s.agents
+    selectMapAgents(s)
       .map((a) =>
         [a.filePath, a.trackedDirRoot, a.createdAt, a.parentDid, a.did, a.agentId, a.didHistory?.join(','), a.handle, a.icon].join('|')
       )
@@ -1129,8 +1258,10 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       .join('\n')
   )
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Regions of other runtimes: the runtime name, with its state while down, greyed then (§6.4).
+  const runtimeList = useRuntimesStore((s) => s.runtimes)
   const layout = useMemo(() => {
-    const built = computeFleetLayout(useMeshStore.getState().agents, placement ?? undefined)
+    const built = computeFleetLayout(selectMapAgents(useMeshStore.getState()), placement ?? undefined, regionDecor(runtimeList))
     // Every node carries `measured` seeded from its fixed declared dims:
     // React Flow resets a node's internals whenever its OBJECT identity
     // changes (our live-field patches, culled flips, selection flips, drag
@@ -1145,7 +1276,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       measured: { width: n.initialWidth, height: n.initialHeight }
     }))
     return { ...built, nodes }
-  }, [structKey, placement])
+  }, [structKey, placement, runtimeList])
 
   // Record first-time region and district positions. Existing coordinates
   // are authoritative: collision resolution can temporarily render a region
@@ -1387,7 +1518,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
     // this memo. This array only changes identity on STRUCTURAL change
     // (agents added/removed, geometry, stations); between rebuilds the
     // patchLiveFields subscription below keeps the controlled copies fresh.
-    const byPath = new Map(useMeshStore.getState().agents.map((a) => [a.filePath, a]))
+    const byPath = new Map(selectMapAgents(useMeshStore.getState()).map((a) => [a.filePath, a]))
     const pending = useMeshGraphStore.getState().pendingInteractions
     const decorated = layout.nodes.map((n) => {
       let out = n
@@ -1482,10 +1613,10 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // a state/online projection — the structural nodes are frozen, so the
   // emitters must re-read live state when it flips (and only then).
   const liveStateKey = useMeshStore((s) =>
-    s.agents.map((a) => `${a.filePath}|${a.state}|${a.online === false ? 0 : 1}`).join('\n')
+    selectMapAgents(s).map((a) => `${a.filePath}|${a.state}|${a.online === false ? 0 : 1}`).join('\n')
   )
   const ambienceEmitters = useMemo<AmbienceEmitter[]>(() => {
-    const byPath = new Map(useMeshStore.getState().agents.map((a) => [a.filePath, a]))
+    const byPath = new Map(selectMapAgents(useMeshStore.getState()).map((a) => [a.filePath, a]))
     const out: AmbienceEmitter[] = []
     for (const n of structuralNodes) {
       if (n.type !== 'meshNode') continue
@@ -1552,22 +1683,26 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // territory to a small one whose center happens to be closer.
   const cellDirs = useMemo(() => {
     const dirs = new Map<string, string>()
+    const blocked = new Set<string>()
     const roots: { rootDir: string; pts: { x: number; y: number }[] }[] = []
     for (const n of layout.nodes) {
       if (n.type !== 'terrainNode') continue
       const data = n.data as unknown as TerrainNodeData
       if (!data.dirPath) continue
+      // Agents are founded on This computer's land only; another runtime's region takes no founding.
+      const remoteRegion = runtimeOfRegion(data.dirPath) !== null
       const pts: { x: number; y: number }[] = []
       for (const cell of data.cells) {
         const ax = n.position.x + cell.x
         const ay = n.position.y + cell.y
         pts.push({ x: ax, y: ay })
         const { q, r } = pixelToAxialRounded(ax, ay)
+        if (remoteRegion) { blocked.add(`${q},${r}`); continue }
         dirs.set(`${q},${r}`, cell.district ? `${data.dirPath}/${cell.district}` : data.dirPath)
       }
-      roots.push({ rootDir: data.dirPath, pts })
+      if (!remoteRegion) roots.push({ rootDir: data.dirPath, pts })
     }
-    return { dirs, roots }
+    return { dirs, roots, blocked }
   }, [layout])
 
   // Founding — double-click empty land (or ocean) to create an agent there
@@ -1581,7 +1716,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
     const pos = reactFlow.screenToFlowPosition({ x: e.clientX, y: e.clientY })
     const { q, r } = pixelToAxialRounded(pos.x, pos.y)
     const key = `${q},${r}`
-    if (occupiedCells.has(key)) return
+    if (occupiedCells.has(key) || cellDirs.blocked.has(key)) return
     const dir = cellDirs.dirs.get(key)
     if (dir) {
       setFounding({ q, r, dir, ocean: false })
@@ -1667,7 +1802,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // render. Position spreads from prev, so a patch landing mid-drag can
   // never snap a tile back.
   const patchLiveFields = useCallback(() => {
-    const byPath = new Map(useMeshStore.getState().agents.map((a) => [a.filePath, a]))
+    const byPath = new Map(selectMapAgents(useMeshStore.getState()).map((a) => [a.filePath, a]))
     const pending = useMeshGraphStore.getState().pendingInteractions
     setControlledNodes((prev) => {
       let next: Node[] | null = null
@@ -1734,7 +1869,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // state flip, an upsert), so the map/sort/join is cached on the agents array
   // identity — the store only hands out a new array when the roster or a row
   // actually changed, and a state-only change still reuses the same key string.
-  const layoutKey = useMeshStore((s) => layoutKeyFor(s.agents))
+  const layoutKey = useMeshStore((s) => layoutKeyFor(selectMapAgents(s)))
 
   useEffect(() => {
     // Never yank a tile out from under the pointer: a poll or activity
@@ -1764,7 +1899,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // of this 2400-line component's memos.
   useEffect(() => {
     const unsubMesh = useMeshStore.subscribe((s, prev) => {
-      if (s.agents !== prev.agents) patchLiveFields()
+      if (s.agents !== prev.agents || s.byRuntime !== prev.byRuntime) patchLiveFields()
     })
     const unsubGraph = useMeshGraphStore.subscribe((s, prev) => {
       if (s.pendingInteractions !== prev.pendingInteractions) patchLiveFields()
@@ -1870,7 +2005,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   /** The set of agents a move touches: the tile, its selection, its
    *  district, or its whole territory. */
   const moveMembers = useCallback((kind: MoveKind, primary: string, selected?: string[]): string[] => {
-    const agents = useMeshStore.getState().agents
+    const agents = selectMapAgents(useMeshStore.getState())
     const agent = agents.find((a) => a.filePath === primary)
     if (!agent) return []
     const root = agent.trackedDirRoot ?? ''
@@ -1924,7 +2059,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       const p = pins[fp]
       if (p) shifted[fp] = { ...p, q: p.q + dq, r: p.r + dr }
     }
-    const agent = useMeshStore.getState().agents.find((a) => a.filePath === primary)
+    const agent = selectMapAgents(useMeshStore.getState()).find((a) => a.filePath === primary)
     const root = agent?.trackedDirRoot ?? ''
     if (kind === 'territory') {
       const origin = fleet.placement.regionOrigins[root]
@@ -2307,7 +2442,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       hilClickTimerRef.current = null
     }
     if (event.metaKey || event.ctrlKey) {
-      const agents = useMeshStore.getState().agents
+      const agents = selectMapAgents(useMeshStore.getState())
       const ref = agents.find((a) => a.filePath === nodeData.filePath)
       if (!ref) return
       const same = agents
@@ -2422,7 +2557,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   }, [flyToAgents])
 
   const selectKnownGroup = useCallback((filePaths: string[]) => {
-    const known = new Set(useMeshStore.getState().agents.map((a) => a.filePath))
+    const known = new Set(selectMapAgents(useMeshStore.getState()).map((a) => a.filePath))
     selectAgents(filePaths.filter((p) => known.has(p)))
   }, [selectAgents])
 
@@ -2531,7 +2666,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       } else if (e.key === 'a' || e.key === 'A') {
         // Select the whole standing army — camera stays put (Space jumps)
         e.preventDefault()
-        selectAgents(useMeshStore.getState().agents.filter((a) => a.online).map((a) => a.filePath), { center: false })
+        selectAgents(selectMapAgents(useMeshStore.getState()).filter((a) => a.online).map((a) => a.filePath), { center: false })
       } else if (e.key === ' ') {
         // Jump the camera to the selection (or fit the world)
         e.preventDefault()
@@ -2543,20 +2678,20 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       } else if (e.key === 'g' || e.key === 'G') {
         // Go — start the selected offline agents
         const sel = new Set(fleet.selection)
-        const offline = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && !a.online)
+        const offline = selectMapAgents(useMeshStore.getState()).filter((a) => sel.has(a.filePath) && !a.online)
         if (offline.length > 0) {
           e.preventDefault()
           useFleetStore.getState().markStarting(offline.map((a) => a.filePath))
-          for (const a of offline) window.adfApi.startBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
+          for (const a of offline) { const t = mapTarget(a.filePath); t.api.startBackgroundAgent(t.filePath).catch(() => { /* poll reflects it */ }) }
         }
       } else if (e.key === 's' || e.key === 'S') {
         // Process shutdown stays behind ⇧S so an unmodified reflex key does
         // not alter agent operation from the fleet map.
         const sel = new Set(fleet.selection)
-        const online = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && a.online)
+        const online = selectMapAgents(useMeshStore.getState()).filter((a) => sel.has(a.filePath) && a.online)
         if (e.shiftKey && online.length > 0) {
           e.preventDefault()
-          for (const a of online) window.adfApi.stopBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
+          for (const a of online) { const t = mapTarget(a.filePath); t.api.stopBackgroundAgent(t.filePath).catch(() => { /* poll reflects it */ }) }
         }
       } else if (e.key === '.') {
         e.preventDefault()
@@ -2569,7 +2704,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         }
       } else if (e.key === ',') {
         e.preventDefault()
-        const idle = useMeshStore.getState().agents
+        const idle = selectMapAgents(useMeshStore.getState())
           .filter((a) => a.state === 'idle')
           .map((a) => a.filePath)
           .sort()

@@ -8,6 +8,8 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
+import { saveFleetKeys, selectMapAgents } from './runtime-fleet'
+import { useRuntimesStore } from '../../stores/runtimes.store'
 
 /**
  * Fleet alert layer — the "needs me" queue plus the resource bar
@@ -47,21 +49,21 @@ export const FleetAlertBar = memo(function FleetAlertBar({
     delete rest[name]
     setNamedGroups(rest)
     try {
-      await window.adfApi.setSettings({ fleetGroups: rest })
+      await saveFleetKeys({ groups: rest }, useRuntimesStore.getState().runtimes)
     } catch { /* store already updated; settings retry on next save */ }
   }
   // Narrow, shallow-compared derivations — this bar sits above a canvas that
   // churns per frame, so it must only re-render when a DISPLAYED value moves,
   // never on raw agents/pulse-array identity.
   const handleByPath = useMeshStore(
-    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, a.handle])))
+    useShallow((s) => new Map(selectMapAgents(s).map((a) => [a.filePath, a.handle])))
   )
   const seedByPath = useMeshStore(
-    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, orbitalSeedFor({ did: a.did, filePath: a.filePath })])))
+    useShallow((s) => new Map(selectMapAgents(s).map((a) => [a.filePath, orbitalSeedFor({ did: a.did, filePath: a.filePath })])))
   )
   // Emoji-mode avatar (Settings > Agent avatars): config icon, else the pool pick.
   const iconByPath = useMeshStore(
-    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, agentAvatarEmoji(a.icon, a.agentId || a.filePath)])))
+    useShallow((s) => new Map(selectMapAgents(s).map((a) => [a.filePath, agentAvatarEmoji(a.icon, a.agentId || a.filePath)])))
   )
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
@@ -113,7 +115,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       let idle = 0
       let error = 0
       let offline = 0
-      for (const a of s.agents) {
+      for (const a of selectMapAgents(s)) {
         if (!a.online) offline++
         else if (a.state === 'active') active++
         else if (a.state === 'idle') idle++
