@@ -35,7 +35,7 @@ The **Loops** tab in Studio shows the full conversation history, including:
 - Approval requests
 - Context blocks (injected system prompt and dynamic instructions)
 
-![The Loop tab showing several entry types in one conversation: a collapsed Context Injected block with its timestamp, a blue user message bubble, amber expandable Thinking blocks with token counts, assistant text with per-turn model and token metadata, msg_send and fs_write tool-call chips, and a collapsed Message Received trigger entry.](../assets/screenshots/agent-loop-conversation.png)
+![The Loops tab showing several entry types in one conversation: the user's request, a collapsed Dynamic Instructions context block, assistant text with timestamps, a step group with fs_write tool-call chips and their JSON arguments, and a sys_update_config call awaiting approval.](../assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 ### Loop Growth
 

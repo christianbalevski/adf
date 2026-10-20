@@ -80,6 +80,8 @@ The app's views:
 
 The app opens on Fleet.
 
+![The terminal app's Fleet view: the fleet list on the left, the daemon status line, a table of four idle agents with their state, loops, approvals, inbox, model, tokens, timers, last activity and mesh columns, and the selected agent's file path and main loop below.](../assets/screenshots/tui-fleet-v0.7.8.png)
+
 ### Tabs, lists and details
 
 Files, Loops, Inspect and Runtime work the same way:
@@ -135,6 +137,8 @@ stopped agents. Track a folder with `f` on the Fleet or `/track [dir]`;
 `/untrack <dir>` stops tracking (files are never touched).
 
 ## Chat
+
+![The terminal app's Chat view: the fleet list on the left, and the team-decisions agent's main loop with the user's request, assistant replies, fs_write and sys_update_config tool calls with their results, an approved approval, the status line and the prompt.](../assets/screenshots/tui-chat-v0.7.8.png)
 
 - **Send:** `Enter`. While the loop is running your message shows
   `[queued]`. Send several and none is lost: they go to the agent together,

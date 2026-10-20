@@ -43,7 +43,7 @@ Providers can also be managed ahead of time, or changed later, in Settings.
 6. Optionally set a default model
 7. Save
 
-![Settings → Providers listing the connected providers, each row with the service logo, name, and default model.](../assets/screenshots/settings-add-provider.png)
+![The Add a provider catalog: a search field, a Subscriptions group (ChatGPT, Grok) and an APIs group (Anthropic, OpenAI, OpenRouter, Google Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together AI, Fireworks AI, Perplexity), each tile with the service logo and a one-line description.](../assets/screenshots/studio-add-provider-v0.7.8.png)
 
 ## Creating a Blank Agent
 
@@ -63,7 +63,7 @@ Your agent is now created and in the **idle** state by default.
 
 [ADF Studio](../ADF_STUDIO_DOCS.md#anatomy-of-the-interface) describes each area.
 
-![The ADF Studio window: agents with live status toggles in the left sidebar, the agent's document open in the center editor, and the Loop panel on the right showing the conversation.](../assets/screenshots/studio-agent-loop.png)
+![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](../assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 ## Talking to Your Agent
 
@@ -81,7 +81,7 @@ When you send a message, several things happen:
 
 You'll see the full conversation in the loop, including any tool calls the agent makes. **Stop** next to the send button, or `Esc`, ends a running turn.
 
-![The Loop tab mid-conversation: a user message, an expandable Thinking block, assistant text, and inline tool-call chips with their arguments.](../assets/screenshots/agent-loop-conversation.png)
+![The Loops tab: the user's request, a collapsed Dynamic Instructions block, assistant text with timestamps, an expanded step group with two fs_write tool calls and their JSON arguments, and a sys_update_config call awaiting approval with Approve and Reject buttons.](../assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 ## Configuring Your Agent
 
