@@ -282,6 +282,7 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | `/instructions [edit]` |  | Edit the selected agent’s instructions (a dialog; edit opens $EDITOR) |
 | `/tools [filter]` |  | The selected agent’s tools: enable, show, require approval, lock (built-in and MCP) |
 | `/compaction [tokens\|default]` |  | Compaction threshold of the selected agent › loop (80000, 80k; default = main’s default / an inner loop inherits). No argument: every loop |
+| `/media [<files> <MB>\|default]` |  | Request media limit of the selected agent: most files and MB one request carries (default 20, 20). Past either, the oldest are left out until half remains |
 
 #### Fleet view
 

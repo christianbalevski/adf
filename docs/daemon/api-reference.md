@@ -1713,7 +1713,7 @@ Operation `setAgentConfig` · bearer token
 | `autostart` | boolean |  |  |
 | `model` | [ModelConfig](#schema-modelconfig) | yes |  |
 | `instructions` | string | yes |  |
-| `context` | object | yes | compact_threshold, audit, dynamic_instructions |
+| `context` | object | yes | compact_threshold, max_request_media_files, max_request_media_mb, compaction_model, audit, dynamic_instructions |
 | `tools` | object[] | yes | Tool declarations |
 | `tools[].name` | string | yes |  |
 | `tools[].enabled` | boolean | yes |  |
@@ -18447,7 +18447,7 @@ The agent's ADF v0.2 config (adf_config). Only the most used fields are listed; 
 | `autostart` | boolean |  |  |
 | `model` | [ModelConfig](#schema-modelconfig) | yes |  |
 | `instructions` | string | yes |  |
-| `context` | object | yes | compact_threshold, audit, dynamic_instructions |
+| `context` | object | yes | compact_threshold, max_request_media_files, max_request_media_mb, compaction_model, audit, dynamic_instructions |
 | `tools` | object[] | yes | Tool declarations |
 | `tools[].name` | string | yes |  |
 | `tools[].enabled` | boolean | yes |  |
