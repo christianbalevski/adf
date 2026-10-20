@@ -179,13 +179,14 @@ export async function archiveRecovered(root: string, now = new Date()): Promise<
     await rename(f.file, to)
   }
   for (const folder of new Set(files.map((f) => f.folder))) {
-    const emptied = await rmdir(join(root, folder)).then(() => true, () => false /* not empty: copies arrived meanwhile */)
-    if (files.some((f) => f.folder === folder && f.runtimeId)) {
-      const marker = join(root, folder + RUNTIME_SUFFIX)
-      // The archived copies keep their runtime; the marker stays while copies arrived meanwhile.
-      await writeFile(join(target, folder + RUNTIME_SUFFIX), (await readFile(marker, 'utf-8').catch(() => '')), { encoding: 'utf-8', mode: 0o600 }).catch(() => {})
-      if (emptied) await rm(marker, { force: true })
-    }
+    await rmdir(join(root, folder)).catch(() => { /* not empty: copies arrived meanwhile */ })
+  }
+  // Another runtime's folders: the archived copies keep their runtime; the marker stays only while copies remain.
+  const remaining = new Set((await listRecovered(root)).map((f) => f.folder))
+  for (const folder of new Set(files.filter((f) => f.runtimeId).map((f) => f.folder))) {
+    const marker = join(root, folder + RUNTIME_SUFFIX)
+    await writeFile(join(target, folder + RUNTIME_SUFFIX), await readFile(marker, 'utf-8').catch(() => ''), { encoding: 'utf-8', mode: 0o600 }).catch(() => {})
+    if (!remaining.has(folder)) await rm(marker, { force: true })
   }
   await pruneArchive(root, now)
   return files.length
