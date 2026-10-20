@@ -1,9 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useRef } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
-import { ProviderModal } from '../providers/ProviderModal'
 import { useProviderManager } from '../providers/useProviderManager'
 import { useOwnedProviderList } from '../providers/useOwnedProviderList'
+import { providerReady } from '../providers/provider-ready'
 
 type Manager = ReturnType<typeof useProviderManager>
 
@@ -14,39 +14,49 @@ export interface HomeProviders {
   /** The provider the next new agent starts on: the session pick, else the default. */
   selectedId: string | null
   selected: ProviderConfig | undefined
+  /** Some provider has a credential and a default model. */
+  anyReady: boolean
+  /** The selected provider has a credential and a default model. */
+  selectedReady: boolean
   /** Picks the provider for the next new agent. A different provider drops the model pick with it. */
   setHomeProviderId: (id: string | null) => void
   /** Model lists by provider id, filled on demand by `fetchModels`. */
   models: Manager['models']
   /** Asks main for one provider's model list; the chip calls it once per provider. */
   fetchModels: (id: string) => Promise<void>
-  /** Opens the Settings catalog picker in place. */
-  openPicker: () => void
+  /**
+   * Opens the provider sheet (the at-need one). Resolves with the provider
+   * connected, now picked for the next new agent, or null when cancelled.
+   */
+  openPicker: () => Promise<string | null>
 }
 
 const Ctx = createContext<HomeProviders | null>(null)
 
 /**
- * One provider list and one Settings modal for the whole home screen, so the
- * composer chip and the connect card agree on what exists and neither has to
- * poll the other. Same manager as Settings → Providers, over a copy of the
- * list that this component persists itself.
+ * One provider list for the whole home screen, so the composer chip and the
+ * connect card agree on what exists and neither has to poll the other. A
+ * provider is connected through the at-need provider sheet
+ * (ProviderSetupDialog): Done needs a key or a sign-in and a model, and
+ * cancel takes back what it added.
  */
 export function HomeProvidersProvider({ children }: { children: React.ReactNode }) {
   const homeProviderId = useAppStore((s) => s.homeProviderId)
   const setHomeProviderId = useAppStore((s) => s.setHomeProviderId)
   const setHomeModelId = useAppStore((s) => s.setHomeModelId)
+  const connectProvider = useAppStore((s) => s.connectProvider)
+  const sheetOpen = useAppStore((s) => s.providerSetupRequest !== null)
   const list = useOwnedProviderList()
   const { providers, setProviders, defaultProviderId, setDefaultProviderId, loaded, load, flushSave, saveFailure } = list
   const m = useProviderManager({ providers, setProviders, defaultProviderId, setDefaultProviderId, flushSave, saveFailure })
-  const { openPicker, closeModal, status, modalOpen } = m
+  const { status } = m
 
   // Settings may change the list while home is open; refresh on focus, but
-  // never underneath an open modal.
-  const modalOpenRef = useRef(modalOpen)
-  modalOpenRef.current = modalOpen
+  // never underneath the open sheet.
+  const sheetOpenRef = useRef(sheetOpen)
+  sheetOpenRef.current = sheetOpen
   useEffect(() => {
-    const reload = () => { if (!modalOpenRef.current) void load().catch(() => {}) }
+    const reload = () => { if (!sheetOpenRef.current) void load().catch(() => {}) }
     reload()
     window.addEventListener('focus', reload)
     return () => window.removeEventListener('focus', reload)
@@ -76,10 +86,29 @@ export function HomeProvidersProvider({ children }: { children: React.ReactNode 
     setHomeModelId(null)
   }, [loaded, selectedId, setHomeModelId])
 
+  // The provider just connected, picked for the next agent (the chip shows it)
+  // once the re-read list holds it: picked earlier, the stale-pick effect
+  // above would drop it again.
+  const [connectedId, setConnectedId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!connectedId || !providers.some((p) => p.id === connectedId)) return
+    setConnectedId(null)
+    pickProvider(connectedId)
+  }, [connectedId, pickProvider, providers])
+  const openPicker = useCallback(async (): Promise<string | null> => {
+    const id = await connectProvider('no_provider', null)
+    // The sheet saved its own copy of the list; read it back.
+    await load().catch(() => {})
+    if (id) setConnectedId(id)
+    return id
+  }, [connectProvider, load])
+
+  const anyReady = providers.some((p) => providerReady(p, status[p.id]))
+  const selectedReady = !!selected && providerReady(selected, status[selected.id])
+
   return (
-    <Ctx.Provider value={{ providers, loaded, status, selectedId, selected, setHomeProviderId: pickProvider, models: m.models, fetchModels: m.fetchModels, openPicker }}>
+    <Ctx.Provider value={{ providers, loaded, status, selectedId, selected, anyReady, selectedReady, setHomeProviderId: pickProvider, models: m.models, fetchModels: m.fetchModels, openPicker }}>
       {children}
-      <ProviderModal {...m.modalProps} open={modalOpen} onClose={() => { void flushSave(); closeModal() }} />
     </Ctx.Provider>
   )
 }
@@ -92,17 +121,18 @@ export function useHomeProviders(): HomeProviders {
 
 /**
  * The first thing to do when nothing can run yet. Sits in the empty middle
- * of the home screen until a provider exists, then disappears; the composer
- * chip below stays as the everyday way in.
+ * of the home screen until a provider has a credential and a model (a tile
+ * left empty does not count), then disappears; the composer chip below stays
+ * as the everyday way in.
  */
 export function ConnectProviderCard() {
-  const { loaded, providers, openPicker } = useHomeProviders()
-  if (!loaded || providers.length > 0) return null
+  const { loaded, anyReady, openPicker } = useHomeProviders()
+  if (!loaded || anyReady) return null
   return (
     <div className="flex w-full justify-center">
       <button
         type="button"
-        onClick={openPicker}
+        onClick={() => { void openPicker() }}
         className="group flex w-full max-w-md items-center gap-4 rounded-2xl border border-[var(--adf-ui-accent)]/40 bg-[var(--adf-ui-surface)] px-5 py-4 text-left shadow-sm transition-colors hover:border-[var(--adf-ui-accent)] hover:bg-[var(--adf-ui-surface-hover)]"
       >
         <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-accent)]">
@@ -113,9 +143,9 @@ export function ConnectProviderCard() {
           </svg>
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[14px] font-semibold text-[var(--adf-ui-text)]">Connect a provider</span>
+          <span className="block text-[14px] font-semibold text-[var(--adf-ui-text)]">Model provider</span>
           <span className="mt-0.5 block text-[12.5px] leading-snug text-[var(--adf-ui-text-muted)]">
-            Agents need a model to run. Add a cloud key or a local server; it takes a minute.
+            Sign in with a plan, paste an API key, or use a local server.
           </span>
         </span>
         <span className="inline-flex h-7 shrink-0 items-center rounded-full bg-[var(--adf-ui-accent)] px-3 text-[12px] font-medium text-[var(--adf-ui-on-accent)]">

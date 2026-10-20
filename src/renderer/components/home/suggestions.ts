@@ -235,3 +235,13 @@ export function pickSuggestions(count: number, random: () => number = Math.rando
   }
   return out
 }
+
+/**
+ * The draft after a suggestion chip is clicked: the suggestion alone in an
+ * empty box; otherwise added on a new line under what is typed, which is
+ * never replaced.
+ */
+export function insertSuggestion(draft: string, suggestion: string): string {
+  if (!draft.trim()) return suggestion
+  return `${draft.replace(/\s+$/, '')}\n${suggestion}`
+}
