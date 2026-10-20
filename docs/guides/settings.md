@@ -14,6 +14,16 @@ The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 - **Studio**, the app on this computer: Connection, Appearance, Notifications, Updates, Privacy, About. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
 - **Runtime · *name***, the runtime this window uses ("This computer", or a saved connection such as `rawl-hub`): Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings; with a remote connection they are that computer's. Controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*."
 
+## Saving
+
+Settings save as you change them. There is no Save button, except in a dialog that creates something (a provider, an MCP server, a connection) and in the prompt editors (see [Prompts](#prompts)).
+
+- A text or number field saves when you press Enter or leave it. Escape puts the saved value back.
+- A field that refuses a value says why under it, and nothing is written. Numbers are never clamped or replaced with 0.
+- After a write lands, **Saved** shows briefly in the page header.
+- When the runtime refuses a write (for example, the daemon's secret store is locked), the control goes back to the saved value and a notice reads "Not saved: *reason*". It stays until you dismiss it. The provider, MCP server and channel lists keep your edit, and the row it concerns says why; the next change retries it.
+- Removing a list entry that can be put back (a package, a catalog source, a manual peer, an execution target) shows **Undo** for 10 seconds instead of asking first.
+
 ![The Settings window on its General page: a section rail on the left (General, Identity, Providers, Packages, MCP servers, Channels, Networking, Compute, About) with theme selection, token usage, and the editable global system prompt on the right.](../assets/screenshots/settings-general.png)
 
 ## Privacy
@@ -443,7 +453,7 @@ Most individual tools (fs_read, fs_list, db_query, etc.) are self-explanatory fr
 
 ## Auto-Save
 
-All settings changes are automatically saved with a debounced delay. There is no manual Save/Cancel workflow — changes take effect shortly after you stop editing. A close button dismisses the settings panel.
+See [Saving](#saving). **Back to app** closes Settings.
 
 ## Theme
 

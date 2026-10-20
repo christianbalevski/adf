@@ -29,7 +29,9 @@ import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMesh } from '../../hooks/useMesh'
-import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
+import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
+import { CommitInput, checkPeerAddress, checkWholeNumber } from './settings-inputs'
+import { SaveIndicator, SettingsSaveProvider, SettingsToasts, settingsWriteOutcome, useSettingsSave } from './settings-save'
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
@@ -90,21 +92,6 @@ function SettingsNavIcon({ section }: { section: SettingsTab }) {
       {paths[section]}
     </svg>
   )
-}
-
-/**
- * Persist a settings patch through the preload bridge.
- *
- * Reached through `globalThis` rather than `window.adfApi` because the web
- * tsconfig does not include the preload's Window augmentation — every direct
- * `window.adfApi` call in this file is unchecked there. Same accessor pattern
- * as approvals.store.ts.
- */
-function writeSetting(patch: Record<string, unknown>): Promise<unknown> | undefined {
-  const api = (globalThis as {
-    adfApi?: { setSettings?: (patch: Record<string, unknown>) => Promise<unknown> }
-  }).adfApi
-  return api?.setSettings?.(patch)
 }
 
 /**
@@ -252,12 +239,25 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
   const [ownerAlias, setOwnerAlias] = useState('')
   const [runtimeAlias, setRuntimeAlias] = useState('')
   const [shareOwner, setShareOwner] = useState(false)
+  // The aliases as last loaded or saved: a refused write puts the field back to these.
+  const savedAliases = useRef({ owner: '', runtime: '' })
+  const { commit } = useSettingsSave()
+  const commitAlias = (which: 'owner' | 'runtime', value: string) => {
+    const next = value.trim()
+    const prev = savedAliases.current[which]
+    const set = which === 'owner' ? setOwnerAlias : setRuntimeAlias
+    if (next === prev) { set(prev); return }
+    set(next)
+    savedAliases.current[which] = next
+    void commit({ [which === 'owner' ? 'ownerAlias' : 'runtimeAlias']: next }, () => { savedAliases.current[which] = prev; set(prev) })
+  }
 
   const refresh = useCallback(() => {
     window.adfApi?.getOwnerIdentityStatus().then(setStatus)
     window.adfApi?.getMeshServerStatus().then(setMeshServer)
     window.adfApi?.getSettings?.().then((s: unknown) => {
       const cfg = s as { ownerAlias?: string; runtimeAlias?: string; shareOwnerIdentity?: boolean } | undefined
+      savedAliases.current = { owner: cfg?.ownerAlias ?? '', runtime: cfg?.runtimeAlias ?? '' }
       setOwnerAlias(cfg?.ownerAlias ?? '')
       setRuntimeAlias(cfg?.runtimeAlias ?? '')
       setShareOwner(cfg?.shareOwnerIdentity === true)
@@ -371,7 +371,8 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             value={ownerAlias}
             maxLength={40}
             onChange={(e) => setOwnerAlias(e.target.value)}
-            onBlur={() => void window.adfApi?.setSettings?.({ ownerAlias: ownerAlias.trim() })}
+            onBlur={() => commitAlias('owner', ownerAlias)}
+            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
             placeholder="a name peers will see"
             className="text-xs"
           />
@@ -379,7 +380,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             <input
               type="checkbox"
               checked={shareOwner}
-              onChange={(e) => { setShareOwner(e.target.checked); void window.adfApi?.setSettings?.({ shareOwnerIdentity: e.target.checked }) }}
+              onChange={(e) => { const next = e.target.checked; setShareOwner(next); void commit({ shareOwnerIdentity: next }, () => setShareOwner(!next)) }}
               className="rounded"
             />
             <span className="text-xs text-neutral-600 dark:text-neutral-300">
@@ -448,7 +449,8 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
               value={runtimeAlias}
               maxLength={40}
               onChange={(e) => setRuntimeAlias(e.target.value)}
-              onBlur={() => void window.adfApi?.setSettings?.({ runtimeAlias: runtimeAlias.trim() })}
+              onBlur={() => commitAlias('runtime', runtimeAlias)}
+              onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
               placeholder="a name for this runtime"
               className="text-xs"
             />
@@ -619,10 +621,12 @@ function SkillsTab() {
    * the whole truth, including when it is empty, and the absent-means-default
    * read never applies again.
    */
+  const { commit } = useSettingsSave()
   const save = useCallback(async (next: string[]) => {
+    const prev = sources
     setSources(next)
-    await window.adfApi?.setSettings?.({ skillCatalogSources: next })
-  }, [])
+    await commit({ skillCatalogSources: next }, () => setSources(prev))
+  }, [commit, sources])
 
   const add = useCallback(async (raw: string) => {
     const result = addCatalogSource(sources ?? [], raw)
@@ -740,6 +744,10 @@ function PackagesTab({
   const [pkgInstalling, setPkgInstalling] = useState<string | null>(null)
   const [pkgError, setPkgError] = useState<string | null>(null)
   const [installedOnDisk, setInstalledOnDisk] = useState<Array<{ name: string; version: string; installedAt: number; size_mb: number; installedBy?: string }>>([])
+  const { offerUndo } = useSettingsSave()
+  // The list as it is now, for an Undo clicked after later edits.
+  const packagesRef = useRef(sandboxPackages)
+  packagesRef.current = sandboxPackages
 
   // Fetch manifest on mount and after installs
   const refreshManifest = useCallback(() => {
@@ -783,145 +791,114 @@ function PackagesTab({
     setPkgInstalling(null)
   }
 
+  const removePackage = (pkg: { name: string; version: string }) => {
+    setSandboxPackages(sandboxPackages.filter((p) => p.name !== pkg.name))
+    offerUndo(`Removed ${pkg.name}. Agents that import it fail until it is back.`, () => {
+      if (!packagesRef.current.some((p) => p.name === pkg.name)) setSandboxPackages([...packagesRef.current, pkg])
+    })
+  }
+
   return (
     <>
       {/* Sandbox resource ceiling — the one knob that decides how much of the
           machine code execution is allowed to claim across every agent. */}
-      <SettingsGroup className="p-4">
-        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-          Sandbox workers
-          <InfoHint tip="Ceiling on sandbox workers running lambdas at the same time, across all agents. Each worker is a JavaScript isolate costing roughly 5 MB. Executions above the ceiling wait for a free slot rather than failing." />
-          <DocsLink href={DOCS.codeExecution} className="ml-2" />
-        </label>
-        <label className="flex items-center gap-2">
-          <span className="text-xs text-neutral-600 dark:text-neutral-300">Maximum</span>
-          <TextInput
-            aria-label="Maximum concurrent sandbox workers"
-            type="number"
-            min={0}
-            max={256}
-            value={sandboxMaxWorkers}
-            onChange={(e) => {
-              const n = parseInt(e.target.value, 10)
-              setSandboxMaxWorkers(isNaN(n) || n < 0 ? 0 : Math.min(n, 256))
-            }}
-            className="w-20 text-xs"
+      <SettingsGroup title="Sandbox" docs={DOCS.codeExecution}>
+        <SettingsRow
+          label={<>Workers<InfoHint tip="Most sandbox workers running lambdas at once, across all agents. Each is a JavaScript isolate of about 5 MB; executions above the ceiling wait for a free slot. 0 is automatic: half this computer's CPU cores, from 4 to 32." /></>}
+          description="0 is automatic."
+        >
+          <CommitInput
+            aria-label="Workers"
+            inputMode="numeric"
+            value={String(sandboxMaxWorkers)}
+            onCommit={(v) => { const r = checkWholeNumber(v, 0, 256); if (r.ok) setSandboxMaxWorkers(r.value) }}
+            check={(v) => { const r = checkWholeNumber(v, 0, 256); return r.ok ? null : r.error }}
+            className="!w-24 !text-[12px]"
           />
-        </label>
-        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-          0 = automatic (half this machine&apos;s CPU cores, between 4 and 32).
-        </p>
+        </SettingsRow>
       </SettingsGroup>
 
       {/* Runtime packages — available to all agents */}
-      <SettingsGroup className="p-4">
-        <div className="flex items-center justify-between mb-1">
-          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            Runtime Packages
-          </label>
-          <span className="text-xs text-neutral-400 dark:text-neutral-500">
-            available to all agents
-          </span>
-        </div>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">
-          Packages installed here are available to every agent. Pure JS only — no native addons.
-        </p>
+      <SettingsGroup title="Packages" description="Available to every agent; pure JavaScript only.">
         {sandboxPackages.length > 0 && (
-          <div className="space-y-1 mb-4">
+          <ul className="border-t border-[var(--adf-ui-separator)]">
             {sandboxPackages.map((pkg) => (
-              <div
-                key={pkg.name}
-                className="flex items-center justify-between text-xs px-2 py-1.5 rounded bg-neutral-100 dark:bg-neutral-700/50"
-              >
-                <span className="font-mono text-neutral-700 dark:text-neutral-300">
-                  {pkg.name}<span className="text-neutral-400 dark:text-neutral-500">@{pkg.version}</span>
+              <li key={pkg.name} className="flex items-center justify-between gap-2 border-b border-[var(--adf-ui-separator)] px-4 py-2 last:border-b-0">
+                <span className="min-w-0 truncate font-mono text-[12px] text-[var(--adf-ui-text)]">
+                  {pkg.name}<span className="text-[var(--adf-ui-text-subtle)]">@{pkg.version}</span>
                 </span>
                 <IconButton
-                  onClick={() => { if (window.confirm(`Remove ${pkg.name}? Agents that import it will fail until it is added again.`)) setSandboxPackages(sandboxPackages.filter((p) => p.name !== pkg.name)) }}
+                  onClick={() => removePackage(pkg)}
                   aria-label={`Remove ${pkg.name}`}
                   variant="danger"
-                  title="Remove package"
+                  title="Remove"
                 >
                   &times;
                 </IconButton>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-        <div className="flex gap-2 items-end">
-          <div className="flex-1">
-            <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 mb-0.5">Package name</label>
+        <SettingsRow separator label="Add" error={pkgError}>
+          <div className="flex items-center gap-2">
             <TextInput
               aria-label="Package name"
               aria-invalid={!!pkgError}
-              aria-describedby={pkgError ? 'package-install-error' : undefined}
               type="text"
               value={newPkgName}
               onChange={(e) => { setNewPkgName(e.target.value); setPkgError(null) }}
-              placeholder="e.g. vega-lite"
-              className="font-mono text-sm"
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleInstall() }}
+              placeholder="vega-lite"
+              spellCheck={false}
+              className="!w-44 font-mono !text-[12px]"
             />
-          </div>
-          <div className="w-28">
-            <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 mb-0.5">Version</label>
             <TextInput
               aria-label="Package version"
               aria-invalid={!!pkgError}
-              aria-describedby={pkgError ? 'package-install-error' : undefined}
               type="text"
               value={newPkgVersion}
               onChange={(e) => { setNewPkgVersion(e.target.value); setPkgError(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleInstall() }}
               placeholder="latest"
-              className="font-mono text-sm"
+              spellCheck={false}
+              className="!w-24 font-mono !text-[12px]"
             />
+            <Button
+              onClick={handleInstall}
+              disabled={!newPkgName.trim() || !!pkgInstalling}
+              loading={!!pkgInstalling}
+              variant="primary"
+              size="compact"
+              className="whitespace-nowrap"
+            >
+              {pkgInstalling ? 'Installing...' : 'Install'}
+            </Button>
           </div>
-          <Button
-            onClick={handleInstall}
-            disabled={!newPkgName.trim() || !!pkgInstalling}
-            loading={!!pkgInstalling}
-            variant="primary"
-            className="whitespace-nowrap"
-          >
-            {pkgInstalling ? 'Installing...' : 'Install'}
-          </Button>
-        </div>
-        {pkgError && (
-          <p id="package-install-error" className="mt-1 text-xs text-[var(--adf-ui-danger)]">{pkgError}</p>
-        )}
+        </SettingsRow>
       </SettingsGroup>
 
       {/* Agent-installed packages — installed on disk by agents via npm_install */}
       {agentOnlyPackages.length > 0 && (
-        <SettingsGroup className="p-4">
-          <div className="flex items-center justify-between mb-1">
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-              Agent-Installed Packages
-            </label>
-            <span className="text-xs text-neutral-400 dark:text-neutral-500">
-              installed by agents via npm_install
-            </span>
-          </div>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
-            These packages were installed by individual agents. They are on disk and visible to any agent that has them in its config.
-          </p>
-          <div className="space-y-1">
+        <SettingsGroup
+          title="Installed by agents"
+          description="On disk; an agent uses one when its config lists it."
+          hint="Installed by individual agents with npm_install. Promote installs one for every agent."
+        >
+          <ul className="border-t border-[var(--adf-ui-separator)]">
             {agentOnlyPackages.map((pkg) => (
-              <div
-                key={pkg.name}
-                className="flex items-center justify-between text-xs px-2 py-1.5 rounded bg-neutral-100 dark:bg-neutral-700/50"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="font-mono text-neutral-700 dark:text-neutral-300 truncate">
-                    {pkg.name}<span className="text-neutral-400 dark:text-neutral-500">@{pkg.version}</span>
+              <li key={pkg.name} className="flex items-center justify-between gap-2 border-b border-[var(--adf-ui-separator)] px-4 py-2 last:border-b-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-mono text-[12px] text-[var(--adf-ui-text)]">
+                    {pkg.name}<span className="text-[var(--adf-ui-text-subtle)]">@{pkg.version}</span>
                   </span>
                   {pkg.installedBy && (
-                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-neutral-200 dark:bg-neutral-600 text-neutral-500 dark:text-neutral-400">
+                    <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-text-muted)]">
                       {pkg.installedBy}
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-[11px] text-[var(--adf-ui-text-subtle)]">
                     {pkg.size_mb} MB
                   </span>
                   <Tooltip tip="Install for every agent">
@@ -931,15 +908,15 @@ function PackagesTab({
                       }}
                       variant="ghost"
                       size="compact"
-                      className="whitespace-nowrap text-[10px]"
+                      className="whitespace-nowrap"
                     >
                       Promote
                     </Button>
                   </Tooltip>
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         </SettingsGroup>
       )}
     </>
@@ -1234,10 +1211,12 @@ function ManualPeersEditor() {
     })()
   }, [])
 
+  const { commit } = useSettingsSave()
   const save = useCallback(async (next: string[]) => {
+    const prev = peers
     setPeers(next)
-    await window.adfApi?.setSettings?.({ meshManualPeers: next })
-  }, [])
+    await commit({ meshManualPeers: next }, () => setPeers(prev))
+  }, [commit, peers])
 
   const add = useCallback(async () => {
     const v = draft.trim()
@@ -1252,9 +1231,10 @@ function ManualPeersEditor() {
         <input
           type="checkbox"
           checked={tailnetOn}
-          onChange={async (e) => {
-            setTailnetOn(e.target.checked)
-            await window.adfApi?.setSettings?.({ tailnetDiscovery: e.target.checked })
+          onChange={(e) => {
+            const next = e.target.checked
+            setTailnetOn(next)
+            void commit({ tailnetDiscovery: next }, () => setTailnetOn(!next))
           }}
         />
         Discover peers over Tailscale
@@ -1304,7 +1284,18 @@ function ManualPeersEditor() {
   )
 }
 
+/** Settings, with its one save model (settings-save.tsx): "Saved" in the header, refusals and Undo as toasts. */
 export function SettingsPage() {
+  return (
+    <SettingsSaveProvider>
+      <SettingsPageBody />
+      <SettingsToasts />
+    </SettingsSaveProvider>
+  )
+}
+
+function SettingsPageBody() {
+  const { commit, track } = useSettingsSave()
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   // Lists that render from settings show a placeholder until the first load
   // lands, so an empty state never flashes before the real rows.
@@ -1614,7 +1605,8 @@ export function SettingsPage() {
     // Onto the lists stored now: another window's change to them is kept, not overwritten (agent windows).
     const lists = await listsToWrite(savedLists.current, shown, async () => (await window.adfApi.getSettings()) as unknown as Record<string, unknown>)
     const attempted: ProviderListSnapshot = { providers: lists.providers, defaultProviderId: lists.defaultProviderId }
-    const written = () => window.adfApi?.setSettings({
+    const written = async () => {
+      const result = await window.adfApi?.setSettings({
       providers: lists.providers,
       defaultProviderId: lists.defaultProviderId,
       mcpServers: lists.mcpServers,
@@ -1622,18 +1614,10 @@ export function SettingsPage() {
       globalSystemPrompt: systemPrompt,
       compactionPrompt,
       toolPrompts,
-      sandboxPackages,
-      sandboxMaxWorkers,
-      compute: {
-        hostAccessEnabled: computeHostAccessEnabled,
-        hostApproved: computeHostApproved,
-        hostApprovedSources: computeHostApprovedSources,
-        containerPackages: computeContainerPackages.split(',').map((s: string) => s.trim()).filter(Boolean),
-        machineCpus: computeMachineCpus,
-        machineMemoryMb: computeMachineMemoryMb,
-        containerImage: computeContainerImage,
-      },
-    })
+      })
+      const outcome = settingsWriteOutcome(result)
+      if (!outcome.ok) throw new Error(outcome.error)
+    }
     // A refused save (the daemon's secret store locked, say) never reads as
     // saved: the rows it concerns say why, and the edits stay for the next try.
     const saving = saveProviderList(written, savedProviders.current, attempted).then((result) => {
@@ -1649,9 +1633,11 @@ export function SettingsPage() {
         if (!sameContent(next.adapters, now.adapters)) setAdapterRegistrations(next.adapters)
       }
       setProviderSaveFailure(result.failure)
+      return result.saved ? { ok: true as const } : { ok: false as const, error: result.error ?? 'The settings could not be saved.' }
     })
     invalidateConfigCaches()
-    return saving
+    // The edits stay on a refusal (the rows say why), so the next change retries them.
+    return track(saving)
   }
   pendingSave.current = doSave
 
@@ -1663,7 +1649,7 @@ export function SettingsPage() {
     // Re-arm the debounce whenever a persisted value changes; the payload itself
     // is read from pendingSave, which every render refreshes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, sandboxMaxWorkers, computeHostAccessEnabled, computeHostApproved, computeHostApprovedSources, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
+  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts])
 
   // Flush pending save on unmount so changes aren't lost
   useEffect(() => {
@@ -1681,45 +1667,70 @@ export function SettingsPage() {
     await pendingSave.current?.()
   }, [])
 
-  const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
-    setTheme(newTheme)
-    await window.adfApi?.setSettings({ theme: newTheme })
+  /** Show `next` now and write it; a refusal puts `prev` back. */
+  const persist = <T,>(patch: Record<string, unknown>, set: (value: T) => void, next: T, prev: T) => {
+    set(next)
+    return commit(patch, () => set(prev))
   }
 
-  const handleAgentAvatarsChange = async (mode: AgentAvatarMode) => {
-    setAgentAvatars(mode)
-    await window.adfApi?.setSettings({ agentAvatars: mode })
+  /** compute.* keys: the store merges a partial compute object. */
+  const persistCompute = <T,>(key: string, set: (value: T) => void, next: T, prev: T) => {
+    set(next)
+    invalidateConfigCaches()
+    return commit({ compute: { [key]: next } }, () => set(prev))
   }
 
-  const handleUiFontChange = async (font: UiFont) => {
-    setUiFont(font)
-    await window.adfApi?.setSettings({ uiFont: font })
+  const saveSandboxPackages = (next: Array<{ name: string; version: string }>) =>
+    persist({ sandboxPackages: next }, setSandboxPackages, next, sandboxPackages)
+  const saveSandboxMaxWorkers = (next: number) =>
+    persist({ sandboxMaxWorkers: next }, setSandboxMaxWorkers, next, sandboxMaxWorkers)
+
+  /** Host approval changes: both lists in one write, the live refs kept in step. */
+  const saveHostApproval = (approved: string[], sources: Record<string, string>) => {
+    const prev = { approved: computeHostApprovedRef.current, sources: computeHostApprovedSourcesRef.current }
+    const set = (state: { approved: string[]; sources: Record<string, string> }) => {
+      computeHostApprovedRef.current = state.approved
+      computeHostApprovedSourcesRef.current = state.sources
+      setComputeHostApproved(state.approved)
+      setComputeHostApprovedSources(state.sources)
+    }
+    set({ approved, sources })
+    invalidateConfigCaches()
+    return commit({ compute: { hostApproved: approved, hostApprovedSources: sources } }, () => set(prev))
   }
 
-  const commitUiFontCustom = async () => {
+  const handleThemeChange = (newTheme: 'light' | 'dark' | 'system') => {
+    void persist({ theme: newTheme }, setTheme, newTheme, theme)
+  }
+
+  const handleAgentAvatarsChange = (mode: AgentAvatarMode) => {
+    void persist({ agentAvatars: mode }, setAgentAvatars, mode, agentAvatars)
+  }
+
+  const handleUiFontChange = (font: UiFont) => {
+    void persist({ uiFont: font }, setUiFont, font, uiFont)
+  }
+
+  const commitUiFontCustom = () => {
     const family = uiFontCustomDraft.trim()
     if (family === uiFontCustom) return
-    setUiFontCustom(family)
-    await window.adfApi?.setSettings({ uiFontCustom: family })
+    void persist({ uiFontCustom: family }, setUiFontCustom, family, uiFontCustom)
   }
 
-  const handleUiScaleChange = async (value: string) => {
+  const handleUiScaleChange = (value: string) => {
     const scale = Number(value) as UiScale
-    setUiScale(scale)
-    await window.adfApi?.setSettings({ uiScale: scale })
+    void persist({ uiScale: scale }, setUiScale, scale, uiScale)
   }
 
   const handleChooseAgentsFolder = async () => {
     const result = await window.adfApi?.pickDirectory?.()
     const path = result?.path
     if (!path) return
-    setAgentsFolder(path)
-    await window.adfApi?.setSettings({ agentsFolder: path })
+    void persist({ agentsFolder: path }, setAgentsFolder, path, agentsFolder)
   }
 
-  const handleResetAgentsFolder = async () => {
-    setAgentsFolder('')
-    await window.adfApi?.setSettings({ agentsFolder: '' })
+  const handleResetAgentsFolder = () => {
+    void persist({ agentsFolder: '' }, setAgentsFolder, '', agentsFolder)
   }
 
   const handleResetPrompt = () => {
@@ -1750,20 +1761,25 @@ export function SettingsPage() {
    */
   const handleAutoApplyPromptUpdates = async (enabled: boolean) => {
     if (!enabled) {
-      setAutoApplyPromptUpdates(false)
-      await writeSetting({ [PROMPT_AUTO_UPDATE_KEY]: false })
+      void persist({ [PROMPT_AUTO_UPDATE_KEY]: false }, setAutoApplyPromptUpdates, false, autoApplyPromptUpdates)
       return
     }
     if (!window.confirm('Replace every prompt with the current defaults now, and again whenever an update ships new ones? Any customizations will be lost.')) return
     const defaults = currentPromptDefaults()
+    const prev = { auto: autoApplyPromptUpdates, systemPrompt, compactionPrompt, toolPrompts }
     setAutoApplyPromptUpdates(true)
     setSystemPrompt(defaults.globalSystemPrompt)
     setCompactionPrompt(defaults.compactionPrompt)
     setToolPrompts(defaults.toolPrompts)
-    await writeSetting({
+    await commit({
       ...defaults,
       [PROMPT_AUTO_UPDATE_KEY]: true,
       [PROMPT_DEFAULTS_APPLIED_KEY]: promptDefaultsFingerprint(),
+    }, () => {
+      setAutoApplyPromptUpdates(prev.auto)
+      setSystemPrompt(prev.systemPrompt)
+      setCompactionPrompt(prev.compactionPrompt)
+      setToolPrompts(prev.toolPrompts)
     })
     invalidateConfigCaches()
   }
@@ -1844,6 +1860,7 @@ export function SettingsPage() {
                 {activeNavItem.label}
               </h1>
               <DocsLink href={activeNavItem.docs} label="Docs" className="!text-[11px]" />
+              <span className="ml-auto"><SaveIndicator /></span>
             </div>
             <p className="mt-1 text-sm text-[var(--adf-ui-text-muted)]">
               {activeNavItem.description}
@@ -1966,42 +1983,14 @@ export function SettingsPage() {
               description="Show an operating-system notification when an agent needs an approval or asks a question while Studio is not the focused app. Clicking one opens that agent."
               help="Studio never notifies twice: while a window is focused, the in-app notice and the bell badge cover it."
             >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={nativeNotifications}
-                  onChange={async (e) => {
-                    const enabled = e.target.checked
-                    setNativeNotifications(enabled)
-                    await writeSetting({ nativeNotificationsEnabled: enabled })
-                  }}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                  {nativeNotifications ? 'On' : 'Off'}
-                </span>
-              </label>
+              <Switch label="System notifications" checked={nativeNotifications} onChange={(next) => void persist({ nativeNotificationsEnabled: next }, setNativeNotifications, next, nativeNotifications)} />
             </SettingsRow>
             {window.adfApi?.platform === 'darwin' && (
               <SettingsRow
                 label="Menu bar icon"
                 description="Show an ADF icon in the macOS menu bar. Its menu lists running agents and requests waiting on you, and the number beside it counts those requests. Clicking an item opens it in Studio."
               >
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={menuBar}
-                    onChange={async (e) => {
-                      const enabled = e.target.checked
-                      setMenuBar(enabled)
-                      await writeSetting({ menuBarEnabled: enabled })
-                    }}
-                    className="rounded text-blue-500"
-                  />
-                  <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                    {menuBar ? 'On' : 'Off'}
-                  </span>
-                </label>
+                <Switch label="Menu bar icon" checked={menuBar} onChange={(next) => void persist({ menuBarEnabled: next }, setMenuBar, next, menuBar)} />
               </SettingsRow>
             )}
           </SettingsGroup>
@@ -2016,21 +2005,7 @@ export function SettingsPage() {
               description="Ask GitHub Releases for a newer version after launch and every hour."
               help="Off: Studio never contacts GitHub for updates; nothing downloads until you click the update badge."
             >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={updateChecks}
-                  onChange={async (e) => {
-                    const enabled = e.target.checked
-                    setUpdateChecks(enabled)
-                    await writeSetting({ updateChecksEnabled: enabled })
-                  }}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                  {updateChecks ? 'On' : 'Off'}
-                </span>
-              </label>
+              <Switch label="Automatic checks" checked={updateChecks} onChange={(next) => void persist({ updateChecksEnabled: next }, setUpdateChecks, next, updateChecks)} />
             </SettingsRow>
           </SettingsGroup>
           </>}
@@ -2248,9 +2223,9 @@ export function SettingsPage() {
           {/* Packages tab */}
           {activeTab === 'packages' && <PackagesTab
             sandboxPackages={sandboxPackages}
-            setSandboxPackages={setSandboxPackages}
+            setSandboxPackages={(next) => void saveSandboxPackages(next)}
             sandboxMaxWorkers={sandboxMaxWorkers}
-            setSandboxMaxWorkers={setSandboxMaxWorkers}
+            setSandboxMaxWorkers={(next) => void saveSandboxMaxWorkers(next)}
           />}
 
           {/* Providers tab */}
@@ -2259,21 +2234,7 @@ export function SettingsPage() {
               label={<>Models<InfoHint tip="Sends GET /models with each provider's key. Off = providers are contacted only when you click Test or an agent runs." /></>}
               description="Test each configured provider when Home, the provider list, or an agent review opens."
             >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={providerChecks}
-                  onChange={async (e) => {
-                    const enabled = e.target.checked
-                    setProviderChecks(enabled)
-                    await writeSetting({ providerChecksEnabled: enabled })
-                  }}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                  {providerChecks ? 'On' : 'Off'}
-                </span>
-              </label>
+              <Switch label="Models" checked={providerChecks} onChange={(next) => void persist({ providerChecksEnabled: next }, setProviderChecks, next, providerChecks)} />
             </SettingsRow>
           </SettingsGroup>}
           {activeTab === 'providers' && (
@@ -2297,21 +2258,7 @@ export function SettingsPage() {
               description="Fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, when used). Off = only the copies bundled with this build (and the last fetched copy)."
               help="Skill catalogs are listed separately under Skills and can be removed there."
             >
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={remoteCatalogs}
-                  onChange={async (e) => {
-                    const enabled = e.target.checked
-                    setRemoteCatalogs(enabled)
-                    await writeSetting({ remoteCatalogsEnabled: enabled })
-                  }}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
-                  {remoteCatalogs ? 'On' : 'Off'}
-                </span>
-              </label>
+              <Switch label="Live catalogs" checked={remoteCatalogs} onChange={(next) => void persist({ remoteCatalogsEnabled: next }, setRemoteCatalogs, next, remoteCatalogs)} />
             </SettingsRow>
           </SettingsGroup>}
           {activeTab === 'mcps' && (
@@ -2329,16 +2276,16 @@ export function SettingsPage() {
                 const state = reconcileHostApprovedRegistrations(
                   prev, next, computeHostApprovedRef.current, computeHostApprovedSourcesRef.current,
                 )
-                // Update refs synchronously so a second call this tick compounds.
-                computeHostApprovedRef.current = state.approved
-                computeHostApprovedSourcesRef.current = state.sources
-                setComputeHostApproved(state.approved)
-                setComputeHostApprovedSources(state.sources)
+                // saveHostApproval updates the refs synchronously, so a second call this tick compounds.
+                const changed = state.approved.length !== computeHostApprovedRef.current.length
+                  || state.approved.some((n, i) => n !== computeHostApprovedRef.current[i])
+                  || JSON.stringify(state.sources) !== JSON.stringify(computeHostApprovedSourcesRef.current)
+                if (changed) void saveHostApproval(state.approved, state.sources)
                 mcpServersRef.current = next
                 setMcpServers(next)
               }}
               hostAccessEnabled={computeHostAccessEnabled}
-              onEnableHostAccess={() => setComputeHostAccessEnabled(true)}
+              onEnableHostAccess={() => void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled)}
             />
           )}
 
@@ -2380,17 +2327,7 @@ export function SettingsPage() {
               </label>
             </SettingsRow>
             <SettingsRow separator label="Start with the runtime">
-              <input
-                type="checkbox"
-                aria-label="Start with the runtime"
-                checked={meshAutoStart}
-                onChange={async (e) => {
-                  const next = e.target.checked
-                  setMeshAutoStart(next)
-                  await window.adfApi?.setSettings({ meshEnabled: next })
-                }}
-                className="rounded text-blue-500"
-              />
+              <Switch label="Start with the runtime" checked={meshAutoStart} onChange={(next) => void persist({ meshEnabled: next }, setMeshAutoStart, next, meshAutoStart)} />
             </SettingsRow>
           </SettingsGroup>
 
@@ -2428,8 +2365,8 @@ export function SettingsPage() {
                 }}
                 onBlur={async () => {
                   // Commit before the restart — main reads the saved port back.
-                  await window.adfApi?.setSettings({ meshPort })
-                  if (meshServerStatus.running && meshPort !== meshServerStatus.port) {
+                  const saved = await commit({ meshPort })
+                  if (saved && meshServerStatus.running && meshPort !== meshServerStatus.port) {
                     await restartMeshServer()
                   }
                 }}
@@ -2447,9 +2384,8 @@ export function SettingsPage() {
                 disabled={meshRestarting}
                 onChange={async (e) => {
                   const lan = e.target.checked
-                  setMeshLan(lan)
-                  await window.adfApi?.setSettings({ meshLan: lan })
-                  if (meshServerStatus.running) await restartMeshServer()
+                  const saved = await persist({ meshLan: lan }, setMeshLan, lan, meshLan)
+                  if (saved && meshServerStatus.running) await restartMeshServer()
                 }}
                 className="rounded text-blue-500"
               />
@@ -2600,7 +2536,7 @@ export function SettingsPage() {
           {/* Remote access: other devices use this computer's daemon (remote-access.md §7); host-only with a remote runtime. */}
           {remote
             ? <HostOnlyRemoteAccess name={runtimeName} />
-            : <RemoteAccessGroup onKeepRunning={async () => { await window.adfApi?.setBackendSettings({ keepDaemonRunning: true }) }} />}
+            : <RemoteAccessGroup onKeepRunning={async () => { await track(window.adfApi.setBackendSettings({ keepDaemonRunning: true }).then((r) => r.ok ? { ok: true as const } : { ok: false as const, error: r.error })) }} />}
           </>}
 
           {/* Compute tab */}
@@ -2609,17 +2545,21 @@ export function SettingsPage() {
             computeEnvStatus={computeEnvStatus}
             setComputeEnvStatus={setComputeEnvStatus}
             computeHostAccessEnabled={computeHostAccessEnabled}
-            setComputeHostAccessEnabled={setComputeHostAccessEnabled}
+            setComputeHostAccessEnabled={(v) => void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, v, computeHostAccessEnabled)}
             computeHostApproved={computeHostApproved}
-            setComputeHostApproved={setComputeHostApproved}
+            revokeHostServer={(name) => {
+              const sources = { ...computeHostApprovedSourcesRef.current }
+              delete sources[name]
+              void saveHostApproval(computeHostApprovedRef.current.filter((n) => n !== name), sources)
+            }}
             containerPackages={computeContainerPackages}
-            setContainerPackages={setComputeContainerPackages}
+            setContainerPackages={(v) => void persistCompute('containerPackages', (list: string[]) => setComputeContainerPackages(list.join(', ')), v.split(',').map((x) => x.trim()).filter(Boolean), computeContainerPackages.split(',').map((x) => x.trim()).filter(Boolean))}
             machineCpus={computeMachineCpus}
-            setMachineCpus={setComputeMachineCpus}
+            setMachineCpus={(v) => void persistCompute('machineCpus', setComputeMachineCpus, v, computeMachineCpus)}
             machineMemoryMb={computeMachineMemoryMb}
-            setMachineMemoryMb={setComputeMachineMemoryMb}
+            setMachineMemoryMb={(v) => void persistCompute('machineMemoryMb', setComputeMachineMemoryMb, v, computeMachineMemoryMb)}
             containerImage={computeContainerImage}
-            setContainerImage={setComputeContainerImage}
+            setContainerImage={(v) => void persistCompute('containerImage', setComputeContainerImage, v, computeContainerImage)}
             executionTargets={computeExecutionTargets}
             setExecutionTargets={setComputeExecutionTargets}
           />
@@ -2640,7 +2580,7 @@ type ComputeEnvView = { status: string; activeAgents: string[]; leftRunning?: Ar
 function ComputeTab({
   computeEnvStatus, setComputeEnvStatus,
   computeHostAccessEnabled, setComputeHostAccessEnabled,
-  computeHostApproved, setComputeHostApproved,
+  computeHostApproved, revokeHostServer,
   containerPackages, setContainerPackages,
   machineCpus, setMachineCpus,
   machineMemoryMb, setMachineMemoryMb,
@@ -2652,7 +2592,7 @@ function ComputeTab({
   computeHostAccessEnabled: boolean
   setComputeHostAccessEnabled: (v: boolean) => void
   computeHostApproved: string[]
-  setComputeHostApproved: React.Dispatch<React.SetStateAction<string[]>>
+  revokeHostServer: (name: string) => void
   containerPackages: string
   setContainerPackages: (v: string) => void
   machineCpus: number
@@ -2681,12 +2621,16 @@ function ComputeTab({
   const [targetBusy, setTargetBusy] = useState(false)
   const [targetMessage, setTargetMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
 
+  const { commit } = useSettingsSave()
+  /** Resolves false on a refusal (the toast says why; the list is unchanged). */
   const saveExecutionTargets = useCallback(async (targets: ExecutionTarget[]) => {
-    const result = await window.adfApi?.setSettings?.({ compute: { executionTargets: targets } })
-    if (result && !result.success) throw new Error('Could not save execution targets.')
-    setExecutionTargets(targets)
-    invalidateConfigCaches()
-  }, [setExecutionTargets])
+    const saved = await commit({ compute: { executionTargets: targets } })
+    if (saved) {
+      setExecutionTargets(targets)
+      invalidateConfigCaches()
+    }
+    return saved
+  }, [commit, setExecutionTargets])
 
   const refreshAll = useCallback(() => {
     window.adfApi?.computeStatus?.().then((s: ComputeEnvView) => {
@@ -3040,7 +2984,7 @@ function ComputeTab({
                     return
                   }
                   if (targetDraft.pinId && result.containerId) candidate.expectedContainerId = result.containerId
-                  await saveExecutionTargets([...executionTargets, candidate])
+                  if (!await saveExecutionTargets([...executionTargets, candidate])) return
                   setTargetMessage({ kind: 'success', text: `Connected to ${result.containerName ?? candidate.containerRef}.` })
                   setTargetDraft({ name: '', engine: 'docker', containerRef: '', workdir: '/workspace', pinId: false })
                   setShowTargetForm(false)
@@ -3056,76 +3000,54 @@ function ComputeTab({
       )}
     </SettingsGroup>
 
-      {/* Container configuration */}
-    <SettingsGroup className="order-[2] p-4">
-      <div>
-        <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Default Podman container configuration</h4>
-        <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mb-3">
-          Applies to new containers and rebuilds. Uses apt-get for Debian-based images, apk for Alpine.
-        </p>
-
-        <div className="space-y-3">
-          {/* Base image */}
-          <div>
-            <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">Base image</label>
-            <TextInput
-              aria-label="Container base image"
-              type="text"
-              value={containerImage}
-              onChange={(e) => setContainerImage(e.target.value)}
-              className="font-mono text-xs"
-              placeholder="docker.io/library/node:20-alpine"
-            />
-          </div>
-
-          {/* Packages */}
-          <div>
-            <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">System packages (comma-separated)</label>
-            <TextInput
-              aria-label="Container system packages"
-              type="text"
-              value={containerPackages}
-              onChange={(e) => setContainerPackages(e.target.value)}
-              className="font-mono text-xs"
-              placeholder="python3, python3-pip, git, curl"
-            />
-          </div>
-
-          {/* Machine resources (macOS/Windows only) */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">VM CPUs</label>
-              <TextInput
-                aria-label="Virtual machine CPUs"
-                type="number"
-                min={1}
-                max={16}
-                value={machineCpus}
-                onChange={(e) => setMachineCpus(Math.max(1, parseInt(e.target.value) || 2))}
-                className="text-xs"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">VM Memory (MB)</label>
-              <TextInput
-                aria-label="Virtual machine memory in megabytes"
-                type="number"
-                min={512}
-                max={32768}
-                step={256}
-                value={machineMemoryMb}
-                onChange={(e) => setMachineMemoryMb(Math.max(512, parseInt(e.target.value) || 2048))}
-                className="text-xs"
-              />
-            </div>
-          </div>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-            VM resources apply to macOS/Windows (Podman machine). On Linux, containers use host resources directly.
-          </p>
-
-        </div>
-      </div>
-
+      {/* Container configuration: each field commits on Enter or when it loses focus. */}
+    <SettingsGroup
+      className="order-[2]"
+      title="Default container"
+      description="Applies to new containers and rebuilds."
+      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows; on Linux, containers use this computer's resources."
+    >
+      <SettingsRow label="Image">
+        <CommitInput
+          aria-label="Image"
+          value={containerImage}
+          onCommit={(v) => setContainerImage(v.trim())}
+          check={(v) => (v.trim() ? null : 'Enter an image.')}
+          spellCheck={false}
+          className="!w-72 font-mono !text-[12px]"
+          placeholder="docker.io/library/node:20-alpine"
+        />
+      </SettingsRow>
+      <SettingsRow separator label={<>Packages<InfoHint tip="System packages, comma-separated." /></>}>
+        <CommitInput
+          aria-label="Packages"
+          value={containerPackages}
+          onCommit={setContainerPackages}
+          spellCheck={false}
+          className="!w-72 font-mono !text-[12px]"
+          placeholder="python3, python3-pip, git, curl"
+        />
+      </SettingsRow>
+      <SettingsRow separator label="CPUs">
+        <CommitInput
+          aria-label="CPUs"
+          inputMode="numeric"
+          value={String(machineCpus)}
+          onCommit={(v) => { const r = checkWholeNumber(v, 1, 16); if (r.ok) setMachineCpus(r.value) }}
+          check={(v) => { const r = checkWholeNumber(v, 1, 16); return r.ok ? null : r.error }}
+          className="!w-24 !text-[12px]"
+        />
+      </SettingsRow>
+      <SettingsRow separator label={<>Memory<InfoHint tip="In megabytes." /></>}>
+        <CommitInput
+          aria-label="Memory"
+          inputMode="numeric"
+          value={String(machineMemoryMb)}
+          onCommit={(v) => { const r = checkWholeNumber(v, 512, 32768); if (r.ok) setMachineMemoryMb(r.value) }}
+          check={(v) => { const r = checkWholeNumber(v, 512, 32768); return r.ok ? null : r.error }}
+          className="!w-24 !text-[12px]"
+        />
+      </SettingsRow>
     </SettingsGroup>
 
     <SettingsGroup className={`order-[3] overflow-hidden p-0 ${advancedOpen ? '!rounded-b-none' : ''}`}>
@@ -3178,7 +3100,7 @@ function ComputeTab({
                 <div key={name} className="flex items-center justify-between py-1 px-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
                   <span className="text-xs text-neutral-700 dark:text-neutral-300 font-mono">{name}</span>
                   <Button
-                    onClick={() => setComputeHostApproved((prev) => prev.filter((n) => n !== name))}
+                    onClick={() => revokeHostServer(name)}
                     variant="danger"
                     size="compact"
                     className="text-[10px]"

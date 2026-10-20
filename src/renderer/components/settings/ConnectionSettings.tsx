@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Button, IconButton, SettingsGroup, SettingsRow, TextInput } from '../ui'
+import { Button, IconButton, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
+import { useSettingsSave } from './settings-save'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -350,6 +351,7 @@ export function ConnectionSettings() {
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [pairWith, setPairWith] = useState<PairTarget | null>(null)
   const [adding, setAdding] = useState(false)
+  const { track } = useSettingsSave()
 
   useEffect(() => {
     startConnectionFeed()
@@ -408,6 +410,19 @@ export function ConnectionSettings() {
     } finally {
       setBusy(false)
     }
+  }
+
+  /** The one setting on this page: written at once, "Saved" in the header, put back on a refusal. */
+  const saveKeepRunning = (next: boolean) => {
+    if (!backend) return
+    const prev = backend
+    setBackend({ ...backend, configured: { ...backend.configured, keepDaemonRunning: next } })
+    void track(window.adfApi.setBackendSettings({ keepDaemonRunning: next }).then((result) => {
+      if (!result.ok) return { ok: false as const, error: result.error }
+      setBackend(result.view)
+      if (result.notices.length > 0) setMessage({ kind: 'ok', text: result.notices.join(' ') })
+      return { ok: true as const }
+    }), () => setBackend(prev))
   }
 
   if (!view || !backend) {
@@ -499,17 +514,7 @@ export function ConnectionSettings() {
             label="Keep running after quit"
             description={<>Agents on this computer keep running after you quit Studio.<LearnMore href={DOCS.backendQuit} /></>}
           >
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={backend.configured.keepDaemonRunning}
-                disabled={busy}
-                onChange={(event) => void saveBackend({ keepDaemonRunning: event.target.checked }, 'Saved.')}
-                className="rounded text-blue-500"
-                aria-label="Keep running after quit"
-              />
-              <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{backend.configured.keepDaemonRunning ? 'On' : 'Off'}</span>
-            </label>
+            <Switch label="Keep running after quit" checked={backend.configured.keepDaemonRunning} disabled={busy} onChange={saveKeepRunning} />
           </SettingsRow>
         </SettingsGroup>
       )}

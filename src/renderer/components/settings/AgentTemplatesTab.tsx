@@ -12,6 +12,7 @@ import { AgentConfig } from '../agent/AgentConfig'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { Dialog } from '../common/Dialog'
 import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
+import { useSettingsSave } from './settings-save'
 
 /**
  * Settings > Agent templates.
@@ -128,6 +129,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
 
   // settings.childTemplateId ('' = none) — written immediately, not debounced.
   const [childTemplateId, setChildTemplateId] = useState('')
+  const { commit } = useSettingsSave()
   useEffect(() => {
     let cancelled = false
     void window.adfApi.getSettings().then((settings) => {
@@ -136,8 +138,9 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     return () => { cancelled = true }
   }, [])
   const pickChildTemplate = (id: string) => {
+    const prev = childTemplateId
     setChildTemplateId(id)
-    void window.adfApi.setSettings({ childTemplateId: id })
+    void commit({ childTemplateId: id }, () => setChildTemplateId(prev))
   }
 
   // --- debounced writes -----------------------------------------------------
