@@ -10,9 +10,9 @@ import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConnectionRows, connectionDetail, emptyDiscoveryLine, pendingRestartLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
+import { ConnectionRows, SimpleConnections, connectionDetail, emptyDiscoveryLine, pendingRestartLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor } from '../../../src/renderer/components/settings/settings-nav'
-import { runtimeGroupLabel } from '../../../src/renderer/stores/connection.store'
+import { remoteConnectionsSaved, runtimeGroupLabel } from '../../../src/renderer/stores/connection.store'
 import { DOCS } from '../../../src/shared/constants/docs-links'
 import { CLIENT_SETTINGS_KEYS } from '../../../src/shared/constants/client-settings-keys'
 import type { BackendDaemonStatus, BackendSettingsView } from '../../../src/shared/types/backend.types'
@@ -156,15 +156,17 @@ describe('This computer and the switch notices', () => {
 })
 
 describe('the sidebar: Studio and Runtime · <name>', () => {
-  it('two groups, Studio first; the runtime group is named after the connection, with its state while not connected', () => {
-    expect(settingsNavGroups(runtimeGroupLabel(current())).map((g) => g.label)).toEqual(['Studio', 'Runtime · This computer'])
+  it('two groups, Studio first; the runtime group is named after the connection only once a remote is saved', () => {
+    // Local only: plain ADF Studio, the runtime's pages have no heading.
+    expect(settingsNavGroups(runtimeGroupLabel(current()), false).map((g) => g.label)).toEqual(['Studio', ''])
+    expect(settingsNavGroups(runtimeGroupLabel(current()), true).map((g) => g.label)).toEqual(['Studio', 'Runtime · This computer'])
     expect(runtimeGroupLabel(current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub' }))).toBe('Runtime · rawl-hub')
     expect(runtimeGroupLabel(current({ kind: 'remote', name: 'rawl-hub', state: 'retrying' }))).toBe('Runtime · rawl-hub · Not connected, retrying')
     expect(runtimeGroupLabel(null)).toBe('Runtime')
   })
 
-  it('Studio holds Connection, Appearance, Notifications, Updates, Privacy, About; the runtime the rest', () => {
-    expect(STUDIO_NAV_ITEMS.map((i) => i.label)).toEqual(['Appearance', 'Connection', 'Notifications', 'Updates', 'Privacy', 'About'])
+  it('Studio holds Appearance, Notifications, Updates, Privacy, About, then Connections; the runtime the rest', () => {
+    expect(STUDIO_NAV_ITEMS.map((i) => i.label)).toEqual(['Appearance', 'Notifications', 'Updates', 'Privacy', 'About', 'Connections'])
     expect(RUNTIME_NAV_ITEMS.map((i) => i.label)).toEqual(['Prompts', 'Agent templates', 'Providers', 'Packages', 'MCP servers', 'Skills', 'Channels', 'Files', 'Identity', 'Networking', 'Compute', 'Usage'])
     // Plain nouns: no question, at most one short sentence under a title.
     for (const item of [...STUDIO_NAV_ITEMS, ...RUNTIME_NAV_ITEMS]) {
@@ -211,5 +213,29 @@ describe('Connection page docs links', () => {
       expect(url, key).toMatch(/\/docs\/guides\/studio-backend\.md#/)
       expect(anchors.has(url.split('#')[1]), `${key}: ${url}`).toBe(true)
     }
+  })
+})
+
+describe('local only: Connections is one line', () => {
+  const saved = row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'paired', action: 'connect', removable: true })
+  const found = row({ id: 'found:F@u', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair' })
+
+  it('a remote counts as saved once it is in the list or in use; a computer found on the network does not', () => {
+    expect(remoteConnectionsSaved(null)).toBe(false)
+    expect(remoteConnectionsSaved({ current: current(), rows: [row({ state: 'connected', action: null })] })).toBe(false)
+    expect(remoteConnectionsSaved({ current: current(), rows: [row({ state: 'connected', action: null }), found] })).toBe(false)
+    expect(remoteConnectionsSaved({ current: current(), rows: [row({ state: 'connected', action: null }), saved] })).toBe(true)
+    expect(remoteConnectionsSaved({ current: current({ id: 'remote', kind: 'remote', name: 'rawl-hub' }), rows: [] })).toBe(true)
+  })
+
+  it('one line and Add; This computer and Inside Studio (legacy) under Details', () => {
+    const html = renderToStaticMarkup(<SimpleConnections busy={false} message={null} onAdd={() => {}} onLegacy={() => {}} details={<span>daemon-row</span>} />)
+    expect(html).toContain('Runtimes on other computers')
+    expect(html).toContain('>Add<')
+    expect(html).toContain('<details')
+    expect(html).toContain('>Details</summary>')
+    expect(html).toContain('daemon-row')
+    expect(html).toContain('Inside Studio (legacy)')
+    expect(html).not.toContain('Runtime ·')
   })
 })

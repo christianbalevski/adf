@@ -1,9 +1,11 @@
 /**
  * The Settings sidebar (docs/design/settings-scopes.md §4): two groups.
  * **Studio** is this app on this computer (client keys,
- * client-settings-keys.ts); **Runtime · <name>** is the runtime this window
- * uses (backend keys), named after the connection. Labels are plain nouns;
- * each page has at most one short sentence under its title.
+ * client-settings-keys.ts); the second group is the runtime this window uses
+ * (backend keys). It is headed **Runtime · <name>** only once a runtime on
+ * another computer is saved; until then it has no heading, so Settings reads
+ * as plain ADF Studio. Labels are plain nouns; each page has at most one
+ * short sentence under its title.
  */
 import type { SettingsSection } from '../../stores/app.store'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -30,11 +32,11 @@ export type SettingsNavGroup = {
 /** Studio: the app on this computer. Client keys only (client-settings-keys.ts). */
 export const STUDIO_NAV_ITEMS: SettingsNavItem[] = [
   { id: 'appearance', label: 'Appearance', description: 'Theme, avatars, chat width, font and scale.', keywords: 'theme dark light font scale avatars chat width', docs: DOCS.settingsGeneral },
-  { id: 'connection', label: 'Connection', description: 'The runtime this window uses.', keywords: 'backend daemon embedded local remote server url token pair add connection this computer', docs: DOCS.backendConnection },
   { id: 'notifications', label: 'Notifications', description: 'System notifications and the menu bar icon.', keywords: 'notifications menu bar badge', docs: DOCS.settingsGeneral },
   { id: 'updates', label: 'Updates', description: 'Version and update checks.', keywords: 'update version release check', docs: DOCS.settingsGeneral },
   { id: 'privacy', label: 'Privacy', description: 'Studio sends no telemetry.', keywords: 'privacy telemetry network spell check dictionaries', docs: DOCS.settingsGeneral },
   { id: 'about', label: 'About', description: 'Concepts and links.', keywords: 'help docs github format', docs: DOCS.index },
+  { id: 'connection', label: 'Connections', description: 'Runtimes on other computers.', keywords: 'backend daemon embedded local remote server url token pair add connection connections this computer runtime', docs: DOCS.backendConnection },
 ]
 
 /** Runtime: the connected daemon's settings (backend keys). */
@@ -50,14 +52,17 @@ export const RUNTIME_NAV_ITEMS: SettingsNavItem[] = [
   { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation seed phrase owner', docs: DOCS.settingsIdentity },
   { id: 'networking', label: 'Networking', description: 'Mesh and remote access', keywords: 'lan tailscale mdns peers server remote access devices pair add device allowed networks', docs: DOCS.settingsNetworking },
   { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation', docs: DOCS.settingsCompute },
-  { id: 'usage', label: 'Usage', description: 'Token totals on this runtime.', keywords: 'tokens usage cost burn', docs: DOCS.settingsUsage },
+  { id: 'usage', label: 'Usage', description: 'Token totals by day, provider and model.', keywords: 'tokens usage cost burn', docs: DOCS.settingsUsage },
 ]
 
-/** The sidebar: Studio, then "Runtime · <name>" (settings-scopes.md §4). */
-export function settingsNavGroups(runtimeLabel: string): SettingsNavGroup[] {
+/**
+ * The sidebar: Studio, then the runtime's pages (settings-scopes.md §4),
+ * headed "Runtime · <name>" only when `remoteSaved`; otherwise unheaded.
+ */
+export function settingsNavGroups(runtimeLabel: string, remoteSaved: boolean): SettingsNavGroup[] {
   return [
     { scope: 'studio', label: 'Studio', items: STUDIO_NAV_ITEMS },
-    { scope: 'runtime', label: runtimeLabel, items: RUNTIME_NAV_ITEMS },
+    { scope: 'runtime', label: remoteSaved ? runtimeLabel : '', items: RUNTIME_NAV_ITEMS },
   ]
 }
 

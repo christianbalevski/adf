@@ -18,7 +18,8 @@ import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
 import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
-import { runtimeDown, runtimeGroupLabel, useCurrentConnection } from '../../stores/connection.store'
+import { runtimeDown, runtimeGroupLabel, useCurrentConnection, useRemoteConnectionsSaved } from '../../stores/connection.store'
+import { CONNECTION_STATE_LABELS } from '../../../shared/types/connection.types'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
@@ -183,7 +184,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
     if (next === prev) { set(prev); return }
     set(next)
     savedAliases.current[which] = next
-    void commit({ [which === 'owner' ? 'ownerAlias' : 'runtimeAlias']: next }, () => { savedAliases.current[which] = prev; set(prev) })
+    void commit(which === 'owner' ? { ownerAlias: next } : { runtimeAlias: next }, () => { savedAliases.current[which] = prev; set(prev) })
   }
 
   const refresh = useCallback(() => {
@@ -1189,7 +1190,8 @@ function SettingsPageBody() {
   const connection = useCurrentConnection()
   const remote = connection?.kind === 'remote'
   const runtimeName = connection?.name ?? 'the runtime'
-  const navGroups = settingsNavGroups(runtimeGroupLabel(connection))
+  const remoteSaved = useRemoteConnectionsSaved()
+  const navGroups = settingsNavGroups(runtimeGroupLabel(connection), remoteSaved)
   const [settingsSearch, setSettingsSearch] = useState('')
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
@@ -1642,7 +1644,7 @@ function SettingsPageBody() {
     const set = key === 'globalSystemPrompt' ? setSystemPrompt : setCompactionPrompt
     const prev = key === 'globalSystemPrompt' ? systemPrompt : compactionPrompt
     invalidateConfigCaches()
-    return persist({ [key]: next }, set, next, prev)
+    return persist(key === 'globalSystemPrompt' ? { globalSystemPrompt: next } : { compactionPrompt: next }, set, next, prev)
   }
 
   /** One tool or dynamic instruction, written as the whole toolPrompts record. */
@@ -1765,9 +1767,11 @@ function SettingsPageBody() {
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Settings sections">
           {visibleNavGroups.length > 0 ? visibleNavGroups.map((group, groupIndex) => (
             <div key={group.scope} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-[var(--adf-ui-separator)]' : 'mt-1'} data-settings-scope={group.scope}>
-              <div className="mb-1 truncate px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>
-                {group.label}
-              </div>
+              {group.label && (
+                <div className="mb-1 truncate px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>
+                  {group.label}
+                </div>
+              )}
               <div className="space-y-0.5">
                 {group.items.map((item) => (
                   <button
@@ -1813,7 +1817,7 @@ function SettingsPageBody() {
 
           {runtimeUnreachable && connection && (
             <p role="status" className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-              Not connected to {connection.name}.
+              {remoteSaved ? `Not connected to ${connection.name}.` : `${CONNECTION_STATE_LABELS[connection.state]}.`}
             </p>
           )}
           <fieldset disabled={runtimeUnreachable} className="contents">
@@ -2021,7 +2025,7 @@ function SettingsPageBody() {
 
           {activeTab === 'usage' && (
             <div data-settings-anchor="usage" className="scroll-mt-4">
-              <SettingsGroup title="Usage" description="Token totals on this runtime." docs={DOCS.settingsUsage}>
+              <SettingsGroup title="Usage" docs={DOCS.settingsUsage}>
                 <div className="px-4 pb-4"><TokenUsageSection /></div>
               </SettingsGroup>
             </div>
@@ -2225,7 +2229,7 @@ function SettingsPageBody() {
           <SettingsGroup title="Mesh" docs={DOCS.lanDiscovery}>
             <SettingsRow
               label="Mesh"
-              description="Agents on this runtime message each other and peer runtimes, and serve their cards and APIs."
+              description="Agents message each other and peer runtimes, and serve their cards and APIs."
               help={MESH_OFF_NOTE}
               error={meshSwitchError ?? undefined}
             >

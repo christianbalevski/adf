@@ -26,7 +26,7 @@ import { KEYCHAIN_FILE_COPY } from '../cli/remotes'
 /**
  * Remote access in Studio main
  * (docs/design/remote-access.md §7, §9.1): the IPC channels of Settings →
- * Networking → Remote access (host) and Settings → Connection (discovery,
+ * Networking → Remote access (host) and Settings → Connections (discovery,
  * pairing), and the quit question. Registered in every backend mode, outside
  * the backend registration; the host channels answer "unavailable" unless
  * Studio runs the ADF daemon on this computer.
@@ -55,7 +55,7 @@ export interface RemoteAccessIpcDeps {
   meshPeers?: () => MdnsService | null
   /** Where cli-remotes.json and the keychain fallback are (connections.ts remotesEnv). Default: next to `settingsDir`. */
   remotesEnv?: NodeJS.ProcessEnv
-  /** The discovery list or the saved connections changed: Settings → Connection is pushed again. */
+  /** The discovery list or the saved connections changed: Settings → Connections is pushed again. */
   onConnectionsChanged?: () => void
   /** The saved connections, cached (connections.ts); default: a cache of `remotesEnv`. */
   savedCache?: SavedConnectionsCache
@@ -120,7 +120,7 @@ export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapsho
 export function unavailableReason(mode: StudioBackendMode): string {
   return mode === 'remote'
     ? 'Remote access is changed on the remote computer.'
-    : 'Remote access needs This computer as the connection (Settings → Connection).'
+    : 'Remote access needs This computer as the connection (Settings → Connections).'
 }
 
 const VIA: Record<PairingClaimView['via'], string> = { lan: 'this network', tailnet: 'your tailnet', proxy: 'through a proxy' }
@@ -420,7 +420,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   const consentTimer = consentPollMs > 0 ? setInterval(checkConsent, consentPollMs) : null
   consentTimer?.unref?.()
 
-  // --- Client: Settings → Connection ---
+  // --- Client: Settings → Connections ---
   ipcMain.handle(IPC.REMOTE_DISCOVERY_START, async () => { await refreshSaved(); discovery.start(); return true })
   ipcMain.handle(IPC.REMOTE_DISCOVERY_STOP, () => { discovery.stop(); return true })
   ipcMain.handle(IPC.REMOTE_PAIR_START, async (_event, request: unknown) => { await refreshSaved(); return pairing.start((request ?? {}) as { url: string }) })

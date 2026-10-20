@@ -86,17 +86,17 @@ describe('after a failed launch', () => {
     await vi.waitFor(() => expect(relaunches).toEqual(['embedded: no ADF daemon could be reached at launch']))
   })
 
-  it('remote mode: Reconnect and Open Settings → Connection, never embedded (agents here may also run on the server)', async () => {
+  it('remote mode: Reconnect and Open Settings → Connections, never embedded (agents here may also run on the server)', async () => {
     electronStub.calls.length = 0
     electronStub.pushes.length = 0
     electronStub.dialogResponse = 99
     const { handle, relaunches } = boot(async () => { throw new Error('The remote ADF daemon at https://adf.example.test does not answer.') }, 'remote')
     expect(await handle.ready).toBe(false)
-    expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Open Settings → Connection'])
-    helpItem('Open Settings → Connection')!.click!()
+    expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Open Settings → Connections'])
+    helpItem('Open Settings → Connections')!.click!()
     expect(electronStub.pushes).toEqual([{ channel: IPC.MENU_ACTION, args: ['open-settings-backend'] }])
     const dialog = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { buttons: string[] }
-    expect(dialog.buttons).toEqual(['Reconnect', 'Open Settings → Connection', 'Open Daemon Log', 'OK'])
+    expect(dialog.buttons).toEqual(['Reconnect', 'Open Settings → Connections', 'Open Daemon Log', 'OK'])
     expect(relaunches).toEqual([])
   })
 

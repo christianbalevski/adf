@@ -1,5 +1,5 @@
 /**
- * Settings → Connection (docs/design/settings-scopes.md §5): the runtimes
+ * Settings → Connections (docs/design/settings-scopes.md §5): the runtimes
  * this window can use. This computer, Inside Studio (legacy) while it is in
  * use or saved, the saved remotes (`cli-remotes.json`, shared with `adf`, and
  * the remote URL of `studio-backend.json`), and computers found on the

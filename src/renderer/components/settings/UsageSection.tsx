@@ -115,7 +115,7 @@ export function TokenUsageSection() {
   }, [])
 
   const handleClear = async () => {
-    if (!await confirm({ title: 'Clear usage', body: 'Every token count on this runtime is deleted. This cannot be undone; Download JSON keeps a copy.', confirmLabel: 'Clear usage', danger: true })) {
+    if (!await confirm({ title: 'Clear usage', body: 'Every token count is deleted. This cannot be undone; Download JSON keeps a copy.', confirmLabel: 'Clear usage', danger: true })) {
       return
     }
     await window.adfApi?.clearTokenUsage()

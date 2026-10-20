@@ -84,7 +84,7 @@ export interface NetworkNotice {
 /** NETWORK_ALLOW / NETWORK_FORGET. */
 export type NetworkConsentResult = { ok: true } | { ok: false; error: string }
 
-// --- Client side: Settings → Connection ---------------------
+// --- Client side: Settings → Connections ---------------------
 
 /** One ADF computer found on the LAN (mDNS) or the tailnet (hello probe), merged by fingerprint. */
 export interface RemoteDiscoveryEntry {

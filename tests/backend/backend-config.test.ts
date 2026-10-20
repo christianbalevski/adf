@@ -187,7 +187,7 @@ describe('normalizeBackendConfig', () => {
   })
 })
 
-describe('Settings → Connection store', () => {
+describe('Settings → Connections store', () => {
   function store(opts: {
     codec?: SecretCodec
     path?: string
@@ -225,7 +225,7 @@ describe('Settings → Connection store', () => {
     expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('local')
   })
 
-  it('Cancel Switch on a waiting switch saves the running mode again; Finish Switch Now restarts (W4-A)', async () => {
+  it('Cancel switch on a waiting switch saves the running mode again; Finish switch now restarts (W4-A)', async () => {
     let waiting: 'local' | null = null
     const restarted: string[] = []
     const path = embeddedConfigPath()
@@ -250,7 +250,7 @@ describe('Settings → Connection store', () => {
     expect(restarted).toEqual(['local'])
   })
 
-  it.each(['env', 'session'] as const)('Cancel Switch in a launch the %s source made embedded writes back the mode the file had (review 4300792088)', async (source) => {
+  it.each(['env', 'session'] as const)('Cancel switch in a launch the %s source made embedded writes back the mode the file had (review 4300792088)', async (source) => {
     let waiting: 'remote' | null = null
     const path = tempConfigPath()
     writeFileSync(path, JSON.stringify({ v: 1, mode: 'local' }))
@@ -461,7 +461,7 @@ describe('review fixes', () => {
     expect(readRemoteToken(boot.config, fakeCodec())).toBeNull()
     expect(lines.some((l) => l.includes('not used until confirmed'))).toBe(true)
     expect(lines.some((l) => l.includes('mode is remote'))).toBe(true)
-    // W0-E follow-up: the refusal is visible in Settings → Connection (and the connector's dialog).
+    // W0-E follow-up: the refusal is visible in Settings → Connections (and the connector's dialog).
     const view = createBackendSettingsStore({ boot, codec: fakeCodec(), log: recordingLog().log }).get()
     expect(view.active.notices.join(' ')).toMatch(/remote daemon cannot be used.*192\.168\.1\.5/)
     expect(view.remoteUrlProblem).toMatch(/not confirmed/)

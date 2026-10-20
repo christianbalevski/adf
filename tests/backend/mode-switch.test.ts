@@ -304,7 +304,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(start).toHaveBeenCalledWith(agent1)
   })
 
-  it('a waiting switch can be finished now or cancelled from Settings → Connection', async () => {
+  it('a waiting switch can be finished now or cancelled from Settings → Connections', async () => {
     const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: true }])
     h.responses.push(0)
     await s.confirm('local')
@@ -350,7 +350,7 @@ describe('the switch dialog and the agents that ran before it (§11.1)', () => {
     expect(h.notifications).toEqual(['Not started after the switch: agent-1, agent-2. The switch was to "This computer", but this launch runs agents inside Studio.'])
   })
 
-  it('once the restart has started, a later switch or Cancel Switch is refused and changes nothing (W5-F)', async () => {
+  it('once the restart has started, a later switch or Cancel switch is refused and changes nothing (W5-F)', async () => {
     const { s, relaunched } = switcher(() => [{ filePath: agent1, busy: true }])
     h.responses.push(0)
     await s.confirm('local')

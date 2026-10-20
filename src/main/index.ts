@@ -133,7 +133,7 @@ let embeddedIpc: EmbeddedIpc | null = null
 let agentWindows: AgentWindows | null = null
 // Queued messages of agent windows, handed to the main window when one closes.
 const queueHandover = new QueueHandover()
-// Set when Settings → Connection confirmed a switch: the quit that follows is a restart into it.
+// Set when Settings → Connections confirmed a switch: the quit that follows is a restart into it.
 let switchingTo: StudioBackendMode | null = null
 // Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
 let remoteAccess: RemoteAccessIpc | null = null
@@ -749,7 +749,7 @@ app.whenReady().then(async () => {
       hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
-      // Read at quit: a change in Settings → Connection applies to the next quit.
+      // Read at quit: a change in Settings → Connections applies to the next quit.
       keepDaemonRunning: () => backendStore?.config().keepDaemonRunning ?? backend.config.keepDaemonRunning,
       reloadCredentials: handover?.changed === true && !sessionOnly,
       onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
@@ -849,7 +849,7 @@ app.whenReady().then(async () => {
     },
     relaunch: (target) => {
       switchingTo = target
-      relaunchStudio(`the backend was switched to ${target} in Settings → Connection`)
+      relaunchStudio(`the backend was switched to ${target} in Settings → Connections`)
     },
   })
   backendStore = registerBackendSettingsHandlers(backend, {
@@ -877,7 +877,7 @@ app.whenReady().then(async () => {
     savedCache,
     onConnectionsChanged: () => connections?.changed(),
   })
-  // Settings → Connection and the status bar's runtime indicator (settings-scopes.md §4.1, §5).
+  // Settings → Connections and the status bar's runtime indicator (settings-scopes.md §4.1, §5).
   const store = backendStore
   const access = remoteAccess
   connections = createConnections({

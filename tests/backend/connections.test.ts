@@ -1,5 +1,5 @@
 /**
- * Settings → Connection (docs/design/settings-scopes.md §5): the saved
+ * Settings → Connections (docs/design/settings-scopes.md §5): the saved
  * connections Studio shares with `adf` (cli-remotes.json and the keychain,
  * here a test keychain file), the rows of the page, Connect, Add connection
  * with a token, Remove, and the remote connector on a saved connection.

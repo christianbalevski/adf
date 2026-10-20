@@ -90,7 +90,7 @@ Quit ADF Studio, then run adf again. Or keep using Studio.
 
 Choose one:
 
-- Connect Studio to **This computer** (Settings → Connection). Studio and `adf`
+- Connect Studio to **This computer** (Settings → Connections). Studio and `adf`
   then share one daemon.
 - Quit Studio and run `adf` again.
 - Give the daemon separate data
@@ -157,7 +157,7 @@ port). Only `adf` and Studio on the daemon's machine send it. If the daemon
 cannot restrict that file to your user (Windows `icacls` failure), it runs
 without a proof and those routes answer `403 loopback_only`.
 `adf daemon status` then prints `proof     unavailable: …`, and Studio's
-Settings → Connection says "Reveal and identity import are refused." and names
+Settings → Connections says "Reveal and identity import are refused." and names
 the problem under **Details** ("Local proof: unavailable (…)"). Fix the
 data folder's permissions (or move it into your user profile) and run
 `adf daemon restart`.

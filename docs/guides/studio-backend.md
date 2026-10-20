@@ -10,7 +10,7 @@ see_also:
 # Studio backend
 
 ADF Studio runs agents in one of three backends. You choose it in
-**Settings → Connection** ([Connection](#connection)); Studio reads the choice
+**Settings → Connections** ([Connection](#connection)); Studio reads the choice
 at launch, so a change applies after a restart.
 
 | Backend | Agents run in | Typical use |
@@ -51,7 +51,7 @@ While the runtime is not connected the group says so ("Runtime · rawl-hub ·
 Not connected, retrying") and its pages show "Not connected to *name*." with
 their controls disabled.
 
-**Studio → Connection** lists the runtimes this window can use:
+**Studio → Connections** lists the runtimes this window can use:
 
 | Row | State | Action |
 |---|---|---|
@@ -85,7 +85,7 @@ mesh and Kill: nothing for This
 computer while it is connected; a remote connection's name with a remote
 icon (its address in the tooltip); the state in the same spot while a
 connection is not connected ("rawl-hub · Not connected, retrying", "This
-computer · Connecting"). A click opens Studio → Connection.
+computer · Connecting"). A click opens Studio → Connections.
 
 ### Saved connections and adf
 
@@ -128,7 +128,7 @@ before the token is sent.
 Studio 0.7.x ran agents itself (Inside Studio). From this release on, every
 install runs This computer, including an install that ran 0.7.x. The first
 launch after the upgrade does what a switch from Inside Studio to This
-computer in Settings → Connection does (see [What moves](#what-moves-during-a-switch)):
+computer in Settings → Connections does (see [What moves](#what-moves-during-a-switch)):
 
 1. Studio moves your client settings, ChatGPT and Grok sessions, app-level MCP
    sign-ins and the runtime identity into the daemon's stores, before it
@@ -145,7 +145,7 @@ computer in Settings → Connection does (see [What moves](#what-moves-during-a-
    connect, the dialog says "… but Studio could not connect to it." and that no agent
    runs yet. The dialog appears once: if Studio quits or restarts before it
    was shown, the next launch shows it, together with what that launch moved
-   and what is still not done. Settings → Connection keeps a **Default changed** row
+   and what is still not done. Settings → Connections keeps a **Default changed** row
    with the date and the version; its **Details** lists what moved.
 
 The dialog also says, when it applies:
@@ -217,7 +217,7 @@ For the week of daily use on a pre-release build of this branch
    macOS) too, so a check for the process name passes while only the daemon
    runs. Check for the window, or for Studio's pid, instead.
 5. **The way back**, in this order:
-   1. Settings → Connection → Inside Studio (legacy), then restart Studio as asked.
+   1. Settings → Connections → Inside Studio (legacy), then restart Studio as asked.
    2. After the restart, check the handover summary: no item may be pending.
       A pending item means a credential is still with the daemon. Fix what it
       names and restart again before going on.
@@ -230,7 +230,7 @@ For the week of daily use on a pre-release build of this branch
 
 ## Switch the backend
 
-1. Open **Settings → Connection** and choose **Connect** on a row.
+1. Open **Settings → Connections** and choose **Connect** on a row.
 2. Studio shows the switch dialog, "Run agents *on B* instead of *on A*?"
    (for example "Run agents on this computer instead of inside Studio?"). It
    lists what moves at the restart (see [What moves](#what-moves-during-a-switch)),
@@ -245,7 +245,7 @@ For the week of daily use on a pre-release build of this branch
 cancelled. Nothing changed."
 
 If `ADF_STUDIO_BACKEND` is set in Studio's environment, it overrides the
-saved mode; the dialog says so and Settings → Connection shows "Agents run
+saved mode; the dialog says so and Settings → Connections shows "Agents run
 *on mode* because ADF_STUDIO_BACKEND is set."
 
 ### Messages on the Connection page
@@ -281,18 +281,18 @@ dialog does not ask. Neither does a switch away from Remote computer.
 
 | Button | What happens |
 |---|---|
-| **Wait for Them to Finish** | Studio restarts once those turns end ("Studio restarts once the turns in flight finish (*agents*)."). Settings → Connection shows "Switching to *B*" with **Finish Switch Now** (restart now; the quit stops the turns) and **Cancel Switch** (stay in the current backend) |
+| **Wait for Them to Finish** | Studio restarts once those turns end ("Studio restarts once the turns in flight finish (*agents*)."). Settings → Connections shows "Switching to *B*" with **Finish switch now** (restart now; the quit stops the turns) and **Cancel switch** (stay in the current backend) |
 | **Stop Them Now** | Studio restarts at once; the quit interrupts the turns |
 | **Cancel** | Nothing changes |
 
 Nothing is interrupted without one of these choices. If the turns are still
 running after 30 minutes, Studio stops waiting and notifies you: "The switch
-to *B* is waiting: *agents* still has a turn in flight. Settings → Connection:
-Finish Switch Now (stops the turns) or Cancel Switch."
+to *B* is waiting: *agents* still has a turn in flight. Settings → Connections:
+Finish switch now (stops the turns) or Cancel switch."
 
 While a switch waits, the latest choice wins: choosing another backend
 replaces the waiting switch (after its own switch dialog), and choosing the
-backend Studio runs now cancels it, as **Cancel Switch** does. The switch
+backend Studio runs now cancels it, as **Cancel switch** does. The switch
 dialog says "This replaces the waiting switch to "*B*"." Once the restart has
 started, a mode change or a switch button is refused with "Studio is already
 restarting for the switch to "*B*". Nothing changed." If a launch then runs another backend
@@ -398,7 +398,7 @@ identity stay where the saved backend keeps them.
 
 ## Quit Studio
 
-**Settings → Connection → This computer → Keep running after quit**
+**Settings → Connections → This computer → Background**
 (`keepDaemonRunning`, This computer only, default off):
 
 | Setting | When you quit Studio | After a Studio crash |
@@ -410,7 +410,7 @@ A change applies from then on, also to the crash case ("Saved. Applies from
 now on.").
 
 A daemon started with `adf daemon start` (or a service manager) is never
-stopped by Studio, whatever the setting says. Settings → Connection shows who
+stopped by Studio, whatever the setting says. Settings → Connections shows who
 started the daemon.
 
 If another client (the terminal app, another Studio) is connected when Studio
@@ -497,7 +497,7 @@ fall back to `/events` and say so once in its activity log: "Live events over
 
 Three places show the daemon Studio uses:
 
-- **Settings → Connection → This computer → ADF daemon** (while This computer is in use): the connection state ("Connected",
+- **Settings → Connections → This computer → Daemon** (while This computer is in use): the connection state ("Connected",
   "Connecting", "Not connected, retrying", "Not connected"), pid and who
   started it ("started by this Studio", "started by Studio", "started by the
   ADF CLI", "started by a service"); **Details** shows the URL and the
@@ -514,7 +514,7 @@ Three places show the daemon Studio uses:
   unavailable: …` when the daemon runs without its local proof (below).
 
 If the daemon could not protect its local proof file (`daemon-local-proof`,
-Windows `icacls` failure), Settings → Connection says "The daemon runs without
+Windows `icacls` failure), Settings → Connections says "The daemon runs without
 its local proof (…), so reveal and identity import are refused. Fix the file's
 permissions, then restart the daemon."
 
@@ -525,7 +525,7 @@ permissions, then restart the daemon."
 | Task-bar progress and the line "Starting the ADF daemon…" | Studio is starting the daemon | Wait; Studio connects when it answers |
 | The line "Waiting for the ADF daemon (pid N)…" and one notification "Waiting for the ADF daemon (pid N)… Studio connects when it answers." | Another daemon is starting or stopping on these settings | Wait |
 | Dialog "Studio lost its connection to the ADF daemon." (**Reconnect Now**, **Open Daemon Log**, **Dismiss**) | The connection dropped for more than 3 seconds. Studio keeps reconnecting. The dialog is not shown again within 60 seconds | Check `adf daemon status`. If the daemon stopped, start it (`adf daemon start`) or restart Studio, which starts one. Studio reconnects by itself and notifies "Reconnected to the ADF daemon." |
-| Dialog "Studio could not connect to an ADF daemon." with **Reconnect**, **Run Inside Studio for This Session** and **Open Daemon Log** | No daemon for this launch (see the table below) | Fix the cause (Settings → Connection works without a daemon), then **Reconnect**: it restarts Studio and tries the daemon again. **Run Inside Studio for This Session** restarts Studio running agents itself for this launch only; the saved mode stays. The Help menu offers both later (**Reconnect to the ADF Daemon**, **Run Inside Studio for This Session**) |
+| Dialog "Studio could not connect to an ADF daemon." with **Reconnect**, **Run Inside Studio for This Session** and **Open Daemon Log** | No daemon for this launch (see the table below) | Fix the cause (Settings → Connections works without a daemon), then **Reconnect**: it restarts Studio and tries the daemon again. **Run Inside Studio for This Session** restarts Studio running agents itself for this launch only; the saved mode stays. The Help menu offers both later (**Reconnect to the ADF Daemon**, **Run Inside Studio for This Session**) |
 | An action fails with "Cannot reach daemon at *url*: …" | The call was made while disconnected. Nothing was done | Retry after the reconnect |
 | A chat waiting for its answer ends after 15 seconds without the daemon | Studio stops waiting; the daemon may still run the turn | Reopen the agent after the reconnect |
 | Dialog "Emergency stop did not reach the ADF daemon. … Agents may still be running." (after **Kill**) | The stop request failed | Run `adf daemon stop` in a terminal, or stop the agents once Studio reconnects |
@@ -565,7 +565,7 @@ keeps the original's "started by", so Studio's quit does not stop a daemon
 the CLI started.
 
 A daemon of another release with the same client API version attaches
-without a question. Settings → Connection shows its version under the ADF
+without a question. Settings → Connections shows its version under the ADF
 daemon row's **Details**.
 
 ## Run agents inside Studio when the daemon does not work
@@ -573,7 +573,7 @@ daemon row's **Details**.
 Inside Studio is the legacy backend. It stays for this release only, as a fallback;
 the next release removes it. There are two ways to run agents in Studio again:
 
-- **Settings → Connection → Inside Studio (legacy)**.
+- **Settings → Connections → Inside Studio (legacy)**.
   Studio restarts, and sign-ins and the runtime identity move back (if a
   daemon still runs on these settings, they stay with it until you stop it).
   This is the persistent way back.
@@ -591,7 +591,7 @@ ChatGPT, Grok and MCP sign-ins that live in the daemon are not available.
 ## Remote computer
 
 Set the daemon up on the server first: [Remote daemon](../cli/remote-daemon.md).
-Then, in **Settings → Connection**:
+Then, in **Settings → Connections**:
 
 1. **Pair** on the server's row when it is found on this network or the
    tailnet ([Pair with a computer](#pair-with-a-computer)), or **Add
@@ -619,7 +619,7 @@ and the MagicDNS name ([Option 4: tailscale serve](../cli/remote-daemon.md#optio
 
 Each failure is one sentence that names the URL. A daemon that cannot be
 reached at launch is retried with growing pauses (2 s up to 30 s), with the
-line "Waiting for the remote ADF daemon at *url* …" in Settings → Connection and
+line "Waiting for the remote ADF daemon at *url* …" in Settings → Connections and
 the Help menu and one notification ("Waiting for the remote ADF daemon at
 *url*. Studio keeps trying."). The other failures are not retried; the dialog
 "Studio could not connect to an ADF daemon." shows the sentence, and Settings
@@ -812,7 +812,7 @@ pairing dialog and other devices' lists.
 name**; **Create token** shows a device token (`adfd_…`) with **Copy** and
 **Done**. The token is shown once: after **Done** it cannot be shown again.
 If it is lost, revoke the device and add it again. On the other device:
-Settings → Connection → Add connection. **Use a code instead** opens a new
+Settings → Connections → Add connection. **Use a code instead** opens a new
 pairing window.
 
 The code alone never pairs a device: you must also allow it. Five wrong
@@ -843,7 +843,7 @@ its token stops working." After it: "Device revoked: *name*."
 
 ### Pair with a computer
 
-On the other device, **Settings → Connection** lists the ADF computers with
+On the other device, **Settings → Connections** lists the ADF computers with
 remote access on, found on this network (mDNS) and on your tailnet, as Not
 paired rows with **Pair**; a computer already paired is its Paired row.
 
@@ -942,7 +942,7 @@ Every message the backend features show, and where it is explained. Text in
 |---|---|
 | "Run agents *on B* instead of *on A*?" | [Switch the backend](#switch-the-backend) |
 | "A turn is in flight in: …" / Wait for Them to Finish / Stop Them Now | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
-| "The switch to *B* is waiting: …" / Finish Switch Now / Cancel Switch | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
+| "The switch to *B* is waiting: …" / Finish switch now / Cancel switch | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "This replaces the waiting switch to "*B*"." / "Studio is already restarting for the switch to "*B*". Nothing changed." / "Not started after the switch: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "Running again after the switch: …" / "Not started: …" | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
 | "The ADF daemon keeps running (…), and so do its agents (…) there." | [Running agents and turns in flight](#running-agents-and-turns-in-flight) |
@@ -950,7 +950,7 @@ Every message the backend features show, and where it is explained. Text in
 | "ADF_STUDIO_BACKEND is set in this environment and overrides this choice …" | [Switch the backend](#switch-the-backend) |
 | "Agents now run *on B*." / "… part of the handover is not done." | [What moves](#what-moves-during-a-switch), [When a move is not done](#when-a-move-is-not-done) |
 | "Agents now run in a background service on this computer (the ADF daemon)." / Open the Guide | [Upgrading from 0.7.x](#upgrading-from-07x) |
-| "Default changed" (Settings → Connection) | [Upgrading from 0.7.x](#upgrading-from-07x) |
+| "Default changed" (Settings → Connections) | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "Inside Studio (legacy)" | [Run agents inside Studio when the daemon does not work](#run-agents-inside-studio-when-the-daemon-does-not-work) |
 | "Agents now run in a background service on this computer (the ADF daemon), but Studio could not connect to it." | [Upgrading from 0.7.x](#upgrading-from-07x) |
 | "An older ADF daemon (adf …) is running and uses the same settings." / "An ADF daemon that Studio cannot identify …" | [Upgrading from 0.7.x](#upgrading-from-07x) |

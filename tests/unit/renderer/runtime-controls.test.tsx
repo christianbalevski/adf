@@ -15,10 +15,12 @@ const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({
 const settingsPage = () => readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
 
 describe('Kill', () => {
-  it('the tooltip names the runtime the indicator shows', () => {
-    expect(killTooltip(current())).toBe('Stops all agents and mesh on This computer')
-    expect(killTooltip(current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub' }))).toBe('Stops all agents and mesh on rawl-hub')
-    expect(killTooltip(null)).toBe('Stops all agents and mesh on This computer')
+  it('the tooltip names the runtime only once a remote connection is saved', () => {
+    expect(killTooltip(current(), false)).toBe('Stops all agents and mesh')
+    expect(killTooltip(null, false)).toBe('Stops all agents and mesh')
+    expect(killTooltip(current(), true)).toBe('Stops all agents and mesh on This computer')
+    expect(killTooltip(current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub' }), true)).toBe('Stops all agents and mesh on rawl-hub')
+    expect(killTooltip(null, true)).toBe('Stops all agents and mesh on This computer')
   })
 
   it('says what it stopped, so the stop is never silent', () => {
@@ -44,7 +46,7 @@ describe('the Mesh controls', () => {
   it('one description sentence and one note on what off interrupts', () => {
     expect(MESH_OFF_NOTE.split(/[.!]\s/)).toHaveLength(1)
     expect(MESH_OFF_NOTE).toMatch(/messaging/)
-    expect(settingsPage()).toContain('description="Agents on this runtime message each other and peer runtimes, and serve their cards and APIs."')
+    expect(settingsPage()).toContain('description="Agents message each other and peer runtimes, and serve their cards and APIs."')
   })
 
   it('the LAN addresses hint no longer points "below" to a toggle above it', () => {

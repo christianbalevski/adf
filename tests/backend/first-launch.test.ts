@@ -233,13 +233,13 @@ describe('upgrade from 0.7.x', () => {
     expect(dialog1.message).toBe('Agents now run in a background service on this computer (the ADF daemon).')
     expect(dialog1.detail).toMatch(/^Moved: Client settings, Owner phrase, Runtime identity, ChatGPT session, MCP sign-ins\./)
     expect(dialog1.detail).toMatch(/Agents set to start automatically now start in the daemon/)
-    expect(dialog1.detail).toMatch(/Settings → Connection has the details\.$/)
+    expect(dialog1.detail).toMatch(/Settings → Connections has the details\.$/)
     expect(dialog1.buttons).toEqual(['OK', 'Open the Guide'])
     expect(h.opened).toEqual([UPGRADE_GUIDE_URL])
     expect(readJson(join(dir, DEFAULT_SWITCH_FILE))).toMatchObject({ from: 'embedded', to: 'local', version: '0.8.0', moved: first.notice!.record.moved, shownAt: expect.any(String) })
     expect(existsSync(join(dir, PENDING_NOTICE_FILE))).toBe(false)
 
-    // The next launch: an explicit file, nothing to move, no dialog; Settings → Connection still has the record.
+    // The next launch: an explicit file, nothing to move, no dialog; Settings → Connections still has the record.
     h.dialogs.length = 0
     const second = await boot()
     expect(second.backend).toMatchObject({ mode: 'local', source: 'file' })

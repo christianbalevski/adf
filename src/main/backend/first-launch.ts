@@ -39,7 +39,7 @@ import { showHandoverSummary } from './mode-switch'
  * handover summary. Every dialog is parented to a visible window.
  */
 
-/** Written once the first-launch notice was shown; Settings → Connection shows it as "Default changed". */
+/** Written once the first-launch notice was shown; Settings → Connections shows it as "Default changed". */
 export const DEFAULT_SWITCH_FILE = 'studio-default-switch.json'
 /** The first-launch notice not shown yet (Studio quit or crashed before): shown at the next launch. */
 export const PENDING_NOTICE_FILE = 'studio-default-switch.pending.json'
@@ -246,7 +246,7 @@ export function mergeNotice(pending: FirstLaunchNotice | null, report: HandoverR
  * notice in PENDING_NOTICE_FILE. On a later launch a notice still pending
  * is returned again, merged with that launch's handover (mergeNotice), so
  * it stands in for that launch's summary. Sets `boot.defaultSwitch` for
- * Settings → Connection. Null on a fresh install and when there is nothing to
+ * Settings → Connections. Null on a fresh install and when there is nothing to
  * show. Never throws.
  */
 export async function settleDefaultBackend(
@@ -292,7 +292,7 @@ async function savePending(userDataDir: string, notice: FirstLaunchNotice, log: 
   return notice
 }
 
-/** Record the notice as shown: Settings → Connection's "Default changed", and no notice at later launches. */
+/** Record the notice as shown: Settings → Connections's "Default changed", and no notice at later launches. */
 async function markNoticeShown(userDataDir: string, notice: FirstLaunchNotice, log: Log): Promise<void> {
   try {
     await writeJsonAtomicAsync(join(userDataDir, DEFAULT_SWITCH_FILE), { v: 1, from: 'embedded', to: 'local', ...notice.record, shownAt: new Date().toISOString() })
@@ -318,8 +318,8 @@ export function firstLaunchNoticeOptions(notice: FirstLaunchNotice, connected: b
   if (notice.keychainWritten && platform === 'darwin') {
     parts.push('macOS asks once whether the ADF daemon may read Studio\'s runtime key from the keychain. Choose "Always Allow".')
   }
-  parts.push('"Inside Studio (legacy)" stays in Settings → Connection for this release only, as a fallback.')
-  parts.push('Settings → Connection has the details.')
+  parts.push('"Inside Studio (legacy)" stays in Settings → Connections for this release only, as a fallback.')
+  parts.push('Settings → Connections has the details.')
   return {
     type: record.notDone.length > 0 || !connected ? 'warning' : 'info',
     title: 'Backend: This computer',

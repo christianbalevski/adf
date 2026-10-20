@@ -511,7 +511,7 @@ export const CHANNEL_MAP = {
   [IPC.ORBITAL_CACHE_GET]: local('invoke', 'Registered in ipc/orbital-cache.ts; cache under Studio userData.'),
   [IPC.ORBITAL_CACHE_PUT]: local('invoke', 'Registered in ipc/orbital-cache.ts; cache under Studio userData.'),
 
-  // --- Settings → Connection (W0-E) --------------------------------------------
+  // --- Settings → Connections (W0-E) --------------------------------------------
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
   [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: relaunchStudio (mode-switch.ts), then the normal quit path.'),
@@ -537,7 +537,7 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_PAIR_SUBMIT_CODE]: local('invoke', 'POST /pair/claim, then the GET /pair/claims/:claimId long poll on the other computer; the token is saved in studio-backend.json as safe: and never returned.'),
   [IPC.REMOTE_PAIR_CANCEL]: local('invoke', 'Stops the pairing flow here.'),
   [IPC.REMOTE_PAIR_STATE]: local('push', 'Pairing progress and errors; never the code or the token.'),
-  [IPC.CONNECTION_LIST]: local('invoke', 'Settings → Connection (settings-scopes.md §5): This computer, the saved connections (cli-remotes.json, studio-backend.json) and the computers found; for the window that asks. No token.'),
+  [IPC.CONNECTION_LIST]: local('invoke', 'Settings → Connections (settings-scopes.md §5): This computer, the saved connections (cli-remotes.json, studio-backend.json) and the computers found; for the window that asks. No token.'),
   [IPC.CONNECTION_USE]: local('invoke', 'Connect: reads a saved token from the OS keychain (off the main thread first), then saves the choice in studio-backend.json; the switch dialog and the restart follow.'),
   [IPC.CONNECTION_ADD]: local('invoke', 'Add connection with a token: /remote/hello on the other computer, the pinned-fingerprint check, then the version handshake; saved to cli-remotes.json and the keychain, or without a fingerprint to studio-backend.json. Never returns the token.'),
   [IPC.CONNECTION_REMOVE]: local('invoke', 'Remove after a native confirmation: forgets the address and token (adf remotes forget), or the remote URL of studio-backend.json.'),

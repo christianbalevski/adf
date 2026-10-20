@@ -366,6 +366,6 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
     ...(problem ? [{ label: problem, enabled: false }] : []),
     ...(problem && options.canReconnect() ? [{ label: 'Reconnect to the ADF Daemon', click: () => options.reconnect() }] : []),
     ...(failed && useEmbedded ? [{ label: 'Run Inside Studio for This Session', click: () => useEmbedded() }] : []),
-    ...(failed && openBackend ? [{ label: 'Open Settings → Connection', click: () => openBackend() }] : [])
+    ...(failed && openBackend ? [{ label: 'Open Settings → Connections', click: () => openBackend() }] : [])
   ]
 }

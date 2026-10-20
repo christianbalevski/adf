@@ -98,10 +98,12 @@ function objectLiteralKeys(text: string, open: number): string[] {
   return keys
 }
 
-/** Renderer writes: `setSettings({ … })` and SettingsPage's `writeSetting({ … })`. */
-function rendererWriteKeys(text: string): string[] {
+/** Renderer writes: `setSettings({ … })`, and Settings' save model (settings-save.tsx): `writeSettings`, `commit`, `persist({ … })`. */
+function rendererWriteKeys(text: string, renderer = true): string[] {
   const keys: string[] = []
-  for (const m of text.matchAll(/\b(?:setSettings|writeSetting)\??\.?\(\s*\{/g)) {
+  // The save-model helpers are renderer names; in main, `commit({` is something else.
+  const call = renderer ? /\b(?:setSettings|writeSettings?|commit|persist)\??\.?\(\s*\{/g : /\bsetSettings\??\.?\(\s*\{/g
+  for (const m of text.matchAll(call)) {
     keys.push(...objectLiteralKeys(text, m.index! + m[0].length - 1))
   }
   return keys
@@ -117,7 +119,7 @@ function keysUsedInSource(): Map<string, Set<string>> {
   for (const f of files) {
     for (const re of [STORE_ACCESS, APP_SETTING_HELPER]) for (const m of f.text.matchAll(re)) add(keyOf(m), f.path)
     if (f.path.endsWith('settings-migrations.ts')) for (const m of f.text.matchAll(MIGRATION_DATA)) add(keyOf(m), f.path)
-    for (const key of rendererWriteKeys(f.text)) add(key, f.path)
+    for (const key of rendererWriteKeys(f.text, relative(ROOT, f.path).startsWith(join('src', 'renderer')))) add(key, f.path)
   }
   return found
 }
@@ -155,7 +157,7 @@ describe('settings key classes', () => {
     expect(used.get('trackedDirectories')?.size ?? 0).toBeGreaterThan(1) // store access
     expect(used.has('updateChecksEnabled')).toBe(true) // readAppSetting
     expect(used.has('uiFontSystemDefaultApplied')).toBe(true) // data[CONST] in migrations
-    expect(used.has('autoApplyPromptUpdates')).toBe(true) // writeSetting({ [CONST]: … })
+    expect(used.has('autoApplyPromptUpdates')).toBe(true) // persist({ [CONST]: … })
     expect(used.has('defaultProviderId')).toBe(true) // second key of setSettings({ a, b })
     expect(used.has('onboardingSharedAt')).toBe(true) // renderer-only key
 

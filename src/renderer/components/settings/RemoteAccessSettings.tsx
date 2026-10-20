@@ -191,7 +191,7 @@ export function NewTokenPanel({ label, token, onDone }: { label: string; token: 
         <Button size="compact" onClick={() => copy(token)}>Copy</Button>
         <Button size="compact" variant="primary" onClick={onDone}>Done</Button>
       </div>
-      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the device: Settings → Connection → Add connection.</div>
+      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the device: Settings → Connections → Add.</div>
     </div>
   )
 }
@@ -526,7 +526,7 @@ export function HostOnlyRemoteAccess({ name }: { name: string }) {
   )
 }
 
-// --- Settings → Connection ---------------------------------------------------------------
+// --- Settings → Connections ---------------------------------------------------------------
 
 /** The dialog's message line: what to do now, or why it stopped. */
 export function pairMessage(state: RemotePairState | null, hostName: string): { kind: 'ok' | 'error'; text: string } | null {

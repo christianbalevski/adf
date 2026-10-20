@@ -431,14 +431,14 @@ export const IPC = {
   // Restart Studio so a saved connection applies. Registered in every mode.
   BACKEND_RESTART_STUDIO: 'adf:backend:restart-studio',
 
-  // Settings → Connection (studio-backend.json). Registered in every backend
+  // Settings → Connections (studio-backend.json). Registered in every backend
   // mode. GET never returns the remote token; SET may carry a new one.
   BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
   BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
 
   // Remote access (docs/design/remote-access.md §9.1).
   // Host side: Settings → Networking → Remote access, local mode, proxied to
-  // the daemon's /remote-access routes. Client side: Settings → Connection,
+  // the daemon's /remote-access routes. Client side: Settings → Connections,
   // discovery and pairing in Studio main. Registered in every mode
   // (backend/remote-access-ipc.ts).
   REMOTE_ACCESS_GET: 'adf:remote-access:get',
@@ -456,7 +456,7 @@ export const IPC = {
   REMOTE_PAIR_SUBMIT_CODE: 'adf:remote-pair:submit-code',
   REMOTE_PAIR_CANCEL: 'adf:remote-pair:cancel',
   REMOTE_PAIR_STATE: 'adf:remote-pair:state',
-  // Settings → Connection (docs/design/settings-scopes.md §5.4): the runtimes
+  // Settings → Connections (docs/design/settings-scopes.md §5.4): the runtimes
   // this window can use, Connect, Add connection with a token, Remove. Every
   // mode (backend/connections-ipc.ts).
   CONNECTION_LIST: 'adf:connection:list',

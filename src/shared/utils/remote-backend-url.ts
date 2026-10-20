@@ -1,5 +1,5 @@
 /**
- * Remote daemon URL rules (design §9.2). Shared so Settings → Connection can show
+ * Remote daemon URL rules (design §9.2). Shared so Settings → Connections can show
  * the plain-HTTP confirmation before main refuses the save.
  *
  * - `https:` is accepted.
