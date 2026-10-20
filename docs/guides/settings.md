@@ -21,7 +21,7 @@ The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 Studio sends no telemetry. Each request it or the runtime makes on its own has an off switch:
 
 - **Studio → Updates → Automatic checks** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every hour. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates. **Check for updates** checks now.
-- **Runtime → Providers → Check provider connections** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
+- **Runtime → Providers → Models** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
 - **Runtime → MCP servers → Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
 - **Studio → Privacy → Spell-check dictionaries** (Linux only, `spellcheckDownloadsEnabled`) — a **Download** button. Linux spell check uses Hunspell dictionaries from Google's CDN; nothing is fetched until you click it. After that, a newly added spell-check language downloads the same way. Windows and macOS use the OS spell checker and never download.
 
@@ -36,15 +36,15 @@ The Identity tab shows the app-level identities that anchor ownership and trust.
 Your user identity as a `did:key` DID, derived from a 12-word seed phrase generated on first launch:
 
 - **Back up seed phrase** — reveals the 12 words (numbered for order, with a copy button) and asks you to confirm you've written them down. Until confirmed, a "Seed not backed up" badge shows.
-- **Import identity** — enter a seed phrase from another Studio to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated.
+- **Import identity** — enter a seed phrase from another computer to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated.
 - Previously used (migrated) owner DIDs are listed so you can see what older files were stamped with.
 - If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted.
 
 ![Settings → Identity showing the Owner Identity card with owner DID, alias field, mesh-sharing checkbox, Back up seed phrase and Import identity buttons plus a "Seed not backed up" badge, and the Runtime Identity card below with the runtime DID, a green "Delegation valid" badge, and the agent directory URL.](../assets/screenshots/settings-identity.png)
 
-### Runtime Identity
+### Runtime key
 
-This install's DID — unique per machine, never shared even between your own Studios. Shows:
+This computer's runtime DID. It identifies this computer to other computers; two computers never share one, even with the same owner. Shows:
 
 - A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
 - The **agent directory URL** (`http://<host>:<port>/agents`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.

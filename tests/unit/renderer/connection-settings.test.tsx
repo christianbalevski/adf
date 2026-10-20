@@ -103,10 +103,17 @@ describe('This computer and the switch notices', () => {
 
   it('keeps an untrusted daemon key on the line (it needs an action) and puts a trusted one under Details', () => {
     const untrusted = { ...daemon, how: 'attached' as const, startedBy: 'cli' as const, trust: { state: 'not-trusted' as const, label: null, message: '' } }
-    expect(daemonLine(untrusted)).toBe('Connected · pid 4242 · started by the ADF CLI · daemon key not trusted (adf identity trust-daemon)')
+    expect(daemonLine(untrusted)).toBe('Connected · pid 4242 · started by the ADF CLI · daemon key not trusted')
+    expect(daemonDetails(untrusted)).toContain('Daemon key: trust it with adf identity trust-daemon')
     const trusted = { ...daemon, trust: { state: 'trusted' as const, label: null, message: '' } }
     expect(daemonLine(trusted)).not.toMatch(/trusted/)
     expect(daemonDetails(trusted)).toContain('Daemon key: trusted by the owner')
+  })
+
+  it('puts a missing local proof under Details, not on the line', () => {
+    const noProof = { ...daemon, localProof: { available: false, problem: 'icacls failed' } }
+    expect(daemonLine(noProof)).not.toMatch(/proof/)
+    expect(daemonDetails(noProof)).toContain('Local proof: unavailable (icacls failed)')
   })
 
   it('shows the progress line while connecting', () => {
@@ -170,7 +177,8 @@ describe('the sidebar: Studio and Runtime · <name>', () => {
   it('the Privacy row is named for what it lists, not like the Connection page (review item 14)', () => {
     const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
     expect(page).not.toContain('label="Connections"')
-    expect(page).toContain('<SettingsRow label="Network traffic" description="docs/NETWORK.md lists every connection Studio and the runtime make." />')
+    expect(page).toContain('<SettingsRow label="Network traffic" description={<>Every connection Studio and the runtime make.<DocsLink href={NETWORK_DOCS}')
+    expect(page).not.toContain('docs/NETWORK.md lists')
   })
 
   it('older ids open their new page: Backend → Connection, General → Appearance, General\'s usage → Usage', () => {

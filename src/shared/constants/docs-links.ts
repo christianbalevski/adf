@@ -107,3 +107,6 @@ export const DOCS = {
 } as const
 
 export type DocsKey = keyof typeof DOCS
+
+/** docs/NETWORK.md, every connection Studio and the runtime make (Studio → Privacy). Not a guide, so not in DOCS. */
+export const NETWORK_DOCS = `${REPO_URL}/blob/main/docs/NETWORK.md`
