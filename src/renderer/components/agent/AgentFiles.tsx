@@ -11,6 +11,7 @@ import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 import { useDockPanelState } from '../../stores/dock-panel-state'
 import { absoluteTime, relativeTime, toEpochMs } from '../../utils/relative-time'
 import { createDebouncedRefresh, isFileUpdatedEvent, loadFilesSort, saveFilesSort, sortByRecent, type FilesSort } from '../../utils/agent-files'
+import { openApi, useOpenRuntime } from '../../utils/runtime-api'
 
 type FileProtectionLevel = 'read_only' | 'no_delete' | 'none'
 
@@ -194,13 +195,13 @@ export function AgentFiles() {
   }, [])
 
   const fetchFiles = useCallback(() => {
-    window.adfApi?.getInternalFiles().then((result) => {
+    openApi()?.getInternalFiles().then((result) => {
       setFiles(result?.files ?? [])
     })
   }, [])
 
   const fetchTables = useCallback(() => {
-    window.adfApi?.listLocalTables().then((result) => {
+    openApi()?.listLocalTables().then((result) => {
       setTables(result?.tables ?? [])
     })
   }, [])
@@ -215,12 +216,13 @@ export function AgentFiles() {
   // daemon API writing, deleting or renaming a file. `file_updated` is the
   // runtime's text-write event; the workspace `files` scope covers every
   // writer, binary files, deletes and renames. One debounced refetch per burst.
+  const runtime = useOpenRuntime()
   useEffect(() => {
     const refresh = createDebouncedRefresh(fetchFiles, 300)
-    const offEvent = window.adfApi?.onAgentEvent?.((event: AgentExecutionEvent) => {
+    const offEvent = openApi()?.onAgentEvent?.((event: AgentExecutionEvent) => {
       if (isFileUpdatedEvent(event)) refresh.trigger()
     })
-    const offData = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+    const offData = openApi()?.onWorkspaceDataChanged?.(({ scope }) => {
       if (scope === 'files') refresh.trigger()
     })
     return () => {
@@ -228,22 +230,22 @@ export function AgentFiles() {
       offEvent?.()
       offData?.()
     }
-  }, [fetchFiles, filePath])
+  }, [fetchFiles, filePath, runtime])
 
   // Live refresh: workspace pushes a signal whenever tables mutate (agent
   // db_execute, lambdas, drops), so counts and expanded rows stay current.
   useEffect(() => {
-    const unsubscribe = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+    const unsubscribe = openApi()?.onWorkspaceDataChanged?.(({ scope }) => {
       if (scope !== 'tables') return
       fetchTables()
       if (expandedTable) {
-        window.adfApi?.queryLocalTable(expandedTable, 50).then((result) => {
+        openApi()?.queryLocalTable(expandedTable, 50).then((result) => {
           if (result) setTableData({ columns: result.columns, rows: result.rows })
         })
       }
     })
     return () => unsubscribe?.()
-  }, [fetchTables, expandedTable])
+  }, [fetchTables, expandedTable, runtime])
 
   useEffect(() => {
     if (editingPath && inputRef.current) {
@@ -272,7 +274,7 @@ export function AgentFiles() {
       setNewFilePath('')
       return
     }
-    await window.adfApi?.uploadFile(trimmed, [], undefined)
+    await openApi()?.uploadFile(trimmed, [], undefined)
     setCreatingFile(false)
     setNewFilePath('')
     fetchFiles()
@@ -317,14 +319,14 @@ export function AgentFiles() {
       for (const { path, file } of allFiles) {
         const buffer = await file.arrayBuffer()
         const data = Array.from(new Uint8Array(buffer))
-        await window.adfApi?.uploadFile(path, data, file.type || undefined)
+        await openApi()?.uploadFile(path, data, file.type || undefined)
       }
     } else {
       // Fallback for browsers without webkitGetAsEntry
       for (const file of Array.from(e.dataTransfer.files)) {
         const buffer = await file.arrayBuffer()
         const data = Array.from(new Uint8Array(buffer))
-        await window.adfApi?.uploadFile(file.name, data, file.type || undefined)
+        await openApi()?.uploadFile(file.name, data, file.type || undefined)
       }
     }
     fetchFiles()
@@ -349,7 +351,7 @@ export function AgentFiles() {
   }, [])
 
   const handleOpenInEditor = useCallback(async (path: string) => {
-    const result = await window.adfApi?.readInternalFile(path)
+    const result = await openApi()?.readInternalFile(path)
     if (result?.content != null) {
       useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary, result.mimeType, result.revision)
     }
@@ -357,20 +359,20 @@ export function AgentFiles() {
 
   const handleDelete = async (path: string) => {
     if (!window.confirm(`Delete ${path}? This cannot be undone.`)) return
-    await window.adfApi?.deleteInternalFile(path)
+    await openApi()?.deleteInternalFile(path)
     useEditorTabsStore.getState().closeTab(path)
     fetchFiles()
   }
 
   const handleCycleProtection = async (path: string, current: FileProtectionLevel) => {
     const next: FileProtectionLevel = current === 'none' ? 'no_delete' : current === 'no_delete' ? 'read_only' : 'none'
-    await window.adfApi?.setFileProtection(path, next)
+    await openApi()?.setFileProtection(path, next)
     fetchFiles()
     setViewingFile((prev) => prev && prev.path === path ? { ...prev, meta: { ...prev.meta, protection: next } } : prev)
   }
 
   const handleToggleAuthorized = async (path: string, current: boolean) => {
-    await window.adfApi?.setFileAuthorized(path, !current)
+    await openApi()?.setFileAuthorized(path, !current)
     fetchFiles()
     setViewingFile((prev) => prev && prev.path === path ? { ...prev, meta: { ...prev.meta, authorized: !current } } : prev)
   }
@@ -394,7 +396,7 @@ export function AgentFiles() {
       setEditingPath(null)
       return
     }
-    const result = await window.adfApi?.renameInternalFile(editingPath, editValue)
+    const result = await openApi()?.renameInternalFile(editingPath, editValue)
     if (result?.success) {
       setViewingFile((prev) => prev && prev.path === editingPath ? { ...prev, path: editValue } : prev)
     } else {
@@ -413,7 +415,7 @@ export function AgentFiles() {
       setRenamingFolder(null)
       return
     }
-    await window.adfApi?.renameFolder(renamingFolder, newFullPath)
+    await openApi()?.renameFolder(renamingFolder, newFullPath)
     setRenamingFolder(null)
     fetchFiles()
   }
@@ -435,7 +437,7 @@ export function AgentFiles() {
   }
 
   const handleViewFile = async (path: string) => {
-    const result = await window.adfApi?.readInternalFile(path)
+    const result = await openApi()?.readInternalFile(path)
     const meta = files.find((f) => f.path === path)
     if (result?.content != null && meta) {
       setViewingFile({ path, content: result.content, binary: result.binary, meta })
@@ -448,7 +450,7 @@ export function AgentFiles() {
       return
     }
     setExpandedTable(name)
-    const result = await window.adfApi?.queryLocalTable(name, 50)
+    const result = await openApi()?.queryLocalTable(name, 50)
     if (result) {
       setTableData({ columns: result.columns, rows: result.rows })
     }
@@ -456,7 +458,7 @@ export function AgentFiles() {
 
   const handleDropTable = async (name: string) => {
     if (!window.confirm(`Drop table ${name}? Its rows are deleted and cannot be recovered.`)) return
-    await window.adfApi?.dropLocalTable(name)
+    await openApi()?.dropLocalTable(name)
     if (expandedTable === name) {
       setExpandedTable(null)
     }
@@ -532,7 +534,7 @@ export function AgentFiles() {
           </button>
           <button
             onClick={async () => {
-              const result = await window.adfApi?.pickAndImport()
+              const result = await openApi()?.pickAndImport()
               if (result?.count) fetchFiles()
             }}
             title="Upload files or folders"
@@ -951,7 +953,7 @@ export function AgentFiles() {
               <div className="flex-1" />
 
               <button
-                onClick={() => window.adfApi?.downloadInternalFile(viewingFile.path)}
+                onClick={() => openApi()?.downloadInternalFile(viewingFile.path)}
                 className="px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
                 title="Download file to disk"
               >

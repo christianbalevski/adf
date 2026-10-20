@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { openApi } from '../../utils/runtime-api'
 
 /**
  * Full-width strip below the title bar with two jobs:
@@ -26,7 +27,7 @@ export function AgentReviewBanner() {
     try {
       // Always refetch — the config may have been edited since the dialog was
       // dismissed, and accepting a stale summary would lock fields unseen.
-      const review = await window.adfApi.checkAgentReview()
+      const review = await openApi().checkAgentReview()
       if (review.needsReview) {
         setDialog(true, review.configSummary)
       } else {

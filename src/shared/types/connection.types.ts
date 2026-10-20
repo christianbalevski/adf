@@ -61,6 +61,25 @@ export interface ConnectionsView {
   rows: ConnectionRow[]
   /** The network search behind the Not paired rows; null when it is not running. */
   discovery: { browsing: boolean; problem: string | null } | null
+  /**
+   * The runtime set in its fixed order (docs/design/multi-runtime.md §3.1):
+   * This computer first, then the remotes in the order added. Present only
+   * while the set has more than one runtime, so a Studio with This computer
+   * only sends the list it sent before.
+   */
+  runtimes?: RuntimeView[]
+}
+
+/** A runtime of the runtime set (multi-runtime.md §1.3, §4.5). Its state counts while it is down. */
+export interface RuntimeView {
+  /** `local`, `remote:<name>` or `remote`. */
+  id: string
+  kind: 'local' | 'remote'
+  /** "This computer", or the saved connection's name. */
+  name: string
+  /** Remote: the address (the tooltip). */
+  url: string | null
+  state: ConnectionCurrent['state']
 }
 
 export type ConnectionResult =

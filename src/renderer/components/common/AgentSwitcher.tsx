@@ -9,7 +9,16 @@ import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useApprovalsStore } from '../../stores/approvals.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useTrackedDirs } from '../../hooks/useTrackedDirs'
-import { collectSwitcherAgents, rankAgents, type SwitcherMatch } from '../../utils/agent-switcher'
+import { collectSwitcherAgents, rankAgents, type SwitcherAgent, type SwitcherMatch } from '../../utils/agent-switcher'
+import { runtimeName, useMultiRuntime, useRuntimes } from '../../stores/runtimes.store'
+import { selectTrackedSlice } from '../../stores/tracked-dirs.store'
+import { selectBackgroundAgents } from '../../stores/background-agents.store'
+import { agentKey } from '../../../shared/types/agent-ref'
+import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
+import { windowRuntime } from '../../utils/window-kind'
+
+/** An agent's key across runtimes: its path on This computer. */
+const keyOf = (a: Pick<SwitcherAgent, 'runtimeId' | 'filePath'>): string => agentKey({ runtimeId: a.runtimeId, filePath: a.filePath })
 
 /**
  * Go to agent (View → Go to Agent…, Cmd/Ctrl+K): fuzzy search over the
@@ -38,8 +47,14 @@ function SwitcherBody({ onDone }: { onDone: () => void }) {
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
   const filePath = useDocumentStore((s) => s.filePath)
+  const openRuntime = useDocumentStore((s) => s.runtimeId)
   const foregroundState = useAgentStore((s) => s.state)
   const backgroundAgents = useBackgroundAgentsStore((s) => s.agents)
+  // Every runtime while there is more than one (multi-runtime.md §5.4): its agents, named by runtime.
+  const multi = useMultiRuntime()
+  const runtimes = useRuntimes()
+  const trackedByRuntime = useTrackedDirsStore((s) => s.byRuntime)
+  const backgroundByRuntime = useBackgroundAgentsStore((s) => s.byRuntime)
   const startingPaths = useAppStore((s) => s.startingFilePaths)
   const approvals = useApprovalsStore((s) => s.approvals)
   const { openFile } = useAdfFile()
@@ -57,17 +72,35 @@ function SwitcherBody({ onDone }: { onDone: () => void }) {
   }, [])
 
   const matches = useMemo<SwitcherMatch[]>(() => {
+    // This window's own runtime's slice: This computer in the main window.
+    const ownRuntime = windowRuntime
     const background = new Set(backgroundAgents.map((a) => a.filePath))
-    const agents = collectSwitcherAgents({
+    const local = collectSwitcherAgents({
       directories,
       filesByDir,
-      currentFilePath: filePath,
+      currentFilePath: openRuntime === ownRuntime ? filePath : null,
       foregroundRunning: foregroundState !== 'off',
       isBackgroundRunning: (fp) => background.has(fp) || startingPaths.has(fp),
-      pendingFilePaths: approvals.map((a) => a.filePath),
+      pendingFilePaths: approvals.filter((a) => (a.runtimeId ?? LOCAL_RUNTIME) === ownRuntime).map((a) => a.filePath),
     })
+    if (!multi) return rankAgents(local, query)
+    const agents: SwitcherAgent[] = local.map((a) => ({ ...a, ...(ownRuntime !== LOCAL_RUNTIME ? { runtimeId: ownRuntime } : {}), runtimeName: runtimeName(ownRuntime, runtimes) }))
+    for (const rt of runtimes) {
+      if (rt.id === ownRuntime) continue
+      const slice = selectTrackedSlice({ directories: [], filesByDir: {}, byRuntime: trackedByRuntime }, rt.id)
+      const running = new Set(selectBackgroundAgents({ agents: [], byRuntime: backgroundByRuntime }, rt.id).map((a) => a.filePath))
+      const rtKey = rt.id === LOCAL_RUNTIME ? undefined : rt.id
+      for (const a of collectSwitcherAgents({
+        directories: slice.directories,
+        filesByDir: slice.filesByDir,
+        currentFilePath: openRuntime === rt.id ? filePath : null,
+        foregroundRunning: foregroundState !== 'off',
+        isBackgroundRunning: (fp) => running.has(fp) || startingPaths.has(agentKey({ runtimeId: rtKey, filePath: fp })),
+        pendingFilePaths: approvals.filter((n) => (n.runtimeId ?? LOCAL_RUNTIME) === rt.id).map((n) => n.filePath),
+      })) agents.push({ ...a, ...(rtKey ? { runtimeId: rtKey } : {}), runtimeName: rt.name })
+    }
     return rankAgents(agents, query)
-  }, [directories, filesByDir, filePath, foregroundState, backgroundAgents, startingPaths, approvals, query])
+  }, [directories, filesByDir, filePath, openRuntime, foregroundState, backgroundAgents, startingPaths, approvals, query, multi, runtimes, trackedByRuntime, backgroundByRuntime])
 
   // A new query starts at the top; a shorter list keeps the active row on it.
   useEffect(() => { setActive(0) }, [query])
@@ -78,15 +111,17 @@ function SwitcherBody({ onDone }: { onDone: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current])
 
-  const choose = useCallback((target: string) => {
+  const choose = useCallback((target: string, runtimeId?: string) => {
     onDone()
     const app = useAppStore.getState()
     if (app.showSettings) app.setShowSettings(false)
     if (app.showMeshGraph) app.setShowMeshGraph(false)
     if (app.showHome) app.setShowHome(false)
-    if (useDocumentStore.getState().filePath === target) return
-    void openFile(target)
-  }, [onDone, openFile])
+    const runtime = runtimeId ?? (multi ? LOCAL_RUNTIME : windowRuntime)
+    const doc = useDocumentStore.getState()
+    if (doc.filePath === target && doc.runtimeId === runtime) return
+    void openFile(target, runtime)
+  }, [onDone, openFile, multi])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.nativeEvent.isComposing) return
@@ -106,7 +141,7 @@ function SwitcherBody({ onDone }: { onDone: () => void }) {
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const hit = matches[current]
-      if (hit) choose(hit.agent.filePath)
+      if (hit) choose(hit.agent.filePath, hit.agent.runtimeId)
     }
   }
 
@@ -116,7 +151,7 @@ function SwitcherBody({ onDone }: { onDone: () => void }) {
       query={query}
       matches={matches}
       current={current}
-      openFilePath={filePath}
+      openFilePath={filePath ? agentKey({ runtimeId: openRuntime, filePath }) : null}
       inputRef={inputRef}
       onQuery={setQuery}
       onKeyDown={onKeyDown}
@@ -133,12 +168,13 @@ export function SwitcherView({ listId, query, matches, current, openFilePath, in
   matches: SwitcherMatch[]
   /** Index of the active option. */
   current: number
+  /** The open agent's key (agentKey): its path on This computer. */
   openFilePath: string | null
   inputRef?: React.MutableRefObject<HTMLInputElement | null>
   onQuery: (query: string) => void
   onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void
   onHover: (index: number) => void
-  onChoose: (filePath: string) => void
+  onChoose: (filePath: string, runtimeId?: string) => void
 }) {
   const optionId = (i: number) => `${listId}-option-${i}`
   return (
@@ -172,13 +208,13 @@ export function SwitcherView({ listId, query, matches, current, openFilePath, in
       >
         {matches.map((m, i) => (
           <SwitcherOption
-            key={m.agent.filePath}
+            key={keyOf(m.agent)}
             id={optionId(i)}
             match={m}
             selected={i === current}
-            isOpen={m.agent.filePath === openFilePath}
+            isOpen={keyOf(m.agent) === openFilePath}
             onHover={() => onHover(i)}
-            onChoose={() => onChoose(m.agent.filePath)}
+            onChoose={() => onChoose(m.agent.filePath, m.agent.runtimeId)}
           />
         ))}
       </ul>
@@ -227,6 +263,7 @@ function SwitcherOption({ id, match, selected, isOpen, onHover, onChoose }: {
       <span className="min-w-0 truncate">
         <Highlighted text={agent.name} matched={matched} />
       </span>
+      {agent.runtimeName && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-muted)]">{agent.runtimeName}</span>}
       {agent.folder && <span className="min-w-0 shrink truncate text-[11px] text-[var(--adf-ui-text-subtle)]">{agent.folder}</span>}
       <span className="flex-1" />
       {isOpen && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-muted)]">Open</span>}

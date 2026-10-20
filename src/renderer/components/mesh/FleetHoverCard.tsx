@@ -7,6 +7,7 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState } from '../../../shared/types/ipc.types'
 import { formatTokenCount as formatTokens } from '../../utils/token-estimate'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Hover preview — a screen-space card that stays readable at any zoom, so
@@ -75,7 +76,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
   /** Click — open the full agent readout */
   onInspect?: (filePath: string) => void
 }) {
-  const agent = useMeshStore((s) => s.agents.find((a) => a.filePath === filePath))
+  const agent = useMeshStore((s) => selectMapAgents(s).find((a) => a.filePath === filePath))
   const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
   const burnEntry = useFleetStore((s) => s.burn?.perAgent[filePath])

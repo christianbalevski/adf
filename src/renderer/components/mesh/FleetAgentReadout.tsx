@@ -9,6 +9,7 @@ import { formatTokens } from './FleetTerrainNode'
 import { ACTIVITY_TYPE_MARKS, BubbleText } from './MeshGraphNode'
 import type { AgentState } from '../../../shared/types/ipc.types'
 import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Agent readout — the full-detail answer to clicking a hover card (or the
@@ -75,8 +76,8 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
   onOpenAgent: (filePath: string) => void
   onFocusAgent: (filePath: string) => void
 }) {
-  const agent = useMeshStore((s) => s.agents.find((a) => a.filePath === filePath))
-  const agents = useMeshStore((s) => s.agents)
+  const agent = useMeshStore((s) => selectMapAgents(s).find((a) => a.filePath === filePath))
+  const agents = useMeshStore((s) => selectMapAgents(s))
   const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
   const burnEntry = useFleetStore((s) => s.burn?.perAgent[filePath])

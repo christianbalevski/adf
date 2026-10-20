@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { MAX_INLINE_BINARY_BYTES, resolveImageMime } from '../../../shared/utils/image-files'
+import { openApi } from '../../utils/runtime-api'
 
 interface Props {
   filePath: string
@@ -46,7 +47,7 @@ export function useWorkspaceImage(filePath: string, mime: string, reloadSeq = 0)
     let cancelled = false
     let url: string | null = null
     setState({ status: 'loading' })
-    const read = window.adfApi?.readInternalFile(filePath, { binaryContent: true })
+    const read = openApi()?.readInternalFile(filePath, { binaryContent: true })
     if (!read) {
       setState({ status: 'failed' })
       return
@@ -194,7 +195,7 @@ export function ImageViewer({ filePath, mime }: Props) {
                   This image is {formatSize(state.size)}. Images larger than {formatSize(MAX_INLINE_BINARY_BYTES)} are not displayed.
                 </span>
                 <button
-                  onClick={() => window.adfApi?.downloadInternalFile(filePath)}
+                  onClick={() => openApi()?.downloadInternalFile(filePath)}
                   className="px-3 py-1.5 text-xs font-medium rounded-md border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
                 >
                   Download

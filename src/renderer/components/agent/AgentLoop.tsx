@@ -55,6 +55,7 @@ import {
 } from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 import type { ApprovalEndedBy } from '../../../shared/types/ipc.types'
+import { openApi, useOpenAgentKey, useOpenRuntime } from '../../utils/runtime-api'
 
 const MAX_INPUT_ROWS = 10
 /** What an error row's Retry now sends: a message of the owner's, shown like any other. */
@@ -1097,7 +1098,10 @@ function LoopStream({ loop }: { loop: string }) {
   const pendingSuspend = useAgentStore((s) => selectLoopSlice(s, loop).pendingSuspend)
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
   // Keyed by agent file, not held in the view: a queue outlives an agent switch.
-  const messageQueue = useMessageQueueStore((s) => selectQueue(s, filePath, loop))
+  // The agent's key (multi-runtime.md §5.2): its path on This computer, runtime and path on another runtime.
+  const agentKeyOpen = useOpenAgentKey()
+  const openRuntime = useOpenRuntime()
+  const messageQueue = useMessageQueueStore((s) => selectQueue(s, agentKeyOpen, loop))
   const removeQueued = useMessageQueueStore((s) => s.remove)
   const setLog = useAgentStore((s) => s.setLog)
   const config = useAgentStore((s) => s.config)
@@ -1115,7 +1119,7 @@ function LoopStream({ loop }: { loop: string }) {
   const [refusedFiles, setRefusedFiles] = useState<Array<RefusedAttachment & { id: string }>>([])
   /** This loop's effective media from the runtime; null before the agent runs. */
   const [loopMedia, setLoopMedia] = useState<LoopMedia | null>(null)
-  const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
+  const starting = useAppStore((s) => agentKeyOpen ? s.startingFilePaths.has(agentKeyOpen) : false)
   // Center stage with both side panels collapsed spans the whole window; the
   // `comfortable` default caps the stream + composer to a reading column. The
   // cap is a width on an inner wrapper, not on the scroller, so the scrollbar
@@ -1165,7 +1169,7 @@ function LoopStream({ loop }: { loop: string }) {
   const handleApprovalRespond = useCallback(async (requestId: string, approved: boolean, feedback?: string): Promise<boolean> => {
     setApprovalStatus(requestId, { busy: true })
     try {
-      const result = await window.adfApi?.respondToolApproval(requestId, approved, feedback)
+      const result = await openApi()?.respondToolApproval(requestId, approved, feedback)
       if (result && result.success === false) {
         setApprovalStatus(requestId, { error: result.error ?? 'Could not resolve this approval' })
         return false
@@ -1187,7 +1191,7 @@ function LoopStream({ loop }: { loop: string }) {
   const handleAlwaysApprove = useCallback(async (requestId: string, toolName: string): Promise<boolean> => {
     setApprovalStatus(requestId, { busy: true })
     try {
-      const result = await window.adfApi?.alwaysApproveTool(requestId, toolName)
+      const result = await openApi()?.alwaysApproveTool(requestId, toolName)
       if (result && !result.success) {
         setApprovalStatus(requestId, { error: `Always approve refused: ${result.error ?? 'unknown reason'}` })
         return false
@@ -1209,7 +1213,7 @@ function LoopStream({ loop }: { loop: string }) {
   }, [setApprovalStatus, settleApprovalCard, loop])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
-    window.adfApi?.respondAsk(requestId, answer)
+    openApi()?.respondAsk(requestId, answer)
     const idx = log.findIndex((entry) => entry.id === logEntryId)
     if (idx >= 0) {
       updateEntryAt(idx, (entry) => {
@@ -1223,7 +1227,7 @@ function LoopStream({ loop }: { loop: string }) {
   }, [log, removePendingAsk, updateEntryAt, loop])
 
   const handleSuspendRespond = useCallback((resume: boolean) => {
-    window.adfApi?.respondSuspend(resume)
+    openApi()?.respondSuspend(resume)
     setPendingSuspend(null, loop)
   }, [setPendingSuspend, loop])
 
@@ -1443,7 +1447,7 @@ function LoopStream({ loop }: { loop: string }) {
   useEffect(() => {
     if (isMainLoop || sideLoopLoaded) return
     let cancelled = false
-    void Promise.resolve(window.adfApi?.getChat(loop))
+    void Promise.resolve(openApi()?.getChat(loop))
       .then((result) => {
         if (cancelled) return
         const history = result?.chatHistory
@@ -1564,7 +1568,7 @@ function LoopStream({ loop }: { loop: string }) {
   // its state changes: a model switch rebuilds the connector.
   useEffect(() => {
     let cancelled = false
-    void Promise.resolve(window.adfApi?.getAgentStatus({ mediaFor: loop }))
+    void Promise.resolve(openApi()?.getAgentStatus({ mediaFor: loop }))
       .then((status) => { if (!cancelled) setLoopMedia(status?.media ?? null) })
       .catch(() => { if (!cancelled) setLoopMedia(null) })
     return () => { cancelled = true }
@@ -1624,7 +1628,7 @@ function LoopStream({ loop }: { loop: string }) {
     let cancelled = false
     void (async () => {
       try {
-        const file = await window.adfApi?.readInternalFile(SKILLS_REGISTRY_PATH)
+        const file = await openApi()?.readInternalFile(SKILLS_REGISTRY_PATH)
         if (cancelled || file?.binary) return
         setSlashCommands(buildSlashCommands(parseSkillsRegistry(file?.content)?.entries ?? []))
       } catch { /* no catalog: the built-ins still work */ }
@@ -1650,7 +1654,9 @@ function LoopStream({ loop }: { loop: string }) {
     setInterrupting(true)
     let error: string | null = null
     try {
-      const result = await window.adfApi?.interruptTurn(filePath, loop)
+      // On the open agent's runtime (multi-runtime.md §4.1); This computer's surface is window.adfApi.
+      const api = openApi()
+      const result = await (api && api !== window.adfApi ? api.interruptTurn(filePath, loop) : window.adfApi?.interruptTurn(filePath, loop))
       if (!result) error = 'no agent runtime'
       else if (!result.success) error = result.error ?? 'unknown error'
     } catch (err) {
@@ -1664,7 +1670,7 @@ function LoopStream({ loop }: { loop: string }) {
 
   /** The `/compact` command, also behind an error row's Compact. */
   const runCompact = useCallback(async () => {
-    const result = await window.adfApi?.compactLoop()
+    const result = await openApi()?.compactLoop()
     if (!result?.success) say(`/compact — ${result?.error ?? 'no agent is running.'}`)
   }, [say])
 
@@ -1672,7 +1678,7 @@ function LoopStream({ loop }: { loop: string }) {
     const mimeType = inferMimeType(file)
     const kind = uploadKind(mimeType)
     const bytes = new Uint8Array(await file.arrayBuffer())
-    const result = await window.adfApi?.uploadFile(
+    const result = await openApi()?.uploadFile(
       `loop-upload/${sanitizeUploadName(file.name)}`, Array.from(bytes), mimeType, { unique: true })
     if (!result?.success || !result.path) return null
     const uploadPath = result.path
@@ -1713,15 +1719,15 @@ function LoopStream({ loop }: { loop: string }) {
   }, [])
 
   const handleInterruptSend = useCallback((id: string) => {
-    if (!filePath) return
-    const msg = removeQueued(filePath, loop, id)
+    if (!agentKeyOpen) return
+    const msg = removeQueued(agentKeyOpen, loop, id)
     // A send main does not take puts it back in the queue, marked "Not sent".
-    if (msg) sendQueuedMessages(filePath, loop, [msg])
-  }, [removeQueued, filePath, loop])
+    if (msg) sendQueuedMessages(agentKeyOpen, loop, [msg])
+  }, [removeQueued, agentKeyOpen, loop])
 
   const handleCancelQueued = useCallback((id: string) => {
-    if (filePath) removeQueued(filePath, loop, id)
-  }, [removeQueued, filePath, loop])
+    if (agentKeyOpen) removeQueued(agentKeyOpen, loop, id)
+  }, [removeQueued, agentKeyOpen, loop])
 
   const buildSubmitContent = useCallback(
     (message: string, items: PendingAttachment[] = attachments): ContentBlock[] => buildContentBlocks(message, items),
@@ -1739,7 +1745,7 @@ function LoopStream({ loop }: { loop: string }) {
    */
   const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]): Promise<SendRoute> => {
     pinToBottom()
-    return sendComposerMessage({ filePath, loop, loopState: state, agentState }, message, content, previews)
+    return sendComposerMessage({ filePath, runtimeId: openRuntime, loop, loopState: state, agentState }, message, content, previews)
   }
 
   // A failed send puts what the owner wrote back in the composer (this tab's
@@ -1817,7 +1823,7 @@ function LoopStream({ loop }: { loop: string }) {
       const name = command.skill
       let parsed = null
       try {
-        const file = await window.adfApi?.readInternalFile(skillInterfacePath(name))
+        const file = await openApi()?.readInternalFile(skillInterfacePath(name))
         parsed = file?.binary ? null : parseSkillInterface(file?.content)
       } catch { /* no interface file: the generic wording still works */ }
       const message = composeSkillMessage(name, parsed, args)
@@ -1842,7 +1848,7 @@ function LoopStream({ loop }: { loop: string }) {
         // pre-clear percentage until the next call.
         agentStore.setTokenUsage({ input: 0, output: 0 })
         agentStore.setTokenEstimate(null)
-        const result = await window.adfApi?.clearChat()
+        const result = await openApi()?.clearChat()
         if (!result?.success) say('/clear — the loop could not be cleared.')
         return
       }
@@ -1860,7 +1866,7 @@ function LoopStream({ loop }: { loop: string }) {
           say(`/${command.key} — no agent file is open.`)
           return
         }
-        const result = await window.adfApi?.setFleetAgentState([target], command.key)
+        const result = await openApi()?.setFleetAgentState([target], command.key)
         const failure = result?.failed?.[0]
         say(failure
           ? `/${command.key} — ${failure.error}`
@@ -1875,7 +1881,7 @@ function LoopStream({ loop }: { loop: string }) {
       case 'off': {
         // Exactly what the title bar's Off does (TitleBar handleOff): full
         // teardown, then the display state follows.
-        await window.adfApi?.stopAgent()
+        await openApi()?.stopAgent()
         setState('off')
         say('Agent off')
         return
@@ -2015,7 +2021,7 @@ function LoopStream({ loop }: { loop: string }) {
     if (oldestSeq === undefined) return
     setLoadingOlder(true)
     try {
-      const result = await window.adfApi.getChatOlder(oldestSeq, undefined, loop)
+      const result = await openApi().getChatOlder(oldestSeq, undefined, loop)
       if (result.uiLog.length > 0) {
         // Count grouped display items so the previous top item can be
         // re-anchored after the prepend without activity groups causing drift.

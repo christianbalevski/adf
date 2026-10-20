@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer as electronIpcRenderer, webFrame } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
 import { RUNTIME_PUSH_CHANNELS } from '../shared/constants/runtime-push-channels'
+import { STUDIO_CALL_CHANNELS } from '../shared/constants/studio-call-channels'
 import { createRuntimeIpc, onAnyRuntime, type RuntimeIpc } from '../shared/runtime-ipc'
 import { LOCAL_RUNTIME, type RuntimeId } from '../shared/runtime-tag'
 import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnapshot, QueueHandoverEntry } from '../shared/types/ipc.types'
@@ -783,7 +784,7 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
   createRemoteFolder: (args: { parent: string; name: string }) => ipcRenderer.invoke(IPC.REMOTE_FS_MKDIR, args),
 
   // Agent windows: Open in new window (daemon mode)
-  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_AGENT, request),
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string; runtimeId?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_AGENT, request),
   closeAgentWindow: () => ipcRenderer.invoke(IPC.WINDOW_CLOSE),
   agentWindowOpenFailed: () => ipcRenderer.invoke(IPC.WINDOW_OPEN_FAILED),
   openMainSettings: (request: { section?: string; anchor?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_SETTINGS, request),
@@ -810,7 +811,7 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
   },
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
-  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null }) => ipcRenderer.invoke(IPC.RECOVERY_STASH, stash),
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string }) => ipcRenderer.invoke(IPC.RECOVERY_STASH, stash),
   recoveryList: () => ipcRenderer.invoke(IPC.RECOVERY_LIST),
   recoveryArchive: () => ipcRenderer.invoke(IPC.RECOVERY_ARCHIVE),
   recoveryReveal: () => ipcRenderer.invoke(IPC.RECOVERY_REVEAL),
@@ -820,6 +821,8 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
 })
 
 const runtimePushChannels = new Set(RUNTIME_PUSH_CHANNELS)
+// Studio calls are never tagged: a surface bound to any runtime makes them as This computer's does (§4.2).
+const studioCallChannels = new Set(STUDIO_CALL_CHANNELS)
 const ipcChannels = new Set<string>(Object.values(IPC))
 const surfaces = new Map<RuntimeId, AdfApi>()
 /** The surface bound to `id`: `local` (This computer) sends no tag. One per runtime, made on first use. */
@@ -828,7 +831,7 @@ function apiFor(id: RuntimeId): AdfApi {
   let surface = surfaces.get(runtimeId)
   if (!surface) {
     surface = {
-      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels)),
+      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels, studioCallChannels)),
       runtimeId,
       runtime: apiFor,
       onAnyRuntime: (channel: string, callback: (runtimeId: RuntimeId, ...args: unknown[]) => void) => {

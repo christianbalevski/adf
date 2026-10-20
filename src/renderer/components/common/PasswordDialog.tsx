@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { Button, TextInput } from '../ui'
+import { openApi } from '../../utils/runtime-api'
 
 export function PasswordDialog() {
   const open = useAppStore((s) => s.passwordDialogOpen)
@@ -22,7 +23,7 @@ export function PasswordDialog() {
     setLoading(true)
     setError('')
     try {
-      const result = await window.adfApi.unlockPassword(password)
+      const result = await openApi().unlockPassword(password)
       if (result.success) {
         successRef.current = true
         setPassword('')
@@ -59,7 +60,7 @@ export function PasswordDialog() {
       'This cannot be undone.'
     )
     if (!confirmed) return
-    await window.adfApi.wipeAllIdentity()
+    await openApi().wipeAllIdentity()
     successRef.current = true
     setPassword('')
     setError('')

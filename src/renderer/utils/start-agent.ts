@@ -2,6 +2,7 @@ import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useAgentStore } from '../stores/agent.store'
 import { toDisplayState } from '../hooks/useAgent'
+import { openApi, windowAgentKey } from './runtime-api'
 
 export interface StartForegroundOptions {
   /** Passed through to main: the start is a prelude to a user message. */
@@ -43,7 +44,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
 
   if (!skipReviewGate) {
     try {
-      const review = await window.adfApi?.checkAgentReview()
+      const review = await openApi()?.checkAgentReview()
       if (review?.needsReview) {
         appStore.setAgentReviewDialog(true, review.configSummary)
         return { success: false, error: 'Agent needs review', cancelled: true }
@@ -53,9 +54,11 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     }
   }
 
-  if (filePath) appStore.addStartingFilePath(filePath)
+  // The row spinner's key: the path on This computer, runtime and path on another runtime.
+  const startKey = filePath ? windowAgentKey(useDocumentStore.getState().runtimeId, filePath) : null
+  if (startKey) appStore.addStartingFilePath(startKey)
   try {
-    let result = await window.adfApi?.startAgent(filePath ?? undefined, hasUserMessage)
+    let result = await openApi()?.startAgent(filePath ?? undefined, hasUserMessage)
     if (result && !result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
       const connected = await useAppStore.getState().requestProviderSetup(result.code, filePath)
       if (!connected) return { success: false, error: result.error, cancelled: true }
@@ -74,7 +77,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
         })
         return { success: false, error }
       }
-      result = await window.adfApi?.startAgent(filePath ?? undefined, hasUserMessage)
+      result = await openApi()?.startAgent(filePath ?? undefined, hasUserMessage)
     }
 
     // Only touch the store if the user is still looking at this agent.
@@ -131,6 +134,6 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     }
     return { success: false, error }
   } finally {
-    if (filePath) useAppStore.getState().removeStartingFilePath(filePath)
+    if (startKey) useAppStore.getState().removeStartingFilePath(startKey)
   }
 }

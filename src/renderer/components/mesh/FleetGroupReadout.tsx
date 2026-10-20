@@ -6,6 +6,7 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { hueFromPath, formatTokens } from './FleetTerrainNode'
 import { isUnder, pathSegments } from './fleet-layout'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Group readout — the full-screen answer to clicking a voice chip: the
@@ -40,7 +41,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
   onClose: () => void
   onFocusAgent: (filePath: string) => void
 }) {
-  const agents = useMeshStore((s) => s.agents)
+  const agents = useMeshStore((s) => selectMapAgents(s))
   const stewards = useFleetStore((s) => s.stewards)
   const burn = useFleetStore((s) => s.burn)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)

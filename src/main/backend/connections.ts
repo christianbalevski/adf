@@ -256,7 +256,7 @@ function encryptedUrl(url: string | null): boolean {
   return kind === 'tailnet' || kind === 'https' || kind === 'loopback'
 }
 
-const LINK_STATE: Record<BackendDaemonStatus['connection'], ConnectionCurrent['state']> = {
+export const LINK_STATE: Record<BackendDaemonStatus['connection'], ConnectionCurrent['state']> = {
   connecting: 'connecting',
   connected: 'connected',
   disconnected: 'retrying',

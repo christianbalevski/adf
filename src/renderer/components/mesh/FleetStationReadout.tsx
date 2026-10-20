@@ -9,6 +9,7 @@ import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { PeerAvatar } from '../orbital/PeerAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Station readout — the full-detail modal for any base station, same family
@@ -65,7 +66,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
   /** A top-talker chip was clicked — open that LOCAL agent's readout. */
   onOpenLocalAgent: (filePath: string) => void
 }) {
-  const agents = useMeshStore((s) => s.agents)
+  const agents = useMeshStore((s) => selectMapAgents(s))
   const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
   const [copied, setCopied] = useState<string | null>(null)
 

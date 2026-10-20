@@ -12,6 +12,7 @@ import { nanoid } from 'nanoid'
 import { findApprovalTargetEntry } from './approval-target'
 import { interruptedBlockIndexes, pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
 import { deliverQueuedMessages } from '../utils/queued-delivery'
+import { openAgentKey, openApi, useOpenRuntime } from '../utils/runtime-api'
 
 /**
  * Search backwards for the last entry of the given type, but only if it's
@@ -165,7 +166,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // Auto-send queued messages when the loop goes idle. The queue is the
         // open agent's (foreground events are only ever about the open file).
         if (displayState === 'idle') {
-          const currentFile = useDocumentStore.getState().filePath
+          const currentFile = openAgentKey()
           if (currentFile) deliverQueuedMessages(currentFile, loop, { automatic: true })
         }
         break
@@ -310,19 +311,19 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // whose document path is neither is covered ONLY here — `file_updated`
         // refreshes open editor tabs, not the document store.
         if (shouldRefreshDocument(payload)) {
-          window.adfApi.getDocument().then((r) => {
+          openApi().getDocument().then((r) => {
             applyDocument(r.content, r.revision)
           })
         }
         // If agent changed its own config, refresh it
         if (payload.name === 'sys_update_config') {
-          window.adfApi.getAgentConfig().then((config) => {
+          openApi().getAgentConfig().then((config) => {
             useAgentStore.getState().setConfig(config)
           })
         }
         // If agent updated meta, refresh status text
         if (payload.name === 'sys_set_meta' || payload.name === 'sys_delete_meta') {
-          window.adfApi.getHeader().then((header) => {
+          openApi().getHeader().then((header) => {
             useAgentStore.getState().setStatusText(header.statusText ?? '')
           })
         }
@@ -456,7 +457,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // status/title/tab-strip ~6x AND, via setDocumentContent, marked the
         // open document dirty on a turn that never touched it.
         if (loop === MAIN_LOOP) {
-          window.adfApi?.getHeader().then((header) => {
+          openApi()?.getHeader().then((header) => {
             applyDocument(header.document)
             applyConfig(header.agentConfig)
             useAgentStore.getState().setStatusText(header.statusText ?? '')
@@ -686,11 +687,13 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
  * never becomes stale — the useEffect runs only once.
  */
 export function useAgentEvents() {
+  // The open agent's runtime: its events come from there (multi-runtime.md §4.1).
+  const runtime = useOpenRuntime()
   useEffect(() => {
-    if (!window.adfApi) return
+    if (!openApi()) return
     // One reference for every subscription this effect makes — they all share
     // the same lifetime and the same cleanup.
-    const api = window.adfApi
+    const api = openApi()
 
     const unsubscribe = api.onAgentEvent(createAgentEventHandler())
 
@@ -739,5 +742,5 @@ export function useAgentEvents() {
       unsubMcp?.()
       unsubConfig?.()
     }
-  }, [])
+  }, [runtime])
 }

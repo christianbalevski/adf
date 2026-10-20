@@ -4,6 +4,7 @@ import { resolveLineage, type ResolvedLineage } from '../../../shared/utils/line
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { MeshNodeData } from './MeshGraphNode'
+import { runtimeDistrictOf, runtimeOfRegion, type MapAgent } from './runtime-fleet'
 
 /**
  * Fleet map layout — a hex world, Civ-style.
@@ -176,6 +177,8 @@ export interface TerrainNodeData {
   members: TerrainMember[]
   /** Distinct district names (subfolders) present in this region */
   districts: string[]
+  /** A runtime other than This computer that is down: the region is greyed (multi-runtime.md §6.4). */
+  muted?: boolean
   /** Far offscreen (MeshGraphView's overscan visibility pass) — render a
    *  hollow fixed-size shell instead of the full content */
   culled?: boolean
@@ -284,6 +287,8 @@ function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): Fl
  *  the SAME grouping planRegion uses, exported for the drag handlers. */
 export function districtKeyOf(filePath: string, root: string): string {
   if (!root) return ''
+  // Another runtime's region: its districts are its tracked folders (runtime-fleet.ts).
+  if (runtimeOfRegion(root) !== null) return runtimeDistrictOf(filePath)
   const dir = pathDirname(filePath)
   if (dir === root) return ''
   if (isUnder(dir, root)) return dir.slice(root.length + 1)
@@ -292,7 +297,7 @@ export function districtKeyOf(filePath: string, root: string): string {
 
 /** Path of an agent's directory relative to its terrain root ('' = at the root). */
 function relativeDir(agent: FleetAgentStatus, root: string): string {
-  return districtKeyOf(agent.filePath, root)
+  return (agent as MapAgent).district ?? districtKeyOf(agent.filePath, root)
 }
 
 /** Every unit's avatar is its orbital, seeded like the sidebar's. */
@@ -572,7 +577,17 @@ function snapToLattice(x: number, y: number): { x: number; y: number } {
   return axialToPixel(q, r)
 }
 
-export function computeFleetLayout(agents: FleetAgentStatus[], placement?: FleetPlacement): FleetLayoutResult {
+/**
+ * Regions of runtimes other than This computer (multi-runtime.md §6.4): the
+ * label (the runtime name, with its state while down) and whether it is
+ * greyed. Omitted, every region is a folder of This computer, as before.
+ */
+export interface RegionDecor {
+  label?: (dirPath: string) => string | undefined
+  muted?: (dirPath: string) => boolean
+}
+
+export function computeFleetLayout(agents: FleetAgentStatus[], placement?: FleetPlacement, decor?: RegionDecor): FleetLayoutResult {
   const lineage = resolveLineage(agents)
   const byPath = new Map(agents.map((a) => [a.filePath, a]))
 
@@ -730,14 +745,15 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
 
     const terrainData = {
       dirPath: plan.dirPath,
-      label: plan.dirPath ? pathBasename(plan.dirPath) : 'Untracked',
+      label: decor?.label?.(plan.dirPath) ?? (plan.dirPath ? pathBasename(plan.dirPath) : 'Untracked'),
       agentCount: plan.members.length,
       width: plan.width,
       height: plan.height,
       // Cell coords relative to the terrain node's top-left
       cells: plan.cells.map((c) => ({ ...c, x: c.x - plan.minX, y: c.y - plan.minY })),
       members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, seed: seedFor(m), icon: agentAvatarEmoji(m.icon, m.agentId || m.filePath) })),
-      districts: plan.districts
+      districts: plan.districts,
+      ...(decor?.muted?.(plan.dirPath) ? { muted: true } : {})
     } satisfies TerrainNodeData
 
     nodes.push({

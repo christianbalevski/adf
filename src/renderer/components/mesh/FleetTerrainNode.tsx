@@ -8,6 +8,7 @@ import { hexCorners, hexBoundaryPath, isUnder, HEX_SIZE, type TerrainNodeData } 
 import { resolveLineage } from '../../../shared/utils/lineage'
 import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { formatTokenCount } from '../../utils/token-estimate'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Territory land — a contiguous cluster of hex cells claimed by one tracked
@@ -232,6 +233,9 @@ function cellFill(
   }
 }
 
+/** A down runtime's region: greyed and dimmed. */
+export const MUTED_REGION: React.CSSProperties = { filter: 'grayscale(1)', opacity: 0.45 }
+
 export const FleetTerrainNode = memo(function FleetTerrainNode(props: NodeProps) {
   // Overscan culling (MeshGraphView's visibility pass): far offscreen the
   // land renders as a hollow shell with the same true footprint, dropping
@@ -240,6 +244,8 @@ export const FleetTerrainNode = memo(function FleetTerrainNode(props: NodeProps)
   if (d.culled) {
     return <div className="pointer-events-none relative" style={{ width: d.width, height: d.height }} />
   }
+  // A runtime that is down: its region is greyed (multi-runtime.md §6.4).
+  if (d.muted) return <div style={MUTED_REGION}><FleetTerrainNodeFull {...props} /></div>
   return <FleetTerrainNodeFull {...props} />
 })
 
@@ -254,7 +260,7 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
   // keeps every element identity below stable, so useShallow bails.
   const memberAgents = useMeshStore(
     useShallow((s) => {
-      const byPath = new Map(s.agents.map((a) => [a.filePath, a]))
+      const byPath = new Map(selectMapAgents(s).map((a) => [a.filePath, a]))
       return members.map((m) => byPath.get(m.filePath))
     })
   )
@@ -272,7 +278,7 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
   const hoverDir = useFleetStore((s) => s.hoverDir)
   // Lineage needs the whole roster (families cross territories) — only
   // subscribe to it while that lens is up
-  const lineageAgents = useMeshStore((s) => (lens === 'lineage' ? s.agents : null))
+  const lineageAgents = useMeshStore((s) => (lens === 'lineage' ? selectMapAgents(s) : null))
 
   // Burn lens normalization — log-scaled against the fleet's hottest agent so
   // a 10x spread still reads as a gradient, not one red hex and a cold map

@@ -45,6 +45,10 @@ export const CLIENT_SETTINGS_KEYS = [
   // setSettings; all three are AppSettings members.
   'fleetGroups',
   'fleetStewards',
+  // The fleet map's groups, stewards and world of each runtime other than
+  // This computer, by runtime id (docs/design/multi-runtime.md §7.4). Paths
+  // on those runtimes: never handed to embedded Studio (CLIENT_FILE_ONLY_KEYS).
+  'runtimeFleet',
   'onboardingSharedAt',
   // GET /templates reports `migrated` from the daemon's view of this key,
   // which never changes in daemon mode: the daemon-mode TEMPLATES_LIST
@@ -142,7 +146,7 @@ export const REMOTE_RECENT_FILES_KEY = 'remoteRecentFiles'
  * reads them, and a remote daemon's paths must not become paths embedded
  * Studio opens or sweeps.
  */
-export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY, 'agentWindows']
+export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY, 'agentWindows', 'runtimeFleet']
 
 /** The settings key of Open Recent: `recentFiles`, or `remoteRecentFiles` in remote mode. */
 export function recentFilesKey(remote: boolean): 'recentFiles' | typeof REMOTE_RECENT_FILES_KEY {

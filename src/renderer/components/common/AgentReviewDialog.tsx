@@ -11,6 +11,7 @@ import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 import { Button, Select, TextInput } from '../ui'
+import { openApi } from '../../utils/runtime-api'
 
 const TIER_STYLES = {
   shared: {
@@ -95,7 +96,7 @@ function useConfiguredProviders(): PickerProvider[] | null {
   const [providers, setProviders] = useState<PickerProvider[] | null>(null)
   useEffect(() => {
     let cancelled = false
-    window.adfApi.getSettings()
+    openApi().getSettings()
       .then((s) => {
         if (cancelled) return
         setProviders((s?.providers ?? []).map((p) => ({ id: p.id, name: p.name || p.id, defaultModel: p.defaultModel })))
@@ -320,7 +321,7 @@ function ModelPicker({ configuredLabel, providers, selected, onSelect }: {
     setModelsError(null)
     setCustom(false)
     try {
-      const { models: list, error } = await window.adfApi.listModels(id)
+      const { models: list, error } = await openApi().listModels(id)
       setModels(list ?? [])
       if (error) setModelsError(error)
       if (!list?.length) setCustom(true)
@@ -610,7 +611,7 @@ export function AgentReviewDialog() {
   /** Re-pull the summary after a failed accept/claim so the retry reflects main's current view. */
   const refreshSummary = useCallback(async () => {
     try {
-      const review = await window.adfApi.checkAgentReview()
+      const review = await openApi().checkAgentReview()
       if (review.needsReview && review.configSummary) {
         useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
       }
@@ -627,7 +628,7 @@ export function AgentReviewDialog() {
     setAcceptError(null)
     const reviewedPath = reviewedPathRef.current
     try {
-      const result = await window.adfApi.acceptAgentReview({
+      const result = await openApi().acceptAgentReview({
         claim: claim || undefined,
         expectedPath: reviewedPath ?? '',
         model: model ?? undefined
@@ -697,7 +698,7 @@ export function AgentReviewDialog() {
     setLoading(true)
     setAcceptError(null)
     try {
-      const result = await window.adfApi.acceptTemplateReview({ id: review.id, password: pw || undefined })
+      const result = await openApi().acceptTemplateReview({ id: review.id, password: pw || undefined })
       if (!result.success) {
         setAcceptError(result.error || 'Claim failed.')
         return
@@ -725,7 +726,7 @@ export function AgentReviewDialog() {
     if (pw) {
       setLoading(true)
       try {
-        const result = await window.adfApi.unlockEnvelopeWithPassword(pw, false)
+        const result = await openApi().unlockEnvelopeWithPassword(pw, false)
         if (!result.success) {
           setPasswordError("That password didn't unlock it — check with the sender.")
           setLoading(false)

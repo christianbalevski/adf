@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { pathBasename } from './fleet-layout'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Station hover/click card — screen-space stats for a base station: what it
@@ -70,7 +71,7 @@ export const FleetStationCard = memo(function FleetStationCard({
   onPointerStay?: () => void
   onPointerAway?: () => void
 }) {
-  const agents = useMeshStore((s) => s.agents)
+  const agents = useMeshStore((s) => selectMapAgents(s))
   const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
 
   // Traffic through this station, from the same heat ledger that grows its

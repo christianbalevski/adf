@@ -7,6 +7,10 @@ import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout
 import { MOD_KEY } from '../../utils/platform'
 import { sendFleetOrders } from '../../utils/queued-delivery'
 import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
+import { byRuntime, mapTarget, messageByRuntime, saveFleetKeys, selectMapAgents, type MapAgent } from './runtime-fleet'
+import { runtimeName, useRuntimesStore } from '../../stores/runtimes.store'
+import { apiFor } from '../../utils/runtime-api'
+import { agentKey, isRemoteAgentKey, parseAgentKey } from '../../../shared/types/agent-ref'
 
 function MoreItem({
   label,
@@ -119,7 +123,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   // selected agent's record changes, not on every roster identity churn
   const selected = useMeshStore(
     useShallow((s) => {
-      const byPath = new Map(s.agents.map((a) => [a.filePath, a]))
+      const byPath = new Map(selectMapAgents(s).map((a) => [a.filePath, a]))
       return selection.map((p) => byPath.get(p)).filter((a): a is FleetAgentStatus => !!a)
     })
   )
@@ -134,7 +138,15 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     if (targets.length === 0 || busy) return
     setBusy(state)
     try {
-      await window.adfApi.setFleetAgentState(targets.map((a) => a.filePath), state)
+      // One call per runtime (multi-runtime.md §6.4): a refusal on one is said, the others proceed.
+      const groups = byRuntime(targets.map((a) => a.filePath))
+      await Promise.all([...groups].map(async ([runtimeId, paths]) => {
+        try {
+          await apiFor(runtimeId).setFleetAgentState(paths, state)
+        } catch (err) {
+          if (groups.size > 1) reportFailure(`${runtimeName(runtimeId)}: ${paths.length} agents not set to ${state}`, err)
+        }
+      }))
     } catch { /* poll reflects the outcome */ } finally {
       setBusy(null)
       onDone()
@@ -151,8 +163,9 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       markStarting(online)
       for (const filePath of online) {
         try {
-          await window.adfApi.stopBackgroundAgent(filePath)
-          await window.adfApi.startBackgroundAgent(filePath)
+          const target = mapTarget(filePath)
+          await target.api.stopBackgroundAgent(target.filePath)
+          await target.api.startBackgroundAgent(target.filePath)
         } catch { /* per-agent failure shouldn't stop the batch */ }
       }
     } catch { /* poll reflects the outcome */ } finally {
@@ -169,9 +182,12 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const single = selection.length === 1 ? selected[0] : null
   const stewardDirs = useMemo(() => {
     if (!single) return []
-    const root = single.trackedDirRoot
+    // Another runtime's agent: its own folders, under the map's keys (multi-runtime.md §6.4).
+    const remote = isRemoteAgentKey(single.filePath) ? parseAgentKey(single.filePath) : null
+    const keyed = (dirs: { dir: string; label: string }[]) => remote ? dirs.map((x) => ({ ...x, dir: agentKey({ runtimeId: remote.runtimeId, filePath: x.dir }) })) : dirs
+    const root = remote ? (single as MapAgent).sourceRoot : single.trackedDirRoot
     const rootName = root ? pathBasename(root) : ''
-    let dir = pathDirname(single.filePath)
+    let dir = pathDirname(remote ? remote.filePath : single.filePath)
     const dirs: { dir: string; label: string }[] = []
     while (dir) {
       const inRoot = !!root && (dir === root || isUnder(dir, root))
@@ -182,7 +198,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       if (!inRoot || dir === root) break
       dir = pathDirname(dir)
     }
-    return dirs
+    return keyed(dirs)
   }, [single])
 
   const appointSteward = useCallback(async (dir: string, appoint: boolean) => {
@@ -193,15 +209,15 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     else delete next[dir]
     setStewards(next)
     try {
-      await window.adfApi.setSettings({ fleetStewards: next })
+      await saveFleetKeys({ stewards: next }, useRuntimesStore.getState().runtimes)
     } catch { /* store already updated; settings retry on next save */ }
 
     // Charge the agent with its new duty (or relieve it) — delivered over the
     // same rails as any owner message, so a running steward starts summarizing
     // immediately and an offline one finds its orders on next start.
-    const label = pathBasename(dir)
+    const label = pathBasename(isRemoteAgentKey(dir) ? parseAgentKey(dir).filePath : dir)
     // Event-handler read — no need to subscribe to the whole roster for this
-    const members = useMeshStore.getState().agents
+    const members = selectMapAgents(useMeshStore.getState())
       .filter((a) => a.filePath !== single.filePath &&
         (a.filePath === dir || isUnder(a.filePath, dir)))
       .map((a) => a.handle)
@@ -225,7 +241,8 @@ If you are later relieved of stewardship, delete that timer and return your stat
       // itself decides that this direct user message wakes hibernation.
       if (!single.online) {
         markStarting([single.filePath])
-        await window.adfApi.startBackgroundAgent(single.filePath)
+        const target = mapTarget(single.filePath)
+        await target.api.startBackgroundAgent(target.filePath)
       }
       // Not awaited: invokeAgent resolves only when the LLM turn completes.
       // A refused order is said here; the appointment itself is persisted.
@@ -239,6 +256,16 @@ If you are later relieved of stewardship, delete that timer and return your stat
     const name = groupName.trim()
     if (!name || selection.length === 0) return
     try {
+      const runtimes = useRuntimesStore.getState().runtimes
+      if (runtimes.length > 1) {
+        // Members of every runtime: each runtime's are kept under its own key (multi-runtime.md §7.4).
+        const groups = { ...useFleetStore.getState().namedGroups, [name]: selection }
+        await saveFleetKeys({ groups }, runtimes)
+        setNamedGroups(groups)
+        setGroupName('')
+        setGroupNameOpen(false)
+        return
+      }
       const settings = await window.adfApi.getSettings()
       const groups = {
         ...((settings as unknown as { fleetGroups?: Record<string, string[]> }).fleetGroups ?? {}),
@@ -263,10 +290,12 @@ If you are later relieved of stewardship, delete that timer and return your stat
         const name = agent.handle || agentNameOf(agent.filePath)
         try {
           if (kind === 'start') {
-            const result = await window.adfApi.startBackgroundAgent(agent.filePath)
+            const target = mapTarget(agent.filePath)
+            const result = await target.api.startBackgroundAgent(target.filePath)
             if (!result?.success) failures.push({ name, reason: result?.error })
           } else {
-            await window.adfApi.stopBackgroundAgent(agent.filePath)
+            const target = mapTarget(agent.filePath)
+            await target.api.stopBackgroundAgent(target.filePath)
           }
         } catch (err) {
           failures.push({ name, reason: err })
@@ -290,7 +319,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
     const offline = selected.filter((a) => !a.online).map((a) => a.filePath)
     if (offline.length > 0) markStarting(offline)
     try {
-      const result = await window.adfApi.messageFleetAgents(selection, content)
+      const result = await messageByRuntime(selection, content)
       const failedNote = result.failed.length > 0 ? ` · ${result.failed.length} failed` : ''
       setMessageResult(`Sent to ${result.delivered.length}${failedNote}`)
       setMessage('')

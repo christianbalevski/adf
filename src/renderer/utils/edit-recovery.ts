@@ -17,7 +17,14 @@ import { useDocumentStore } from '../stores/document.store'
 
 export const CONFIG_RECOVERY_PATH = 'config.json'
 
-type Stash = { agentFilePath: string; path: string; content: string | null }
+/** `runtimeId`: the agent's runtime, omitted for This computer (docs/design/multi-runtime.md §4.5). */
+type Stash = { agentFilePath: string; path: string; content: string | null; runtimeId?: string }
+
+/** The stash fields naming the open agent's runtime: none for This computer, so its copies are the ones kept before. */
+function runtimeField(): { runtimeId?: string } {
+  const runtimeId = useDocumentStore.getState().runtimeId
+  return runtimeId && runtimeId !== 'local' ? { runtimeId } : {}
+}
 type Api = { recoveryStash?: (stash: Stash) => Promise<unknown> }
 
 export function startEditRecovery(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined, delayMs = 500): () => void {
@@ -38,12 +45,16 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
       conflicted.add(tab.path)
       if (!tabOwner.has(tab.path) && open) tabOwner.set(tab.path, open)
       const owner = tabOwner.get(tab.path)
-      if (owner) want.set(`${owner}\0${tab.path}`, { agentFilePath: owner, path: tab.path, content: tab.content })
+      if (owner) {
+        const rt = runtimeField()
+        want.set(`${rt.runtimeId ?? ''}\0${owner}\0${tab.path}`, { agentFilePath: owner, path: tab.path, content: tab.content, ...rt })
+      }
     }
     for (const path of [...tabOwner.keys()]) if (!conflicted.has(path)) tabOwner.delete(path)
     const config = useAgentStore.getState().configConflict
     if (config?.owner) {
-      want.set(`${config.owner}\0${CONFIG_RECOVERY_PATH}`, { agentFilePath: config.owner, path: CONFIG_RECOVERY_PATH, content: `${JSON.stringify(config.mine, null, 2)}\n` })
+      const rt = runtimeField()
+      want.set(`${rt.runtimeId ?? ''}\0${config.owner}\0${CONFIG_RECOVERY_PATH}`, { agentFilePath: config.owner, path: CONFIG_RECOVERY_PATH, content: `${JSON.stringify(config.mine, null, 2)}\n`, ...rt })
     }
 
     for (const [key, entry] of want) {
@@ -115,7 +126,7 @@ export async function stashUnsavedEditors(api: Api | undefined = typeof window !
   let written = 0
   for (const [path, content] of copies) {
     try {
-      await api.recoveryStash({ agentFilePath, path, content })
+      await api.recoveryStash({ agentFilePath, path, content, ...runtimeField() })
       written++
     } catch (err) {
       console.error(`[Recovery] Could not keep a copy of unsaved ${path}:`, err)

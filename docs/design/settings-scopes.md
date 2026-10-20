@@ -66,7 +66,7 @@ Columns **Local** and **Remote** give editability with the local runtime and wit
 | `spellcheckDownloadsEnabled` (Linux) | Privacy | Studio | C | Edit | Edit |
 | `recentFiles`, `remoteRecentFiles` | File menu | Studio | C | Edit | Edit |
 | `agentWindows` (agent windows open at quit; [agent-windows.md](agent-windows.md)) | none | Studio | C | none | none |
-| `fleetMapState`, `fleetGroups`, `fleetStewards`, `onboardingSharedAt`, `templatesMigrationSeen`, `uiFontSystemDefaultApplied` | none | Studio | C | none | none |
+| `fleetMapState`, `fleetGroups`, `fleetStewards`, `runtimeFleet` ([multi-runtime.md](multi-runtime.md) §7.4), `onboardingSharedAt`, `templatesMigrationSeen`, `uiFontSystemDefaultApplied` | none | Studio | C | none | none |
 | `mode`, `remote.url`, `remote.token`, `remote.allowInsecureHttp`, `remote.paired` | Connection | Studio | B | Edit | Edit |
 | `keepDaemonRunning` | Connection, This computer | Studio | B | Edit | Hidden |
 | Saved remotes | Connection | Studio | K | Edit | Edit |

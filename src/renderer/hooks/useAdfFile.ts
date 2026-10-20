@@ -11,7 +11,41 @@ import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
 import { confirmDiscardConflicts } from '../utils/edit-conflict'
-import { closeAgentWindow, isAgentWindow, openAgentWindow } from '../utils/window-kind'
+import { closeAgentWindow, isAgentWindow, openAgentWindow, windowRuntime } from '../utils/window-kind'
+import { apiFor, openApi, windowAgentKey } from '../utils/runtime-api'
+import { selectBackgroundAgents } from '../stores/background-agents.store'
+import { agentKey } from '../../shared/types/agent-ref'
+import type { RuntimeId } from '../../shared/runtime-tag'
+import type { AdfApi } from '../../preload/api'
+
+/**
+ * The key an agent's saved editor tabs are kept under (localStorage, shared
+ * by every window): its path on This computer, as before; runtime and path
+ * on another runtime.
+ */
+export function tabsKey(runtimeId: RuntimeId, filePath: string): string {
+  return agentKey({ runtimeId, filePath })
+}
+
+/** The open agent's tabs key, or null. */
+export function openTabsKey(): string | null {
+  const { filePath, runtimeId } = useDocumentStore.getState()
+  return filePath ? tabsKey(runtimeId, filePath) : null
+}
+
+/**
+ * Main window: before an agent of `target` opens, the open agent of another
+ * runtime is closed on its runtime (docs/design/multi-runtime.md §4.3), as an
+ * open within one runtime replaces the open file. True when one was closed.
+ */
+async function leaveOtherRuntime(target: RuntimeId): Promise<boolean> {
+  if (isAgentWindow) return false
+  const { filePath, runtimeId } = useDocumentStore.getState()
+  if (!filePath || runtimeId === target) return false
+  console.log(`[useAdfFile] Closing ${filePath} on ${runtimeId}: an agent on ${target} opens`)
+  await apiFor(runtimeId).closeFile()
+  return true
+}
 
 /** W3-F: what an agent switch answers when the user kept unsaved text under a "changed elsewhere" notice. */
 const KEPT_UNSAVED = { success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
@@ -40,16 +74,16 @@ export interface FileContents {
  * in parallel, without touching any store. `agentFilePath` picks the saved
  * tab set; main must already have this agent as its workspace.
  */
-export async function fetchFileContents(agentFilePath: string | null): Promise<FileContents> {
+export async function fetchFileContents(agentFilePath: string | null, api: AdfApi = openApi(), runtimeId: RuntimeId = useDocumentStore.getState().runtimeId): Promise<FileContents> {
   const t0 = performance.now()
-  const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
+  const saved = agentFilePath ? loadOpenTabs(tabsKey(runtimeId, agentFilePath)) : null
   const paths = (saved ? saved.paths : [...DEFAULT_OPEN_TABS])
     .filter((p) => p !== 'README.md' && !p.startsWith('browser://'))
   const [batch, files] = await Promise.all([
-    window.adfApi.getBatch() as Promise<FileBatch>,
+    api.getBatch() as Promise<FileBatch>,
     Promise.all(paths.map(async (path) => {
       try {
-        const file = await window.adfApi.readInternalFile(path)
+        const file = await api.readInternalFile(path)
         return file?.content != null ? [path, file as TabFile] as const : null
       } catch {
         return null // file gone since last session — skip
@@ -81,7 +115,7 @@ function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.star
     // A turn that ended during the switch reported its idle to neither
     // the background list nor this view: send what was queued for
     // every loop that is idle now.
-    if (filePath) deliverSettledQueues(filePath, loopStates, reattachedState)
+    if (filePath) deliverSettledQueues(windowAgentKey(useDocumentStore.getState().runtimeId, filePath), loopStates, reattachedState)
 
     // Restore pending HIL approvals so the user can still approve/reject
     const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals
@@ -242,7 +276,7 @@ export function useAdfFile() {
     // core set (README + mind + soul) when nothing restorable is saved —
     // those three are the agent's own document, memory, and voice, so they
     // are the default view rather than bespoke panels.
-    const agentFilePath = useDocumentStore.getState().filePath
+    const agentFilePath = openTabsKey()
     const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
     const tabStore = useEditorTabsStore.getState()
     tabStore.reset()
@@ -338,17 +372,18 @@ export function useAdfFile() {
     await loadFileContents()
 
     const filePath = useDocumentStore.getState().filePath
-    if (filePath && reattachAfterUnlock.delete(filePath) && opts.reattach !== false) {
+    const openKey = filePath ? windowAgentKey(useDocumentStore.getState().runtimeId, filePath) : null
+    if (filePath && openKey && reattachAfterUnlock.delete(openKey) && opts.reattach !== false) {
       // A running agent skips the review check, as openFile's re-attach does.
-      useAppStore.getState().addStartingFilePath(filePath)
-      const startResult = await window.adfApi.startAgent().finally(() => useAppStore.getState().removeStartingFilePath(filePath))
+      useAppStore.getState().addStartingFilePath(openKey)
+      const startResult = await openApi().startAgent().finally(() => useAppStore.getState().removeStartingFilePath(openKey))
       applyReattach(startResult, filePath)
       return
     }
 
     // Check if review is needed (replaces MCP server check)
     try {
-      const review = await window.adfApi.checkAgentReview()
+      const review = await openApi().checkAgentReview()
       if (review.needsReview) {
         useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
         return
@@ -358,15 +393,21 @@ export function useAdfFile() {
     }
   }, [setShowSettings, resetAgent, loadFileContents])
 
-  const openFile = useCallback(async (filePath?: string) => {
+  /**
+   * `runtimeId`: the agent's runtime (docs/design/multi-runtime.md §5.2);
+   * omitted, this window's own (This computer in the main window).
+   */
+  const openFile = useCallback(async (filePath?: string, runtimeId: RuntimeId = windowRuntime) => {
     // An agent window keeps its agent (agent-windows.md): another agent opens in its own window.
     if (isAgentWindow) {
       const current = useDocumentStore.getState().filePath
-      if (current && filePath !== current) {
-        if (filePath) openAgentWindow({ filePath })
+      if (current && (filePath !== current || runtimeId !== windowRuntime)) {
+        if (filePath) openAgentWindow({ filePath, runtimeId })
         return
       }
     }
+    const api = isAgentWindow ? window.adfApi : apiFor(runtimeId)
+    const keyOf = (fp: string) => windowAgentKey(runtimeId, fp)
     const tTotal = performance.now()
     // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
     if (!confirmDiscardConflicts()) return
@@ -386,12 +427,13 @@ export function useAdfFile() {
     // the IPC; the re-attach's startAgent clears it, or the finally does.
     const marked = new Set<string>()
     const markStarting = (fp: string) => {
-      marked.add(fp)
-      openingFilePaths.add(fp)
-      useAppStore.getState().addStartingFilePath(fp)
+      const key = keyOf(fp)
+      marked.add(key)
+      openingFilePaths.add(key)
+      useAppStore.getState().addStartingFilePath(key)
     }
     let startHandedOff = false
-    if (filePath && useBackgroundAgentsStore.getState().agents.some((a) => a.filePath === filePath)) {
+    if (filePath && selectBackgroundAgents(useBackgroundAgentsStore.getState(), isAgentWindow ? undefined : runtimeId).some((a) => a.filePath === filePath)) {
       markStarting(filePath)
     }
     let switchOpen = true
@@ -404,7 +446,9 @@ export function useAdfFile() {
     reattachAfterUnlock.clear()
     try {
       let t1 = performance.now()
-      const result = await window.adfApi.openFile(filePath)
+      // An agent of another runtime than the open one: the open one is closed on its runtime first (§4.3).
+      const leftOther = await leaveOtherRuntime(runtimeId)
+      const result = await api.openFile(filePath)
       console.log(`[PERF:renderer] openFile.openFile IPC: ${(performance.now() - t1).toFixed(1)}ms`)
 
       if (result.success && result.filePath) {
@@ -420,7 +464,7 @@ export function useAdfFile() {
           resetAgent()
           resetDocument()
           useEditorTabsStore.getState().reset()
-          setFilePath(result.filePath!)
+          setFilePath(result.filePath!, runtimeId)
           // Previous file's review banner must not linger behind the modal.
           useAppStore.getState().resetAgentReview()
         }
@@ -428,7 +472,7 @@ export function useAdfFile() {
         // Check if password is needed
         if (result.needsPassword) {
           parkOnGate()
-          if (result.agentWasRunning) reattachAfterUnlock.add(result.filePath)
+          if (result.agentWasRunning) reattachAfterUnlock.add(keyOf(result.filePath))
           useAppStore.getState().setPasswordDialogOpen(true, result.filePath)
           return result
         }
@@ -450,7 +494,7 @@ export function useAdfFile() {
         // stays on screen until the new one can replace it in a single render
         // (no blank frame, no tabs arriving one at a time).
         t1 = performance.now()
-        const contents = await fetchFileContents(result.filePath)
+        const contents = await fetchFileContents(result.filePath, api, runtimeId)
         console.log(`[PERF:renderer] openFile.fetchFileContents: ${(performance.now() - t1).toFixed(1)}ms`)
 
         // Reset agent state and update filePath, then apply the contents, all
@@ -459,7 +503,7 @@ export function useAdfFile() {
         // has changed (their stillViewing checks fail as before).
         t1 = performance.now()
         resetAgent()
-        setFilePath(result.filePath)
+        setFilePath(result.filePath, runtimeId)
         // Review state belongs to the previous file until main re-checks below.
         useAppStore.getState().resetAgentReview()
         await loadFileContents(contents)
@@ -471,7 +515,7 @@ export function useAdfFile() {
         // Check if agent review is needed (first open or config changed)
         if (!result.agentWasRunning) {
           try {
-            const review = await window.adfApi.checkAgentReview()
+            const review = await api.checkAgentReview()
             if (review.needsReview) {
               useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
             }
@@ -491,7 +535,7 @@ export function useAdfFile() {
           // row) show "Starting…" until the real state arrives. That mark went
           // on above, before the reset.
           startHandedOff = true
-          const startResult = await window.adfApi.startAgent().finally(() => {
+          const startResult = await api.startAgent().finally(() => {
             // Clears on both outcomes — including the re-attach failure below,
             // whose message must not be hidden behind a stuck spinner.
             for (const fp of marked) useAppStore.getState().removeStartingFilePath(fp)
@@ -503,6 +547,13 @@ export function useAdfFile() {
         console.log(`[PERF:renderer] openFile total: ${(performance.now() - tTotal).toFixed(1)}ms`)
       } else {
         console.error('[useAdfFile] Failed to open file:', result.error)
+        // The open agent of the other runtime was closed for this open: its view goes too.
+        if (leftOther) {
+          resetDocument()
+          resetAgent()
+          useAppStore.getState().resetAgentReview()
+          useEditorTabsStore.getState().reset()
+        }
         // Show errors to the user, but keep the historical migration-specific copy.
         if (result.error?.includes('old ZIP format')) {
           alert(
@@ -546,13 +597,14 @@ export function useAdfFile() {
     beginAgentSwitch()
     try {
       const { files, ...createOptions } = options ?? {}
+      await leaveOtherRuntime(windowRuntime)
       const result = await window.adfApi.createQuickAgent(createOptions)
       if (result.success && result.filePath) {
         setShowSettings(false)
         useAppStore.getState().setShowHome(false)
         resetAgent()
         if (firstMessage) useAppStore.getState().setPendingFirstMessage({ filePath: result.filePath, text: firstMessage, files })
-        setFilePath(result.filePath)
+        setFilePath(result.filePath, windowRuntime)
         useAppStore.getState().resetAgentReview()
         await loadFileContents()
       } else if (fileOperationDetachedForeground(result)) {
@@ -570,13 +622,14 @@ export function useAdfFile() {
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
     try {
+      await leaveOtherRuntime(windowRuntime)
       const result = await window.adfApi.createFile(name)
       if (result.success && result.filePath) {
         // Close settings if it's open
         setShowSettings(false)
         useAppStore.getState().setShowHome(false)
 
-        setFilePath(result.filePath)
+        setFilePath(result.filePath, windowRuntime)
         // A fresh file never inherits the previous file's review state.
         useAppStore.getState().resetAgentReview()
         await loadFileContents()
@@ -597,7 +650,7 @@ export function useAdfFile() {
   }, [setShowSettings, setFilePath, loadFileContents, clearDetachedForeground])
 
   const saveFile = useCallback(async () => {
-    const result = await window.adfApi.saveFile()
+    const result = await openApi().saveFile()
     if (result.success) {
       setDirty(false)
     }
@@ -617,7 +670,7 @@ export function useAdfFile() {
     // Its queued messages stay: a running agent moves to the background, where
     // they go at its turn's end; a stopped one keeps them until it is started,
     // shown in its chat when it is opened again.
-    await window.adfApi.closeFile()
+    await openApi().closeFile()
     resetDocument()
     resetAgent()
     useAppStore.getState().resetAgentReview()

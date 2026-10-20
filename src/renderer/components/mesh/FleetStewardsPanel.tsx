@@ -6,6 +6,7 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { isUnder, pathBasename, pathSegments } from './fleet-layout'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
+import { selectMapAgents } from './runtime-fleet'
 
 const STATE_DOT: Record<string, string> = {
   active: 'bg-yellow-400',
@@ -51,7 +52,7 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
   const agents = useMeshStore(
     useShallow((s) => {
       const dids = new Set(Object.values(stewards))
-      return s.agents.filter((a) => a.did && dids.has(a.did))
+      return selectMapAgents(s).filter((a) => a.did && dids.has(a.did))
     })
   )
 

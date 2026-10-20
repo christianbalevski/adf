@@ -10,6 +10,9 @@ import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
+import { useRuntimeFeeds } from './hooks/useRuntimeFeeds'
+import { runtimeLabel, useRuntimesStore } from './stores/runtimes.store'
+import { openApi } from './utils/runtime-api'
 import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
@@ -17,7 +20,7 @@ import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
 import { useAgentStore } from './stores/agent.store'
 import { reportFailure } from './stores/failure-notices.store'
-import { agentWindowFile, agentWindowsAvailable, isAgentWindow, openAgentWindow } from './utils/window-kind'
+import { agentWindowFile, agentWindowsAvailable, isAgentWindow, openAgentWindow, windowRuntime } from './utils/window-kind'
 import { openWindowAgent, startQueueHandover, startQueueMirror } from './utils/agent-window'
 import { IS_MAC } from './utils/platform'
 import { isPrimaryModifier } from './utils/keyboard'
@@ -72,6 +75,8 @@ export default function App() {
   useAgentEvents()
   useMeshEvents()
   useBackgroundAgentEvents()
+  // Every runtime other than This computer (multi-runtime.md §5.3); no call with This computer only.
+  useRuntimeFeeds()
   useBrowserSessionEvents()
   // Global HIL approvals (every agent + loop, foreground and background)
   useApprovalEvents()
@@ -119,7 +124,7 @@ export default function App() {
   // gets focus instead).
   const saveActiveDocument = useCallback(() => {
     saveActiveEditorTab()
-    window.adfApi?.saveFile().then((result) => {
+    openApi()?.saveFile().then((result) => {
       if (result?.success) {
         useDocumentStore.getState().setDirty(false)
       }
@@ -150,7 +155,8 @@ export default function App() {
   useEffect(() => {
     return window.adfApi?.onFileRenamed?.(({ oldPath, newPath }) => {
       const store = useDocumentStore.getState()
-      if (store.filePath === oldPath) store.setFilePath(newPath)
+      // This window's runtime's rename: an agent of another runtime with the same path is not it (useRuntimeFeeds follows those).
+      if (store.filePath === oldPath && (isAgentWindow || store.runtimeId === 'local')) store.setFilePath(newPath)
       // Queued messages follow their agent to its new path.
       useMessageQueueStore.getState().rekey(oldPath, newPath)
     })
@@ -178,13 +184,16 @@ export default function App() {
     if (isAgentWindow && tabStore.tabs.length === 0) void closeFile()
   }, [closeFile])
 
-  // An agent window's title is its agent's name.
+  // An agent window's title is its agent's name; with more than one runtime,
+  // `<agent> · <runtime name>` (multi-runtime.md §5.5).
   const agentName = useAgentStore((s) => s.config?.name)
+  const windowLabel = useRuntimesStore((s) => runtimeLabel(windowRuntime, s.runtimes))
   useEffect(() => {
     if (!isAgentWindow) return
     const fileName = agentWindowFile?.split(/[\\/]/).pop()?.replace(/\.adf$/i, '')
-    document.title = agentName || fileName || document.title
-  }, [agentName])
+    const name = agentName || fileName
+    document.title = name ? (windowLabel ? `${name} · ${windowLabel}` : name) : document.title
+  }, [agentName, windowLabel])
 
   // Application menu actions (File > New/Open/Add Directory, app menu > Settings)
   useEffect(() => {
@@ -246,10 +255,10 @@ export default function App() {
           break
         // An agent window already is the agent's window.
         case 'open-in-new-window': {
-          const filePath = useDocumentStore.getState().filePath
+          const { filePath, runtimeId } = useDocumentStore.getState()
           const config = useAgentStore.getState().config
           if (agentWindowsAvailable && filePath) {
-            openAgentWindow({ filePath, agentId: config?.id ?? null, ...(config?.name ? { name: config.name } : {}) })
+            openAgentWindow({ filePath, agentId: config?.id ?? null, ...(config?.name ? { name: config.name } : {}), runtimeId })
           }
           break
         }

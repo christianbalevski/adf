@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import type { BrowserTabMeta } from '../../stores/editor-tabs.store'
 import type { ContainerPhase, ContainerPhaseEvent } from '../../../shared/types/compute.types'
+import { openApi, useOpenRuntime } from '../../utils/runtime-api'
 
 interface Props {
   meta: BrowserTabMeta
@@ -51,7 +52,7 @@ export function BrowserViewer({ meta, reloadNonce }: Props) {
   // Re-query the port when the container becomes ready: the phase event does
   // not carry it, and the browser stack bring-up is awaited by the query.
   const fetchPort = useCallback(async () => {
-    const info = await window.adfApi?.getBrowserSessionInfo({ agentName: meta.agentName, agentId: meta.agentId })
+    const info = await openApi()?.getBrowserSessionInfo({ agentName: meta.agentName, agentId: meta.agentId })
     if (!info) return
     setState({ phase: info.phase, detail: info.detail, hostPort: info.hostPort })
   }, [meta.agentName, meta.agentId])
@@ -65,9 +66,10 @@ export function BrowserViewer({ meta, reloadNonce }: Props) {
     if (meta.phase === 'ready' && meta.hostPort == null) void fetchPort()
   }, [meta.phase, meta.detail, meta.hostPort, fetchPort])
 
+  const runtime = useOpenRuntime()
   useEffect(() => {
-    if (!window.adfApi?.onContainerPhase) return
-    return window.adfApi.onContainerPhase((event: ContainerPhaseEvent) => {
+    if (!openApi()?.onContainerPhase) return
+    return openApi().onContainerPhase((event: ContainerPhaseEvent) => {
       if (event.containerName !== meta.containerName) return
       if (event.phase === 'ready') {
         setState((s) => ({ ...s, phase: 'ready', detail: undefined }))
@@ -76,7 +78,7 @@ export function BrowserViewer({ meta, reloadNonce }: Props) {
         setState({ phase: event.phase, detail: event.detail, hostPort: null })
       }
     })
-  }, [meta.containerName, fetchPort])
+  }, [meta.containerName, fetchPort, runtime])
 
   if (state.phase === 'ready' && state.hostPort != null) {
     return <DesktopWebview hostPort={state.hostPort} reloadNonce={reloadNonce} />

@@ -9,6 +9,7 @@ import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
 import { timersBlocked } from './config-panel-model'
 import { TimersBlockedNotice } from './config-panel-parts'
 import { openConfigSection } from '../../utils/open-config-section'
+import { openApi } from '../../utils/runtime-api'
 
 interface Timer {
   id: number
@@ -305,9 +306,9 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
 
       let result: { success: boolean; error?: string } | undefined
       if (isEdit) {
-        result = await window.adfApi?.updateTimer({ ...args, id: editTimer!.id })
+        result = await openApi()?.updateTimer({ ...args, id: editTimer!.id })
       } else {
-        result = await window.adfApi?.addTimer(args)
+        result = await openApi()?.addTimer(args)
       }
 
       if (result?.success) {
@@ -608,7 +609,7 @@ export function AgentTimers() {
   const rootRef = useRef<HTMLDivElement>(null)
 
   const fetchTimers = useCallback(() => {
-    window.adfApi?.getTimers().then((result) => {
+    openApi()?.getTimers().then((result) => {
       setTimers(result?.timers ?? [])
     })
   }, [])
@@ -619,7 +620,7 @@ export function AgentTimers() {
 
   const handleDelete = async (id: number) => {
     if (!window.confirm('Delete this timer? It will not fire again.')) return
-    await window.adfApi?.deleteTimer(id)
+    await openApi()?.deleteTimer(id)
     fetchTimers()
   }
 
@@ -630,7 +631,7 @@ export function AgentTimers() {
     else if (s.mode === 'interval') mode = 'interval'
     else mode = 'cron'
 
-    await window.adfApi?.updateTimer({
+    await openApi()?.updateTimer({
       id: timer.id,
       mode,
       ...(s.mode === 'once' ? { at: s.at } : {}),

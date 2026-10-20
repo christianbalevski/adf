@@ -10,6 +10,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 import { orbitalSeedFor, type OrbitalSeedSource } from './orbital-seed'
+import { openApi } from '../../utils/runtime-api'
 
 export function useOrbitalSeed(agent: OrbitalSeedSource | null | undefined): string | null {
   const did = agent?.did
@@ -71,7 +72,7 @@ export function useOpenAgentOrbitalSeed(): string | null {
       return
     }
     let live = true
-    window.adfApi?.getDid?.().then(
+    openApi()?.getDid?.().then(
       (r) => {
         const did = r?.did ?? null
         if (did) fetchedDids.set(cacheKey, did)

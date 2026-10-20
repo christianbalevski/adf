@@ -305,6 +305,12 @@ export interface AppSettings {
   fleetStewards?: Record<string, string>
   /** Fleet map world, saved by the renderer every 60 s and on close. */
   fleetMapState?: FleetMapState
+  /**
+   * The fleet map of each runtime other than This computer, by runtime id
+   * (docs/design/multi-runtime.md §7.4): the same three keys, with that
+   * runtime's paths. Written by the renderer.
+   */
+  runtimeFleet?: Record<string, { fleetGroups?: Record<string, string[]>; fleetStewards?: Record<string, string>; fleetMapState?: FleetMapState }>
 }
 
 /**

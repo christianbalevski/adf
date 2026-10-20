@@ -6,6 +6,7 @@ import { useAgentStore, selectAggregateLogVersion } from '../../stores/agent.sto
 import { AgentLoop } from '../agent/AgentLoop'
 import { DEFAULT_OPEN_TABS } from '../../hooks/useAdfFile'
 import { saveOpenTabs } from '../../utils/editor-tab-persistence'
+import { openTabsKey } from '../../hooks/useAdfFile'
 import { TabBar } from './TabBar'
 import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
@@ -18,6 +19,7 @@ import { confirmDiscardConflicts } from '../../utils/edit-conflict'
 import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveEditorTab } from '../../utils/editor-save'
 import type { SaveBase } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice, ExternalUpdateNotice } from './ChangedElsewhereNotice'
+import { openApi } from '../../utils/runtime-api'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -215,7 +217,7 @@ export function EditorPanel() {
     if (!tab?.conflict) return
     let theirs: { content: string; revision?: number } | undefined
     if (tab.conflict.content === null) {
-      const read = path === 'README.md' ? await window.adfApi?.getDocument() : await window.adfApi?.readInternalFile(path)
+      const read = path === 'README.md' ? await openApi()?.getDocument() : await openApi()?.readInternalFile(path)
       if (read?.content == null) return
       theirs = { content: read.content, revision: read.revision }
     }
@@ -290,7 +292,7 @@ export function EditorPanel() {
         continue
       }
       try {
-        const file = await window.adfApi?.readInternalFile(path)
+        const file = await openApi()?.readInternalFile(path)
         if (file?.content != null) {
           tabStore.openTab(path, file.binary ? '' : file.content, file.binary, file.mimeType, file.revision)
         }
@@ -326,7 +328,8 @@ export function EditorPanel() {
   // per-keystroke store notifications don't hit localStorage.
   useEffect(() => {
     return useEditorTabsStore.subscribe((state) => {
-      const agentFilePath = useDocumentStore.getState().filePath
+      // Its path on This computer; runtime and path on another runtime (useAdfFile tabsKey).
+      const agentFilePath = openTabsKey()
       if (!agentFilePath) return
       saveOpenTabs(
         agentFilePath,

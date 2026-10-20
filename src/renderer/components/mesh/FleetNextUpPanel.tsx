@@ -3,6 +3,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
+import { selectMapAgents } from './runtime-fleet'
 
 const MAX_ROWS = 8
 
@@ -48,7 +49,7 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
   onFocusAgent: (filePath: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
-  const agents = useMeshStore((s) => s.agents)
+  const agents = useMeshStore((s) => selectMapAgents(s))
 
   // Countdowns tick every second — the whole point of the panel is "how long"
   const [, setTick] = useState(0)

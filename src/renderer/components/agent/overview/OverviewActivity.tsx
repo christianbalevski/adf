@@ -40,8 +40,9 @@ import {
   type ShelfSpine,
   type WaitingItem
 } from './agent-overview-model'
+import { openApi } from '../../../utils/runtime-api'
 
-export const readActivity: OverviewReader<AgentActivity> = (filePath, force) => window.adfApi?.getAgentActivity?.(filePath, { force })
+export const readActivity: OverviewReader<AgentActivity> = (filePath, force) => openApi()?.getAgentActivity?.(filePath, { force })
 
 const SPARK_HEIGHT = 24
 

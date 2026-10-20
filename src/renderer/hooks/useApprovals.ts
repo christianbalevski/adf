@@ -5,6 +5,14 @@ import { useDocumentStore } from '../stores/document.store'
 import { useMeshGraphStore, type PendingInteraction } from '../stores/mesh-graph.store'
 import { useJumpToAgent } from './useJumpToAgent'
 import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
+import { noticeKey } from '../../shared/runtime-tag'
+import { agentKey } from '../../shared/types/agent-ref'
+
+/** The open agent as a ref key (agentKey), compared with each request's: refs of two runtimes never match. */
+function openRefKey(): string | null {
+  const { filePath, runtimeId } = useDocumentStore.getState()
+  return filePath ? agentKey({ runtimeId, filePath }) : null
+}
 
 /** How long a "waiting on you" toast stays up before it dismisses itself. */
 const TOAST_TTL_MS = 8_000
@@ -25,8 +33,10 @@ const TOAST_TTL_MS = 8_000
 function toPendingInteractions(notifications: PendingNotification[]): Record<string, PendingInteraction> {
   const byAgent: Record<string, PendingInteraction> = {}
   for (const n of notifications) {
-    if (byAgent[n.filePath]) continue
-    byAgent[n.filePath] = {
+    // By agent key: the path on This computer, runtime and path on another runtime (multi-runtime.md §5.2).
+    const key = agentKey({ runtimeId: n.runtimeId, filePath: n.filePath })
+    if (byAgent[key]) continue
+    byAgent[key] = {
       type: n.kind,
       requestId: n.requestId,
       question: n.question,
@@ -51,14 +61,17 @@ export function arrivalsToAnnounce(snapshot: NotificationsSnapshot, seen: Set<st
   const mine = snapshot.notify ? new Set(snapshot.notify) : null
   const out: PendingNotification[] = []
   for (const n of snapshot.pending) {
-    if (seen.has(n.id)) continue
-    seen.add(n.id)
-    if (n.filePath === openFilePath) continue
-    if (mine && !mine.has(n.id)) continue
+    // Keys across runtimes (noticeKey): equal ids on two runtimes are two requests (multi-runtime.md §6.1).
+    const key = noticeKey(n.runtimeId, n.id)
+    if (seen.has(key)) continue
+    seen.add(key)
+    // `openFilePath` is the open agent's key: its path on This computer.
+    if (agentKey({ runtimeId: n.runtimeId, filePath: n.filePath }) === openFilePath) continue
+    if (mine && !mine.has(key)) continue
     out.push(n)
   }
   // Forget answered ids so the set does not grow across a long session.
-  const live = new Set(snapshot.pending.map((n) => n.id))
+  const live = new Set(snapshot.pending.map((n) => noticeKey(n.runtimeId, n.id)))
   for (const id of seen) if (!live.has(id)) seen.delete(id)
   return out
 }
@@ -129,16 +142,18 @@ export function useApprovalEvents() {
     const apply = (snapshot: NotificationsSnapshot): void => {
       hasAppliedPush.current = true
       const store = useApprovalsStore.getState()
-      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useAppStore.getState().showHome ? null : useDocumentStore.getState().filePath)) {
+      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useAppStore.getState().showHome ? null : openRefKey())) {
+        const key = noticeKey(n.runtimeId, n.id)
         store.pushToast({
-          id: n.id,
+          id: key,
+          ...(n.runtimeId ? { runtimeId: n.runtimeId } : {}),
           kind: n.kind,
           agentName: n.agentName,
           loop: n.loop,
           detail: n.kind === 'ask' ? n.preview : (n.toolName ?? 'tool'),
           filePath: n.filePath
         })
-        scheduleExpiry(n.id)
+        scheduleExpiry(key)
       }
 
       commit(snapshot)
@@ -155,7 +170,7 @@ export function useApprovalEvents() {
       }
       // First paint only seeds the list — a pull is not an "arrival", so it
       // must not fire toasts for requests that were already pending.
-      for (const n of seeded.pending) seenIds.current.add(n.id)
+      for (const n of seeded.pending) seenIds.current.add(noticeKey(n.runtimeId, n.id))
       commit(seeded)
     }).catch(() => { /* hub unavailable — badge stays at 0 */ })
 
@@ -183,7 +198,7 @@ export function useApprovalDeepLink(): void {
   const jumpToAgent = useJumpToAgent()
 
   useEffect(() => {
-    type RevealPayload = { filePath?: string; notificationId?: string }
+    type RevealPayload = { filePath?: string; notificationId?: string; runtimeId?: string }
     const api = (globalThis as {
       adfApi?: {
         onApprovalReveal?: (cb: (payload: RevealPayload) => void) => () => void
@@ -192,9 +207,9 @@ export function useApprovalDeepLink(): void {
     }).adfApi
     if (!api?.onApprovalReveal) return
 
-    const reveal = ({ filePath }: RevealPayload): void => {
+    const reveal = ({ filePath, runtimeId }: RevealPayload): void => {
       if (filePath) {
-        jumpToAgent(filePath)
+        jumpToAgent(filePath, runtimeId)
         return
       }
       useApprovalsStore.getState().setPanelOpen(true)

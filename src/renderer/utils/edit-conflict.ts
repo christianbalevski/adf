@@ -1,6 +1,7 @@
 import { useEditorTabsStore, type TabConflict } from '../stores/editor-tabs.store'
 import { useAgentStore } from '../stores/agent.store'
 import { describeWriter, type ResourceConflict, type ResourceWriter } from '../../shared/types/resource-revision.types'
+import { openApi } from './runtime-api'
 
 /**
  * W3-F: saving over the revision an editor last saw, and what the editor does
@@ -154,7 +155,7 @@ export function confirmDiscardConflicts(
  * for this one's change. Answers the saved config, or null.
  */
 export async function changeAgentConfig<C extends object>(change: (config: C) => C): Promise<C | null> {
-  const api = window.adfApi
+  const api = openApi()
   if (!api?.getAgentConfigWithRevision) return null
   for (let attempt = 0; attempt < 3; attempt++) {
     const read = await api.getAgentConfigWithRevision()

@@ -10,6 +10,13 @@ const params = typeof window !== 'undefined' && window.location ? new URLSearchP
 /** This window shows one agent: its chat and panels, no sidebar. */
 export const isAgentWindow = params.get('window') === 'agent'
 
+/**
+ * The runtime an agent window's agent lives on (`runtime=<id>`, set by main
+ * for a runtime other than This computer; docs/design/multi-runtime.md
+ * §5.5). The main window, and an agent window of This computer: `local`.
+ */
+export const windowRuntime: string = (isAgentWindow && params.get('runtime')) || 'local'
+
 /** The agent file an agent window was opened for; null in the main window. */
 export const agentWindowFile: string | null = isAgentWindow ? params.get('file') : null
 
@@ -17,7 +24,9 @@ export const agentWindowFile: string | null = isAgentWindow ? params.get('file')
 export const agentWindowsAvailable = !isAgentWindow && params.get('agentWindows') === '1'
 
 /** Open in new window: opens the agent's window, or focuses it when it has one. */
-export function openAgentWindow(request: { filePath: string; agentId?: string | null; name?: string }): void {
+export function openAgentWindow(request: { filePath: string; agentId?: string | null; name?: string; runtimeId?: string }): void {
+  // This computer's agent: the request is the one sent before (multi-runtime.md §4.6).
+  if (request.runtimeId === 'local') { const { runtimeId: _local, ...rest } = request; request = rest }
   window.adfApi?.openAgentWindow(request).then((result) => {
     if (!result.success) console.error('[AgentWindow] Open in new window failed:', result.error)
   }).catch((err: unknown) => console.error('[AgentWindow] Open in new window failed:', err))

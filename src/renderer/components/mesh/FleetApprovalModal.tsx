@@ -1,11 +1,12 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
-import { useDocumentStore } from '../../stores/document.store'
 import { ApprovalControls } from '../agent/ApprovalControls'
 import { ToolCallModal } from '../agent/ToolCallModal'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
+import { mapTarget, selectMapAgents } from './runtime-fleet'
+import { useOpenAgentKey } from '../../utils/runtime-api'
 
 /**
  * Full-context HIL approval modal — thin wrapper around the unified
@@ -24,10 +25,11 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   /** Open the agent's document + loop panel (closes the modal). */
   onOpenAgent?: () => void
 }) {
-  const agent = useMeshStore((s) => s.agents.find((a) => a.filePath === filePath))
+  const agent = useMeshStore((s) => selectMapAgents(s).find((a) => a.filePath === filePath))
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
   const setPendingInteraction = useMeshGraphStore((s) => s.setPendingInteraction)
-  const foregroundFilePath = useDocumentStore((s) => s.filePath)
+  // The open agent's map id: the foreground calls apply only to it, on its runtime (multi-runtime.md §6.4).
+  const foregroundFilePath = useOpenAgentKey()
   const isForeground = foregroundFilePath === filePath
 
   // Raw tool input for the inspector. The ApprovalHub broadcast snapshot no
@@ -38,12 +40,11 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   const requestId = pending?.type === 'approval' ? pending.requestId : undefined
   useEffect(() => {
     if (!requestId) return
-    const api = (globalThis as {
-      adfApi?: { getApprovalInput?: (filePath: string, approvalId: string) => Promise<unknown> }
-    }).adfApi
+    const target = mapTarget(filePath)
+    const api = target.api as { getApprovalInput?: (filePath: string, approvalId: string) => Promise<unknown> } | undefined
     if (!api?.getApprovalInput) return
     let cancelled = false
-    void api.getApprovalInput(filePath, requestId).then((input) => {
+    void api.getApprovalInput(target.filePath, requestId).then((input) => {
       if (!cancelled && input != null) setFetchedInput(input)
     }).catch(() => { /* input unavailable — fall back to the snapshot's */ })
     return () => { cancelled = true }
@@ -57,9 +58,10 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   const respond = useCallback((approved: boolean, feedback?: string) => {
     if (!pending || pending.type !== 'approval') return
     if (isForeground) {
-      window.adfApi.respondToolApproval(pending.requestId, approved, feedback)
+      mapTarget(filePath).api.respondToolApproval(pending.requestId, approved, feedback)
     } else {
-      window.adfApi.respondBackgroundAgentToolApproval(filePath, pending.requestId, approved, feedback)
+      const t = mapTarget(filePath)
+      t.api.respondBackgroundAgentToolApproval(t.filePath, pending.requestId, approved, feedback)
     }
     setPendingInteraction(filePath, null)
     onClose()
@@ -71,9 +73,10 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   const alwaysApprove = useCallback(async () => {
     if (!pending || pending.type !== 'approval') return
     const toolName = pending.toolName ?? 'tool'
+    const t = mapTarget(filePath)
     const result = isForeground
-      ? await window.adfApi.alwaysApproveTool(pending.requestId, toolName)
-      : await window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+      ? await t.api.alwaysApproveTool(pending.requestId, toolName)
+      : await t.api.alwaysApproveBackgroundAgentTool(t.filePath, pending.requestId, toolName)
     if (result && !result.success) {
       console.warn(`[FleetApprovalModal] Always approve refused for ${toolName}: ${result.error}`)
       return

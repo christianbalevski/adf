@@ -2,7 +2,8 @@ import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, useStore } from '@xyflow/react'
 import type { NodeProps, ReactFlowState } from '@xyflow/react'
 import { useMeshGraphStore, findLastActivity, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
-import { useDocumentStore } from '../../stores/document.store'
+import { useOpenAgentKey } from '../../utils/runtime-api'
+import { mapTarget } from './runtime-fleet'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ApprovalControls } from '../agent/ApprovalControls'
 import type { AgentState } from '../../../shared/types/ipc.types'
@@ -211,7 +212,9 @@ function GhostStartButton({ filePath }: { filePath: string }) {
     e.stopPropagation()
     if (booting) return
     markStarting([filePath])
-    window.adfApi.startBackgroundAgent(filePath).catch(() => { /* 30s timeout re-arms */ })
+    // On the agent's runtime (map ids are agent keys, multi-runtime.md §6.4).
+    const target = mapTarget(filePath)
+    target.api.startBackgroundAgent(target.filePath).catch(() => { /* 30s timeout re-arms */ })
   }, [filePath, booting, markStarting])
 
   if (booting) {
@@ -359,16 +362,17 @@ export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: stri
 
 function PendingInteractionUI({ filePath, pending }: { filePath: string; pending: PendingInteraction }) {
   const [input, setInput] = useState('')
-  const foregroundFilePath = useDocumentStore((s) => s.filePath)
+  // The open agent's map id: the foreground calls apply only to it, on its runtime.
+  const foregroundFilePath = useOpenAgentKey()
   const isForeground = filePath === foregroundFilePath
   const setPendingInteraction = useMeshGraphStore((s) => s.setPendingInteraction)
 
   const handleSubmit = useCallback(() => {
     if (pending.type === 'ask') {
       if (isForeground) {
-        window.adfApi.respondAsk(pending.requestId, input)
+        mapTarget(filePath).api.respondAsk(pending.requestId, input)
       } else {
-        window.adfApi.respondBackgroundAgentAsk(filePath, pending.requestId, input)
+        { const t = mapTarget(filePath); t.api.respondBackgroundAgentAsk(t.filePath, pending.requestId, input) }
       }
       setPendingInteraction(filePath, null)
     }
@@ -378,9 +382,9 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
   const handleApproval = useCallback((approved: boolean, feedback?: string) => {
     if (pending.type === 'approval') {
       if (isForeground) {
-        window.adfApi.respondToolApproval(pending.requestId, approved, feedback)
+        mapTarget(filePath).api.respondToolApproval(pending.requestId, approved, feedback)
       } else {
-        window.adfApi.respondBackgroundAgentToolApproval(filePath, pending.requestId, approved, feedback)
+        { const t = mapTarget(filePath); t.api.respondBackgroundAgentToolApproval(t.filePath, pending.requestId, approved, feedback) }
       }
       setPendingInteraction(filePath, null)
     }
@@ -391,9 +395,10 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
   // the request stays pending so the user can still Approve once.
   const handleAlwaysApprove = useCallback(async (toolName: string) => {
     if (pending.type !== 'approval') return
+    const t = mapTarget(filePath)
     const result = isForeground
-      ? await window.adfApi.alwaysApproveTool(pending.requestId, toolName)
-      : await window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+      ? await t.api.alwaysApproveTool(pending.requestId, toolName)
+      : await t.api.alwaysApproveBackgroundAgentTool(t.filePath, pending.requestId, toolName)
     if (result && !result.success) {
       console.warn(`[MeshGraphNode] Always approve refused for ${toolName}: ${result.error}`)
       return

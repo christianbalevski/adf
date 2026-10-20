@@ -4,7 +4,7 @@ import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, BackendSettingsPatch } from '../../shared/types/backend.types'
-import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '../../shared/types/connection.types'
+import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimeView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
 import { buildConnectionsView, ConnectionError, forgetConnection, SavedConnectionsCache, saveConnection, savedConnectionTarget } from './connections'
@@ -39,6 +39,8 @@ export interface ConnectionsDeps {
   confirm: (prompt: { title?: string; message: string; detail: string; ok: string }) => Promise<boolean>
   /** Push the list to the windows (CONNECTION_CHANGED). */
   push: (view: ConnectionsView) => void
+  /** The runtime set in order (multi-runtime.md §3.1); the view lists it only while it has more than one runtime. */
+  runtimes?: () => RuntimeView[]
   fetch?: typeof fetch
   log?: Pick<Console, 'log' | 'warn'>
 }
@@ -66,13 +68,18 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   // The list and every push read the cache; an action reads the file again first (async), and after it writes.
   const saved = () => cache.get()
   const fresh = () => cache.refresh().catch(() => cache.get())
-  const view = (): ConnectionsView => buildConnectionsView({
-    active: { mode: deps.boot.mode, remoteName: deps.boot.mode === 'remote' ? deps.boot.config.remote.name ?? null : null, config: deps.boot.config },
-    configured: deps.backend.config(),
-    daemon: deps.daemonStatus(),
-    saved: saved(),
-    discovery: deps.discovery(),
-  })
+  const view = (): ConnectionsView => {
+    const built = buildConnectionsView({
+      active: { mode: deps.boot.mode, remoteName: deps.boot.mode === 'remote' ? deps.boot.config.remote.name ?? null : null, config: deps.boot.config },
+      configured: deps.backend.config(),
+      daemon: deps.daemonStatus(),
+      saved: saved(),
+      discovery: deps.discovery(),
+    })
+    // One runtime: the view is the one sent before (multi-runtime.md §4.6).
+    const runtimes = deps.runtimes?.() ?? []
+    return runtimes.length > 1 ? { ...built, runtimes } : built
+  }
   const changed = () => deps.push(view())
   const configuredId = () => {
     const c = deps.backend.config()

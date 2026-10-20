@@ -1,4 +1,5 @@
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
+import { openApi } from './runtime-api'
 
 const ADF_FILE_PREFIX = 'adf-file://'
 
@@ -22,7 +23,7 @@ export async function openAdfFileLink(href: string): Promise<void> {
     return
   }
 
-  const result = await window.adfApi?.readInternalFile(filePath)
+  const result = await openApi()?.readInternalFile(filePath)
   if (result?.content != null) {
     useEditorTabsStore.getState().openTab(filePath, result.binary ? '' : result.content, result.binary, result.mimeType, result.revision)
   }

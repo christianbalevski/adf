@@ -26,6 +26,7 @@
  */
 
 import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
+import { noticeKey } from '../../shared/runtime-tag'
 
 /** A live OS notification we can still retract. */
 export interface NativeToastHandle {
@@ -63,6 +64,12 @@ export interface NativeNotifierPlatform {
   reveal(entry: PendingNotification): void
   /** Focus the window and open the notifications (bell) panel. */
   openPanel(): void
+  /**
+   * The name of the entry's runtime, named before its agent while Studio
+   * has more than one runtime (docs/design/multi-runtime.md §6.1); null or
+   * absent: the agent alone, as before.
+   */
+  runtimeName?(entry: PendingNotification): string | null
 }
 
 /**
@@ -78,15 +85,16 @@ export const COALESCE_WINDOW_MS = 2_000
  */
 export const COALESCE_THRESHOLD = 3
 
-function displayName(entry: Pick<PendingNotification, 'agentName' | 'loop'>): string {
-  return entry.loop && entry.loop !== 'main' ? `${entry.agentName} · ${entry.loop}` : entry.agentName
+function displayName(entry: Pick<PendingNotification, 'agentName' | 'loop'>, runtime?: string | null): string {
+  const agent = entry.loop && entry.loop !== 'main' ? `${entry.agentName} · ${entry.loop}` : entry.agentName
+  return runtime ? `${runtime} · ${agent}` : agent
 }
 
 /** 'loop2 needs approval' / 'loop2 asked a question'. */
-export function notificationTitle(entry: PendingNotification): string {
+export function notificationTitle(entry: PendingNotification, runtime?: string | null): string {
   return entry.kind === 'ask'
-    ? `${displayName(entry)} asked a question`
-    : `${displayName(entry)} needs approval`
+    ? `${displayName(entry, runtime)} asked a question`
+    : `${displayName(entry, runtime)} needs approval`
 }
 
 /**
@@ -109,10 +117,10 @@ export function summaryTitle(entries: PendingNotification[]): string {
 }
 
 /** Which agents are blocked, deduped — the summary's one useful detail. */
-export function summaryBody(entries: PendingNotification[]): string {
+export function summaryBody(entries: PendingNotification[], runtimeName?: (entry: PendingNotification) => string | null): string {
   const names: string[] = []
   for (const entry of entries) {
-    const name = displayName(entry)
+    const name = displayName(entry, runtimeName?.(entry))
     if (!names.includes(name)) names.push(name)
   }
   const head = names.slice(0, 3).join(', ')
@@ -137,7 +145,7 @@ export class NativeNotifier {
    * would be a lie about when they happened.
    */
   seed(pending: PendingNotification[]): void {
-    for (const entry of pending) this.known.add(entry.id)
+    for (const entry of pending) this.known.add(noticeKey(entry.runtimeId, entry.id))
   }
 
   /**
@@ -146,7 +154,8 @@ export class NativeNotifier {
    */
   apply(snapshot: NotificationsSnapshot): void {
     const pending = snapshot.pending ?? []
-    const live = new Set(pending.map((entry) => entry.id))
+    // Keyed across runtimes: equal ids on two runtimes stay two requests (multi-runtime.md §6.1).
+    const live = new Set(pending.map((entry) => noticeKey(entry.runtimeId, entry.id)))
 
     // Departures first: something answered elsewhere must not keep a clickable
     // toast on screen, and its id must be forgettable so a genuine
@@ -161,10 +170,10 @@ export class NativeNotifier {
     }
     if (live.size === 0) this.endBurst()
 
-    const arrivals = pending.filter((entry) => !this.known.has(entry.id))
+    const arrivals = pending.filter((entry) => !this.known.has(noticeKey(entry.runtimeId, entry.id)))
     // Mark seen even when we decide not to toast: a request the user was
     // focused for is not "new" again the moment they alt-tab away.
-    for (const entry of arrivals) this.known.add(entry.id)
+    for (const entry of arrivals) this.known.add(noticeKey(entry.runtimeId, entry.id))
     if (arrivals.length === 0) return
 
     if (!this.platform.isEnabled()) return
@@ -194,27 +203,28 @@ export class NativeNotifier {
       // individual toasts it already produced and re-issue the summary with
       // the current count (the OS has no "edit this toast").
       for (const shownEntry of this.burstEntries) {
-        const handle = this.shown.get(shownEntry.id)
+        const key = noticeKey(shownEntry.runtimeId, shownEntry.id)
+        const handle = this.shown.get(key)
         if (!handle) continue
-        this.shown.delete(shownEntry.id)
+        this.shown.delete(key)
         closeQuietly(handle)
       }
       if (this.summary) closeQuietly(this.summary)
       const entries = [...this.burstEntries]
       this.summary = this.platform.show({
         title: summaryTitle(entries),
-        body: summaryBody(entries),
+        body: summaryBody(entries, (e) => this.platform.runtimeName?.(e) ?? null),
         onClick: () => this.platform.openPanel(),
       })
       return
     }
 
     const handle = this.platform.show({
-      title: notificationTitle(entry),
+      title: notificationTitle(entry, this.platform.runtimeName?.(entry) ?? null),
       body: notificationBody(entry),
       onClick: () => this.platform.reveal(entry),
     })
-    if (handle) this.shown.set(entry.id, handle)
+    if (handle) this.shown.set(noticeKey(entry.runtimeId, entry.id), handle)
   }
 
   private endBurst(): void {

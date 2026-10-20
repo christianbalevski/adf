@@ -238,6 +238,7 @@ import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
 import { invalidateProviderModels } from '../../hooks/useProviderModels'
 import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
+import { openApi, useOpenRuntime } from '../../utils/runtime-api'
 
 // Module-level caches to avoid redundant IPC calls on every tab switch
 let _cachedProviders: ProviderConfig[] | null = null
@@ -276,7 +277,7 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
 
   useEffect(() => {
     if (!open) return
-    const unsub = window.adfApi?.onSandboxInstallProgress((event: { package: string; status: string; progress?: string; error?: string }) => {
+    const unsub = openApi()?.onSandboxInstallProgress((event: { package: string; status: string; progress?: string; error?: string }) => {
       setResults((prev) => ({
         ...prev,
         [event.package]: { status: event.status, error: event.error }
@@ -288,7 +289,7 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
   const handleInstall = async () => {
     setInstalling(true)
     try {
-      await window.adfApi?.installSandboxPackages(packages)
+      await openApi()?.installSandboxPackages(packages)
     } catch { /* errors reported via progress events */ }
     setInstalling(false)
   }
@@ -604,6 +605,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const docFilePath = useDocumentStore((s) => s.filePath)
   // Template mode has no open workspace: everything keyed on the file path is off.
   const filePath = template ? null : docFilePath
+  // The open agent's runtime: its pushes come from there (multi-runtime.md §4.1).
+  const openRuntime = useOpenRuntime()
   const setFilePath = useDocumentStore((s) => s.setFilePath)
   const templateRef = useRef(template)
   templateRef.current = template
@@ -731,7 +734,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   useEffect(() => {
     const t0 = performance.now()
     // Always fetch runtime host setting (it can change between Settings visits)
-    window.adfApi?.getSettings().then((s) => {
+    openApi()?.getSettings().then((s) => {
       setRuntimeHostEnabled(s?.compute?.hostAccessEnabled ?? false)
       setRuntimeHostApproved((s?.compute?.hostApproved as string[] | undefined) ?? [])
       setRuntimeHostApprovedSources((s?.compute?.hostApprovedSources as Record<string, string> | undefined) ?? {})
@@ -744,7 +747,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setAdapterRegistrations(_cachedAdapterRegistrations)
       // console.log(`[PERF:renderer] AgentConfig.getSettings: ${(performance.now() - t0).toFixed(1)}ms (cached)`)
     } else {
-      window.adfApi?.getSettings().then((settings) => {
+      openApi()?.getSettings().then((settings) => {
         _cachedProviders = (settings.providers as ProviderConfig[]) ?? []
         _cachedMcpRegistrations = (settings.mcpServers as McpServerRegistration[]) ?? []
         _cachedAdapterRegistrations = (settings.adapters as AdapterRegistration[]) ?? []
@@ -762,7 +765,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   useEffect(() => {
     const packages = config?.code_execution?.packages
     if (template || !packages?.length) return
-    window.adfApi?.checkMissingSandboxPackages(packages).then((result) => {
+    openApi()?.checkMissingSandboxPackages(packages).then((result) => {
       if (result?.missing?.length) {
         setMissingPackages(result.missing)
         setShowPkgInstallModal(true)
@@ -773,13 +776,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   // Fetch mesh server status for Serving section URL preview
   useEffect(() => {
     if (template) return
-    window.adfApi?.getMeshServerStatus().then(setMeshServerStatus)
+    openApi()?.getMeshServerStatus().then(setMeshServerStatus)
   }, [])
 
   // Fetch adf_meta entries
   const refreshMeta = useCallback(() => {
     if (templateRef.current) return
-    window.adfApi?.getAllMeta().then((res) => {
+    openApi()?.getAllMeta().then((res) => {
       if (res?.entries) setMetaEntries(res.entries)
     })
   }, [])
@@ -788,17 +791,17 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   useEffect(() => {
     if (template) return
     const fetchLocalTables = () => {
-      window.adfApi?.listLocalTables().then((res) => {
+      openApi()?.listLocalTables().then((res) => {
         setLocalTables((res?.tables ?? []).filter((table) => table.name.startsWith('local_')))
       })
     }
     fetchLocalTables()
     // Live refresh when the agent creates/drops tables while this panel is open
-    const unsubscribe = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+    const unsubscribe = openApi()?.onWorkspaceDataChanged?.(({ scope }) => {
       if (scope === 'tables') fetchLocalTables()
     })
     return () => unsubscribe?.()
-  }, [filePath])
+  }, [filePath, openRuntime])
 
   // Fetch known agents from the mesh for the allow/block list DID picker
   useEffect(() => {
@@ -809,7 +812,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
       // Mesh agents (local)
       try {
-        const meshResult = await window.adfApi?.getMeshStatus()
+        const meshResult = await openApi()?.getMeshStatus()
         if (meshResult?.agents) {
           for (const a of meshResult.agents) {
             if (a.did && !seen.has(a.did)) {
@@ -835,7 +838,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setMcpServersWithKeys(new Set())
       return
     }
-    window.adfApi?.listIdentityPurposes('mcp:').then((purposes) => {
+    openApi()?.listIdentityPurposes('mcp:').then((purposes) => {
       const namesWithKeys = new Set<string>()
       for (const srv of local.mcp!.servers) {
         const regType = mcpRegistrations.find((r) => r.name === srv.name)?.type ?? (srv.npm_package ? 'npm' : srv.pypi_package ? 'uvx' : 'custom')
@@ -857,7 +860,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setAdapterWithKeys(new Set())
       return
     }
-    window.adfApi?.listIdentityPurposes('adapter:').then((purposes) => {
+    openApi()?.listIdentityPurposes('adapter:').then((purposes) => {
       const typesWithKeys = new Set<string>()
       const keysByType: Record<string, Set<string>> = {}
       for (const reg of adapterRegistrations) {
@@ -876,7 +879,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
       // Pull the email account identifier for display (non-sensitive)
       if (keysByType.email?.has('EMAIL_USERNAME')) {
-        window.adfApi?.getIdentity('adapter:email:EMAIL_USERNAME').then((val) => {
+        openApi()?.getIdentity('adapter:email:EMAIL_USERNAME').then((val) => {
           setEmailAccount(val ?? null)
         })
       } else {
@@ -889,7 +892,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   useEffect(() => {
     if (template) return
     const check = () => {
-      window.adfApi?.getDid().then((r) => setHasSigningKeys(!!r?.did))
+      openApi()?.getDid().then((r) => setHasSigningKeys(!!r?.did))
     }
     check()
     // Re-check when window gains focus (user may switch to Identity tab and generate keys)
@@ -904,7 +907,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setToolDefs(_cachedToolDefs)
       // console.log(`[PERF:renderer] AgentConfig.getToolDefs: ${(performance.now() - t0).toFixed(1)}ms (cached)`)
     } else {
-      window.adfApi?.getToolDescriptions().then((defs) => {
+      openApi()?.getToolDescriptions().then((defs) => {
         _cachedToolDefs = defs
         setToolDefs(defs)
         // console.log(`[PERF:renderer] AgentConfig.getToolDefs: ${(performance.now() - t0).toFixed(1)}ms (fetched)`)
@@ -927,7 +930,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       // On failure the draft stays and the header says "Not saved" (Retry,
       // Discard), so the edit is neither lost nor passed off as saved.
       const seq = ++saveSeqRef.current
-      void Promise.resolve(window.adfApi?.setAgentConfig(updated, baseRevision !== undefined ? { baseRevision } : undefined))
+      void Promise.resolve(openApi()?.setAgentConfig(updated, baseRevision !== undefined ? { baseRevision } : undefined))
         .then((res) => {
           // W3-F: someone else saved the config since this edit started.
           // Only the revision moved (the config is what the edit started
@@ -1003,7 +1006,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const discardFailedSave = useCallback(() => {
     failedSaveRef.current = null
     setSaveStatus({ kind: 'idle' })
-    void window.adfApi?.getAgentConfig().then((authoritative) => {
+    void openApi()?.getAgentConfig().then((authoritative) => {
       if (authoritative) setConfig(authoritative as AgentConfigType)
     })
   }, [setConfig])
@@ -1029,24 +1032,24 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     if (template) return
     let cancelled = false
     setMcpStates({})
-    void Promise.resolve(window.adfApi?.getMcpServerStatus?.()).then((res) => {
+    void Promise.resolve(openApi()?.getMcpServerStatus?.()).then((res) => {
       if (cancelled || !res?.servers) return
       const next: Record<string, { status: McpServerStatus; error?: string }> = {}
       for (const st of res.servers) next[st.name] = { status: st.status, error: st.error }
       setMcpStates(next)
     }).catch(() => { /* no runtime for this agent: no status to show */ })
-    const unsub = window.adfApi?.onMcpServerStatusChanged?.((event) => {
+    const unsub = openApi()?.onMcpServerStatusChanged?.((event) => {
       setMcpStates((prev) => ({ ...prev, [event.name]: { status: event.status, error: event.error } }))
     })
     return () => { cancelled = true; unsub?.() }
-  }, [filePath])
+  }, [filePath, openRuntime])
 
   // The open Logs view follows the server's status changes.
   const mcpLogsStatus = mcpLogsFor ? mcpStates[mcpLogsFor]?.status : undefined
   useEffect(() => {
     if (!mcpLogsFor) return
     let cancelled = false
-    void Promise.resolve(window.adfApi?.getMcpServerLogs?.({ name: mcpLogsFor })).then((res) => {
+    void Promise.resolve(openApi()?.getMcpServerLogs?.({ name: mcpLogsFor })).then((res) => {
       if (!cancelled) setMcpLogs(res?.logs ?? [])
     }).catch(() => { if (!cancelled) setMcpLogs([]) })
     return () => { cancelled = true }
@@ -1220,7 +1223,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setNameError(null)
       return
     }
-    const result = await window.adfApi.renameFile(filePath, trimmed)
+    const result = await openApi().renameFile(filePath, trimmed)
     if (result.success && result.filePath) {
       setFilePath(result.filePath)
       setLocal({ ...local, name: trimmed })
@@ -1284,7 +1287,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               useAgentStore.getState().setConfigRevision(configConflict.revision)
               setConfig(theirs)
             } else {
-              void window.adfApi?.getAgentConfig().then((c) => { if (c) setConfig(c as AgentConfigType) })
+              void openApi()?.getAgentConfig().then((c) => { if (c) setConfig(c as AgentConfigType) })
             }
           }}
           onKeep={() => {
@@ -1487,7 +1490,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                 // Re-fetch settings to get the latest defaults (invalidate cache)
                 _cachedProviders = null
-                const settings = await window.adfApi?.getSettings()
+                const settings = await openApi()?.getSettings()
                 const freshProviders = (settings?.providers as ProviderConfig[]) ?? []
                 _cachedProviders = freshProviders
                 setProviders(freshProviders)
@@ -2885,7 +2888,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     <button
                       className="mt-1 text-xs px-2 py-1 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-600"
                       onClick={async () => {
-                        const info = await window.adfApi?.getBrowserSessionInfo({ agentName: local.name, agentId: local.id })
+                        const info = await openApi()?.getBrowserSessionInfo({ agentName: local.name, agentId: local.id })
                         const docPath = useDocumentStore.getState().filePath
                         if (info && docPath) {
                           useEditorTabsStore.getState().openBrowserTab({
@@ -2959,10 +2962,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               env: appKeys.map((k) => ({ key: k, value: '' })),
             }
 
-            const currentSettings = await window.adfApi?.getSettings()
+            const currentSettings = await openApi()?.getSettings()
             const existingServers = (currentSettings?.mcpServers as McpServerRegistration[]) ?? []
             if (existingServers.some((r) => r.name === srv.name)) return
-            await window.adfApi?.setSettings({
+            await openApi()?.setSettings({
               mcpServers: [...existingServers, reg],
             })
             invalidateConfigCaches()
@@ -2977,7 +2980,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             const toolPrefix = `mcp_${serverName}_`
             const tools = local.tools.filter((t) => !t.name.startsWith(toolPrefix))
             // Clean up identity entries
-            if (!template) window.adfApi?.deleteIdentityByPrefix(`mcp:${serverName}:`)
+            if (!template) openApi()?.deleteIdentityByPrefix(`mcp:${serverName}:`)
             save({ ...local, mcp: servers.length > 0 ? { servers } : undefined, tools })
           }
 
@@ -3341,7 +3344,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   if (!window.confirm(msg)) return
 
                   // Clean up identity keys
-                  if (!template) window.adfApi?.deleteIdentityByPrefix(`adapter:${reg.type}:`)
+                  if (!template) openApi()?.deleteIdentityByPrefix(`adapter:${reg.type}:`)
 
                   const adapters = { ...(local.adapters ?? {}) }
                   delete adapters[reg.type]
@@ -5736,14 +5739,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
               // Clear backend state
               await Promise.all([
-                window.adfApi?.setDocument(''),
-                window.adfApi?.writeInternalFile('mind.md', ''),
-                window.adfApi?.clearChat(),
-                window.adfApi?.clearInbox()
+                openApi()?.setDocument(''),
+                openApi()?.writeInternalFile('mind.md', ''),
+                openApi()?.clearChat(),
+                openApi()?.clearInbox()
               ])
 
               // Force immediate save to disk (don't wait for autosave)
-              await window.adfApi?.saveFile()
+              await openApi()?.saveFile()
             }}
           >
             Clear Agent State
@@ -5830,7 +5833,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   const levels: MetaProtectionLevel[] = ['none', 'readonly', 'increment']
                   const idx = levels.indexOf(viewingMeta.protection)
                   const next = levels[(idx + 1) % levels.length]
-                  await window.adfApi?.setMetaProtection(viewingMeta.key, next)
+                  await openApi()?.setMetaProtection(viewingMeta.key, next)
                   setViewingMeta({ ...viewingMeta, protection: next })
                   refreshMeta()
                 }}
@@ -5851,7 +5854,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               {/* Save */}
               <button
                 onClick={async () => {
-                  await window.adfApi?.setMeta(viewingMeta.key, editingMetaValue, viewingMeta.protection)
+                  await openApi()?.setMeta(viewingMeta.key, editingMetaValue, viewingMeta.protection)
                   setViewingMeta(null)
                   refreshMeta()
                 }}
@@ -5869,7 +5872,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <button
                 onClick={async () => {
                   if (!window.confirm(`Delete meta key "${viewingMeta.key}"?`)) return
-                  await window.adfApi?.deleteMeta(viewingMeta.key)
+                  await openApi()?.deleteMeta(viewingMeta.key)
                   setViewingMeta(null)
                   refreshMeta()
                 }}
@@ -5937,7 +5940,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <button
             onClick={async () => {
               if (!newMetaKey.trim()) return
-              await window.adfApi?.setMeta(newMetaKey.trim(), newMetaValue, newMetaProtection)
+              await openApi()?.setMeta(newMetaKey.trim(), newMetaValue, newMetaProtection)
               setAddingMeta(false)
               refreshMeta()
             }}
@@ -6293,7 +6296,7 @@ function PromptCompositionField({
     if (!filePath) return
     let cancelled = false
     const timer = setTimeout(() => {
-      Promise.resolve(window.adfApi?.getContextBreakdown(filePath))
+      Promise.resolve(openApi()?.getContextBreakdown(filePath))
         .then((b) => {
           if (cancelled) return
           setParts(b?.system_prompt_parts ?? null)

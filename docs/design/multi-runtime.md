@@ -1,6 +1,6 @@
 # Multi-runtime Studio
 
-Status: design for step 2 of [#149](https://github.com/christianbalevski/adf/issues/149) (phase 1 of [#148](https://github.com/christianbalevski/adf/issues/148)). Phase 1 (§10) is built; §13 records how it meets the code. Step 1 is [agent-windows.md](agent-windows.md).
+Status: design for step 2 of [#149](https://github.com/christianbalevski/adf/issues/149) (phase 1 of [#148](https://github.com/christianbalevski/adf/issues/148)). Phases 1 and 2 (§10) are built; §13 and §14 record how they meet the code. Step 1 is [agent-windows.md](agent-windows.md).
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 
@@ -440,3 +440,20 @@ Choices made where this design met the code. Each is the simplest option consist
 10. **A runtime other than the primary.** It keeps no recent files (local-open grants are This computer's, §8.3), and the fleet map's saved burn totals are not handed to it (per-runtime keys are §7.4, phase 2). Its connector stops when it leaves the set. Reconnect on it when failed replaces its `RuntimeConnection` after its agent windows kept their unsaved text; those windows close, and phase 3 reopens them.
 11. **Recovery copies.** A copy of another runtime's agent is kept in a folder whose hash covers the runtime id, with `<folder>.runtime` next to it holding the id.
 12. **Harness.** `multiDaemonBackend()` and the `tests/parity/multi/` scenarios come with phase 3, which §10 gives the multi-daemon parity scenarios. Phase 1 tests two and three runtimes against fake daemons (tests/backend/multi-runtime.test.ts); the existing parity recordings are unchanged.
+
+## 14. Phase 2 notes
+
+Choices made where this design met the code. Each is the simplest option consistent with §12.
+
+1. **Condition.** Grouping, runtime names and tags follow `useMultiRuntime()`: the runtime set has more than one runtime, which needs `ADF_MULTI_RUNTIME=1` until phase 3 (§13 item 2). `useRemoteConnectionsSaved()` stays for the Settings heading, the status bar and Connections until phase 3 removes the flag: without the flag a saved connection is not in the set, so the two conditions of §5.1 are the same only from then.
+2. **Runtime list.** Main sends `ConnectionsView.runtimes` only while the set has more than one runtime. With one, the renderer's set is the runtime the window uses, under the id `local`. CONNECTION_CHANGED is pushed when the set, its order or the state of a runtime other than the primary changes.
+3. **Agent keys.** `agentKey` is the file path on This computer and `<runtime id>\n<path>` on any other runtime, not `agentId ?? filePath`: maps keyed by path keep their keys, and client keys and local storage keep their bytes (M11). Two refs are the same agent by `sameAgent` (§1.3). An agent window shows one runtime; its maps are keyed by path.
+4. **Store slices.** In the stores of §5.3 the top-level fields stay This computer's slice (an agent window's: its own runtime's), and `byRuntime` holds every other runtime. `selectLocal` is the store itself. `useRuntimeFeeds` (main window) fills the other slices and makes no call with This computer only.
+5. **Open agent.** `document.store.runtimeId` is the open agent's runtime. The agent, editor-tabs and inbox stores hold the open agent only, so they keep one slice; their subscriptions follow that runtime (`openApi()`, `useOpenRuntime()`). Saved editor tabs are keyed by agent key.
+6. **Bound surfaces.** A surface bound to a runtime sends Studio-scope calls untagged (`STUDIO_CALL_CHANNELS`, kept equal to the channel map by tests/backend/multi-runtime-phase2.test.ts). One surface then serves a whole agent view, and an agent window of another runtime can make Studio calls. `apiFor('local')` in such a window is the untagged surface.
+7. **Call sites.** Calls about the main window's open agent go through `openApi()`; sidebar rows, Go to Agent, the bell and the remote picker call the row's runtime. Settings pages, Home and the status bar stay on This computer until phase 3's picker and status-bar groups.
+8. **Bell, toasts and OS notifications.** They name their runtime in phase 2, not phase 3 (§10): the merged list already carries `runtimeId`. The rows of a runtime that is down are shown with their answers disabled (§3.6).
+9. **Share.** Share and drag-out are This computer's only: a path of another runtime never reaches a local file call (§8.3).
+10. **Recent files.** `runtimeRecentFiles` comes with Open Recent of each runtime (§6.6), in phase 3. A runtime other than the primary keeps no recent files (§13 item 10).
+11. **The Mesh view.** A runtime other than This computer is one region rooted at its runtime, one district per tracked folder; its tiles are keyed by agent key. A peer is drawn as a region, not a station, when its `runtime_did` is the DID of a runtime in the set (`getOwnerIdentityStatus().runtimeDid`); a peer without one, or a runtime whose DID could not be read, stays a station. New agents are founded on This computer's land only. Trace heat, routes and street heat that touch another runtime's agents last for the session. The map reads only the tail of a remote's message log.
+12. **`runtimeFleet`.** A remote's groups, stewards, burn totals and placement are kept under `runtimeFleet[<id>]` with that runtime's paths; entries of runtimes not in the set are kept. The primary's keys are unchanged, and nothing writes `runtimeFleet` with This computer only. A runtime other than the primary is handed its own saved burn totals (§13 item 10).

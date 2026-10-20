@@ -5,6 +5,7 @@ import { formatTime, PANEL_BUTTON_CLASS, PANEL_LIVE_ON_CLASS, PANEL_SELECT_CLASS
 import { FreshnessStamp } from '../common/FreshnessStamp'
 import type { TaskEntry, TaskStatus } from '../../../shared/types/adf-v02.types'
 import { TASK_STATUSES } from '../../../shared/types/adf-v02.types'
+import { openApi } from '../../utils/runtime-api'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   pending: 'text-amber-600 dark:text-yellow-400',
@@ -22,7 +23,7 @@ export function useTasksCount(): number {
 
   useEffect(() => {
     if (!filePath) { setCount(0); return }
-    window.adfApi?.getTasks(1).then(({ tasks }) => setCount(tasks.length > 0 ? -1 : 0))
+    openApi()?.getTasks(1).then(({ tasks }) => setCount(tasks.length > 0 ? -1 : 0))
     // We just need to know if there are tasks; actual count comes from the full fetch
   }, [filePath])
 
@@ -42,7 +43,7 @@ export function TasksPanel() {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const fetchTasks = useCallback(() => {
-    window.adfApi?.getTasks(200).then(({ tasks: fetched }) => {
+    openApi()?.getTasks(200).then(({ tasks: fetched }) => {
       // API returns newest-first; reverse for chronological (newest at bottom)
       setTasks([...fetched].reverse())
       setFetchedAt(Date.now())

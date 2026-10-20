@@ -30,6 +30,22 @@ import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
+import type { RuntimeView } from '../../../shared/types/connection.types'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
+import { agentKey } from '../../../shared/types/agent-ref'
+import { apiFor, openApi } from '../../utils/runtime-api'
+import { runtimeHeader, useMultiRuntime, useRuntimes } from '../../stores/runtimes.store'
+import { selectTrackedSlice } from '../../stores/tracked-dirs.store'
+import { selectBackgroundAgents } from '../../stores/background-agents.store'
+import { selectMeshSlice } from '../../stores/mesh.store'
+import { trackedDirsActions } from '../../hooks/useTrackedDirs'
+import { CONNECTION_STATE_LABELS } from '../../../shared/types/connection.types'
+
+/** A runtime other than This computer: its rows, calls and keys name it (docs/design/multi-runtime.md §5.2). Omitted: This computer. */
+type RowRuntime = RuntimeId | undefined
+
+/** The key of an agent of `runtimeId` in the spinner sets, queues and maps: its path on This computer. */
+const rowKey = (runtimeId: RowRuntime, filePath: string): string => agentKey({ runtimeId, filePath })
 
 /**
  * Keep only entries whose name (file name, agent display name, or path
@@ -62,37 +78,38 @@ async function startAgentsSequentially(
   files: TrackedDirEntry[],
   currentFilePath: string | null,
   foregroundRunning: boolean,
-  backgroundAgentMap: Map<string, BackgroundAgentStatus>
+  backgroundAgentMap: Map<string, BackgroundAgentStatus>,
+  runtimeId?: RowRuntime
 ): Promise<void> {
   const app = useAppStore.getState()
   const toStart = files.filter((f) =>
     f.filePath === currentFilePath ? !foregroundRunning : !backgroundAgentMap.has(f.filePath)
   )
-  for (const file of toStart) app.addStartingFilePath(file.filePath)
+  for (const file of toStart) app.addStartingFilePath(rowKey(runtimeId, file.filePath))
   try {
     // One failure is shown and the rest still start.
     for (const file of toStart) {
       const name = file.agentName ?? agentNameOf(file.filePath)
       try {
         if (file.filePath === currentFilePath) {
-          const result = await window.adfApi.startAgent()
+          const result = await openApi().startAgent()
           if (result.success) {
             useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
           } else {
             reportFailure(`${name} did not start`, result.error)
           }
         } else {
-          const result = await window.adfApi.startBackgroundAgent(file.filePath)
+          const result = await apiFor(runtimeId).startBackgroundAgent(file.filePath)
           if (!result.success) reportFailure(`${name} did not start`, result.error)
         }
       } catch (err) {
         reportFailure(`${name} did not start`, err)
       } finally {
-        app.removeStartingFilePath(file.filePath)
+        app.removeStartingFilePath(rowKey(runtimeId, file.filePath))
       }
     }
   } finally {
-    for (const file of toStart) app.removeStartingFilePath(file.filePath)
+    for (const file of toStart) app.removeStartingFilePath(rowKey(runtimeId, file.filePath))
   }
 }
 
@@ -106,22 +123,22 @@ async function stopAgentsSequentially(
   files: TrackedDirEntry[],
   currentFilePath: string | null,
   backgroundAgentMap: Map<string, BackgroundAgentStatus>,
-  { report = true }: { report?: boolean } = {}
+  { report = true, runtimeId }: { report?: boolean; runtimeId?: RowRuntime } = {}
 ): Promise<string[]> {
   const failures: string[] = []
   const app = useAppStore.getState()
   const toStop = files.filter((f) =>
     f.filePath === currentFilePath || backgroundAgentMap.has(f.filePath)
   )
-  for (const file of toStop) app.addStoppingFilePath(file.filePath)
+  for (const file of toStop) app.addStoppingFilePath(rowKey(runtimeId, file.filePath))
   try {
     for (const file of toStop) {
       try {
         if (file.filePath === currentFilePath) {
-          await window.adfApi.stopAgent()
+          await openApi().stopAgent()
           useAgentStore.getState().setState('off')
         } else {
-          await window.adfApi.stopBackgroundAgent(file.filePath)
+          await apiFor(runtimeId).stopBackgroundAgent(file.filePath)
         }
       } catch (err) {
         const what = `${file.agentName ?? agentNameOf(file.filePath)} did not stop`
@@ -129,11 +146,11 @@ async function stopAgentsSequentially(
         if (report) reportFailure(what, err)
         else console.warn(`[Sidebar] ${what}:`, err)
       } finally {
-        app.removeStoppingFilePath(file.filePath)
+        app.removeStoppingFilePath(rowKey(runtimeId, file.filePath))
       }
     }
   } finally {
-    for (const file of toStop) app.removeStoppingFilePath(file.filePath)
+    for (const file of toStop) app.removeStoppingFilePath(rowKey(runtimeId, file.filePath))
   }
   return failures
 }
@@ -146,7 +163,7 @@ async function stopAgentsSequentially(
 async function needsReviewBeforeStart(isActive: boolean): Promise<boolean> {
   if (!isActive) return false
   try {
-    const review = await window.adfApi.checkAgentReview()
+    const review = await openApi().checkAgentReview()
     if (review?.needsReview) {
       useAppStore.getState().setAgentReviewDialog(true, review.configSummary)
       return true
@@ -161,27 +178,30 @@ async function needsReviewBeforeStart(isActive: boolean): Promise<boolean> {
  * file uses the background manager. The starting/stopping path sets drive the
  * row spinner for the duration.
  */
-async function toggleAgent(filePath: string, isActive: boolean, isRunning: boolean, name: string = agentNameOf(filePath)): Promise<void> {
+async function toggleAgent(filePath: string, isActive: boolean, isRunning: boolean, name: string = agentNameOf(filePath), runtimeId?: RowRuntime): Promise<void> {
   const app = useAppStore.getState()
-  if (isRunning) app.addStoppingFilePath(filePath)
-  else app.addStartingFilePath(filePath)
+  const key = rowKey(runtimeId, filePath)
+  const api = apiFor(runtimeId)
+  if (isRunning) app.addStoppingFilePath(key)
+  else app.addStartingFilePath(key)
   try {
     if (isActive) {
       if (isRunning) {
-        await window.adfApi.stopAgent()
+        await openApi().stopAgent()
         useAgentStore.getState().setState('off')
       } else {
         await startForegroundAgent({ skipReviewGate: true })
       }
     } else if (isRunning) {
-      await window.adfApi.stopBackgroundAgent(filePath)
+      await api.stopBackgroundAgent(filePath)
     } else {
-      let result = await window.adfApi.startBackgroundAgent(filePath)
+      let result = await api.startBackgroundAgent(filePath)
       // Same provider-at-need as the foreground path: connect one, retry once.
+      // The sheet sets up This computer's providers: another runtime's refusal is said as it is.
       let cancelled = false
-      if (!result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
+      if (!runtimeId && !result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
         const connected = await app.requestProviderSetup(result.code, filePath)
-        if (connected) result = await window.adfApi.startBackgroundAgent(filePath)
+        if (connected) result = await api.startBackgroundAgent(filePath)
         else cancelled = true
       }
       // A background agent has no chat on screen: the reason is shown here.
@@ -191,8 +211,8 @@ async function toggleAgent(filePath: string, isActive: boolean, isRunning: boole
     // The foreground start reports in its chat and does not throw; this is a stop, or the IPC itself.
     reportFailure(`${name} did not ${isRunning ? 'stop' : 'start'}`, err)
   } finally {
-    if (isRunning) app.removeStoppingFilePath(filePath)
-    else app.removeStartingFilePath(filePath)
+    if (isRunning) app.removeStoppingFilePath(key)
+    else app.removeStartingFilePath(key)
   }
 }
 
@@ -265,7 +285,18 @@ function useFolderExpanded(path: string): [boolean, () => void] {
 interface RowTarget {
   file: TrackedDirEntry
   dirPath: string
+  /** The row's runtime; omitted for This computer. */
+  runtimeId?: RowRuntime
 }
+
+/** A row's context menu: the row's file, its tracked root and (another runtime than This computer) its runtime. */
+/** Open a row's agent on its runtime (omitted: This computer). */
+type OpenFileHandler = (filePath: string, runtimeId?: RowRuntime) => void
+
+type FileContextMenuHandler = (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string, runtimeId?: RowRuntime) => void
+
+/** No runtime besides This computer: the sidebar is the one before. */
+const NO_RUNTIMES: RuntimeView[] = []
 
 /** Shared empty list so a leaf TreeNode's memo stays identity-stable. */
 const EMPTY_ENTRIES: TrackedDirEntry[] = []
@@ -314,7 +345,11 @@ export function Sidebar() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
-  const filePath = useDocumentStore((s) => s.filePath)
+  // The open agent and its runtime. `filePath` is This computer's open agent, the one
+  // its tree marks: null while the open agent is on another runtime (multi-runtime.md §1.3).
+  const openPath = useDocumentStore((s) => s.filePath)
+  const openRuntime = useDocumentStore((s) => s.runtimeId)
+  const filePath = openRuntime === LOCAL_RUNTIME ? openPath : null
   const showHome = useAppStore((s) => s.showHome)
   const setShowHome = useAppStore((s) => s.setShowHome)
   const { openFile, createFile, closeFile } = useAdfFile()
@@ -346,6 +381,15 @@ export function Sidebar() {
   )
   const dirScrollRef = useRef<HTMLDivElement>(null)
 
+  // Every runtime of the set while there is more than one (§5.4); none otherwise, so this
+  // sidebar is exactly the one before.
+  const multi = useMultiRuntime()
+  const runtimes = useRuntimes()
+  const remotes = useMemo(() => (multi ? runtimes.filter((r) => r.id !== LOCAL_RUNTIME) : NO_RUNTIMES), [multi, runtimes])
+  const trackedByRuntime = useTrackedDirsStore((s) => s.byRuntime)
+  const backgroundByRuntime = useBackgroundAgentsStore((s) => s.byRuntime)
+  const meshByRuntime = useMeshStore((s) => s.byRuntime)
+
   const [agentSearch, setAgentSearch] = useState('')
   const searchQuery = agentSearch.trim().toLowerCase()
   const searching = searchQuery.length > 0
@@ -365,7 +409,7 @@ export function Sidebar() {
   // Pinned "Running" list: every running agent across all roots, flat. Built
   // from the unfiltered trees so it does not depend on folder state; hidden
   // while searching because search already flattens the tree.
-  const runningRows = useMemo(() => collectRunningAgents({
+  const localRunningRows = useMemo(() => collectRunningAgents({
     directories,
     filesByDir,
     currentFilePath: filePath,
@@ -376,26 +420,60 @@ export function Sidebar() {
     foregroundRunning: foregroundAgentState !== 'off' || (filePath !== null && startingPaths.has(filePath)),
     isBackgroundRunning: (fp) => backgroundAgentMap.has(fp) || startingPaths.has(fp)
   }), [directories, filesByDir, filePath, foregroundAgentState, backgroundAgentMap, startingPaths])
+  // Other runtimes' running agents follow, each named by its runtime (§5.4).
+  const runningRows = useMemo(() => {
+    if (remotes.length === 0) return localRunningRows
+    const rows: RunningAgentRow[] = [...localRunningRows]
+    for (const rt of remotes) {
+      const slice = selectTrackedSlice({ directories: [], filesByDir: {}, byRuntime: trackedByRuntime }, rt.id)
+      const background = new Set(selectBackgroundAgents({ agents: [], byRuntime: backgroundByRuntime }, rt.id).map((a) => a.filePath))
+      const current = openRuntime === rt.id ? openPath : null
+      for (const row of collectRunningAgents({
+        directories: slice.directories,
+        filesByDir: slice.filesByDir,
+        currentFilePath: current,
+        foregroundRunning: foregroundAgentState !== 'off' || (current !== null && startingPaths.has(rowKey(rt.id, current))),
+        isBackgroundRunning: (fp) => background.has(fp) || startingPaths.has(rowKey(rt.id, fp)),
+      })) {
+        rows.push({ ...row, runtimeId: rt.id, folderHint: row.folderHint ? `${rt.name} · ${row.folderHint}` : rt.name })
+      }
+    }
+    return rows
+  }, [localRunningRows, remotes, trackedByRuntime, backgroundByRuntime, openRuntime, openPath, foregroundAgentState, startingPaths])
+  // The Running list's lookups by agent key: This computer's by path, as before, then every other runtime's.
+  const runningStatusMap = useStableMap(useMemo(() => {
+    const entries: [string, MeshAgentStatus][] = meshAgents.map((a) => [a.filePath, a])
+    for (const rt of remotes) for (const a of selectMeshSlice({ enabled: false, enabledRev: 0, agents: [], byRuntime: meshByRuntime }, rt.id).agents) entries.push([rowKey(rt.id, a.filePath), a])
+    return entries
+  }, [meshAgents, remotes, meshByRuntime]))
+  const runningBackgroundMap = useStableMap(useMemo(() => {
+    const entries: [string, BackgroundAgentStatus][] = backgroundAgents.map((a) => [a.filePath, a])
+    for (const rt of remotes) for (const a of backgroundByRuntime[rt.id] ?? []) entries.push([rowKey(rt.id, a.filePath), a])
+    return entries
+  }, [backgroundAgents, remotes, backgroundByRuntime]))
+  /** The open agent's key, which the Running list and the rail mark. */
+  const openKey = openPath ? rowKey(openRuntime === LOCAL_RUNTIME ? undefined : openRuntime, openPath) : null
   // The collapsed rail: the same agents as avatars, plus the open one.
   const railAgents = useMemo(
     () => (collapsed ? collectRailAgents(runningRows, { directories, filesByDir, currentFilePath: filePath }) : []),
     [collapsed, runningRows, directories, filesByDir, filePath]
   )
 
-  const handleOpenFile = useCallback((fp: string) => {
+  const handleOpenFile = useCallback((fp: string, runtimeId?: RowRuntime) => {
+    const runtime = runtimeId ?? LOCAL_RUNTIME
     if (showSettings) setShowSettings(false)
     if (showMeshGraph) setShowMeshGraph(false)
     // The open agent, from Home: back to it, nothing is reopened.
-    if (showHome && fp === filePath) { setShowHome(false); return }
+    if (showHome && fp === openPath && runtime === openRuntime) { setShowHome(false); return }
     const scrollTop = dirScrollRef.current?.scrollTop ?? 0
-    openFile(fp).then(() => {
+    openFile(fp, runtime).then(() => {
       requestAnimationFrame(() => {
         if (dirScrollRef.current) {
           dirScrollRef.current.scrollTop = scrollTop
         }
       })
     })
-  }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph, showHome, filePath, setShowHome])
+  }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph, showHome, openPath, openRuntime, setShowHome])
 
   const handleCreateFile = useCallback(async () => {
     const result = await createFile('Untitled')
@@ -426,16 +504,25 @@ export function Sidebar() {
   // Right-click on a tracked folder's header row: its own short menu. This
   // is where a folder stops being tracked; nothing on the home screen lists
   // the folders any more.
-  const [dirMenu, setDirMenu] = useState<{ dirPath: string; x: number; y: number } | null>(null)
-  const [untrackTarget, setUntrackTarget] = useState<string | null>(null)
+  const [dirMenu, setDirMenu] = useState<{ dirPath: string; runtimeId?: RowRuntime; x: number; y: number } | null>(null)
+  const [untrackTarget, setUntrackTarget] = useState<{ dirPath: string; runtimeId?: RowRuntime } | null>(null)
   const [renameTarget, setRenameTarget] = useState<RowTarget | null>(null)
   const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
 
   // Every agent file under the folder about to be untracked, and which of
   // them run. An untracked folder has no rows, so nothing may keep running
   // from it: the confirm stops them all before the folder goes.
+  // The folder's runtime: its tree, its running agents, and the open agent when it is on that runtime.
+  const untrackRuntime = untrackTarget?.runtimeId
+  const untrackSlice = untrackRuntime ? selectTrackedSlice({ directories, filesByDir, byRuntime: trackedByRuntime }, untrackRuntime) : { directories, filesByDir }
+  const untrackCurrent = untrackRuntime ? (openRuntime === untrackRuntime ? openPath : null) : filePath
+  const untrackBackground = useMemo(
+    () => (untrackRuntime ? new Map((backgroundByRuntime[untrackRuntime] ?? []).map((a) => [a.filePath, a] as [string, BackgroundAgentStatus])) : backgroundAgentMap),
+    [untrackRuntime, backgroundByRuntime, backgroundAgentMap]
+  )
   const untrackFiles = useMemo(() => {
     if (!untrackTarget) return [] as TrackedDirEntry[]
+    const root = untrackTarget.dirPath
     const out: TrackedDirEntry[] = []
     const walk = (entries: TrackedDirEntry[]) => {
       for (const e of entries) {
@@ -443,34 +530,38 @@ export function Sidebar() {
         else out.push(e)
       }
     }
-    for (const d of directories) {
-      if (d === untrackTarget || d.startsWith(`${untrackTarget}/`)) walk(filesByDir[d] ?? [])
+    for (const d of untrackSlice.directories) {
+      if (d === root || d.startsWith(`${root}/`)) walk(untrackSlice.filesByDir[d] ?? [])
     }
     return out
-  }, [untrackTarget, directories, filesByDir])
+  }, [untrackTarget, untrackSlice])
   const untrackRunning = useMemo(
-    () => untrackFiles.filter((f) => (f.filePath === filePath ? foregroundAgentState !== 'off' : backgroundAgentMap.has(f.filePath))),
-    [untrackFiles, filePath, foregroundAgentState, backgroundAgentMap]
+    () => untrackFiles.filter((f) => (f.filePath === untrackCurrent ? foregroundAgentState !== 'off' : untrackBackground.has(f.filePath))),
+    [untrackFiles, untrackCurrent, foregroundAgentState, untrackBackground]
   )
   const handleUntrack = useCallback(async () => {
-    const root = untrackTarget
-    if (!root) return
+    if (!untrackTarget) return
+    const root = untrackTarget.dirPath
     // A folder whose agent did not stop stays tracked: its row is the only Stop left.
-    const failed = await stopAgentsSequentially(untrackFiles, filePath, backgroundAgentMap, { report: false })
+    const failed = await stopAgentsSequentially(untrackFiles, untrackCurrent, untrackBackground, { report: false, runtimeId: untrackRuntime })
     if (failed.length > 0) throw new Error(`${failed.join('; ')}. The folder is still tracked.`)
     // The open file is one of the rows about to vanish; close it so the
     // editor cannot start it again from a folder the sidebar no longer shows.
-    if (filePath && (filePath === root || filePath.startsWith(`${root}/`))) await closeFile()
+    if (untrackCurrent && (untrackCurrent === root || untrackCurrent.startsWith(`${root}/`))) await closeFile()
     // Tracked roots nested inside this one go with it.
-    for (const d of directories) {
-      if (d === root || d.startsWith(`${root}/`)) await removeDirectory(d)
+    const remove = untrackRuntime ? trackedDirsActions(untrackRuntime).removeDirectory : removeDirectory
+    for (const d of untrackSlice.directories) {
+      if (d === root || d.startsWith(`${root}/`)) await remove(d)
     }
     setUntrackTarget(null)
-  }, [untrackTarget, untrackFiles, filePath, backgroundAgentMap, closeFile, directories, removeDirectory])
+  }, [untrackTarget, untrackFiles, untrackCurrent, untrackBackground, untrackRuntime, untrackSlice, closeFile, removeDirectory])
+
+  /** Rescan a tracked root on its runtime. */
+  const rescanOn = useCallback((dirPath: string, runtimeId?: RowRuntime) => (runtimeId ? trackedDirsActions(runtimeId).rescanDirectory(dirPath) : rescanDirectory(dirPath)), [rescanDirectory])
 
   const handleRenamed = useCallback(async (target: RowTarget, newPath: string, name: string, deferred: boolean) => {
     setRenameTarget(null)
-    if (target.file.filePath === filePath) {
+    if (target.file.filePath === openPath && (target.runtimeId ?? LOCAL_RUNTIME) === openRuntime) {
       useDocumentStore.getState().setFilePath(newPath)
       const cfg = useAgentStore.getState().config
       if (cfg) useAgentStore.getState().setConfig({ ...cfg, name })
@@ -478,80 +569,89 @@ export function Sidebar() {
     // A running agent's file cannot move until it stops. The row keeps the
     // file's name, which is still the old one, and shows the new one as
     // pending; the rescan below confirms either outcome from disk.
-    if (deferred) updateFileEntry(newPath, { pendingName: name })
-    await rescanDirectory(target.dirPath)
-  }, [filePath, rescanDirectory, updateFileEntry])
+    if (deferred) updateFileEntry(newPath, { pendingName: name }, target.runtimeId)
+    await rescanOn(target.dirPath, target.runtimeId)
+  }, [openPath, openRuntime, rescanOn, updateFileEntry])
   const [cloneTarget, setCloneTarget] = useState<RowTarget | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RowTarget | null>(null)
   const startingFilePaths = useAppStore((s) => s.startingFilePaths)
   const stoppingFilePaths = useAppStore((s) => s.stoppingFilePaths)
 
-  const handleFileContextMenu = useCallback((e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => {
+  const handleFileContextMenu = useCallback((e: React.MouseEvent, file: TrackedDirEntry, dirPath: string, runtimeId?: RowRuntime) => {
     e.preventDefault()
     e.stopPropagation()
-    setMenu({ file, dirPath, x: e.clientX, y: e.clientY })
+    setMenu({ file, dirPath, ...(runtimeId ? { runtimeId } : {}), x: e.clientX, y: e.clientY })
   }, [])
   const closeMenu = useCallback(() => setMenu(null), [])
-  const handleDirContextMenu = useCallback((e: React.MouseEvent, dirPath: string) => {
+  const handleDirContextMenu = useCallback((e: React.MouseEvent, dirPath: string, runtimeId?: RowRuntime) => {
     e.preventDefault()
     e.stopPropagation()
     setMenu(null)
-    setDirMenu({ dirPath, x: e.clientX, y: e.clientY })
+    setDirMenu({ dirPath, ...(runtimeId ? { runtimeId } : {}), x: e.clientX, y: e.clientY })
   }, [])
   const closeDirMenu = useCallback(() => setDirMenu(null), [])
 
   const dirMenuItems = useMemo<ContextMenuItem[]>(() => {
     if (!dirMenu) return []
-    const { dirPath } = dirMenu
+    const { dirPath, runtimeId } = dirMenu
     return [
-      { label: 'Rescan', onSelect: () => { void rescanDirectory(dirPath) } },
-      { label: REVEAL_IN_FOLDER_LABEL, onSelect: () => { window.adfApi.revealInFolder(dirPath).catch(() => {}) } },
-      { label: 'Untrack folder…', separatorBefore: true, onSelect: () => setUntrackTarget(dirPath) }
+      { label: 'Rescan', onSelect: () => { rescanOn(dirPath, runtimeId).catch((err) => reportFailure('Folder not rescanned', err)) } },
+      { label: REVEAL_IN_FOLDER_LABEL, onSelect: () => { apiFor(runtimeId).revealInFolder(dirPath).catch(() => {}) } },
+      { label: 'Untrack folder…', separatorBefore: true, onSelect: () => setUntrackTarget({ dirPath, ...(runtimeId ? { runtimeId } : {}) }) }
     ]
-  }, [dirMenu, rescanDirectory])
+  }, [dirMenu, rescanOn])
 
   const menuItems = useMemo<ContextMenuItem[]>(() => {
     if (!menu) return []
-    const { file, dirPath } = menu
+    const { file, dirPath, runtimeId } = menu
     const fp = file.filePath
-    const isActive = fp === filePath
-    const isRunning = isActive ? foregroundAgentState !== 'off' : backgroundAgentMap.has(fp)
-    const busy = startingFilePaths.has(fp) || stoppingFilePaths.has(fp)
+    // The row's runtime: the open agent is this row only on that runtime (§1.3).
+    const isActive = fp === openPath && (runtimeId ?? LOCAL_RUNTIME) === openRuntime
+    const running = runtimeId ? (backgroundByRuntime[runtimeId] ?? []).some((a) => a.filePath === fp) : backgroundAgentMap.has(fp)
+    const isRunning = isActive ? foregroundAgentState !== 'off' : running
+    const busy = startingFilePaths.has(rowKey(runtimeId, fp)) || stoppingFilePaths.has(rowKey(runtimeId, fp))
     return [
       {
         label: isRunning ? 'Stop' : 'Start',
         disabled: busy,
         onSelect: async () => {
           if (!isRunning && await needsReviewBeforeStart(isActive)) return
-          await toggleAgent(fp, isActive, isRunning, file.agentName ?? agentNameOf(fp))
+          await toggleAgent(fp, isActive, isRunning, file.agentName ?? agentNameOf(fp), runtimeId)
         }
       },
       // Daemon mode: the agent in its own window (agent-windows.md).
-      ...(agentWindowsAvailable ? [{ label: 'Open in new window', onSelect: () => openAgentWindow({ filePath: fp, agentId: file.agentId ?? null, ...(file.agentName ? { name: file.agentName } : {}) }) }] : []),
-      { label: 'Rename…', onSelect: () => setRenameTarget({ file, dirPath }) },
-      { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath }) },
-      { label: 'Share…', onSelect: () => useAppStore.getState().openShareDialog(fp) },
+      ...(agentWindowsAvailable ? [{ label: 'Open in new window', onSelect: () => openAgentWindow({ filePath: fp, agentId: file.agentId ?? null, ...(file.agentName ? { name: file.agentName } : {}), ...(runtimeId ? { runtimeId } : {}) }) }] : []),
+      { label: 'Rename…', onSelect: () => setRenameTarget({ file, dirPath, runtimeId }) },
+      { label: 'Clone…', onSelect: () => setCloneTarget({ file, dirPath, runtimeId }) },
+      // Share copies This computer's file: a path of another runtime never reaches a local file call (§8.3).
+      ...(runtimeId ? [] : [{ label: 'Share…', onSelect: () => useAppStore.getState().openShareDialog(fp) }]),
       {
         label: REVEAL_IN_FOLDER_LABEL,
-        onSelect: () => { window.adfApi.revealInFolder(fp).catch(() => {}) }
+        onSelect: () => { apiFor(runtimeId).revealInFolder(fp).catch(() => {}) }
       },
       {
         label: 'Delete…',
         danger: true,
         separatorBefore: true,
-        onSelect: () => setDeleteTarget({ file, dirPath })
+        onSelect: () => setDeleteTarget({ file, dirPath, runtimeId })
       }
     ]
-  }, [menu, filePath, foregroundAgentState, backgroundAgentMap, startingFilePaths, stoppingFilePaths])
+  }, [menu, openPath, openRuntime, foregroundAgentState, backgroundAgentMap, backgroundByRuntime, startingFilePaths, stoppingFilePaths])
+
+  /** Track Folder from a runtime's group header: on that runtime (§5.4). */
+  const trackOn = useCallback((runtimeId: RuntimeId) => {
+    const add = runtimeId === LOCAL_RUNTIME ? addDirectory : trackedDirsActions(runtimeId).addDirectory
+    add().catch((err) => reportFailure('Folder not tracked', err))
+  }, [addDirectory])
 
   const handleDeleted = useCallback(async (target: RowTarget) => {
     setDeleteTarget(null)
     // Main has already closed the file; drop the renderer's document/agent state.
-    if (target.file.filePath === filePath) await closeFile()
+    if (target.file.filePath === openPath && (target.runtimeId ?? LOCAL_RUNTIME) === openRuntime) await closeFile()
     // The directory watcher also emits TRACKED_DIRS_CHANGED on unlink; this
     // rescan just removes the row without waiting on it.
-    await rescanDirectory(target.dirPath)
-  }, [filePath, closeFile, rescanDirectory])
+    await rescanOn(target.dirPath, target.runtimeId)
+  }, [openPath, openRuntime, closeFile, rescanOn])
 
   // Menus and dialogs a row can open; the rail's avatars open them too.
   const overlays = (
@@ -569,7 +669,7 @@ export function Sidebar() {
         <ContextMenu position={folderMenu} items={folderMenuItems} onClose={closeFolderMenu} />
         {untrackTarget && (
           <UntrackFolderDialog
-            dirPath={untrackTarget}
+            dirPath={untrackTarget.dirPath}
             runningCount={untrackRunning.length}
             onClose={() => setUntrackTarget(null)}
             onConfirm={handleUntrack}
@@ -588,7 +688,8 @@ export function Sidebar() {
             onClose={() => setCloneTarget(null)}
             filePath={cloneTarget.file.filePath}
             dirPath={cloneTarget.dirPath}
-            onCloned={() => rescanDirectory(cloneTarget.dirPath)}
+            runtimeId={cloneTarget.runtimeId}
+            onCloned={() => rescanOn(cloneTarget.dirPath, cloneTarget.runtimeId)}
           />
         )}
         {deleteTarget && (
@@ -618,14 +719,15 @@ export function Sidebar() {
         {/* Running agents, and the open one; only these scroll. */}
         <div className="scrollbar-none flex-1 min-h-0 w-full overflow-y-auto flex flex-col items-center gap-1 pt-1">
           {railAgents.map((a, i) => (
-            <div key={a.file.filePath} className="contents">
+            <div key={rowKey(a.runtimeId, a.file.filePath)} className="contents">
               <RailAvatar
                 file={a.file}
                 dirPath={a.dirPath}
-                isActive={a.file.filePath === filePath}
-                backgroundStatus={backgroundAgentMap.get(a.file.filePath)}
+                isActive={rowKey(a.runtimeId, a.file.filePath) === openKey}
+                backgroundStatus={runningBackgroundMap.get(rowKey(a.runtimeId, a.file.filePath))}
                 onOpenFile={handleOpenFile}
                 onFileContextMenu={handleFileContextMenu}
+                runtimeId={a.runtimeId}
               />
               {a.openOnly && i < railAgents.length - 1 && <div className="w-5 shrink-0 border-t border-hairline my-0.5" />}
             </div>
@@ -709,10 +811,10 @@ export function Sidebar() {
       {!searching && runningRows.length > 0 && (
         <RunningSection
           rows={runningRows}
-          currentFilePath={filePath}
+          currentFilePath={openKey}
           meshEnabled={meshEnabled}
-          agentStatusMap={agentStatusMap}
-          backgroundAgentMap={backgroundAgentMap}
+          agentStatusMap={runningStatusMap}
+          backgroundAgentMap={runningBackgroundMap}
           onOpenFile={handleOpenFile}
           onFileContextMenu={handleFileContextMenu}
           treeRef={dirScrollRef}
@@ -727,7 +829,48 @@ export function Sidebar() {
         style={{ minHeight: TREE_MIN_HEIGHT }}
         className="scrollbar-autohide flex-1 overflow-y-auto"
       >
-        {directories.length > 0 ? (
+        {multi ? (
+          // One group per runtime, in the set's order (multi-runtime.md §5.4).
+          <div className="pb-1">
+            {runtimes.map((rt) => (
+              <RuntimeGroup key={rt.id} runtime={rt} onTrack={() => trackOn(rt.id)}>
+                {rt.id === LOCAL_RUNTIME ? (
+                  directories.length > 0 ? visibleDirectories.map((dirPath, index) => (
+              <div key={dirPath}>
+                {index > 0 && <div className="border-t border-hairline my-1" />}
+                <DirectorySection
+                  dirPath={dirPath}
+                  files={visibleFilesByDir[dirPath] ?? []}
+                  currentFilePath={filePath}
+                  meshEnabled={meshEnabled}
+                  agentStatusMap={agentStatusMap}
+                  backgroundAgentMap={backgroundAgentMap}
+                  foregroundAgentState={foregroundAgentState}
+                  onOpenFile={handleOpenFile}
+                  onFileContextMenu={handleFileContextMenu}
+                  onDirContextMenu={handleDirContextMenu}
+                  forceExpanded={searching}
+                />
+              </div>
+            )) : (
+                    <p className="pl-6 pr-3 py-[3px] text-[11px] leading-4 italic text-[var(--adf-ui-text-subtle)]">No agents</p>
+                  )
+                ) : (
+                  <RemoteRuntimeTree
+                    runtime={rt}
+                    searchQuery={searchQuery}
+                    openPath={openPath}
+                    openRuntime={openRuntime}
+                    foregroundAgentState={foregroundAgentState}
+                    onOpenFile={handleOpenFile}
+                    onFileContextMenu={handleFileContextMenu}
+                    onDirContextMenu={handleDirContextMenu}
+                  />
+                )}
+              </RuntimeGroup>
+            ))}
+          </div>
+        ) : directories.length > 0 ? (
           <div className="pb-1">
             {visibleDirectories.map((dirPath, index) => (
               <div key={dirPath}>
@@ -768,6 +911,111 @@ export function Sidebar() {
     </div>
   )
 }
+
+/**
+ * A runtime's group (multi-runtime.md §5.4): its name, and its state while
+ * it is down; its tracked folders inside. Collapsible like a folder; its
+ * context menu tracks a folder on that runtime.
+ */
+function RuntimeGroup({ runtime, onTrack, children }: { runtime: RuntimeView; onTrack: () => void; children: React.ReactNode }) {
+  const [expanded, toggle] = useFolderExpanded(`runtime:${runtime.id}`)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const items = useMemo<ContextMenuItem[]>(() => [
+    { label: 'Track folder…', disabled: runtime.state !== 'connected', onSelect: onTrack },
+  ], [runtime.state, onTrack])
+  return (
+    <div className="mb-1">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggle}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
+        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY }) }}
+        className="w-full pl-3 pr-1.5 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
+      >
+        <Chevron expanded={expanded} />
+        <Tooltip tip={runtime.url ?? runtime.name} className="flex-1 min-w-0">
+          <span className={`block font-semibold truncate ${runtime.state === 'connected' ? '' : 'text-[var(--adf-ui-text-subtle)]'}`}>{runtimeHeader(runtime)}</span>
+        </Tooltip>
+      </div>
+      {expanded && children}
+      <ContextMenu position={menu} items={items} onClose={() => setMenu(null)} />
+    </div>
+  )
+}
+
+/**
+ * The tracked folders of a runtime other than This computer, from its slice
+ * of the stores (useRuntimeFeeds). While it is down its folders stay from
+ * the last list, greyed and inert (§3.6); one that never connected shows
+ * its header only.
+ */
+const RemoteRuntimeTree = memo(function RemoteRuntimeTree({
+  runtime,
+  searchQuery,
+  openPath,
+  openRuntime,
+  foregroundAgentState,
+  onOpenFile,
+  onFileContextMenu,
+  onDirContextMenu,
+}: {
+  runtime: RuntimeView
+  searchQuery: string
+  openPath: string | null
+  openRuntime: RuntimeId
+  foregroundAgentState: string
+  onOpenFile: OpenFileHandler
+  onFileContextMenu: FileContextMenuHandler
+  onDirContextMenu: (e: React.MouseEvent, dirPath: string, runtimeId?: RowRuntime) => void
+}) {
+  const slice = useTrackedDirsStore((s) => selectTrackedSlice(s, runtime.id))
+  const background = useBackgroundAgentsStore((s) => selectBackgroundAgents(s, runtime.id))
+  const mesh = useMeshStore((s) => selectMeshSlice(s, runtime.id))
+  const backgroundMap = useStableMap(useMemo(() => background.map((a) => [a.filePath, a] as [string, BackgroundAgentStatus]), [background]))
+  const statusMap = useStableMap(useMemo(() => mesh.agents.map((a) => [a.filePath, a] as [string, MeshAgentStatus]), [mesh.agents]))
+  const current = openRuntime === runtime.id ? openPath : null
+  const searching = searchQuery.length > 0
+  const visibleFilesByDir = useMemo(() => {
+    if (!searching) return slice.filesByDir
+    const out: Record<string, TrackedDirEntry[]> = {}
+    for (const dirPath of slice.directories) out[dirPath] = filterTree(slice.filesByDir[dirPath] ?? [], searchQuery, dirPath)
+    return out
+  }, [searching, searchQuery, slice])
+  const visibleDirectories = searching ? slice.directories.filter((d) => (visibleFilesByDir[d]?.length ?? 0) > 0) : slice.directories
+  const down = runtime.state !== 'connected'
+  if (slice.directories.length === 0) {
+    return down ? null : <p className="pl-6 pr-3 py-[3px] text-[11px] leading-4 italic text-[var(--adf-ui-text-subtle)]">No agents</p>
+  }
+  return (
+    <div
+      className={down ? 'opacity-50 pointer-events-none' : undefined}
+      aria-disabled={down || undefined}
+      title={down ? CONNECTION_STATE_LABELS[runtime.state] : undefined}
+    >
+      {visibleDirectories.map((dirPath, index) => (
+        <div key={dirPath}>
+          {index > 0 && <div className="border-t border-hairline my-1" />}
+          <DirectorySection
+            dirPath={dirPath}
+            files={visibleFilesByDir[dirPath] ?? []}
+            currentFilePath={current}
+            meshEnabled={mesh.enabled}
+            agentStatusMap={statusMap}
+            backgroundAgentMap={backgroundMap}
+            foregroundAgentState={current ? foregroundAgentState : 'off'}
+            onOpenFile={onOpenFile}
+            onFileContextMenu={onFileContextMenu}
+            onDirContextMenu={onDirContextMenu}
+            forceExpanded={searching}
+            runtimeId={runtime.id}
+          />
+        </div>
+      ))}
+    </div>
+  )
+})
 
 /**
  * One disclosure chevron for the whole tree, rotated instead of swapped for a
@@ -853,8 +1101,8 @@ const RunningSection = memo(function RunningSection({
   meshEnabled: boolean
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
-  onOpenFile: (filePath: string) => void
-  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  onOpenFile: OpenFileHandler
+  onFileContextMenu: FileContextMenuHandler
   /** The agent tree below, which the drag must leave TREE_MIN_HEIGHT of. */
   treeRef: React.RefObject<HTMLDivElement | null>
 }) {
@@ -936,19 +1184,21 @@ const RunningSection = memo(function RunningSection({
       </div>
       {!collapsed && (
         <div ref={listRef} style={{ maxHeight: cap }} className="scrollbar-autohide min-h-0 overflow-y-auto">
-          {rows.map(({ file, dirPath, folderHint }) => (
+          {rows.map(({ file, dirPath, folderHint, runtimeId }) => (
+            // Keys, the open agent and the maps are by agent key: the path on This computer.
             <AgentFileRow
-              key={file.filePath}
+              key={rowKey(runtimeId, file.filePath)}
               file={file}
               depth={0}
-              isActive={file.filePath === currentFilePath}
+              isActive={rowKey(runtimeId, file.filePath) === currentFilePath}
               meshEnabled={meshEnabled}
-              status={agentStatusMap.get(file.filePath)}
-              backgroundStatus={backgroundAgentMap.get(file.filePath)}
+              status={agentStatusMap.get(rowKey(runtimeId, file.filePath))}
+              backgroundStatus={backgroundAgentMap.get(rowKey(runtimeId, file.filePath))}
               folderHint={folderHint}
               dirPath={dirPath}
               onOpenFile={onOpenFile}
               onFileContextMenu={onFileContextMenu}
+              runtimeId={runtimeId}
             />
           ))}
         </div>
@@ -976,7 +1226,8 @@ const DirectorySection = memo(function DirectorySection({
   onOpenFile,
   onFileContextMenu,
   onDirContextMenu,
-  forceExpanded = false
+  forceExpanded = false,
+  runtimeId
 }: {
   dirPath: string
   files: TrackedDirEntry[]
@@ -985,13 +1236,15 @@ const DirectorySection = memo(function DirectorySection({
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
-  onOpenFile: (filePath: string) => void
-  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
-  onDirContextMenu: (e: React.MouseEvent, dirPath: string) => void
+  onOpenFile: OpenFileHandler
+  onFileContextMenu: FileContextMenuHandler
+  onDirContextMenu: (e: React.MouseEvent, dirPath: string, runtimeId?: RowRuntime) => void
   /** Show children regardless of the user's collapse state (used while searching). */
   forceExpanded?: boolean
+  /** The folder's runtime; omitted for This computer. */
+  runtimeId?: RowRuntime
 }) {
-  const [userExpanded, toggleExpanded] = useFolderExpanded(dirPath)
+  const [userExpanded, toggleExpanded] = useFolderExpanded(rowKey(runtimeId, dirPath))
   const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
   // Split on both separators: a Windows path has no forward slashes, so a
@@ -1028,16 +1281,16 @@ const DirectorySection = memo(function DirectorySection({
     setToggling(true)
     try {
       if (allActive) {
-        await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap)
+        await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap, { runtimeId })
       } else {
-        await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
+        await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap, runtimeId)
       }
     } catch (err) {
       reportFailure(`${dirName}: ${allActive ? 'Stop all' : 'Start all'} failed`, err)
     } finally {
       setToggling(false)
     }
-  }, [allActive, toggling, allFiles, currentFilePath, foregroundInTree, foregroundRunning, backgroundAgentMap])
+  }, [allActive, toggling, allFiles, currentFilePath, foregroundInTree, foregroundRunning, backgroundAgentMap, runtimeId])
 
   return (
     <div>
@@ -1052,7 +1305,7 @@ const DirectorySection = memo(function DirectorySection({
           if (e.target !== e.currentTarget) return
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded() }
         }}
-        onContextMenu={(e) => onDirContextMenu(e, dirPath)}
+        onContextMenu={(e) => onDirContextMenu(e, dirPath, runtimeId)}
         className="group w-full pl-3 pr-1.5 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
       >
         <Chevron expanded={expanded} />
@@ -1113,6 +1366,7 @@ const DirectorySection = memo(function DirectorySection({
               onOpenFile={onOpenFile}
               onFileContextMenu={onFileContextMenu}
               forceExpanded={forceExpanded}
+              runtimeId={runtimeId}
             />
           ))}
         </div>
@@ -1132,7 +1386,8 @@ const TreeNode = memo(function TreeNode({
   foregroundAgentState,
   onOpenFile,
   onFileContextMenu,
-  forceExpanded = false
+  forceExpanded = false,
+  runtimeId
 }: {
   entry: TrackedDirEntry
   depth: number
@@ -1143,11 +1398,12 @@ const TreeNode = memo(function TreeNode({
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
-  onOpenFile: (filePath: string) => void
-  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  onOpenFile: OpenFileHandler
+  onFileContextMenu: FileContextMenuHandler
   forceExpanded?: boolean
+  runtimeId?: RowRuntime
 }) {
-  const [userExpanded, toggleExpanded] = useFolderExpanded(entry.filePath)
+  const [userExpanded, toggleExpanded] = useFolderExpanded(rowKey(runtimeId, entry.filePath))
   const expanded = forceExpanded || userExpanded
   const [toggling, setToggling] = useState(false)
 
@@ -1182,16 +1438,16 @@ const TreeNode = memo(function TreeNode({
     setToggling(true)
     try {
       if (allActive) {
-        await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap)
+        await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap, { runtimeId })
       } else {
-        await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
+        await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap, runtimeId)
       }
     } catch (err) {
       reportFailure(`${entry.fileName}: ${allActive ? 'Stop all' : 'Start all'} failed`, err)
     } finally {
       setToggling(false)
     }
-  }, [allActive, toggling, allFiles, currentFilePath, foregroundRunning, backgroundAgentMap])
+  }, [allActive, toggling, allFiles, currentFilePath, foregroundRunning, backgroundAgentMap, runtimeId])
 
   if (entry.isDirectory) {
     return (
@@ -1255,6 +1511,7 @@ const TreeNode = memo(function TreeNode({
                 onOpenFile={onOpenFile}
                 onFileContextMenu={onFileContextMenu}
                 forceExpanded={forceExpanded}
+                runtimeId={runtimeId}
               />
             ))}
           </div>
@@ -1278,6 +1535,7 @@ const TreeNode = memo(function TreeNode({
       dirPath={dirPath}
       onOpenFile={onOpenFile}
       onFileContextMenu={onFileContextMenu}
+      runtimeId={runtimeId}
     />
   )
 })
@@ -1292,7 +1550,8 @@ const AgentFileRow = memo(function AgentFileRow({
   folderHint,
   dirPath,
   onOpenFile,
-  onFileContextMenu
+  onFileContextMenu,
+  runtimeId
 }: {
   file: TrackedDirEntry
   depth: number
@@ -1306,14 +1565,17 @@ const AgentFileRow = memo(function AgentFileRow({
   dirPath: string
   // The row binds these itself: fresh per-row closures from the parent would
   // make every render a new prop object and the memo would never hit.
-  onOpenFile: (filePath: string) => void
-  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  onOpenFile: OpenFileHandler
+  onFileContextMenu: FileContextMenuHandler
+  /** The row's runtime; omitted for This computer. */
+  runtimeId?: RowRuntime
 }) {
   const [toggling, setToggling] = useState(false)
-  const handleOpen = useCallback(() => onOpenFile(file.filePath), [onOpenFile, file.filePath])
+  const key = rowKey(runtimeId, file.filePath)
+  const handleOpen = useCallback(() => onOpenFile(file.filePath, runtimeId), [onOpenFile, file.filePath, runtimeId])
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent) => onFileContextMenu(e, file, dirPath),
-    [onFileContextMenu, file, dirPath]
+    (e: React.MouseEvent) => onFileContextMenu(e, file, dirPath, runtimeId),
+    [onFileContextMenu, file, dirPath, runtimeId]
   )
   // Shift+F10 / the Menu key on the focused row opens the same menu.
   const rowMenu = useKeyboardContextMenu(handleContextMenu)
@@ -1323,12 +1585,12 @@ const AgentFileRow = memo(function AgentFileRow({
   const foregroundActiveLoops = useAgentStore((s) =>
     isActive ? Object.values(s.sideLoops).filter((l) => l.state === 'active').length : 0
   )
-  const isStarting = useAppStore((s) => s.startingFilePaths.has(file.filePath))
-  const isStopping = useAppStore((s) => s.stoppingFilePaths.has(file.filePath))
+  const isStarting = useAppStore((s) => s.startingFilePaths.has(key))
+  const isStopping = useAppStore((s) => s.stoppingFilePaths.has(key))
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
-  // Same as the rail: the request the agent is blocked on, oldest first.
-  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath)?.kind ?? null)
-  const inWindow = useInAgentWindow(file.filePath, file.agentId)
+  // Same as the rail: the request the agent is blocked on, oldest first (on this row's runtime).
+  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind ?? null)
+  const inWindow = useInAgentWindow(file.filePath, file.agentId, runtimeId)
   // The open agent's review state is live; the others come from the folder scan.
   const needsReview = useAppStore((s) => isActive ? s.agentNeedsReview : file.reviewed === false)
 
@@ -1363,7 +1625,8 @@ const AgentFileRow = memo(function AgentFileRow({
 
   // Drag the row out of the app: a consistent snapshot of the .adf lands
   // wherever it is dropped (Finder, a message, another Studio).
-  const shareDrag = useShareDrag(file.filePath)
+  // This computer's files only: a path of another runtime never reaches a local file call (multi-runtime.md §8.3).
+  const shareDrag = useShareDrag(runtimeId ? null : file.filePath)
 
   const handleToggle = useCallback(
     async (e: React.MouseEvent) => {
@@ -1375,12 +1638,12 @@ const AgentFileRow = memo(function AgentFileRow({
 
       setToggling(true)
       try {
-        await toggleAgent(file.filePath, isActive, isRunning, file.agentName ?? agentNameOf(file.filePath))
+        await toggleAgent(file.filePath, isActive, isRunning, file.agentName ?? agentNameOf(file.filePath), runtimeId)
       } finally {
         setToggling(false)
       }
     },
-    [file.filePath, file.agentName, isActive, isRunning, toggling]
+    [file.filePath, file.agentName, isActive, isRunning, toggling, runtimeId]
   )
 
   // Direction reads as a hover detail, not a permanent column: a leading glyph
@@ -1561,24 +1824,26 @@ const RailAvatar = memo(function RailAvatar({
   isActive,
   backgroundStatus,
   onOpenFile,
-  onFileContextMenu
+  onFileContextMenu,
+  runtimeId
 }: {
   file: TrackedDirEntry
   dirPath?: string
   isActive: boolean
   backgroundStatus: BackgroundAgentStatus | undefined
-  onOpenFile: (filePath: string) => void
-  onFileContextMenu: (e: React.MouseEvent, file: TrackedDirEntry, dirPath: string) => void
+  onOpenFile: OpenFileHandler
+  onFileContextMenu: FileContextMenuHandler
+  runtimeId?: RowRuntime
 }) {
   const agentState = useAgentStore((s) => isActive ? s.state : 'off')
   const foregroundActiveLoops = useAgentStore((s) =>
     isActive ? Object.values(s.sideLoops).filter((l) => l.state === 'active').length : 0
   )
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
-  const isStarting = useAppStore((s) => s.startingFilePaths.has(file.filePath))
-  const isStopping = useAppStore((s) => s.stoppingFilePaths.has(file.filePath))
+  const isStarting = useAppStore((s) => s.startingFilePaths.has(rowKey(runtimeId, file.filePath)))
+  const isStopping = useAppStore((s) => s.stoppingFilePaths.has(rowKey(runtimeId, file.filePath)))
   // Oldest first, like the snapshot: the request the agent is blocked on.
-  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath)?.kind ?? null)
+  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind ?? null)
 
   const isRunning = isActive ? agentState !== 'off' : backgroundStatus !== undefined
   const state: AgentState = isActive
@@ -1603,8 +1868,8 @@ const RailAvatar = memo(function RailAvatar({
     <Tooltip tip={tip} delay={300} className="flex shrink-0">
       <button
         type="button"
-        onClick={() => onOpenFile(file.filePath)}
-        onContextMenu={dirPath ? (e) => onFileContextMenu(e, file, dirPath) : undefined}
+        onClick={() => onOpenFile(file.filePath, runtimeId)}
+        onContextMenu={dirPath ? (e) => onFileContextMenu(e, file, dirPath, runtimeId) : undefined}
         aria-label={tip}
         aria-current={isActive || undefined}
         className={`relative w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
@@ -1832,7 +2097,7 @@ function RenameAgentDialog({ target, onClose, onRenamed }: {
     setBusy(true)
     setError(null)
     try {
-      const result = await window.adfApi.renameFile(target.file.filePath, trimmed)
+      const result = await apiFor(target.runtimeId).renameFile(target.file.filePath, trimmed)
       if (result.success && result.filePath) {
         onRenamed(target, result.filePath, trimmed, result.renameDeferred ?? false)
         return
@@ -1893,10 +2158,10 @@ function DeleteAgentDialog({
     setDeleting(true)
     setError(null)
     try {
-      const result = await window.adfApi.deleteFile(target.file.filePath)
+      const result = await apiFor(target.runtimeId).deleteFile(target.file.filePath)
       if (result.success) {
         // An agent created later at this path must not inherit its queue.
-        useMessageQueueStore.getState().clearAgent(target.file.filePath)
+        useMessageQueueStore.getState().clearAgent(rowKey(target.runtimeId, target.file.filePath))
         onDeleted(target)
         return
       }

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import { isRemoteAgentKey } from '../../shared/types/agent-ref'
 
 /** A message the owner typed while the loop was mid-turn, held until it ends. */
 export interface QueuedMessage {
@@ -40,7 +41,8 @@ export function heldForOwner(queue: readonly QueuedMessage[]): boolean {
  * empty). A rename moves it with the file.
  *
  * Keys are `queuePathKey(filePath)`, so every caller may pass the path as it
- * has it; spellings of one file share one queue.
+ * has it; spellings of one file share one queue. An agent of a runtime other
+ * than This computer is passed as its agentKey (runtime and path).
  */
 interface MessageQueueState {
   /** filePath → loop → messages, oldest first. Empty lists are removed. */
@@ -72,9 +74,12 @@ interface MessageQueueState {
 /**
  * One key per agent file however its path is spelled, by the rule the
  * daemon's pathKey uses: case-insensitive on Windows and macOS; on Windows,
- * either slash.
+ * either slash. The key of an agent on another runtime (agentKey: runtime
+ * and path) is kept as it is: a remote path belongs to its daemon, compared
+ * exactly (docs/design/multi-runtime.md §1.3).
  */
 export function queuePathKey(filePath: string): string {
+  if (isRemoteAgentKey(filePath)) return filePath
   const platform = typeof window !== 'undefined' ? window.adfApi?.platform : undefined
   const slashed = platform === 'win32' ? filePath.replace(/\\/g, '/') : filePath
   return platform === 'win32' || platform === 'darwin' ? slashed.toLowerCase() : slashed

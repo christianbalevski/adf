@@ -7,9 +7,10 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, joinDir, pathDirname, type TerrainNodeData } from './fleet-layout'
-import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR } from './FleetTerrainNode'
+import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR, MUTED_REGION } from './FleetTerrainNode'
 import { OrbitalSvgImage } from '../orbital/OrbitalSvgImage'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Text layer of a territory — identity (icon/name/status/vitals), badges,
@@ -85,6 +86,8 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode(props: 
   if (d.culled) {
     return <div className="pointer-events-none relative" style={{ width: d.width, height: d.height }} />
   }
+  // A runtime that is down: its region is greyed; the banner names its state (multi-runtime.md §6.4).
+  if (d.muted) return <div style={MUTED_REGION}><FleetTerrainLabelNodeFull {...props} /></div>
   return <FleetTerrainLabelNodeFull {...props} />
 })
 
@@ -105,7 +108,7 @@ function FleetTerrainLabelNodeFull({ data }: NodeProps) {
   // events re-render this (heavy) text stack.
   const memberAgents = useMeshStore(
     useShallow((s) => {
-      const byPath = new Map(s.agents.map((a) => [a.filePath, a]))
+      const byPath = new Map(selectMapAgents(s).map((a) => [a.filePath, a]))
       return members.map((m) => byPath.get(m.filePath))
     })
   )

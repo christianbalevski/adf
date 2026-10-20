@@ -3,6 +3,7 @@ import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { Button } from '../ui'
+import { openApi } from '../../utils/runtime-api'
 
 export function OwnerMismatchDialog() {
   const open = useAppStore((s) => s.ownerMismatchDialogOpen)
@@ -15,7 +16,7 @@ export function OwnerMismatchDialog() {
   const handleClaim = useCallback(async () => {
     setLoading(true)
     try {
-      const result = await window.adfApi.claimAgent()
+      const result = await openApi().claimAgent()
       if (result.success) {
         successRef.current = true
         setOpen(false)

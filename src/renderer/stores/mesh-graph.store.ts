@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { useMeshStore } from './mesh.store'
 import type { ApprovalReason } from '../../shared/types/ipc.types'
 import type { ProtectionDenial } from '../../shared/types/tool.types'
+import { selectMapAgents } from '../components/mesh/runtime-fleet'
 
 export interface NodeActivity {
   id: string
@@ -544,7 +545,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       let prunedActivities: typeof s.nodeActivities | null = null
       let prunedLastAt: typeof s.lastActivityAt | null = null
       let prunedRoutes: typeof s.liveRoutes | null = null
-      const roster = useMeshStore.getState().agents
+      const roster = selectMapAgents(useMeshStore.getState())
       if (roster.length > 0) {
         const known = new Set(roster.map((a) => a.filePath))
         // Station endpoints are peer runtimes, not local agents — they have no

@@ -6,6 +6,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { joinDir, type TerrainCell } from './fleet-layout'
 import { hueFromPath, isDarkMode } from './FleetTerrainNode'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
+import { selectMapAgents } from './runtime-fleet'
 
 /**
  * Voices — the group-status layer, rendered above the whole canvas (like the
@@ -94,7 +95,7 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
   terrains: VoiceTerrain[]
 }) {
   const storeApi = useStoreApi()
-  const agents = useMeshStore((s) => s.agents)
+  const agents = useMeshStore((s) => selectMapAgents(s))
   const lastActivityAt = useMeshGraphStore((s) => s.lastActivityAt)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const stewards = useFleetStore((s) => s.stewards)

@@ -16,6 +16,7 @@ import { Tooltip } from '../common/Tooltip'
 import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
 import { ACCELERATORS, formatKey } from '../../../shared/constants/keyboard-shortcuts'
 import { IS_MAC } from '../../utils/platform'
+import { openApi } from '../../utils/runtime-api'
 
 /** An icon-only nav control: its label shows as a tooltip (a native title never renders here). */
 function NavButton({
@@ -259,7 +260,7 @@ export function TitleBar() {
     const stoppingPath = filePath
     setStopping(true)
     try {
-      await window.adfApi?.stopAgent()
+      await openApi()?.stopAgent()
     } catch (err) {
       // The agent still runs: say so, and leave the state as it is.
       reportFailure(`${config?.name || (stoppingPath ? agentNameOf(stoppingPath) : 'The agent')} did not turn off`, err)
@@ -380,7 +381,7 @@ export function TitleBar() {
         {filePath && config && !showHome && agentWindowsAvailable && (
           <Tooltip tip="Open in new window" className="flex">
             <button
-              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name })}
+              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name, runtimeId: useDocumentStore.getState().runtimeId })}
               aria-label="Open in new window"
               className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
             >

@@ -7,6 +7,7 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
+import { selectMapAgents } from './runtime-fleet'
 
 const ROW_H = 46
 const MAX_ROWS = 10
@@ -101,7 +102,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
     const { burn: burnResult, burnBaseline } = useFleetStore.getState()
     const perAgent = burnResult?.perAgent
     const ranked: RankedAgent[] = []
-    for (const agent of useMeshStore.getState().agents) {
+    for (const agent of selectMapAgents(useMeshStore.getState())) {
       const pulse = agentPulse[agent.filePath]
       const events = pulse ? pulse.filter((t) => now - t < RANK_WINDOW_MS).length : 0
       const entry = perAgent?.[agent.filePath]
