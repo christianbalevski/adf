@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { MAIN_LOOP, selectLoopSlice, useAgentStore, type TokenUsage } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -8,8 +8,15 @@ import { Tooltip } from '../common/Tooltip'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
-import type { ConnectionCurrent } from '../../../shared/types/connection.types'
-import { runtimeIndicator, useCurrentConnection, useRemoteConnectionsSaved } from '../../stores/connection.store'
+import { CONNECTION_STATE_LABELS, type ConnectionCurrent, type RuntimeView } from '../../../shared/types/connection.types'
+import { runtimeIndicator, useCurrentConnection } from '../../stores/connection.store'
+import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
+import { selectMeshSlice } from '../../stores/mesh.store'
+import { selectBackgroundAgents } from '../../stores/background-agents.store'
+import { requestSettingsRuntime } from '../../stores/settings-runtime.store'
+import { apiFor } from '../../utils/runtime-api'
+import { isAgentWindow, windowRuntime } from '../../utils/window-kind'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -25,9 +32,20 @@ export function killResultLabel(result: { success: boolean; stoppedAgents?: numb
   return `${agents} · Mesh off`
 }
 
-/** Kill's tooltip; it names the runtime it acts on only once a remote connection is saved. */
-export function killTooltip(current: ConnectionCurrent | null, remoteSaved: boolean): string {
-  return remoteSaved ? `Stops all agents and mesh on ${current?.name ?? 'This computer'}` : 'Stops all agents and mesh'
+/** Kill's tooltip; it names the runtime it acts on only while runtime names show (more than one runtime, or a remote). */
+export function killTooltip(current: Pick<ConnectionCurrent, 'name'> | null, named: boolean): string {
+  return named ? `Stops all agents and mesh on ${current?.name ?? 'This computer'}` : 'Stops all agents and mesh'
+}
+
+/**
+ * The status bar's runtime groups fold when they do not fit (multi-runtime.md
+ * §6.2): the remote groups become one Runtimes button. Folded at the width
+ * the inline groups needed; unfolded once the bar is that wide again.
+ */
+export interface RuntimeGroupsFold { folded: boolean; needed: number }
+export function foldRuntimeGroups(state: RuntimeGroupsFold, bar: { scrollWidth: number; clientWidth: number }): RuntimeGroupsFold {
+  if (!state.folded) return bar.scrollWidth > bar.clientWidth + 1 ? { folded: true, needed: bar.scrollWidth } : state
+  return bar.clientWidth >= state.needed ? { folded: false, needed: 0 } : state
 }
 
 function MeshIcon() {
@@ -77,8 +95,10 @@ export function StatusBar() {
   const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
   // This window's connection (settings-scopes.md §4.1); main answers per window (#149).
   const connection = useCurrentConnection()
-  // No remote saved: plain ADF Studio, so the group shows no runtime name (Mesh and Kill stay).
-  const remoteSaved = useRemoteConnectionsSaved()
+  // One runtime: one group, named only when it is another computer (remote mode). More: one group per runtime (§6.2).
+  const runtimes = useRuntimes()
+  const multi = runtimes.length > 1
+  const named = connection?.kind === 'remote'
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)
   const toggleLogsPanel = useAppStore((s) => s.toggleLogsPanel)
   const bottomPanelTab = useAppStore((s) => s.bottomPanelTab)
@@ -204,8 +224,9 @@ export function StatusBar() {
         )}
       </span>
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
+      {multi ? <RuntimeGroups runtimes={runtimes} /> : (
       <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
-      <RuntimeIndicator current={connection} showName={remoteSaved} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
+      <RuntimeIndicator current={connection} showName={named} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
       <Tooltip tip={meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off'} className="flex">
       <button
@@ -227,11 +248,11 @@ export function StatusBar() {
           {killResult}
         </span>
       )}
-      <Tooltip tip={isAnythingRunning ? killTooltip(connection, remoteSaved) : 'Nothing running'} className="flex">
+      <Tooltip tip={isAnythingRunning ? killTooltip(connection, named) : 'Nothing running'} className="flex">
       <button
         onClick={isAnythingRunning ? handleEmergencyStop : undefined}
         disabled={!isAnythingRunning}
-        aria-label={isAnythingRunning ? killTooltip(connection, remoteSaved) : 'Kill: nothing running'}
+        aria-label={isAnythingRunning ? killTooltip(connection, named) : 'Kill: nothing running'}
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
@@ -245,6 +266,160 @@ export function StatusBar() {
       </button>
       </Tooltip>
       </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * More than one runtime (multi-runtime.md §6.2): one group per runtime in the
+ * set's order, This computer first: `( [name] [Mesh] [Kill] )`. An agent
+ * window shows its own runtime's group only. When the groups do not fit, the
+ * remote groups fold into one Runtimes button whose popover lists them.
+ */
+export function RuntimeGroups({ runtimes }: { runtimes: RuntimeView[] }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [fold, setFold] = useState<RuntimeGroupsFold>({ folded: false, needed: 0 })
+  const [open, setOpen] = useState(false)
+  const shown = isAgentWindow ? runtimes.filter((r) => r.id === windowRuntime) : runtimes
+  const ids = shown.map((r) => r.id).join('\n')
+  // Another set is measured again, inline first.
+  useLayoutEffect(() => { setFold({ folded: false, needed: 0 }) }, [ids])
+  useLayoutEffect(() => {
+    const bar = ref.current?.parentElement
+    if (!bar || typeof ResizeObserver === 'undefined') return
+    const check = () => setFold((state) => foldRuntimeGroups(state, bar))
+    check()
+    const observer = new ResizeObserver(check)
+    observer.observe(bar)
+    return () => observer.disconnect()
+  }, [ids, fold.folded])
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false) }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [open])
+  const local = shown.filter((r) => r.id === LOCAL_RUNTIME || isAgentWindow)
+  const remotes = shown.filter((r) => !local.includes(r))
+  const folded = fold.folded && remotes.length > 0
+  return (
+    <div ref={ref} className="relative flex shrink-0 items-center gap-2">
+      {local.map((r) => <RuntimeGroup key={r.id} runtime={r} />)}
+      {!folded && remotes.map((r) => <RuntimeGroup key={r.id} runtime={r} />)}
+      {folded && (
+        <Tooltip tip={remotes.map((r) => runtimeHeader(r)).join(', ')} className="flex">
+          <button
+            onClick={() => setOpen((o) => !o)}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            className={`rounded-full border border-[var(--adf-ui-separator)] px-2.5 py-0.5 text-[11px] font-medium hover:text-[var(--adf-ui-text)] ${remotes.some((r) => r.state !== 'connected') ? 'text-[var(--adf-ui-danger)]' : ''}`}
+          >
+            Runtimes
+          </button>
+        </Tooltip>
+      )}
+      {folded && open && (
+        <div role="dialog" aria-label="Runtimes" className="absolute bottom-full right-0 z-20 mb-1.5 flex flex-col items-end gap-1.5 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-2 shadow-lg">
+          {remotes.map((r) => <RuntimeGroup key={r.id} runtime={r} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One runtime's group: its name (remote icon for a remote; its state while
+ * down; the address as tooltip; a click opens Settings → Connections), its
+ * mesh and its Kill, which act on that runtime only (§12 item 4). This
+ * computer's group, and an agent window's, read the window's own slices.
+ */
+function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
+  const own = runtime.id === LOCAL_RUNTIME || isAgentWindow
+  // The slice key of this runtime in this window's stores; undefined: the window's own.
+  const slice: RuntimeId | undefined = own ? undefined : runtime.id
+  const mesh = useMeshStore((s) => selectMeshSlice(s, slice))
+  const backgroundCount = useBackgroundAgentsStore((s) => selectBackgroundAgents(s, slice).length)
+  const openHere = useDocumentStore((s) => !!s.filePath && (isAgentWindow || (s.runtimeId || LOCAL_RUNTIME) === runtime.id))
+  const agentState = useAgentStore((s) => s.state)
+  const [killResult, setKillResult] = useState<string | null>(null)
+  useEffect(() => {
+    if (!killResult) return
+    const timer = setTimeout(() => setKillResult(null), 6000)
+    return () => clearTimeout(timer)
+  }, [killResult])
+  const down = runtime.state !== 'connected'
+  const running = (openHere && agentState !== 'off') || backgroundCount > 0 || mesh.enabled
+  const participating = mesh.agents.filter((a) => a.participating).length
+  const header = runtimeHeader(runtime)
+  const meshLabel = mesh.enabled ? `Mesh on, ${participating} participating agents` : 'Mesh off'
+  const killTip = down ? CONNECTION_STATE_LABELS[runtime.state] : running ? killTooltip(runtime, true) : 'Nothing running'
+
+  const kill = async () => {
+    try {
+      const result = await (own ? window.adfApi : apiFor(runtime.id)).emergencyStop()
+      setKillResult(killResultLabel(result))
+      // A partial stop may leave agents running: their own state events say which.
+      if (result && result.success === false) return
+    } catch (err) {
+      // The stop did not happen (the runtime was not reached); keep what the window shows.
+      console.error(`[StatusBar] Emergency stop on ${runtime.name} failed:`, err)
+      setKillResult(`Not stopped: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    if (openHere) useAgentStore.getState().setState('off')
+    useMeshStore.getState().reset(slice)
+    useBackgroundAgentsStore.getState().setAgents([], slice)
+  }
+
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group={runtime.id}>
+      <button
+        onClick={() => useAppStore.getState().openSettingsAt('connection')}
+        title={runtime.url ?? undefined}
+        aria-label={`Runtime: ${header}`}
+        className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${down ? 'text-[var(--adf-ui-danger)]' : ''}`}
+      >
+        {runtime.kind === 'remote' && <RemoteIcon />}
+        <span className="max-w-[180px] truncate">{header}</span>
+      </button>
+      <Tooltip tip={meshLabel} className="flex">
+      <button
+        role="status"
+        onClick={() => { requestSettingsRuntime(runtime.id); useAppStore.getState().openSettingsAt('networking') }}
+        aria-label={meshLabel}
+        className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+            mesh.enabled
+              ? 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]'
+              : 'text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-text)]'
+        }`}
+      >
+        <MeshIcon />
+        {mesh.enabled ? `Mesh (${participating})` : 'Mesh off'}
+      </button>
+      </Tooltip>
+      {killResult && (
+        <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">
+          {killResult}
+        </span>
+      )}
+      <Tooltip tip={killTip} className="flex">
+      <button
+        onClick={running && !down ? () => void kill() : undefined}
+        disabled={!running || down}
+        aria-label={running && !down ? killTooltip(runtime, true) : `Kill on ${runtime.name}: ${down ? CONNECTION_STATE_LABELS[runtime.state] : 'nothing running'}`}
+        className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+          running && !down
+            ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
+            : 'cursor-default text-[var(--adf-ui-text-disabled)]'
+        }`}
+      >
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+          <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
+        </svg>
+        Kill
+      </button>
+      </Tooltip>
     </div>
   )
 }

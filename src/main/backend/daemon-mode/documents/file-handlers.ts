@@ -191,6 +191,7 @@ const CLAIM_KEYS_UNAVAILABLE = 'Owner and runtime encryption keys are unavailabl
 /** Re-key the client key recentFiles (remoteRecentFiles in remote mode) and the session after the open file moved (embedded persistAcceptedAgent). */
 function noteMoved(ctx: DaemonModeContext, oldPath: string, newPath: string): void {
   ctx.session.rekey(oldPath, newPath)
+  if (ctx.renameRecentFile) { ctx.renameRecentFile(oldPath, newPath); return }
   const key = recentFilesKey(ctx.mode === 'remote')
   const recent = ctx.clientSettings.get(key)
   if (Array.isArray(recent) && recent.includes(oldPath)) {

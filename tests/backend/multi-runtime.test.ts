@@ -102,7 +102,7 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[] }) {
+async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[]; hooks?: Record<string, unknown>; slot?: FakeHost }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-multi-runtime-'))
   dirs.push(dir)
   // The user-only token file in the test's own folder: the OS keychain is never opened.
@@ -122,6 +122,7 @@ async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[] }) {
   const logs: string[] = []
   const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(String(m)) }, error: (m: string) => { logs.push(m) } }
   const closedWindows: number[] = []
+  const keptWindows: number[] = []
   const hostOf = (name: string) => opts.hosts.find((h) => h.name === name)!
   const handle = registerDaemonModeHandlers({
     mode: 'local',
@@ -139,10 +140,15 @@ async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[] }) {
       localSessions.push(s)
       return s
     },
-    hooks: { closeAgentWindow: (id) => { closedWindows.push(id) } },
+    hooks: { closeAgentWindow: (id, keep) => { closedWindows.push(id); if (keep) keptWindows.push(id) }, ...opts.hooks },
     keepDaemonRunning: true,
     log,
     runtimeSet: {
+      ...(opts.slot ? { slotConnector: () => {
+        const host = opts.slot!
+        const config = { ...defaultBackendConfig(), mode: 'remote' as const, remote: { url: host.url, token: codec.encrypt(TOKEN + '-' + host.name), allowInsecureHttp: false } }
+        return remoteDaemonConnector(config, codec, { env, fetch: host.fetch, retry: { initialMs: 2, maxMs: 8 }, sleep: async (ms) => { host.sleeps.push(ms); await tick(ms) } })
+      } } : {}),
       connectorFor: (name) => {
         const host = hostOf(name)
         const config = { ...defaultBackendConfig(), mode: 'remote' as const, remote: { url: null, token: null, allowInsecureHttp: false, name } }
@@ -150,7 +156,7 @@ async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[] }) {
         return remoteDaemonConnector(config, codec, { env, fetch: host.fetch, retry: { initialMs: 2, maxMs: 8 }, sleep: async (ms) => { host.sleeps.push(ms); await tick(ms) } })
       },
       overrides: (name) => {
-        const host = hostOf(name)
+        const host = opts.slot && opts.slot.name === name ? opts.slot : hostOf(name)
         return {
           fetch: host.fetch,
           createSession: () => {
@@ -168,7 +174,7 @@ async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[] }) {
   const sync = async () => handle.runtimes.sync((await loadRemotesAsync(env)).remotes)
   const invoke = (channel: string, sender: number | null, ...args: unknown[]) =>
     handlers.get(channel)!(sender === null ? {} : { sender: { id: sender } }, ...args)
-  return { handle, env, local, localSessions, handlers, invoke, logs, closedWindows, sync, save, dir }
+  return { handle, env, local, localSessions, handlers, invoke, logs, closedWindows, keptWindows, sync, save, dir }
 }
 
 describe('RuntimeManager lifecycle', () => {
@@ -461,5 +467,70 @@ describe('phase 1 pieces', () => {
   it('runtimeOrder: kept order first, new ones by pairedAt, gone ones dropped', () => {
     expect(runtimeOrder([], { b: { pairedAt: '2026-01-02' }, a: { pairedAt: '2026-01-03' }, c: { pairedAt: '2026-01-01' } })).toEqual(['remote:c', 'remote:b', 'remote:a'])
     expect(runtimeOrder(['remote:a', 'remote:x'], { b: { pairedAt: '2026-01-01' }, a: { pairedAt: '2026-01-03' } })).toEqual(['remote:a', 'remote:b'])
+  })
+})
+
+describe('phase 3: saving connects, Reconnect reopens, the slot, recent files (multi-runtime.md §3, §6.6, §7.5)', () => {
+  it('a remote that connects for the first time asks for its saved agent windows once (runtimeConnected)', async () => {
+    const connected: string[] = []
+    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const t = await boot({ hosts: [host1], hooks: { runtimeConnected: (id: string) => { connected.push(id) } } })
+    await t.sync()
+    await t.handle.runtimes.get('remote:host-1')!.ready
+    await until(() => connected.length === 1)
+    // A drop and a resume is the same connection: no second ask.
+    host1.sessions[0].listener!.onConnection({ state: 'reconnecting', error: 'the stream dropped' })
+    host1.sessions[0].listener!.onConnection({ state: 'open' })
+    await tick(20)
+    expect(connected).toEqual(['remote:host-1'])
+  })
+
+  it('Reconnect on a failed remote closes its agent windows to reopen (keep); the new connection asks for them again', async () => {
+    const connected: string[] = []
+    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const t = await boot({ hosts: [host1], hooks: { runtimeConnected: (id: string) => { connected.push(id) } } })
+    await t.sync()
+    const failed = t.handle.runtimes.get('remote:host-1')!
+    await failed.ready
+    t.handle.windows.open({ id: WINDOW, send: () => {}, focused: () => false }, 'remote:host-1')
+    host1.daemon.routes.set('GET /files/agent', () => ({ status: 401, body: { error: 'Unauthorized' } }))
+    await failed.ctx.runningAgentAt('/srv/agents/agent-1.adf').catch(() => null)
+    await until(() => failed.connection.state.state === 'failed')
+    host1.daemon.routes.delete('GET /files/agent')
+    // The window answers the stash request at once.
+    t.handle.windows.stashed(WINDOW)
+    failed.reconnect()
+    t.handle.windows.stashed(WINDOW)
+    await until(() => t.handle.runtimes.get('remote:host-1') !== failed)
+    await t.handle.runtimes.get('remote:host-1')!.ready
+    expect(t.keptWindows).toEqual([WINDOW])
+    await until(() => connected.length === 2)
+    expect(connected).toEqual(['remote:host-1', 'remote:host-1'])
+  })
+
+  it('the remote slot of studio-backend.json is a runtime: it connects with its own token, untagged calls stay This computer\'s', async () => {
+    const office = fakeHost('office', 47393, 'FP-OFFICE')
+    const t = await boot({ hosts: [], save: [], slot: office })
+    t.handle.runtimes.sync({}, { name: 'office', url: office.url })
+    const slot = t.handle.runtimes.get('remote')!
+    expect(await slot.ready).toBe(true)
+    expect(t.handle.runtimes.runtimes().map((r) => [r.id, r.name()])).toEqual([['local', 'This computer'], ['remote', 'office']])
+    expect(office.daemon.requests.find((r) => r.path === '/agents')?.auth).toBe(`Bearer ${TOKEN}-office`)
+    expect(t.local.requests.some((r) => r.auth === `Bearer ${TOKEN}-office`)).toBe(false)
+  })
+
+  it('a remote\'s recent files go to runtimeRecentFiles under its id, never to recentFiles', async () => {
+    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const t = await boot({ hosts: [host1] })
+    await t.sync()
+    const rt = t.handle.runtimes.get('remote:host-1')!
+    await rt.ready
+    rt.ctx.recordRecentFile(REMOTE_FILE_2)
+    expect(t.handle.clientSettings.get('runtimeRecentFiles')).toEqual({ 'remote:host-1': [REMOTE_FILE_2] })
+    expect(t.handle.clientSettings.get('recentFiles')).toBeUndefined()
+    rt.ctx.renameRecentFile!(REMOTE_FILE_2, '/srv/agents/claimed/agent-2.adf')
+    expect(t.handle.clientSettings.get('runtimeRecentFiles')).toEqual({ 'remote:host-1': ['/srv/agents/claimed/agent-2.adf'] })
+    // This computer's context keeps recentFiles, with no rename hook.
+    expect(t.handle.runtimes.primary.ctx.renameRecentFile).toBeUndefined()
   })
 })

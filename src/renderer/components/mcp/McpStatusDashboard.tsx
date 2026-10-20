@@ -8,6 +8,7 @@ import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../sha
 import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
 import { allowHostTip, registrationPlacement } from '../../../shared/utils/mcp-host-placement'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 export const STATUS_COLORS: Record<string, string> = {
   connected: 'bg-green-500',
@@ -42,6 +43,8 @@ interface McpStatusDashboardProps {
 }
 
 export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost }: McpStatusDashboardProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   // Ref to always access latest mcpServers inside async callbacks (avoids stale closures)
   const mcpServersRef = useRef(mcpServers)
   mcpServersRef.current = mcpServers
@@ -85,7 +88,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
     const oauthRows = mcpServersRef.current.filter((s) => s.type === 'http' && !!s.url && oauthEntryFor(s))
     const results = await Promise.all(oauthRows.map(async (s) => {
       try {
-        const r = await window.adfApi?.mcpOAuthStatus({ url: s.url! })
+        const r = await api?.mcpOAuthStatus({ url: s.url! })
         return [s.id, r?.signedIn] as const
       } catch {
         return [s.id, undefined] as const
@@ -108,7 +111,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const handleOAuthSignOut = async (reg: McpServerRegistration) => {
     if (!reg.url) return
     try {
-      await window.adfApi?.mcpOAuthSignOut({ url: reg.url })
+      await api?.mcpOAuthSignOut({ url: reg.url })
     } catch {
       // Low-stakes: re-sign-in is one click. Surface nothing on failure.
     }
@@ -117,7 +120,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
   // Fetch server status on mount
   const refreshStatus = useCallback(async () => {
-    const result = await window.adfApi?.getMcpServerStatus()
+    const result = await api?.getMcpServerStatus()
     if (result?.servers) {
       setServerStates(result.servers)
     }
@@ -140,7 +143,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
   // Listen for status change events
   useEffect(() => {
-    const unsub = window.adfApi?.onMcpServerStatusChanged((event: McpServerStatusEvent) => {
+    const unsub = api?.onMcpServerStatusChanged((event: McpServerStatusEvent) => {
       setServerStates((prev) => {
         const idx = prev.findIndex((s) => s.name === event.name)
         if (idx >= 0) {
@@ -156,7 +159,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
   // Listen for install progress events
   useEffect(() => {
-    const unsub = window.adfApi?.onMcpInstallProgress((event: McpInstallProgress) => {
+    const unsub = api?.onMcpInstallProgress((event: McpInstallProgress) => {
       if (event.status === 'installed') {
         setInstalling((prev) => {
           const next = new Set(prev)
@@ -191,9 +194,9 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
       if (pkg) {
         try {
           if (isPython) {
-            await window.adfApi?.uninstallPythonMcpPackage({ package: pkg })
+            await api?.uninstallPythonMcpPackage({ package: pkg })
           } else {
-            await window.adfApi?.uninstallMcpPackage({ package: pkg })
+            await api?.uninstallMcpPackage({ package: pkg })
           }
         } catch (err) {
           console.warn(`[McpStatusDashboard] Uninstall failed for ${pkg}:`, err)
@@ -219,8 +222,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         setInstalling((prev) => new Set(prev).add(pkg))
         try {
           const result = isPython
-            ? await window.adfApi?.installPythonMcpPackage({ package: pkg, name: reg.name })
-            : await window.adfApi?.installMcpPackage({ package: pkg, name: reg.name })
+            ? await api?.installPythonMcpPackage({ package: pkg, name: reg.name })
+            : await api?.installMcpPackage({ package: pkg, name: reg.name })
           if (result?.success && result.installed) {
             // Identity guard: the install ran for `reg` — don't stamp its
             // version onto a registration edited+saved while it downloaded.
@@ -243,7 +246,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const handleReconnect = async (reg: McpServerRegistration) => {
     setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: true } }))
     try {
-      const result = await window.adfApi?.testMcpRegistration({ registration: reg })
+      const result = await api?.testMcpRegistration({ registration: reg })
       if (result?.success) {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, count: result.tools.length } }))
         // Identity guard: the test ran against `reg` as captured at click
@@ -254,7 +257,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
           : s)))
         const state = serverStates.find((s) => s.name === reg.name)
         if (state && state.status !== 'stopped') {
-          await window.adfApi?.restartMcpServer({ name: reg.name })
+          await api?.restartMcpServer({ name: reg.name })
           await refreshStatus()
         }
         // A reconnect can complete an interactive sign-in — refresh oauth state.

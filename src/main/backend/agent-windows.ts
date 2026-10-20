@@ -194,6 +194,8 @@ export class AgentWindows {
   /** Bumped by closeAll and freeze: a restore in flight stops opening windows. */
   private restoreGeneration = 0
   private restoring: Promise<{ opened: number; skipped: number }> | null = null
+  /** The restore in flight covers every runtime. */
+  private restoringAll = false
   private restoringGeneration = -1
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private readonly log: Pick<Console, 'log' | 'warn'>
@@ -241,10 +243,27 @@ export class AgentWindows {
     return null
   }
 
-  /** Close one agent window because its runtime left the set: it leaves the saved list. */
-  close(id: number): void {
+  /**
+   * Close one agent window because of its runtime (multi-runtime.md §3.3,
+   * §3.4): it left the set (Remove), and the window leaves the saved list;
+   * or `keep`, its connection is being replaced (Reconnect), and the window
+   * stays saved and reopens when that runtime connects again (`restore`).
+   */
+  close(id: number, opts: { keep?: boolean } = {}): void {
     const w = this.windows.get(id)
     if (!w || w.handle.isDestroyed()) return
+    if (opts.keep) {
+      const shown = this.shown(w)
+      if (!w.failed && this.deps.runtime() !== null) {
+        const entry: SavedAgentWindow = { agentId: shown.agentId, filePath: shown.filePath, bounds: w.handle.getBounds(), ...(shown.runtimeId ? { runtimeId: shown.runtimeId, ...(w.fingerprint ? { fingerprint: w.fingerprint } : {}) } : {}) }
+        this.carriedList = [entry, ...this.carried.filter((e) => !this.matches(e, entry.filePath, entry.agentId, entry.runtimeId))]
+      }
+      w.keep = true
+      this.log.log(`[AgentWindows] Closing the window of ${w.filePath}${w.runtimeId ? ` on ${w.runtimeId}` : ''} while its runtime reconnects; it reopens once connected`)
+      w.handle.close()
+      this.save()
+      return
+    }
     this.log.log(`[AgentWindows] Closing the window of ${w.filePath}${w.runtimeId ? ` on ${w.runtimeId}` : ''}: its runtime is no longer connected`)
     w.handle.close()
   }
@@ -391,25 +410,38 @@ export class AgentWindows {
    * Reopen the carried windows: `open` ones reopen, `gone` ones are
    * dropped, `unknown` ones stay saved for the next time. Windows already
    * open are kept. Resolves with the counts.
+   *
+   * `runtimeId` (multi-runtime.md §7.5): only the windows of that runtime,
+   * when it first connects (`local` names the primary). A restore asked for
+   * while another runs follows it.
    */
-  restore(): Promise<{ opened: number; skipped: number }> {
+  restore(runtimeId?: string): Promise<{ opened: number; skipped: number }> {
     // One at a time; a restore that closeAll stopped is replaced by a new one.
-    if (this.restoring && this.restoringGeneration === this.restoreGeneration) return this.restoring
-    const run = this.restoreNow()
+    const running = this.restoring && this.restoringGeneration === this.restoreGeneration ? this.restoring : null
+    if (running && runtimeId === undefined && this.restoringAll) return running
+    // A follower does not run when closeAll or a quit stopped the restore it waited for.
+    const asked = this.restoreGeneration
+    const run = running
+      ? running.catch(() => ({ opened: 0, skipped: 0 })).then(() => (asked === this.restoreGeneration ? this.restoreNow(runtimeId) : { opened: 0, skipped: 0 }))
+      : this.restoreNow(runtimeId)
     this.restoring = run
-    void run.finally(() => { if (this.restoring === run) this.restoring = null })
+    this.restoringAll = runtimeId === undefined
+    void run.finally(() => { if (this.restoring === run) this.restoring = null }).catch(() => {})
     return run
   }
 
-  private async restoreNow(): Promise<{ opened: number; skipped: number }> {
+  private async restoreNow(runtimeId?: string): Promise<{ opened: number; skipped: number }> {
     if (this.frozen) return { opened: 0, skipped: 0 }
     const generation = ++this.restoreGeneration
     this.restoringGeneration = generation
     const live = () => generation === this.restoreGeneration && !this.frozen
     let opened = 0
     let skipped = 0
+    // The primary's entries carry no runtimeId.
+    const only = runtimeId === undefined ? null : runtimeId === 'local' ? '' : runtimeId
     for (const entry of [...this.carried]) {
       if (!live()) break
+      if (only !== null && (entry.runtimeId ?? '') !== only) continue
       if (this.find(entry.filePath, entry.agentId, entry.runtimeId)) {
         this.carriedList = this.carried.filter((e) => e !== entry)
         continue

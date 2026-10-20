@@ -1,6 +1,8 @@
 import { useEffect, useCallback } from 'react'
 import { useMeshStore } from '../stores/mesh.store'
 import type { MeshEvent } from '../../shared/types/ipc.types'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
+import { apiFor } from '../utils/runtime-api'
 
 /** Trailing window that folds an agent_joined burst into one getMeshStatus. */
 const JOIN_REFRESH_DEBOUNCE_MS = 250
@@ -84,36 +86,39 @@ export function useMeshEvents() {
 }
 
 /**
- * Exposes mesh control functions.
+ * Exposes mesh control functions, for `runtimeId` (multi-runtime.md §6.3:
+ * the Settings picker's runtime); omitted, This computer's, as before.
  */
-export function useMesh() {
+export function useMesh(runtimeId?: RuntimeId) {
   const setEnabled = useMeshStore((s) => s.setEnabled)
   const upsertAgents = useMeshStore((s) => s.upsertAgents)
   const reset = useMeshStore((s) => s.reset)
+  const other = runtimeId && runtimeId !== LOCAL_RUNTIME ? runtimeId : undefined
 
   const enableMesh = useCallback(async () => {
-    const result = await window.adfApi.enableMesh()
+    const api = apiFor(other)
+    const result = await api.enableMesh()
     if (result.success) {
-      setEnabled(true)
-      const status = await window.adfApi.getMeshStatus()
-      upsertAgents(status.agents)
+      setEnabled(true, other)
+      const status = await api.getMeshStatus()
+      upsertAgents(status.agents, other)
     }
     return result
-  }, [setEnabled, upsertAgents])
+  }, [setEnabled, upsertAgents, other])
 
   const disableMesh = useCallback(async () => {
-    const result = await window.adfApi.disableMesh()
+    const result = await apiFor(other).disableMesh()
     if (result.success) {
-      reset()
+      reset(other)
     }
     return result
-  }, [reset])
+  }, [reset, other])
 
   const refreshStatus = useCallback(async () => {
-    const status = await window.adfApi.getMeshStatus()
-    setEnabled(status.running)
-    upsertAgents(status.agents)
-  }, [setEnabled, upsertAgents])
+    const status = await apiFor(other).getMeshStatus()
+    setEnabled(status.running, other)
+    upsertAgents(status.agents, other)
+  }, [setEnabled, upsertAgents, other])
 
   return { enableMesh, disableMesh, refreshStatus }
 }

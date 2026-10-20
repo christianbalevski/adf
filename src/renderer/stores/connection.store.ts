@@ -42,18 +42,12 @@ export function useCurrentConnection(): ConnectionCurrent | null {
 
 /**
  * At least one runtime on another computer is saved (or in use). Until then
- * Studio reads as plain ADF Studio: no runtime names in the sidebar or the
- * status bar, and Connections is one line with Add (settings-scopes.md §4).
+ * Connections is one line with Add (settings-scopes.md §4,
+ * multi-runtime.md §6.5). Runtime names follow useMultiRuntime().
  */
 export function remoteConnectionsSaved(view: Pick<ConnectionsView, 'current' | 'rows'> | null): boolean {
   if (!view) return false
   return view.current.kind === 'remote' || view.rows.some((r) => r.kind === 'saved')
-}
-
-/** remoteConnectionsSaved for this window's list. */
-export function useRemoteConnectionsSaved(): boolean {
-  useEffect(() => { startConnectionFeed() }, [])
-  return useConnectionStore((s) => remoteConnectionsSaved(s.view))
 }
 
 /** The runtime is not reachable now (connecting, retrying, failed). */

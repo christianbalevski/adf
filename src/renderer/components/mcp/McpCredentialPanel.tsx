@@ -3,6 +3,7 @@ import type { McpServerRegistration, McpCredentialFileInfo, TrackedDirEntry } fr
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { isOAuthEntry, isDualModeOAuthEntry } from './McpAddServerModal'
 import { editPlaceholderField } from '../../utils/placeholder-field'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 /** Flatten a TrackedDirEntry tree into a list of .adf file entries. */
 function flattenAdfFiles(entries: TrackedDirEntry[]): { filePath: string; fileName: string }[] {
@@ -62,6 +63,8 @@ interface McpCredentialPanelProps {
  * - "agent": credentials stored per-ADF file in adf_identity
  */
 export function McpCredentialPanel({ server, registryEntry, onServerUpdate, showOAuthNote = true }: McpCredentialPanelProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const storageMode = server.credentialStorage ?? 'app'
 
   // OAuth servers authenticate via browser sign-in (token sealed on attach), so
@@ -126,7 +129,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
     if (storageMode !== 'agent' || !credentialNamespace) return
     setLoadingFiles(true)
     try {
-      const result = await window.adfApi?.listMcpCredentialFiles({
+      const result = await api?.listMcpCredentialFiles({
         mcpServerName: server.name,
         npmPackage: credentialNamespace
       })
@@ -146,11 +149,11 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   const loadTrackedAdfFiles = useCallback(async () => {
     setLoadingTracked(true)
     try {
-      const dirsResult = await window.adfApi?.getTrackedDirectories()
+      const dirsResult = await api?.getTrackedDirectories()
       const dirs = dirsResult?.directories ?? []
       const all: { filePath: string; fileName: string }[] = []
       for (const dir of dirs) {
-        const scanResult = await window.adfApi?.scanTrackedDirectory(dir)
+        const scanResult = await api?.scanTrackedDirectory(dir)
         if (scanResult?.files) {
           all.push(...flattenAdfFiles(scanResult.files))
         }
@@ -178,7 +181,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   const loadCredentialsForFile = async (filePath: string) => {
     if (!credentialNamespace) return
     try {
-      const result = await window.adfApi?.getMcpCredentials({
+      const result = await api?.getMcpCredentials({
         filePath,
         npmPackage: credentialNamespace
       })
@@ -223,7 +226,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
       }
 
       // Attach the MCP server config to the ADF (idempotent)
-      const attachResult = await window.adfApi?.attachMcpServer({
+      const attachResult = await api?.attachMcpServer({
         filePath,
         serverConfig: mcpAttachServerConfig(server, registryEntry, allEnvKeys.length > 0 ? allEnvKeys : keysToSave.map(([k]) => k), keysToSave.map(([k]) => k))
       })
@@ -235,7 +238,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
 
       // Save credential values
       for (const [envKey, value] of keysToSave) {
-        const result = await window.adfApi?.setMcpCredential({
+        const result = await api?.setMcpCredential({
           filePath,
           npmPackage: credentialNamespace,
           envKey,
@@ -323,7 +326,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   const handleRemoveAdfFile = async (filePath: string) => {
     // Detach: remove server config + credentials from the ADF
     if (credentialNamespace) {
-      await window.adfApi?.detachMcpServer({
+      await api?.detachMcpServer({
         filePath,
         serverName: server.name,
         credentialNamespace

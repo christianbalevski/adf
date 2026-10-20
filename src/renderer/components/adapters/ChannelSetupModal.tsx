@@ -7,6 +7,7 @@ import { BrandMark } from '../common/BrandMark'
 import { DocsLink } from '../common/DocsLink'
 import { Button, Select, TextInput } from '../ui'
 import { AdapterLogs } from './AdapterLogs'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 interface ChannelSetupModalProps {
   open: boolean
@@ -30,6 +31,8 @@ interface ChannelSetupModalProps {
  * (or restarts it) if the agent is running.
  */
 export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents, connectedPaths, liveStatus, onSaved }: ChannelSetupModalProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const label = entry?.displayName ?? type
   // Known channel types describe their own keys. Unknown ones (a package the
   // registry has never heard of) get whatever the agent already stores, plus
@@ -69,7 +72,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
     setLogs(null)
     setLogsNote(null)
     if (filePath) {
-      window.adfApi?.getAdapterCredentials({ filePath, adapterType: type }).then((r) => {
+      api?.getAdapterCredentials({ filePath, adapterType: type }).then((r) => {
         if (r?.credentials) {
           setLoaded(r.credentials)
           setValues(r.credentials)
@@ -105,7 +108,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
    * are on the agent, but nothing is listening.
    */
   const runAttach = async (target: string, credentialsWritten: boolean): Promise<{ ok: boolean; alreadyOn: boolean }> => {
-    const attach = await window.adfApi?.attachAdapter({
+    const attach = await api?.attachAdapter({
       filePath: target,
       adapterType: type,
       config: { enabled: true, policy: { dm: 'all', groups: 'mention' } },
@@ -132,7 +135,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
       // Credentials first, then the config write: the config change is what
       // (re)starts the adapter, and it must find the token already in place.
       for (const f of changed) {
-        const r = await window.adfApi?.setAdapterCredential({ filePath: agent, adapterType: type, envKey: f.key, value: (values[f.key] ?? '').trim() })
+        const r = await api?.setAdapterCredential({ filePath: agent, adapterType: type, envKey: f.key, value: (values[f.key] ?? '').trim() })
         if (r && !r.success) throw new Error(r.error ?? `Could not save ${f.label}`)
       }
       setLoaded((prev) => ({ ...prev, ...Object.fromEntries(changed.map((f) => [f.key, (values[f.key] ?? '').trim()])) }))
@@ -171,7 +174,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
     if (!window.confirm(`Disconnect ${agentLabel(target)} from ${label}? Its stored ${label} credentials are deleted.`)) return
     setSaving(true)
     try {
-      const r = await window.adfApi?.detachAdapter({ filePath: target, adapterType: type })
+      const r = await api?.detachAdapter({ filePath: target, adapterType: type })
       if (r && !r.success) throw new Error(r.error ?? 'Could not disconnect')
       onSaved()
       onClose()
@@ -188,7 +191,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
     const target = filePath ?? agent
     if (!target) return
     if (logs) { setLogs(null); setLogsNote(null); return }
-    const r = await window.adfApi?.getAdapterLogs({ type, filePath: target })
+    const r = await api?.getAdapterLogs({ type, filePath: target })
     setLogs(r?.logs ?? [])
     setLogsNote(r?.running === false ? 'This agent is not running, so it holds no logs for this channel.' : null)
   }
@@ -199,7 +202,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
     setSaving(true)
     setError(null)
     try {
-      const r = await window.adfApi?.restartAdapter({ type, filePath: target })
+      const r = await api?.restartAdapter({ type, filePath: target })
       if (r && !r.success) setError(r.error ?? `Could not restart ${label}.`)
       else onSaved()
     } finally {

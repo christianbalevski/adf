@@ -25,7 +25,7 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
-import { LINK_STATE, migratePairedSlot, remotesEnv, SavedConnectionsCache } from './backend/connections'
+import { LINK_STATE, migratePairedSlot, remotesEnv, runtimeSlot, SavedConnectionsCache } from './backend/connections'
 import { notConnectedSentence } from '../shared/runtime-tag'
 import type { RuntimeView } from '../shared/types/connection.types'
 import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
@@ -128,6 +128,11 @@ if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
+// The runtime of fileToOpen when it is not This computer's (Open Recent of a remote, multi-runtime.md §6.6).
+let fileToOpenRuntime: string | null = null
+// Resolves once the main window first showed: saved agent windows of a remote reopen after it (§7.5).
+let mainWindowShown: () => void = () => {}
+const mainWindowFirstShown = new Promise<void>((resolve) => { mainWindowShown = resolve })
 // Set at boot when studio-backend.json selects a daemon backend (design D9).
 // Every branch on it below keeps the embedded path exactly as it was.
 let daemonMode: DaemonModeHandle | null = null
@@ -362,13 +367,16 @@ function showMainWindow(): BrowserWindow | null {
  * otherwise queues it for the renderer's OPEN_FILE_GET_PENDING pull, making
  * sure a window exists to do the pulling.
  */
-function requestOpenFile(filePath: string): void {
+function requestOpenFile(filePath: string, runtimeId?: string): void {
+  // This computer's request is the one sent before (multi-runtime.md §4.6).
+  const request = runtimeId && runtimeId !== 'local' ? { filePath, runtimeId } : { filePath }
   if (canPushOpenFile()) {
     showMainWindow()
-    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
+    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, request)
     return
   }
   fileToOpen = filePath
+  fileToOpenRuntime = runtimeId && runtimeId !== 'local' ? runtimeId : null
   showMainWindow()
 }
 
@@ -386,8 +394,10 @@ app.on('open-file', (event, filePath) => {
 // be dropped; pull + push are idempotent (re-opening the same path is safe).
 ipcMain.handle(IPC.OPEN_FILE_GET_PENDING, () => {
   const filePath = fileToOpen
+  const runtimeId = fileToOpenRuntime
   fileToOpen = null
-  return { filePath }
+  fileToOpenRuntime = null
+  return runtimeId && filePath ? { filePath, runtimeId } : { filePath }
 })
 
 // Windows/Linux: .adf file path passed as CLI argument
@@ -442,6 +452,7 @@ function createWindow(): BrowserWindow {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
+    mainWindowShown()
     // The boot window (a dialog or keychain wait before this window existed) is done.
     closeBootWindow()
     // Agent windows saved at the last quit (or closed with this window on macOS) reopen.
@@ -489,7 +500,7 @@ function createWindow(): BrowserWindow {
   // may miss this push — the OPEN_FILE_GET_PENDING pull clears instead.
   mainWindow.webContents.on('did-finish-load', () => {
     if (fileToOpen && mainWindow && !mainWindow.webContents.isDestroyed()) {
-      mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: fileToOpen })
+      mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, fileToOpenRuntime ? { filePath: fileToOpen, runtimeId: fileToOpenRuntime } : { filePath: fileToOpen })
     }
   })
 
@@ -737,13 +748,18 @@ app.whenReady().then(async () => {
   await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
   // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
   let connections: Connections | null = null
-  // Development flag (multi-runtime.md §10 phase 1): every saved connection joins the runtime set. Local mode only.
-  const multiRuntime = backend.mode === 'local' && process.env.ADF_MULTI_RUNTIME === '1'
-  if (multiRuntime) console.log('[Runtimes] ADF_MULTI_RUNTIME=1: every saved connection joins the runtime set (development flag)')
+  // Local mode: every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
+  // Remote mode keeps its one runtime until phase 4 moves it to local (§13 item 1).
+  const runtimeSetOn = backend.mode === 'local'
+  // Saving a connection connects it; forgetting it disconnects it (§12 item 2). Read from the caches: no disk access.
+  const syncRuntimes = (): void => {
+    if (!runtimeSetOn) return
+    const saved = savedCache.get()
+    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved))
+  }
   const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
     connections?.changed()
-    // Saving a connection connects it; forgetting it disconnects it (§12 item 2).
-    if (multiRuntime) daemonMode?.runtimes.sync(savedCache.get())
+    syncRuntimes()
   })
   await savedCache.refresh().catch(() => {})
   savedCache.watch()
@@ -779,7 +795,16 @@ app.whenReady().then(async () => {
           onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
         : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
-      hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow, closeAgentWindow: (id) => agentWindows?.close(id), runtimesChanged: () => connections?.changed() },
+      hooks: {
+        showMainWindow,
+        openFile: requestOpenFile,
+        openFileOn: (runtimeId, filePath) => requestOpenFile(filePath, runtimeId),
+        mainWindow: () => mainWindow,
+        closeAgentWindow: (id, keep) => agentWindows?.close(id, { keep }),
+        runtimesChanged: () => connections?.changed(),
+        // A remote's saved agent windows reopen once it connects, after the main window showed (§7.5).
+        runtimeConnected: (id) => { void mainWindowFirstShown.then(() => agentWindows?.restore(id)) },
+      },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
       // Read at quit: a change in Settings → Connections applies to the next quit.
@@ -790,18 +815,26 @@ app.whenReady().then(async () => {
       // The primary runtime's id (multi-runtime.md §1.3).
       runtimeId: backend.mode === 'local' ? 'local' : backend.config.remote.name ? `remote:${backend.config.remote.name}` : 'remote',
       // Each saved connection's connector: its token is read only when it connects (§3.5).
-      ...(multiRuntime ? {
+      ...(runtimeSetOn ? {
         runtimeSet: {
           connectorFor: (name: string) => {
             const config = backendStore?.config() ?? backend.config
             return remoteDaemonConnector({ ...config, mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name } }, safeStorageCodec, { env: connectionsEnv })
           },
+          // The remote slot: its URL and token from studio-backend.json, pinned when it was paired.
+          slotConnector: () => {
+            const config = backendStore?.config() ?? backend.config
+            return remoteDaemonConnector({ ...config, mode: 'remote', remote: { ...config.remote, name: null } }, safeStorageCodec, { env: connectionsEnv })
+          },
+          ...(backend.config.runtimeOrder ? { initialOrder: backend.config.runtimeOrder } : {}),
+          // §3.1: written only when it changes, never while no remote is saved.
+          onOrder: (order: string[]) => { void backendStore?.setRuntimeOrder(order) },
         },
       } : {}),
       ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
     })
     const handle = daemonMode
-    if (multiRuntime) handle.runtimes.sync(savedCache.get())
+    syncRuntimes()
     void handle.ready.then(async (ok) => { if (ok) await resumeSwitchedAgents(backend.mode, userDataDir, (filePath) => handle.startBackgroundAgent(filePath)) })
     agentWindows = new AgentWindows({
       create: createAgentWindow,
@@ -855,14 +888,18 @@ app.whenReady().then(async () => {
       return { success: true }
     })
     ipcMain.handle(IPC.WINDOW_OPEN_FAILED, (event) => { agentWindows?.openFailed(event.sender.id) })
-    // Settings live in the main window: an agent window's Settings links open them there.
-    ipcMain.handle(IPC.WINDOW_OPEN_SETTINGS, (_event, request?: { section?: unknown; anchor?: unknown }) => {
+    // Settings live in the main window: an agent window's Settings links open them there,
+    // with the runtime picker on that window's runtime (multi-runtime.md §6.3).
+    ipcMain.handle(IPC.WINDOW_OPEN_SETTINGS, (event, request?: { section?: unknown; anchor?: unknown; runtimeId?: unknown }) => {
       const win = showMainWindow()
       if (!win) return
       if (win.isMinimized()) win.restore()
       win.focus()
       const section = typeof request?.section === 'string' ? request.section : ''
       const anchor = typeof request?.anchor === 'string' ? request.anchor : ''
+      // Main knows the asking window's runtime; the request's is only a hint for the main window itself.
+      const runtimeId = handle.windows.runtimeOf(event.sender.id) ?? (typeof request?.runtimeId === 'string' && handle.runtimes.get(request.runtimeId) ? request.runtimeId : null)
+      if (runtimeId && runtimeId !== 'local') deliverMenuAction(win, `settings-runtime:${runtimeId}`)
       deliverMenuAction(win, section ? `open-settings-at:${section}${anchor ? `#${anchor}` : ''}` : 'open-settings')
     })
     ipcMain.handle(IPC.WINDOW_STASH_DONE, (event) => { handle.windows.stashed(event.sender.id) })
@@ -955,6 +992,10 @@ app.whenReady().then(async () => {
     push: pushConnections,
     // The runtime set (multi-runtime.md §4.5), listed only while it has more than one runtime.
     runtimes: runtimeViews,
+    // Remove says how many agent windows of that runtime it closes (§6.5).
+    agentWindowsOn: (id) => daemonMode?.runtimes.get(id)?.windows.ids().length ?? 0,
+    // The remote slot was added, replaced or removed: it joins or leaves the set at once.
+    slotChanged: syncRuntimes,
   })
   registerConnectionHandlers(connections)
   daemonMode?.connection.onState(() => connections?.changed())

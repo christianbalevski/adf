@@ -80,7 +80,16 @@ export interface StudioBackendConfig {
    * `cli-remotes.json` (that file has no such field, and `adf` asks each time).
    */
   insecureHttpOrigins?: string[]
+  /**
+   * The remote runtimes in the order Studio first saw them
+   * (docs/design/multi-runtime.md §3.1): `remote:<name>` and `remote`.
+   * Written only when it changes, so never while no remote is saved.
+   */
+  runtimeOrder?: string[]
 }
+
+/** At most this many runtime ids are kept in `runtimeOrder`. */
+const MAX_RUNTIME_ORDER = 256
 
 /** A saved connection name as `adf remotes` shows it: 1-64 characters, no control characters. */
 export function validRemoteName(value: unknown): value is string {
@@ -254,6 +263,10 @@ export function normalizeBackendConfig(raw: unknown): { config: StudioBackendCon
   if (Array.isArray(obj.insecureHttpOrigins)) {
     const origins = obj.insecureHttpOrigins.filter((o): o is string => typeof o === 'string' && remoteUrlOrigin(o) === o).slice(0, MAX_INSECURE_ORIGINS)
     if (origins.length > 0) config.insecureHttpOrigins = origins
+  }
+  if (Array.isArray(obj.runtimeOrder)) {
+    const ids = obj.runtimeOrder.filter((id): id is string => typeof id === 'string' && (id === 'remote' || (id.startsWith('remote:') && validRemoteName(id.slice('remote:'.length)))))
+    config.runtimeOrder = [...new Set(ids)].slice(0, MAX_RUNTIME_ORDER)
   }
   // Mode remote without a usable URL stays remote: the connector refuses it
   // with a dialog that points at Settings → Connections. Falling back to embedded
@@ -591,6 +604,12 @@ export interface BackendSettingsStore {
   savePairing(patch: Pick<BackendSettingsPatch, 'remoteUrl' | 'remoteToken' | 'allowInsecureHttp' | 'insecureHttpOrigin'>, paired: RemotePairedComputer): Promise<BackendSettingsSaveResult>
   /** Current config (main only; holds the encrypted token). */
   config(): StudioBackendConfig
+  /**
+   * Save the order of the remote runtimes (multi-runtime.md §3.1). Written
+   * only when it differs from the saved one; never throws (a failed write is
+   * logged and the order stays in memory for this launch).
+   */
+  setRuntimeOrder(order: readonly string[]): Promise<boolean>
 }
 
 /**
@@ -714,6 +733,30 @@ export function createBackendSettingsStore(deps: {
     savePairing: (patch, paired) => {
       const { remoteUrl, remoteToken, allowInsecureHttp, insecureHttpOrigin } = patch
       const run = queue.then(() => save({ remoteUrl, remoteToken, allowInsecureHttp, insecureHttpOrigin }, paired))
+      queue = run.catch(() => {})
+      return run
+    },
+    setRuntimeOrder: (order) => {
+      const run = queue.then(async () => {
+        const next = [...order]
+        if ((current.runtimeOrder ?? []).join('\n') === next.join('\n') && (current.runtimeOrder !== undefined || next.length === 0)) return false
+        if (deps.boot.writeBlocked) {
+          log.warn(`[Backend] The runtime order is not saved: ${deps.boot.writeBlocked}`)
+          return false
+        }
+        const config: StudioBackendConfig = { ...current, runtimeOrder: next }
+        try {
+          await mkdir(dirname(deps.boot.configPath), { recursive: true })
+          await writeJsonAtomicAsync(deps.boot.configPath, config)
+        } catch (err) {
+          log.warn(`[Backend] Could not save the runtime order to ${deps.boot.configPath}: ${(err as Error)?.message ?? 'unknown error'}`)
+          return false
+        }
+        current = config
+        if (droppedUnwritten.length > 0) log.log(`[Backend] Saving the runtime order left out what the boot read ignored: ${droppedUnwritten.join('; ')}`)
+        log.log(`[Backend] Runtime order saved: ${next.length ? next.join(', ') : '(none)'}`)
+        return true
+      })
       queue = run.catch(() => {})
       return run
     },

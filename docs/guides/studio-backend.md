@@ -11,12 +11,14 @@ see_also:
 
 ADF Studio runs agents in one of three backends. You choose it in
 **Settings → Connections** ([Connection](#connection)); Studio reads the choice
-at launch, so a change applies after a restart.
+at launch, so a change applies after a restart. With This computer, Studio
+also connects to every saved connection; adding or removing one takes effect
+at once, without a restart.
 
 | Backend | Agents run in | Typical use |
 |---|---|---|
 | **This computer** | A background service on this computer, with the same settings file and agent files as Studio | The default. Studio and the terminal app (`adf`) show the same agents at the same time; with **Keep the daemon running** on, agents keep running when Studio is closed |
-| **Remote computer** | A background service on another computer, reached by URL and token | Agents on a server; Studio on a laptop |
+| **Remote computer** | A background service on another computer, reached by URL and token | Agents on a server; Studio on a laptop. With This computer, each saved connection is a runtime of its own ([Connection](#connection)); a `studio-backend.json` with `"mode": "remote"` from an earlier release still runs that one connection only |
 | **Inside Studio (legacy)** | Studio's own process | A fallback for this release only, if the background service does not work for you; the next release removes it. Agents stop when you quit Studio |
 
 The background service is the ADF daemon (`adf daemon`). The rest of this
@@ -28,8 +30,10 @@ later release reads an explicit choice. The file names the modes `local`
 (This computer), `remote` (Remote computer) and `embedded` (Inside Studio); a
 file that says `"mode": "embedded"` keeps Inside Studio. The file holds the
 mode, `keepDaemonRunning`, the saved connection in use (`remote.name`), the
-origins you confirmed plain http for, and one connection without a
-fingerprint (its URL and token, encrypted with Electron's safeStorage: DPAPI
+origins you confirmed plain http for, the order of the other computers'
+runtimes (`runtimeOrder`, written only once a connection is saved, so the
+file of a Studio with This computer only is not rewritten), and one
+connection without a fingerprint (its URL and token, encrypted with Electron's safeStorage: DPAPI
 on Windows, the Keychain on macOS, the Secret Service on Linux). Saved
 connections with a fingerprint are in `cli-remotes.json`
 ([Saved connections and adf](#saved-connections-and-adf)).
@@ -43,49 +47,86 @@ computer](#remote-computer) lists each difference.
 Settings has two groups (design:
 [settings-scopes.md](../design/settings-scopes.md)): **Studio**, the app on
 this computer (Appearance, Connection, Notifications, Updates, Privacy,
-About), and **Runtime · *name***, the runtime this window uses (Prompts,
-Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files,
-Identity, Networking, Compute, Usage). *name* is "This computer", "Inside
-Studio" or the saved connection's name, for example **Runtime · rawl-hub**.
-While the runtime is not connected the group says so ("Runtime · rawl-hub ·
-Not connected, retrying") and its pages show "Not connected to *name*." with
-their controls disabled.
+About), and the runtime's pages (Prompts, Agent templates, Providers,
+Packages, MCP servers, Skills, Channels, Files, Identity, Networking,
+Compute, Usage). With This computer only, the runtime group has no heading.
+With a connection saved, it is headed **Runtime** with a picker of the
+runtime names ("This computer", "rawl-hub", …); the runtime pages show the
+runtime picked there, and the Studio pages do not change. Settings opens on
+the runtime of the open agent (from an agent window: that window's runtime),
+else This computer; the choice is not saved. A picked runtime that is not
+connected is listed with its state ("rawl-hub · Not connected, retrying"),
+and its pages show "Not connected to *name*." with their controls disabled.
+In remote mode (a `studio-backend.json` with `"mode": "remote"` from an
+earlier release) the group is headed **Runtime · *name***, as before.
 
-**Studio → Connections** lists the runtimes this window can use:
+**Studio → Connections** lists the runtimes Studio connects to (design:
+[multi-runtime.md §6.5](../design/multi-runtime.md#65-connections-page)):
 
 | Row | State | Action |
 |---|---|---|
-| This computer, in use | Connected (or Connecting, Not connected, retrying) | None |
-| This computer, not in use | None | **Connect** |
-| A saved connection, in use | Connected (or Connecting, Not connected, retrying) | None |
-| A saved connection, not in use | Paired | **Connect** |
-| A computer found on this network or the tailnet, not paired | Not paired | **Pair** ([Pair with a computer](#pair-with-a-computer)) |
+| This computer | Connected (or Connecting, Not connected, retrying, Not connected) | None |
+| A saved connection | Connected, Connecting, Not connected, retrying, or Not connected | None |
+| A computer found on this network or the tailnet, not saved | Not paired | **Add** ([Pair with a computer](#pair-with-a-computer)) |
 | Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
 
 Each row shows its address and fingerprint. A computer found on the network
-whose fingerprint is saved is its saved row: a Paired row never offers
-**Pair**. **Remove** is in a saved row's **More** menu (⋯); on the connection
-in use it switches to This computer first (the switch dialog follows). **Inside
+whose fingerprint is saved is its saved row. A saved connection is connected
+while it is saved: there is no Connect step and no restart. **Remove** is in
+a saved row's **More** menu (⋯): "Removes the address and token from Studio
+and adf.", plus "Closes *N* agent windows." when that runtime has agent
+windows open, and "Still listed on *name*; revoke it there." **Remove** then
+closes those windows, disconnects and forgets the connection. **Inside
 Studio (legacy)** is in This computer's **More** menu while it is not a row.
 
-**Connect** shows the switch dialog ([Switch the backend](#switch-the-backend)),
-then Studio restarts on that connection. For a saved connection Studio first
-reads its token from the OS keychain. On macOS the keychain may ask once
-whether ADF Studio may use a token `adf pair` saved; answer that prompt (it
-can be behind other windows). If the keychain does not give the token: "The
-OS keychain did not give the token for *name*; allow ADF Studio to use it, or
-pair again." Nothing is saved and Studio does not restart.
+A saved connection reads its token from the OS keychain when it connects. On
+macOS the keychain may ask once whether ADF Studio may use a token `adf
+pair` saved; answer that prompt (it can be behind other windows). If the
+keychain does not give the token, that runtime is not connected and says
+why: "The OS keychain did not give the token for *name*; allow ADF Studio to
+use it, or pair again." The other runtimes connect as usual.
+
+In remote mode (from an earlier release), the rows are those of before:
+This computer and the other saved connections offer **Connect**, which shows
+the switch dialog ([Switch the backend](#switch-the-backend)) and restarts
+Studio, and **Remove** on the connection in use switches to This computer
+first.
 
 While This computer is in use, **This computer** under the list shows the
 **ADF daemon** line ([Daemon status](#daemon-status)) and **Keep running after
-quit** ([Quit Studio](#quit-studio)). With a remote connection neither shows.
+quit** ([Quit Studio](#quit-studio)). In remote mode neither shows.
 
 The status bar shows the runtime right of the version, grouped with its
-mesh and Kill: nothing for This
-computer while it is connected; a remote connection's name with a remote
-icon (its address in the tooltip); the state in the same spot while a
-connection is not connected ("rawl-hub · Not connected, retrying", "This
-computer · Connecting"). A click opens Studio → Connections.
+mesh and Kill. With This computer only: nothing for This computer while it
+is connected, and its state in the same spot while it is not ("This
+computer · Connecting"). With a connection saved: one group per runtime,
+This computer first, then the other computers in the order they were added
+(`runtimeOrder` in `studio-backend.json`). Each group shows the runtime's
+name (a remote icon for another computer, its address in the tooltip), its
+state while it is not connected ("rawl-hub · Not connected, retrying"), its
+**Mesh** and its **Kill**. **Kill** stops the agents and the mesh of that
+runtime only ("Stops all agents and mesh on *name*") and is disabled while
+that runtime is not connected. When the groups do not fit, the other
+computers' groups are one **Runtimes** button that lists them. An agent
+window shows the group of its own runtime. A click on a name opens Studio →
+Connections.
+
+While a runtime is not connected, its sidebar group and its agents are
+greyed, its pending approvals cannot be answered, and its agent windows stay
+open with the connection state. A runtime that fails shows a notification
+and its state; only This computer opens a dialog when it fails. **Help**
+names each runtime that is not connected ("rawl-hub: not connected
+(https://…), retrying"); **Reconnect** acts on it, and is a submenu of their
+names when more than one is down. Reconnect on another computer whose
+connection failed connects it again without restarting Studio: its agent
+windows keep their unsaved text as recovery copies, close, and reopen once
+it connects. Agent windows of another computer that were open at the last
+quit reopen once that computer connects.
+
+**File → Open Recent** lists This computer's agents, then each other
+computer's agents under its name (`runtimeRecentFiles` in
+`studio-client-settings.json`); choosing one opens it on that computer.
+**Clear Menu** clears the lists shown.
 
 ### Saved connections and adf
 
@@ -96,14 +137,17 @@ there is none, Studio shows **Keychain unavailable** ("The token can be
 saved in a file only you can read.", **Save to file** / **Cancel**) and
 `adf pair` the same line with `Save to file? [y/N]`; Save to file saves it in
 `cli-remote-tokens.json` (readable by your user only), Cancel saves nothing. A computer paired
-in Studio is in `adf remotes`; one paired with `adf pair` is a Paired row in
-Studio. Remove in Studio is `adf remotes forget`. A connection without a
-fingerprint (a daemon set up by hand, remote access off there) is kept in
-`studio-backend.json` as before, one at a time.
+in Studio is in `adf remotes`. One saved with `adf pair` or `adf remotes
+add`, also while Studio runs, is a row in Studio and connects at once;
+`adf remotes forget` disconnects it and closes its agent windows. Remove in
+Studio is `adf remotes forget`. A connection without a fingerprint (a
+daemon set up by hand, remote access off there) is kept in
+`studio-backend.json` as before, one at a time, and is connected too.
 
-### Add connection
+### Add
 
-**Add connection** opens a dialog:
+**Add** below the list, **Add** on a found computer's row and **Add** under
+**Runtimes on other computers** open one dialog, titled **Add**:
 
 1. **Address**: `https://…`, `http://127.0.0.1:<port>` (an SSH tunnel) or
    `http://100.x.y.z:7385` (a tailnet address). Any other `http://` address
@@ -117,7 +161,12 @@ fingerprint (a daemon set up by hand, remote access off there) is kept in
    fingerprint; identity not checked." A token
    connection replaces the previous one without a fingerprint after the
    **Replace connection** dialog.
-4. **Done**, or **Connect**.
+4. The connection is saved and connects: **Done**.
+
+Opened on a found computer, the address is that computer's, and the
+computer must answer with the fingerprint it was found with; otherwise
+"*address* now answers as another computer (*fingerprint*). Add it from the
+list again." and nothing is sent.
 
 A token is checked against the computer before it is saved. A saved
 connection's address that now answers with another fingerprint is refused
@@ -230,7 +279,10 @@ For the week of daily use on a pre-release build of this branch
 
 ## Switch the backend
 
-1. Open **Settings → Connections** and choose **Connect** on a row.
+1. Open **Settings → Connections** and choose **Connect** on a row:
+   **Inside Studio (legacy)** (This computer's **More** menu), or This
+   computer in remote mode. A saved connection has no Connect: it is
+   connected while it is saved ([Connection](#connection)).
 2. Studio shows the switch dialog, "Run agents *on B* instead of *on A*?"
    (for example "Run agents on this computer instead of inside Studio?"). It
    lists what moves at the restart (see [What moves](#what-moves-during-a-switch)),
@@ -259,6 +311,7 @@ saved mode; the dialog says so and Settings → Connections shows "Agents run
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "In use." | Remove on This computer or Inside Studio while in use |
 | "Pair first." | Connect on a computer that is not paired |
+| "A saved connection is connected while it is saved." | Connect on a saved connection while This computer runs; there is nothing to switch to |
 | "Could not save *path*." / "Could not save the backend settings." / "Could not read the backend settings." | `studio-backend.json` could not be written or read; check the user data folder |
 | "studio-backend.json: …" / "studio-backend.json: ignored …" | The file has a problem or fields this Studio does not use; Studio says what it ignored |
 | "The remote daemon cannot be used: …" | The saved remote settings break the transport rule (an unconfirmed plain-http URL); see [Remote computer](#remote-computer) |
@@ -425,7 +478,10 @@ disconnects, then stops. The clients that stay connected are told so:
 
 A Studio that connects again in the meantime clears the pending stop.
 
-Remote computer: quitting Studio never stops the remote daemon.
+Remote computer: quitting Studio never stops the remote daemon. With
+saved connections, quitting ends Studio's sessions on every runtime at once;
+a computer that does not answer is given 1.5 seconds, then its daemon
+expires the session. Its daemon keeps running.
 
 When devices are connected to this computer, quitting asks first:
 [Quit with devices connected](#quit-with-devices-connected).
@@ -593,10 +649,10 @@ ChatGPT, Grok and MCP sign-ins that live in the daemon are not available.
 Set the daemon up on the server first: [Remote daemon](../cli/remote-daemon.md).
 Then, in **Settings → Connections**:
 
-1. **Pair** on the server's row when it is found on this network or the
-   tailnet ([Pair with a computer](#pair-with-a-computer)), or **Add
-   connection** with its address and the code or a token
-   ([Add connection](#add-connection)). A token is a device token from
+1. **Add** on the server's row when it is found on this network or the
+   tailnet ([Pair with a computer](#pair-with-a-computer)), or **Add**
+   below the list with its address and the code or a token
+   ([Add](#add)). A token is a device token from
    **Add device** on the other computer ([Add device](#add-device)), or the
    `ADF_DAEMON_TOKEN` of a daemon set up by hand. It is never shown again.
    The token is as powerful as the server's owner seed phrase: a token
@@ -604,10 +660,9 @@ Then, in **Settings → Connections**:
    agent start) and read the phrase from the server's keychain. Save it only
    on a computer you trust with the phrase. Rotation: [The token is as
    powerful as your seed phrase](../cli/remote-daemon.md#the-token-is-as-powerful-as-your-seed-phrase).
-2. **Connect** on its row. The switch dialog says "Studio restarts and uses
-   the ADF daemon at *url*.", what stays on this computer and what happens
-   to running agents ([Running agents](#running-agents-and-turns-in-flight));
-   confirming restarts Studio connected to the daemon.
+2. The connection is saved and connects at once; Studio does not restart.
+   The server's agents are listed in their own sidebar group, and its
+   runtime group joins the status bar ([Connection](#connection)).
 
 Plain `http://` to a `100.64.0.0/10` address is accepted without the
 confirmation because Tailscale uses that range. Internet providers use the
@@ -622,21 +677,23 @@ reached at launch is retried with growing pauses (2 s up to 30 s), with the
 line "Waiting for the remote ADF daemon at *url* …" in Settings → Connections and
 the Help menu and one notification ("Waiting for the remote ADF daemon at
 *url*. Studio keeps trying."). The other failures are not retried; the dialog
-"Studio could not connect to an ADF daemon." shows the sentence, and Settings
-→ Connection works without a daemon, so you can add the connection again or
-choose another one there:
+"Studio could not connect to an ADF daemon." shows the sentence in remote
+mode. With This computer, a saved connection that fails is not connected,
+with a notification of the sentence and its state in Settings →
+Connections, the sidebar and the status bar; **Help → Reconnect** connects
+it again without a restart:
 
 | Sentence starts with | Fix |
 |---|---|
 | "Cannot reach the ADF daemon at …" / "… did not answer within 15 s" | The server, tunnel or tailnet is down. Studio keeps trying |
 | "… answered HTTP 502/503/504: a proxy answers there, but the ADF daemon behind it does not." | Start the daemon on the server. Studio keeps trying |
-| "The ADF daemon at … refused the token; choose Add device on *host* and pair again." | Choose **Add device** on the host and pair again, then **Reconnect** (Studio restarts and connects). The master token (`adf daemon token`) is refused from other computers. A token refused after connecting ends the connection with the same sentence |
+| "The ADF daemon at … refused the token; choose Add device on *host* and pair again." | Choose **Add device** on the host and pair again (in remote mode, then **Reconnect**: Studio restarts and connects). The master token (`adf daemon token`) is refused from other computers. A token refused after connecting ends the connection with the same sentence |
 | "The ADF daemon at … does not accept the host name …" | Add the name to `ADF_DAEMON_ALLOWED_HOSTS` on the server and restart the daemon |
 | "The TLS connection to … failed" | Give the server a certificate this computer trusts, or use an SSH tunnel. Studio has no option to skip certificate checks |
 | "… answered a redirect" | Enter the daemon's final URL |
 | "… does not answer as an ADF daemon" | Wrong address or port |
 | "… speaks client API N; this Studio needs M." | Update the daemon on the server (or Studio) to the same version |
-| "No token is saved for … or it cannot be decrypted on this computer." | Add the connection again |
+| "No token is saved for … or it cannot be decrypted on this computer." | **Add** the connection again |
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "*url* is not *name* (fingerprint …, paired as …); the token was not sent." | Another computer answers at the saved address. Studio checks this before every new connection (launch, a dropped connection, wake, Reconnect), sends nothing, and stops. If that computer was set up again, remove *name* and pair again |
 
@@ -677,7 +734,7 @@ daemon. …". ChatGPT sign-in relays its callback the same way in every mode.
 
 ### What stays on the server
 
-| Action | In Remote computer mode |
+| Action | On a runtime on another computer |
 |---|---|
 | Reveal in folder, Reveal template | A dialog: "This file is on *host*." (or "The templates folder is on *host*.") with the path and **Copy path** |
 | Back up seed phrase, Import identity, Restore identity | Disabled, with the commands to run on the server (`adf identity new`, `adf identity restore`, `adf identity import`). Studio does not send a seed phrase to another machine; this holds through an SSH tunnel too |
@@ -689,7 +746,7 @@ daemon. …". ChatGPT sign-in relays its callback the same way in every mode.
 | Owner identity (back up, import, restore) | "Change on *name*." under Owner Identity; run `adf identity …` on the server |
 | Agent endpoints, Agent directory URL | Not shown: they are the server's loopback addresses |
 | Open Daemon Log | Disabled; run `adf daemon logs` on the server |
-| Recent files | Paths on the server; not added to the OS recent documents |
+| Recent files | Paths on the server, listed under its name in Open Recent; not added to the OS recent documents |
 
 Providers, MCP servers, channels, compute and the mesh act on the server:
 `localhost` in a provider URL means the server.
@@ -796,9 +853,9 @@ pairing dialog and other devices' lists.
 **Add device** opens one dialog. It opens on a 6-digit code: the time left
 (2 minutes), the wrong codes left (20) and this computer's fingerprint.
 
-1. On the other device, **Pair** on this computer's row in **Settings →
-   Connection** ([Pair with a computer](#pair-with-a-computer)), or **Add
-   connection** with this computer's address, and enter the code. With the
+1. On the other device, **Add** on this computer's row in **Settings →
+   Connections** ([Pair with a computer](#pair-with-a-computer)), or **Add**
+   below the list with this computer's address, and enter the code. With the
    CLI: `adf pair`.
 2. This computer shows the **Allow device** dialog. Its first line is where
    the request came from ("From *address* (this network)", and the Tailscale
@@ -812,7 +869,7 @@ pairing dialog and other devices' lists.
 name**; **Create token** shows a device token (`adfd_…`) with **Copy** and
 **Done**. The token is shown once: after **Done** it cannot be shown again.
 If it is lost, revoke the device and add it again. On the other device:
-Settings → Connections → Add connection. **Use a code instead** opens a new
+Settings → Connections → **Add**. **Use a code instead** opens a new
 pairing window.
 
 The code alone never pairs a device: you must also allow it. Five wrong
@@ -845,7 +902,7 @@ its token stops working." After it: "Device revoked: *name*."
 
 On the other device, **Settings → Connections** lists the ADF computers with
 remote access on, found on this network (mDNS) and on your tailnet, as Not
-paired rows with **Pair**; a computer already paired is its Paired row.
+paired rows with **Add**; a computer already saved is its saved row.
 
 The list, the mesh's list in Settings → Networking and `adf pair` read one
 discovery feed: one announcement per computer carries both the mesh and
@@ -855,19 +912,20 @@ allowed. Its announcement on this network names its tailnet addresses, so a
 computer on both is one row, at its tailnet address.
 
 A computer seen at two addresses that are not merged is listed once per
-address. Pair only with the one whose fingerprint matches the one the host
+address. Add only the one whose fingerprint matches the one the host
 shows next to its pairing code.
 
-**Pair** opens the **Pair** dialog: this device's name (default: its runtime
-alias, else its host name), the code, and, for a plain-http address, "I
-trust this network; the token is sent unencrypted." Then "Waiting for *host*
-to allow this device…". When the host allows it, Studio saves the connection
-where `adf pair` saves it ([Saved connections and adf](#saved-connections-and-adf)),
-pinned to the host's fingerprint. When the host also answers at a Tailscale
+**Add** on the row opens the [Add](#add) dialog on that computer's address:
+"*name* at *address*, fingerprint *fingerprint*.", and, for a plain-http
+address, "I trust this network; the token is sent unencrypted." **Next**
+asks for the code. Then "Waiting for *host* to allow this device…". When
+the host allows it, Studio saves the connection where `adf pair` saves it
+([Saved connections and adf](#saved-connections-and-adf)), pinned to the
+host's fingerprint, and connects to it. When the host also answers at a Tailscale
 address (a tailnet IP or a `*.ts.net` name) with the same fingerprint, the
 **Encrypted address** dialog offers to save that one instead. A saved
 connection is never moved to another address without the **Use new
-address** dialog ("*name* is now at *url*."). **Connect** connects to it.
+address** dialog ("*name* is now at *url*."). The dialog then shows **Done**.
 
 | Message | What to do |
 |---|---|
@@ -920,7 +978,13 @@ the agent. Starting an agent another runtime runs is refused with code
 
 Autostart skips such agents (`leased_elsewhere` in the daemon's autostart
 report). A Studio in This computer or Remote computer mode runs no agents and holds no
-leases, so `adf daemon start` does not refuse it. Lease files, stale leases
+leases, so `adf daemon start` does not refuse it.
+
+One Studio shows the agents of This computer and of each saved connection at
+the same time; a second Studio is not needed to watch two computers. The
+same agent file on two computers is two agents, one per runtime: each is
+listed, opened and run on its own computer, and Studio does not pass
+messages between computers (their runtimes' mesh does). Lease files, stale leases
 and the full list of sentences: [Troubleshooting › Agent is already
 running](../cli/troubleshooting.md#agent-is-already-running-agent_leased).
 
@@ -986,7 +1050,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Agents run … because ADF_STUDIO_BACKEND is set." / "… for this session only" | [Run agents inside Studio when the daemon does not work](#run-agents-inside-studio-when-the-daemon-does-not-work) |
 | The remote sentences | [Connection problems](#connection-problems) |
 | "The OS keychain did not give the token for *name*; …" / "In use." / "Pair first." | [Connection](#connection) |
-| "No fingerprint; identity not checked." / "Saved without a fingerprint; identity not checked." / "Replace connection" | [Add connection](#add-connection) |
+| "No fingerprint; identity not checked." / "Saved without a fingerprint; identity not checked." / "Replace connection" | [Add](#add) |
 | "I trust this network; the token is sent unencrypted." | [Remote computer](#remote-computer) |
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
 | "Turn on remote access" / "Devices lose the connection when Studio quits." / "Change on *name*." | [Remote access](#remote-access) |

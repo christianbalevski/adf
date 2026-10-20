@@ -21,7 +21,8 @@ import { samePath, type DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
 import { REMOTE_MODE_HANDLERS } from './remote/handlers'
 import { createRuntimeConnection, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
-import { RuntimeManager, RuntimeRouteError } from './runtime-manager'
+import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manager'
+import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
 
 export { RECOVERY_HINT, REMOTE_RECOVERY_HINT, remoteWaitingNotice } from './hints'
@@ -128,14 +129,19 @@ export interface DaemonModeDeps {
   connect: DaemonConnector
   /** Studio's userData (studio-client-settings.json lives here). */
   userDataDir: string
-  /** `mainWindow`: the main window (pushes not addressed to an agent window go there); default the first window. `closeAgentWindow`: close an agent window whose runtime left the set. */
+  /** `mainWindow`: the main window (pushes not addressed to an agent window go there); default the first window. */
   hooks?: {
     showMainWindow?: () => BrowserWindow | null
     openFile?: (filePath: string) => void
+    /** Open Recent of another runtime: open `filePath` on `runtimeId` in the main window (multi-runtime.md §6.6). */
+    openFileOn?: (runtimeId: RuntimeId, filePath: string) => void
     mainWindow?: () => BrowserWindow | null
-    closeAgentWindow?: (webContentsId: number) => void
+    /** Close an agent window whose runtime left the set; `keep`: its runtime is being replaced, the window reopens once it connects. */
+    closeAgentWindow?: (webContentsId: number, keep: boolean) => void
     /** The runtime set, its order, or the state of a runtime other than the primary changed (multi-runtime.md §4.5). */
     runtimesChanged?: () => void
+    /** A runtime other than the primary connected for the first time since its RuntimeConnection was created: its saved agent windows reopen (§7.5). */
+    runtimeConnected?: (id: RuntimeId) => void
   }
   log?: Pick<Console, 'log' | 'warn' | 'error'>
   /** Agent lease registry (tests); defaults to the process registry. */
@@ -192,14 +198,20 @@ export interface DaemonModeDeps {
    */
   runtimeId?: RuntimeId
   /**
-   * The saved connections as runtimes (§3.1). Phase 1: set only behind the
-   * development flag (ADF_MULTI_RUNTIME=1, local mode); the caller then
-   * calls `runtimes.sync(saved)`. Absent: the runtime set is the primary
-   * runtime only.
+   * The saved connections as runtimes (§3.1): local mode. The caller calls
+   * `runtimes.sync(saved, slot)` at launch and whenever the saved
+   * connections change. Absent: the runtime set is the primary runtime only
+   * (remote mode until phase 4 migrates it, §13 item 1).
    */
   runtimeSet?: {
     /** The connector of a saved connection (remote/connector.ts with `remote.name`). */
     connectorFor(name: string): DaemonConnector
+    /** The connector of the remote slot of studio-backend.json (a connection without a fingerprint). */
+    slotConnector?(): DaemonConnector
+    /** studio-backend.json `runtimeOrder` as read at launch (§3.1). */
+    initialOrder?: readonly RuntimeId[]
+    /** The order changed: save it (written only when it changes). */
+    onOrder?(order: RuntimeId[]): void
     /** Tests: per-runtime fetch and client sessions. */
     overrides?(name: string): Partial<Pick<DaemonModeDeps, 'fetch' | 'createSession'>>
   }
@@ -416,6 +428,15 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       const main = firstWindow()
       noticeOwners.moveTo(windowId, main && !main.isDestroyed() ? main.webContents.id : null)
     },
+    // The primary's menu is built in its constructor, before the manager exists: the primary alone then.
+    menuRuntimes: () => (manager ? manager.runtimes() : []).map((rt) => ({
+      id: rt.id,
+      name: rt.name(),
+      primary: rt.primary,
+      problem: rt.problem(),
+      canReconnect: rt.canReconnect(),
+      reconnect: () => rt.reconnect(),
+    })),
   }
 
   const primary = createRuntimeConnection({
@@ -430,8 +451,12 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     primary,
     closedWindows,
     log,
+    ...(deps.runtimeSet?.initialOrder ? { initialOrder: deps.runtimeSet.initialOrder } : {}),
+    ...(deps.runtimeSet?.onOrder ? { onOrder: (order: RuntimeId[]) => deps.runtimeSet!.onOrder!(order) } : {}),
     create: (id, name) => {
-      if (!deps.runtimeSet) throw new Error(`${id}: this Studio has no runtime set (multi-runtime is off)`)
+      const set = deps.runtimeSet
+      if (!set) throw new Error(`${id}: this Studio has no runtime set (remote mode)`)
+      if (id === SLOT_RUNTIME && !set.slotConnector) throw new Error(`${id}: this Studio has no connector for the remote slot`)
       const runtime = createRuntimeConnection({
         id,
         kind: 'remote',
@@ -440,23 +465,32 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         deps: {
           ...deps,
           mode: 'remote',
-          connect: deps.runtimeSet.connectorFor(name),
+          connect: id === SLOT_RUNTIME ? set.slotConnector!() : set.connectorFor(name),
           runtimeName: () => name,
           runtimeId: id,
           reloadCredentials: false,
           afterOwnerImport: undefined,
           onRemoteAccessEvent: undefined,
           keepDaemonRunning: false,
-          ...deps.runtimeSet.overrides?.(name),
+          ...set.overrides?.(name),
         },
         shared,
         recreate: () => { void manager.replace(id) },
       })
-      // Its state shows in the runtime list (CONNECTION_CHANGED, §4.5).
-      runtime.connection.onState(() => hooks.runtimesChanged?.())
+      // Its state shows in the runtime list (CONNECTION_CHANGED, §4.5) and the Help menu (§6.6).
+      let connected = false
+      runtime.connection.onState((state) => {
+        hooks.runtimesChanged?.()
+        buildApplicationMenu()
+        // Its saved agent windows reopen once it first connects (§7.5).
+        if (state.state === 'connected' && !connected) {
+          connected = true
+          hooks.runtimeConnected?.(id)
+        }
+      })
       return runtime
     },
-    closeWindow: (windowId) => hooks.closeAgentWindow?.(windowId),
+    closeWindow: (windowId, keep) => hooks.closeAgentWindow?.(windowId, keep),
     onChange: () => hooks.runtimesChanged?.(),
     onRemoved: (id) => {
       if (!aggregator.delete(id)) return

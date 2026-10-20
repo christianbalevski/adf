@@ -38,6 +38,8 @@ export interface DaemonModeContext {
   sharedMnemonic(): SharedMnemonicStore | null
   /** Records a recent file (menu Open Recent + OS list), in the client settings. */
   recordRecentFile(filePath: string): void
+  /** A runtime other than the primary: its Open Recent entry for a file that moved follows it (runtimeRecentFiles). Absent: `recentFiles` is re-keyed. */
+  renameRecentFile?(oldPath: string, newPath: string): void
   hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void; mainWindow?: () => Electron.BrowserWindow | null }
   /**
    * Local mode, after an owner import in the daemon (§5.3.1): rewrite the

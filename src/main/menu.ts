@@ -3,7 +3,7 @@ import { existsSync } from 'fs'
 import { basename } from 'path'
 import { IPC } from '../shared/constants/ipc-channels'
 import { grantLocalOpen } from './backend/local-open-grants'
-import { recentFilesKey as recentFilesKeyFor } from '../shared/constants/client-settings-keys'
+import { recentFilesKey as recentFilesKeyFor, RUNTIME_RECENT_FILES_KEY } from '../shared/constants/client-settings-keys'
 import { ACCELERATORS } from '../shared/constants/keyboard-shortcuts'
 
 /** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode), `remoteRecentFiles` in remote mode. */
@@ -44,6 +44,27 @@ export interface DaemonMenuOptions {
    * embedded leaves behind (W5-D3).
    */
   remoteRecents?: boolean
+  /**
+   * The runtime set (docs/design/multi-runtime.md §6.6), This computer
+   * first. With more than one runtime, Help names each runtime that is down
+   * and Reconnect acts on it, and Open Recent lists each remote's files under
+   * its name. With one, both menus are the ones before.
+   */
+  runtimes?: () => MenuRuntime[]
+  /** Open Recent of another runtime: open `filePath` on that runtime in the main window. */
+  openOnRuntime?: (runtimeId: string, filePath: string) => void
+}
+
+/** A runtime of the set as the menu shows it. */
+export interface MenuRuntime {
+  id: string
+  name: string
+  /** primary: This computer (its recent files are `recentFiles`). */
+  primary: boolean
+  /** The connection status line (`ADF daemon: …`), or null while connected. */
+  problem: string | null
+  canReconnect: boolean
+  reconnect(): void
 }
 
 export type MenuAction =
@@ -181,16 +202,70 @@ export function recordRecentFile(filePath: string): void {
   buildApplicationMenu()
 }
 
+/** `runtimeRecentFiles`: each remote runtime's Open Recent, by runtime id (docs/design/multi-runtime.md §7.4). */
+function runtimeRecentFiles(): Record<string, string[]> {
+  const raw = settingsRef?.get(RUNTIME_RECENT_FILES_KEY)
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, string[]> = {}
+  for (const [id, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (Array.isArray(list)) out[id] = list.filter((p): p is string => typeof p === 'string')
+  }
+  return out
+}
+
+/**
+ * Record a file of a remote runtime in its Open Recent (§6.6). A path on
+ * another computer: never added to the OS recent documents, never checked
+ * on this computer's disk, never granted as a local file (§8.3).
+ */
+export function recordRuntimeRecentFile(runtimeId: string, filePath: string): void {
+  if (!settingsRef) return
+  const all = runtimeRecentFiles()
+  const list = [filePath, ...(all[runtimeId] ?? []).filter((p) => p !== filePath)].slice(0, MAX_RECENT_FILES)
+  settingsRef.set(RUNTIME_RECENT_FILES_KEY, { ...all, [runtimeId]: list })
+  buildApplicationMenu()
+}
+
+/** A remote runtime's file moved (a claim, a rename): its Open Recent entry follows, then it is the most recent. */
+export function renameRuntimeRecentFile(runtimeId: string, oldPath: string, newPath: string): void {
+  if (!settingsRef) return
+  const all = runtimeRecentFiles()
+  const list = all[runtimeId]
+  if (list?.includes(oldPath)) settingsRef.set(RUNTIME_RECENT_FILES_KEY, { ...all, [runtimeId]: list.map((p) => (p === oldPath ? newPath : p)) })
+  recordRuntimeRecentFile(runtimeId, newPath)
+}
+
+/** The remote runtimes of the set with their Open Recent files, in the set's order; none with one runtime. */
+function runtimeRecents(): Array<{ runtime: MenuRuntime; files: string[] }> {
+  const runtimes = daemonMenu?.runtimes?.() ?? []
+  if (runtimes.length < 2) return []
+  const all = runtimeRecentFiles()
+  return runtimes.filter((r) => !r.primary && (all[r.id]?.length ?? 0) > 0).map((runtime) => ({ runtime, files: all[runtime.id] }))
+}
+
 function clearRecentFiles(): void {
   settingsRef?.set(recentFilesKey(), [])
   app.clearRecentDocuments()
+  // The remotes' lists shown in the menu go too; those of runtimes not in the set stay.
+  const shown = runtimeRecents()
+  if (shown.length > 0) {
+    const all = runtimeRecentFiles()
+    for (const { runtime } of shown) delete all[runtime.id]
+    settingsRef?.set(RUNTIME_RECENT_FILES_KEY, all)
+  }
   buildApplicationMenu()
+}
+
+function sendOpenOnRuntime(runtimeId: string, filePath: string): void {
+  if (daemonMenu?.openOnRuntime) { daemonMenu.openOnRuntime(runtimeId, filePath); return }
+  targetWindow('open-recent')?.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath, runtimeId })
 }
 
 export function buildApplicationMenu(): void {
   const isMac = process.platform === 'darwin'
   // No file-system call on a network path (UNC: Windows would send NTLM credentials to that host).
   const recents = daemonMenu?.remoteRecents ? getRecentFiles() : getRecentFiles().filter((p) => !/^[\\/]{2}/.test(p) && existsSync(p))
+  const remoteRecents = runtimeRecents()
 
   const openRecentSubmenu: Electron.MenuItemConstructorOptions[] = [
     ...recents.map((filePath) => ({
@@ -198,8 +273,17 @@ export function buildApplicationMenu(): void {
       toolTip: filePath,
       click: () => sendOpenFile(filePath)
     })),
-    ...(recents.length ? [{ type: 'separator' as const }] : []),
-    { label: 'Clear Menu', enabled: recents.length > 0, click: clearRecentFiles }
+    // Each remote's files under its name (§6.6).
+    ...remoteRecents.map(({ runtime, files }) => ({
+      label: runtime.name,
+      submenu: files.map((filePath) => ({
+        label: basename(filePath, '.adf'),
+        toolTip: filePath,
+        click: () => sendOpenOnRuntime(runtime.id, filePath)
+      }))
+    })),
+    ...(recents.length || remoteRecents.length ? [{ type: 'separator' as const }] : []),
+    { label: 'Clear Menu', enabled: recents.length > 0 || remoteRecents.length > 0, click: clearRecentFiles }
   ]
 
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -360,6 +444,21 @@ export function daemonHelpTemplate(options: DaemonMenuOptions): Electron.MenuIte
   const useEmbedded = options.useEmbeddedForSession
   const openBackend = options.openBackendSettings
   const failed = !!problem && options.launchFailed?.() === true
+  const runtimes = options.runtimes?.() ?? []
+  if (runtimes.length > 1) {
+    // §6.6: a status line for each runtime that is down, named; Reconnect acts on it, a submenu of names for more than one.
+    const down = runtimes.filter((r) => r.problem)
+    const reconnectable = down.filter((r) => r.canReconnect)
+    return [
+      { type: 'separator' },
+      { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },
+      ...down.map((r) => ({ label: `${r.name}: ${r.problem!.replace(/^ADF daemon: /, '')}`, enabled: false })),
+      ...(reconnectable.length === 1 ? [{ label: 'Reconnect', toolTip: reconnectable[0].name, click: () => reconnectable[0].reconnect() }] : []),
+      ...(reconnectable.length > 1 ? [{ label: 'Reconnect', submenu: reconnectable.map((r) => ({ label: r.name, click: () => r.reconnect() })) }] : []),
+      ...(failed && useEmbedded ? [{ label: 'Run Inside Studio for This Session', click: () => useEmbedded() }] : []),
+      ...(failed && openBackend ? [{ label: 'Open Settings → Connections', click: () => openBackend() }] : [])
+    ]
+  }
   return [
     { type: 'separator' },
     { label: 'Open Daemon Log', enabled: logFile !== null, click: () => options.openLog() },

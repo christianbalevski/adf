@@ -10,7 +10,7 @@ import { processAgentLeases } from '../../runtime/agent-lease'
 import { openSharedMnemonicStore } from '../../services/owner-secret-store'
 import { isLocalOnlyRoute, LOCAL_PROOF_HEADER, readLocalProof } from '../../daemon/local-access'
 import { BackgroundEventBatcher } from '../../ipc/background-event-batch'
-import { initApplicationMenu, recordRecentFile } from '../../menu'
+import { initApplicationMenu, recordRecentFile, recordRuntimeRecentFile, renameRuntimeRecentFile, type MenuRuntime } from '../../menu'
 import { relaunchEmbeddedForSession, relaunchStudio } from '../mode-switch'
 import type { ApprovalsUi } from './approvals-ui'
 import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
@@ -88,6 +88,8 @@ export interface RuntimeShared {
   closedWindows: Set<number>
   /** A runtime's agent window closed: its notices move to the main window. */
   windowClosed(windowId: number): void
+  /** Every runtime of the set as the menu shows it (Help, Open Recent; multi-runtime.md §6.6). */
+  menuRuntimes(): MenuRuntime[]
 }
 
 export interface RuntimeConnectionOptions {
@@ -133,6 +135,10 @@ export interface RuntimeConnection {
   ready: Promise<boolean>
   started: Promise<DaemonClient>
   reconnect(): void
+  /** The Help menu's status line (`ADF daemon: …`), or null while connected. */
+  problem(): string | null
+  /** Reconnect makes sense now: the connection dropped, or failed. */
+  canReconnect(): boolean
   status(): BackendDaemonStatus
   client(): Promise<DaemonClient>
   setKeepDaemonRunning(keep: boolean): Promise<void>
@@ -557,17 +563,21 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     const win = hooks.showMainWindow?.() ?? BrowserWindow.getAllWindows()[0] ?? null
     if (win && !win.isDestroyed()) win.webContents.send(IPC.MENU_ACTION, 'open-settings-backend')
   } : undefined
+  const problem = (): string | null => connectionProblem(connection.state, connection.baseUrl)
+  const canReconnect = (): boolean => connection.state.state === 'disconnected' || connection.state.state === 'failed'
   if (primary) {
     initApplicationMenu(clientSettings, {
       logFile: () => connection.logFile,
-      problem: () => connectionProblem(connection.state, connection.baseUrl),
-      canReconnect: () => connection.state.state === 'disconnected' || connection.state.state === 'failed',
+      problem,
+      canReconnect,
       openLog: () => { void openDaemonLog(connection.logFile, log) },
       reconnect,
       useEmbeddedForSession,
       openBackendSettings,
       launchFailed: () => connection.state.state === 'failed',
       remoteRecents: remote,
+      runtimes: () => shared.menuRuntimes(),
+      ...(hooks.openFileOn ? { openOnRuntime: hooks.openFileOn } : {}),
     })
   }
   // Failure dialogs are the primary runtime's only (§3.6).
@@ -864,7 +874,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     return reviving
   }
 
-  let recentNoticed = false
   /** A window's handler context: its own session, bridge and session-stamped client; everything else this runtime's or Studio's. */
   const contextFor = (s: DaemonModeSession, b: EventBridge, ready: () => Promise<DaemonClient>): DaemonModeContext => ({
     mode: kind,
@@ -883,13 +892,10 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     },
     // The owner phrase Studio and This computer's daemon share (§3.2): local only.
     sharedMnemonic: primary ? deps.sharedMnemonic ?? openSharedMnemonicStore : () => null,
-    // Recent files are This computer's, or the primary remote's (§7.4 keys them per runtime in phase 4):
-    // another runtime's path never reaches the OS recent list or a local-open grant (§8.3).
-    recordRecentFile: primary ? recordRecentFile : () => {
-      if (recentNoticed) return
-      recentNoticed = true
-      log.log('[Backend] Recent files are not kept for this runtime yet')
-    },
+    // Recent files: This computer's (or the primary remote's) `recentFiles`; another runtime's under its id in
+    // `runtimeRecentFiles` (§7.4), never in the OS recent list or a local-open grant (§8.3).
+    recordRecentFile: primary ? recordRecentFile : (filePath) => recordRuntimeRecentFile(id, filePath),
+    ...(primary ? {} : { renameRecentFile: (oldPath: string, newPath: string) => renameRuntimeRecentFile(id, oldPath, newPath) }),
     hooks,
     ...(primary && deps.afterOwnerImport ? { afterOwnerImport: deps.afterOwnerImport } : {}),
     remote: remoteServices,
@@ -1132,6 +1138,8 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     ready: started.then(() => true, () => false),
     started,
     reconnect,
+    problem,
+    canReconnect,
     status,
     client: () => started.then(sessionClient),
     setKeepDaemonRunning,

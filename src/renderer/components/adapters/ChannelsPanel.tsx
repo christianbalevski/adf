@@ -7,6 +7,7 @@ import { BrandMark } from '../common/BrandMark'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { ChannelSetupModal } from './ChannelSetupModal'
+import { useSettingsApi } from '../settings/settings-runtime'
 
 const STATUS_DOT: Record<string, string> = {
   connected: 'bg-green-500',
@@ -27,6 +28,8 @@ interface ChannelsPanelProps {
  * and one token shared by two agents would put two pollers on one bot.
  */
 export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProps) {
+  // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
+  const api = useSettingsApi()
   const adaptersRef = useRef(adapters)
   adaptersRef.current = adapters
   const rows = withBuiltInAdapterRegistrations(adapters)
@@ -41,7 +44,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
   const [setup, setSetup] = useState<{ type: string; filePath?: string } | null>(null)
 
   const refreshStatus = useCallback(async () => {
-    const r = await window.adfApi?.getAdapterStatus()
+    const r = await api?.getAdapterStatus()
     if (r?.adapters) setByType(r.adapters)
     setPerAgent(r?.perAgent ?? [])
   }, [])
@@ -50,7 +53,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
     const types = rows.map((r) => r.type)
     const scans = await Promise.all(types.map(async (type) => {
       try {
-        const r = await window.adfApi?.listAdapterCredentialFiles({ adapterType: type })
+        const r = await api?.listAdapterCredentialFiles({ adapterType: type })
         return r?.files ?? []
       } catch {
         return [] as AdapterCredentialFileInfo[]
@@ -69,7 +72,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
 
   // Live status: the event carries no file path, so re-pull the per-agent view.
   useEffect(() => {
-    const unsub = window.adfApi?.onAdapterStatusChanged((_e: AdapterStatusEvent) => { void refreshStatus() })
+    const unsub = api?.onAdapterStatusChanged((_e: AdapterStatusEvent) => { void refreshStatus() })
     return () => { unsub?.() }
   }, [refreshStatus])
 
@@ -81,7 +84,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
       ? `Remove ${label} from this list and uninstall ${reg.npmPackage}? Agents keep the credentials stored in their own files.`
       : `Remove ${label} from this list? Agents keep the credentials stored in their own files.`
     if (!window.confirm(message)) return
-    if (reg.npmPackage && reg.managed) await window.adfApi?.uninstallAdapterPackage({ package: reg.npmPackage })
+    if (reg.npmPackage && reg.managed) await api?.uninstallAdapterPackage({ package: reg.npmPackage })
     onAdaptersChanged(adaptersRef.current.filter((a) => a.id !== reg.id))
   }
 
