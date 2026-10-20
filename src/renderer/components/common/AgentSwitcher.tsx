@@ -10,12 +10,12 @@ import { useApprovalsStore } from '../../stores/approvals.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { collectSwitcherAgents, rankAgents, type SwitcherAgent, type SwitcherMatch } from '../../utils/agent-switcher'
-import { runtimeName, useMultiRuntime, useRuntimes } from '../../stores/runtimes.store'
+import { runtimeName, useMultiRuntime, useRuntimeLabel, useRuntimes } from '../../stores/runtimes.store'
 import { selectTrackedSlice } from '../../stores/tracked-dirs.store'
 import { selectBackgroundAgents } from '../../stores/background-agents.store'
 import { agentKey } from '../../../shared/types/agent-ref'
 import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
-import { windowRuntime } from '../../utils/window-kind'
+import { isAgentWindow, windowRuntime } from '../../utils/window-kind'
 
 /** An agent's key across runtimes: its path on This computer. */
 const keyOf = (a: Pick<SwitcherAgent, 'runtimeId' | 'filePath'>): string => agentKey({ runtimeId: a.runtimeId, filePath: a.filePath })
@@ -30,8 +30,11 @@ export function AgentSwitcher() {
   const open = useKeyboardStore((s) => s.switcherOpen)
   const setOpen = useKeyboardStore((s) => s.setSwitcherOpen)
   const close = useCallback(() => setOpen(false), [setOpen])
+  // An agent window reaches its own runtime only: with more than one runtime, the title names the one it lists.
+  const label = useRuntimeLabel(isAgentWindow ? windowRuntime : null)
+  const title = isAgentWindow && label ? `Agents · ${label}` : 'Agents'
   return (
-    <Dialog open={open} onClose={close} title="Agents">
+    <Dialog open={open} onClose={close} title={title}>
       {open && <SwitcherBody onDone={close} />}
     </Dialog>
   )
