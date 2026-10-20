@@ -750,11 +750,19 @@ app.whenReady().then(async () => {
   let connections: Connections | null = null
   // Every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
   // Saving a connection connects it; forgetting it disconnects it (§12 item 2). Read from the caches: no disk access.
+  // cli-remotes.json that cannot be read is not "nothing saved": the saved connections stay as they are, unknown (A11).
   const syncRuntimes = (): void => {
     const saved = savedCache.get()
-    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved))
+    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved), { savedUnknown: savedCache.unreadable !== null })
   }
+  let unreadableNoticed = false
   const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
+    if (savedCache.unreadable && !unreadableNoticed) {
+      unreadableNoticed = true
+      console.warn(`[Connection] ${savedCache.unreadable}: the saved connections are left as they are until it can be read`)
+      // Settings → Connections shows it (the notices of this launch).
+      backend.notices = [...(backend.notices ?? []), `Saved connections could not be read: ${savedCache.unreadable}. Fix or remove the file; nothing was changed.`]
+    }
     connections?.changed()
     syncRuntimes()
   })
@@ -764,7 +772,9 @@ app.whenReady().then(async () => {
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
   // before any connector or client settings store exists. A launch Inside Studio leaves the file for the next one.
   let migration: RemoteModeMigration | null = null
-  if (backend.mode === 'local' && backend.config.mode === 'remote') {
+  if (backend.mode === 'local' && backend.config.mode === 'remote' && savedCache.unreadable) {
+    console.warn('[Backend] studio-backend.json is in remote mode; it migrates once the saved connections can be read')
+  } else if (backend.mode === 'local' && backend.config.mode === 'remote') {
     const legacy = backend.config
     migration = await migrateRemoteMode(backend, savedCache.get())
     await migrateRemoteModeClientFile(getUserDataPath(), legacy, migration?.runtime ?? null, savedCache.get())
@@ -845,6 +855,8 @@ app.whenReady().then(async () => {
       // kept and not opened while it is not connected.
       check: async (entry) => {
         const runtime = handle.runtimes.get(entry.runtimeId)
+        // The saved connections cannot be read: another runtime's window is neither opened nor dropped.
+        if (!runtime && entry.runtimeId && entry.runtimeId !== 'local' && savedCache.unreadable) return 'unknown'
         if (!runtime) {
           console.log(`[AgentWindows] Not reopening the window of ${entry.filePath}: ${notConnectedSentence(entry.runtimeId ?? 'local')}`)
           return 'gone'

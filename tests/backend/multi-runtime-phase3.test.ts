@@ -342,3 +342,26 @@ describe('studio-backend.json runtimeOrder (§3.1, M11)', () => {
     expect(existsSync(path)).toBe(true)
   })
 })
+
+describe('the saved connections unknown (cli-remotes.json unreadable, A11)', () => {
+  it('at launch: nothing connects or is dropped and the order saved at the last launch is not rewritten; readable again, it holds', () => {
+    const t = manager({ initialOrder: ['remote:host-2', 'remote:host-1'] })
+    // The file could not be read: the empty list is not "nothing saved".
+    t.m.sync({}, null, { savedUnknown: true })
+    expect(t.m.runtimes().map((r) => r.id)).toEqual(['local'])
+    expect(t.orders).toEqual([])
+    t.m.sync({ 'host-1': remote('2026-10-20T12:00:00Z'), 'host-2': remote('2026-10-20T12:00:01Z') })
+    expect(t.m.runtimes().map((r) => r.id)).toEqual(['local', 'remote:host-2', 'remote:host-1'])
+    expect(t.orders).toEqual([])
+  })
+
+  it('while running: the remotes in the set stay and the order is not saved; the slot still follows studio-backend.json', () => {
+    const t = manager()
+    t.m.sync({ 'host-1': remote('2026-10-20T12:00:00Z') })
+    const saved = t.orders.length
+    t.m.sync({}, { name: 'office', url: 'https://office.example.com' }, { savedUnknown: true })
+    expect(t.m.runtimes().map((r) => r.id)).toEqual(['local', 'remote:host-1', 'remote'])
+    expect(t.orders).toHaveLength(saved)
+    expect(t.created).toEqual(['remote:host-1=host-1', 'remote=office'])
+  })
+})
