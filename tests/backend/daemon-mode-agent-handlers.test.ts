@@ -187,11 +187,14 @@ describe('the open file\'s agent', () => {
     expect(await call(IPC.AGENT_COMPACT)).toEqual({ success: true })
   })
 
-  it('approval, ask and suspend answers resolve through the task routes; a stale request is a logged success, as embedded ignores it', async () => {
+  it('approval, ask and suspend answers resolve through the task routes; a stale ask or suspend is a logged success, as embedded ignores it', async () => {
     await call(IPC.FILE_OPEN, { filePath: file1 })
     daemon.routes.set(`POST /agents/${AGENT}/tasks/task_1/resolve`, () => ({ agentId: AGENT, taskId: 'task_1' }))
     expect(await call(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId: 'task_1', approved: false, feedback: 'no' })).toEqual({ success: true })
     expect(last('POST', `/agents/${AGENT}/tasks/task_1/resolve`)?.body).toEqual({ action: 'deny', reason: 'no' })
+    // A stale approval is refused, so the card can say the decision did not land.
+    daemon.routes.set(`POST /agents/${AGENT}/tasks/task_3/resolve`, () => ({ status: 404, body: { error: 'Task "task_3" not found', code: 'task_not_found' } }))
+    expect(await call(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId: 'task_3', approved: true })).toEqual({ success: false, error: 'This approval is no longer pending' })
     daemon.routes.set(`POST /agents/${AGENT}/asks/ask_1/respond`, () => ({ status: 404, body: { error: 'Ask request "ask_1" not found', code: 'ask_not_found' } }))
     expect(await call(IPC.AGENT_ASK_RESPOND, { requestId: 'ask_1', answer: 'x' })).toEqual({ success: true })
     expect(last('POST', `/agents/${AGENT}/asks/ask_1/respond`)?.body).toEqual({ answer: 'x', loop: 'main' })
@@ -245,6 +248,8 @@ describe('background agents and folders', () => {
     expect(await call(IPC.BACKGROUND_AGENT_STOP, { filePath: file1 })).toEqual({ success: false })
     daemon.routes.set(`POST /agents/${OTHER}/tasks/t9/resolve`, () => ({ agentId: OTHER }))
     expect(await call(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath: file2, requestId: 't9', approved: true })).toEqual({ success: true })
+    daemon.routes.set(`POST /agents/${OTHER}/tasks/t10/resolve`, () => ({ status: 409, body: { error: 'Task is not pending', code: 'conflict' } }))
+    expect(await call(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath: file2, requestId: 't10', approved: true })).toEqual({ success: false, error: 'This approval is no longer pending' })
     daemon.routes.set(`POST /agents/${OTHER}/stop`, () => ({ success: true }))
     expect(await call(IPC.BACKGROUND_AGENT_STOP, { filePath: file2 })).toEqual({ success: true })
   })

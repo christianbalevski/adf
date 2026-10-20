@@ -586,6 +586,22 @@ export interface ApprovalMeta {
   alwaysApproveBlockedReason?: string
 }
 
+/**
+ * Why a pending approval ended with no decision: a chat message ended the
+ * wait, an owner state change ended the turn, or the agent stopped.
+ */
+export type ApprovalEndedBy = 'chat' | 'state' | 'stop'
+
+/** Payload of the 'tool_approval_resolved' agent event. */
+export interface ToolApprovalResolvedPayload {
+  requestId: string
+  approved: boolean
+  /** The runtime ended it (no human decision) — not a denial. */
+  settled?: boolean
+  /** Present when the wait was drained with no decision. */
+  endedBy?: ApprovalEndedBy
+}
+
 /** Payload of the 'tool_approval_request' agent event. */
 export interface ToolApprovalRequestPayload extends ApprovalMeta {
   requestId: string

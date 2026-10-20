@@ -6,7 +6,7 @@ import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
-import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ApprovalEndedBy, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
@@ -952,7 +952,7 @@ export class AgentExecutor extends EventEmitter {
     // replays them after the transition.
     if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
     this.deltaQueue.length = 0
-    this.drainPendingHilTasks()
+    this.drainPendingHilTasks({ endedBy: 'state' })
     this.drainPendingAsks()
     if (this.pendingSuspend) {
       this.pendingSuspend.resolve(false)
@@ -1088,16 +1088,21 @@ export class AgentExecutor extends EventEmitter {
 
   /**
    * Drop every pending HIL request as denied (teardown, chat interrupt, owner
-   * state transition). These paths deliberately do NOT emit
-   * `tool_approval_resolved`, so the hub must be cleared here explicitly or it
-   * keeps rows nobody can ever answer.
+   * state transition). The hub row is cleared here, and each card gets a
+   * `tool_approval_resolved` with `endedBy` so no client keeps a card nobody
+   * can answer and the card can say why it ended.
    */
-  private drainPendingHilTasks(opts?: { keepBesideTurn?: boolean }): void {
+  private drainPendingHilTasks(opts?: { keepBesideTurn?: boolean; endedBy?: ApprovalEndedBy }): void {
     const entries = [...this.pendingHilTasks.entries()].filter(([taskId]) => !opts?.keepBesideTurn || !this.besideTurnHilTasks.has(taskId))
     // Remove first: a resolve callback that re-enters resolveHilTask must no-op.
     for (const [taskId] of entries) this.pendingHilTasks.delete(taskId)
     for (const [taskId, pending] of entries) {
       approvalHub.unregister(this.notificationKeyFor(taskId))
+      this.emitEvent({
+        type: 'tool_approval_resolved',
+        payload: { requestId: taskId, approved: false, endedBy: opts?.endedBy ?? 'stop' },
+        timestamp: Date.now()
+      })
       pending.resolve({ approved: false })
     }
   }
@@ -2201,7 +2206,7 @@ export class AgentExecutor extends EventEmitter {
         this.abortController?.abort()
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        this.drainPendingHilTasks({ keepBesideTurn: true })
+        this.drainPendingHilTasks({ keepBesideTurn: true, endedBy: 'chat' })
         this.drainPendingAsks()
         if (this.pendingSuspend) {
           this.pendingSuspend.resolve(false)

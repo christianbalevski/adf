@@ -52,6 +52,9 @@ function notRunning(err: unknown, agentId: string): boolean {
  * or swept): embedded's executor ignores it and answers success. The same
  * here, with a log line instead of silence.
  */
+/** An approval answered after it ended (decided elsewhere, timed out, drained). */
+const STALE_APPROVAL = { success: false, error: 'This approval is no longer pending' } as const
+
 function staleRequest(err: unknown): boolean {
   const status = daemonStatus(err)
   return (status === 404 || status === 409) && daemonCode(err) !== 'agent_not_running'
@@ -122,7 +125,9 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
         })
       } catch (err) {
         if (!staleRequest(err)) throw err
+        // The card must not vanish as if the decision landed: say it did not.
         ctx.log.warn(`[Backend] AGENT_TOOL_APPROVAL_RESPOND: ${args.requestId} is not pending any more (${errorMessage(err)})`)
+        return STALE_APPROVAL
       }
       return { success: true }
     }),
@@ -272,6 +277,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
       if (isAgentGone(err, agentId) || daemonCode(err) === 'agent_not_running') return BACKGROUND_NOT_FOUND
       if (!staleRequest(err)) throw err
       ctx.log.warn(`[Backend] BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND: ${args.requestId} is not pending any more (${errorMessage(err)})`)
+      return STALE_APPROVAL
     }
     return { success: true }
   },
