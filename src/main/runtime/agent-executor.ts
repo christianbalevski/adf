@@ -5,6 +5,7 @@ import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
+import { projectMessageMedia } from './message-media-projection'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent, ApprovalEndedBy, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
@@ -1224,6 +1225,9 @@ export class AgentExecutor extends EventEmitter {
     this.lastSystemPromptHash = undefined
     this.lastDynamicInstructions = undefined
     this.currentDynamicInstructions = undefined
+    // A rebuilt context must receive the current topology again, including
+    // any delta prepared before a preflight compaction replaced the history.
+    this.lastMeshSnapshot = undefined
     this.injectedFileSnapshots = null
     // The cached prompt HOLDS the resolved copies of the files we just dropped,
     // and its key is only ever as good as the set of paths the snapshot scan
@@ -2407,45 +2411,8 @@ export class AgentExecutor extends EventEmitter {
 
         // System prompt is stable across turns for prompt caching;
         // per-turn dynamic info (inbox, context warning) goes via dynamicInstructions.
-        const systemPrompt = this.buildSystemPrompt()
-        const dynamicInstructions = this.buildDynamicInstructions(chatTokens, compactThreshold)
-        // Unconditional: getContextBreakdown() must see what THIS turn sends
-        // (usually nothing). lastDynamicInstructions can't serve that role —
-        // it's a dedup high-water mark that intentionally never clears.
-        this.currentDynamicInstructions = dynamicInstructions
-
-        // "No Secrets" context injection — write system prompt and dynamic instructions
-        // to the loop so they are visible in the UI and queryable via SQL.
-        const currentSPHash = this.systemPromptCache
-          ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
-          : this.hashString(systemPrompt)
-        if (currentSPHash !== this.lastSystemPromptHash) {
-          const spSeq = this.session.appendContextEntry('system_prompt', systemPrompt)
-          this.emitEvent({
-            type: 'context_injected',
-            payload: {
-              category: 'system_prompt',
-              content: systemPrompt,
-              ...(spSeq !== undefined ? { seq: spSeq } : {})
-            },
-            timestamp: Date.now()
-          })
-          this.lastSystemPromptHash = currentSPHash
-        }
-        if (dynamicInstructions && dynamicInstructions !== this.lastDynamicInstructions) {
-          const diSeq = this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
-          this.emitEvent({
-            type: 'context_injected',
-            payload: {
-              category: 'dynamic_instructions',
-              content: dynamicInstructions,
-              ...(diSeq !== undefined ? { seq: diSeq } : {})
-            },
-            timestamp: Date.now()
-          })
-          this.lastDynamicInstructions = dynamicInstructions
-        }
-
+        let systemPrompt = this.buildSystemPrompt()
+        let dynamicInstructions = this.buildDynamicInstructions(chatTokens, compactThreshold)
         // `loop_inject` may be called by code while this turn is waiting on a
         // tool, HIL, or another trigger. Drain only here: the previous tool
         // batch has been committed in full and the next provider request has
@@ -2534,8 +2501,54 @@ export class AgentExecutor extends EventEmitter {
               payload: { category: 'System', content: 'Compacting conversation history (context limit reached)…' },
               timestamp: Date.now()
             })
+            const previousPromptCache = this.systemPromptCache
             chatTokens = await this.forceCompact(`preflight: ${preflightTokens} >= ${preflightBound}`)
+            // Successful compaction re-snapshots injected files while measuring
+            // the rebuilt session. Send that refreshed prefix immediately, not
+            // the old one for a single request followed by another cache miss.
+            // On failure, preserve the one-shot dynamic warning built above.
+            if (this.systemPromptCache !== previousPromptCache) {
+              systemPrompt = this.buildSystemPrompt()
+              dynamicInstructions = this.buildDynamicInstructions(chatTokens, compactThreshold)
+            }
           }
+        }
+
+        // Unconditional: getContextBreakdown() must see what THIS turn sends
+        // (usually nothing). lastDynamicInstructions can't serve that role —
+        // it's a dedup high-water mark that intentionally never clears.
+        this.currentDynamicInstructions = dynamicInstructions
+
+        // "No Secrets" context injection — write system prompt and dynamic instructions
+        // to the loop so they are visible in the UI and queryable via SQL.
+        const currentSPHash = this.systemPromptCache
+          ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
+          : this.hashString(systemPrompt)
+        if (currentSPHash !== this.lastSystemPromptHash) {
+          const spSeq = this.session.appendContextEntry('system_prompt', systemPrompt)
+          this.emitEvent({
+            type: 'context_injected',
+            payload: {
+              category: 'system_prompt',
+              content: systemPrompt,
+              ...(spSeq !== undefined ? { seq: spSeq } : {})
+            },
+            timestamp: Date.now()
+          })
+          this.lastSystemPromptHash = currentSPHash
+        }
+        if (dynamicInstructions && dynamicInstructions !== this.lastDynamicInstructions) {
+          const diSeq = this.session.appendContextEntry('dynamic_instructions', dynamicInstructions)
+          this.emitEvent({
+            type: 'context_injected',
+            payload: {
+              category: 'dynamic_instructions',
+              content: dynamicInstructions,
+              ...(diSeq !== undefined ? { seq: diSeq } : {})
+            },
+            timestamp: Date.now()
+          })
+          this.lastDynamicInstructions = dynamicInstructions
         }
 
         // Pre-send guard: detect orphaned tool blocks (e.g. an external session
@@ -2612,7 +2625,7 @@ export class AgentExecutor extends EventEmitter {
         const callFingerprint = transformedRequest ? null : this.fixedPartsFingerprint()
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
-          messages: request.messages,
+          messages: projectMessageMedia(request.messages, this.config.model),
           dynamicInstructions: request.options.dynamicInstructions,
           tools: request.tools,
           maxTokens: request.options.maxTokens,

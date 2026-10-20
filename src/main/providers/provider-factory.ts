@@ -308,6 +308,9 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
     }
   }
   const hasExtraParams = Object.keys(extraParams).length > 0
+  // An explicit raw cache_control (including deletion) owns the caching policy.
+  // Do not add 5m block markers beside a caller's custom TTL or opt-out.
+  const useDefaultPromptCaching = !Object.hasOwn(extraParams, 'cache_control')
 
   if (cfg.type === 'anthropic') {
     // Pooled instance unless custom params require a request-scoped fetch injector.
@@ -315,7 +318,10 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       ? createAnthropic({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
       : getAnthropicProvider(cfg.apiKey)
     const model = anthropic(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'anthropic' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, {
+      providerId: providerKey, providerType: cfg.type, reasoningStyle: 'anthropic',
+      ...(useDefaultPromptCaching ? { promptCaching: 'anthropic' } : {}),
+    })
   }
 
   if (cfg.type === 'openai') {
@@ -374,6 +380,8 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
   // control via reasoningStyle 'openrouter'. Reuses the param injector for
   // provider-routing / extra body params.
   if (cfg.type === 'openrouter') {
+    const promptCaching = useDefaultPromptCaching && /^~?anthropic\//.test(modelId)
+      ? 'openrouter' as const : undefined
     // Usage accounting: puts `usage: {include: true}` in the request body so
     // responses carry providerMetadata.openrouter.usage with the EXACT billed
     // cost (works on streams too — OpenRouter appends the usage block to the
@@ -387,11 +395,11 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
         fetch: createParamInjector(extraParams)
       })
       const model = provider(modelId, openrouterSettings) as LanguageModel
-      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter' })
+      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter', promptCaching })
     }
     const provider = getOpenRouterProvider(cfg.apiKey || undefined, cfg.baseUrl || undefined)
     const model = provider(modelId, openrouterSettings) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter' })
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter', promptCaching })
   }
 
   // When extra params are needed, create a fresh provider with custom fetch

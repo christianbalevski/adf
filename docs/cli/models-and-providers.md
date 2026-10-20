@@ -68,3 +68,26 @@ and `ChatGPT not signed in — /login chatgpt` in Chat.
   loop it sets that loop's own model override; `/model inherit` clears it.
 
 `adf usage [agent]` and Runtime › Usage show token usage by model.
+
+## Media when changing models
+
+Set `model.multimodal.image`, `.audio`, and `.video` to match the selected
+model's input capabilities. These are explicit settings, not automatic
+capability detection. Disabling a modality also omits older attachments from
+outgoing requests, using a stable text notice. The live session retains the
+original attachment until normal media cleanup or context reset, so enabling
+the modality again can restore it without rewriting history.
+
+Native media payloads are held in memory; normal session writes exclude them
+from persisted loop messages. Tool-result text may retain a saved file path, but reopening a loop
+does not automatically reload that file as a native attachment. Read it again
+when needed. Changing models requires a separate cache warmup.
+
+## Prompt caching
+
+Direct Anthropic and Claude models selected through OpenRouter cache the
+system instructions and the end of conversation history before temporary
+runtime hints. Cache hits still depend on the provider's minimum token count,
+retention window, and matching prompt prefix. Explicit raw `cache_control`
+request parameters override this default policy; an empty value disables the
+default markers. Claude subscription sessions use Claude Code's own caching.

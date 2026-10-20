@@ -88,12 +88,13 @@ describe('output limit reached before any reply', () => {
 describe('chat while the agent is working', () => {
   beforeEach(() => { clearAllUmbilicalBuses() })
 
-  it('is delivered with the tool results at the next model call, without interrupting', async () => {
+  it.each([true, false])('is delivered with the tool results without interrupting (image input enabled: %s)', async (imageEnabled) => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-chat-next-step-'))
     const filePath = join(dir, 'agent-1.adf')
     createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() }).dispose()
     const workspace = AdfWorkspace.open(filePath)
     const config = workspace.getAgentConfig()
+    config.model.multimodal = { image: imageEnabled }
     const provider = new ToolThenAnswerProvider()
     const agent = await new AgentRuntimeBuilder().build({ workspace, filePath, config, provider })
     const events: Array<{ event_type: string; turn_id?: string; payload: Record<string, unknown> }> = []
@@ -113,11 +114,14 @@ describe('chat while the agent is working', () => {
       const at = msgs.findIndex((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'))
       const results = msgs[at].content as Array<{ type: string }>
       expect(results.every((b) => b.type === 'tool_result')).toBe(true)
-      // The chat follows the tool results as its own user row, full content.
+      // The chat follows tool results as its own user row, with media projected
+      // for the current model rather than bypassing its configured policy.
       const next = msgs[at + 1]
       expect(next.role).toBe('user')
       expect(JSON.stringify(next.content)).toContain('also check the logs')
-      expect(JSON.stringify(next.content)).toContain('image_url')
+      if (imageEnabled) expect(JSON.stringify(next.content)).toContain('image_url')
+      else expect(JSON.stringify(next.content)).toContain('image attachment omitted')
+      expect(JSON.stringify(agent.session.getMessages())).toContain('image_url')
       const completed = events.filter((e) => e.event_type === 'turn.completed')
       expect(completed.map((e) => e.payload.interrupted === true)).toEqual([false])
       expect(completed[0].payload.absorbed_turn_ids).toEqual(['turn_b'])
