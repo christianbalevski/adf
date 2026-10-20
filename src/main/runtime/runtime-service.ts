@@ -68,6 +68,7 @@ import { deriveHandle } from '../utils/handle'
 import { toDisplayState } from './display-state'
 import type { AgentHostBindings, AgentStopMode, AssembledAgentBase, HostAttachment } from './assemble-agent'
 import { LoopPoolError, stripLoopNameMarker } from './loop-pool'
+import { interruptLoopTurn, InterruptRefusedError, type InterruptTurnResult } from './interrupt-turn'
 import { LOOP_AUTOSTART_MESSAGE, type LoopDeleteResult, type LoopInfo, type LoopSendResult } from '../adf/loop-pool.types'
 import { LoopConfigSchema } from '../adf/adf-schema'
 import { MAIN_LOOP, listAvailableLoopTools, validateLoopToolList } from '../adf/derive-loop-config'
@@ -1528,9 +1529,14 @@ export class RuntimeService extends EventEmitter {
     return this.resolveAgent(agentId)?.agent.session.getSessionId()
   }
 
-  /** Stop and unload; a held document stays open on the same workspace (D4). A document that is not running: no-op. */
+  /**
+   * Stop and unload (the owner's Off); a held document stays open on the
+   * same workspace (D4). A document that is not running: no-op. Immediate:
+   * no grace in which the turn could start another tool. The agent's host
+   * shells are killed with it (assemble-agent teardown).
+   */
   async stopAgent(agentId: string): Promise<void> {
-    await this.unloadAgent(agentId)
+    await this.unloadAgent(agentId, { mode: 'immediate' })
   }
 
   /** Abort the current turn of one loop (default main) without unloading. */
@@ -1548,21 +1554,20 @@ export class RuntimeService extends EventEmitter {
 
   /**
    * Interrupt one loop's running turn (default main) and leave its executor
-   * idle and still accepting work — Studio's fleet-map teardown. Unlike
+   * idle and still accepting work: Studio's Stop and Esc, the terminal app's
+   * Esc, `adf interrupt`. The provider request is cancelled, running tools
+   * get the abort (host shells are killed), every call without a result gets
+   * an interrupted one, and the loop shows "Turn interrupted". Unlike
    * abortAgent this never stops the executor. No-op when nothing is running.
    */
-  interruptAgent(agentId: string, loop?: string): { interrupted: boolean; loop: string } {
+  interruptAgent(agentId: string, loop?: string): InterruptTurnResult {
     const managed = this.requireAgent(agentId)
-    const loopName = this.requireLoopName(managed, loop)
-    const executor = loopName === MAIN_LOOP
-      ? managed.agent.executor
-      : managed.agent.loopPool.getRuntime(loopName)?.executor
-    if (!executor) throw new RuntimeLoopError(`Loop "${loopName}" has no running executor (it is disabled or stopping).`, 409)
-    const state = executor.getState()
-    if (state === 'stopped' || state === 'error') throw new RuntimeLoopError(`Cannot interrupt: loop "${loopName}" is ${state}.`, 409)
-    if (!executor.isTurnActive()) return { interrupted: false, loop: loopName }
-    executor.endTurnAndSetState('idle')
-    return { interrupted: true, loop: loopName }
+    try {
+      return interruptLoopTurn(managed.agent.executor, managed.agent.loopPool, loop)
+    } catch (err) {
+      if (err instanceof InterruptRefusedError) throw new RuntimeLoopError(err.message, err.statusCode)
+      throw err
+    }
   }
 
   async autostartFromDirectories(

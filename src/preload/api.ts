@@ -132,6 +132,12 @@ export interface AdfApi {
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean; code?: 'daemon_exited' }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
+  /**
+   * End the running turn of one loop (default main) of the agent at
+   * `filePath` (default the open one); the agent stays on. `interrupted`
+   * false: no turn was running. The loop shows "Turn interrupted".
+   */
+  interruptTurn: (filePath?: string, loop?: string) => Promise<{ success: boolean; interrupted?: boolean; error?: string }>
   /** `mediaFor`: also answer that loop's effective media (the composer's attachment gate). */
   getAgentStatus: (opts?: { mediaFor?: string }) => Promise<AgentStatusResult>
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>

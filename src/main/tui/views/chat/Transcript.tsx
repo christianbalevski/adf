@@ -215,6 +215,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
           <Text color={item.streaming ? theme.color.live : theme.color.assistant}>{g.dot} </Text>
           <Box width={w - 2} flexDirection="column">
             {item.text ? <Markdown text={item.text} color={theme.color.assistant} /> : <Text> </Text>}
+            {item.interrupted ? <Text color={theme.color.dim}>[interrupted]</Text> : null}
           </Box>
         </Box>
       )

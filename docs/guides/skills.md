@@ -217,7 +217,8 @@ Two kinds of command, and the difference is the whole point:
 | `/skills` | Opens the Skills panel, where muting lives. |
 | `/idle` | Ends the turn and parks the agent in the `idle` state. |
 | `/hibernate` | Ends the turn and hibernates the agent. |
-| `/stop` | Stops the running agent — the same teardown as the Stop button. |
+| `/stop` | Stops the running turn — the same as **Stop** in the composer. The agent stays on. |
+| `/off` | Turns the agent off — the same teardown as **Off** in the title bar. |
 
 **Skill commands** — one `/<skill-name>` per skill in `skills-registry.json` —
 execute nothing at all. They compose an ordinary user message and send it as if

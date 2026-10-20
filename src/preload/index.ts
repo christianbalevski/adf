@@ -89,6 +89,7 @@ const api: AdfApi = {
   invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) =>
     ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop }),
   compactLoop: () => ipcRenderer.invoke(IPC.AGENT_COMPACT),
+  interruptTurn: (filePath?: string, loop?: string) => ipcRenderer.invoke(IPC.AGENT_INTERRUPT, { filePath, loop }),
   getAgentStatus: (opts?: { mediaFor?: string }) => opts ? ipcRenderer.invoke(IPC.AGENT_STATUS, opts) : ipcRenderer.invoke(IPC.AGENT_STATUS),
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),

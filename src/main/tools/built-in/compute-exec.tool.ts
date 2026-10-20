@@ -13,7 +13,7 @@
 
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
-import type { Tool } from '../tool.interface'
+import type { Tool, ToolCallContext } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import { PodmanService } from '../../services/podman.service'
@@ -67,7 +67,7 @@ export class ComputeExecTool implements Tool {
     this.description = `${BASE_DESCRIPTION}${targetNote}${displayNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`
   }
 
-  async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
+  async execute(input: unknown, _workspace: AdfWorkspace, context?: ToolCallContext): Promise<ToolResult> {
     const { command, target: requestedTarget, timeout_ms } = input as {
       command: string
       target?: ComputeTarget
@@ -131,7 +131,8 @@ export class ComputeExecTool implements Tool {
         }
         case 'host': {
           const cwd = ensureHostWorkspace(this.capabilities.agentId)
-          result = await hostExec(cwd, command, effectiveTimeout)
+          // The interrupt kills the shell's process tree; Off kills every shell of this agent (owner).
+          result = await hostExec(cwd, command, effectiveTimeout, { owner: this.capabilities.agentId, signal: context?.signal })
           break
         }
       }
@@ -150,6 +151,7 @@ export class ComputeExecTool implements Tool {
           ...(result.code === TIMEOUT_EXIT_CODE
             ? { timed_out: true, timeout_ms: effectiveTimeout }
             : {}),
+          ...(context?.signal?.aborted ? { interrupted: true } : {}),
           stdout: truncate(result.stdout, MAX_OUTPUT_BYTES),
           stderr: truncate(result.stderr, MAX_OUTPUT_BYTES),
         }),

@@ -593,9 +593,10 @@ export interface ApprovalMeta {
 
 /**
  * Why a pending approval ended with no decision: a chat message ended the
- * wait, an owner state change ended the turn, or the agent stopped.
+ * wait, an owner state change ended the turn, the owner interrupted the
+ * turn, or the agent stopped.
  */
-export type ApprovalEndedBy = 'chat' | 'state' | 'stop'
+export type ApprovalEndedBy = 'chat' | 'state' | 'interrupt' | 'stop'
 
 /** Payload of the 'tool_approval_resolved' agent event. */
 export interface ToolApprovalResolvedPayload {

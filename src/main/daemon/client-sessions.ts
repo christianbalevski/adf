@@ -1582,7 +1582,7 @@ export function watchWorkspaceData(
 ): () => void {
   const token = Symbol('client-stream')
   workspaceWatchers.set(workspace, token)
-  const pending = new Map<string, ReturnType<typeof setTimeout>>()
+  const pending = new Map<WorkspaceDataScope, ReturnType<typeof setTimeout>>()
   workspace.setOnDataChangeCallback((scope) => {
     if (pending.has(scope)) return
     const timer = setTimeout(() => {
@@ -1593,7 +1593,12 @@ export function watchWorkspaceData(
     pending.set(scope, timer)
   })
   return () => {
-    for (const timer of pending.values()) clearTimeout(timer)
+    // A change already signalled is still sent: an agent that turns off
+    // right after a write (Off is immediate) must not drop the hint.
+    for (const [scope, timer] of pending) {
+      clearTimeout(timer)
+      try { sessions.publishPush('workspace_data', { scope }, target()) } catch { /* best effort */ }
+    }
     pending.clear()
     if (workspaceWatchers.get(workspace) !== token) return
     workspaceWatchers.delete(workspace)

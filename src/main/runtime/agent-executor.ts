@@ -39,7 +39,7 @@ import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 // Config derivation + the host-loop name + main's loops prompt section; the
 // module imports only shared types, so no runtime cycle.
 import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
-import { LoopCompactionSupersededError } from '../adf/adf-workspace'
+import { LoopCompactionSupersededError, type AdfWorkspace } from '../adf/adf-workspace'
 // Global pending-approval registry (title-bar approvals menu). Registration is
 // unconditional: hosts with no UI never subscribe, so it costs one map write.
 import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
@@ -135,6 +135,11 @@ const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
 // Sent when a turn answering an owner chat is about to end with nothing the
 // owner can see (only thinking, or a bare state change). Written to the loop
 // like any other model input.
+/** The tool_result of a call the owner's interrupt (or a restarting chat) cut off or never ran. */
+export const INTERRUPTED_TOOL_RESULT = '[Tool execution cancelled — user interrupted the turn]'
+/** The loop row an owner interrupt (Stop, Esc, POST /interrupt) leaves. */
+export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by user.'
+
 const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
 // gets one turn to persist durable learnings to its mind pages before the loop
@@ -633,6 +638,12 @@ export class AgentExecutor extends EventEmitter {
   // to the requested lifecycle state instead of 'error' — this interruption
   // is intentional, not structural breakage.
   private _ownerStateTransitionRequested = false
+  // Why the owner ended the turn: 'interrupt' (Stop, Esc, POST /interrupt)
+  // writes "Turn interrupted"; a fleet state set names the state it went to.
+  private _ownerTransitionReason: 'interrupt' | null = null
+  // What the in-flight model call has streamed so far (text, thinking). An
+  // interrupt saves it to the loop as the model's own output; null between calls.
+  private inFlightOutput: { text: string; thinking: string } | null = null
   private _skipNextTriggerEvent = false
   private _isMessageTriggered = false
   // True while an image-content provider error is being recovered. Suppresses
@@ -965,9 +976,12 @@ export class AgentExecutor extends EventEmitter {
    * End the current turn and move the still-running executor to an ordinary
    * runtime state. Trigger eligibility remains owned by TriggerEvaluator.
    */
-  endTurnAndSetState(targetState: 'idle' | 'hibernate'): void {
+  endTurnAndSetState(targetState: 'idle' | 'hibernate', opts?: { reason?: 'interrupt' }): void {
+    // A turn between its start and its first model call (auto-compact,
+    // provider checks) still reads 'idle'; its abort controller says it runs.
     const midTurn = this.state === 'thinking' || this.state === 'tool_use' ||
-      this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended'
+      this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended' ||
+      (this.abortController !== null && this.activeAgentTurnCount > 0)
     // awaiting_approval with no agent turn running is an approval raised
     // beside the turn: there is no turn to end, so the transition applies now
     // and the approval stays open.
@@ -979,12 +993,16 @@ export class AgentExecutor extends EventEmitter {
 
     this._lastTargetState = targetState
     this._ownerStateTransitionRequested = true
+    this._ownerTransitionReason = opts?.reason ?? null
     // Mirror the chat-interrupt teardown (executeTurnImpl's chat branch),
     // minus _interruptRestart. Queued chats are kept: the turn's finally
-    // replays them after the transition.
-    if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
-    this.deltaQueue.length = 0
-    this.drainPendingHilTasks({ endedBy: 'state' })
+    // replays them after the transition. Text already streamed is shown in
+    // full (flushed, not dropped): the turn saves exactly that to the loop.
+    this.flushDeltaBuffer()
+    // An interrupt ends the turn's own waits; an approval raised beside the
+    // turn (a lambda's) is not the turn's and stays open.
+    if (opts?.reason === 'interrupt') this.drainPendingHilTasks({ keepBesideTurn: true, endedBy: 'interrupt' })
+    else this.drainPendingHilTasks({ endedBy: 'state' })
     this.drainPendingAsks()
     if (this.pendingSuspend) {
       this.pendingSuspend.resolve(false)
@@ -2663,6 +2681,9 @@ export class AgentExecutor extends EventEmitter {
           requestMediaLimit(this.config.context),
         )
         if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
+        const callSignal = this.abortController?.signal
+        const inFlight = { text: '', thinking: '' }
+        this.inFlightOutput = inFlight
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
           messages: files.messages,
@@ -2672,19 +2693,25 @@ export class AgentExecutor extends EventEmitter {
           maxTokens: request.options.maxTokens,
           temperature: request.options.temperature,
           topP: request.options.topP,
-          signal: this.abortController?.signal,
+          signal: callSignal,
           thinkingBudget: request.options.thinkingBudget,
           reasoning: request.options.reasoning,
           providerParams: request.options.providerParams,
           onTextDelta: (delta: string) => {
+            // After the abort nothing more is the model's output for this call.
+            if (callSignal?.aborted) return
+            inFlight.text += delta
             this.deltaQueue.push({ type: 'text', text: delta })
             this.scheduleDeltaFlush()
           },
           onThinkingDelta: (delta: string) => {
+            if (callSignal?.aborted) return
+            inFlight.thinking += delta
             this.deltaQueue.push({ type: 'thinking', text: delta })
             this.scheduleDeltaFlush()
           }
         }, turnId ? { turn_id: turnId } : undefined)
+        this.inFlightOutput = null
 
         // A successful provider call ends the current outage: the recovery
         // counter tracks CONSECUTIVE failures, so it resets here rather than
@@ -2815,12 +2842,17 @@ export class AgentExecutor extends EventEmitter {
           this.flushDeltaBuffer()
 
           const toolResults: ContentBlock[] = []
+          // Calls the renderer saw start, and calls still running in the
+          // registry when the turn was interrupted (they report their own end).
+          const startedToolIds = new Set<string>()
+          const abandonedToolIds = new Set<string>()
           let needsLoopReset = false
           let needsCompaction = false
           let compactionInstructions: string | undefined
           for (const toolBlock of toolUseBlocks) {
             if (this._interruptRestart || this._ownerStateTransitionRequested) break
 
+            startedToolIds.add(toolBlock.id)
             this.emitEvent({
               type: 'tool_call_start',
               payload: {
@@ -2836,6 +2868,8 @@ export class AgentExecutor extends EventEmitter {
             if (toolBlock.name === 'ask') {
               const askInput = toolBlock.input as { question: string }
               const answer = await this.requestAsk(askInput.question)
+              // The owner ended the turn while it asked: no answer came.
+              if (this._interruptRestart || this._ownerStateTransitionRequested) break
               // Restore state after human responds
               this.setState('tool_use')
 
@@ -3030,6 +3064,12 @@ export class AgentExecutor extends EventEmitter {
             if (isRestricted) {
               const hilResult = await this.requestHilApproval(toolBlock.name, toolBlock.input)
               hilTaskId = hilResult.taskId
+              if (!hilResult.approved && (this._interruptRestart || this._ownerStateTransitionRequested)) {
+                // Nobody rejected it: the owner ended the turn. The call gets
+                // the interrupted result below, and its task says why.
+                this.session.getWorkspace().updateTaskStatus(hilTaskId, 'denied', undefined, 'Turn interrupted')
+                break
+              }
               if (!hilResult.approved) {
                 // Feedback the authorizer typed on rejection is surfaced to the
                 // agent in-band so it can course-correct rather than just retry.
@@ -3120,12 +3160,12 @@ export class AgentExecutor extends EventEmitter {
 
             let rawResult: ToolResult
             try {
-              rawResult = await this.toolRegistry.executeTool(
-                toolBlock.name!,
-                toolBlock.input,
-                this.session.getWorkspace(),
-                { toolUseId: toolBlock.id }
-              )
+              const ran = await this.runTurnTool(toolBlock.name!, toolBlock.input, this.session.getWorkspace(), toolBlock.id)
+              if (!ran) {
+                abandonedToolIds.add(toolBlock.id)
+                break
+              }
+              rawResult = ran
             } catch (toolError) {
               // Abort/quit mid-batch: persist the results already computed
               // before propagating. Discarding them leaves the assistant
@@ -3166,6 +3206,12 @@ export class AgentExecutor extends EventEmitter {
                   toolBlock.name!, toolBlock.input, this.buildApprovalMeta(toolBlock.name!, p)
                 )
                 const workspace = this.session.getWorkspace()
+                if (!hil.approved && (this._interruptRestart || this._ownerStateTransitionRequested)) {
+                  // The owner ended the turn while the override waited: the
+                  // protection denial stands and the call reads interrupted.
+                  workspace.updateTaskStatus(hil.taskId, 'denied', undefined, 'Turn interrupted')
+                  break
+                }
                 if (hil.approved) {
                   this.setState('tool_use')
                   const finalInput = {
@@ -3174,7 +3220,13 @@ export class AgentExecutor extends EventEmitter {
                   }
                   // Second execution of the same tool_use — a second tool.*
                   // pair is correct: two executions really did happen.
-                  rawResult = await this.toolRegistry.executeTool(toolBlock.name!, finalInput, workspace, { toolUseId: toolBlock.id })
+                  const ran = await this.runTurnTool(toolBlock.name!, finalInput, workspace, toolBlock.id)
+                  if (!ran) {
+                    workspace.updateTaskStatus(hil.taskId, 'failed', undefined, 'Turn interrupted')
+                    abandonedToolIds.add(toolBlock.id)
+                    break
+                  }
+                  rawResult = ran
                   workspace.updateTaskStatus(
                     hil.taskId,
                     rawResult.isError ? 'failed' : 'completed',
@@ -3368,9 +3420,9 @@ export class AgentExecutor extends EventEmitter {
             }
           }
 
-          // On interrupt restart or an owner state transition: add placeholder results for unexecuted
+          // On interrupt restart, an owner state transition or a stop that cut a call off: add placeholder results for unexecuted
           // tool_use blocks (API requires every tool_use to have a corresponding tool_result)
-          if (this._interruptRestart || this._ownerStateTransitionRequested) {
+          if (this._interruptRestart || this._ownerStateTransitionRequested || abandonedToolIds.size > 0) {
             const executedIds = new Set(
               toolResults
                 .filter((r): r is ContentBlock & { type: 'tool_result' } => r.type === 'tool_result')
@@ -3381,9 +3433,22 @@ export class AgentExecutor extends EventEmitter {
                 toolResults.push({
                   type: 'tool_result',
                   tool_use_id: tb.id,
-                  content: '[Tool execution cancelled — user interrupted the turn]',
+                  content: INTERRUPTED_TOOL_RESULT,
                   is_error: true
                 })
+                // A call already on screen ends there too. One the registry
+                // still runs reports its own tool.* end; the others never
+                // reached it, so their pair is written here.
+                if (startedToolIds.has(tb.id)) {
+                  this.emitEvent({
+                    type: 'tool_call_result',
+                    payload: { name: tb.name, id: tb.id, result: { content: INTERRUPTED_TOOL_RESULT, isError: true } },
+                    timestamp: Date.now()
+                  })
+                  if (!abandonedToolIds.has(tb.id)) {
+                    this.emitSyntheticToolEvents(tb.name, tb.id, tb.input, { content: INTERRUPTED_TOOL_RESULT, isError: true })
+                  }
+                }
               }
             }
           }
@@ -3553,6 +3618,13 @@ export class AgentExecutor extends EventEmitter {
         }
       }
     } catch (error) {
+      // A model call cut off by an interrupt, an owner state change or a
+      // stop: what it already streamed is the model's output and is kept.
+      const cutOff = this.inFlightOutput
+      this.inFlightOutput = null
+      if (cutOff && (this._interruptRestart || this._ownerStateTransitionRequested || this.getState() === 'stopped')) {
+        this.interruptedOutputSeq = this.saveInterruptedOutput(cutOff)
+      }
       // Intentional abort from user interrupt — not a real error
       if (this._interruptRestart) {
         // Fall through to finally block which handles the restart
@@ -3832,10 +3904,13 @@ export class AgentExecutor extends EventEmitter {
         this.abortController = null
         this._interruptRestart = false
         this._ownerStateTransitionRequested = false
+        this._ownerTransitionReason = null
         this._lastTargetState = null
+        const restartPartialSeq = this.interruptedOutputSeq
+        this.interruptedOutputSeq = undefined
         this.emitEvent({
           type: 'turn_complete',
-          payload: { content: [], interrupted: true },
+          payload: { content: [], interrupted: true, ...(restartPartialSeq !== undefined ? { partial: true, seq: restartPartialSeq } : {}) },
           timestamp: Date.now()
         })
         // The cut-short request is in history and the replay answers it too:
@@ -3856,10 +3931,16 @@ export class AgentExecutor extends EventEmitter {
         this._ownerStateTransitionRequested = false
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        this.addRuntimeNotice(`[System] Turn ended by owner; state set to ${this._lastTargetState ?? 'idle'}.`)
+        const partialSeq = this.interruptedOutputSeq
+        this.interruptedOutputSeq = undefined
+        this.addRuntimeNotice(this._ownerTransitionReason === 'interrupt'
+          ? TURN_INTERRUPTED_NOTICE
+          : `[System] Turn ended by owner; state set to ${this._lastTargetState ?? 'idle'}.`)
+        this._ownerTransitionReason = null
         this.emitEvent({
           type: 'turn_complete',
-          payload: { content: [], interrupted: true },
+          // partial: the streamed text above was saved (row `seq`) as interrupted output.
+          payload: { content: [], interrupted: true, ...(partialSeq !== undefined ? { partial: true, seq: partialSeq } : {}) },
           timestamp: Date.now()
         })
       }
@@ -4556,6 +4637,7 @@ export class AgentExecutor extends EventEmitter {
     // data flushing is best-effort and must never prevent shutdown.
     this._interruptRestart = false
     this._ownerStateTransitionRequested = false
+    this._ownerTransitionReason = null
     this.abortController?.abort()
     this.cancelScheduledRecovery('abort')
     this._recoveryAttempts = 0
@@ -5140,6 +5222,60 @@ export class AgentExecutor extends EventEmitter {
     } catch { /* overhead measurement must never break the loop */ }
     return (this.systemPromptCache?.promptTokens ?? 0) +
       (this.toolSnapshotCache?.toolsTotalTokens ?? 0)
+  }
+
+  /** adf_loop seq of the interrupted output the current turn saved, until its turn_complete names it. */
+  private interruptedOutputSeq: number | undefined = undefined
+
+  /**
+   * Save what a cut-off model call streamed as the model's own assistant
+   * message, each block marked `interrupted`, so the loop shows it after a
+   * reload and the next call sees what it already said. It never holds a
+   * tool_use (those exist only in a finished response), so the pairing is
+   * untouched; the runtime notice that follows keeps the roles alternating.
+   * A partial thinking block has no provider signature: providers drop it
+   * when they send history, as they drop any unsigned thinking. Returns the
+   * row's seq, or undefined when nothing was streamed.
+   */
+  private saveInterruptedOutput(partial: { text: string; thinking: string }): number | undefined {
+    const content: ContentBlock[] = []
+    if (partial.thinking.trim()) content.push({ type: 'thinking', thinking: partial.thinking, interrupted: true })
+    if (partial.text.trim()) content.push({ type: 'text', text: partial.text, interrupted: true })
+    if (content.length === 0) return undefined
+    try {
+      const message: LLMMessage = { role: 'assistant', content }
+      this.session.addMessage(message, { model: this.provider?.modelId ?? this.config.model.model_id })
+      return message.seq
+    } catch {
+      // A closing workspace (stop) must not turn the save into a turn error.
+      return undefined
+    }
+  }
+
+  /**
+   * Run one tool call of the turn. The turn's abort signal (owner interrupt,
+   * a chat that restarts the turn, stop) goes to the tool, which stops on it
+   * where it can (host shells are killed, MCP requests cancelled), and it
+   * also ends the wait: a tool that ignores it finishes in the background
+   * without holding the turn. Null: the turn ended before the call did.
+   */
+  private async runTurnTool(name: string, input: unknown, workspace: AdfWorkspace, toolUseId: string): Promise<ToolResult | null> {
+    const signal = this.abortController?.signal
+    if (!signal) return this.toolRegistry.executeTool(name, input, workspace, { toolUseId })
+    if (signal.aborted) return null
+    const run = this.toolRegistry.executeTool(name, input, workspace, { toolUseId, signal })
+    let onAbort: (() => void) | undefined
+    const aborted = new Promise<null>((resolve) => {
+      onAbort = () => resolve(null)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      return await Promise.race([run, aborted])
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort)
+      // A call left running after the race must not surface as unhandled.
+      run.catch(() => {})
+    }
   }
 
   /**

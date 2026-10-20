@@ -13,6 +13,12 @@ export type ToolCategory =
   | 'database'
   | 'system'
 
+/** Per-call context the registry hands a tool. */
+export interface ToolCallContext {
+  /** Aborted when the owner interrupts the turn that made the call. A long-running tool stops on it. */
+  signal?: AbortSignal
+}
+
 export interface Tool {
   readonly name: string
   readonly description: string
@@ -21,6 +27,6 @@ export interface Tool {
   /** If true, requires human-in-the-loop approval before execution */
   readonly requireApproval?: boolean
 
-  execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult>
+  execute(input: unknown, workspace: AdfWorkspace, context?: ToolCallContext): Promise<ToolResult>
   toProviderFormat(): ToolProviderFormat
 }

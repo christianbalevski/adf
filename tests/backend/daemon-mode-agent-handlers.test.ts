@@ -187,6 +187,25 @@ describe('the open file\'s agent', () => {
     expect(await call(IPC.AGENT_COMPACT)).toEqual({ success: true })
   })
 
+  it('AGENT_INTERRUPT is the daemon\'s interrupt for the open file (or a background agent by path), per loop', async () => {
+    expect(await call(IPC.AGENT_INTERRUPT, {})).toEqual({ success: false, error: 'Agent not running' })
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    daemon.routes.set(`POST /agents/${AGENT}/interrupt`, ({ query }) => ({ success: true, interrupted: true, loop: query.loop ?? 'main' }))
+    expect(await call(IPC.AGENT_INTERRUPT, { filePath: file1 })).toEqual({ success: true, interrupted: true })
+    expect(last('POST', `/agents/${AGENT}/interrupt`)?.query).toEqual({})
+    expect(await call(IPC.AGENT_INTERRUPT, { filePath: file1, loop: 'reflection' })).toEqual({ success: true, interrupted: true })
+    expect(last('POST', `/agents/${AGENT}/interrupt`)?.query).toEqual({ loop: 'reflection' })
+    // Nothing running in that loop: answered, not an error.
+    daemon.routes.set(`POST /agents/${AGENT}/interrupt`, () => ({ success: true, interrupted: false, loop: 'main' }))
+    expect(await call(IPC.AGENT_INTERRUPT)).toEqual({ success: true, interrupted: false })
+    // A refusal (a loop in error) carries the daemon's sentence.
+    daemon.routes.set(`POST /agents/${AGENT}/interrupt`, () => ({ status: 409, body: { error: 'Cannot interrupt: loop "main" is error.', code: 'conflict' } }))
+    expect(await call(IPC.AGENT_INTERRUPT)).toEqual({ success: false, error: 'Cannot interrupt: loop "main" is error.' })
+    // Another agent by path (one Studio navigated away from).
+    daemon.routes.set(`POST /agents/${OTHER}/interrupt`, () => ({ success: true, interrupted: true, loop: 'main' }))
+    expect(await call(IPC.AGENT_INTERRUPT, { filePath: file2 })).toEqual({ success: true, interrupted: true })
+  })
+
   it('approval, ask and suspend answers resolve through the task routes; a stale ask or suspend is a logged success, as embedded ignores it', async () => {
     await call(IPC.FILE_OPEN, { filePath: file1 })
     daemon.routes.set(`POST /agents/${AGENT}/tasks/task_1/resolve`, () => ({ agentId: AGENT, taskId: 'task_1' }))

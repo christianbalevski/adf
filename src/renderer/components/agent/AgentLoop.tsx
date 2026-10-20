@@ -33,6 +33,8 @@ import {
   type SlashCommand,
 } from '../../utils/slash-commands'
 import { Button } from '../ui'
+import { Tooltip } from '../common/Tooltip'
+import { escStopsTurn } from '../../utils/keyboard'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { SlashCommandPalette } from './SlashCommandPalette'
@@ -489,6 +491,7 @@ type ApprovalStatus = { busy?: boolean; error?: string }
 const APPROVAL_ENDED_TEXT: Record<ApprovalEndedBy, string> = {
   chat: 'Ended by your message',
   state: 'Ended by a state change',
+  interrupt: 'Ended when you stopped the turn',
   stop: 'Ended when the agent stopped',
 }
 
@@ -676,12 +679,19 @@ const LogEntryRow = memo(({
             </div>
           )
         }
+        // Output the model streamed before the turn was stopped: kept, and labelled.
+        const interrupted = entry.metadata?.interrupted === true
         return (
           <div>
             <MarkdownEntry content={entry.content} />
-            {entry.timestamp > 0 && (
-              <div className="mt-0.5 px-1 text-[10px] text-[var(--ink-faint)]">
-                {formatLoopTime(entry.timestamp)}
+            {(entry.timestamp > 0 || interrupted) && (
+              <div className="mt-0.5 flex items-center gap-1.5 px-1 text-[10px] text-[var(--ink-faint)]">
+                {entry.timestamp > 0 && <span>{formatLoopTime(entry.timestamp)}</span>}
+                {interrupted && (
+                  <Tooltip tip="Cut off when the turn was stopped" className="flex">
+                    <span data-interrupted className="rounded-[var(--radius-sm)] border border-[var(--rule)] px-1 text-[var(--ink-muted)]">Interrupted</span>
+                  </Tooltip>
+                )}
               </div>
             )}
           </div>
@@ -1245,6 +1255,8 @@ function LoopStream({ loop }: { loop: string }) {
   )
   const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log, structuralVersion])
   const isActive = state === 'active'
+  // A turn that can be stopped: working, or waiting on the owner (approval, question, suspend).
+  const turnRunning = state === 'active' || state === 'suspended'
   // Side loops never inherit the host's autonomy (derive-loop-config).
   const autonomous = isMainLoop
     ? config?.autonomous === true
@@ -1625,6 +1637,31 @@ function LoopStream({ loop }: { loop: string }) {
     addLogEntry({ id: nanoid(), type: 'system', content: text, timestamp: Date.now() })
   }, [addLogEntry])
 
+  /**
+   * The composer's Stop (and Esc, and `/stop`): end this loop's running turn.
+   * The agent stays on. The runtime cancels the model call and the running
+   * tools and writes "Turn interrupted" into the loop; a refusal is said here.
+   */
+  const interruptingRef = useRef(false)
+  const [interrupting, setInterrupting] = useState(false)
+  const handleInterrupt = useCallback(async () => {
+    if (!filePath || interruptingRef.current) return
+    interruptingRef.current = true
+    setInterrupting(true)
+    let error: string | null = null
+    try {
+      const result = await window.adfApi?.interruptTurn(filePath, loop)
+      if (!result) error = 'no agent runtime'
+      else if (!result.success) error = result.error ?? 'unknown error'
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    } finally {
+      interruptingRef.current = false
+      setInterrupting(false)
+    }
+    if (error) addLogEntry({ id: nanoid(), type: 'system', content: `Turn not interrupted: ${error}`, timestamp: Date.now() }, loop)
+  }, [filePath, loop, addLogEntry])
+
   /** The `/compact` command, also behind an error row's Compact. */
   const runCompact = useCallback(async () => {
     const result = await window.adfApi?.compactLoop()
@@ -1766,8 +1803,9 @@ function LoopStream({ loop }: { loop: string }) {
    * Built-ins reuse the handlers Studio already has: `/clear` is the loop clear
    * behind the Clear Agent State control (`clearLog` + `clearChat`), `/skills`
    * is the right dock's own navigation action, `/idle` and `/hibernate` are the
-   * fleet bar's own state setter aimed at this one agent, and `/stop` is the
-   * Stop button's teardown. Nothing here invents a lifecycle state.
+   * fleet bar's own state setter aimed at this one agent, `/stop` is the
+   * composer's Stop (the turn interrupt) and `/off` the title bar's Off
+   * teardown. Nothing here invents a lifecycle state.
    *
    * A skill row does none of that. It reads the package's optional
    * `agents/openai.yaml`, composes a sentence, and sends it as an ordinary user
@@ -1830,11 +1868,16 @@ function LoopStream({ loop }: { loop: string }) {
         return
       }
       case 'stop': {
-        // Exactly what the Stop button does (TitleBar handleStop): full
+        // Exactly what the composer's Stop does: end this loop's turn.
+        await handleInterrupt()
+        return
+      }
+      case 'off': {
+        // Exactly what the title bar's Off does (TitleBar handleOff): full
         // teardown, then the display state follows.
         await window.adfApi?.stopAgent()
         setState('off')
-        say('Agent stopped')
+        say('Agent off')
         return
       }
     }
@@ -2110,8 +2153,19 @@ function LoopStream({ loop }: { loop: string }) {
 
   const virtualItems = virtualizer.getVirtualItems()
 
+  // Esc stops the running turn from the empty composer or from anywhere in
+  // the loop view that is not another field or an open dialog or menu.
+  const handleLoopKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || e.isDefaultPrevented()) return
+    if (inspectedToolCall || review) return
+    const composerEmpty = input.length === 0 && attachments.length === 0
+    if (!escStopsTurn({ turnRunning, target: e.target, composer: textareaRef.current, composerEmpty, paletteOpen: slashOpen, root: e.currentTarget })) return
+    e.preventDefault()
+    void handleInterrupt()
+  }
+
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" onKeyDown={handleLoopKeyDown}>
       {/* Earlier-entries boundary — the loop table holds more rows than the
           loaded window; without this the cutoff is indistinguishable from a
           cleared loop. Only shown once the user scrolls up to the top of the
@@ -2135,6 +2189,8 @@ function LoopStream({ loop }: { loop: string }) {
           identity stays on the tab underline and on `loop_send` card rails. */}
       <div
         ref={scrollRef}
+        // Focusable (not tabbable) so a click in the loop puts Esc here.
+        tabIndex={-1}
         onScroll={handleScroll}
         onWheel={handleWheel}
         onKeyDown={handleScrollKey}
@@ -2534,6 +2590,23 @@ function LoopStream({ loop }: { loop: string }) {
                   rows={1}
                   className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-[var(--ink)] placeholder:text-[var(--ink-faint)]"
                 />
+                {turnRunning && (
+                  <Tooltip tip="Stop" shortcut="Esc" className="mb-1 flex shrink-0">
+                    <Button
+                      type="button"
+                      onClick={() => void handleInterrupt()}
+                      disabled={interrupting}
+                      size="default"
+                      variant="secondary"
+                      className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
+                      aria-label="Stop"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor" />
+                      </svg>
+                    </Button>
+                  </Tooltip>
+                )}
                 <Button
                   type="submit"
                   disabled={!canSubmit}

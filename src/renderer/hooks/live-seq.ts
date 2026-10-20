@@ -52,6 +52,17 @@ export function pendingBlockIndexes(log: AgentLogEntry[]): number[] {
 }
 
 /**
+ * Indexes of the streamed text/thinking entries an interrupted model call
+ * left, now saved as one assistant row: the unstamped run just before the
+ * interrupt's System notice (which the runtime writes after the row).
+ */
+export function interruptedBlockIndexes(log: AgentLogEntry[]): number[] {
+  let end = log.length - 1
+  while (end >= 0 && log[end].type === 'context' && log[end].metadata?.category === 'System') end--
+  return pendingBlockIndexes(log.slice(0, end + 1))
+}
+
+/**
  * Indexes of the unstamped `tool_result` entries produced by the given tool
  * calls. Scans backwards and stops at the first entry older than the batch,
  * so a long transcript is not re-walked for every batch.

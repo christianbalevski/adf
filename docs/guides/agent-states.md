@@ -56,7 +56,7 @@ Structural failures write with `level = "error"`, `event = "turn_error"`. Agents
 
 ### Off
 
-Completely stopped. No triggers fire. The agent must be manually restarted. Use this to fully disable an agent.
+Completely stopped. No triggers fire. The agent must be manually restarted. Use this to fully disable an agent. In ADF Studio this is **Off** in the title bar; on the daemon it is `POST /agents/{id}/stop` (`adf stop <agent>`). Off ends the running turn at once, so no further tool starts, and kills every host shell the agent started.
 
 **Hard-off guarantee.** Transitioning to `off` is a full teardown, not a soft pause. The runtime unregisters the agent from the mesh, disconnects all MCP servers, stops all channel adapters, closes WS connections, and destroys the code sandbox. After `off`, the agent is unreachable from the network — messages addressed to it fail to route. Restart re-establishes these connections from scratch.
 
@@ -169,7 +169,26 @@ If you send a message while an agent is thinking or running tools (in any mode),
 
 If the agent is waiting on you (an approval, a question, or a suspend), your message ends that wait: the turn restarts with your message, and pending tool calls are filled with placeholder results.
 
-To stop the agent's work immediately, use **Stop** (Esc in the terminal app, `POST /agents/{id}/interrupt` on the daemon).
+#### Interrupting a Turn
+
+To end the running turn and keep the agent on, interrupt it:
+
+| Client | Interrupt |
+|---|---|
+| ADF Studio | **Stop** next to the composer's send button, or Esc (from an empty composer, or from the loop view when focus is not in another field) |
+| Terminal app | Esc, or `/interrupt` |
+| CLI | `adf interrupt <agent> [--loop <name>]` |
+| Daemon | `POST /agents/{id}/interrupt` (`?loop=<name>` for an inner loop) |
+
+The interrupt applies to one loop (main by default). The runtime:
+
+- cancels the in-flight model request. Text (and thinking) the model had already streamed is kept: it is saved to the loop as the model's own reply, labelled **Interrupted**, and the next model call sees it as what it already said;
+- signals the running tools to stop: host `compute_exec` shells are killed with their process tree, and MCP requests are cancelled. A tool that cannot stop finishes in the background; the turn does not wait for it;
+- ends the turn's pending approval, question or suspend with no decision;
+- writes an interrupted result for every tool call of the turn that has no result, so the loop never holds a tool call without one;
+- writes **Turn interrupted** into the loop, and the loop goes `idle`.
+
+Queued messages are kept and run as the next turn. The agent keeps its mesh registration, MCP servers, adapters, timers and triggers. Approvals raised beside the turn (by a lambda) stay open. To shut the agent down instead, use **Off** (see [Off](#off)).
 
 **Example flow:**
 
