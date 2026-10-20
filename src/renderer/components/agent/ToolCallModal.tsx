@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import { diffLines, diffWordsWithSpace, type Change } from 'diff'
 import {
   TOOL_FAMILY_STYLES,
@@ -33,6 +33,7 @@ export interface ToolCallModalResult {
   imageUrl?: string
 }
 
+const FOCUSABLE = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
 const SECTION_LABEL = 'text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1'
 const KEY_CLS = 'font-mono text-[11px] font-semibold text-indigo-500 dark:text-indigo-400'
 const PRE_PLAIN = 'text-xs font-mono whitespace-pre-wrap break-all overflow-y-auto text-neutral-600 dark:text-neutral-300'
@@ -354,16 +355,47 @@ export const ToolCallModal = memo(function ToolCallModal({
     }).catch(() => { /* clipboard unavailable */ })
   }
 
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+
+  // Initial focus on the dialog; focus goes back to the opener on close.
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    dialogRef.current?.focus()
+    return () => {
+      if (opener && opener.isConnected) opener.focus()
+    }
+  }, [])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
+      if (e.key !== 'Escape') return
+      // A menu or a nested dialog (reject feedback) inside the modal closes
+      // itself first; only Escape aimed at this dialog closes it.
+      const target = e.target instanceof Element ? e.target : null
+      const own = !target || target === document.body || target.closest('[role="dialog"]') === dialogRef.current
+      if (!own || target?.closest('[role="menu"]')) return
+      e.stopPropagation()
+      onClose()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [onClose])
+
+  // Focus trap: Tab and Shift+Tab wrap inside the dialog.
+  const trapTab = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Tab' || e.defaultPrevented) return
+    const root = dialogRef.current
+    if (!root) return
+    const focusable = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.offsetParent !== null || el === document.activeElement)
+    if (focusable.length === 0) { e.preventDefault(); return }
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    const active = document.activeElement
+    if (active instanceof Node && !root.contains(active)) return
+    if (e.shiftKey && (active === first || active === root)) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus() }
+  }
 
   const record = input && typeof input === 'object' && !Array.isArray(input)
     ? (input as Record<string, unknown>)
@@ -441,7 +473,13 @@ export const ToolCallModal = memo(function ToolCallModal({
       onClick={onClose}
     >
       <div
-        className="w-[640px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] border border-[var(--adf-ui-border)] shadow-float overflow-hidden"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={trapTab}
+        className="w-[640px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] border border-[var(--adf-ui-border)] shadow-float overflow-hidden outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -449,7 +487,7 @@ export const ToolCallModal = memo(function ToolCallModal({
           <div className="flex items-center gap-2 min-w-0">
             {headerLead}
             <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} aria-hidden />
-            <span className="text-[14px] font-mono font-semibold text-neutral-800 dark:text-neutral-100 shrink-0">
+            <span id={titleId} className="text-[14px] font-mono font-semibold text-neutral-800 dark:text-neutral-100 shrink-0">
               {toolName}
             </span>
             {target && (
@@ -481,6 +519,7 @@ export const ToolCallModal = memo(function ToolCallModal({
               onClick={onClose}
               className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
               title="Close (Esc)"
+              aria-label="Close"
             >
               ✕
             </button>

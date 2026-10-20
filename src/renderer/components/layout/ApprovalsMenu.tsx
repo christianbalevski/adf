@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { nanoid } from 'nanoid'
 import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store'
+import { useAgentStore } from '../../stores/agent.store'
+import { useDocumentStore } from '../../stores/document.store'
 import { useJumpToAgent } from '../../hooks/useJumpToAgent'
 import { loopColor } from '../../utils/loop-color'
+import { ApprovalControls, OverrideBadge } from '../agent/ApprovalControls'
+import { ToolCallModal } from '../agent/ToolCallModal'
 import type { NotificationOutcome, PendingNotification, ResolvedNotification } from '../../../shared/types/ipc.types'
 
 /**
@@ -16,6 +22,7 @@ import type { NotificationOutcome, PendingNotification, ResolvedNotification } f
  * Two kinds, two affordances:
  *  - approval → inline Approve/Reject, resolved through the same executor path
  *    the in-chat card uses, so a decision made in either place clears both;
+ *    clicking the row opens the full request in the tool call modal;
  *  - ask → the answer is prose, so the row offers "Respond", which opens the
  *    agent and leaves the question pending for its chat composer.
  *
@@ -69,20 +76,25 @@ function AskIcon() {
   )
 }
 
-function ApprovalRow({
+export function ApprovalRow({
   approval,
   now,
-  onJump
+  onJump,
+  onInspect
 }: {
   approval: PendingNotification
   now: number
   onJump: (filePath: string) => void
+  /** Open the full request (approvals only). */
+  onInspect: (id: string) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const colors = loopColor(approval.loop)
   const isAsk = approval.kind === 'ask'
   const isProtection = approval.reason === 'protection'
+  // An ask is answered in the agent's chat; an approval opens in full here.
+  const open = () => (isAsk ? onJump(approval.filePath) : onInspect(approval.id))
 
   const respond = useCallback(async (approved: boolean) => {
     setBusy(true)
@@ -106,10 +118,10 @@ function ApprovalRow({
       <div
         role="button"
         tabIndex={0}
-        onClick={() => onJump(approval.filePath)}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onJump(approval.filePath) }}
+        onClick={open}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } }}
         className="cursor-pointer"
-        title="Open this agent to see the request in context"
+        title={isAsk ? 'Open this agent to answer' : 'Show the full request'}
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <span
@@ -126,18 +138,19 @@ function ApprovalRow({
               {approval.loop}
             </span>
           )}
-          {isProtection && (
-            <span className="shrink-0 px-1 rounded text-[10px] leading-4 bg-[var(--status-deprecated-bg)] text-[var(--status-deprecated)]">
-              override
-            </span>
-          )}
+          {isProtection && <OverrideBadge />}
           <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500 tabular-nums">
             {relativeAge(approval.requestedAt, now)}
           </span>
         </div>
         {!isAsk && (
-          <div className="mt-0.5 text-[11px] font-mono text-neutral-600 dark:text-neutral-300 truncate">
+          <div
+            className="mt-0.5 text-[11px] font-mono text-neutral-600 dark:text-neutral-300 truncate"
+            title={isProtection && approval.protection?.target ? approval.protection.target : undefined}
+          >
             {approval.toolName}
+            {/* An override names what it unlocks. */}
+            {isProtection && approval.protection?.target ? ` · ${approval.protection.target}` : ''}
           </div>
         )}
         <div
@@ -158,7 +171,7 @@ function ApprovalRow({
           // dropdown row, so this hands off to the agent's own composer.
           <button
             onClick={() => onJump(approval.filePath)}
-            className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]"
+            className="h-6 px-2 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]"
           >
             Respond
           </button>
@@ -167,14 +180,14 @@ function ApprovalRow({
             <button
               onClick={() => void respond(true)}
               disabled={busy}
-              className="px-2 py-0.5 rounded text-[11px] font-medium border border-transparent bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-50"
+              className="h-6 px-2 rounded text-[11px] font-medium border border-transparent bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-50"
             >
               Approve
             </button>
             <button
               onClick={() => void respond(false)}
               disabled={busy}
-              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50"
+              className="h-6 px-2 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50"
             >
               Reject
             </button>
@@ -247,6 +260,16 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   const jumpToAgent = useJumpToAgent()
   const containerRef = useRef<HTMLDivElement>(null)
   const [now, setNow] = useState(() => Date.now())
+  // The approval whose full request is open in the modal, by hub id.
+  const [inspectingId, setInspectingId] = useState<string | null>(null)
+  const inspecting = inspectingId ? approvals.find((a) => a.id === inspectingId) ?? null : null
+  const inspectingRef = useRef(false)
+  inspectingRef.current = inspecting !== null
+
+  // Answered anywhere: the modal closes and the row shows under Recent.
+  useEffect(() => {
+    if (inspectingId && !inspecting) setInspectingId(null)
+  }, [inspectingId, inspecting])
 
   // Ages are only interesting to the second while the panel is open.
   useEffect(() => {
@@ -259,6 +282,8 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   useEffect(() => {
     if (!panelOpen) return
     const onPointerDown = (e: MouseEvent) => {
+      // The modal (and its menus) sit outside the panel; using them keeps it open.
+      if (inspectingRef.current) return
       if (!containerRef.current?.contains(e.target as Node)) setPanelOpen(false)
     }
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setPanelOpen(false) }
@@ -274,6 +299,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   const askCount = approvals.reduce((total, a) => total + (a.kind === 'ask' ? 1 : 0), 0)
 
   const handleJump = (filePath: string) => {
+    setInspectingId(null)
     setPanelOpen(false)
     jumpToAgent(filePath)
   }
@@ -326,7 +352,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
                     Waiting on you
                   </div>
                   {approvals.map((approval) => (
-                    <ApprovalRow key={approval.id} approval={approval} now={now} onJump={handleJump} />
+                    <ApprovalRow key={approval.id} approval={approval} now={now} onJump={handleJump} onInspect={setInspectingId} />
                   ))}
                 </>
               )}
@@ -347,7 +373,147 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
           )}
         </div>
       )}
+
+      {inspecting && createPortal(
+        // Above the title bar and the toasts.
+        <div className="relative z-[70]">
+          <ApprovalDetailModal approval={inspecting} onJump={handleJump} onClose={() => setInspectingId(null)} />
+        </div>,
+        document.body
+      )}
     </div>
+  )
+}
+
+/**
+ * The full request behind a bell row: the tool call modal with the raw input
+ * (fetched on demand, the snapshot carries none) and the same decisions as the
+ * in-chat card. A refused decision keeps the modal open and says why.
+ */
+function ApprovalDetailModal({
+  approval,
+  onJump,
+  onClose
+}: {
+  approval: PendingNotification
+  onJump: (filePath: string) => void
+  onClose: () => void
+}) {
+  const [input, setInput] = useState<unknown>(undefined)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const foregroundFilePath = useDocumentStore((s) => s.filePath)
+  const toolName = approval.toolName ?? 'tool'
+  const colors = loopColor(approval.loop)
+
+  useEffect(() => {
+    let cancelled = false
+    void approvalsBridge()?.getApprovalInput?.(approval.filePath, approval.id)
+      .then((value) => { if (!cancelled && value != null) setInput(value) })
+      .catch(() => { /* input unavailable: the modal shows what the snapshot has */ })
+    return () => { cancelled = true }
+  }, [approval.filePath, approval.id])
+
+  const respond = async (approved: boolean, feedback?: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await approvalsBridge()?.resolvePendingApproval?.(approval.filePath, approval.id, approved, feedback)
+      if (result && result.success === false) {
+        setError(result.error ?? 'Could not resolve this approval')
+        setBusy(false)
+        return
+      }
+    } catch {
+      setError('Could not reach the agent runtime')
+      setBusy(false)
+      return
+    }
+    onClose()
+  }
+
+  // Same server-side path as the in-chat card and the fleet map: refused when
+  // the declaration is locked or the request is a protection override.
+  const alwaysApprove = async () => {
+    setBusy(true)
+    setError(null)
+    const foreground = foregroundFilePath === approval.filePath
+    try {
+      const result = foreground
+        ? await window.adfApi?.alwaysApproveTool(approval.requestId, toolName)
+        : await window.adfApi?.alwaysApproveBackgroundAgentTool(approval.filePath, approval.requestId, toolName)
+      if (result && !result.success) {
+        setError(`Always approve refused: ${result.error ?? 'unknown reason'}`)
+        setBusy(false)
+        return
+      }
+    } catch {
+      setError('Could not reach the agent runtime')
+      setBusy(false)
+      return
+    }
+    if (foreground) {
+      useAgentStore.getState().addLogEntry({
+        id: nanoid(),
+        type: 'system',
+        content: `Approval no longer required for ${toolName}`,
+        timestamp: Date.now()
+      }, approval.loop)
+    }
+    onClose()
+  }
+
+  return (
+    <ToolCallModal
+      toolName={toolName}
+      input={input ?? approval.input}
+      awaitingApproval
+      approvalTitle={approval.protection?.description}
+      subtitle={approval.filePath}
+      startedAt={approval.requestedAt}
+      headerLead={
+        <span className="flex items-center gap-1.5 min-w-0 shrink-0">
+          <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100 truncate max-w-40">
+            {approval.agentName}
+          </span>
+          {approval.loop !== 'main' && (
+            <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>{approval.loop}</span>
+          )}
+          {approval.reason === 'protection' && <OverrideBadge />}
+        </span>
+      }
+      headerActions={
+        <button
+          type="button"
+          onClick={() => onJump(approval.filePath)}
+          className="h-7 px-2.5 text-[11px] font-medium rounded-full border border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0 whitespace-nowrap"
+          title="Open this agent; the request stays pending"
+        >
+          Open agent
+        </button>
+      }
+      approvalControls={
+        <>
+          {error && (
+            <span role="alert" className="min-w-0 truncate text-[11px] text-[var(--adf-ui-danger)]" title={error}>
+              {error}
+            </span>
+          )}
+          <ApprovalControls
+            dropUp
+            overlay
+            busy={busy}
+            toolName={toolName}
+            onApprove={() => void respond(true)}
+            onAlwaysApprove={() => void alwaysApprove()}
+            onReject={(feedback) => void respond(false, feedback)}
+            alwaysApproveDisabled={approval.canAlwaysApprove === false}
+            alwaysApproveDisabledReason={approval.alwaysApproveBlockedReason}
+          />
+        </>
+      }
+      onClose={onClose}
+    />
   )
 }
 

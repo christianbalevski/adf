@@ -133,7 +133,7 @@ export interface AdfApi {
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
-  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean }>
+  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
   /** Approve all pending gated (restricted) tool approvals at once; protection overrides are excluded server-side. */
   approveAllGatedTools: () => Promise<{ success: boolean; approved?: number; skippedProtection?: number; error?: string }>

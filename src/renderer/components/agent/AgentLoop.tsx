@@ -31,7 +31,8 @@ import {
   type SlashCommand,
 } from '../../utils/slash-commands'
 import { Button } from '../ui'
-import { ApprovalControls } from './ApprovalControls'
+import { ApprovalControls, OverrideBadge } from './ApprovalControls'
+import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
 import {
@@ -47,6 +48,7 @@ import {
   type ToolFamily,
 } from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
+import type { ApprovalEndedBy } from '../../../shared/types/ipc.types'
 
 const MAX_INPUT_ROWS = 10
 /** What an error row's Retry now sends: a message of the owner's, shown like any other. */
@@ -500,6 +502,16 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
   return Math.max(0, completedAt - startedAt)
 }
 
+/** A pending approval card's decision: in flight, or the reason it did not land. */
+type ApprovalStatus = { busy?: boolean; error?: string }
+
+/** Why an approval card ended with no decision. */
+const APPROVAL_ENDED_TEXT: Record<ApprovalEndedBy, string> = {
+  chat: 'Ended by your message',
+  state: 'Ended by a state change',
+  stop: 'Ended when the agent stopped',
+}
+
 /** Brand §10 "Tool calls, logs": sunken, hairline, ink-muted mono. Standalone
  *  log rows get the box; rows inside an activity group sit in the group's box. */
 const LOG_BOX = 'overflow-hidden rounded-lg border border-[var(--rule)] bg-[var(--paper-sunken)]'
@@ -518,6 +530,7 @@ const LogEntryRow = memo(({
   pendingApprovalMeta,
   onApprovalRespond,
   onAlwaysApprove,
+  approvalStatus,
   pendingAsk,
   isSuspendEntry,
   onSuspendRespond,
@@ -541,6 +554,8 @@ const LogEntryRow = memo(({
   pendingApprovalMeta?: PendingApprovalInfo
   onApprovalRespond?: (requestId: string, approved: boolean, feedback?: string) => void
   onAlwaysApprove?: (requestId: string, toolName: string) => void
+  /** The pending card's decision in flight, or why it did not land. */
+  approvalStatus?: ApprovalStatus
   pendingAsk?: { requestId: string; question: string }
   isSuspendEntry?: boolean
   onSuspendRespond?: (resume: boolean) => void
@@ -582,6 +597,8 @@ const LogEntryRow = memo(({
   // get a paired tool_result (the gated call runs inside the shell/code that
   // raised the approval), so the human's decision is the entry's outcome.
   const overrideOutcome = entry.metadata?.overrideOutcome as 'approved' | 'denied' | 'completed' | undefined
+  // The wait ended with no decision (useAgent's tool_approval_resolved).
+  const approvalEndedBy = entry.metadata?.approvalEndedBy as ApprovalEndedBy | undefined
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -756,23 +773,37 @@ const LogEntryRow = memo(({
                 </span>
               </div>
             )}
+            {!pendingApprovalRequestId && approvalEndedBy && (
+              <div className="px-1.5 pb-1 text-[10px] font-medium text-[var(--ink-muted)]">
+                {APPROVAL_ENDED_TEXT[approvalEndedBy] ?? APPROVAL_ENDED_TEXT.stop}
+              </div>
+            )}
             {pendingApprovalRequestId && onApprovalRespond && (
-              <div className="flex min-w-0 items-center justify-between gap-2 border-t border-[color:var(--adf-ui-warning)]/15 px-1 pb-1 pt-1">
-                <span className="min-w-0 truncate text-[10px] font-medium text-[var(--adf-ui-warning)]">
-                  Awaiting approval
-                </span>
-                <span className="shrink-0">
-                  <ApprovalControls
-                    compact
-                    overlay
-                    toolName={toolName}
-                    onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
-                    onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, toolName)}
-                    onReject={(feedback) => onApprovalRespond(pendingApprovalRequestId, false, feedback)}
-                    alwaysApproveDisabled={pendingApprovalMeta?.canAlwaysApprove === false}
-                    alwaysApproveDisabledReason={pendingApprovalMeta?.alwaysApproveBlockedReason}
-                  />
-                </span>
+              <div className="border-t border-[color:var(--adf-ui-warning)]/15 px-1 pb-1 pt-1">
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5 text-[10px] font-medium text-[var(--adf-ui-warning)]">
+                    {pendingApprovalMeta?.reason === 'protection' && <OverrideBadge />}
+                    <span className="truncate">Awaiting approval</span>
+                  </span>
+                  <span className="shrink-0">
+                    <ApprovalControls
+                      compact
+                      overlay
+                      busy={approvalStatus?.busy}
+                      toolName={toolName}
+                      onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
+                      onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, toolName)}
+                      onReject={(feedback) => onApprovalRespond(pendingApprovalRequestId, false, feedback)}
+                      alwaysApproveDisabled={pendingApprovalMeta?.canAlwaysApprove === false}
+                      alwaysApproveDisabledReason={pendingApprovalMeta?.alwaysApproveBlockedReason}
+                    />
+                  </span>
+                </div>
+                {approvalStatus?.error && (
+                  <div role="alert" className="px-0.5 pt-0.5 text-[10px] text-[var(--adf-ui-danger)]">
+                    {approvalStatus.error}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1085,40 +1116,90 @@ function LoopStream({ loop }: { loop: string }) {
   const capColumn = useAppStore(selectChatColumnCapped)
   const columnClass = capColumn ? 'mx-auto w-full max-w-4xl' : 'w-full'
 
-  const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
-    window.adfApi?.respondToolApproval(requestId, approved, feedback)
-    // Find the logEntryId for this requestId and remove it. The removal here
-    // races ahead of the tool_approval_resolved round-trip, so the outOfBand
-    // outcome stamp must happen here too — the event handler will find nothing.
-    for (const [logEntryId, info] of pendingApprovals.entries()) {
+  // Per-request decision state: in flight, or why it did not land. The card
+  // stays up until main confirms, so a refused decision is never hidden.
+  const [approvalStatuses, setApprovalStatuses] = useState<Record<string, ApprovalStatus>>({})
+  const setApprovalStatus = useCallback((requestId: string, status: ApprovalStatus | null) => {
+    setApprovalStatuses((prev) => {
+      const next = { ...prev }
+      if (status) next[requestId] = status
+      else delete next[requestId]
+      return next
+    })
+  }, [])
+  const statusFor = (requestId: string | undefined): ApprovalStatus | undefined =>
+    requestId ? approvalStatuses[requestId] : undefined
+  // Forget the state of cards that are gone (decided here or elsewhere).
+  useEffect(() => {
+    setApprovalStatuses((prev) => {
+      const live = new Set([...pendingApprovals.values()].map((info) => info.requestId))
+      const stale = Object.keys(prev).filter((id) => !live.has(id))
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const id of stale) delete next[id]
+      return next
+    })
+  }, [pendingApprovals])
+
+  // Clear the card once main took the decision. The removal races ahead of
+  // the tool_approval_resolved round-trip, so the outOfBand outcome stamp
+  // must happen here too — the event handler will find nothing.
+  const settleApprovalCard = useCallback((requestId: string, approved: boolean) => {
+    for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
       if (info.requestId === requestId) {
         markApprovalOutcome(logEntryId, approved, loop)
         removePendingApproval(logEntryId, loop)
         break
       }
     }
-  }, [pendingApprovals, removePendingApproval, markApprovalOutcome, loop])
+  }, [removePendingApproval, markApprovalOutcome, loop])
+
+  /** Resolves true when main took the decision; otherwise the card shows why. */
+  const handleApprovalRespond = useCallback(async (requestId: string, approved: boolean, feedback?: string): Promise<boolean> => {
+    setApprovalStatus(requestId, { busy: true })
+    try {
+      const result = await window.adfApi?.respondToolApproval(requestId, approved, feedback)
+      if (result && result.success === false) {
+        setApprovalStatus(requestId, { error: result.error ?? 'Could not resolve this approval' })
+        return false
+      }
+    } catch {
+      setApprovalStatus(requestId, { error: 'Could not reach the agent runtime' })
+      return false
+    }
+    setApprovalStatus(requestId, null)
+    settleApprovalCard(requestId, approved)
+    return true
+  }, [setApprovalStatus, settleApprovalCard])
 
   // "Always approve" — server-side: the main process drops the HIL gate on the
   // tool (enabled, un-restricted), persists + propagates the config, then
   // approves the pending request. Refused there when the declaration is locked
   // or the approval is a protection override; on refusal the request stays
-  // pending so the user can still Approve once.
-  const handleAlwaysApprove = useCallback((requestId: string, toolName: string) => {
-    void window.adfApi?.alwaysApproveTool(requestId, toolName).then((result) => {
+  // pending, the card says why, and the user can still Approve once.
+  const handleAlwaysApprove = useCallback(async (requestId: string, toolName: string): Promise<boolean> => {
+    setApprovalStatus(requestId, { busy: true })
+    try {
+      const result = await window.adfApi?.alwaysApproveTool(requestId, toolName)
       if (result && !result.success) {
-        console.warn(`[AgentLoop] Always approve refused for ${toolName}: ${result.error}`)
-        return
+        setApprovalStatus(requestId, { error: `Always approve refused: ${result.error ?? 'unknown reason'}` })
+        return false
       }
-      for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
-        if (info.requestId === requestId) {
-          useAgentStore.getState().markApprovalOutcome(logEntryId, true, loop)
-          removePendingApproval(logEntryId, loop)
-          break
-        }
-      }
-    })
-  }, [removePendingApproval, loop])
+    } catch {
+      setApprovalStatus(requestId, { error: 'Could not reach the agent runtime' })
+      return false
+    }
+    setApprovalStatus(requestId, null)
+    settleApprovalCard(requestId, true)
+    // The tool's gate is gone for good: say so in the loop.
+    useAgentStore.getState().addLogEntry({
+      id: nanoid(),
+      type: 'system',
+      content: `Approval no longer required for ${toolName}`,
+      timestamp: Date.now()
+    }, loop)
+    return true
+  }, [setApprovalStatus, settleApprovalCard, loop])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
     window.adfApi?.respondAsk(requestId, answer)
@@ -1303,25 +1384,43 @@ function LoopStream({ loop }: { loop: string }) {
   }, [pendingApprovals])
 
   const [approveAllNote, setApproveAllNote] = useState<string | null>(null)
-  const handleApproveAllGated = useCallback(() => {
-    // Snapshot the gated request rows so we can clear them optimistically; main
-    // enforces the never-protection filter and also emits resolved events.
-    const gatedLogIds: string[] = []
-    for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
-      if (info.reason === 'restricted') gatedLogIds.push(logEntryId)
+  // "Review N calls": the list is frozen when the dialog opens, and the
+  // confirm approves exactly those calls, each once. Protection overrides are
+  // never in it (one-time, one card at a time).
+  const [review, setReview] = useState<{ calls: ReviewCall[]; overrideCount: number; busy: boolean; error: string | null } | null>(null)
+  const openReview = useCallback(() => {
+    const slice = selectLoopSlice(useAgentStore.getState(), loop)
+    const calls: ReviewCall[] = []
+    let overrideCount = 0
+    for (const [logEntryId, info] of slice.pendingApprovals.entries()) {
+      if (info.reason === 'protection') { overrideCount++; continue }
+      if (info.reason !== 'restricted') continue
+      const entry = slice.log.find((e) => e.id === logEntryId)
+      const toolName = (entry?.metadata?.name as string | undefined) ?? 'tool'
+      const record = entry ? getToolInputRecord(entry) : null
+      calls.push({ requestId: info.requestId, toolName, target: getToolTarget(toolName, record) || summarizeToolInput(entry?.metadata?.input) })
     }
-    void window.adfApi?.approveAllGatedTools().then((result) => {
-      if (!result?.success) return
-      for (const logEntryId of gatedLogIds) removePendingApproval(logEntryId, loop)
-      const remaining = result.skippedProtection ?? 0
-      const approved = result.approved ?? gatedLogIds.length
-      setApproveAllNote(
-        remaining > 0
-          ? `Approved ${approved} tool call${approved === 1 ? '' : 's'} — ${remaining} protection override${remaining === 1 ? '' : 's'} still need your review`
-          : null
-      )
-    })
-  }, [removePendingApproval, loop])
+    setReview({ calls, overrideCount, busy: false, error: null })
+  }, [loop])
+  const confirmReview = useCallback(async () => {
+    if (!review) return
+    setReview({ ...review, busy: true, error: null })
+    const outcomes = await Promise.all(review.calls.map((call) => handleApprovalRespond(call.requestId, true)))
+    const failed = review.calls.filter((_, i) => !outcomes[i])
+    if (failed.length > 0) {
+      // Keep the dialog on the calls that did not land.
+      setReview({ ...review, calls: failed, busy: false, error: `${failed.length} of ${review.calls.length} could not be approved` })
+      return
+    }
+    const approved = review.calls.length
+    const remaining = review.overrideCount
+    setReview(null)
+    setApproveAllNote(
+      remaining > 0
+        ? `Approved ${approved} tool call${approved === 1 ? '' : 's'} — ${remaining} protection override${remaining === 1 ? '' : 's'} still need your review`
+        : null
+    )
+  }, [review, handleApprovalRespond])
 
   // Clear the post-batch note once every remaining approval is resolved.
   useEffect(() => {
@@ -2038,6 +2137,7 @@ function LoopStream({ loop }: { loop: string }) {
         pendingApprovalMeta={pendingApprovals.get(entry.id)}
         onApprovalRespond={handleApprovalRespond}
         onAlwaysApprove={handleAlwaysApprove}
+        approvalStatus={statusFor(pendingApprovals.get(entry.id)?.requestId)}
         pendingAsk={pendingAsks.get(entry.id)}
         isSuspendEntry={pendingSuspend === entry.id}
         onSuspendRespond={handleSuspendRespond}
@@ -2213,14 +2313,24 @@ function LoopStream({ loop }: { loop: string }) {
       {gatedPendingCount >= 2 && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
           <button
-            onClick={handleApproveAllGated}
-            className="px-3 py-1 text-xs font-medium rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] shadow-float transition-colors"
-            title="Approve all pending gated tool calls at once — protection/lock overrides still need individual review"
+            type="button"
+            onClick={openReview}
+            className="h-7 px-3 text-xs font-medium rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] shadow-float transition-colors"
+            title="Review the pending gated calls before approving them. Protection overrides are not included."
           >
-            Approve all {gatedPendingCount} tool calls
+            Review {gatedPendingCount} calls
           </button>
         </div>
       )}
+      <ApprovalReviewDialog
+        open={review !== null}
+        calls={review?.calls ?? []}
+        overrideCount={review?.overrideCount ?? 0}
+        busy={review?.busy ?? false}
+        error={review?.error ?? null}
+        onConfirm={() => void confirmReview()}
+        onClose={() => setReview(null)}
+      />
 
       {/* Post-batch note: how many protection overrides still need attention. */}
       {approveAllNote && (
@@ -2519,19 +2629,29 @@ function LoopStream({ loop }: { loop: string }) {
             seq={call?.metadata?.seq as number | undefined}
             rawPayload={{ call, result }}
             approvalControls={modalApprovalRequestId ? (
-              // dropUp + overlay: the modal card is overflow-hidden and its
-              // footer sits near the viewport bottom — portal the popovers to
-              // <body> and open them upward so nothing clips them.
-              <ApprovalControls
-                dropUp
-                overlay
-                toolName={toolName}
-                onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
-                onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
-                onReject={(feedback) => { handleApprovalRespond(modalApprovalRequestId, false, feedback); setInspectedToolCall(null) }}
-                alwaysApproveDisabled={modalApproval?.canAlwaysApprove === false}
-                alwaysApproveDisabledReason={modalApproval?.alwaysApproveBlockedReason}
-              />
+              <>
+                {modalApproval?.reason === 'protection' && <OverrideBadge />}
+                {statusFor(modalApprovalRequestId)?.error && (
+                  <span role="alert" className="min-w-0 truncate text-[11px] text-[var(--adf-ui-danger)]" title={statusFor(modalApprovalRequestId)?.error}>
+                    {statusFor(modalApprovalRequestId)?.error}
+                  </span>
+                )}
+                {/* dropUp + overlay: the modal card is overflow-hidden and its
+                    footer sits near the viewport bottom — portal the popovers
+                    to <body> and open them upward so nothing clips them. The
+                    modal closes only once the decision landed. */}
+                <ApprovalControls
+                  dropUp
+                  overlay
+                  busy={statusFor(modalApprovalRequestId)?.busy}
+                  toolName={toolName}
+                  onApprove={() => { void handleApprovalRespond(modalApprovalRequestId, true).then((ok) => { if (ok) setInspectedToolCall(null) }) }}
+                  onAlwaysApprove={() => { void handleAlwaysApprove(modalApprovalRequestId, toolName).then((ok) => { if (ok) setInspectedToolCall(null) }) }}
+                  onReject={(feedback) => { void handleApprovalRespond(modalApprovalRequestId, false, feedback).then((ok) => { if (ok) setInspectedToolCall(null) }) }}
+                  alwaysApproveDisabled={modalApproval?.canAlwaysApprove === false}
+                  alwaysApproveDisabledReason={modalApproval?.alwaysApproveBlockedReason}
+                />
+              </>
             ) : undefined}
             onClose={() => setInspectedToolCall(null)}
           />

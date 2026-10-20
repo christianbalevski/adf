@@ -11,7 +11,7 @@ export interface ConfigConflictState {
   /** The agent file the edit belongs to. */
   owner: string | null
 }
-import type { ApprovalMeta } from '../../shared/types/ipc.types'
+import type { ApprovalEndedBy, ApprovalMeta } from '../../shared/types/ipc.types'
 
 /** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
 export type PendingApprovalInfo = { requestId: string } & Partial<ApprovalMeta>
@@ -201,6 +201,8 @@ interface AgentStoreState extends LoopSlice {
    *  belong to a real tool call (their paired result is the terminal state). */
   /** `'completed'`: the runtime settled the request (no human decision). */
   markApprovalOutcome: (logEntryId: string, approved: boolean | 'completed', loop?: string) => void
+  /** Record on any approval card that its wait ended with no decision (a chat message, a state change, a stop). */
+  markApprovalEnded: (logEntryId: string, endedBy: ApprovalEndedBy, loop?: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string, loop?: string) => void
   removePendingAsk: (logEntryId: string, loop?: string) => void
   setPendingSuspend: (logEntryId: string | null, loop?: string) => void
@@ -361,6 +363,13 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         metadata: { ...entry.metadata, overrideOutcome: approved === 'completed' ? 'completed' : approved ? 'approved' : 'denied' }
       }
       // A new entry object — the grouping passes must hand the row out again.
+      return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
+    }),
+    markApprovalEnded: (logEntryId, endedBy, loop) => patchSlice(loop, (s) => {
+      const index = s.log.findIndex((e) => e.id === logEntryId)
+      const entry = s.log[index]
+      if (!entry) return {}
+      s.log[index] = { ...entry, metadata: { ...entry.metadata, approvalEndedBy: endedBy } }
       return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     addPendingAsk: (logEntryId, requestId, question, loop) => patchSlice(loop, (s) => {

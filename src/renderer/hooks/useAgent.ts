@@ -4,7 +4,7 @@ import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES, type AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
-import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload, ToolApprovalResolvedPayload } from '../../shared/types/ipc.types'
 import { parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
@@ -531,14 +531,17 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       }
 
       case 'tool_approval_resolved': {
-        const payload = event.payload as { requestId: string; approved: boolean; settled?: boolean }
+        const payload = event.payload as ToolApprovalResolvedPayload
         // pendingApprovals maps logEntryId -> info — find by requestId value
         for (const [logEntryId, info] of slice.pendingApprovals) {
           if (info.requestId === payload.requestId) {
+            // Drained with no decision (a chat message, a state change, a
+            // stop): the card says why instead of reading as a denial.
+            if (payload.endedBy) agentStore.markApprovalEnded(logEntryId, payload.endedBy, loop)
             // Synthesized (outOfBand) entries have no tool_result to land —
             // stamp the decision so they don't render as "running…" forever.
             // `settled`: the runtime ended it (no human decision) — not a denial.
-            agentStore.markApprovalOutcome(logEntryId, payload.settled ? 'completed' : payload.approved, loop)
+            else agentStore.markApprovalOutcome(logEntryId, payload.settled ? 'completed' : payload.approved, loop)
             agentStore.removePendingApproval(logEntryId, loop)
             break
           }

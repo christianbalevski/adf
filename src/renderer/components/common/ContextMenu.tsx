@@ -8,6 +8,8 @@ export interface ContextMenuItem {
   danger?: boolean
   /** Draw a hairline above this item. */
   separatorBefore?: boolean
+  /** One muted line under the label, e.g. why the item is disabled. */
+  hint?: string
 }
 
 interface ContextMenuProps {
@@ -15,6 +17,14 @@ interface ContextMenuProps {
   position: { x: number; y: number } | null
   items: ContextMenuItem[]
   onClose: () => void
+  /**
+   * How the menu sits on `position`: the default opens right and down from it;
+   * `end` aligns the menu's right edge to it, `above` its bottom edge (a menu
+   * opened from a button near the viewport bottom).
+   */
+  placement?: { x?: 'start' | 'end'; y?: 'below' | 'above' }
+  /** Accessible name of the menu. */
+  label?: string
 }
 
 const EDGE = 4
@@ -25,7 +35,7 @@ const EDGE = 4
  * outside pointerdown, Escape, window blur, any scroll, or after an item is
  * chosen. Arrow keys move focus between enabled items; Enter/Space select.
  */
-export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
+export function ContextMenu({ position, items, onClose, placement, label }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null)
@@ -42,13 +52,17 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
     const el = menuRef.current
     if (!el) return
     const r = el.getBoundingClientRect()
+    const x = placement?.x === 'end' ? position.x - r.width : position.x
+    const y = placement?.y === 'above' ? position.y - r.height : position.y
     setClamped({
-      x: Math.max(EDGE, Math.min(position.x, window.innerWidth - r.width - EDGE)),
-      y: Math.max(EDGE, Math.min(position.y, window.innerHeight - r.height - EDGE))
+      x: Math.max(EDGE, Math.min(x, window.innerWidth - r.width - EDGE)),
+      y: Math.max(EDGE, Math.min(y, window.innerHeight - r.height - EDGE))
     })
+    // Focus moves into the menu: its first enabled item, else the menu itself
+    // (so Escape and a disabled item's hint still reach a keyboard user).
     const first = itemRefs.current.find((b) => b && !b.disabled)
-    first?.focus()
-  }, [position])
+    ;(first ?? el).focus()
+  }, [position, placement?.x, placement?.y])
 
   useEffect(() => {
     if (!open) return
@@ -123,9 +137,11 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
     <div
       ref={menuRef}
       role="menu"
+      aria-label={label}
+      tabIndex={-1}
       onKeyDown={handleMenuKeyDown}
       onContextMenu={(e) => e.preventDefault()}
-      className="fixed z-[1000] bg-surface-raised border border-[var(--adf-ui-border)] shadow-float rounded-[var(--adf-ui-container-radius)] py-1 min-w-[180px] text-[12px] text-[var(--adf-ui-text)] select-none"
+      className="fixed z-[1000] outline-none bg-surface-raised border border-[var(--adf-ui-border)] shadow-float rounded-[var(--adf-ui-container-radius)] py-1 min-w-[180px] text-[12px] text-[var(--adf-ui-text)] select-none"
       style={{ left: at.x, top: at.y, visibility: clamped ? 'visible' : 'hidden' }}
     >
       {items.map((item, i) => (
@@ -151,6 +167,9 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
           >
             {item.label}
           </button>
+          {item.hint && (
+            <div className="-mt-1 max-w-[260px] px-3 pb-1.5 text-[11px] text-[var(--adf-ui-text-muted)]">{item.hint}</div>
+          )}
         </div>
       ))}
     </div>,

@@ -295,6 +295,8 @@ export function TitleBar() {
               app-global nav cluster, not the per-agent controls. */}
           <ApprovalsMenu align="left" />
         </nav>}
+        {/* An agent window has no app nav, but other agents can still be waiting on you. */}
+        {isAgentWindow && <ApprovalsMenu align="left" />}
       </div>
 
       <div className="h-full flex-1 min-w-0 bg-[var(--adf-ui-canvas)] border-b border-hairline text-[var(--adf-ui-text-muted)] flex items-center">
