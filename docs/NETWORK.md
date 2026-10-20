@@ -12,8 +12,9 @@ requests.
 
 ## 1. Traffic Studio starts on its own
 
-Requests the app makes without you or an agent asking. The switches are under
-**Settings → General → Privacy**.
+Requests the app makes without you or an agent asking. The switches are on
+the Settings pages **Updates**, **Providers**, **MCP servers** and **Privacy**
+([Settings › Privacy](guides/settings.md#privacy) lists them).
 
 | What | Endpoint | When | Carries | Off switch |
 |---|---|---|---|---|

@@ -35,8 +35,8 @@ The sidebar's `+` creates a blank agent under a name you choose. Its folder butt
 
 Providers can also be managed ahead of time, or changed later, in Settings.
 
-1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`)
-2. Go to the **Providers** section
+1. Open **Settings** (the gear in the title bar, or `Cmd/Ctrl + ,`)
+2. Go to **Providers**
 3. Click **Add provider** — a catalog opens, grouped into **Subscriptions**, **APIs**, **Local**, and **Other**
 4. Click the tile for the service you use (Anthropic, OpenAI, Claude, ChatGPT, Grok, a hosted OpenAI-compatible API, or a local server). The provider is created with its base URL prefilled and its configure modal opens
 5. Enter your API key (or sign in, for the Claude, ChatGPT and Grok subscription tiles)
@@ -47,34 +47,29 @@ Providers can also be managed ahead of time, or changed later, in Settings.
 
 ## Creating a Blank Agent
 
-1. Click the **New agent** button in the sidebar (the `+`)
-2. Choose a name for your agent (e.g., "assistant")
-3. A new `.adf` file is created from the default template, with the app's default provider
+1. Click **New agent** in the sidebar (the `+`), or File → New ADF Agent (`Cmd/Ctrl + N`)
+2. Choose a file name and folder in the save dialog (e.g., `assistant.adf`)
+3. A new `.adf` file is created from the default template, with the runtime's default provider, and opens
 
 Your agent is now created and in the **idle** state by default.
 
 ## Anatomy of the Interface
 
-The ADF Studio interface is organized into several areas:
+- **Title bar**: **Home**, **Mesh**, **Settings**, the notifications bell and, while an agent is open, its avatar; the open agent's name, state and current step in the middle; **Start** or **Off** on the right
+- **Sidebar** (left): tracked folders and their agents, with a **Running** list at the top
+- **Center**: Home, the Mesh view, Settings, or the open agent's editor tabs
+- **Dock** (right): the open agent's **Overview**, **Loops**, **Inbox**, **Files** and **Agent** tabs; **Agent** has the **Timers**, **Identity**, **Skills** and **Config** sub-tabs
+- **Status bar** (bottom): save state, model and context gauge, **Logs** and **Tasks**, the version, and the runtime's **Mesh** and **Kill**
 
-- **Sidebar** (left) — Lists your open agents, shows their status, and provides quick actions
-- **Main Panel** (center) — Shows the active tab content
-- **Right Panel** (collapsible) — Additional context and configuration
-
-### Tabs
-
-- **Loop** — The conversation history with your agent. This is where you chat, see tool usage, and observe the agent's reasoning
-- **Inbox** — Messages received from other agents
-- **Files** — The agent's virtual filesystem (document, mind, and uploaded files)
-- **Agent** — Configuration panel with sub-tabs for Timers, Identity, and raw Config
+[ADF Studio](../ADF_STUDIO_DOCS.md#anatomy-of-the-interface) describes each area.
 
 ![The ADF Studio window: agents with live status toggles in the left sidebar, the agent's document open in the center editor, and the Loop panel on the right showing the conversation.](../assets/screenshots/studio-agent-loop.png)
 
 ## Talking to Your Agent
 
-1. Select your agent from the sidebar
-2. Make sure you're on the **Loop** tab
-3. Type a message in the input field at the bottom
+1. Open your agent from the sidebar
+2. Open the **Loops** tab in the dock (an agent made from Home has it in the center)
+3. Type a message in the composer at the bottom
 4. Press Enter to send
 
 When you send a message, several things happen:
@@ -84,20 +79,20 @@ When you send a message, several things happen:
 3. The agent responds (and may use tools along the way)
 4. The agent returns to **idle**
 
-You'll see the full conversation in the Loop panel, including any tool calls the agent makes.
+You'll see the full conversation in the loop, including any tool calls the agent makes. **Stop** next to the send button, or `Esc`, ends a running turn.
 
 ![The Loop tab mid-conversation: a user message, an expandable Thinking block, assistant text, and inline tool-call chips with their arguments.](../assets/screenshots/agent-loop-conversation.png)
 
 ## Configuring Your Agent
 
-Click the **Agent** tab to access configuration. Key settings include:
+Open **Agent** → **Config** in the dock. Key settings include:
 
-- **Name and Description** — How your agent identifies itself
-- **Icon** — An emoji published on the agent's card (Studio shows the agent's orbital instead)
-- **Instructions** — The system prompt that defines your agent's behavior
-- **Model** — Which LLM provider and model to use
-- **Tools** — Which built-in tools the agent can access
-- **Triggers** — What events wake the agent
+- **Name and Description**: how your agent identifies itself
+- **Icon**: an emoji published on the agent's card. Studio shows the agent's orbital instead, unless Settings → Appearance → **Agent avatars** is **Emoji**
+- **Instructions**: the system prompt that defines your agent's behavior
+- **Model**: which LLM provider and model to use
+- **Tools**: which built-in tools the agent can access, and which need your approval
+- **Triggers**: what events wake the agent
 
 See [Creating and Configuring Agents](creating-agents.md) for full details.
 

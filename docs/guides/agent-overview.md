@@ -9,7 +9,7 @@ see_also:
 
 # Agent Overview
 
-The Overview is the agent card in Studio's right dock. It shows a header (status line, description, context fill, next wake, 7-day cost, model, age), four stats (Reach, Access, Autonomy, Experience), the agent's metrics, and three lower sections: Coming up (the next three timer wakes), Activity (messages per local day over 14 days, with cost per day) and Contents.
+The Overview is the first tab of Studio's dock. It shows a header (description, context fill, next wake, 7-day cost, model, age), four stats (Reach, Access, Autonomy, Experience), the agent's metrics, and three lower sections: Coming up (the next three timer wakes), Activity (messages per local day over 14 days, with cost per day) and Contents.
 
 This page states how every number is computed. The scoring is in `src/shared/utils/agent-stats.ts`; the inputs are measured in `src/main/services/agent-vitals.ts`. The tables below are checked against the exported constants (and `MEMORY_STRATA_DAYS` in `src/shared/types/agent-vitals.types.ts`) by `tests/unit/shared/agent-overview-doc.test.ts`.
 

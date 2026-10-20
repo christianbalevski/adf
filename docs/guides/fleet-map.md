@@ -36,7 +36,7 @@ Press `?` at any time for the built-in keyboard command card.
 | **Station** | A perimeter platform: one per configured channel adapter (Telegram, email, Discord…), plus the web gateway and one per discovered peer runtime |
 | **Trace** | A message route along the hex lattice — accumulates heat with traffic |
 | **Street** | On a peer platform: the persistent last hop from the platform gate to a recipient tile |
-| **Top bar** | Doubles as the window titlebar: app navigation (Home / map / Settings) and the agent count. While an agent file is open, the title becomes that agent's identity cluster (orbital, name, state, status) — click it to fly to the tile, or the ✕ beside it to close the agent (the side panel and status bar return to the fleet). The open tile also wears a blue corner badge, and the bottom status bar leads with the same name |
+| **Top bar** | Doubles as the window titlebar: app navigation (Home, Mesh, Settings, the notifications bell and, while an agent is open, its avatar) and the agent count. While an agent file is open, the title becomes that agent's identity cluster (orbital, name, state, status) — click it to fly to the tile, or the ✕ beside it to close the agent (the side panel and status bar return to the fleet). The open tile also wears a blue corner badge, and the bottom status bar leads with the same name |
 | **Map controls** (bottom left) | Zoom, fit view, `?` shortcuts, full screen (F — the real thing, not windowed), and the Log drawer |
 | **Alert bar** | Fleet state counts, token burn, tool/message rates, named-group chips, the "Needs you" queue |
 | **Left rail** | Stewards panel (group voices) and the burn leaderboard |

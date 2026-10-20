@@ -13,9 +13,11 @@ This guide covers everything you need to know about creating a new agent and con
 
 To create a new `.adf` file:
 
-1. Click **New .adf** in the sidebar
-2. Choose a filename — this becomes the agent's default name
-3. The file is created from an [agent template](agent-templates.md) and placed in your tracked directory
+1. Click **New agent** (`+`) in the sidebar, or File → New ADF Agent (`Cmd/Ctrl + N`)
+2. Choose a file name and folder in the save dialog. The file name becomes the agent's default name
+3. The file is created from the default [agent template](agent-templates.md) and opens
+
+A task sent from Home also creates an agent, from the template on its **Start from** chip; see [Getting Started](../getting-started.md).
 
 A new agent gets everything in its template except the template's identity and history: config (including its start state), files and tools. It gets a new 12-character config `id` and its own signing keys. Fields the template does not set take the [new-file defaults](../../ADF_SPEC_v0.2.md#141-new-file-defaults).
 
@@ -31,7 +33,7 @@ A short description of what this agent does. Shown in `agent_discover` output an
 
 ### Icon
 
-A single emoji published on the agent's card, for clients that show one. Studio draws the agent's orbital instead: a shape generated from its DID, the same on every surface.
+A single emoji published on the agent's card, for clients that show one. Studio draws the agent's orbital instead: a shape generated from its DID, the same on every surface. With Settings → Appearance → **Agent avatars** set to **Emoji**, Studio shows the emoji.
 
 ### Agent ID
 

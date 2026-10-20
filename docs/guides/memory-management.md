@@ -23,7 +23,7 @@ Each entry has:
 
 ### Viewing the Loop
 
-The **Loop** tab in the UI shows the full conversation history, including:
+The **Loops** tab in Studio shows the full conversation history, including:
 
 - User messages (your chat input)
 - Assistant responses
@@ -51,7 +51,7 @@ This is where compaction comes in.
 
 Every LLM API call includes content that the user doesn't directly author — the system prompt and per-turn dynamic instructions. ADF follows a "No Secrets" principle: any content injected into the agent's context must be viewable and auditable.
 
-Context blocks are stored as regular entries in `adf_loop` and appear in the Loop tab as collapsible teal blocks. They persist across sessions, survive restarts, and are swept by compaction like any other loop entry.
+Context blocks are stored as regular entries in `adf_loop` and appear in the Loops tab as collapsible teal blocks. They persist across sessions, survive restarts, and are swept by compaction like any other loop entry.
 
 ![A Context Injected block expanded at the top of the Loop tab, revealing the exact system-prompt text that was sent to the model, with its injection timestamp in the block header.](../assets/screenshots/agent-loop-context-block.png)
 

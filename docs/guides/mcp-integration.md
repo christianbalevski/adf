@@ -22,7 +22,7 @@ Common examples:
 
 ## MCP Server Manager
 
-ADF Studio includes a built-in **MCP Server Manager** for installing, configuring, and monitoring MCP servers. Access it from **Settings > MCP Servers**.
+ADF Studio installs, configures and monitors MCP servers on **Settings → MCP servers**.
 
 ### Curated Server Registry
 
@@ -67,7 +67,7 @@ The app bundles the same document as its offline fallback, so what you fetch is 
 
 ### Installing a Server
 
-1. Open **Settings > MCP Servers** and click **Add MCP Server**
+1. Open **Settings → MCP servers** and click **Add MCP Server**
 2. Pick a known server from the quick-add cards (OAuth servers are labeled, with their prerequisites called out — e.g. "needs a Google OAuth client JSON"), or choose **Custom server** / **Remote HTTP server**
 3. The configuration form pre-fills from your pick: package, environment variables, run location, auth flow, and any credential files the server needs (with a file picker per required file)
 4. Click **Connect** to verify: it runs the real pipeline — credential files land where the server runs, the OAuth browser flow runs when declared, and the result shows the discovered tool count (or the server's own error output, verbatim). You can save without connecting; the row shows **Not verified** until a connect succeeds

@@ -851,7 +851,7 @@ Use this to fetch exact schemas before writing lambda code that calls `adf.<tool
 
 ## Enabling and Disabling Tools
 
-In the Agent configuration panel, each tool has two independent toggles:
+In **Agent → Config → Tools**, each tool row has four controls, left to right: a lock (**Locked**, see [Tool Locking](#tool-locking)), **Needs approval** (a person with a check; stored as `restricted: true`, see [Restricted Tools](#restricted-tools)), **Visible** (an eye) and an enabled checkbox. Each group header sets **Needs approval**, visibility and enabled for every tool in the group. Enabled and visible are two independent toggles:
 
 - **Enabled** — whether the tool exists for the agent at all, and the **only** gate on whether a call executes. A disabled tool cannot be called by the LLM, lambdas, or other code (the one exception: a disabled tool that is also `restricted` may still be called by authorized code).
 - **Visible** — whether the tool is advertised in the LLM's tool schema. This controls only what the model is *shown*; it does **not** gate execution. An enabled tool is callable from the LLM loop whether or not it is visible.
@@ -872,7 +872,7 @@ Set `visible: false` on an enabled tool to remove it from the LLM's advertised s
 
 ### Restricted Tools
 
-Any tool can have `restricted: true`. This is the unified access control for gating a tool behind authorization. When a tool is restricted:
+Any tool can have `restricted: true`. This is the unified access control for gating a tool behind authorization. Studio labels this flag **Needs approval**; its **Restricted** label is for things only authorized code can call or write, such as restricted methods and protected tables. When a tool is restricted:
 
 - **LLM loop calls** — if also `enabled`, the runtime creates a task in `adf_tasks` with `pending_approval` status and shows a confirmation dialog (HIL). The task can be approved via the UI dialog or externally via `task_resolve` (e.g., from an `on_task_create` trigger lambda).
 - **Authorized code** — can call the tool directly without approval, regardless of `enabled`.
@@ -925,7 +925,7 @@ These controls serve different purposes:
 |---------|-------------|----------------|-------------------|
 | **Enabled** | Tool exists and can be called by code | All callers | Yes (unless locked) |
 | **Visible** | Tool is included in the LLM's active tool schema | LLM loop only | Yes (unless locked) |
-| **Restricted** | Requires trust to call (HIL or authorized code) | All callers | No — owner only |
+| **Needs approval** (`restricted`) | Requires trust to call (HIL or authorized code) | All callers | No — owner only |
 | **Locked** | Prevents agent from modifying this tool's config | Agent's `sys_update_config` | No — owner only |
 
 **Important:** Disabling a tool without locking it is a *suggestion*, not a boundary. If `sys_update_config` is available, the agent can re-enable disabled tools. To enforce a tool being off, either lock it or disable `sys_update_config`.
@@ -1019,4 +1019,4 @@ An agent can drop all of them at once with `bare_prompt` (see
 [Settings › System Prompt](settings.md#base-prompt-global-system-prompt)) — tool schemas are
 unaffected, and so are per-turn dynamic instructions, which have their own checkboxes.
 
-These sections are editable in **Settings > General > Tool Instructions**. See [Settings](settings.md#tool-instructions) for details.
+These sections are editable in **Settings → Prompts → Tool instructions**. See [Settings](settings.md#tool-instructions) for details.

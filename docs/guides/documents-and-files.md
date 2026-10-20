@@ -139,7 +139,7 @@ Key features:
 - **Image viewing** — PNG, JPEG, GIF, WebP, SVG, BMP, ICO, and AVIF files open in a read-only image tab, fitted to the view; click the image or use **Actual size** to see it at 100%. The footer shows dimensions, file size, and type. Images over 25 MB are not displayed. An image tab does not update while it is showing — use **Reload** after the agent rewrites the file
 - **Binary file handling** — Other binary files show a placeholder instead of attempting to render content
 
-When you open an ADF file, `README.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
+The first time you open an ADF file, `README.md`, `mind.md` and `soul.md` open in editor tabs, with `README.md` in front; after that Studio reopens the tabs you left open. Clicking files in the Files panel opens them in new tabs.
 
 ![The tabbed editor with README.md and charter.md tabs open, the markdown formatting toolbar (bold, italic, headings, lists, quote, code, table) above the rendered document, and a Raw toggle on the right.](../assets/screenshots/editor-tabs.png)
 

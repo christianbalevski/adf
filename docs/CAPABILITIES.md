@@ -119,7 +119,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 
 ## Staying in control
 
-- **Approve before it acts** — mark any tool as restricted and the agent must ask you before using it, with a plain-English reason. You set this per tool.
+- **Approve before it acts** — mark any tool **Needs approval** and the agent must ask you before using it, with a plain-English reason. You set this per tool.
 - **Approve once or always** — approve a single call, reject with feedback the agent can act on, or permanently lift the gate for that tool on that agent.
 - **Approvals everywhere** — the same request shows in the chat, in a global bell menu, in the Mesh view, and as an OS notification when Studio is not focused. Resolving it in one place clears it everywhere.
 - **Lock what the agent cannot change** — lock any config field, tool setting, timer, or trigger so the agent cannot modify it.
@@ -185,19 +185,23 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 ## The Studio app
 
 - **Home screen** — a status line with agent, running, failing, and token counts, a connect-provider card until you have one, and a composer where sending a message creates a new agent.
-- **Sidebar** — every tracked agent with live status, grouped by folder; start or stop a whole folder at once.
-- **Agent dock** — four tabs (Loops, Inbox, Files, Agent), with Timers, Identity, Skills, and Config as sub-tabs under Agent. The container desktop opens as its own editor tab.
+- **Title bar** — Home, Mesh, Settings, a notifications bell for every pending approval and question, and the open agent's avatar, name, state and current step, with Start or Off.
+- **Sidebar** — every tracked agent with live status, grouped by folder, with a Running list; markers for agents waiting on you, not reviewed, or in their own window; start or stop a whole folder at once.
+- **Go to agent** — `Cmd/Ctrl + K` searches every tracked agent; Help → Keyboard Shortcuts lists every shortcut.
+- **Agent windows** — open an agent in a window of its own.
+- **Agent dock** — five tabs (Overview, Loops, Inbox, Files, Agent), with Timers, Identity, Skills, and Config as sub-tabs under Agent. It keeps its tab, width and collapsed state. The chat can move to the center as a pinned Loops tab. The container desktop opens as its own editor tab.
+- **Chat controls** — Stop (or Esc) ends a running turn and keeps what the model streamed; queued messages, Send now, attachment chips, and Review N calls for a batch of pending approvals.
 - **Rich editor** — WYSIWYG markdown with a raw toggle and a multi-tab code editor with syntax highlighting, live-updating as the agent writes.
 - **File browser** — drag-and-drop upload, previews, protection badges, rename, download, delete.
 - **Local tables and metadata views** — inspect the agent's own tables and key-value store.
-- **Inbox view** — merged inbox and outbox with status filters and full message detail.
+- **Inbox view** — merged inbox and outbox with status filters, search and full message detail.
 - **Tool call inspector** — every tool call with arguments, results, diffs, shell output, and timing.
-- **Bottom panel** — logs and tasks with filters, expandable payloads, and auto-refresh.
+- **Bottom panel** — logs and tasks with filters, expandable payloads, and a Live toggle.
 - **Mesh view** — an RTS-style hex map where every agent is a tile, folders are territories, and channels are stations. Watch messages flow, spot who needs you, box-select, assign control groups, and issue commands (start, stop, message, hibernate, restart) from the map.
 - **Map lenses** — switch the map between state, token burn, model, health, and lineage views.
 - **Inline approvals on the map** — answer an agent's question or approve a tool right on its tile.
 - **Peer platforms** — agents discovered on other machines appear as satellite stations with their verified identity and served files.
-- **Theme, font, and scale** — light/dark, font family, UI scale.
+- **Appearance** — light, dark or system theme, orbital or emoji avatars, chat width, font family, UI scale.
 - **Auto-update** — checks GitHub releases, downloads on your click, restarts to install. The check can be turned off.
 - **No telemetry** — no analytics SDK; crash dumps stay local. The update check, provider connection checks and live catalogs each have an off switch, and [every outbound connection](NETWORK.md) is listed.
 - **Keyboard shortcuts** — throughout: Help → Keyboard Shortcuts lists them all, the map has its own reference card (?), and Cmd/Ctrl+K goes to any tracked agent.
@@ -367,6 +371,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 
 *Full reference: [Settings](guides/settings.md) · [Daemon Runtime Settings](daemon/runtime-settings.md)*
 
+- **One save model** — a Settings control saves when it changes; the page header shows Saved, a refused write puts the control back with a "Not saved:" notice and its reason, and a removal that can be taken back offers Undo.
 - **Coalesced writes** — bursts collapse into one flush; identity-critical writes flush synchronously.
 - **Merge on stale** — a write detects another process changed the file and merges rather than clobbering.
 - **Corrupt-file quarantine** — an unreadable settings file is moved aside, never deleted, and writes are refused if quarantine fails.

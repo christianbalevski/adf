@@ -7,7 +7,7 @@ see_also:
 
 # Settings
 
-ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl + ,`. Settings are global and apply across all agents.
+Open Settings with the gear in the title bar, Edit → Settings… (ADF Studio → Settings… on macOS), or `Cmd/Ctrl + ,`. Settings are global and apply across all agents. Settings replaces the sidebar with its own navigation: **Back to app** returns to where you were, and **Search settings** filters the pages.
 
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
@@ -62,7 +62,7 @@ This computer's runtime DID. It identifies this computer to other computers; two
 
 ### Agent identities
 
-Per-agent DIDs and keystores are managed separately in the **Agent panel → Identity** tab; attestation publishing is toggled per agent in **Config → Security**.
+Per-agent DIDs and keystores are managed separately in the dock's **Agent → Identity** tab; attestation publishing is toggled per agent in **Agent → Config → Security**.
 
 ## Providers
 
@@ -280,17 +280,17 @@ Each ADF file can store its own copy of a provider independently of the app-wide
 Per-ADF provider configs are managed from:
 
 - **Settings > Providers** — Open a provider and use **Agent overrides** to add an agent and set its API key, default model, request delay, and custom parameters.
-- **Agent > Config** — The agent's configuration panel shows which provider is being used and whether it has an override.
+- **Agent → Config** — The agent's configuration panel shows which provider is being used and whether it has an override.
 
 Credentials are stored in the ADF's `adf_identity` table (encrypted at rest), mirroring the pattern used for MCP server and channel adapter credentials. ADF files with stored provider configurations will continue to work independently, even if the provider is not listed in the app-wide settings.
 
 ## MCP Servers
 
-MCP servers are managed through the **MCP Status Dashboard** in Settings. This configuration is app-level, not agent-reachable; agents request changes from their principal. See [MCP Integration](mcp-integration.md) for full details.
+MCP servers are managed on **Settings → MCP servers**. This configuration is app-level, not agent-reachable; agents request changes from their principal. See [MCP Integration](mcp-integration.md) for full details.
 
 ### Status Dashboard
 
-From **Settings > MCP Servers**:
+From **Settings → MCP servers**:
 
 - **Add MCP Server** — One button opens the configuration modal: pick a known server from the curated quick-add cards (OAuth servers labeled, prerequisites called out) or configure a custom/remote server; every option — package, args, env vars, run location, auth flow, credential files, agent availability — lives in the same form
 - **Connect** — The modal's verify button runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
@@ -359,11 +359,11 @@ A second tier is **locked by default** rather than hard-denied: `security.allow_
 
 ## Web (Mesh Server)
 
-The **Web** tab shows the status of the mesh HTTP server and all agents currently serving content.
+**Settings → Networking** shows the status of the mesh HTTP server and all agents currently serving content.
 
 ![Settings → Networking showing the Mesh startup card with a Disable button, the mesh server running on loopback with its port, the Allow LAN access checkbox, per-interface LAN addresses with copy links, and the Discovered runtimes list with a recheck button and the Discover peers over Tailscale option.](../assets/screenshots/settings-networking.png)
 
-The tab has, in this order: the network status line, **Mesh**, **Server** (status, **Port**, **LAN**, addresses, agent visibility), **Discovery** (runtimes found, **Tailscale**, manual **Peers**), **Agent endpoints** and **Remote access**.
+The page has, in this order: the network status line, **Mesh**, **Server** (status, **Port**, **LAN**, addresses, agent visibility), **Discovery** (runtimes found, **Tailscale**, manual **Peers**), **Agent endpoints** and **Remote access**.
 
 ### Network status
 
@@ -413,7 +413,7 @@ See [HTTP Serving](serving.md) for the full guide on configuring what agents ser
 
 ## System Prompt
 
-The system prompt is assembled dynamically from two parts: a **base prompt** and **conditional tool instruction sections**. Both are editable in **Settings > General**.
+The system prompt is assembled dynamically from two parts: a **base prompt** and **conditional tool instruction sections**. Both are editable in **Settings → Prompts**.
 
 ### Base Prompt (Global System Prompt)
 
@@ -439,7 +439,7 @@ A section whose text you blank in Settings is skipped entirely rather than emitt
 
 ### Tool Instructions
 
-Below the base prompt, the **Tool Instructions** section lists conditional prompt blocks that are injected based on the agent's enabled tools and features. Each section has an expandable editor with the same Save, Revert and Reset as the base prompt. **Modified** marks a saved section that differs from the default; **Unsaved** marks a draft.
+Below the base prompt, the **Tool instructions** group lists conditional prompt blocks that are injected based on the agent's enabled tools and features. Each section has an expandable editor with the same Save, Revert and Reset as the base prompt. **Modified** marks a saved section that differs from the default; **Unsaved** marks a draft.
 
 | Section | Injected When |
 |---------|---------------|
@@ -463,11 +463,16 @@ See [Saving](#saving). **Back to app** closes Settings.
 
 ## Theme
 
-Toggle between **light** and **dark** mode.
+**Studio → Appearance** has:
+
+- **Theme**: **Light**, **Dark** or **System**.
+- **Agent avatars**: **Orbital** or **Emoji**, in lists, the title bar and the Mesh view.
+- **Chat width**: **Comfortable** or **Full**, for the chat when it is in the center.
+- **Font family** and **UI scale**.
 
 ## Token Usage
 
-ADF Studio tracks token usage across all agents. View usage in **Settings > Token Usage**.
+ADF Studio tracks token usage across all agents. View it in **Settings → Usage**. Home's "tokens today" opens the same page.
 
 ### Usage Breakdown
 
@@ -479,8 +484,9 @@ ADF Studio tracks token usage across all agents. View usage in **Settings > Toke
 
 ### Managing Usage Data
 
-- **Clear All** — Delete all tracked usage data
-- Data is stored locally and not sent anywhere
+- **Download JSON** saves a copy of the usage data.
+- **Clear history…** deletes every token count, after a confirmation whose button reads **Clear usage**.
+- Data is stored locally and not sent anywhere.
 
 ## Tracked Directories
 
@@ -489,13 +495,14 @@ ADF Studio monitors directories for `.adf` files. When a new file appears in a t
 ### Managing Directories
 
 - Directories are auto-tracked when you create or open a file
-- You can manually add or remove tracked directories
+- **Track folder…** (the sidebar's folder button, or File → Track Folder…, `Cmd/Ctrl + Shift + O`) adds one; **Untrack folder…** in a folder row's right-click menu removes it
 - The sidebar shows a hierarchical tree of tracked directories and their files
 
 ### Directory Actions
 
 - **Start all** — Start all agents in a directory
 - **Stop all** — Stop all agents in a directory
+- **Rescan** (right-click the folder row) — Read the folder again
 
 ## Application Settings
 
@@ -519,7 +526,8 @@ Displays structured log entries from `adf_logs` — including lambda trigger exe
 - **Origin filtering** — Filter by origin (e.g., `timer`, `lambda`, `serving`, `adf_shell`). The dropdown is populated dynamically from the origins present in the current log entries.
 - **Structured columns** — Each log entry shows timestamp, level, origin, event type, target, and message
 - **Expandable data** — Click a row to expand and view the full JSON data payload
-- **Auto-refresh** — Toggle auto-refresh to poll for new log entries
+- **Text filter** — The **Filter…** box narrows the list
+- **Live** — On by default: new entries appear every 2 seconds while the panel is open. Click it to pause; the panel then shows when it last read the logs
 - **Per-ADF** — Logs reload automatically when navigating between ADF files
 
 #### Log Entry Fields
@@ -541,7 +549,7 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 - **Status filtering** — Filter by `pending`, `pending_approval`, `running`, `completed`, `failed`, `denied`, or `cancelled`
 - **Expandable rows** — Click a task to view its full arguments, result, or error details
-- **Auto-refresh** — Toggle auto-refresh to poll for task status changes
+- **Live** — Off by default; on, the list refreshes every 2 seconds while the panel is open
 - **Per-ADF** — Tasks reload automatically when navigating between ADF files
 
 ## Connection
@@ -586,8 +594,4 @@ On Linux, set the variable in the terminal you start Studio from. The variable a
 
 ## Keyboard Shortcuts
 
-| Shortcut | Action |
-|----------|--------|
-| `Cmd/Ctrl + ,` | Open Settings |
-| `Cmd/Ctrl + S` | Save current editor tab |
-| `Cmd/Ctrl + W` | Close active editor tab |
+`Cmd/Ctrl + ,` opens Settings. **Help → Keyboard Shortcuts** lists every shortcut; [ADF Studio](../ADF_STUDIO_DOCS.md#keyboard-shortcuts) has the main ones.

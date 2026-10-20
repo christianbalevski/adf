@@ -35,7 +35,7 @@ Assume the user is non-technical: they shouldn't need to know about config, rout
 
 ## Prerequisites
 
-1. **Mesh enabled** — Toggle mesh on in **Settings > Web** or the sidebar (this and the port/LAN server configuration are owner-only — not agent-writable; ask your principal)
+1. **Mesh enabled** — Turn the mesh on in **Settings → Networking → Mesh** (this and the port/LAN server configuration are owner-only — not agent-writable; ask your principal)
 2. **Agent running** — The agent must be started (foreground or background)
 3. **Handle set** — The agent needs a URL handle (defaults to the filename if not set)
 
@@ -357,13 +357,12 @@ Route validation rules:
 
 ## UI Configuration
 
-### Settings > Web Tab
+### Settings → Networking
 
-The **Web** tab in Settings shows:
+**Settings → Networking** shows:
 
-- **Server status** — Running/stopped indicator with host and port
-- **Mesh toggle** — Enable/disable the mesh
-- **LAN access toggle** — Bind to `0.0.0.0` instead of `127.0.0.1` for local network access
+- **Mesh** — The switch that turns the mesh and its server on or off
+- **Server** — Running/stopped indicator with host and port, and the **LAN** switch, which also listens on this computer's private-network addresses on networks you allowed (see [Settings › LAN Access](settings.md#lan-access))
 - **Agent endpoints** — Table of all agents currently serving, with handles, URLs, and serving mode badges
 
 ### Agent Config > Serving Section
