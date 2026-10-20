@@ -24,6 +24,10 @@
  *   (another connection) is not restored and not kept.
  * - **A window that never opened its agent** (the open failed and the owner
  *   did not retry) is not saved.
+ * - **Runtimes** (multi-runtime.md §7.5). An entry may name its agent's
+ *   runtime (`runtimeId`, and the fingerprint it was paired with); one
+ *   without it is on the list's `runtime`. A window is matched within its
+ *   runtime only. A list of This computer only is byte-identical to before.
  */
 
 export const AGENT_WINDOWS_KEY = 'agentWindows'
@@ -34,6 +38,10 @@ export interface SavedAgentWindow {
   agentId: string | null
   filePath: string
   bounds?: WindowBounds
+  /** The agent's runtime when it is not the list's `runtime` (multi-runtime.md §7.5). */
+  runtimeId?: string
+  /** The fingerprint of that runtime's saved connection. */
+  fingerprint?: string
 }
 
 export interface SavedAgentWindows {
@@ -59,6 +67,10 @@ export interface AgentWindowHandle {
 export interface AgentWindowRequest {
   filePath: string
   agentId?: string | null
+  /** The agent's runtime; omitted for the primary runtime. */
+  runtimeId?: string | null
+  /** That runtime's saved fingerprint, kept with the window. */
+  fingerprint?: string
   /** The window title; default the file name without `.adf`. */
   name?: string
   bounds?: WindowBounds
@@ -70,10 +82,11 @@ export interface AgentWindowsDeps {
    * its events; `restored`: a window the launch reopens, shown without
    * taking focus.
    */
-  create(request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean }, events: { closed(): void; moved(): void }): AgentWindowHandle
+  create(request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean; runtimeId?: string }, events: { closed(): void; moved(): void }): AgentWindowHandle
   /** The agent the window shows now (its session's current file), or null before it opened one. */
   current(id: number): { filePath: string; agentId: string | null } | null
-  samePath(a: string, b: string): boolean
+  /** Path equality under the rule of the runtime (omitted: the primary). */
+  samePath(a: string, b: string, runtimeId?: string): boolean
   settings: { get(key: string): unknown; set(key: string, value: unknown): void }
   /** The runtime the list is saved for (DaemonWindows.runtime); null while unknown: the list is then neither read nor written. */
   runtime(): string | null
@@ -145,6 +158,8 @@ export function parseSavedAgentWindows(raw: unknown, runtime: string): SavedAgen
       agentId: typeof entry.agentId === 'string' ? entry.agentId : null,
       filePath: entry.filePath,
       ...(isBounds(entry.bounds) ? { bounds: { x: entry.bounds.x, y: entry.bounds.y, width: entry.bounds.width, height: entry.bounds.height } } : {}),
+      ...(typeof entry.runtimeId === 'string' && entry.runtimeId ? { runtimeId: entry.runtimeId } : {}),
+      ...(typeof entry.fingerprint === 'string' && entry.fingerprint ? { fingerprint: entry.fingerprint } : {}),
     })
   }
   return out
@@ -161,6 +176,10 @@ interface OpenWindow {
   failed: boolean
   /** Closed by closeAll: carried, not dropped. */
   keep: boolean
+  /** The agent's runtime; undefined for the primary. */
+  runtimeId?: string
+  /** That runtime's fingerprint, kept from the saved entry. */
+  fingerprint?: string
   /** Reopened by restore: a failed open drops it only when the agent is gone. */
   restored: boolean
 }
@@ -191,32 +210,43 @@ export class AgentWindows {
     const saved = parseSavedAgentWindows(this.deps.settings.get(AGENT_WINDOWS_KEY), runtime)
     const held = this.heldUntilKnown
     this.heldUntilKnown = []
-    this.carriedList = [...held, ...saved.filter((e) => !held.some((h) => this.matches(h, e.filePath, e.agentId)))]
+    this.carriedList = [...held, ...saved.filter((e) => !held.some((h) => this.matches(h, e.filePath, e.agentId, e.runtimeId)))]
     return this.carriedList
   }
 
-  private matches(entry: { filePath: string; agentId: string | null }, filePath: string, agentId?: string | null): boolean {
-    return (!!agentId && entry.agentId === agentId) || this.deps.samePath(entry.filePath, filePath)
+  /** The same agent ref (multi-runtime.md §1.3): the same runtime, then the same agent id or the same path under that runtime's rule. */
+  private matches(entry: { filePath: string; agentId: string | null; runtimeId?: string }, filePath: string, agentId?: string | null, runtimeId?: string | null): boolean {
+    if ((entry.runtimeId || undefined) !== (runtimeId || undefined)) return false
+    return (!!agentId && entry.agentId === agentId) || this.deps.samePath(entry.filePath, filePath, entry.runtimeId)
   }
 
   /** The agent a window shows: its session's file once known, else what it was opened for. */
-  private shown(w: OpenWindow): { filePath: string; agentId: string | null } {
+  private shown(w: OpenWindow): { filePath: string; agentId: string | null; runtimeId?: string } {
+    const runtime = w.runtimeId ? { runtimeId: w.runtimeId } : {}
     const current = this.deps.current(w.handle.id)
     if (current) {
       w.opened = true
       w.failed = false
-      return { filePath: current.filePath, agentId: current.agentId ?? w.agentId }
+      return { filePath: current.filePath, agentId: current.agentId ?? w.agentId, ...runtime }
     }
-    return { filePath: w.filePath, agentId: w.agentId }
+    return { filePath: w.filePath, agentId: w.agentId, ...runtime }
   }
 
-  /** The window that shows this agent, or null. */
-  find(filePath: string, agentId?: string | null): AgentWindowHandle | null {
+  /** The window that shows this agent (on `runtimeId`, omitted: the primary), or null. */
+  find(filePath: string, agentId?: string | null, runtimeId?: string | null): AgentWindowHandle | null {
     for (const w of this.windows.values()) {
       if (w.handle.isDestroyed()) continue
-      if (this.matches(this.shown(w), filePath, agentId)) return w.handle
+      if (this.matches(this.shown(w), filePath, agentId, runtimeId)) return w.handle
     }
     return null
+  }
+
+  /** Close one agent window because its runtime left the set: it leaves the saved list. */
+  close(id: number): void {
+    const w = this.windows.get(id)
+    if (!w || w.handle.isDestroyed()) return
+    this.log.log(`[AgentWindows] Closing the window of ${w.filePath}${w.runtimeId ? ` on ${w.runtimeId}` : ''}: its runtime is no longer connected`)
+    w.handle.close()
   }
 
   /** Open in new window: focuses the agent's window when it has one. */
@@ -225,7 +255,8 @@ export class AgentWindows {
   }
 
   private openWindow(request: AgentWindowRequest, restored: boolean): { id: number; created: boolean } {
-    const existing = this.find(request.filePath, request.agentId)
+    const runtimeId = request.runtimeId || undefined
+    const existing = this.find(request.filePath, request.agentId, runtimeId)
     if (existing) {
       if (!restored) {
         if (existing.isMinimized()) existing.restore()
@@ -235,10 +266,10 @@ export class AgentWindows {
     }
     const agentId = request.agentId ?? null
     // Opened now: it is no longer one to reopen.
-    if (this.deps.runtime() !== null) this.carriedList = this.carried.filter((e) => !this.matches(e, request.filePath, agentId))
+    if (this.deps.runtime() !== null) this.carriedList = this.carried.filter((e) => !this.matches(e, request.filePath, agentId, runtimeId))
     let id = -1
     const handle = this.deps.create(
-      { filePath: request.filePath, agentId, name: request.name || agentWindowName(request.filePath), ...(request.bounds ? { bounds: request.bounds } : {}), restored },
+      { filePath: request.filePath, agentId, name: request.name || agentWindowName(request.filePath), ...(request.bounds ? { bounds: request.bounds } : {}), restored, ...(runtimeId ? { runtimeId } : {}) },
       {
         closed: () => {
           const w = this.windows.get(id)
@@ -250,8 +281,8 @@ export class AgentWindows {
       },
     )
     id = handle.id
-    this.windows.set(id, { handle, filePath: request.filePath, agentId, opened: false, failed: false, keep: false, restored })
-    this.log.log(`[AgentWindows] Opened a window for ${request.filePath}`)
+    this.windows.set(id, { handle, filePath: request.filePath, agentId, opened: false, failed: false, keep: false, restored, ...(runtimeId ? { runtimeId } : {}), ...(runtimeId && request.fingerprint ? { fingerprint: request.fingerprint } : {}) })
+    this.log.log(`[AgentWindows] Opened a window for ${request.filePath}${runtimeId ? ` on ${runtimeId}` : ''}`)
     this.save()
     this.changed()
     return { id, created: true }
@@ -262,8 +293,8 @@ export class AgentWindows {
   }
 
   /** The agents shown in agent windows now (a window whose open failed is left out). */
-  agents(): Array<{ filePath: string; agentId: string | null }> {
-    return this.list().map(({ filePath, agentId }) => ({ filePath, agentId }))
+  agents(): Array<{ filePath: string; agentId: string | null; runtimeId?: string }> {
+    return this.list().map(({ filePath, agentId, runtimeId }) => ({ filePath, agentId, ...(runtimeId ? { runtimeId } : {}) }))
   }
 
   /**
@@ -281,7 +312,7 @@ export class AgentWindows {
       this.changed()
       return
     }
-    const entry = { agentId: w.agentId, filePath: w.filePath }
+    const entry = { agentId: w.agentId, filePath: w.filePath, ...(w.runtimeId ? { runtimeId: w.runtimeId } : {}) }
     void Promise.resolve().then(() => this.deps.check(entry)).catch(() => 'unknown' as const).then((found) => {
       if (found !== 'gone' || w.opened || !this.windows.has(id)) return
       w.failed = true
@@ -298,7 +329,7 @@ export class AgentWindows {
       if (w.handle.isDestroyed()) continue
       const shown = this.shown(w)
       if (w.failed) continue
-      out.push({ agentId: shown.agentId, filePath: shown.filePath, bounds: w.handle.getBounds() })
+      out.push({ agentId: shown.agentId, filePath: shown.filePath, bounds: w.handle.getBounds(), ...(shown.runtimeId ? { runtimeId: shown.runtimeId, ...(w.fingerprint ? { fingerprint: w.fingerprint } : {}) } : {}) })
     }
     return out
   }
@@ -321,7 +352,7 @@ export class AgentWindows {
     // Never written for an unknown runtime: it would replace the saved list with one nobody can restore.
     if (runtime === null) return
     const open = this.list()
-    const carried = this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))
+    const carried = this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId, e.runtimeId)))
     this.deps.settings.set(AGENT_WINDOWS_KEY, { runtime, windows: [...open, ...carried] } satisfies SavedAgentWindows)
   }
 
@@ -346,9 +377,9 @@ export class AgentWindows {
   closeAll(): void {
     this.restoreGeneration++
     const open = this.list()
-    if (this.deps.runtime() !== null) this.carriedList = [...open, ...this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))]
+    if (this.deps.runtime() !== null) this.carriedList = [...open, ...this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId, e.runtimeId)))]
     // Runtime not known yet: kept here and carried, then saved, once it is.
-    else this.heldUntilKnown = [...open, ...this.heldUntilKnown.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId)))]
+    else this.heldUntilKnown = [...open, ...this.heldUntilKnown.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId, e.runtimeId)))]
     for (const w of this.windows.values()) {
       w.keep = true
       if (!w.handle.isDestroyed()) w.handle.close()
@@ -379,7 +410,7 @@ export class AgentWindows {
     let skipped = 0
     for (const entry of [...this.carried]) {
       if (!live()) break
-      if (this.find(entry.filePath, entry.agentId)) {
+      if (this.find(entry.filePath, entry.agentId, entry.runtimeId)) {
         this.carriedList = this.carried.filter((e) => e !== entry)
         continue
       }
@@ -399,7 +430,7 @@ export class AgentWindows {
         this.log.log(`[AgentWindows] Not reopening the window of ${entry.filePath} this time: it could not be checked; it stays saved`)
         continue
       }
-      this.openWindow({ filePath: entry.filePath, agentId: entry.agentId, ...(entry.bounds ? { bounds: entry.bounds } : {}) }, true)
+      this.openWindow({ filePath: entry.filePath, agentId: entry.agentId, ...(entry.bounds ? { bounds: entry.bounds } : {}), ...(entry.runtimeId ? { runtimeId: entry.runtimeId, ...(entry.fingerprint ? { fingerprint: entry.fingerprint } : {}) } : {}) }, true)
       opened++
     }
     if (opened + skipped > 0) {

@@ -91,3 +91,30 @@ it('never writes outside the agent\'s folder', async () => {
   // An agent named like the archive never collides with it.
   expect(agentFolder('archive.adf')).toMatch(/^archive-[0-9a-f]{8}$/)
 })
+
+it('a copy of another runtime\'s agent gets its own folder and is listed with its runtime (multi-runtime.md §4.5)', async () => {
+  const r = root()
+  const remotePath = '/srv/agents/agent-1.adf'
+  expect(await stashRecovery(r, { agentFilePath: remotePath, path: 'config.json', content: 'remote text', runtimeId: 'remote:host-1' })).toBe(true)
+  expect(await stashRecovery(r, { agentFilePath: remotePath, path: 'notes/a.md', content: 'other remote', runtimeId: 'remote:host-2' })).toBe(true)
+  expect(await stashRecovery(r, { agentFilePath: ONE, path: 'notes/a.md', content: 'local text' })).toBe(true)
+  // The primary runtime's folder is the one it always was.
+  expect(readFileSync(join(r, agentFolder(ONE), 'notes', 'a.md'), 'utf-8')).toBe('local text')
+  expect(agentFolder(remotePath, process.platform, 'remote:host-1')).not.toBe(agentFolder(remotePath, process.platform, 'remote:host-2'))
+  const listed = await listRecovered(r)
+  expect(listed.map((f) => [f.agent, f.path, f.runtimeId ?? 'local']).sort()).toEqual([
+    ['agent-1', 'config.json', 'remote:host-1'],
+    ['agent-1', 'notes/a.md', 'local'],
+    ['agent-1', 'notes/a.md', 'remote:host-2'],
+  ])
+  expect(listed.find((f) => !f.runtimeId)).not.toHaveProperty('runtimeId')
+  // Removed: the folder and its runtime marker go.
+  await stashRecovery(r, { agentFilePath: remotePath, path: 'config.json', content: null, runtimeId: 'remote:host-1' })
+  const folder = join(r, agentFolder(remotePath, process.platform, 'remote:host-1'))
+  expect(existsSync(folder)).toBe(false)
+  expect(existsSync(`${folder}.runtime`)).toBe(false)
+  // Dismissed: the archived copy keeps its runtime marker.
+  expect(await archiveRecovered(r)).toBe(2)
+  expect(await listRecovered(r)).toEqual([])
+  expect(existsSync(`${join(r, agentFolder(remotePath, process.platform, 'remote:host-2'))}.runtime`)).toBe(false)
+})

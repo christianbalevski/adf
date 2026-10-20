@@ -16,11 +16,13 @@ import { IPC } from '../../src/shared/constants/ipc-channels'
 import {
   CHANNEL_MAP,
   RAW_CHANNELS,
+  channelScope,
   listChannelGaps,
   type ChannelEntry,
   type ChannelKind,
   type MappedChannel,
 } from '../../src/main/backend/channel-map'
+import { RUNTIME_PUSH_CHANNELS } from '../../src/shared/constants/runtime-push-channels'
 
 const ROOT = join(__dirname, '..', '..')
 
@@ -167,6 +169,50 @@ describe('channel map', () => {
     const offenders = entries
       .filter(([, entry]) => entry.note && /\bembedded\b/i.test(entry.note))
       .map(([channel, entry]) => `${nameOf.get(channel) ?? channel}: ${entry.note}`)
+    expect(offenders).toEqual([])
+  })
+})
+
+describe('runtime scopes (docs/design/multi-runtime.md §4.2)', () => {
+  const AGGREGATE = [IPC.APPROVALS_CHANGED, IPC.CONNECTION_CHANGED, IPC.WINDOW_AGENTS_CHANGED, IPC.APPROVALS_REVEAL].sort()
+  /** `local` channels reviewed in phase 1 that act on one runtime. */
+  const LOCAL_ON_RUNTIME = [IPC.REMOTE_PICKER_REQUEST, IPC.REMOTE_PICKER_RESPOND].sort()
+
+  it('gives every entry a scope: runtime for proxied and remote classes, studio for local, aggregate for the listed four', () => {
+    const bad: string[] = []
+    for (const [channel, entry] of entries) {
+      const label = nameOf.get(channel) ?? channel
+      if (!['runtime', 'studio', 'aggregate'].includes(entry.scope)) { bad.push(`${label}: no scope`); continue }
+      if (channelScope(channel) !== entry.scope) bad.push(`${label}: channelScope disagrees`)
+      if ((AGGREGATE as string[]).includes(channel)) { if (entry.scope !== 'aggregate') bad.push(`${label}: not aggregate`); continue }
+      if ((LOCAL_ON_RUNTIME as string[]).includes(channel)) { if (entry.scope !== 'runtime') bad.push(`${label}: not runtime`); continue }
+      const want = entry.class === 'local' ? 'studio' : 'runtime'
+      if (entry.scope !== want) bad.push(`${label}: ${entry.scope}, expected ${want}`)
+    }
+    expect(bad).toEqual([])
+    expect(entries.filter(([, e]) => e.scope === 'aggregate').map(([c]) => c).sort()).toEqual(AGGREGATE)
+  })
+
+  it('aggregate channels are pushes: there is no aggregate call to tag', () => {
+    expect(entries.filter(([, e]) => e.scope === 'aggregate' && e.kind !== 'push').map(([c]) => nameOf.get(c) ?? c)).toEqual([])
+  })
+
+  it('keeps preload\'s runtime push list equal to the map\'s', () => {
+    const fromMap = entries.filter(([, e]) => e.kind === 'push' && e.scope === 'runtime').map(([c]) => c).sort()
+    expect([...RUNTIME_PUSH_CHANNELS].sort()).toEqual(fromMap)
+  })
+
+  it('studio channels registered outside the backend registration go through the guard that refuses a tag', () => {
+    // daemon-mode/index.ts routes its own studio channels (and refuses a tag there); ipc/index.ts is the embedded backend.
+    const exempt = [join('backend', 'daemon-mode', 'index.ts'), join('main', 'ipc', 'index.ts')]
+    const offenders: string[] = []
+    for (const f of mainFiles) {
+      if (exempt.some((e) => f.path.endsWith(e))) continue
+      const registersStudio = [...f.text.matchAll(/ipcMain\.(?:handle|on)\(\s*IPC\.([A-Z_0-9]+)/g)]
+        .some((m) => CHANNEL_MAP[(IPC as Record<string, MappedChannel>)[m[1]]]?.scope === 'studio')
+      if (!registersStudio) continue
+      if (!/import \{ ipcMain \} from '[./]+(backend\/)?studio-ipc'/.test(f.text)) offenders.push(f.path)
+    }
     expect(offenders).toEqual([])
   })
 })

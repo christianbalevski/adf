@@ -1,4 +1,5 @@
 import type { PendingNotification } from '../../../shared/types/ipc.types'
+import { noticeKey, type RuntimeId } from '../../../shared/runtime-tag'
 // One source for main/index.ts and the real-Electron test (tests/electron/adf-file-window-header.cjs).
 import ADF_FILE_WINDOW from './adf-file-window.json'
 
@@ -25,30 +26,44 @@ export { ADF_FILE_WINDOW }
  */
 export const ADF_WINDOW_HEADER = ADF_FILE_WINDOW.windowHeader
 
-/** One window as the notice rule sees it. `filePath`: the agent it shows (its session's current file). */
+/**
+ * One window as the notice rule sees it. `filePath`: the agent it shows (its
+ * session's current file); `runtimeId`: that agent's runtime, omitted for the
+ * primary runtime (multi-runtime.md §6.1: the rule compares agent refs).
+ */
 export interface WindowView {
   /** The window's webContents id. */
   id: number
   main: boolean
   focused: boolean
   filePath: string | null
+  runtimeId?: RuntimeId
 }
 
-/** The window that shows the notice of a request for `filePath`, or null when there is no window. */
-export function noticeWindow(filePath: string, windows: readonly WindowView[], samePath: (a: string | null, b: string | null) => boolean): number | null {
-  const focused = windows.find((w) => w.focused && samePath(w.filePath, filePath))
+/** Path equality under a runtime's path rule (`runtimeId` omitted: the primary runtime). */
+export type RuntimeSamePath = (a: string | null, b: string | null, runtimeId?: RuntimeId) => boolean
+
+/** The window that shows the notice of a request for `filePath` on `runtimeId`, or null when there is no window. */
+export function noticeWindow(filePath: string, windows: readonly WindowView[], samePath: RuntimeSamePath, runtimeId?: RuntimeId): number | null {
+  const shows = (w: WindowView): boolean => w.runtimeId === runtimeId && samePath(w.filePath, filePath, runtimeId)
+  const focused = windows.find((w) => w.focused && shows(w))
   if (focused) return focused.id
   const main = windows.find((w) => w.main)
   if (main) return main.id
   // No main window (macOS keeps Studio open without one): a window that shows the agent.
-  return windows.find((w) => samePath(w.filePath, filePath))?.id ?? null
+  return windows.find(shows)?.id ?? null
 }
 
+/**
+ * The notice window of each pending request, keyed by `noticeKey(runtimeId,
+ * id)`: the plain notification id for the primary runtime, so equal ids on
+ * two runtimes stay distinct.
+ */
 export class NoticeOwners {
-  /** Notification id → webContents id of the window that shows it. */
+  /** Notice key → webContents id of the window that shows it. */
   private readonly owners = new Map<string, number>()
 
-  constructor(private readonly samePath: (a: string | null, b: string | null) => boolean) {}
+  constructor(private readonly samePath: RuntimeSamePath) {}
 
   /**
    * One approvals snapshot: requests not seen before get their window,
@@ -56,20 +71,22 @@ export class NoticeOwners {
    * `owner` for the same snapshot.
    */
   assign(pending: readonly PendingNotification[], windows: readonly WindowView[]): void {
-    const live = new Set(pending.map((n) => n.id))
-    for (const id of [...this.owners.keys()]) if (!live.has(id)) this.owners.delete(id)
+    const live = new Set(pending.map((n) => noticeKey(n.runtimeId, n.id)))
+    for (const key of [...this.owners.keys()]) if (!live.has(key)) this.owners.delete(key)
     for (const n of pending) {
-      if (this.owners.has(n.id)) continue
-      const id = noticeWindow(n.filePath, windows, this.samePath)
-      if (id !== null) this.owners.set(n.id, id)
+      const key = noticeKey(n.runtimeId, n.id)
+      if (this.owners.has(key)) continue
+      const id = noticeWindow(n.filePath, windows, this.samePath, n.runtimeId)
+      if (id !== null) this.owners.set(key, id)
     }
   }
 
-  owner(notificationId: string): number | null {
-    return this.owners.get(notificationId) ?? null
+  /** The window of a notice key (`noticeKey(runtimeId, id)`). */
+  owner(key: string): number | null {
+    return this.owners.get(key) ?? null
   }
 
-  /** The notification ids whose notice `windowId` shows. */
+  /** The notice keys whose notice `windowId` shows. */
   idsFor(windowId: number): string[] {
     return [...this.owners].filter(([, owner]) => owner === windowId).map(([id]) => id)
   }

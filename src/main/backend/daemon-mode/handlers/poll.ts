@@ -101,6 +101,12 @@ export function fleetState(ctx: DaemonModeContext): FleetClientState {
 export async function hydrateBurn(ctx: DaemonModeContext, client: DaemonClient): Promise<void> {
   const state = fleetState(ctx)
   if (state.hydrated === client) return
+  if (ctx.runtime && !ctx.runtime.primary) {
+    // The saved totals are the primary runtime's (multi-runtime.md §7.4 keys them per runtime in phase 2): never handed to another runtime.
+    ctx.log.log('[Backend] The fleet map\'s saved token totals are not handed to this runtime')
+    state.hydrated = client
+    return
+  }
   state.hydrating ??= (async () => {
     const saved = ctx.clientSettings.get('fleetMapState') as { burnTotals?: Record<string, number> } | undefined
     const burnTotals = saved?.burnTotals

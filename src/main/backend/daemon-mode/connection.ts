@@ -119,7 +119,7 @@ export class DaemonConnection {
   private wakeVerification: (() => void) | null = null
   private readonly verifiedListeners = new Set<(pid: number | null) => void>()
 
-  constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch) {
+  constructor(connector: DaemonConnector, private readonly log: Log = console, fetchImpl?: typeof fetch, options: { stopWhenDisposed?: boolean } = {}) {
     this.connector = connector
     this.connectorLogFile = connector.logFile ?? null
     // A pinned connection sends no request at all until the address shows the pinned fingerprint again (or after it did not).
@@ -134,6 +134,8 @@ export class DaemonConnection {
     this.ready = (async () => {
       try {
         const endpoint = await connector((progress) => {
+          // A runtime Studio removed stops its connector at the next step instead of retrying on (multi-runtime.md §3.3).
+          if (this.disposed && options.stopWhenDisposed) throw new Error('Studio closed this connection')
           this.log.log(`[Backend] ${progress}`)
           this.set({ state: 'connecting', progress })
         })

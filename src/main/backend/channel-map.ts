@@ -56,6 +56,17 @@ export type MappedChannel = IpcChannel | RawChannel
 export type ChannelClass = 'local' | 'proxied' | 'remote-variant' | 'remote-unsupported'
 export type ChannelKind = 'invoke' | 'send' | 'push' | 'none'
 
+/**
+ * Runtime scope (docs/design/multi-runtime.md §4.2):
+ *
+ * | Scope | Classes | Tag |
+ * |---|---|---|
+ * | `runtime` | `proxied`, `remote-variant`, `remote-unsupported`, and the remote picker | Accepted; pushes of a runtime other than the primary are tagged |
+ * | `studio` | `local` | Refused: an invoke rejects with "This call has no runtime."; a send is dropped and logged |
+ * | `aggregate` | listed | Untagged; entries carry `runtimeId`, omitted for the primary runtime |
+ */
+export type ChannelScope = 'runtime' | 'studio' | 'aggregate'
+
 /** Workstreams that add daemon routes, producers or behaviour a channel needs. */
 export type GapWorkstream = 'W1-A' | 'W1-B' | 'W1-C' | 'W1-D' | 'W1-E' | 'W2-A' | 'W2-B' | 'W2-C' | 'W3-A'
 
@@ -67,6 +78,7 @@ export interface ChannelGap {
 export interface ChannelEntry {
   class: ChannelClass
   kind: ChannelKind
+  scope: ChannelScope
   /** Existing daemon routes the daemon-mode handler calls (for `local`: daemon state it reads). */
   routes: readonly string[]
   /** Proxied push: the client-stream frame (D5) it is fed from: `executor`, `host` or `push:<topic>`. */
@@ -86,15 +98,25 @@ interface EntryOpts {
 const gap = (ws: GapWorkstream, need: string): ChannelGap => ({ ws, need })
 
 function local(kind: ChannelKind, note?: string, opts: { reads?: readonly string[]; remote?: string } = {}): ChannelEntry {
-  return { class: 'local', kind, routes: opts.reads ?? [], gaps: [], ...(opts.remote ? { remote: opts.remote } : {}), ...(note ? { note } : {}) }
+  return { class: 'local', kind, scope: 'studio', routes: opts.reads ?? [], gaps: [], ...(opts.remote ? { remote: opts.remote } : {}), ...(note ? { note } : {}) }
 }
 
 function proxied(kind: ChannelKind, routes: readonly string[], opts: EntryOpts = {}): ChannelEntry {
-  return { class: 'proxied', kind, routes, gaps: opts.gaps ?? [], ...(opts.frame ? { frame: opts.frame } : {}), ...(opts.note ? { note: opts.note } : {}) }
+  return { class: 'proxied', kind, scope: 'runtime', routes, gaps: opts.gaps ?? [], ...(opts.frame ? { frame: opts.frame } : {}), ...(opts.note ? { note: opts.note } : {}) }
 }
 
 function variant(kind: ChannelKind, routes: readonly string[], remote: string, opts: EntryOpts = {}): ChannelEntry {
   return { ...proxied(kind, routes, opts), class: 'remote-variant', remote }
+}
+
+/** A channel whose entries come from every runtime, merged in Studio main (§4.2): untagged, entries carry `runtimeId`. */
+function aggregate(entry: ChannelEntry): ChannelEntry {
+  return { ...entry, scope: 'aggregate' }
+}
+
+/** A `local` channel that acts on one runtime (§4.2 review): it takes the tag. */
+function onRuntime(entry: ChannelEntry): ChannelEntry {
+  return { ...entry, scope: 'runtime' }
 }
 
 function unsupported(kind: ChannelKind, routes: readonly string[], remote: string, opts: EntryOpts = {}): ChannelEntry {
@@ -182,12 +204,12 @@ export const CHANNEL_MAP = {
   // --- Approvals hub ---------------------------------------------------------
   [IPC.APPROVALS_LIST]: proxied('invoke', ['GET /approvals']),
   [IPC.APPROVALS_RESOLVE]: proxied('invoke', ['POST /approvals/resolve']),
-  [IPC.APPROVALS_CHANGED]: proxied('push', [], {
+  [IPC.APPROVALS_CHANGED]: aggregate(proxied('push', [], {
     frame: 'push:approvals',
     note: 'Sent to every window, not only the first (ipc/index.ts:1938).',
-  }),
+  })),
   [IPC.APPROVALS_GET_INPUT]: proxied('invoke', ['GET /approvals/input'], { note: 'Unwraps { input }; {} answers undefined.' }),
-  [IPC.APPROVALS_REVEAL]: local('push', 'Studio native notifier and menu bar click. In daemon mode the notifier is fed from the approvals frames.'),
+  [IPC.APPROVALS_REVEAL]: aggregate(local('push', 'Studio native notifier and menu bar click. In daemon mode the notifier is fed from the approvals frames.')),
   [IPC.APPROVALS_GET_PENDING_REVEAL]: local('invoke', 'Reveal queued in Studio main for a loading renderer.'),
 
   [IPC.AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond']),
@@ -544,7 +566,7 @@ export const CHANNEL_MAP = {
   [IPC.CONNECTION_USE]: local('invoke', 'Connect: reads a saved token from the OS keychain (off the main thread first), then saves the choice in studio-backend.json; the switch dialog and the restart follow.'),
   [IPC.CONNECTION_ADD]: local('invoke', 'Add connection with a token: /remote/hello on the other computer, the pinned-fingerprint check, then the version handshake; saved to cli-remotes.json and the keychain, or without a fingerprint to studio-backend.json. Never returns the token.'),
   [IPC.CONNECTION_REMOVE]: local('invoke', 'Remove after a native confirmation: forgets the address and token (adf remotes forget), or the remote URL of studio-backend.json.'),
-  [IPC.CONNECTION_CHANGED]: local('push', 'The list and the connection state, pushed on a change (discovery, pairing, Connect, the daemon connection).'),
+  [IPC.CONNECTION_CHANGED]: aggregate(local('push', 'The list and the connection state, pushed on a change (discovery, pairing, Connect, the daemon connection).')),
   [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
   [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
   [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),
@@ -560,14 +582,14 @@ export const CHANNEL_MAP = {
   [IPC.QUEUE_HANDOVER_TAKE]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages of closed agent windows, taken once by the main window.'),
   [IPC.QUEUE_HANDOVER_READY]: local('push', 'Studio main tells the main window that a closed agent window left queued messages.'),
   [IPC.WINDOW_LIST_AGENTS]: local('invoke', 'Registered in main/index.ts in daemon mode: the agents open in agent windows ({filePath, agentId}), for the sidebar marker.'),
-  [IPC.WINDOW_AGENTS_CHANGED]: local('push', 'Studio main sends the main window the agents open in agent windows when a window opens, closes or fails to open its agent.'),
+  [IPC.WINDOW_AGENTS_CHANGED]: aggregate(local('push', 'Studio main sends the main window the agents open in agent windows when a window opens, closes or fails to open its agent.')),
   [IPC.MENU_ACTION_TAKE_PENDING]: local('invoke', 'Registered in main/index.ts in daemon mode: the menu actions sent while the page loaded; the call marks the page as listening.'),
   [IPC.APPEARANCE_CHANGED]: local('push', 'Studio main sends the appearance keys a window saved to every other window.'),
   [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),
 
   // --- Remote mode: daemon-side picker (W4-B) -------------------------------
-  [IPC.REMOTE_PICKER_REQUEST]: local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.'),
-  [IPC.REMOTE_PICKER_RESPOND]: local('invoke', 'Settles the pick remote/picker.ts is waiting for; reads no daemon state. Outside daemon mode it answers false (backend-settings-ipc.ts).'),
+  [IPC.REMOTE_PICKER_REQUEST]: onRuntime(local('push', 'Studio main asks the renderer for a daemon-side pick (remote/picker.ts); the answer comes back on REMOTE_PICKER_RESPOND.')),
+  [IPC.REMOTE_PICKER_RESPOND]: onRuntime(local('invoke', 'Settles the pick remote/picker.ts is waiting for; reads no daemon state. Outside daemon mode it answers false (backend-settings-ipc.ts).')),
   [IPC.REMOTE_FS_BROWSE]: proxied('invoke', ['GET /fs/browse'], { note: 'Answers { error, code } instead of rejecting, so the picker shows it. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
   [IPC.REMOTE_FS_MKDIR]: proxied('invoke', ['POST /fs/folders'], { note: 'The picker\'s New folder. Answers { error, code } instead of rejecting. Outside daemon mode it answers an error (backend-settings-ipc.ts).' }),
 
@@ -590,6 +612,11 @@ export const CHANNEL_MAP = {
 
 export function channelEntry(channel: MappedChannel): ChannelEntry {
   return CHANNEL_MAP[channel]
+}
+
+/** The scope of a channel (§4.2); null for a string that is not in the map. */
+export function channelScope(channel: string): ChannelScope | null {
+  return (CHANNEL_MAP as Record<string, ChannelEntry>)[channel]?.scope ?? null
 }
 
 /** Every gap in the map, one row per (channel, gap). */

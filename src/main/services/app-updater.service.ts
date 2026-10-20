@@ -20,7 +20,9 @@
  * builds skip every scheduled check while the `updateChecksEnabled` setting
  * is false.
  */
-import { app, ipcMain } from 'electron'
+import { app } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from '../backend/studio-ipc'
 import { autoUpdater } from 'electron-updater'
 import type { ProgressInfo, UpdateInfo } from 'electron-updater'
 import { IPC } from '../../shared/constants/ipc-channels'

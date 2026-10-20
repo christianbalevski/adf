@@ -10,7 +10,9 @@
  * already on disk (userData) load either way.
  */
 
-import { ipcMain, session } from 'electron'
+import { session } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from '../backend/studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import type { SpellcheckDownloadResult } from '../../shared/types/ipc.types'
 

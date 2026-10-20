@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from '../backend/studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { isOrbitalCacheRequest, readOrbitalCache, writeOrbitalCache } from '../services/orbital-cache'
 

@@ -1,4 +1,6 @@
-import { ipcMain, safeStorage } from 'electron'
+import { safeStorage } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../shared/types/backend.types'
 import { createBackendSettingsStore, type BackendSettingsStore, type BootBackend, type SecretCodec } from './backend-config'

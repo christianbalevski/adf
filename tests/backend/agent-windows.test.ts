@@ -323,3 +323,46 @@ describe('the open agents, for the main window (sidebar marker)', () => {
     expect(manager.agents()).toEqual([])
   })
 })
+
+describe('runtimes (docs/design/multi-runtime.md §7.5)', () => {
+  const HOST_1 = 'remote:host-1'
+
+  it('a local-only list is written exactly as before: no runtimeId field', () => {
+    const { manager, saved } = setup()
+    manager.open({ filePath: FILE_1, agentId: AGENT_1 })
+    expect(JSON.stringify(saved())).toBe(JSON.stringify({ runtime: 'local', windows: [{ agentId: AGENT_1, filePath: FILE_1, bounds: BOUNDS }] }))
+    expect(manager.agents()).toEqual([{ filePath: FILE_1, agentId: AGENT_1 }])
+  })
+
+  it('a window is matched within its runtime: the same path on two runtimes is two windows', () => {
+    const { manager, windows, saved } = setup()
+    expect(manager.open({ filePath: FILE_1, agentId: AGENT_1 }).created).toBe(true)
+    expect(manager.open({ filePath: FILE_1, agentId: AGENT_1, runtimeId: HOST_1, fingerprint: 'FP-HOST-1' }).created).toBe(true)
+    expect(manager.open({ filePath: FILE_1, runtimeId: HOST_1 }).created).toBe(false)
+    expect(windows[1].request).toMatchObject({ runtimeId: HOST_1 })
+    expect(windows[0].request).not.toHaveProperty('runtimeId')
+    expect(saved()!.windows).toEqual([
+      { agentId: AGENT_1, filePath: FILE_1, bounds: BOUNDS },
+      { agentId: AGENT_1, filePath: FILE_1, bounds: BOUNDS, runtimeId: HOST_1, fingerprint: 'FP-HOST-1' },
+    ])
+    expect(manager.agents()).toEqual([{ filePath: FILE_1, agentId: AGENT_1 }, { filePath: FILE_1, agentId: AGENT_1, runtimeId: HOST_1 }])
+  })
+
+  it('parse keeps runtimeId and fingerprint; restore reopens each entry on its runtime', async () => {
+    const list = { runtime: 'local', windows: [{ agentId: AGENT_2, filePath: FILE_2, runtimeId: HOST_1, fingerprint: 'FP-HOST-1' }, { agentId: AGENT_1, filePath: FILE_1 }] }
+    expect(parseSavedAgentWindows(list, 'local')).toEqual([{ agentId: AGENT_2, filePath: FILE_2, runtimeId: HOST_1, fingerprint: 'FP-HOST-1' }, { agentId: AGENT_1, filePath: FILE_1 }])
+    const checked: SavedAgentWindow[] = []
+    const { manager, windows } = setup({ saved: list, check: async (entry) => { checked.push(entry); return 'open' } })
+    expect(await manager.restore()).toEqual({ opened: 2, skipped: 0 })
+    expect(checked.map((e) => e.runtimeId ?? 'local')).toEqual([HOST_1, 'local'])
+    expect(windows.map((w) => w.request.runtimeId ?? 'local')).toEqual([HOST_1, 'local'])
+  })
+
+  it('close(id) closes one window, which leaves the saved list', () => {
+    const { manager, windows, saved } = setup()
+    manager.open({ filePath: FILE_1, agentId: AGENT_1, runtimeId: HOST_1 })
+    manager.close(windows[0].id)
+    expect(windows[0].closed).toBe(true)
+    expect(saved()!.windows).toEqual([])
+  })
+})

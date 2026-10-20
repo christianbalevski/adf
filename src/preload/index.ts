@@ -1,5 +1,8 @@
-import { contextBridge, ipcRenderer, webFrame } from 'electron'
+import { contextBridge, ipcRenderer as electronIpcRenderer, webFrame } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
+import { RUNTIME_PUSH_CHANNELS } from '../shared/constants/runtime-push-channels'
+import { createRuntimeIpc, onAnyRuntime, type RuntimeIpc } from '../shared/runtime-ipc'
+import { LOCAL_RUNTIME, type RuntimeId } from '../shared/runtime-tag'
 import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnapshot, QueueHandoverEntry } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../shared/types/resource-revision.types'
@@ -13,7 +16,13 @@ type SubscriptionPayload<Subscription> = Subscription extends (callback: (data: 
   ? Payload
   : never
 
-const api: AdfApi = {
+/**
+ * `adfApi` is built by one factory over one runtime's `invoke`, `send` and
+ * `on` (docs/design/multi-runtime.md §4.1). The parameter is named
+ * `ipcRenderer` on purpose: every call below reads as it did, and
+ * tests/backend/channel-map.test.ts reads the kinds from these lines.
+ */
+const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyRuntime' | 'runtimeId'> => ({
   // App
   getAppVersion: () => ipcRenderer.invoke(IPC.APP_GET_VERSION),
   setBadgeCount: (count: number) => ipcRenderer.invoke(IPC.APP_SET_BADGE_COUNT, count),
@@ -808,6 +817,31 @@ const api: AdfApi = {
 
   // Platform identifier ('darwin' | 'win32' | 'linux' | ...)
   platform: process.platform
+})
+
+const runtimePushChannels = new Set(RUNTIME_PUSH_CHANNELS)
+const ipcChannels = new Set<string>(Object.values(IPC))
+const surfaces = new Map<RuntimeId, AdfApi>()
+/** The surface bound to `id`: `local` (This computer) sends no tag. One per runtime, made on first use. */
+function apiFor(id: RuntimeId): AdfApi {
+  const runtimeId = typeof id === 'string' && id ? id : LOCAL_RUNTIME
+  let surface = surfaces.get(runtimeId)
+  if (!surface) {
+    surface = {
+      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels)),
+      runtimeId,
+      runtime: apiFor,
+      onAnyRuntime: (channel: string, callback: (runtimeId: RuntimeId, ...args: unknown[]) => void) => {
+        // IPC channels only: the bridge never subscribes the page to an arbitrary string.
+        if (!ipcChannels.has(channel)) throw new Error(`Unknown IPC channel: ${channel}`)
+        return onAnyRuntime(electronIpcRenderer, channel, callback)
+      },
+    }
+    surfaces.set(runtimeId, surface)
+  }
+  return surface
 }
 
-contextBridge.exposeInMainWorld('adfApi', api)
+// An agent window's page names its runtime (main sets `runtime=<id>` for a runtime other than This computer, §5.5).
+const windowRuntime = new URLSearchParams(globalThis.location?.search ?? '').get('runtime')
+contextBridge.exposeInMainWorld('adfApi', apiFor(windowRuntime || LOCAL_RUNTIME))

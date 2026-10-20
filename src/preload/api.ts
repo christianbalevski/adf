@@ -833,6 +833,14 @@ export interface AdfApi {
 
   // Platform ('darwin' | 'win32' | 'linux' | ...)
   platform: NodeJS.Platform
+
+  // --- Runtimes (docs/design/multi-runtime.md §4.1) ---
+  /** The runtime this surface talks to: `local` for window.adfApi in the main window. */
+  runtimeId: string
+  /** The same surface bound to runtime `id`: calls carry its tag (none for `local`), `on` delivers its pushes. */
+  runtime(id: string): AdfApi
+  /** Every push on an IPC channel with its runtime id (`local` for an untagged one). Returns the unsubscribe. */
+  onAnyRuntime(channel: string, callback: (runtimeId: string, ...args: unknown[]) => void): () => void
 }
 
 declare global {

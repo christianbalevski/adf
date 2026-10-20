@@ -1,4 +1,6 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus, BackendSettingsPatch } from '../../shared/types/backend.types'

@@ -642,6 +642,11 @@ export interface PendingNotification {
   requestId: string
   /** The .adf this request belongs to — the jump-to target. */
   filePath: string
+  /**
+   * The runtime that asks (docs/design/multi-runtime.md §6.1), set by Studio
+   * main's merge; omitted for the primary runtime (This computer).
+   */
+  runtimeId?: string
   agentName: string
   /** 'main' for the host loop, otherwise the inner loop's name. */
   loop: string
@@ -698,6 +703,8 @@ export interface ResolvedNotification extends Omit<PendingNotification, 'input'>
  */
 export interface QueueHandoverEntry {
   filePath: string
+  /** The agent's runtime (multi-runtime.md §4.5); omitted for the primary runtime. */
+  runtimeId?: string
   loop: string
   messages: Array<{ id: string; text: string; content?: unknown[]; error?: string; failures?: number }>
 }

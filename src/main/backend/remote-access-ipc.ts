@@ -1,4 +1,6 @@
-import { BrowserWindow, dialog, ipcMain, Notification } from 'electron'
+import { BrowserWindow, dialog, Notification } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from './studio-ipc'
 import { readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
