@@ -18,7 +18,8 @@ import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../../tray/me
  * APPROVALS_GET_PENDING_REVEAL. The queue is per window (agent windows).
  */
 
-type ApprovalRevealPayload = { filePath?: string; notificationId?: string }
+/** `runtimeId`: the asking runtime, omitted for the primary runtime (multi-runtime.md §6.1). */
+type ApprovalRevealPayload = { filePath?: string; notificationId?: string; runtimeId?: string }
 
 export interface ApprovalsUiDeps {
   /** Read per notification: the client key nativeNotificationsEnabled. */
@@ -45,6 +46,11 @@ export interface ApprovalsUiDeps {
   log?: Pick<Console, 'warn'>
 }
 
+/** A reveal of one request: its file, its id and, for a runtime other than the primary, its runtime (an untagged push either way). */
+function revealOf(entry: Pick<PendingNotification, 'filePath' | 'id' | 'runtimeId'>): ApprovalRevealPayload {
+  return { filePath: entry.filePath, notificationId: entry.id, ...(entry.runtimeId ? { runtimeId: entry.runtimeId } : {}) }
+}
+
 export class ApprovalsUi {
   /** webContents id → the reveal its loading page has not taken yet. */
   private readonly pendingReveals = new Map<number, ApprovalRevealPayload>()
@@ -66,9 +72,9 @@ export class ApprovalsUi {
     }
   }
 
-  /** The agent files with an approval or a question waiting for an answer now. */
-  pendingFilePaths(): string[] {
-    return [...new Set(this.pending.map((p) => p.filePath))]
+  /** The agent files of one runtime (omitted: the primary) with an approval or a question waiting for an answer now. */
+  pendingFilePaths(runtimeId?: string): string[] {
+    return [...new Set(this.pending.filter((p) => p.runtimeId === runtimeId).map((p) => p.filePath))]
   }
 
   /**
@@ -123,7 +129,7 @@ export class ApprovalsUi {
   private onMenuBarAction(action: MenuBarAction): void {
     switch (action.type) {
       case 'reveal':
-        this.sendReveal({ filePath: action.notification.filePath, notificationId: action.notification.id })
+        this.sendReveal(revealOf(action.notification))
         return
       case 'open-agent':
         this.deps.openFile?.(action.filePath)
@@ -209,7 +215,7 @@ export class ApprovalsUi {
           return null
         }
       },
-      reveal: (entry) => this.sendReveal({ filePath: entry.filePath, notificationId: entry.id }),
+      reveal: (entry) => this.sendReveal(revealOf(entry)),
       openPanel: () => this.sendReveal({}),
     }
   }

@@ -47,6 +47,12 @@ export interface DaemonModeContext {
   afterOwnerImport?: (phrase: string) => Promise<string>
   /** Remote mode's picker, OAuth relay and upload (remote/, W4-B); null or absent in local mode. */
   remote?: RemoteServices | null
+  /**
+   * The runtime this context serves (docs/design/multi-runtime.md §3.2):
+   * `primary` is the runtime the saved mode selects, whose traffic is
+   * untagged. Absent in tests that build a context by hand: the primary.
+   */
+  runtime?: { id: string; primary: boolean }
   log: Pick<Console, 'log' | 'warn' | 'error'>
 }
 
