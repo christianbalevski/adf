@@ -60,7 +60,7 @@ Read a file from the VFS. Always returns a JSON object with the full file record
 
 - **Text files** return raw text content. Use `start_line`/`end_line` for large files.
 - **Binary files** return base64 content in code execution. In chat, the executor strips binary content (metadata only) — use code execution to process binary data programmatically.
-- **Media files** — When the corresponding `model.multimodal` modality is enabled, the LLM receives a native content block (`image_url`, `input_audio`, or `video_url`) alongside the JSON metadata row, allowing the agent to perceive the media directly. Media blocks are ephemeral (not persisted to `adf_loop`). When disabled, media returns the JSON row with `content: null`. Media exceeding the size limit (`max_image_size_bytes`, `max_audio_size_bytes`, `max_video_size_bytes`) is skipped. See [Multimodal](../ADF_STUDIO_DOCS.md#multimodal) for supported formats and details.
+- **Media files** — The JSON row's `content` is `[image: <path> (<mime>)]` (or `audio`, `video`), and the tool result is followed by a `file_ref` reference to the file, which `adf_loop` stores. Each request loads the file and sends it as a native content block (`image_url`, `input_audio`, or `video_url`) when the corresponding `model.multimodal` modality is enabled, so the agent perceives the media directly; otherwise the request carries a text placeholder. A file over its size limit (`max_image_size_bytes`, `max_audio_size_bytes`, `max_video_size_bytes`) is a placeholder with the reason. See [Multimodal](../ADF_STUDIO_DOCS.md#multimodal) for supported formats and details.
 
 Two output guards are applied by the executor when results go to the LLM context:
 
@@ -847,7 +847,7 @@ Use this to fetch exact schemas before writing lambda code that calls `adf.<tool
 
 ### Media Files
 
-`cat` on an image, audio, or video file emits a short marker in stdout plus a media manifest; when the model has that modality enabled, the file is attached as a multimodal block after the tool result. The same size limits as `fs_read` apply (`max_image_size_bytes`, etc.). Base64 never flows through stdout.
+`cat` on an image, audio, or video file emits a short marker in stdout plus a media manifest; the tool result is followed by a `file_ref` reference to each file, as for `fs_read`. The same size limits apply (`max_image_size_bytes`, etc.). Base64 never flows through stdout.
 
 ## Enabling and Disabling Tools
 

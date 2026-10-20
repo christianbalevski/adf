@@ -137,7 +137,7 @@ The complete reference is in [Settings](guides/settings.md).
 
 ## Multimodal
 
-Studio agents can perceive images, audio, and video when the matching modality is enabled in the agent's `model.multimodal` configuration. When enabled, media returned by `fs_read` or MCP tools is sent to the model as a native content block (rather than just a path reference); when disabled, the file is still saved to `adf_files` and the tool result includes a path reference, but no content block is created.
+Studio agents can perceive images, audio, and video when the matching modality is enabled in the agent's `model.multimodal` configuration. Media is always a file in `adf_files`: chat attachments, files the agent reads with `fs_read` or `cat`, and MCP tool media. The message or tool result keeps a `file_ref` reference to the file (ADF spec §13.1). Each request loads the referenced files and sends them as native content blocks when the modality is enabled; otherwise it sends a text placeholder. History keeps the reference either way, so turning a modality on later, or switching back to a model that takes it, sends the older media again. See [Media when changing models](cli/models-and-providers.md#media-when-changing-models) for the placeholders, the request media limit and deleted files.
 
 | Modality | Config flag | Content block | Supported formats | Default size limit (`limits.*`) |
 |----------|-------------|---------------|-------------------|--------------------------------|

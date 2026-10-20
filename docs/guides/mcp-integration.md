@@ -395,13 +395,13 @@ MCP tools can return multiple content block types beyond plain text. The runtime
 
 #### Multimodal Support (Image, Audio, Video)
 
-Media from MCP tools and `fs_read` can be sent as native content blocks to the LLM when the corresponding modality is enabled in `model.multimodal`:
+Media from MCP tools and `fs_read` is saved to `adf_files`, and the tool result is followed by a `file_ref` reference to the file. Each request sends the file as a native content block when the corresponding modality is enabled in `model.multimodal`:
 
 - **Image** (`multimodal.image`): `image_url` content blocks, same as the legacy `model.vision` toggle. Supports PNG, JPEG, GIF, WEBP. Size limit: `limits.max_image_size_bytes` (default 5 MB).
 - **Audio** (`multimodal.audio`): `input_audio` content blocks. Supports WAV, MP3, OGG, FLAC, AAC, AIFF, M4A, WebM. Size limit: `limits.max_audio_size_bytes` (default 10 MB). Note: the AI SDK only natively supports WAV and MP3; other formats are coerced to WAV for the SDK's validator but the actual codec negotiation happens provider-side.
 - **Video** (`multimodal.video`): `video_url` content blocks. Supports MP4, MPEG, QuickTime, WebM. Size limit: `limits.max_video_size_bytes` (default 20 MB). Note: the AI SDK doesn't support video natively — the runtime bypasses the SDK's message validation and injects raw OpenAI-format `video_url` parts directly into the HTTP request body. This works for providers that support the OpenAI chat completions format (OpenRouter, Gemini, etc.).
 
-When a modality is disabled, media is still saved to `adf_files` and the tool result text includes a path reference (e.g., `[image: mcp/puppeteer/screenshot_1710000000_1.png (image/png)]`), but no content block is created for the LLM.
+The tool result text includes the path (e.g., `[image: mcp/puppeteer/screenshot_1710000000_1.png (image/png)]`). When a modality is disabled, the request carries a text placeholder instead of the media; the reference stays in history. See [Media when changing models](../cli/models-and-providers.md#media-when-changing-models).
 
 **In code/shell execution:** The full structured JSON response is always returned with raw base64 data regardless of multimodal settings (see below).
 

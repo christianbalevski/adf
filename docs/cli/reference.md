@@ -57,7 +57,7 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf mcp [agent]` | Show daemon MCP registrations or agent MCP state |
 | `adf adapters [agent]` | Show daemon adapter registrations or agent adapter state |
 | `adf events [agent]` | Follow daemon SSE events |
-| `adf chat <agent> [--loop <name>] <message>` | Send chat (to main, or an inner loop) and print the accepted turn id |
+| `adf chat <agent> [--loop <name>] [--attach <file>]... <message>` | Send chat (to main, or an inner loop) and print the accepted turn id. --attach uploads a file to the agent's loop-upload/ folder and attaches it |
 | `adf identity` | Show the owner identity status |
 | `adf identity new` | Create an owner identity; shows the 12-word seed phrase once — write it down |
 | `adf identity restore` | Restore the owner identity from its seed phrase (typed at a hidden prompt; the same phrase as ADF Studio = the same owner) |

@@ -970,9 +970,9 @@ The runtime locks `security.allow_local_fetch` and `stream_bind` for every agent
 | `max_tool_result_tokens` | `16000` | A tool result larger than this is replaced with a preview. |
 | `max_tool_result_preview_chars` | `5000` | Length of that preview. |
 | `max_active_turns` | `null` | Maximum consecutive turns before the runtime suspends the agent; `null` means no limit. |
-| `max_image_size_bytes` | `5242880` | Maximum inlined image size. |
-| `max_audio_size_bytes` | `10485760` | Maximum inlined audio size. |
-| `max_video_size_bytes` | `20971520` | Maximum inlined video size. |
+| `max_image_size_bytes` | `5242880` | Largest image file a request carries (§13.1). |
+| `max_audio_size_bytes` | `10485760` | Largest audio file a request carries (§13.1). |
+| `max_video_size_bytes` | `20971520` | Largest video file a request carries (§13.1). |
 | `suspend_timeout_ms` | `1200000` when absent | Time the runtime waits for the owner to answer a suspend prompt before it turns the agent `off`. |
 | `hibernate_nudge` | `{ "enabled": true, "interval_ms": 86400000 }` when absent | Periodic wake of a hibernating agent. Requires `on_timer` enabled. |
 
@@ -1931,7 +1931,7 @@ When `msg_send` has a `parent_id` and no recipient or address, the runtime takes
 | `reference` | URL plus digest and size. |
 | `imported` | Stored form after the receiver extracts inline data to `adf_files`. |
 
-The receiving runtime writes inline attachments to the recipient's `adf_files`, under `imported/{source}/` or `imports/{sender}/`, and records the `path` in the stored attachment.
+The receiving runtime writes inline attachments to the recipient's `adf_files`, under `imported/{source}/` or `imports/{sender}/`, and records the `path` in the stored attachment. A transcript refers to such a file with a `file_ref` block (§13.1).
 
 ### 11.5 Agent Card
 
@@ -2096,6 +2096,29 @@ Context blocks start with a marker:
 [Context: dynamic_instructions] ...
 [Context: loop_inject] ...
 ```
+
+#### File references
+
+Media in a transcript is a reference to a file in `adf_files`, never inline bytes. A `file_ref` block names the file:
+
+```json
+{ "type": "file_ref", "file_ref": { "path": "loop-upload/photo.png", "mime_type": "image/png", "size": 48213 } }
+```
+
+| Field | Meaning |
+|-------|---------|
+| `path` | `adf_files.path` of the file. |
+| `mime_type` | MIME type of the file when the reference was made. |
+| `size` | Byte length of the file when the reference was made. |
+| `deleted` | `true` once the file is deleted. Absent otherwise. |
+
+A runtime MUST store attachments as files and reference them: owner chat attachments under `loop-upload/`, inline attachments from other agents as in §11.4. A tool result that read an image, audio or video file is followed by a reference to that file in the same row.
+
+When it builds a request, a runtime loads each referenced file and sends it as the model's native media, when the model takes that kind. Otherwise it sends a text placeholder in that request only and leaves the row unchanged. A runtime MUST NOT fail a turn because a referenced file is missing; it sends `[deleted: <file name>]` instead.
+
+A rename or move of a referenced file MUST rewrite `path` in every row that references it. A delete MUST set `deleted: true` and keep the block; the reference is then a tombstone, and a later file at the same path does not revive it. A reference names a file, not a snapshot: a file overwritten in place is sent with its new contents.
+
+A runtime that does not implement file references MUST NOT send a `file_ref` block to a model as is; it SHOULD send the path as text.
 
 ### 13.2 Compaction
 

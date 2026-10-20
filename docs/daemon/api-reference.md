@@ -3286,7 +3286,7 @@ Example 200 (`application/json`):
 
 **Queue a user chat turn**
 
-The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Content with a modality the loop's model cannot take (turned off in its model settings, or not carried by its provider) answers 400 `media_unsupported`, also before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`. An open document that is not running answers 409 `agent_not_running`.
+The owner's voice into main or any inner loop. Answers 202 at once (scheduling, not completion); follow the turn on GET /events, …/status or …/loop. An unknown loop answers 404 and a disabled one 409, before anything is queued. Content with a modality the loop's model cannot take (turned off in its model settings, or not carried by its provider) answers 400 `media_unsupported`, and a `file_ref` to a file the agent does not have answers 400 `file_not_found`, also before anything is queued. Match the returned `turnId` against `event.turn_id` on GET /events to follow this request's turn. Chats sent while the loop is busy queue in arrival order and none is ever dropped, and a working turn is never cut off: in a tool loop they join the running turn after the current tool results (`chat.delivered` with `delivery: 'next_step'`); otherwise the oldest queued chat runs as the next turn (its own `turnId`) and the others join it as consecutive user rows before its first model call, listed right away on a `chat.delivered` event (`payload.turn_ids`). A chat to a loop waiting on the owner (approval, ask, suspend) ends that wait and restarts the turn; /interrupt is the hard stop. Every `turnId` ends on a `turn.completed` (as its `turn_id` or in `absorbed_turn_ids`) or an `agent.error`; only /abort, unload or an `off` transition discard queued chats, announced by `chat.discarded`. An open document that is not running answers 409 `agent_not_running`.
 
 Operation `chatAgent` · bearer token
 
@@ -3301,8 +3301,8 @@ Operation `chatAgent` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `text` | string |  |  |
-| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB. |
-| `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `file_ref` ({path}: a file in the agent's Files, for example one uploaded with PUT /agents/{id}/files/raw?unique=true; the runtime takes its type and size from the file; a path that names no file answers 400 `file_not_found`), `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Inline media is saved to the agent's `loop-upload/` folder and the message keeps a `file_ref` to it. Body limit 128 MiB. |
+| `content[].type` | `"text"` \| `"file_ref"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
 | `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
 
@@ -18848,8 +18848,8 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `text` | string |  |  |
-| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Body limit 128 MiB. |
-| `content[].type` | `"text"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
+| `content` | object[] |  | The message as content blocks (Studio's AGENT_INVOKE `content`): `text`, `file_ref` ({path}: a file in the agent's Files, for example one uploaded with PUT /agents/{id}/files/raw?unique=true; the runtime takes its type and size from the file; a path that names no file answers 400 `file_not_found`), `image_url` ({url}: a data URI), `input_audio` ({data, format}), `video_url` ({url}). Inline media is saved to the agent's `loop-upload/` folder and the message keeps a `file_ref` to it. Body limit 128 MiB. |
+| `content[].type` | `"text"` \| `"file_ref"` \| `"image_url"` \| `"input_audio"` \| `"video_url"` | yes |  |
 | `loop` | string |  | Cognition loop to talk to; absent = main. Unknown loop: 404; disabled loop: 409. |
 | `echoed` | boolean |  | `true`: the sending client session (`X-ADF-Client-Session`) already shows the message (Studio's AGENT_INVOKE), so that session's stream skips the turn's `trigger_message`. Every other client still gets it. Without the header it has no effect. |
 
