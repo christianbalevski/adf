@@ -95,6 +95,46 @@ const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
 const CHAT_WIDTH_KEY = 'adf-chat-width'
 const COMPUTER_MATCH_TAB_KEY = 'adf-computer-match-tab'
 
+/**
+ * Dock and bottom-panel layout, remembered across restarts with the same
+ * best-effort localStorage idiom as the panel sizes: a failed or foreign read
+ * falls back to the default, a failed write just means the choice won't stick.
+ */
+const DOCK_TAB_KEY = 'adf-dock-tab'
+const DOCK_AGENT_SUBTAB_KEY = 'adf-dock-agent-subtab'
+const DOCK_COLLAPSED_KEY = 'adf-dock-collapsed'
+const BOTTOM_PANEL_OPEN_KEY = 'adf-bottom-panel-open'
+const BOTTOM_PANEL_TAB_KEY = 'adf-bottom-panel-tab'
+const LOGS_LIVE_KEY = 'adf-logs-live'
+
+const RIGHT_PANELS: readonly RightPanel[] = ['overview', 'loop', 'inbox', 'files', 'agent']
+const AGENT_SUB_TABS: readonly AgentSubTab[] = ['config', 'timers', 'identity', 'skills']
+const BOTTOM_PANEL_TABS: readonly ('logs' | 'tasks')[] = ['logs', 'tasks']
+
+function loadChoice<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw !== null && (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function loadFlag(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw === '1' ? true : raw === '0' ? false : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function saveLayoutValue(key: string, value: string | boolean): void {
+  try {
+    localStorage.setItem(key, typeof value === 'boolean' ? (value ? '1' : '0') : value)
+  } catch { /* storage full/unavailable — non-fatal, the choice just won't stick */ }
+}
+
 function loadComputerMatchTab(): boolean {
   try {
     return localStorage.getItem(COMPUTER_MATCH_TAB_KEY) === '1'
@@ -373,10 +413,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   showSettings: false,
   pendingSettingsSection: null,
   pendingSettingsAnchor: null,
-  // Overview first on a fresh session. Not persisted: opening another agent
-  // keeps whatever tab the user picked (revealRightPanel).
-  rightPanel: 'overview',
-  agentSubTab: 'timers',
+  // Overview first on a fresh install; after that the last tab picked
+  // (persisted below). Opening another agent keeps it (revealRightPanel).
+  rightPanel: loadChoice(DOCK_TAB_KEY, RIGHT_PANELS, 'overview'),
+  agentSubTab: loadChoice(DOCK_AGENT_SUBTAB_KEY, AGENT_SUB_TABS, 'timers'),
   pendingConfigSection: null,
   chatPlacement: loadChatPlacement(),
   chatWidth: loadChatWidth(),
@@ -384,7 +424,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   centerChatTabActive: loadChatPlacement() === 'center',
   sidebarCollapsed: false,
   sidebarWidth: loadStoredSize(SIDEBAR_WIDTH_KEY, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
-  rightPanelCollapsed: false,
+  rightPanelCollapsed: loadFlag(DOCK_COLLAPSED_KEY, false),
   theme: 'system',
   uiFont: UI_FONT_DEFAULT,
   uiFontCustom: '',
@@ -412,10 +452,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   homeTemplateId: null,
   homeModelId: null,
   templateReview: null,
-  showLogsPanel: false,
-  logsAutoRefresh: false,
+  showLogsPanel: loadFlag(BOTTOM_PANEL_OPEN_KEY, false),
+  // Live by default: the panel polls only while it is on screen.
+  logsAutoRefresh: loadFlag(LOGS_LIVE_KEY, true),
   logsPanelHeight: loadStoredSize(LOGS_PANEL_HEIGHT_KEY, LOGS_PANEL_HEIGHT_DEFAULT, LOGS_PANEL_HEIGHT_MIN, LOGS_PANEL_HEIGHT_MAX),
-  bottomPanelTab: 'logs',
+  bottomPanelTab: loadChoice(BOTTOM_PANEL_TAB_KEY, BOTTOM_PANEL_TABS, 'logs'),
   shuttingDown: false,
 
   // An agent window has no Settings: they open in the main window (agent-windows.md).
@@ -585,3 +626,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setBottomPanelTab: (tab) => set({ bottomPanelTab: tab }),
   setShuttingDown: (v) => set({ shuttingDown: v })
 }))
+
+// Persisted from one place so every writer counts — setters, the chat
+// placement switch, expandRightPanelToTab, the fleet map's Loops hand-off.
+useAppStore.subscribe((s, prev) => {
+  if (s.rightPanel !== prev.rightPanel) saveLayoutValue(DOCK_TAB_KEY, s.rightPanel)
+  if (s.agentSubTab !== prev.agentSubTab) saveLayoutValue(DOCK_AGENT_SUBTAB_KEY, s.agentSubTab)
+  if (s.rightPanelCollapsed !== prev.rightPanelCollapsed) saveLayoutValue(DOCK_COLLAPSED_KEY, s.rightPanelCollapsed)
+  if (s.showLogsPanel !== prev.showLogsPanel) saveLayoutValue(BOTTOM_PANEL_OPEN_KEY, s.showLogsPanel)
+  if (s.logsAutoRefresh !== prev.logsAutoRefresh) saveLayoutValue(LOGS_LIVE_KEY, s.logsAutoRefresh)
+  if (s.bottomPanelTab !== prev.bottomPanelTab) saveLayoutValue(BOTTOM_PANEL_TAB_KEY, s.bottomPanelTab)
+})

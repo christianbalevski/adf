@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { DocsLink } from '../common/DocsLink'
+import { FreshnessStamp } from '../common/FreshnessStamp'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { useDocumentStore } from '../../stores/document.store'
 import { changeAgentConfig } from '../../utils/edit-conflict'
@@ -111,6 +112,7 @@ export function IdentityPanel() {
   const [shareError, setShareError] = useState('')
   const [unlockPassword, setUnlockPassword] = useState('')
   const [unlockError, setUnlockError] = useState('')
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null)
 
   const refresh = useCallback(async () => {
     const [didResult, entriesResult, pwResult, attResult, config, envResult] = await Promise.all([
@@ -133,6 +135,7 @@ export function IdentityPanel() {
     } : null)
     setRevealed({})
     setRevealNote(null)
+    setFetchedAt(Date.now())
   }, [])
 
   const handleReissueAttestations = useCallback(async () => {
@@ -275,6 +278,8 @@ export function IdentityPanel() {
         <div className="flex items-center gap-2 mb-2">
           <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">DID</h3>
           <DocsLink href={DOCS.identity} />
+          {/* Read on open, not pushed: another client can change identity meanwhile. */}
+          <FreshnessStamp at={fetchedAt} onRefresh={() => { void refresh() }} className="ml-auto" />
         </div>
         {did ? (
           <div className="flex items-start gap-2">

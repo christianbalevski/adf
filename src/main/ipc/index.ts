@@ -307,7 +307,7 @@ function discardShareSnapshot(token: string): void {
 }
 
 /**
- * Forward workspace data-change signals (inbox/outbox/tables) to the renderer
+ * Forward workspace data-change signals (inbox/outbox/tables/files) to the renderer
  * so open views refresh live instead of only on file switch. Attached to every
  * workspace that becomes `currentWorkspace`; detached in cleanupCurrentFile so
  * a workspace transitioning to background stops notifying. Bursts are coalesced

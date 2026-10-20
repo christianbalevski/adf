@@ -36,7 +36,7 @@ export function BottomPanel() {
   }
 
   return (
-    <div ref={panelRef} style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-neutral-950 shrink-0">
+    <div ref={panelRef} style={{ height: panelHeight }} className="flex flex-col border-t border-hairline bg-[var(--adf-ui-surface)] shrink-0">
       {/* Resize handle */}
       <div
         onMouseDown={handleResizeMouseDown}
@@ -45,7 +45,7 @@ export function BottomPanel() {
       />
 
       {/* Tab bar */}
-      <div className="flex items-center gap-0 px-2 bg-neutral-900 border-b border-white/5 text-xs shrink-0">
+      <div className="flex items-center gap-0 px-2 bg-neutral-50 dark:bg-neutral-900 border-b border-hairline text-xs shrink-0">
         <TabButton
           label="Logs"
           active={activeTab === 'logs'}
@@ -62,7 +62,7 @@ export function BottomPanel() {
         {/* Close button */}
         <button
           onClick={toggleLogsPanel}
-          className="hover:bg-neutral-800 text-neutral-500 hover:text-neutral-300 px-1 py-0.5 rounded"
+          className="hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-300 px-1 py-0.5 rounded"
           title="Close panel"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -92,8 +92,8 @@ function TabButton({
       onClick={onClick}
       className={`px-3 py-1.5 font-medium transition-colors ${
         active
-          ? 'text-neutral-100 border-b-2 border-blue-500'
-          : 'text-neutral-500 hover:text-neutral-300 border-b-2 border-transparent'
+          ? 'text-neutral-900 dark:text-neutral-100 border-b-2 border-blue-500'
+          : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-300 border-b-2 border-transparent'
       }`}
     >
       {label}

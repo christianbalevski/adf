@@ -38,6 +38,20 @@ export interface EditorTab {
   revision?: number
   /** W3-F: someone else changed the file while this tab had unsaved text; the tab shows the notice. */
   conflict?: TabConflict
+  /**
+   * Someone else's change replaced this (clean) tab's text. The tab shows a
+   * short-lived "Updated by … · Undo" strip; cleared by typing, a save, or
+   * dismissal. Not persisted.
+   */
+  replaced?: TabReplaced
+}
+
+/** What a clean tab showed before someone else's write replaced it. */
+export interface TabReplaced {
+  previous: string
+  writer: ResourceWriter | null
+  /** Tells two replacements of the same tab apart (restarts the strip's timer). */
+  seq: number
 }
 
 /** Someone else's change that arrived over unsaved text (or refused a save). */
@@ -107,6 +121,14 @@ interface EditorTabsState {
   resolveTabConflict: (path: string, choice: 'reload' | 'keep', theirs?: { content: string; revision?: number }) => void
   /** W3-F: focus the active tab's notice (a save was asked for while it is up). */
   focusConflictNotice: () => void
+  /**
+   * Undo of a replacement: the tab shows what it held before, unsaved (dirty
+   * over their text and revision), and returns that text for the caller to
+   * save. Null when there is nothing to undo.
+   */
+  undoExternalReplace: (path: string) => string | null
+  /** The "Updated by" strip timed out or was closed. */
+  dismissExternalReplace: (path: string) => void
   reset: () => void
 }
 
@@ -116,6 +138,7 @@ function getExtension(path: string): string {
 }
 
 let externalWriteSeq = 0
+let replacedSeq = 0
 
 export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
   tabs: [],
@@ -222,7 +245,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) =>
         t.path === path
-          ? { ...t, content, isDirty: content !== t.savedContent }
+          ? { ...t, content, isDirty: content !== t.savedContent, ...(t.replaced && content !== t.content ? { replaced: undefined } : {}) }
           : t
       )
     }))
@@ -253,7 +276,12 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
           if (t.conflict && t.conflict.content === content && meta === undefined) return t
           return { ...t, conflict: { content, revision: meta?.revision, writer: meta?.writer ?? null } }
         }
-        return { ...t, content, savedContent: content, isDirty: false, revision: meta ? meta.revision : t.revision, conflict: undefined }
+        // A clean tab takes their text, and says so: the strip names the
+        // writer and offers Undo (the text it showed is kept for that).
+        const replaced = t.content !== content && t.kind === 'file' && !t.isBinary
+          ? { previous: t.content, writer: meta?.writer ?? null, seq: ++replacedSeq }
+          : t.replaced
+        return { ...t, content, savedContent: content, isDirty: false, revision: meta ? meta.revision : t.revision, conflict: undefined, replaced }
       }),
       // Marked unconditionally: the save layer needs to know the file changed
       // underneath it even when no tab is currently showing it.
@@ -276,7 +304,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
       tabs: s.tabs.map((t) => {
         if (t.path !== path) return t
         const showsMineOrTheirs = !t.isDirty && (t.content === mine || t.content === conflict.content)
-        return { ...t, content: showsMineOrTheirs ? mine ?? t.content : t.content, conflict, isDirty: true, savedContent: conflict.content ?? t.savedContent }
+        return { ...t, content: showsMineOrTheirs ? mine ?? t.content : t.content, conflict, isDirty: true, savedContent: conflict.content ?? t.savedContent, replaced: undefined }
       })
     }))
   },
@@ -287,7 +315,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
         if (t.path !== path || !t.conflict) return t
         if (choice === 'reload') {
           const content = theirs?.content ?? t.conflict.content ?? t.savedContent
-          return { ...t, content, savedContent: content, isDirty: false, revision: theirs ? theirs.revision : t.conflict.revision, conflict: undefined }
+          return { ...t, content, savedContent: content, isDirty: false, revision: theirs ? theirs.revision : t.conflict.revision, conflict: undefined, replaced: undefined }
         }
         // Keep mine: based on their revision now; dirty until the save lands.
         return { ...t, isDirty: true, revision: t.conflict.revision, conflict: undefined }
@@ -297,6 +325,24 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
 
   focusConflictNotice: () => {
     set((s) => ({ conflictFocusSeq: s.conflictFocusSeq + 1 }))
+  },
+
+  undoExternalReplace: (path) => {
+    const tab = get().tabs.find((t) => t.path === path)
+    if (!tab?.replaced || tab.conflict) return null
+    const previous = tab.replaced.previous
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.path === path ? { ...t, content: previous, isDirty: previous !== t.savedContent, replaced: undefined } : t
+      )
+    }))
+    return previous
+  },
+
+  dismissExternalReplace: (path) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.path === path && t.replaced ? { ...t, replaced: undefined } : t))
+    }))
   },
 
   reset: () => {

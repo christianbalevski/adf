@@ -17,7 +17,7 @@ import { estimateTokens, formatTokenCount } from '../../utils/token-estimate'
 import { confirmDiscardConflicts } from '../../utils/edit-conflict'
 import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveEditorTab } from '../../utils/editor-save'
 import type { SaveBase } from '../../utils/edit-conflict'
-import { ChangedElsewhereNotice } from './ChangedElsewhereNotice'
+import { ChangedElsewhereNotice, ExternalUpdateNotice } from './ChangedElsewhereNotice'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -233,6 +233,14 @@ export function EditorPanel() {
     if (path === 'README.md') useDocumentStore.getState().setDocumentContent(content)
     performSave(path, content, useDocumentStore.getState().filePath)
   }, [performSave])
+  // "Updated by … · Undo": the text the tab showed before goes back in as an
+  // unsaved edit over their revision, and is saved like any other edit.
+  const undoReplace = useCallback((path: string) => {
+    const previous = useEditorTabsStore.getState().undoExternalReplace(path)
+    if (previous === null) return
+    if (path === 'README.md') useDocumentStore.getState().setDocumentContent(previous)
+    performSave(path, previous, useDocumentStore.getState().filePath)
+  }, [performSave])
 
   // Handle content changes from editors
   const handleChange = useCallback((path: string, content: string) => {
@@ -393,6 +401,16 @@ export function EditorPanel() {
           focusSeq={conflictFocusSeq}
           onReload={() => { void reloadTheirs(activeTab.path) }}
           onKeep={() => keepMine(activeTab.path)}
+          mine={activeTab.content}
+          theirs={activeTab.conflict.content}
+        />
+      )}
+      {!activeTab.conflict && activeTab.replaced && (
+        <ExternalUpdateNotice
+          writer={activeTab.replaced.writer}
+          seq={activeTab.replaced.seq}
+          onUndo={() => undoReplace(activeTab.path)}
+          onDismiss={() => useEditorTabsStore.getState().dismissExternalReplace(activeTab.path)}
         />
       )}
       <div className="flex-1 overflow-hidden relative">

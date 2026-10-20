@@ -1,17 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { usePollWhenVisible } from '../../hooks/usePollWhenVisible'
-import { formatTime } from '../logs/LogsPanel'
+import { formatTime, PANEL_BUTTON_CLASS, PANEL_LIVE_ON_CLASS, PANEL_SELECT_CLASS } from '../logs/LogsPanel'
+import { FreshnessStamp } from '../common/FreshnessStamp'
 import type { TaskEntry, TaskStatus } from '../../../shared/types/adf-v02.types'
 import { TASK_STATUSES } from '../../../shared/types/adf-v02.types'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
-  pending: 'text-yellow-400',
-  pending_approval: 'text-orange-400',
-  running: 'text-blue-400',
-  completed: 'text-green-400',
-  failed: 'text-red-400',
-  denied: 'text-red-400',
+  pending: 'text-amber-600 dark:text-yellow-400',
+  pending_approval: 'text-orange-600 dark:text-orange-400',
+  running: 'text-blue-600 dark:text-blue-400',
+  completed: 'text-green-600 dark:text-green-400',
+  failed: 'text-red-600 dark:text-red-400',
+  denied: 'text-red-600 dark:text-red-400',
   cancelled: 'text-neutral-500'
 }
 
@@ -36,6 +37,7 @@ export function TasksPanel() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -43,6 +45,7 @@ export function TasksPanel() {
     window.adfApi?.getTasks(200).then(({ tasks: fetched }) => {
       // API returns newest-first; reverse for chronological (newest at bottom)
       setTasks([...fetched].reverse())
+      setFetchedAt(Date.now())
     })
   }, [])
 
@@ -51,6 +54,7 @@ export function TasksPanel() {
     setTasks([])
     setExpandedId(null)
     setUserScrolledUp(false)
+    setFetchedAt(null)
     if (!filePath) return
     fetchTasks()
   }, [filePath, fetchTasks])
@@ -79,12 +83,13 @@ export function TasksPanel() {
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-1 text-xs text-neutral-400 shrink-0">
+      <div className="flex items-center gap-2 px-3 py-1 text-xs text-neutral-500 dark:text-neutral-400 shrink-0">
         {/* Status filter */}
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as TaskStatus | 'all')}
-          className="bg-neutral-800 text-neutral-300 border border-neutral-700 rounded px-1.5 py-0.5 text-[11px] outline-none"
+          className={PANEL_SELECT_CLASS}
+          aria-label="Status"
         >
           <option value="all">All Statuses</option>
           {TASK_STATUSES.map((s) => (
@@ -96,35 +101,23 @@ export function TasksPanel() {
         <button
           onClick={() => setAutoRefresh(!autoRefresh)}
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] ${
-            autoRefresh
-              ? 'bg-green-900/40 text-green-400 border border-green-800'
-              : 'hover:bg-neutral-800 text-neutral-500'
+            autoRefresh ? PANEL_LIVE_ON_CLASS : PANEL_BUTTON_CLASS
           }`}
-          title={autoRefresh ? 'Stop auto-refresh' : 'Start auto-refresh (2s)'}
+          title={autoRefresh ? 'Live: refreshes every 2s while the panel is open. Click to pause.' : 'Paused. Click to refresh every 2s.'}
+          aria-pressed={autoRefresh}
         >
           {autoRefresh && (
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500 dark:bg-green-400 animate-pulse" />
           )}
-          Auto
+          Live
         </button>
 
-        {/* Manual refresh */}
-        {!autoRefresh && (
-          <button
-            onClick={fetchTasks}
-            className="hover:bg-neutral-800 text-neutral-500 hover:text-neutral-300 px-1.5 py-0.5 rounded text-[11px]"
-            title="Refresh"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-        )}
+        {/* Paused: how old the view is, and a way to catch up */}
+        {!autoRefresh && <FreshnessStamp at={fetchedAt} onRefresh={fetchTasks} />}
 
         <div className="flex-1" />
 
-        <span className="text-neutral-600 text-[10px]">{filtered.length} tasks</span>
+        <span className="text-neutral-400 dark:text-neutral-600 text-[10px]">{filtered.length} tasks</span>
       </div>
 
       {/* Task content */}
@@ -134,7 +127,7 @@ export function TasksPanel() {
         className="flex-1 overflow-auto font-mono text-[11px] leading-[18px] px-3 py-1"
       >
         {filtered.length === 0 ? (
-          <div className="text-neutral-600 py-4 text-center">No tasks</div>
+          <div className="text-neutral-400 dark:text-neutral-600 py-4 text-center">No tasks</div>
         ) : (
           filtered.map((task) => (
             <TaskRow
@@ -169,20 +162,20 @@ function TaskRow({
     <div>
       <div
         onClick={onToggle}
-        className="flex gap-2 cursor-pointer hover:bg-neutral-900/50"
+        className="flex gap-2 cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-900/50"
       >
-        <span className="text-neutral-600 shrink-0 select-none">
+        <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none">
           [{formatTime(task.created_at)}]
         </span>
         <span className={`shrink-0 font-semibold uppercase ${statusColor}`}>
           {task.status.replace('_', ' ')}
         </span>
-        <span className="text-cyan-400 shrink-0">{task.tool}</span>
+        <span className="text-cyan-700 dark:text-cyan-400 shrink-0">{task.tool}</span>
         {task.requires_authorization && (
-          <span className="text-orange-400 shrink-0" title="Requires authorized code to resolve">AUTH</span>
+          <span className="text-orange-600 dark:text-orange-400 shrink-0" title="Requires authorized code to resolve">AUTH</span>
         )}
         {task.approval_meta?.protection?.description ? (
-          <span className="text-neutral-400 truncate" title={task.approval_meta.protection.description}>
+          <span className="text-neutral-600 dark:text-neutral-400 truncate" title={task.approval_meta.protection.description}>
             — {task.approval_meta.protection.description}
           </span>
         ) : task.origin && (
@@ -191,14 +184,14 @@ function TaskRow({
           </span>
         )}
         {duration && (
-          <span className="text-neutral-600 shrink-0">({duration})</span>
+          <span className="text-neutral-400 dark:text-neutral-600 shrink-0">({duration})</span>
         )}
-        <span className="text-neutral-600 shrink-0 select-none ml-auto">
+        <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none ml-auto">
           {expanded ? '\u25BC' : '\u25B6'}
         </span>
       </div>
       {expanded && (
-        <pre className="ml-8 my-1 px-2 py-1.5 bg-neutral-900 border border-neutral-800 rounded text-[10px] text-neutral-400 overflow-x-auto whitespace-pre-wrap">
+        <pre className="ml-8 my-1 px-2 py-1.5 bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded text-[10px] text-neutral-600 dark:text-neutral-400 overflow-x-auto whitespace-pre-wrap">
           {formatTaskDetails(task)}
         </pre>
       )}

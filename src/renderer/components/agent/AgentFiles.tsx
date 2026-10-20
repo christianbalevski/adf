@@ -7,6 +7,10 @@ import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { MAX_INLINE_BINARY_BYTES, resolveImageMime } from '../../../shared/utils/image-files'
 import { useWorkspaceImage } from '../editor/ImageViewer'
+import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
+import { useDockPanelState } from '../../stores/dock-panel-state'
+import { absoluteTime, relativeTime, toEpochMs } from '../../utils/relative-time'
+import { createDebouncedRefresh, isFileUpdatedEvent, loadFilesSort, saveFilesSort, sortByRecent, type FilesSort } from '../../utils/agent-files'
 
 type FileProtectionLevel = 'read_only' | 'no_delete' | 'none'
 
@@ -157,10 +161,19 @@ export function AgentFiles() {
   const [expandedTable, setExpandedTable] = useState<string | null>(null)
   const [tableData, setTableData] = useState<{ columns: string[]; rows: Record<string, unknown>[] }>({ columns: [], rows: [] })
   const [viewingFile, setViewingFile] = useState<{ path: string; content: string; binary: boolean; meta: FileEntry } | null>(null)
-  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set())
+  // Per agent, kept across tab switches (the dock unmounts this panel).
+  const [collapsedDirs, setCollapsedDirs] = useDockPanelState<Set<string>>('files', 'collapsed', new Set())
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
-  const [fileFilter, setFileFilter] = useState('')
+  const [fileFilter, setFileFilter] = useDockPanelState('files', 'filter', '')
+  const [sort, setSortState] = useState<FilesSort>(loadFilesSort)
+  const setSort = useCallback((next: FilesSort) => { setSortState(next); saveFilesSort(next) }, [])
+  // Relative times re-render once a minute; nothing is fetched for it.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(timer)
+  }, [])
   const inputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
   const folderRenameRef = useRef<HTMLInputElement>(null)
@@ -173,7 +186,7 @@ export function AgentFiles() {
       else next.add(dirPath)
       return next
     })
-  }, [])
+  }, [setCollapsedDirs])
 
   const countFiles = useCallback((node: FileTreeNode): number => {
     if (!node.isDir) return 1
@@ -197,6 +210,25 @@ export function AgentFiles() {
     fetchTables()
     setExpandedTable(null)
   }, [filePath, fetchFiles, fetchTables])
+
+  // Live file list: the agent, a lambda, the shell, another client or the
+  // daemon API writing, deleting or renaming a file. `file_updated` is the
+  // runtime's text-write event; the workspace `files` scope covers every
+  // writer, binary files, deletes and renames. One debounced refetch per burst.
+  useEffect(() => {
+    const refresh = createDebouncedRefresh(fetchFiles, 300)
+    const offEvent = window.adfApi?.onAgentEvent?.((event: AgentExecutionEvent) => {
+      if (isFileUpdatedEvent(event)) refresh.trigger()
+    })
+    const offData = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+      if (scope === 'files') refresh.trigger()
+    })
+    return () => {
+      refresh.cancel()
+      offEvent?.()
+      offData?.()
+    }
+  }, [fetchFiles, filePath])
 
   // Live refresh: workspace pushes a signal whenever tables mutate (agent
   // db_execute, lambdas, drops), so counts and expanded rows stay current.
@@ -441,6 +473,7 @@ export function AgentFiles() {
   // Rebuilding the tree in the render body ran the whole walk on every
   // keystroke in the filter box (and on every unrelated state change).
   const tree = useMemo(() => buildFileTree(visibleFiles), [visibleFiles])
+  const recent = useMemo(() => (sort === 'recent' ? sortByRecent(visibleFiles) : []), [sort, visibleFiles])
 
   return (
     <div
@@ -489,6 +522,14 @@ export function AgentFiles() {
           />
         </div>
         <div className="flex items-center shrink-0">
+          <button
+            onClick={() => setSort(sort === 'name' ? 'recent' : 'name')}
+            title={sort === 'name' ? 'Sorted by name. Click to sort by most recent.' : 'Sorted by most recent. Click to sort by name.'}
+            aria-label={`Sort: ${sort === 'name' ? 'Name' : 'Recent'}`}
+            className="h-6 px-1.5 flex items-center rounded text-[10px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+          >
+            {sort === 'name' ? 'Name' : 'Recent'}
+          </button>
           <button
             onClick={async () => {
               const result = await window.adfApi?.pickAndImport()
@@ -571,6 +612,12 @@ export function AgentFiles() {
                 </span>
                 <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
                   {formatSize(file.size)}
+                </span>
+                <span
+                  className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 tabular-nums"
+                  title={`Modified ${absoluteTime(toEpochMs(file.updated_at))}`}
+                >
+                  {relativeTime(toEpochMs(file.updated_at), now)}
                 </span>
                 {file.authorized && (
                   <span className="shrink-0 px-1.5 py-0.5 text-[10px] rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">
@@ -655,6 +702,8 @@ export function AgentFiles() {
             )
           }
 
+          // Recent: one flat list, newest change first, full paths.
+          if (sort === 'recent') return recent.map((file) => renderFileRow(file, file.path, 0))
           return tree.map((node) => renderNode(node, 0))
         })()}
         {files.length === 0 && (

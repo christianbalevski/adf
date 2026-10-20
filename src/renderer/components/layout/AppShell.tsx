@@ -30,8 +30,12 @@ import { AgentWindowStatus } from './AgentWindowStatus'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 const RIGHT_PANEL_MIN = 260
-const RIGHT_PANEL_MAX = 600
+/** Share of the window the dock may take: wide windows get a wide dock, and a width saved on one can't crowd out a small one. */
+const RIGHT_PANEL_MAX_VW = 50
+/** Ceiling for a stored width; the live limit is RIGHT_PANEL_MAX_VW of the window. */
+const RIGHT_PANEL_STORED_MAX = 2400
 const RIGHT_PANEL_DEFAULT = 320
+const rightPanelMax = (): number => Math.max(RIGHT_PANEL_MIN, Math.round(window.innerWidth * RIGHT_PANEL_MAX_VW / 100))
 
 // The three heavy main-content views are split out of the startup chunk. None
 // of them is on the first-paint path — a cold start has no file open, so the
@@ -76,7 +80,7 @@ export function AppShell() {
   const showMeshGraph = useAppStore((s) => s.showMeshGraph) && !isAgentWindow
   const filePath = useDocumentStore((s) => s.filePath)
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
-    loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
+    loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_STORED_MAX)
   )
   // The drag writes the width straight to the panel element and only commits
   // to state on mouseup — a setState per mousemove re-renders the whole shell
@@ -87,8 +91,9 @@ export function AppShell() {
     axis: 'x',
     grow: -1,
     min: RIGHT_PANEL_MIN,
-    max: RIGHT_PANEL_MAX,
-    getStart: () => rightPanelWidth,
+    max: rightPanelMax,
+    // What is on screen: a stored width wider than this window allows shows clamped.
+    getStart: () => rightPanelRef.current?.getBoundingClientRect().width || rightPanelWidth,
     onDrag: (w) => { if (rightPanelRef.current) rightPanelRef.current.style.width = `${w}px` },
     onCommit: (w) => {
       setRightPanelWidth(w)
@@ -263,7 +268,7 @@ export function AppShell() {
                 />
                 <div
                   ref={rightPanelRef}
-                  style={{ width: rightPanelWidth }}
+                  style={{ width: rightPanelWidth, maxWidth: `max(${RIGHT_PANEL_MIN}px, ${RIGHT_PANEL_MAX_VW}vw)` }}
                   className="shrink-0 flex flex-col bg-[var(--adf-ui-surface)] border-l border-hairline"
                 >
                   <RightDock reserveWindowControls={dockUnderWindowControls} />

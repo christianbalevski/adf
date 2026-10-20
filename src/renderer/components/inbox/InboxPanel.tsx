@@ -2,6 +2,9 @@ import { useState, memo } from 'react'
 import { Dialog } from '../common/Dialog'
 import { useAgentStore } from '../../stores/agent.store'
 import { useInboxStore } from '../../stores/inbox.store'
+import { useDockPanelState } from '../../stores/dock-panel-state'
+import { absoluteTime, relativeTime } from '../../utils/relative-time'
+import { matchesInboxSearch, matchesOutboxSearch } from './inbox-search'
 import type { InboxMessage, RendererOutboxMessage } from '../../../shared/types/adf.types'
 
 type StatusFilter = 'all' | 'unread' | 'read' | 'archived' | 'outbox'
@@ -10,39 +13,30 @@ export function InboxPanel() {
   // Read inbox data from shared store (populated by AppShell polling)
   const inboxData = useInboxStore((s) => s.inboxData)
   const outboxMessages = useInboxStore((s) => s.outboxMessages)
-  const [filter, setFilter] = useState<StatusFilter>('all')
+  // Per agent, kept across tab switches (the dock unmounts this panel).
+  const [filter, setFilter] = useDockPanelState<StatusFilter>('inbox', 'filter', 'all')
+  const [search, setSearch] = useDockPanelState('inbox', 'search', '')
   const [selectedMessage, setSelectedMessage] = useState<InboxMessage | null>(null)
   const [selectedOutboxMessage, setSelectedOutboxMessage] = useState<RendererOutboxMessage | null>(null)
   const config = useAgentStore((s) => s.config)
 
   const inboxMode = config?.messaging?.inbox_mode === true
 
-  if (!inboxMode) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-4">
-        <div className="text-center">
-          <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            Inbox mode is not enabled.
-          </p>
-          <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
-            Enable it in Agent &rarr; Config &rarr; Messaging &rarr; Inbox mode.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
+  // Inbox mode off: messages go straight to the loop, but what the inbox and
+  // Sent already hold (from before, or delivered while it was on) stays listed.
   const messages = inboxData?.messages ?? []
   const filtered = filter === 'all'
     ? messages
     : filter === 'outbox'
       ? []
       : messages.filter((m) => m.status === filter)
+  const searching = search.trim().length > 0
+  const searched = searching ? filtered.filter((m) => matchesInboxSearch(m, search)) : filtered
 
   // Sort newest-first for the panel view
-  const sorted = [...filtered].sort((a, b) => b.received_at - a.received_at)
+  const sorted = [...searched].sort((a, b) => b.received_at - a.received_at)
   const sortedOutbox = filter === 'outbox'
-    ? [...outboxMessages].sort((a, b) => b.created_at - a.created_at)
+    ? outboxMessages.filter((m) => matchesOutboxSearch(m, search)).sort((a, b) => b.created_at - a.created_at)
     : []
 
   const counts = {
@@ -55,8 +49,21 @@ export function InboxPanel() {
 
   return (
     <div className="h-full flex flex-col">
+      {!inboxMode && (
+        <div className="shrink-0 px-3 py-1.5 border-b border-neutral-200 dark:border-neutral-700 text-[11px] text-neutral-500 dark:text-neutral-400">
+          Inbox mode off. New messages go to the loop.
+        </div>
+      )}
       {/* Filter bar */}
-      <div className="shrink-0 px-3 py-2 border-b border-neutral-200 dark:border-neutral-700">
+      <div className="shrink-0 px-3 py-2 space-y-1.5 border-b border-neutral-200 dark:border-neutral-700">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setSearch('') }}
+          placeholder="Search…"
+          aria-label="Search messages"
+          className="w-full h-6 text-xs px-2 border border-neutral-200 dark:border-neutral-700 rounded bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 placeholder:text-neutral-400 dark:placeholder:text-neutral-500 outline-none focus:border-blue-400 min-w-0"
+        />
         <div className="flex items-center gap-2">
           <div className="flex-1 flex rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
             {(['all', 'unread', 'read', 'archived', 'outbox'] as const).map((f) => (
@@ -81,7 +88,9 @@ export function InboxPanel() {
         {filter === 'outbox' ? (
           sortedOutbox.length === 0 ? (
             <div className="flex items-center justify-center h-full">
-              <p className="text-xs text-neutral-400 dark:text-neutral-500">No sent messages yet.</p>
+              <p className="text-xs text-neutral-400 dark:text-neutral-500">
+                {outboxMessages.length > 0 && searching ? 'No sent messages match.' : 'No sent messages yet.'}
+              </p>
             </div>
           ) : (
             <div className="p-2 space-y-1.5">
@@ -93,7 +102,7 @@ export function InboxPanel() {
         ) : sorted.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-xs text-neutral-400 dark:text-neutral-500">
-              {messages.length === 0 ? 'No messages yet.' : 'No messages match this filter.'}
+              {messages.length === 0 ? 'No messages yet.' : searching ? 'No messages match.' : 'No messages match this filter.'}
             </p>
           </div>
         ) : (
@@ -163,7 +172,7 @@ const MessageRow = memo(function MessageRow({ message, onClick }: { message: Inb
           <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
         )}
         <span
-          className="text-[10px] font-semibold truncate min-w-0 text-purple-600 dark:text-purple-400"
+          className={`text-[10px] truncate min-w-0 text-purple-600 dark:text-purple-400 ${isUnread ? 'font-bold' : 'font-medium'}`}
           title={message.from}
         >
           {displayName}
@@ -177,16 +186,16 @@ const MessageRow = memo(function MessageRow({ message, onClick }: { message: Inb
         )}
         <StatusBadge status={message.status} />
         <VerificationBadge meta={message.meta} />
-        <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0">
+        <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0" title={absoluteTime(message.received_at)}>
           {formatTime(message.received_at)}
         </span>
       </div>
       {message.subject && (
-        <div className="text-[10px] font-medium text-purple-700 dark:text-purple-300 truncate mb-0.5">
+        <div className={`text-[10px] text-purple-700 dark:text-purple-300 truncate mb-0.5 ${isUnread ? 'font-bold' : 'font-medium'}`}>
           {message.subject}
         </div>
       )}
-      <div className="text-xs truncate text-purple-800 dark:text-purple-300">
+      <div className={`text-xs truncate text-purple-800 dark:text-purple-300 ${isUnread ? 'font-semibold' : ''}`}>
         {message.content}
       </div>
     </button>
@@ -213,7 +222,7 @@ const OutboxRow = memo(function OutboxRow({ message, onClick }: { message: Rende
             {message.status_code}
           </span>
         )}
-        <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0">
+        <span className="ml-auto text-[9px] text-neutral-400 dark:text-neutral-500 shrink-0" title={absoluteTime(message.created_at)}>
           {formatTime(message.created_at)}
         </span>
       </div>
@@ -503,15 +512,5 @@ function formatSize(bytes: number): string {
 }
 
 function formatTime(timestamp: number): string {
-  const now = Date.now()
-  const diff = now - timestamp
-
-  if (diff < 60_000) return 'just now'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-
-  return new Date(timestamp).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric'
-  })
+  return relativeTime(timestamp, Date.now())
 }

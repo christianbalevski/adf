@@ -10,6 +10,8 @@ import { useAppStore, selectChatInCenter, selectActiveDockPanel } from '../../st
 import type { RightPanel } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
+import { useLayoutEffect, useRef } from 'react'
+import { dockStateKey, elementAtPath, elementPath, readDockState, writeDockState, type DockScroll } from '../../stores/dock-panel-state'
 
 const DOCK_TABS: readonly RightPanel[] = ['overview', 'loop', 'inbox', 'files', 'agent']
 /** Center placement takes Loops off the dock; every other tab stays put. */
@@ -35,6 +37,12 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel)
   const filePath = useDocumentStore((s) => s.filePath)
   const unreadInboxCount = useInboxStore((s) => s.unreadCount)
+  const contentRef = useRef<HTMLDivElement>(null)
+  // Loops keeps its own scroll (it follows the tail); every other panel gets
+  // its scroll position back when its tab comes back (per agent, this session).
+  const panelKey = rightPanel === 'agent' ? `agent:${agentSubTab}` : rightPanel
+  const scrollKey = rightPanel === 'loop' ? null : dockStateKey(filePath, panelKey, 'scroll')
+  useRestoredDockScroll(contentRef, scrollKey)
 
   return (
     <>
@@ -114,7 +122,16 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
         </div>
       )}
       {/* Panel content */}
-      <div className="flex-1 overflow-auto min-w-0 relative">
+      <div
+        ref={contentRef}
+        className="flex-1 overflow-auto min-w-0 relative"
+        onScrollCapture={(e) => {
+          const root = contentRef.current
+          if (!scrollKey || !root || !(e.target instanceof Element)) return
+          const path = elementPath(root, e.target)
+          if (path) writeDockState(scrollKey, { path, top: e.target.scrollTop } satisfies DockScroll)
+        }}
+      >
         {/* Keyed by placement as well as agent: moving the chat remounts it so
             the virtualised stream re-measures at the new panel width. */}
         {rightPanel === 'overview' && <AgentOverview />}
@@ -128,6 +145,47 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       </div>
     </>
   )
+}
+
+/**
+ * Put a dock panel's scroll back where it was left. The panel's content can
+ * arrive a little after mount (a fetch), so this retries for a short while
+ * until the remembered offset fits, and stops as soon as the user scrolls,
+ * clicks or types themselves.
+ */
+function useRestoredDockScroll(rootRef: React.RefObject<HTMLDivElement | null>, key: string | null): void {
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root || !key) return
+    const saved = readDockState<DockScroll | null>(key, null)
+    if (!saved || saved.top <= 0) return
+    let frame = 0
+    let tries = 0
+    const stop = () => {
+      cancelAnimationFrame(frame)
+      root.removeEventListener('wheel', stop, true)
+      root.removeEventListener('pointerdown', stop, true)
+      root.removeEventListener('keydown', stop, true)
+    }
+    const apply = () => {
+      const el = elementAtPath(root, saved.path)
+      const last = ++tries >= 60
+      // Only once it fits (or on the last try): a clamped write would be
+      // recorded as the new position.
+      if (el && (last || el.scrollHeight - el.clientHeight >= saved.top - 1)) {
+        el.scrollTop = saved.top
+        stop()
+        return
+      }
+      if (last) stop()
+      else frame = requestAnimationFrame(apply)
+    }
+    root.addEventListener('wheel', stop, true)
+    root.addEventListener('pointerdown', stop, true)
+    root.addEventListener('keydown', stop, true)
+    apply()
+    return stop
+  }, [rootRef, key])
 }
 
 function RightDockIconButton({
