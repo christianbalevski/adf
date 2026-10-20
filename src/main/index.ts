@@ -46,7 +46,7 @@ import { AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandl
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
 import { samePath } from './backend/daemon-mode/session'
-import { deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
+import { actsOnFocusedWindow, deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -773,10 +773,12 @@ app.whenReady().then(async () => {
       if (!details.url.startsWith(`${ADF_FILE_WINDOW.scheme}:`)) { callback({}); return }
       callback({ requestHeaders: { ...details.requestHeaders, [ADF_WINDOW_HEADER]: String(details.webContentsId ?? '') } })
     })
-    // Save and Close Agent act on the window in front; every other menu item on the main window.
+    // Save, Close Tab, Go to Agent, the sidebar and panel toggles, Open in New Window and the
+    // shortcuts sheet act on the window in front (menu.ts actsOnFocusedWindow); Close Agent on an
+    // agent window in front; every other menu item on the main window.
     setMenuWindowResolver((action) => {
       const focused = BrowserWindow.getFocusedWindow()
-      if (action === 'save') return focused ?? showMainWindow()
+      if (actsOnFocusedWindow(action)) return focused ?? showMainWindow()
       if (action === 'close-file' && focused && focused !== mainWindow) return focused
       return showMainWindow()
     }, requestOpenFile)

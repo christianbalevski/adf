@@ -1,8 +1,8 @@
 /**
- * Platform-aware modifier-key labels. Handlers accept BOTH metaKey and
- * ctrlKey everywhere, so commands work identically on every OS — these
- * constants only fix what the UI *shows*: ⌘/⌥/⇧ glyphs are meaningless on
- * Windows/Linux keyboards, which label the same keys Ctrl and Alt.
+ * Platform-aware modifier-key labels: ⌘/⌥/⇧ glyphs are meaningless on
+ * Windows/Linux keyboards, which label the same keys Ctrl and Alt. App
+ * shortcuts check the platform's command modifier only (`isPrimaryModifier`
+ * in keyboard.ts with IS_MAC): ⌘ on macOS, Ctrl elsewhere.
  */
 export const IS_MAC = window.adfApi?.platform === 'darwin'
 export const IS_WINDOWS = window.adfApi?.platform === 'win32'

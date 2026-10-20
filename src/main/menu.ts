@@ -4,6 +4,7 @@ import { basename } from 'path'
 import { IPC } from '../shared/constants/ipc-channels'
 import { grantLocalOpen } from './backend/local-open-grants'
 import { recentFilesKey as recentFilesKeyFor } from '../shared/constants/client-settings-keys'
+import { ACCELERATORS } from '../shared/constants/keyboard-shortcuts'
 
 /** What the menu reads and writes: `recentFiles` (SettingsService, or the client settings in daemon mode), `remoteRecentFiles` in remote mode. */
 export interface MenuSettings {
@@ -53,6 +54,28 @@ export type MenuAction =
   | 'close-file'
   | 'open-settings'
   | 'open-settings-backend'
+  | 'go-home'
+  | 'show-fleet-map'
+  | 'toggle-sidebar'
+  | 'toggle-panel'
+  | 'go-to-agent'
+  | 'open-in-new-window'
+  | 'close-tab'
+  | 'show-shortcuts'
+
+/**
+ * Agent windows (agent-windows.md): the items that act on the window in
+ * front. Every other item acts on the main window, which alone has Home, the
+ * fleet map, Settings and the sidebar.
+ */
+const FOCUSED_WINDOW_ACTIONS: ReadonlySet<string> = new Set<MenuAction>([
+  'save', 'close-tab', 'toggle-sidebar', 'toggle-panel', 'go-to-agent', 'open-in-new-window', 'show-shortcuts'
+])
+
+/** Whether `action` acts on the focused window rather than the main window. */
+export function actsOnFocusedWindow(action: string): boolean {
+  return FOCUSED_WINDOW_ACTIONS.has(action)
+}
 
 const MAX_RECENT_FILES = 10
 
@@ -209,32 +232,47 @@ export function buildApplicationMenu(): void {
       submenu: [
         {
           label: 'New ADF Agent',
-          accelerator: 'CmdOrCtrl+N',
+          accelerator: ACCELERATORS.newAgent,
           click: () => sendMenuAction('new-file')
         },
         {
           label: 'Open ADF Agent…',
-          accelerator: 'CmdOrCtrl+O',
+          accelerator: ACCELERATORS.openAgent,
           click: () => sendMenuAction('open-file')
         },
         { label: 'Open Recent', submenu: openRecentSubmenu },
+        // Agent windows exist in daemon mode only (agent-windows.md §9).
+        ...(daemonMenu
+          ? [{
+              label: 'Open in New Window',
+              accelerator: ACCELERATORS.openInNewWindow,
+              click: () => sendMenuAction('open-in-new-window')
+            }]
+          : []),
         { type: 'separator' },
         {
           label: 'Track Folder…',
-          accelerator: 'CmdOrCtrl+Shift+O',
+          accelerator: ACCELERATORS.trackFolder,
           click: () => sendMenuAction('add-directory')
         },
         { type: 'separator' },
         {
           label: 'Save',
-          accelerator: 'CmdOrCtrl+S',
+          accelerator: ACCELERATORS.save,
           click: () => sendMenuAction('save')
         },
-        // Cmd/Ctrl+W is left unbound here on purpose — the renderer uses it to
-        // close the active editor tab; binding it to a menu role would swallow it.
+        // The page handles Cmd/Ctrl+W (the active tab, or an agent window with
+        // no tab), so the menu shows it without registering it: a registered
+        // accelerator would swallow the key.
+        {
+          label: 'Close Tab',
+          accelerator: ACCELERATORS.closeTab,
+          registerAccelerator: false,
+          click: () => sendMenuAction('close-tab')
+        },
         {
           label: 'Close Agent',
-          accelerator: 'CmdOrCtrl+Shift+W',
+          accelerator: ACCELERATORS.closeAgent,
           click: () => sendMenuAction('close-file')
         },
         ...(isMac ? [] : [{ type: 'separator' as const }, { role: 'quit' as const }])
@@ -265,6 +303,14 @@ export function buildApplicationMenu(): void {
     {
       label: 'View',
       submenu: [
+        { label: 'Go to Agent…', accelerator: ACCELERATORS.goToAgent, click: () => sendMenuAction('go-to-agent') },
+        { type: 'separator' },
+        { label: 'Home', accelerator: ACCELERATORS.home, click: () => sendMenuAction('go-home') },
+        { label: 'Age of Agents', accelerator: ACCELERATORS.fleetMap, click: () => sendMenuAction('show-fleet-map') },
+        { type: 'separator' },
+        { label: 'Toggle Sidebar', accelerator: ACCELERATORS.toggleSidebar, click: () => sendMenuAction('toggle-sidebar') },
+        { label: 'Toggle Panel', accelerator: ACCELERATORS.togglePanel, click: () => sendMenuAction('toggle-panel') },
+        { type: 'separator' },
         { role: 'reload' },
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
@@ -277,7 +323,9 @@ export function buildApplicationMenu(): void {
       ]
     },
     {
+      // role 'window': macOS lists the open windows here.
       label: 'Window',
+      role: 'window',
       submenu: [
         { role: 'minimize' },
         { role: 'zoom' },
@@ -287,6 +335,8 @@ export function buildApplicationMenu(): void {
     {
       role: 'help',
       submenu: [
+        // Above Documentation: daemon mode's items follow Documentation (tests/parity/harness/gaps.ts).
+        { label: 'Keyboard Shortcuts', click: () => sendMenuAction('show-shortcuts') },
         {
           label: 'ADF Studio Documentation',
           click: () => shell.openExternal('https://github.com/christianbalevski/adf')

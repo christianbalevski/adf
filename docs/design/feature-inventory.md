@@ -1115,7 +1115,7 @@ Grouped by area, then category.
 - **Graceful shutdown overlay** — full-screen overlay shown during quit/update-install teardown, distinguishes "Shutting down" vs "Restarting…" wording.
 - **In-app auto-updater** — checks GitHub Releases every hour, status-bar badge, click-to-download, auto-restart-and-install after download; disabled in unpackaged dev builds.
 - **Native OS notifications** — toast fires only when no Studio window is focused, bursts of 5+ requests collapse into one summary toast, click focuses window and jumps to the agent.
-- **Keyboard shortcuts** — `Cmd/Ctrl+,` Settings, `Cmd/Ctrl+S` save tab, `Cmd/Ctrl+W` close tab, `Cmd/Ctrl+N` new agent, `Cmd/Ctrl+O` open agent, `Cmd/Ctrl+Shift+O` add directory, `Cmd/Ctrl+Shift+W` close agent.
+- **Keyboard shortcuts** — `Cmd/Ctrl+,` Settings, `Cmd/Ctrl+S` save tab, `Cmd/Ctrl+W` close tab, `Cmd/Ctrl+N` new agent, `Cmd/Ctrl+O` open agent, `Cmd/Ctrl+Shift+O` add directory, `Cmd/Ctrl+Shift+W` close agent, `Cmd/Ctrl+K` go to agent, `Cmd/Ctrl+Shift+H` Home, `Cmd/Ctrl+Shift+M` fleet map, `Cmd/Ctrl+Shift+E` toggle sidebar, `Cmd/Ctrl+J` toggle panel, `Cmd/Ctrl+Shift+N` open in new window (daemon mode), Shift+F10 or the Menu key for a sidebar row's menu. ⌘ on macOS, Ctrl elsewhere, never both. One table (`src/shared/constants/keyboard-shortcuts.ts`) feeds the menu, Help → Keyboard Shortcuts and the map's card.
 - **DevTools / reload / zoom** — standard Electron View menu roles exposed.
 - **External docs link** — Help menu opens GitHub repo in OS browser.
 

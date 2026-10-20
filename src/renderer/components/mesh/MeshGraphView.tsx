@@ -47,6 +47,7 @@ import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
 import { useDocumentStore } from '../../stores/document.store'
+import { isTypingElement, mapOwnsKey } from '../../utils/keyboard'
 import { AgentTitleCluster } from '../layout/TitleBar'
 import { ApprovalsMenu } from '../layout/ApprovalsMenu'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
@@ -761,11 +762,9 @@ function FleetMiniMapNode({ id, x, y, width, height, color, borderRadius, shapeR
   )
 }
 
-/** True when a keyboard event originates from a text-entry element. */
+/** True when a keyboard event originates from a field: text, select, combobox or editable content. */
 function isTypingTarget(e: KeyboardEvent): boolean {
-  const el = e.target as HTMLElement | null
-  if (!el) return false
-  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
+  return isTypingElement(e.target)
 }
 
 function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSettings: () => void }) {
@@ -2425,8 +2424,19 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       selectAgents([filePaths[next]], { center: false })
     }
 
+    // The map's keys act only while the map has the keyboard: focus on the
+    // map or nowhere, never in a field, a dialog or the dock (mapOwnsKey).
+    // A press on the map takes the keyboard from a control outside it.
+    const onPointerDown = (e: PointerEvent) => {
+      const root = mapRootRef.current
+      const focused = document.activeElement as HTMLElement | null
+      if (!root || !root.contains(e.target as HTMLElement | null)) return
+      if (focused && focused !== document.body && !root.contains(focused)) focused.blur()
+    }
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTypingTarget(e) || e.altKey) return
+      if (!mapOwnsKey(e.target, mapRootRef.current, document)) return
       const fleet = useFleetStore.getState()
 
       // Physical digit row (e.code survives Shift — ⇧1 emits key '!')
@@ -2586,7 +2596,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }
 
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('pointerdown', onPointerDown, true)
+    }
   }, [focusAgent, openFile, revealRightPanel, selectAgents, flyToAgents, reactFlow])
 
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out

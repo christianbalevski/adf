@@ -2987,6 +2987,9 @@
           accelerator: "CmdOrCtrl+S"
           label: "Save"
         -
+          accelerator: "CmdOrCtrl+W"
+          label: "Close Tab"
+        -
           accelerator: "CmdOrCtrl+Shift+W"
           label: "Close Agent"
         -
@@ -3019,6 +3022,27 @@
       label: "View"
       submenu:
         -
+          accelerator: "CmdOrCtrl+K"
+          label: "Go to Agent…"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+H"
+          label: "Home"
+        -
+          accelerator: "CmdOrCtrl+Shift+M"
+          label: "Age of Agents"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+E"
+          label: "Toggle Sidebar"
+        -
+          accelerator: "CmdOrCtrl+J"
+          label: "Toggle Panel"
+        -
+          type: "separator"
+        -
           role: "reload"
         -
           role: "forceReload"
@@ -3038,6 +3062,7 @@
           role: "togglefullscreen"
     -
       label: "Window"
+      role: "window"
       submenu:
         -
           role: "minimize"
@@ -3046,6 +3071,8 @@
     -
       role: "help"
       submenu:
+        -
+          label: "Keyboard Shortcuts"
         -
           label: "ADF Studio Documentation"
 #2 app.addRecentDocument:
@@ -3082,6 +3109,9 @@
           accelerator: "CmdOrCtrl+S"
           label: "Save"
         -
+          accelerator: "CmdOrCtrl+W"
+          label: "Close Tab"
+        -
           accelerator: "CmdOrCtrl+Shift+W"
           label: "Close Agent"
         -
@@ -3114,6 +3144,27 @@
       label: "View"
       submenu:
         -
+          accelerator: "CmdOrCtrl+K"
+          label: "Go to Agent…"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+H"
+          label: "Home"
+        -
+          accelerator: "CmdOrCtrl+Shift+M"
+          label: "Age of Agents"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+E"
+          label: "Toggle Sidebar"
+        -
+          accelerator: "CmdOrCtrl+J"
+          label: "Toggle Panel"
+        -
+          type: "separator"
+        -
           role: "reload"
         -
           role: "forceReload"
@@ -3133,6 +3184,7 @@
           role: "togglefullscreen"
     -
       label: "Window"
+      role: "window"
       submenu:
         -
           role: "minimize"
@@ -3141,6 +3193,8 @@
     -
       role: "help"
       submenu:
+        -
+          label: "Keyboard Shortcuts"
         -
           label: "ADF Studio Documentation"
 #4 app.addRecentDocument:
@@ -3179,6 +3233,9 @@
           accelerator: "CmdOrCtrl+S"
           label: "Save"
         -
+          accelerator: "CmdOrCtrl+W"
+          label: "Close Tab"
+        -
           accelerator: "CmdOrCtrl+Shift+W"
           label: "Close Agent"
         -
@@ -3211,6 +3268,27 @@
       label: "View"
       submenu:
         -
+          accelerator: "CmdOrCtrl+K"
+          label: "Go to Agent…"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+H"
+          label: "Home"
+        -
+          accelerator: "CmdOrCtrl+Shift+M"
+          label: "Age of Agents"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+E"
+          label: "Toggle Sidebar"
+        -
+          accelerator: "CmdOrCtrl+J"
+          label: "Toggle Panel"
+        -
+          type: "separator"
+        -
           role: "reload"
         -
           role: "forceReload"
@@ -3230,6 +3308,7 @@
           role: "togglefullscreen"
     -
       label: "Window"
+      role: "window"
       submenu:
         -
           role: "minimize"
@@ -3238,6 +3317,8 @@
     -
       role: "help"
       submenu:
+        -
+          label: "Keyboard Shortcuts"
         -
           label: "ADF Studio Documentation"
 #6 app.addRecentDocument:
@@ -3276,6 +3357,9 @@
           accelerator: "CmdOrCtrl+S"
           label: "Save"
         -
+          accelerator: "CmdOrCtrl+W"
+          label: "Close Tab"
+        -
           accelerator: "CmdOrCtrl+Shift+W"
           label: "Close Agent"
         -
@@ -3308,6 +3392,27 @@
       label: "View"
       submenu:
         -
+          accelerator: "CmdOrCtrl+K"
+          label: "Go to Agent…"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+H"
+          label: "Home"
+        -
+          accelerator: "CmdOrCtrl+Shift+M"
+          label: "Age of Agents"
+        -
+          type: "separator"
+        -
+          accelerator: "CmdOrCtrl+Shift+E"
+          label: "Toggle Sidebar"
+        -
+          accelerator: "CmdOrCtrl+J"
+          label: "Toggle Panel"
+        -
+          type: "separator"
+        -
           role: "reload"
         -
           role: "forceReload"
@@ -3327,6 +3432,7 @@
           role: "togglefullscreen"
     -
       label: "Window"
+      role: "window"
       submenu:
         -
           role: "minimize"
@@ -3335,6 +3441,8 @@
     -
       role: "help"
       submenu:
+        -
+          label: "Keyboard Shortcuts"
         -
           label: "ADF Studio Documentation"
 

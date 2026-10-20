@@ -33,12 +33,15 @@ const EDGE = 4
  * Fixed-position menu anchored at the pointer and clamped to the viewport.
  * Rendered into a body portal so overflow containers never clip it. Closes on
  * outside pointerdown, Escape, window blur, any scroll, or after an item is
- * chosen. Arrow keys move focus between enabled items; Enter/Space select.
+ * chosen. Arrow keys move focus between enabled items; Enter/Space select;
+ * Escape and Tab give the focus back to what had it when the menu opened.
  */
 export function ContextMenu({ position, items, onClose, placement, label }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null)
+  // What had the focus when the menu opened: Escape and Tab give it back.
+  const returnFocusRef = useRef<HTMLElement | null>(null)
 
   const open = position !== null
 
@@ -47,10 +50,13 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
   useLayoutEffect(() => {
     if (!position) {
       setClamped(null)
+      returnFocusRef.current = null
       return
     }
     const el = menuRef.current
     if (!el) return
+    const before = document.activeElement
+    if (!returnFocusRef.current && before instanceof HTMLElement && !el.contains(before)) returnFocusRef.current = before
     const r = el.getBoundingClientRect()
     const x = placement?.x === 'end' ? position.x - r.width : position.x
     const y = placement?.y === 'above' ? position.y - r.height : position.y
@@ -73,7 +79,9 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
+        const back = returnFocusRef.current
         onClose()
+        if (back?.isConnected) back.focus()
       }
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -121,7 +129,9 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
       moveFocus(0, -1)
     } else if (e.key === 'Tab') {
       e.preventDefault()
+      const back = returnFocusRef.current
       onClose()
+      if (back?.isConnected) back.focus()
     }
   }
 

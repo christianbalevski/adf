@@ -12,6 +12,7 @@ import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { useShareDrag } from '../../hooks/useShareDrag'
 import { useDragResize } from '../../hooks/useDragResize'
+import { useKeyboardContextMenu } from '../../hooks/useKeyboardContextMenu'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
 import { Tooltip } from '../common/Tooltip'
@@ -1276,6 +1277,8 @@ const AgentFileRow = memo(function AgentFileRow({
     (e: React.MouseEvent) => onFileContextMenu(e, file, dirPath),
     [onFileContextMenu, file, dirPath]
   )
+  // Shift+F10 / the Menu key on the focused row opens the same menu.
+  const rowMenu = useKeyboardContextMenu(handleContextMenu)
   const agentState = useAgentStore((s) => isActive ? s.state : 'off')
   // Inner loops only — main is the dot. A primitive selector, so a streaming
   // side loop re-renders the row on the count, not on every delta.
@@ -1360,7 +1363,8 @@ const AgentFileRow = memo(function AgentFileRow({
     <div
       {...shareDrag}
       onClick={handleOpen}
-      onContextMenu={handleContextMenu}
+      onContextMenu={rowMenu.onContextMenu}
+      onKeyDown={rowMenu.onKeyDown}
       data-active={isActive || undefined}
       className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
         isActive

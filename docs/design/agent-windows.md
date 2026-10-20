@@ -6,7 +6,7 @@ Status: step 1 of [#149](https://github.com/christianbalevski/adf/issues/149), o
 
 **Open in new window** on an agent opens a window with that agent's chat and loop (middle) and its panels (right). The window has no sidebar, no Home, no Settings and no fleet map. Its title is the agent's name. One Studio process, one runtime connection; every window is a view on it.
 
-Entry points: the agent's row in the sidebar (context menu), the agent title bar of the main window (icon button), and the fleet map's agent readout. All are shown only in daemon mode.
+Entry points: the agent's row in the sidebar (context menu), the agent title bar of the main window (icon button), the fleet map's agent readout, and File → Open in New Window (Cmd/Ctrl+Shift+N) for the open agent. All are shown only in daemon mode.
 
 ## 2. Decisions
 
@@ -50,7 +50,7 @@ Code: `src/main/backend/daemon-mode/index.ts` (`openWindow`, `closeWindow`, `ctx
 | `QUEUE_HANDOVER_TAKE` / `QUEUE_HANDOVER_READY` | The main window takes the queued messages closed agent windows left |
 | `MENU_ACTION_TAKE_PENDING` | The page listens for menu actions from now on; the ones sent while it loaded |
 
-- Application menu (`menu.ts` `setMenuWindowResolver`): Save acts on the focused window. Close Agent acts on the focused agent window (it closes that window), else on the main window. Every other item (New, Open, Open Recent, Track Folder, Settings) acts on the main window, creating it on macOS when there is none. An action for a page that is not listening yet waits in main until the page takes it (`deliverMenuAction`, `takePendingMenuActions`). A new page waits again: only a committed main-frame navigation (`did-navigate`: a reload) is one. `did-start-navigation` also fires for a navigation main blocks in will-navigate (a link in a chat, a dropped file), which never commits; a subframe, a `<webview>` or an in-page navigation keeps the page (`tests/backend/blocked-navigation-events.test.ts`, real Electron). Open Recent goes through main's open-file flow.
+- Application menu (`menu.ts` `setMenuWindowResolver`, `actsOnFocusedWindow`): Save, Close Tab, Go to Agent, Toggle Sidebar, Toggle Panel, Open in New Window and Keyboard Shortcuts act on the focused window. Close Agent acts on the focused agent window (it closes that window), else on the main window. Close Tab (Cmd/Ctrl+W) in an agent window with no tab open closes the window. Every other item (New, Open, Open Recent, Track Folder, Settings, Home, Age of Agents) acts on the main window, creating it on macOS when there is none. Window has `role: 'window'`: macOS lists the open windows there. An action for a page that is not listening yet waits in main until the page takes it (`deliverMenuAction`, `takePendingMenuActions`). A new page waits again: only a committed main-frame navigation (`did-navigate`: a reload) is one. `did-start-navigation` also fires for a navigation main blocks in will-navigate (a link in a chat, a dropped file), which never commits; a subframe, a `<webview>` or an in-page navigation keeps the page (`tests/backend/blocked-navigation-events.test.ts`, real Electron). Open Recent goes through main's open-file flow.
 - Settings links in an agent window (identity restore banner, runtime indicator, skills, compute, the Providers jump after a sign-in failure, Ctrl+,) open Settings in the main window at that section: `useAppStore.openSettingsAt` and `setShowSettings(true)` call `WINDOW_OPEN_SETTINGS` there.
 
 ## 5. Event routing and agent window state

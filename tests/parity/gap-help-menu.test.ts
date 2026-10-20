@@ -42,4 +42,16 @@ describe('mode:help-menu', () => {
     const extra = recording([menu(help('connecting')), menu(help(null)), menu(help(null))])
     expect(entry.apply(extra, embedded)).toBe(0)
   })
+
+  it('File\'s "Open in New Window" (agent windows) is the daemon mode\'s own; other File items stay', () => {
+    const file = (extra: string[]) => ({ label: 'File', submenu: [{ label: 'New ADF Agent' }, ...extra.map((label) => ({ label })), { label: 'Save' }] })
+    const embedded = recording([menu([file([]), ...embeddedHelp])])
+    const daemon = recording([menu([file(['Open in New Window']), ...help(null)])])
+    expect(entry.apply(daemon, embedded)).toBe(1)
+    expect(daemon.local).toEqual([menu([file([]), ...embeddedHelp])])
+
+    const other = recording([menu([file(['Something Else']), ...help(null)])])
+    expect(entry.apply(other, embedded)).toBe(1)
+    expect(other.local).toEqual([menu([file(['Something Else']), ...embeddedHelp])])
+  })
 })
