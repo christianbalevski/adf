@@ -483,6 +483,9 @@ export const IPC = {
   WINDOW_QUEUE_GET: 'adf:window:queue-get',
   QUEUE_HANDOVER_TAKE: 'adf:window:queue-handover-take',
   QUEUE_HANDOVER_READY: 'adf:window:queue-handover-ready',
+  // The agents open in agent windows (the sidebar's marker): read, and pushed to the main window on a change.
+  WINDOW_LIST_AGENTS: 'adf:window:list-agents',
+  WINDOW_AGENTS_CHANGED: 'adf:window:agents-changed',
   // Menu actions sent while the page was loading, taken once it listens (daemon mode).
   MENU_ACTION_TAKE_PENDING: 'adf:menu:take-pending',
   // Theme, typeface, scale or avatars changed in another window.

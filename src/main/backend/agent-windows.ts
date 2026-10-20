@@ -82,6 +82,8 @@ export interface AgentWindowsDeps {
   log?: Pick<Console, 'log' | 'warn'>
   /** Moves and resizes are saved after this pause (default 500 ms). */
   saveDelayMs?: number
+  /** The open agents (`agents()`) may have changed: a window opened, closed, or failed to open its agent. */
+  onChange?: () => void
 }
 
 /** The window title for an agent file: its name without `.adf` (either separator: remote paths). */
@@ -242,6 +244,7 @@ export class AgentWindows {
           const w = this.windows.get(id)
           this.windows.delete(id)
           if (w && !w.keep) this.save()
+          this.changed()
         },
         moved: () => this.saveSoon(),
       },
@@ -250,7 +253,17 @@ export class AgentWindows {
     this.windows.set(id, { handle, filePath: request.filePath, agentId, opened: false, failed: false, keep: false, restored })
     this.log.log(`[AgentWindows] Opened a window for ${request.filePath}`)
     this.save()
+    this.changed()
     return { id, created: true }
+  }
+
+  private changed(): void {
+    try { this.deps.onChange?.() } catch (err) { this.log.warn('[AgentWindows] onChange failed:', err) }
+  }
+
+  /** The agents shown in agent windows now (a window whose open failed is left out). */
+  agents(): Array<{ filePath: string; agentId: string | null }> {
+    return this.list().map(({ filePath, agentId }) => ({ filePath, agentId }))
   }
 
   /**
@@ -265,6 +278,7 @@ export class AgentWindows {
     if (!w.restored) {
       w.failed = true
       this.save()
+      this.changed()
       return
     }
     const entry = { agentId: w.agentId, filePath: w.filePath }
@@ -273,6 +287,7 @@ export class AgentWindows {
       w.failed = true
       this.log.log(`[AgentWindows] ${w.filePath} did not open and is no longer there: its window is not saved`)
       this.save()
+      this.changed()
     })
   }
 

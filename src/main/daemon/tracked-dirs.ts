@@ -9,7 +9,7 @@ import { existsSync, statSync, type Dirent } from 'node:fs'
 import { readdir, realpath, stat as fsStat } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
-import { isConfigReviewed } from '../services/agent-review'
+import { getReviewedIds, isConfigReviewed } from '../services/agent-review'
 import { canonicalizePath, containsPath, isSameOrSubPath } from '../utils/tracked-paths'
 import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import {
@@ -300,6 +300,8 @@ export interface TrackedTreeEntry {
   agentId?: string
   icon?: string
   did?: string
+  /** config.id is in reviewedAgents (the sidebar's "Not reviewed" marker); unset without a readable config. */
+  reviewed?: boolean
   isDirectory: boolean
   children?: TrackedTreeEntry[]
 }
@@ -358,6 +360,7 @@ export async function scanTrackedTree(
     } catch { depthOffset = 0 }
   }
   const maxDepth = maxDepthOf(settings)
+  const reviewedIds = new Set(getReviewedIds(settings.get('reviewedAgents')))
   const walk = async (current: string, depth: number): Promise<TrackedTreeEntry[]> => {
     if (depth > maxDepth) return []
     let entries: Dirent[]
@@ -378,6 +381,7 @@ export async function scanTrackedTree(
         agentId: msg?.id,
         icon: msg?.icon,
         did: msg?.did,
+        reviewed: msg?.id ? reviewedIds.has(msg.id) : undefined,
         isDirectory: false,
       })
     }

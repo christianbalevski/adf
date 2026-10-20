@@ -1199,3 +1199,24 @@ describe('daemon file routes: final-check fixes', () => {
     expect(runtime.getPendingRename(a.filePath)).toBeUndefined()
   })
 })
+
+describe('GET /tracked-dirs/tree: the review state', () => {
+  it('marks each agent reviewed or not from reviewedAgents (the sidebar marker)', async () => {
+    const root = tempDir('adf-files-')
+    const sub = join(root, 'team')
+    mkdirSync(sub)
+    const a = seedAgent(root, 'agent-1')
+    const b = seedAgent(sub, 'agent-2')
+    const { server, settings } = setup({ trackedDirectories: [root], reviewedAgents: [a.id] })
+    const q = encodeURIComponent
+    let tree = (await server.inject({ method: 'GET', url: `/tracked-dirs/tree?path=${q(root)}` })).json()
+    expect(tree.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ filePath: a.filePath, reviewed: true }),
+      expect.objectContaining({ isDirectory: true, children: [expect.objectContaining({ filePath: b.filePath, reviewed: false })] }),
+    ]))
+    // Read per scan, not cached with the file: an accept shows at the next scan.
+    settings.data.reviewedAgents = { [a.id]: 'accepted', [b.id]: 'accepted' }
+    tree = (await server.inject({ method: 'GET', url: `/tracked-dirs/tree?path=${q(sub)}` })).json()
+    expect(tree.files).toEqual([expect.objectContaining({ filePath: b.filePath, reviewed: true })])
+  })
+})

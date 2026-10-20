@@ -240,6 +240,11 @@ export interface AppState {
   /** FilePaths with a registered but not yet completed stop (sidebar spinner) */
   stoppingFilePaths: Set<string>
   showMeshGraph: boolean
+  /**
+   * Home while an agent stays open: Home never closes it. The open agent's
+   * nav item, opening an agent, Settings and the map leave it.
+   */
+  showHome: boolean
   agentReviewDialogOpen: boolean
   agentReviewSummary: AgentConfigSummary | null
   /** Open agent still needs review (dialog was dismissed) — drives the banner. */
@@ -334,6 +339,7 @@ export interface AppState {
   addStoppingFilePath: (filePath: string) => void
   removeStoppingFilePath: (filePath: string) => void
   setShowMeshGraph: (show: boolean) => void
+  setShowHome: (show: boolean) => void
   expandRightPanelToTab: (panel: RightPanel, subTab?: AgentSubTab) => void
   setAgentReviewDialog: (open: boolean, summary?: AgentConfigSummary | null) => void
   setAgentNeedsReview: (v: boolean) => void
@@ -437,6 +443,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   startingFilePaths: new Set(),
   stoppingFilePaths: new Set(),
   showMeshGraph: false,
+  showHome: false,
   agentReviewDialogOpen: false,
   agentReviewSummary: null,
   agentNeedsReview: false,
@@ -464,12 +471,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (show && isAgentWindow) { openMainSettings(); return }
     set({
       showSettings: show,
-      ...(show ? { showMeshGraph: false } : {})
+      ...(show ? { showMeshGraph: false, showHome: false } : {})
     })
   },
   openSettingsAt: (section, anchor) => {
     if (isAgentWindow) { openMainSettings(section, anchor); return }
-    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null })
+    set({ showSettings: true, showMeshGraph: false, showHome: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null })
   },
   consumePendingSettingsAnchor: () => {
     const current = get().pendingSettingsAnchor
@@ -548,11 +555,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShowMeshGraph: (show) =>
     set((s) => ({
       showMeshGraph: show,
+      ...(show ? { showHome: false } : {}),
       // A center-mode chat yields to the dock while the map holds the stage:
       // the dock lands on its Loops tab once, as the map opens, and the tabs
       // then switch as usual (as a selector override they could not).
       ...(show && !s.showMeshGraph && s.chatPlacement === 'center' ? { rightPanel: 'loop' as const } : {}),
     })),
+  setShowHome: (show) => set(show ? { showHome: true, showSettings: false, showMeshGraph: false } : { showHome: false }),
   expandRightPanelToTab: (panel, subTab) =>
     set((s) => {
       // "Take me to the chat" has to land wherever the chat actually IS right

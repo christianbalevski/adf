@@ -5,6 +5,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
+import { reportFailure } from '../../stores/failure-notices.store'
 import { collectRunningAgents, type RunningAgentRow } from '../../utils/running-agents'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
@@ -153,7 +154,7 @@ function AgentList({ rows, kind, currentFilePath }: { rows: RunningAgentRow[]; k
   const { openFile } = useAdfFile()
   const [stopping, setStopping] = useState<Set<string>>(new Set())
 
-  const stop = async (fp: string) => {
+  const stop = async (fp: string, name: string) => {
     setStopping((s) => new Set(s).add(fp))
     try {
       if (fp === currentFilePath) {
@@ -162,6 +163,8 @@ function AgentList({ rows, kind, currentFilePath }: { rows: RunningAgentRow[]; k
       } else {
         await window.adfApi.stopBackgroundAgent(fp)
       }
+    } catch (err) {
+      reportFailure(`${name} did not stop`, err)
     } finally {
       setStopping((s) => { const n = new Set(s); n.delete(fp); return n })
     }
@@ -189,7 +192,7 @@ function AgentList({ rows, kind, currentFilePath }: { rows: RunningAgentRow[]; k
             <span className="flex-1" />
             <button
               type="button"
-              onClick={() => { void stop(file.filePath) }}
+              onClick={() => { void stop(file.filePath, name) }}
               disabled={busy}
               className="rounded-md border border-[var(--adf-ui-border)] px-2 py-0.5 text-[11.5px] text-[var(--adf-ui-text-muted)] transition-colors hover:border-[var(--adf-ui-danger)] hover:text-[var(--adf-ui-danger)] disabled:opacity-50"
             >

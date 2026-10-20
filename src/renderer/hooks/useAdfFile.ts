@@ -7,7 +7,6 @@ import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
 import { deliverSettledQueues } from '../utils/queued-delivery'
-import { useMessageQueueStore } from '../stores/message-queue.store'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
@@ -332,6 +331,7 @@ export function useAdfFile() {
    */
   const completeFileOpen = useCallback(async (opts: { reattach?: boolean } = {}) => {
     setShowSettings(false)
+    useAppStore.getState().setShowHome(false)
     resetAgent()
     // Review state belongs to the previous file until main re-checks below.
     useAppStore.getState().resetAgentReview()
@@ -442,6 +442,7 @@ export function useAdfFile() {
 
         // Close settings if it's open
         setShowSettings(false)
+        useAppStore.getState().setShowHome(false)
 
         if (result.agentWasRunning) markStarting(result.filePath)
 
@@ -548,6 +549,7 @@ export function useAdfFile() {
       const result = await window.adfApi.createQuickAgent(createOptions)
       if (result.success && result.filePath) {
         setShowSettings(false)
+        useAppStore.getState().setShowHome(false)
         resetAgent()
         if (firstMessage) useAppStore.getState().setPendingFirstMessage({ filePath: result.filePath, text: firstMessage, files })
         setFilePath(result.filePath)
@@ -572,6 +574,7 @@ export function useAdfFile() {
       if (result.success && result.filePath) {
         // Close settings if it's open
         setShowSettings(false)
+        useAppStore.getState().setShowHome(false)
 
         setFilePath(result.filePath)
         // A fresh file never inherits the previous file's review state.
@@ -611,13 +614,10 @@ export function useAdfFile() {
     }
     // The password prompt was cancelled (or the file closed): nothing to re-attach after an unlock.
     reattachAfterUnlock.clear()
-    // Closing a running agent moves it to the background, where its queue is
-    // still delivered; a stopped one has no turn left to end, so its queue
-    // goes with it.
-    const closing = useDocumentStore.getState().filePath
-    const stopped = useAgentStore.getState().state === 'off'
+    // Its queued messages stay: a running agent moves to the background, where
+    // they go at its turn's end; a stopped one keeps them until it is started,
+    // shown in its chat when it is opened again.
     await window.adfApi.closeFile()
-    if (closing && stopped) useMessageQueueStore.getState().clearAgent(closing)
     resetDocument()
     resetAgent()
     useAppStore.getState().resetAgentReview()

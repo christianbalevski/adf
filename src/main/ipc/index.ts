@@ -166,7 +166,7 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { listAdapterCredentialFiles, listMcpCredentialFiles, listProviderCredentialFiles, type CredentialFileSources } from '../services/credential-list-files'
 import { getTokenCounterService } from '../services/token-counter.service'
-import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { buildConfigSummary, deriveReviewIdentity, autoLockFields, getReviewedIds, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { inboxSnapshot } from '../runtime/inbox-snapshot'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
@@ -5462,6 +5462,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     agentId?: string
     icon?: string
     did?: string | null
+    reviewed?: boolean
     isDirectory: boolean
     children?: TrackedDirEntry[]
   }
@@ -5483,6 +5484,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const result: TrackedDirEntry[] = []
 
     const adfFiles = entries.filter((e) => e.isFile() && e.name.endsWith('.adf'))
+    const reviewedIds = adfFiles.length > 0 ? new Set(getReviewedIds(settings.get('reviewedAgents'))) : null
     for (const e of adfFiles) {
       const fp = join(currentPath, e.name)
       // mtime-keyed: an unchanged agent file is never reopened, so a rescan of
@@ -5502,6 +5504,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         agentId: msgConfig?.id,
         icon: msgConfig?.icon,
         did: msgConfig?.did,
+        reviewed: msgConfig?.id ? reviewedIds?.has(msgConfig.id) : undefined,
         isDirectory: false
       })
     }

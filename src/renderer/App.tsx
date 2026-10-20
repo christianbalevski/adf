@@ -16,6 +16,7 @@ import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
 import { useAgentStore } from './stores/agent.store'
+import { reportFailure } from './stores/failure-notices.store'
 import { agentWindowFile, agentWindowsAvailable, isAgentWindow, openAgentWindow } from './utils/window-kind'
 import { openWindowAgent, startQueueHandover, startQueueMirror } from './utils/agent-window'
 import { IS_MAC } from './utils/platform'
@@ -206,7 +207,7 @@ export default function App() {
           break
         }
         case 'add-directory':
-          await addDirectory()
+          await addDirectory().catch((err: unknown) => reportFailure('Folder not tracked', err))
           break
         case 'save':
           saveActiveDocument()
@@ -227,11 +228,9 @@ export default function App() {
           useKeyboardStore.getState().setShortcutsOpen(true)
           break
         // Home, the fleet map and the sidebar are the main window's (main sends these there).
+        // Home only navigates: the open agent stays open (Close Agent closes it).
         case 'go-home':
-          if (isAgentWindow) break
-          setShowSettings(false)
-          setShowMeshGraph(false)
-          if (useDocumentStore.getState().filePath) await closeFile()
+          if (!isAgentWindow) useAppStore.getState().setShowHome(true)
           break
         case 'show-fleet-map':
           if (isAgentWindow) break

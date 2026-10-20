@@ -3,6 +3,7 @@ import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
+import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { migrateOpenTabs } from '../../utils/editor-tab-persistence'
@@ -665,6 +666,9 @@ export function AgentReviewDialog() {
       await loadFileContents()
       successRef.current = true
       useAppStore.getState().setAgentNeedsReview(false)
+      // The sidebar row's "Not reviewed" marker goes now, not at the next folder scan.
+      const acceptedPath = useDocumentStore.getState().filePath
+      if (acceptedPath) useTrackedDirsStore.getState().updateFileEntry(acceptedPath, { reviewed: true })
       setDialog(false)
       resetSteps()
       if (startAfter) await startAgentNow()

@@ -19,6 +19,7 @@ export function useJumpToAgent(): (filePath: string) => void {
     const app = useAppStore.getState()
     if (app.showSettings) app.setShowSettings(false)
     if (app.showMeshGraph) app.setShowMeshGraph(false)
+    if (app.showHome) app.setShowHome(false)
     // Reveal the chat itself, not just the agent (B4): for an ask "Respond" the
     // whole point is to land on the composer. expandRightPanelToTab('loop')
     // routes to the center tab or the dock's Loops tab as appropriate. This must
