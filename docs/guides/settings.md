@@ -23,6 +23,7 @@ Settings save as you change them. There is no Save button, except in a dialog th
 - After a write lands, **Saved** shows briefly in the page header.
 - When the runtime refuses a write (for example, the daemon's secret store is locked), the control goes back to the saved value and a notice reads "Not saved: *reason*". It stays until you dismiss it. The provider, MCP server and channel lists keep your edit, and the row it concerns says why; the next change retries it.
 - Removing a list entry that can be put back (a package, a catalog source, a manual peer, an execution target) shows **Undo** for 10 seconds instead of asking first.
+- A risky action asks first, in one dialog whose button names the action: **Replace owner** (Import identity), **Allow host access** (Compute), **Revoke** (an approved host server), **Stop** (a container others use), **Replace prompts** (Auto-update), **Clear usage**, and a template's **Reset**, **Delete** and file **Remove**.
 
 ![The Settings window on its General page: a section rail on the left (General, Identity, Providers, Packages, MCP servers, Channels, Networking, Compute, About) with theme selection, token usage, and the editable global system prompt on the right.](../assets/screenshots/settings-general.png)
 
@@ -46,7 +47,7 @@ The Identity tab shows the app-level identities that anchor ownership and trust.
 Your user identity as a `did:key` DID, derived from a 12-word seed phrase generated on first launch:
 
 - **Back up seed phrase** — reveals the 12 words (numbered for order, with a copy button) and asks you to confirm you've written them down. Until confirmed, a "Seed not backed up" badge shows.
-- **Import identity** — enter a seed phrase from another computer to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated.
+- **Import identity** — enter a seed phrase from another computer to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated. Because the owner changes, Studio asks first; the button reads **Replace owner**.
 - Previously used (migrated) owner DIDs are listed so you can see what older files were stamped with.
 - If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted.
 

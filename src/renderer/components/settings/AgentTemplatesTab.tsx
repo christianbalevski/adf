@@ -11,6 +11,7 @@ import { useAppStore } from '../../stores/app.store'
 import { AgentConfig } from '../agent/AgentConfig'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { Dialog } from '../common/Dialog'
+import { useConfirm } from '../common/ConfirmDialog'
 import { InfoHint } from '../common/DocsLink'
 import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import { useSettingsSave } from './settings-save'
@@ -134,6 +135,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
   // settings.childTemplateId ('' = none) — written immediately, not debounced.
   const [childTemplateId, setChildTemplateId] = useState('')
   const { commit } = useSettingsSave()
+  const [confirmDialog, confirm] = useConfirm()
   useEffect(() => {
     let cancelled = false
     void window.adfApi.getSettings().then((settings) => {
@@ -332,7 +334,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
   }
 
   const removeFile = async (id: string, path: string) => {
-    if (!window.confirm(`Remove ${path} from this template?`)) return
+    if (!await confirm({ title: 'Remove file', body: `${path} is removed from this template. New agents no longer get it.`, confirmLabel: 'Remove', danger: true })) return
     await runWrite(id, () => window.adfApi.removeTemplateFile({ id, path }))
     await refreshContents(id)
   }
@@ -469,8 +471,8 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
         label: 'Reset to shipped',
         separatorBefore: true,
         onSelect: () => {
-          if (!window.confirm(`Reset "${t.name}" to the version Studio ships? Your changes to it are lost.`)) return
-          void act(() => window.adfApi.resetShippedTemplate(shipped))
+          void confirm({ title: 'Reset template', body: `"${t.name}" goes back to the version Studio ships. Your changes to it are lost.`, confirmLabel: 'Reset', danger: true })
+            .then((yes) => { if (yes) void act(() => window.adfApi.resetShippedTemplate(shipped)) })
         },
       })
     }
@@ -479,8 +481,8 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       danger: true,
       separatorBefore: !t.shipped,
       onSelect: () => {
-        if (!window.confirm(`Delete "${t.name}"? The file goes to the trash.`)) return
-        void act(() => window.adfApi.deleteTemplate(t.id))
+        void confirm({ title: 'Delete template', body: `"${t.name}" goes to the trash.`, confirmLabel: 'Delete', danger: true })
+          .then((yes) => { if (yes) void act(() => window.adfApi.deleteTemplate(t.id)) })
       },
     })
     return items
@@ -513,6 +515,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
 
   const dialogs = (
     <>
+      {confirmDialog}
       <ContextMenu
         position={menu ? { x: menu.x, y: menu.y } : null}
         items={menu ? menuItems(menu.template) : []}

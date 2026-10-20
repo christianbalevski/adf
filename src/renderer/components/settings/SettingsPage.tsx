@@ -21,6 +21,7 @@ import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, m
 import { runtimeDown, runtimeGroupLabel, useCurrentConnection } from '../../stores/connection.store'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
+import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { Tooltip } from '../common/Tooltip'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
@@ -218,7 +219,15 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
     refresh()
   }
 
+  const [confirmDialog, confirm] = useConfirm()
   const runImport = async () => {
+    // A new owner restamps every agent: say so and ask, by name. Restore keeps the owner.
+    if (importMode === 'import' && !await confirm({
+      title: 'Replace owner',
+      body: 'Your owner DID changes to the identity of this seed phrase, and every agent file you own on this computer is restamped to it. Peers that trust your current DID no longer recognise you.',
+      confirmLabel: 'Replace owner',
+      danger: true,
+    })) return
     setImportBusy(true)
     setImportResult(null)
     try {
@@ -466,6 +475,8 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
         </div>
       </Dialog>
 
+      {confirmDialog}
+
       {/* Import identity dialog */}
       <Dialog lightDismiss={false} open={importOpen} onClose={() => setImportOpen(false)} title={importMode === 'restore' ? 'Restore Identity' : 'Import Identity'}>
         {importMode === 'restore' ? (
@@ -552,7 +563,7 @@ function SkillsTab() {
    * the whole truth, including when it is empty, and the absent-means-default
    * read never applies again.
    */
-  const { commit } = useSettingsSave()
+  const { commit, offerUndo } = useSettingsSave()
   const save = useCallback(async (next: string[]) => {
     const prev = sources
     setSources(next)
@@ -605,7 +616,10 @@ function SkillsTab() {
                   </span>
                 )}
                 <IconButton
-                  onClick={() => { if (window.confirm(`Remove catalog source ${source}?`)) void save(list.filter((s) => s !== source)) }}
+                  onClick={() => {
+                    const before = list
+                    void save(list.filter((s) => s !== source)).then(() => offerUndo(`Removed ${source}.`, () => void save(before)))
+                  }}
                   aria-label={`Remove catalog source ${source}`}
                   title="Remove source"
                   variant="danger"
@@ -1142,7 +1156,7 @@ function ManualPeersEditor() {
     })()
   }, [])
 
-  const { commit } = useSettingsSave()
+  const { commit, offerUndo } = useSettingsSave()
   const save = useCallback(async (next: string[]) => {
     const prev = peers
     setPeers(next)
@@ -1183,7 +1197,10 @@ function ManualPeersEditor() {
               <li key={p} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
                 <span>{p}</span>
                 <IconButton
-                  onClick={() => { if (window.confirm(`Remove peer ${p}?`)) void save(peers.filter((x) => x !== p)) }}
+                  onClick={() => {
+                    const before = peers
+                    void save(peers.filter((x) => x !== p)).then(() => offerUndo(`Removed peer ${p}.`, () => void save(before)))
+                  }}
                   aria-label={`Remove peer ${p}`}
                   variant="danger"
                   title="Remove peer"
@@ -1227,6 +1244,7 @@ export function SettingsPage() {
 
 function SettingsPageBody() {
   const { commit, track, offerUndo } = useSettingsSave()
+  const [confirmDialog, confirm] = useConfirm()
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   // Lists that render from settings show a placeholder until the first load
   // lands, so an empty state never flashes before the real rows.
@@ -1731,7 +1749,12 @@ function SettingsPageBody() {
       void persist({ [PROMPT_AUTO_UPDATE_KEY]: false }, setAutoApplyPromptUpdates, false, autoApplyPromptUpdates)
       return
     }
-    if (!window.confirm('Replace every prompt with the current defaults now, and again whenever an update ships new ones? Any customizations will be lost.')) return
+    if (!await confirm({
+      title: 'Auto-update prompts',
+      body: 'Every prompt on this page is replaced with the current defaults now, and again whenever an update ships new ones. Your changes to them are lost.',
+      confirmLabel: 'Replace prompts',
+      danger: true,
+    })) return
     const defaults = currentPromptDefaults()
     const prev = { auto: autoApplyPromptUpdates, systemPrompt, compactionPrompt, toolPrompts }
     setAutoApplyPromptUpdates(true)
@@ -2223,7 +2246,7 @@ function SettingsPageBody() {
                 setMcpServers(next)
               }}
               hostAccessEnabled={computeHostAccessEnabled}
-              onEnableHostAccess={() => void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled)}
+              onEnableHostAccess={() => { void confirm(HOST_ACCESS_CONFIRM).then((yes) => { if (yes) void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled) }) }}
             />
           )}
 
@@ -2504,6 +2527,7 @@ function SettingsPageBody() {
           </>}
           </div>
           </fieldset>
+          {confirmDialog}
         </div>
       </main>
     </div>
@@ -2559,7 +2583,21 @@ function ComputeTab({
   const [targetBusy, setTargetBusy] = useState(false)
   const [targetMessage, setTargetMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
 
-  const { commit } = useSettingsSave()
+  const { commit, offerUndo } = useSettingsSave()
+  const [confirmDialog, confirm] = useConfirm()
+  /** Host access is a grant: asked for by name when it turns on, never when it turns off. */
+  const switchHostAccess = async (next: boolean) => {
+    if (next && !await confirm(HOST_ACCESS_CONFIRM)) return
+    setComputeHostAccessEnabled(next)
+  }
+  const confirmRevoke = async (name: string) => {
+    if (await confirm({
+      title: 'Revoke host server',
+      body: `${name} runs in the container from its next start, unless its agent has host access.`,
+      confirmLabel: 'Revoke',
+      danger: true,
+    })) revokeHostServer(name)
+  }
   /** Resolves false on a refusal (the toast says why; the list is unchanged). */
   const saveExecutionTargets = useCallback(async (targets: ExecutionTarget[]) => {
     const saved = await commit({ compute: { executionTargets: targets } })
@@ -2739,7 +2777,7 @@ function ComputeTab({
                         setBusyContainer(c.name); setSetupError(null)
                         try {
                           const stopQuestion = containerStopConfirmation(c, isShared, computeEnvStatus.activeAgents)
-                          if (stopQuestion && !window.confirm(stopQuestion)) return
+                          if (stopQuestion && !await confirm({ title: `Stop ${c.name}`, body: stopQuestion, confirmLabel: 'Stop', danger: true })) return
                           const result = c.running ? await window.adfApi.computeStopContainer({ name: c.name }) : await window.adfApi.computeStartContainer({ name: c.name })
                           if (!result.success) setSetupError(result.error ?? `${c.running ? 'Stop' : 'Start'} failed`)
                         } finally { setBusyContainer(null); refreshAll() }
@@ -2847,15 +2885,14 @@ function ComputeTab({
                 size="compact"
                 variant="danger"
                 onClick={async () => {
-                  if (!window.confirm(`Remove execution target ${alias}?`)) return
-                  setTargetBusy(true)
                   setTargetMessage(null)
-                  try {
-                    await saveExecutionTargets(executionTargets.filter((item) => item.id !== target.id))
-                  } catch (err) {
-                    setTargetMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
-                  } finally {
-                    setTargetBusy(false)
+                  if (await saveExecutionTargets(executionTargets.filter((item) => item.id !== target.id))) {
+                    offerUndo(`Removed ${alias}.`, () => {
+                      void window.adfApi?.getSettings().then((s) => {
+                        const now = (s?.compute?.executionTargets ?? []) as ExecutionTarget[]
+                        if (!now.some((item) => item.id === target.id)) void saveExecutionTargets([...now, target])
+                      })
+                    })
                   }
                 }}
               >Remove</Button>
@@ -3014,7 +3051,7 @@ function ComputeTab({
           <input
             type="checkbox"
             checked={computeHostAccessEnabled}
-            onChange={(e) => setComputeHostAccessEnabled(e.target.checked)}
+            onChange={(e) => void switchHostAccess(e.target.checked)}
             className="rounded text-blue-500"
           />
           <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Enable host access</span>
@@ -3038,7 +3075,7 @@ function ComputeTab({
                 <div key={name} className="flex items-center justify-between py-1 px-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
                   <span className="text-xs text-neutral-700 dark:text-neutral-300 font-mono">{name}</span>
                   <Button
-                    onClick={() => revokeHostServer(name)}
+                    onClick={() => void confirmRevoke(name)}
                     variant="danger"
                     size="compact"
                     className="text-[10px]"
@@ -3060,6 +3097,7 @@ function ComputeTab({
         return <ContainerDetailPanel container={c} onClose={() => setSelectedContainer(null)} />
       })()}
 
+      {confirmDialog}
       <ContainerDestroyDialog
         request={destroyRequest}
         busy={busyContainer === destroyRequest?.container.name}
