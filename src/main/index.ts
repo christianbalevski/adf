@@ -1,4 +1,6 @@
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, dialog, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron'
+// Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
+import { ipcMain } from './backend/studio-ipc'
 import { join } from 'path'
 // The embedded IPC layer (./ipc) is imported only in embedded mode, at boot:
 // loading it constructs embedded services (a PodmanService, the uvx manifest
@@ -24,6 +26,7 @@ import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
 import { migratePairedSlot, remotesEnv, SavedConnectionsCache } from './backend/connections'
+import { notConnectedSentence } from '../shared/runtime-tag'
 import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
@@ -511,7 +514,7 @@ function loadRenderer(win: BrowserWindow, query: Record<string, string>): void {
  * call it makes is served by it; it ends when the window closes.
  */
 function createAgentWindow(
-  request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean },
+  request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean; runtimeId?: string },
   events: { closed(): void; moved(): void },
 ): AgentWindowHandle {
   // Saved bounds whose title strip is off every display: the saved size only.
@@ -528,6 +531,7 @@ function createAgentWindow(
     ...studioWindowOptions()
   })
   const id = win.webContents.id
+  // Main binds the window to its agent's runtime (multi-runtime.md §5.5); the page query only tells the page.
   daemonMode?.windows.open({
     id,
     send: (channel, ...args) => {
@@ -535,7 +539,7 @@ function createAgentWindow(
       try { win.webContents.send(channel, ...args) } catch { /* window going away */ }
     },
     focused: () => !win.isDestroyed() && win.isFocused(),
-  })
+  }, request.runtimeId ?? null)
   // A restored window opens behind the main window, which keeps the focus.
   win.once('ready-to-show', () => { if (request.restored) win.showInactive(); else win.show() })
   win.on('session-end', handleSessionEnd)
@@ -549,7 +553,8 @@ function createAgentWindow(
   win.on('moved', () => events.moved())
   win.on('resized', () => events.moved())
   prepareStudioWindow(win)
-  loadRenderer(win, { window: 'agent', file: request.filePath })
+  // An agent of the primary runtime carries no runtime in its query: the page is the one it was before.
+  loadRenderer(win, { window: 'agent', ...(request.runtimeId ? { runtime: request.runtimeId } : {}), file: request.filePath })
   return {
     id,
     focus: () => { if (!win.isDestroyed()) win.focus() },
@@ -711,7 +716,14 @@ app.whenReady().then(async () => {
   await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
   // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
   let connections: Connections | null = null
-  const savedCache = new SavedConnectionsCache(connectionsEnv, () => connections?.changed())
+  // Development flag (multi-runtime.md §10 phase 1): every saved connection joins the runtime set. Local mode only.
+  const multiRuntime = backend.mode === 'local' && process.env.ADF_MULTI_RUNTIME === '1'
+  if (multiRuntime) console.log('[Runtimes] ADF_MULTI_RUNTIME=1: every saved connection joins the runtime set (development flag)')
+  const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
+    connections?.changed()
+    // Saving a connection connects it; forgetting it disconnects it (§12 item 2).
+    if (multiRuntime) daemonMode?.runtimes.sync(savedCache.get())
+  })
   await savedCache.refresh().catch(() => {})
   savedCache.watch()
   app.once('before-quit', () => savedCache.dispose())
@@ -746,7 +758,7 @@ app.whenReady().then(async () => {
           onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
         })
         : remoteDaemonConnector(backend.config, safeStorageCodec, { env: connectionsEnv }),
-      hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow },
+      hooks: { showMainWindow, openFile: requestOpenFile, mainWindow: () => mainWindow, closeAgentWindow: (id) => agentWindows?.close(id) },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
       // Read at quit: a change in Settings → Connections applies to the next quit.
@@ -754,19 +766,41 @@ app.whenReady().then(async () => {
       reloadCredentials: handover?.changed === true && !sessionOnly,
       onRemoteAccessEvent: (payload) => remoteAccess?.onDaemonEvent(payload),
       runtimeName: () => backend.config.remote.name ?? backend.config.remote.paired?.name ?? null,
+      // The primary runtime's id (multi-runtime.md §1.3).
+      runtimeId: backend.mode === 'local' ? 'local' : backend.config.remote.name ? `remote:${backend.config.remote.name}` : 'remote',
+      // Each saved connection's connector: its token is read only when it connects (§3.5).
+      ...(multiRuntime ? {
+        runtimeSet: {
+          connectorFor: (name: string) => {
+            const config = backendStore?.config() ?? backend.config
+            return remoteDaemonConnector({ ...config, mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name } }, safeStorageCodec, { env: connectionsEnv })
+          },
+        },
+      } : {}),
       ...(backend.mode === 'local' ? { afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase) } : {}),
     })
     const handle = daemonMode
+    if (multiRuntime) handle.runtimes.sync(savedCache.get())
     void handle.ready.then(async (ok) => { if (ok) await resumeSwitchedAgents(backend.mode, userDataDir, (filePath) => handle.startBackgroundAgent(filePath)) })
     agentWindows = new AgentWindows({
       create: createAgentWindow,
       current: (id) => handle.windows.current(id),
-      samePath: (a, b) => samePath(a, b, backend.mode === 'remote'),
+      samePath: (a, b, runtimeId) => samePath(a, b, (handle.runtimes.get(runtimeId)?.kind ?? backend.mode) === 'remote'),
       settings: handle.clientSettings,
       runtime: () => handle.windows.runtime(),
       // The file is there and is still the same agent (GET /files/agent/config answers its config.id).
-      check: async (entry) => checkSavedAgent(entry, async (filePath) =>
-        (await handle.client()).request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: filePath } })),
+      // An entry of another runtime is checked on that runtime (§7.5): dropped when the runtime is not in the set,
+      // kept and not opened while it is not connected.
+      check: async (entry) => {
+        const runtime = handle.runtimes.get(entry.runtimeId)
+        if (!runtime) {
+          console.log(`[AgentWindows] Not reopening the window of ${entry.filePath}: ${notConnectedSentence(entry.runtimeId ?? 'local')}`)
+          return 'gone'
+        }
+        if (!runtime.primary && runtime.connection.state.state !== 'connected') return 'unknown'
+        return checkSavedAgent(entry, async (filePath) =>
+          (await runtime.client()).request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: filePath } }))
+      },
       // The main window's sidebar marks the agents that have their own window.
       onChange: () => {
         if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
@@ -817,13 +851,17 @@ app.whenReady().then(async () => {
     ipcMain.handle(IPC.WINDOW_LIST_AGENTS, () => ({ windows: agentWindows?.agents() ?? [] }))
     // Open in new window. Inside Studio registers no handler: its renderer never offers it.
     const windows = agentWindows
-    ipcMain.handle(IPC.WINDOW_OPEN_AGENT, (_event, request?: { filePath?: unknown; agentId?: unknown; name?: unknown }) => {
+    ipcMain.handle(IPC.WINDOW_OPEN_AGENT, (_event, request?: { filePath?: unknown; agentId?: unknown; name?: unknown; runtimeId?: unknown }) => {
       if (typeof request?.filePath !== 'string' || !request.filePath) return { success: false, error: 'No agent file.' }
       if (shutdownCleanup) return { success: false, error: 'Studio is quitting.' }
+      // §5.5: one window per agent ref; the runtime must be in the set. Omitted: the primary runtime.
+      const runtime = typeof request.runtimeId === 'string' && request.runtimeId ? handle.runtimes.get(request.runtimeId) : handle.runtimes.primary
+      if (!runtime) return { success: false, error: notConnectedSentence(String(request.runtimeId)) }
       const { created } = windows.open({
         filePath: request.filePath,
         agentId: typeof request.agentId === 'string' ? request.agentId : null,
         ...(typeof request.name === 'string' && request.name ? { name: request.name } : {}),
+        ...(runtime.primary ? {} : { runtimeId: runtime.id }),
       })
       return { success: true, created }
     })
