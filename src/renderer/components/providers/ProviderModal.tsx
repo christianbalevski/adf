@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import {
   PROVIDER_CATALOG,
@@ -13,6 +13,7 @@ import { BrandMark } from '../common/BrandMark'
 import { Button, Select, TextInput } from '../ui'
 import { ProviderAgentOverrides, ParamsEditor } from './ProviderAgentOverrides'
 import { providerDotClass, providerStatusLabel, type ProviderTestStatus } from './provider-status'
+import { hasCredential } from './provider-ready'
 import { editPlaceholderField } from '../../utils/placeholder-field'
 
 export interface SubscriptionAuthState {
@@ -65,6 +66,8 @@ interface ProviderModalProps {
   onTest: () => void
   models?: ModelListState
   onFetchModels: () => void
+  /** A key was pasted or the key field left with a new value: save, test, list models. */
+  onKeyEntered?: () => void
   chatgpt: SubscriptionAuthState
   grok: SubscriptionAuthState
   claude: SubscriptionAuthState
@@ -78,8 +81,9 @@ interface ProviderModalProps {
    */
   onDone?: () => void
   /**
-   * Done stays disabled until a default model is set, with this text as the
-   * reason. The at-need sheet needs a model to hand the blocked agent.
+   * Done stays disabled until the provider has a key or a sign-in and a
+   * default model, with this text under the model field. The at-need sheet
+   * needs a working model to hand the blocked agent.
    */
   requireDefaultModel?: string
 }
@@ -183,14 +187,16 @@ export function ProviderSaveError({ message }: { message: string }) {
 
 function ProviderForm({
   provider, entry, isDefault, status, saveError, onUpdate, onRemove, onMakeDefault, onTest, onClose,
-  models, onFetchModels, chatgpt, grok, claude, onCarrierCountChange, onDone, requireDefaultModel,
+  models, onFetchModels, onKeyEntered, chatgpt, grok, claude, onCarrierCountChange, onDone, requireDefaultModel,
 }: ProviderModalProps & { provider: ProviderConfig; entry?: ProviderCatalogEntry }) {
-  const doneBlocked = !!requireDefaultModel && !(provider.defaultModel ?? '').trim()
   const subscription = isSubscriptionType(provider.type)
   const auth = provider.type === 'chatgpt-subscription' ? chatgpt
     : provider.type === 'grok-subscription' ? grok
     : provider.type === 'claude-subscription' ? claude
     : null
+  const doneReason = requireDefaultModel ? doneBlockedReason(provider, status, auth, entry?.label ?? provider.name) : null
+  const doneBlocked = !!doneReason
+  const keyCheck = useKeyCheck(provider, !!entry?.keyOptional, !!models?.models?.length, onKeyEntered)
   const [customModel, setCustomModel] = useState(false)
   const modelList = models?.models ?? []
   const listMode = modelList.length > 0 && !customModel
@@ -238,7 +244,7 @@ function ProviderForm({
               ? <span className="text-[var(--adf-ui-warning)]">Replace {baseUrlPlaceholder} with your own value.</span>
               : 'The root the /chat/completions path is appended to.'}
           >
-            <TextInput aria-label="Base URL" type="text" value={provider.baseUrl} onChange={(e) => onUpdate({ baseUrl: e.target.value })} placeholder={entry?.baseUrl ?? 'http://localhost:1234/v1'} className="font-mono text-[12px]" />
+            <TextInput aria-label="Base URL" type="text" value={provider.baseUrl} onChange={(e) => onUpdate({ baseUrl: e.target.value })} onBlur={keyCheck.onUrlBlur} placeholder={entry?.baseUrl ?? 'http://localhost:1234/v1'} className="font-mono text-[12px]" />
           </Field>
         )}
 
@@ -253,18 +259,20 @@ function ProviderForm({
         ) : (
           <Field
             label="API key"
-            hint={provider.apiKeyStorage === 'secret-store'
+            hint={(keyCheck.checked && keyCheckResult(status, !!(provider.apiKey ?? '').trim())) || (provider.apiKeyStorage === 'secret-store'
               ? (provider.apiKeyStatus === 'missing' && !provider.apiKey
                 ? <span className="text-[var(--adf-ui-warning)]">No key for this provider in the OS keychain. Enter one to store it there.</span>
                 : 'Kept in the OS keychain, shared with the ADF CLI.')
-              : entry?.keysUrl ? <ExternalLink href={entry.keysUrl}>Get a key ↗</ExternalLink> : entry?.keyOptional ? 'Most local servers accept any value or none.' : undefined}
+              : entry?.keysUrl ? <ExternalLink href={entry.keysUrl}>Get a key ↗</ExternalLink> : entry?.keyOptional ? 'Most local servers accept any value or none.' : undefined)}
           >
             <TextInput
               aria-label="API key"
               type="password"
               value={provider.apiKey}
               // The daemon answers a stored key as a placeholder (§4.2): typing replaces it, never edits it.
-              onChange={(e) => onUpdate({ apiKey: editPlaceholderField(provider.apiKey ?? '', e.target.value) })}
+              onChange={(e) => { keyCheck.onKeyChange(); onUpdate({ apiKey: editPlaceholderField(provider.apiKey ?? '', e.target.value) }) }}
+              onPaste={keyCheck.onKeyPaste}
+              onBlur={keyCheck.onKeyBlur}
               placeholder={entry?.keyPlaceholder ?? 'API key'}
               className="font-mono text-[12px]"
             />
@@ -330,10 +338,73 @@ function ProviderForm({
       {/* Footer */}
       <div className="flex items-center justify-between border-t border-[var(--adf-ui-separator)] pt-3">
         <Button variant="ghost" size="compact" className="text-[var(--adf-ui-danger)]" onClick={onRemove}>Remove provider</Button>
-        <Button variant="primary" onClick={onDone ?? onClose} disabled={doneBlocked}>Done</Button>
+        <span className="flex items-center gap-2">
+          {doneReason && <span className="text-[11px] text-[var(--adf-ui-text-subtle)]">{doneReason}</span>}
+          <Button variant="primary" onClick={onDone ?? onClose} disabled={doneBlocked}>Done</Button>
+        </span>
       </div>
     </div>
   )
+}
+
+/** Why Done is off on the at-need sheet: no key or sign-in yet, or no model. Null: Done is on. */
+export function doneBlockedReason(
+  provider: ProviderConfig,
+  status: ProviderTestStatus | undefined,
+  auth: Pick<SubscriptionAuthState, 'authenticated'> | null,
+  label: string,
+): string | null {
+  if (!hasCredential(provider, status, !!auth?.authenticated)) return auth ? `Sign in with ${label} first.` : 'Enter an API key first.'
+  if (!(provider.defaultModel ?? '').trim()) return 'Pick a model first.'
+  return null
+}
+
+/** The key check's outcome under the key field; undefined while there is nothing to say. */
+export function keyCheckResult(status: ProviderTestStatus | undefined, hasKey: boolean): React.ReactNode {
+  if (status === 'testing') return 'Checking…'
+  if (status === 'ok') return <span className="text-[var(--adf-ui-success)]">Connected</span>
+  if (status === 'failed') return <span className="text-[var(--adf-ui-danger)]">{hasKey ? 'Key rejected' : 'Connection failed'}</span>
+  return undefined
+}
+
+/**
+ * When the form checks the key on its own: on paste, on leaving the key field
+ * with a new key, on leaving the base URL field with a new address, and once
+ * on opening a local server that needs no key. `checked`: a check ran for
+ * what the fields hold now, so its result is shown under the key.
+ */
+function useKeyCheck(provider: ProviderConfig, keyOptional: boolean, hasModels: boolean, onKeyEntered?: () => void) {
+  const key = provider.apiKey ?? ''
+  const lastKey = useRef(key)
+  const lastUrl = useRef(provider.baseUrl)
+  const pasted = useRef(false)
+  const [checked, setChecked] = useState(false)
+  const run = useCallback(() => {
+    if (!onKeyEntered) return
+    lastKey.current = provider.apiKey ?? ''
+    lastUrl.current = provider.baseUrl
+    setChecked(true)
+    onKeyEntered()
+  }, [onKeyEntered, provider.apiKey, provider.baseUrl])
+  const keyIsNew = () => !!key.trim() && key !== lastKey.current
+  // The pasted value lands through onChange; check once it is in the props.
+  useEffect(() => {
+    if (!pasted.current) return
+    pasted.current = false
+    if (keyIsNew()) run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  useEffect(() => {
+    if (keyOptional && !hasModels) run()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return {
+    checked,
+    onKeyChange: () => setChecked(false),
+    onKeyPaste: () => { pasted.current = true },
+    onKeyBlur: () => { if (keyIsNew()) run() },
+    onUrlBlur: () => { if (provider.baseUrl.trim() && provider.baseUrl !== lastUrl.current) run() },
+  }
 }
 
 function SubscriptionAuth({ auth, label }: { auth: SubscriptionAuthState; label: string }) {

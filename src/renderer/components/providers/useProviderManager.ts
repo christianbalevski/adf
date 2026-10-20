@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
-import { isSubscriptionType, nextProviderName, type ProviderCatalogEntry } from '../../../shared/constants/provider-catalog'
+import { catalogEntryForProvider, isSubscriptionType, nextProviderName, type ProviderCatalogEntry } from '../../../shared/constants/provider-catalog'
 import type { ModelListState, SubscriptionAuthState } from './ProviderModal'
 import { generateProviderId, type ProviderTestStatus } from './provider-status'
 import { countOverrides } from './override-utils'
 import { rebaseProviderList, type ProviderSaveFailure } from './provider-save'
+import { recommendedModel } from './provider-ready'
 import type { ClaudeAuthStatusView } from '../../../preload/api'
 
 export interface ProviderManagerInput {
@@ -40,14 +41,16 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
   const [editingId, setEditingId] = useState<string | null>(null)
 
   // --- Connection tests -----------------------------------------------------
-  const runTest = useCallback(async (id: string, force: boolean) => {
+  const runTest = useCallback(async (id: string, force: boolean): Promise<ProviderTestStatus> => {
     setStatus((s) => ({ ...s, [id]: 'testing' }))
+    let next: ProviderTestStatus
     try {
-      const r = await window.adfApi?.testProvider(id, force)
-      setStatus((s) => ({ ...s, [id]: r?.status ?? 'unknown' }))
+      next = (await window.adfApi?.testProvider(id, force))?.status ?? 'unknown'
     } catch {
-      setStatus((s) => ({ ...s, [id]: 'failed' }))
+      next = 'failed'
     }
+    setStatus((s) => ({ ...s, [id]: next }))
+    return next
   }, [])
 
   // Cached (non-forced) test per row on first sight; the modal's Test forces.
@@ -82,23 +85,52 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers.map((p) => p.id).join('|')])
 
+  const update = useCallback((id: string, patch: Partial<ProviderConfig>) =>
+    setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p))), [setProviders])
+
   // --- Models ------------------------------------------------------------------
-  const fetchModels = useCallback(async (id: string) => {
-    if (models[id]?.loading) return
+  const modelsRef = useRef(models)
+  modelsRef.current = models
+  /**
+   * Ask main for one provider's models. `preselect` (the provider form): a
+   * provider with no default model gets the recommended one from the list,
+   * shown in the form's model field.
+   */
+  const fetchModels = useCallback(async (id: string, opts: { preselect?: boolean } = {}) => {
+    if (modelsRef.current[id]?.loading) return
     setModels((m) => ({ ...m, [id]: { models: [], loading: true } }))
     try {
       // main reads the provider back from settings, so the write has to land first.
       await flushSave()
       const result = await window.adfApi?.listModels(id)
-      setModels((m) => ({ ...m, [id]: { models: [...(result?.models ?? [])].sort((a, b) => a.localeCompare(b)), error: result?.error } }))
+      const list = [...(result?.models ?? [])].sort((a, b) => a.localeCompare(b))
+      setModels((m) => ({ ...m, [id]: { models: list, error: result?.error } }))
+      const p = providersRef.current.find((x) => x.id === id)
+      if (opts.preselect && p && !(p.defaultModel ?? '').trim()) {
+        const pick = recommendedModel(catalogEntryForProvider(p), list)
+        if (pick) update(id, { defaultModel: pick })
+      }
     } catch (err) {
       setModels((m) => ({ ...m, [id]: { models: [], error: String(err) } }))
     }
-  }, [models, flushSave])
+  }, [flushSave, update])
+
+  /**
+   * A key was entered (pasted, or the field left): save it, test it, and on
+   * a pass list the models with one preselected. The form shows each step.
+   */
+  const checkKey = useCallback(async (id: string) => {
+    await flushSave()
+    const result = await runTest(id, true)
+    if (result === 'ok') await fetchModels(id, { preselect: true })
+  }, [fetchModels, flushSave, runTest])
 
   // --- Subscription auth ---------------------------------------------------------
   const [chatgptAuth, setChatgptAuth] = useState<{ authenticated: boolean; email?: string }>({ authenticated: false })
   const [chatgptLoading, setChatgptLoading] = useState(false)
+  /** Why the last sign-in failed, shown under the button; a status refresh does not clear it. */
+  const [chatgptError, setChatgptError] = useState<string | undefined>()
+  const [grokError, setGrokError] = useState<string | undefined>()
   const [grokAuth, setGrokAuth] = useState<{ authenticated: boolean; email?: string; flowError?: string }>({ authenticated: false })
   const [grokLoading, setGrokLoading] = useState(false)
   const [grokDevice, setGrokDevice] = useState<{ userCode: string; verificationUri: string } | null>(null)
@@ -114,15 +146,21 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
 
   const chatgpt: SubscriptionAuthState = {
     ...chatgptAuth,
+    flowError: chatgptError,
     loading: chatgptLoading,
     signIn: async () => {
       setChatgptLoading(true)
+      setChatgptError(undefined)
       try {
         const result = await window.adfApi?.chatgptAuthStart()
-        if (result && !result.success) console.warn('[ChatGPT Auth]', result.error)
+        if (result && !result.success) {
+          console.warn('[ChatGPT Auth]', result.error)
+          setChatgptError(result.error || 'Sign-in failed.')
+        }
         refreshChatgpt()
       } catch (err) {
         console.warn('[ChatGPT Auth]', err)
+        setChatgptError(err instanceof Error ? err.message : String(err))
       } finally {
         setChatgptLoading(false)
       }
@@ -132,19 +170,22 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
 
   const grok: SubscriptionAuthState = {
     ...grokAuth,
+    flowError: grokError ?? grokAuth.flowError,
     loading: grokLoading,
     device: grokDevice,
     signIn: async () => {
       setGrokLoading(true)
+      setGrokError(undefined)
       try {
         const result = await window.adfApi?.grokAuthStart()
         if (result?.success && result.userCode && result.verificationUri) {
           setGrokDevice({ userCode: result.userCode, verificationUri: result.verificationUri })
         } else if (result && !result.success) {
-          setGrokAuth((prev) => ({ ...prev, flowError: result.error }))
+          setGrokError(result.error || 'Sign-in failed.')
         }
       } catch (err) {
         console.warn('[Grok Auth]', err)
+        setGrokError(err instanceof Error ? err.message : String(err))
       } finally {
         setGrokLoading(false)
       }
@@ -222,11 +263,23 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
   const editing = editingId ? providers.find((p) => p.id === editingId) ?? null : null
   useEffect(() => {
     if (!editing) return
-    if (editing.type === 'chatgpt-subscription') { refreshChatgpt(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
-    if (editing.type === 'grok-subscription') { refreshGrok(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
-    if (editing.type === 'claude-subscription') { refreshClaude(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id) }
+    if (editing.type === 'chatgpt-subscription') { refreshChatgpt(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id, { preselect: true }) }
+    if (editing.type === 'grok-subscription') { refreshGrok(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id, { preselect: true }) }
+    if (editing.type === 'claude-subscription') { refreshClaude(); if (!models[editing.id]?.models?.length) void fetchModels(editing.id, { preselect: true }) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingId])
+
+  // A sign-in that just landed: list the open subscription's models (one
+  // preselected) when the list asked for before sign-in came back empty.
+  const editingSignedIn = editing?.type === 'chatgpt-subscription' ? chatgptAuth.authenticated
+    : editing?.type === 'grok-subscription' ? grokAuth.authenticated
+    : editing?.type === 'claude-subscription' ? claudeAuth.authenticated
+    : false
+  useEffect(() => {
+    if (!editing || !editingSignedIn || models[editing.id]?.models?.length || models[editing.id]?.loading) return
+    void fetchModels(editing.id, { preselect: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId, editingSignedIn])
 
   // --- Mutations -------------------------------------------------------------------
   /** Add a provider from the catalog, persist it, and open its form. Returns the new id. */
@@ -269,9 +322,6 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     return created.id
   }, [defaultProviderId, runTest, setDefaultProviderId, setProviders])
 
-  const update = useCallback((id: string, patch: Partial<ProviderConfig>) =>
-    setProviders((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p))), [setProviders])
-
   const remove = useCallback((id: string, confirm = true) => {
     const p = providersRef.current.find((x) => x.id === id)
     if (confirm && !window.confirm(`Remove ${p?.name || 'this provider'}? Agents that carry their own copy keep working; agents using the app default will need another provider.`)) return false
@@ -302,7 +352,8 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     onMakeDefault: () => { if (editing) setDefaultProviderId(editing.id) },
     onTest: () => { if (editing) void (async () => { await flushSave(); await runTest(editing.id, true) })() },
     models: editing ? models[editing.id] : undefined,
-    onFetchModels: () => { if (editing) void fetchModels(editing.id) },
+    onFetchModels: () => { if (editing) void fetchModels(editing.id, { preselect: true }) },
+    onKeyEntered: () => { if (editing) void checkKey(editing.id) },
     chatgpt,
     grok,
     claude,
@@ -318,6 +369,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     editing,
     runTest,
     fetchModels,
+    checkKey,
     chatgpt,
     grok,
     claude,
