@@ -200,7 +200,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 - **Theme, font, and scale** — light/dark, font family, UI scale.
 - **Auto-update** — checks GitHub releases, downloads on your click, restarts to install. The check can be turned off.
 - **No telemetry** — no analytics SDK; crash dumps stay local. The update check, provider connection checks and live catalogs each have an off switch, and [every outbound connection](NETWORK.md) is listed.
-- **Keyboard shortcuts** — throughout, with an in-app reference card on the map.
+- **Keyboard shortcuts** — throughout: Help → Keyboard Shortcuts lists them all, the map has its own reference card (?), and Cmd/Ctrl+K goes to any tracked agent.
 - **OS integration** — `.adf` file association, recent files, single-instance focus, native notifications.
 
 ## Running without the app

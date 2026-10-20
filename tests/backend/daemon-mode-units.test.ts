@@ -147,7 +147,7 @@ describe('backend not connected (visible state, reconnect)', () => {
       electronStub.dialogResponse = 0 // "Reconnect Now"
 
       connection.markDisconnected('stream ended')
-      expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected, retrying', 'Reconnect to the ADF Daemon'])
+      expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected, retrying', 'Reconnect to the ADF Daemon'])
       // A short blip raises no dialog; a lasting one does, once.
       expect(electronStub.calls.some((c) => c.api === 'dialog.showMessageBox')).toBe(false)
       await vi.advanceTimersByTimeAsync(3_100)
@@ -157,7 +157,7 @@ describe('backend not connected (visible state, reconnect)', () => {
       expect(reconnects).toBe(1)
 
       connection.markConnected()
-      expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log'])
+      expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log'])
       expect(electronStub.calls.filter((c) => c.api === 'Notification.show').map((c) => (c.args[0] as { body: string }).body)).toEqual(['Reconnected to the ADF daemon.'])
       ui.dispose()
     } finally {

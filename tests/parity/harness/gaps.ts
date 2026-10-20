@@ -153,14 +153,18 @@ const STATUS_LINE = /^ADF daemon: /
  * The Help items daemon mode adds (menu.ts daemonHelpItems), stripped one by
  * one: the separator and "Open Daemon Log" right after "ADF Studio
  * Documentation", then the disabled status line and "Reconnect to the ADF
- * Daemon" when present. Anything else stays (and shows in the diff).
- * Answers null when the menu lacks the daemon items.
+ * Daemon" when present. File's "Open in New Window" (agent windows, daemon
+ * mode only: agent-windows.md §9) goes too. Anything else stays (and shows
+ * in the diff). Answers null when the menu lacks the daemon items.
  */
 function stripDaemonHelp(items: unknown): { items: MenuItem[]; status: boolean } | null {
   if (!Array.isArray(items)) return null
   let found = false
   let status = false
   const out = (items as MenuItem[]).map((item) => {
+    if (item.label === 'File' && Array.isArray(item.submenu)) {
+      return { ...item, submenu: item.submenu.filter((s) => s.label !== 'Open in New Window') }
+    }
     if (item.role !== 'help' || !Array.isArray(item.submenu)) return item
     const sub = [...item.submenu]
     const at = sub.findIndex((s) => s.label === 'ADF Studio Documentation') + 1
@@ -380,8 +384,8 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     id: 'mode:help-menu',
     ws: 'mode',
     scenarios: [...ALL, ...MESH],
-    path: 'local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon")',
-    what: 'Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode\'s own. So is the pair a client-stream drop makes after the first connect (the status line while reconnecting, then the rebuild on reconnect): a loaded CI runner drops the stream in some runs and not in others (CI run 39157150645, windows template-create).',
+    path: 'local calls: Menu.setApplicationMenu (Help: the separator, "Open Daemon Log", the status line, "Reconnect to the ADF Daemon"; File: "Open in New Window")',
+    what: 'Daemon mode adds a separator, "Open Daemon Log" and, while not connected, the status line (and "Reconnect to the ADF Daemon") to Help (§8.1), and "Open in New Window" to File (agent windows, agent-windows.md §9). A menu built while not connected (at boot: connecting) is rebuilt on connect; those calls carry the status line and are the daemon mode\'s own. So is the pair a client-stream drop makes after the first connect (the status line while reconnecting, then the rebuild on reconnect): a loaded CI runner drops the stream in some runs and not in others (CI run 39157150645, windows template-create).',
     apply(d, e) {
       const menus = (calls: typeof d.local) => calls.filter((c) => c.api === 'Menu.setApplicationMenu').length
       let n = 0

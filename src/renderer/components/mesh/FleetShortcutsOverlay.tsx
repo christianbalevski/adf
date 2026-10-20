@@ -1,5 +1,6 @@
 import { memo } from 'react'
-import { IS_MAC, MOD_KEY, ALT_KEY, SHIFT_KEY } from '../../utils/platform'
+import { IS_MAC } from '../../utils/platform'
+import { FLEET_MAP_SECTIONS, rowFor } from '../../../shared/constants/keyboard-shortcuts'
 
 function Key({ k }: { k: string }) {
   return (
@@ -31,7 +32,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 /**
  * Command card — every map hotkey on a blurred full-screen sheet. ? toggles,
- * Esc or a click anywhere dismisses.
+ * Esc or a click anywhere dismisses. The keys come from the shared table
+ * (keyboard-shortcuts.ts) that Help → Keyboard Shortcuts lists too.
  */
 export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClose }: { onClose: () => void }) {
   return (
@@ -48,46 +50,14 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-200">Keyboard commands</span>
           <span className="text-[10px] text-neutral-400 dark:text-neutral-500">? toggles · Esc closes</span>
         </div>
-        <Section title="Camera">
-          <Row keys={['↑', '↓', '←', '→']} label="pan the map" />
-          <Row keys={['drag']} label="right- or middle-drag to pan" />
-          <Row keys={['scroll']} label={`two-finger pan · pinch or ${IS_MAC ? '⌃' : 'Ctrl+'}scroll to zoom`} />
-          <Row keys={['+', '-']} label="zoom in / out" />
-          <Row keys={['Space']} label="jump to selection / fit world" />
-          <Row keys={['F']} label="full screen — cursor at edge pans" />
-        </Section>
-        <Section title="Selection">
-          <Row keys={['A']} label="select all running agents" />
-          <Row keys={[SHIFT_KEY, 'click']} label="add or remove from selection" />
-          <Row keys={['drag']} label="marquee select" />
-          <Row keys={[`${MOD_KEY}1-9`]} label="assign control group" />
-          <Row keys={[`${SHIFT_KEY}1-9`]} label="add selection to group" />
-          <Row keys={['1-9']} label="recall group · tap twice to jump there" />
-          <Row keys={['Esc']} label="clear selection" />
-        </Section>
-        <Section title="Command">
-          <Row keys={['M']} label="message the selection" />
-          <Row keys={['G']} label="start selected (offline)" />
-          <Row keys={[SHIFT_KEY, 'S']} label="stop selected (shut down)" />
-          <Row keys={['Enter']} label="open focused agent" />
-          <Row keys={['I']} label="inspect — full agent readout" />
-          <Row keys={['2×click']} label="open agent + panel" />
-          <Row keys={['R-click']} label="message that agent" />
-        </Section>
-        <Section title="Move">
-          <Row keys={['drag tile']} label="move agent to a free hex (stays there)" />
-          <Row keys={[ALT_KEY, 'drag']} label="move its whole group" />
-          <Row keys={[MOD_KEY, 'drag']} label="move its whole territory" />
-          <Row keys={['drag base']} label="move a runtime or channel platform" />
-          <Row keys={['2×click', 'land']} label="found a new agent on an empty hex" />
-        </Section>
-        <Section title="View">
-          <Row keys={['L']} label="cycle lens (terrain · burn · model · health · lineage)" />
-          <Row keys={['V']} label="toggle voices (group status chips)" />
-          <Row keys={['.']} label="next agent needing you" />
-          <Row keys={[',']} label="next idle agent" />
-          <Row keys={['?']} label="this card" />
-        </Section>
+        {FLEET_MAP_SECTIONS.map((section) => (
+          <Section key={section.title} title={section.title}>
+            {section.rows.map((row) => {
+              const { keys, label } = rowFor(row, IS_MAC)
+              return <Row key={`${row.keys.join(' ')} ${row.label}`} keys={keys} label={label} />
+            })}
+          </Section>
+        ))}
       </div>
     </div>
   )

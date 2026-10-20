@@ -138,7 +138,7 @@ describe('daemon-mode handler registration (D2)', () => {
   })
 
   it('adds "Open Daemon Log" to the Help menu', () => {
-    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log'])
+    expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log'])
   })
 
   it('local handlers answer without the daemon, as embedded does', async () => {

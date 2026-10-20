@@ -16,8 +16,13 @@ import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
 import { useAgentStore } from './stores/agent.store'
-import { agentWindowFile, agentWindowsAvailable, isAgentWindow } from './utils/window-kind'
+import { agentWindowFile, agentWindowsAvailable, isAgentWindow, openAgentWindow } from './utils/window-kind'
 import { openWindowAgent, startQueueHandover, startQueueMirror } from './utils/agent-window'
+import { IS_MAC } from './utils/platform'
+import { isPrimaryModifier } from './utils/keyboard'
+import { useKeyboardStore } from './stores/keyboard.store'
+import { AgentSwitcher } from './components/common/AgentSwitcher'
+import { KeyboardShortcutsDialog } from './components/common/KeyboardShortcutsDialog'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -153,6 +158,25 @@ export default function App() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
 
+  // Cmd/Ctrl+W and File > Close Tab. On the center stage's chat tab it does
+  // exactly what that tab's X does: send the chat back to the side dock.
+  // Closing whichever file tab happens to be behind it would be the shortcut
+  // acting on something the user cannot even see. An agent window with no
+  // tab left closes, as Close Agent does there (agent-windows.md).
+  const closeActiveTab = useCallback(() => {
+    const app = useAppStore.getState()
+    if (app.chatPlacement === 'center' && app.centerChatTabActive) {
+      app.setChatPlacement('side')
+      return
+    }
+    const tabStore = useEditorTabsStore.getState()
+    if (tabStore.activeTabPath) {
+      tabStore.closeTab(tabStore.activeTabPath)
+      return
+    }
+    if (isAgentWindow && tabStore.tabs.length === 0) void closeFile()
+  }, [closeFile])
+
   // An agent window's title is its agent's name.
   const agentName = useAgentStore((s) => s.config?.name)
   useEffect(() => {
@@ -193,6 +217,43 @@ export default function App() {
         case 'open-settings':
           setShowSettings(true)
           break
+        case 'close-tab':
+          closeActiveTab()
+          break
+        case 'go-to-agent':
+          useKeyboardStore.getState().setSwitcherOpen(true)
+          break
+        case 'show-shortcuts':
+          useKeyboardStore.getState().setShortcutsOpen(true)
+          break
+        // Home, the fleet map and the sidebar are the main window's (main sends these there).
+        case 'go-home':
+          if (isAgentWindow) break
+          setShowSettings(false)
+          setShowMeshGraph(false)
+          if (useDocumentStore.getState().filePath) await closeFile()
+          break
+        case 'show-fleet-map':
+          if (isAgentWindow) break
+          setShowSettings(false)
+          setShowMeshGraph(true)
+          break
+        case 'toggle-sidebar':
+          if (!isAgentWindow) useAppStore.getState().toggleSidebar()
+          break
+        // The panel shows the open agent: with none, there is nothing to toggle.
+        case 'toggle-panel':
+          if (useDocumentStore.getState().filePath) useAppStore.getState().toggleRightPanel()
+          break
+        // An agent window already is the agent's window.
+        case 'open-in-new-window': {
+          const filePath = useDocumentStore.getState().filePath
+          const config = useAgentStore.getState().config
+          if (agentWindowsAvailable && filePath) {
+            openAgentWindow({ filePath, agentId: config?.id ?? null, ...(config?.name ? { name: config.name } : {}) })
+          }
+          break
+        }
         // Daemon mode: a remote daemon could not be reached at launch (Help, or the failure dialog).
         case 'open-settings-backend':
           useAppStore.getState().openSettingsAt('connection')
@@ -216,7 +277,7 @@ export default function App() {
       void window.adfApi?.takePendingMenuActions?.().then((actions) => { for (const action of actions ?? []) void handle(action) }).catch(() => {})
     }
     return off
-  }, [openFile, createFile, closeFile, addDirectory, saveActiveDocument, setShowMeshGraph, setShowSettings])
+  }, [openFile, createFile, closeFile, addDirectory, saveActiveDocument, closeActiveTab, setShowMeshGraph, setShowSettings])
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
   const uiFont = useAppStore((s) => s.uiFont)
@@ -301,43 +362,34 @@ export default function App() {
     }
   }, [theme])
 
-  // Keyboard shortcut for settings
+  // Settings, Save and Close Tab from the keyboard. The platform's command
+  // modifier only (⌘ on macOS, Ctrl elsewhere): Ctrl+S on a Mac and Win+S on
+  // Windows are not Save.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+      if (!isPrimaryModifier(e, IS_MAC) || e.altKey) return
+      if (e.key === ',') {
         e.preventDefault()
         // An agent window opens them in the main window (app.store).
         setShowSettings(true)
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      } else if (e.key === 's') {
         e.preventDefault()
         saveActiveDocument()
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
+      } else if (e.key === 'w') {
         e.preventDefault()
-        // On the center stage's chat tab, Ctrl+W does exactly what its X does:
-        // send the chat back to the side dock. Closing whichever file tab
-        // happens to be behind it would be the shortcut acting on something the
-        // user cannot even see.
-        const app = useAppStore.getState()
-        if (app.chatPlacement === 'center' && app.centerChatTabActive) {
-          app.setChatPlacement('side')
-          return
-        }
-        const tabStore = useEditorTabsStore.getState()
-        if (tabStore.activeTabPath) {
-          tabStore.closeTab(tabStore.activeTabPath)
-        }
+        closeActiveTab()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [setShowSettings, saveActiveDocument])
+  }, [setShowSettings, saveActiveDocument, closeActiveTab])
 
   return (
     <ErrorBoundary>
       <AppShell />
       <RemotePickerHost />
+      <AgentSwitcher />
+      <KeyboardShortcutsDialog />
     </ErrorBoundary>
   )
 }

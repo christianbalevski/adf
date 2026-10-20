@@ -60,7 +60,7 @@ describe('after a failed launch', () => {
     const { handle, relaunches } = boot(async () => { throw new Error('The ADF daemon exited during startup (code 1). Its log says: "Failed to start: port 7385 on 127.0.0.1 is already in use".') })
     expect(await handle.ready).toBe(false)
     expect(handle.connection.state.state).toBe('failed')
-    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Run Inside Studio for This Session'])
+    expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Run Inside Studio for This Session'])
     helpItem('Reconnect to the ADF Daemon')!.click!()
     await vi.waitFor(() => expect(relaunches).toHaveLength(1))
     helpItem('Run Inside Studio for This Session')!.click!()
@@ -92,7 +92,7 @@ describe('after a failed launch', () => {
     electronStub.dialogResponse = 99
     const { handle, relaunches } = boot(async () => { throw new Error('The remote ADF daemon at https://adf.example.test does not answer.') }, 'remote')
     expect(await handle.ready).toBe(false)
-    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Open Settings → Connection'])
+    expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log', 'ADF daemon: not connected', 'Reconnect to the ADF Daemon', 'Open Settings → Connection'])
     helpItem('Open Settings → Connection')!.click!()
     expect(electronStub.pushes).toEqual([{ channel: IPC.MENU_ACTION, args: ['open-settings-backend'] }])
     const dialog = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as { buttons: string[] }
@@ -130,7 +130,7 @@ describe('after a failed launch', () => {
     const { handle, session, relaunches } = boot(async () => ({ baseUrl: BASE, logFile: null, description: 'the fake daemon', source: { token: () => 't' } }))
     expect(await handle.ready).toBe(true)
     handle.connection.markDisconnected('stream ended')
-    expect(helpLabels(electronStub)).toEqual(['ADF Studio Documentation', '<separator>', 'Open Daemon Log', `ADF daemon: not connected (${BASE}), retrying`, 'Reconnect to the ADF Daemon'])
+    expect(helpLabels(electronStub)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '<separator>', 'Open Daemon Log', `ADF daemon: not connected (${BASE}), retrying`, 'Reconnect to the ADF Daemon'])
     helpItem('Reconnect to the ADF Daemon')!.click!()
     expect(session.reconnects).toBe(1)
     expect(relaunches).toEqual([])

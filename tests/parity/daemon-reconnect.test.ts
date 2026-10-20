@@ -47,7 +47,7 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
       expect(await invoke(IPC.FILE_OPEN, { filePath: agents['agent-1'].filePath })).toMatchObject({ success: true })
       expect(await invoke(IPC.AGENT_START, { filePath: agents['agent-1'].filePath })).toMatchObject({ success: true })
       expect(booted.handle.connection.state.state).toBe('connected')
-      expect(helpLabels(electron)).toEqual(['ADF Studio Documentation', '-', 'Open Daemon Log'])
+      expect(helpLabels(electron)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '-', 'Open Daemon Log'])
 
       await booted.killDaemon()
       await waitFor('the Help menu status line', () => helpLabels(electron).includes('Reconnect to the ADF Daemon'))
@@ -75,7 +75,7 @@ describe.skipIf(!existsSync(DAEMON_BUNDLE))('daemon mode: backend not connected,
       expect(resync.find((p) => p.channel === IPC.APPROVALS_CHANGED)?.args[0]).toEqual({ pending: [], history: [] })
       expect(electron.localCalls.filter((c) => c.api === 'Notification.show').map((c) => (c.args[0] as { body?: string }).body))
         .toContain('Reconnected to the ADF daemon.')
-      expect(helpLabels(electron)).toEqual(['ADF Studio Documentation', '-', 'Open Daemon Log'])
+      expect(helpLabels(electron)).toEqual(['Keyboard Shortcuts', 'ADF Studio Documentation', '-', 'Open Daemon Log'])
       expect(await invoke(IPC.AGENT_STATUS)).toEqual({ running: false, state: 'stopped' })
       // The session kept the open file across the daemon's restart.
       expect(await invoke(IPC.FILE_GET_CURRENT)).toEqual({ filePath: agents['agent-1'].filePath, agentRunning: false })
