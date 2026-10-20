@@ -196,14 +196,24 @@ describe('assembled-agent load-time recovery and reconciliation', () => {
   it('warns but never rejects when the config does not match AgentConfigSchema', () => {
     const { workspace } = makeLoadFixture()
     const config = workspace.getAgentConfig()
-    config.instructions = ''
+    config.model.temperature = 5
     const { agent } = assembleFrom(workspace, config)
 
     expect(agent.getLifecycleState()).toBe('created')
     const warnings = workspace.getLogs(50).filter(log => log.event === 'config_validation')
     expect(warnings).toHaveLength(1)
     expect(warnings[0]?.level).toBe('warn')
-    expect(warnings[0]?.message).toContain('instructions')
+    expect(warnings[0]?.message).toContain('model.temperature')
+  })
+
+  it('accepts empty instructions without a config_validation warning', () => {
+    const { workspace } = makeLoadFixture()
+    const config = workspace.getAgentConfig()
+    config.model.provider = 'mock'
+    config.instructions = ''
+    assembleFrom(workspace, config)
+
+    expect(workspace.getLogs(50).filter(log => log.event === 'config_validation')).toHaveLength(0)
   })
 
   it('flags duplicate tools[] entries instead of letting the last one win', async () => {
@@ -437,7 +447,11 @@ describe('canonical assembled-agent lifecycle', () => {
 
     expect(second).toBe(first)
     expect(agent.getLifecycleState()).toBe('stopping')
-    expect(stop).toHaveBeenCalledTimes(1)
+    // Teardown reaps host shells before resources, so the resource stop
+    // starts a few ticks in, not synchronously.
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1))
+    expect(agent.stop({ mode: 'immediate' })).toBe(first)
+    expect(agent.getLifecycleState()).toBe('stopping')
 
     gate.resolve()
     await Promise.all([first, second])
