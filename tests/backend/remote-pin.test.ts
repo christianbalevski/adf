@@ -165,6 +165,9 @@ describe('a second drop before the stream opened again (A8)', () => {
     pinOk = true
     await until(() => c.tokenAllowed, 3_000)
     const checks = pinChecks
+    // The re-dial starting (no error yet) is not a failure: the token goes with it.
+    c.markDisconnected()
+    expect(c.tokenAllowed).toBe(true)
     // The re-dial after the check fails too (a proxy's 502): the connection is still down.
     pinOk = false
     c.markDisconnected('the re-dial failed')

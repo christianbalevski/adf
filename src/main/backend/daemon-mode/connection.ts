@@ -233,9 +233,10 @@ export class DaemonConnection {
   markDisconnected(error?: string): void {
     if (this.disposed || this.status.state === 'failed') return
     if (this.status.state === 'disconnected') {
-      // A pinned connection that dropped again before it opened (the re-dial after the check failed too): whoever
-      // answers now may not be the computer that showed the fingerprint, so nothing is sent until it shows it again.
-      if (this.connector.pinCheck && this.endpoint && this.listenerVerified) {
+      // A pinned connection whose re-dial after the check failed too (an error: a failed attempt, not the start of
+      // one): whoever answers now may not be the computer that showed the fingerprint, so nothing is sent until it
+      // shows it again.
+      if (error !== undefined && this.connector.pinCheck && this.endpoint && this.listenerVerified) {
         this.listenerVerified = false
         void this.verifyListenerLoop()
       }
