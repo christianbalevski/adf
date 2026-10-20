@@ -134,7 +134,11 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
 
   // settings.childTemplateId ('' = none) — written immediately, not debounced.
   const [childTemplateId, setChildTemplateId] = useState('')
-  const { commit } = useSettingsSave()
+  const { commit, track } = useSettingsSave()
+  /** A template write's outcome, reported like every Settings write: "Saved" in the header, or a "Not saved" notice. */
+  const report = useCallback((error: string | null) => {
+    void track(Promise.resolve(error ? { ok: false as const, error } : { ok: true as const }))
+  }, [track])
   const [confirmDialog, confirm] = useConfirm()
   useEffect(() => {
     let cancelled = false
@@ -212,11 +216,14 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       const res = await op()
       if (!res?.success) {
         setWriteError(res?.error || 'The template could not be saved.')
+        report(res?.error || 'The template could not be saved.')
         return
       }
       setWriteError(null)
+      report(null)
     } catch (err) {
       setWriteError(err instanceof Error ? err.message : 'The template could not be saved.')
+      report(err instanceof Error ? err.message : 'The template could not be saved.')
       return
     } finally {
       inFlight.current--
@@ -228,7 +235,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
       dirty.current = false
       await refreshContents(id)
     }
-  }, [refreshContents, settle])
+  }, [refreshContents, settle, report])
 
   // --- selection ------------------------------------------------------------
   const select = useCallback((id: string | null) => {
@@ -299,9 +306,13 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
         inFlight.current++
         try {
           const res = await window.adfApi.setTemplateMeta({ id, description: next.description, warning: next.warning })
-          setMetaError(res?.success ? null : res?.error || 'The notes could not be saved.')
+          const error = res?.success ? null : res?.error || 'The notes could not be saved.'
+          setMetaError(error)
+          report(error)
         } catch (err) {
-          setMetaError(err instanceof Error ? err.message : 'The notes could not be saved.')
+          const error = err instanceof Error ? err.message : 'The notes could not be saved.'
+          setMetaError(error)
+          report(error)
         } finally {
           inFlight.current--
           settle()
@@ -606,7 +617,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
               role={saveError ? 'alert' : 'status'}
               title={saveError ?? 'Edits save to the template file as you type.'}
             >
-              {saveError ? `Not saved: ${saveError}` : saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : 'Edits save as you type'}
+              {saveError ? `Not saved: ${saveError}` : saveState === 'saving' ? 'Saving…' : 'Edits save as you type'}
             </span>
             {!selected.reviewed && (
               <Button onClick={() => void reviewTemplate(selected)} size="compact" className="shrink-0">
