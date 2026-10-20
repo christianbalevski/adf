@@ -2,7 +2,7 @@ import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useAgentStore } from '../stores/agent.store'
 import { toDisplayState } from '../hooks/useAgent'
-import { openApi, windowAgentKey } from './runtime-api'
+import { openAgentKey, openApi, providerSheetReaches, windowAgentKey } from './runtime-api'
 
 export interface StartForegroundOptions {
   /** Passed through to main: the start is a prelude to a user message. */
@@ -55,11 +55,15 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
   }
 
   // The row spinner's key: the path on This computer, runtime and path on another runtime.
-  const startKey = filePath ? windowAgentKey(useDocumentStore.getState().runtimeId, filePath) : null
+  const runtimeId = useDocumentStore.getState().runtimeId
+  const startKey = filePath ? windowAgentKey(runtimeId, filePath) : null
+  // The agent the user is looking at, by runtime and path: an agent of another runtime with the same path is not it.
+  const viewing = () => openAgentKey() === startKey
   if (startKey) appStore.addStartingFilePath(startKey)
   try {
     let result = await openApi()?.startAgent(filePath ?? undefined, hasUserMessage)
-    if (result && !result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
+    // The sheet sets up the providers of this window's runtime: another runtime's refusal is said as it is (its Settings).
+    if (result && !result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured') && providerSheetReaches(runtimeId)) {
       const connected = await useAppStore.getState().requestProviderSetup(result.code, filePath)
       if (!connected) return { success: false, error: result.error, cancelled: true }
       // The sheet is modal but slow: the user can still have switched agents
@@ -67,7 +71,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
       // whichever agent they left, so the retry is abandoned instead — and
       // said out loud, since the switched-away loop would otherwise get
       // nothing at all.
-      if (useDocumentStore.getState().filePath !== filePath) {
+      if (!viewing()) {
         const error = 'Agent file changed — start it again'
         agentStore.addLogEntry({
           id: `error-${Date.now()}`,
@@ -81,7 +85,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     }
 
     // Only touch the store if the user is still looking at this agent.
-    const stillViewing = useDocumentStore.getState().filePath === filePath
+    const stillViewing = viewing()
     // Daemon mode: the file's password key is not unlocked (design §6.1 row
     // 27). Ask for it with the same dialog the file open uses; embedded never
     // answers this code (its file open asks first).
@@ -124,7 +128,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     // The open agent's log, as above: not another agent's the user switched to.
-    if (useDocumentStore.getState().filePath === filePath) {
+    if (viewing()) {
       agentStore.addLogEntry({
         id: `error-${Date.now()}`,
         type: 'error',

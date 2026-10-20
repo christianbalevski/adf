@@ -43,6 +43,25 @@ export function openRuntime(): RuntimeId {
 }
 
 /**
+ * The runtime argument of a store slice action (tracked folders, running
+ * agents) for the open agent: its runtime in the main window; none in an
+ * agent window, whose top-level slice is its own runtime's.
+ */
+export function openSliceRuntime(): RuntimeId | undefined {
+  return isAgentWindow ? undefined : openRuntime()
+}
+
+/**
+ * The provider sheet (ProviderSetupDialog) sets up the providers of this
+ * window's own runtime: true when an agent of `runtimeId` is served by it.
+ * The main window's agent of another runtime is not: its refusal is shown
+ * as it is, and its runtime's Settings set it up.
+ */
+export function providerSheetReaches(runtimeId: RuntimeId | null | undefined): boolean {
+  return isAgentWindow || (runtimeId || LOCAL_RUNTIME) === LOCAL_RUNTIME
+}
+
+/**
  * The open agent's key in maps keyed by agent (agentKey): its path on This
  * computer, as before; runtime and path on another runtime. Null when no
  * agent is open. An agent window shows one runtime, whose stores are its
