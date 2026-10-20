@@ -6,6 +6,8 @@ import { startForegroundAgent } from './start-agent'
 import { queueOwnerMessage, sendOwnerMessage } from './queued-delivery'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import { attachmentMetadata, attachmentsOf } from '../../shared/utils/file-ref'
+import { openAgentKey, windowAgentKey } from './runtime-api'
+import type { RuntimeId } from '../../shared/runtime-tag'
 
 /** What a queued message is listed as: its text, else its files' names. */
 function queuedText(message: string, content: ContentBlock[]): string {
@@ -16,6 +18,8 @@ function queuedText(message: string, content: ContentBlock[]): string {
 export interface ComposerTarget {
   /** The agent the composer is for, captured at submit so navigation can't redirect the message. */
   filePath: string | null
+  /** The agent's runtime (multi-runtime.md §5.2); omitted, the open agent's. */
+  runtimeId?: RuntimeId
   loop: string
   loopState: string
   agentState: string
@@ -42,6 +46,8 @@ export type SendRoute = 'queued' | 'direct'
  */
 export async function sendComposerMessage(target: ComposerTarget, message: string, content: ContentBlock[], previews: string[]): Promise<SendRoute> {
   const { filePath, loop, loopState, agentState } = target
+  // Its queue's key: the path on This computer, runtime and path on another runtime.
+  const key = filePath ? windowAgentKey(target.runtimeId ?? useDocumentStore.getState().runtimeId, filePath) : null
   // Review gate, provider-at-need, store mirroring: one shared path, for
   // exactly the agent the owner sent to.
   let startError: string | undefined
@@ -61,10 +67,10 @@ export async function sendComposerMessage(target: ComposerTarget, message: strin
   // sent" with the reason, the same as the direct path below.
   const startForQueue = async () => {
     const started = await start()
-    if (!started && filePath) markQueueNotSent(filePath, loop, startError ?? 'the agent did not start')
+    if (!started && key) markQueueNotSent(key, loop, startError ?? 'the agent did not start')
     return started
   }
-  if (queueOwnerMessage(filePath, loop, loopState, agentState, { text: queuedText(message, content), content, imagePreviewUrls: previews }, startForQueue)) {
+  if (queueOwnerMessage(key, loop, loopState, agentState, { text: queuedText(message, content), content, imagePreviewUrls: previews }, startForQueue)) {
     return 'queued'
   }
 
@@ -85,15 +91,15 @@ export async function sendComposerMessage(target: ComposerTarget, message: strin
   // A start that did not happen (review pending, provider sheet cancelled,
   // real error) leaves the message "Not sent" with the reason.
   if (agentState === 'off' && !(await start())) {
-    return notSent(filePath, loop, bubbleId, { id: nanoid(), text, content, ...(previews.length > 0 ? { imagePreviewUrls: previews } : {}) }, startError ?? 'the agent did not start')
+    return notSent(key, loop, bubbleId, { id: nanoid(), text, content, ...(previews.length > 0 ? { imagePreviewUrls: previews } : {}) }, startError ?? 'the agent did not start')
   }
 
   // Update activity state if still viewing, then always send the invoke
-  if (useDocumentStore.getState().filePath === filePath) {
+  if (openAgentKey() === key) {
     useAgentStore.getState().setState('active', loop)
   }
 
-  sendOwnerMessage(filePath, loop, message, content, previews)
+  sendOwnerMessage(key, loop, message, content, previews)
   return 'direct'
 }
 
@@ -112,7 +118,7 @@ function notSent(filePath: string | null, loop: string, bubbleId: string, messag
     return 'direct'
   }
   useMessageQueueStore.getState().restore(filePath, loop, [message], reason)
-  if (!sameAgentPath(useDocumentStore.getState().filePath, filePath)) return 'queued'
+  if (!sameAgentPath(openAgentKey(), filePath)) return 'queued'
   const log = selectLoopSlice(agentStore, loop).log
   if (log.some((e) => e.id === bubbleId)) agentStore.setLog(log.filter((e) => e.id !== bubbleId), undefined, loop)
   return 'queued'

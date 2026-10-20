@@ -7,6 +7,7 @@ import { DOCS } from '../../../shared/constants/docs-links'
 import { useDocumentStore } from '../../stores/document.store'
 import { changeAgentConfig } from '../../utils/edit-conflict'
 import type { AgentConfig } from '../../../shared/types/adf-v02.types'
+import { openApi } from '../../utils/runtime-api'
 
 interface IdentityEntry {
   purpose: string
@@ -116,12 +117,12 @@ export function IdentityPanel() {
 
   const refresh = useCallback(async () => {
     const [didResult, entriesResult, pwResult, attResult, config, envResult] = await Promise.all([
-      window.adfApi.getDid(),
-      window.adfApi.listIdentityEntries(),
-      window.adfApi.checkPassword(),
-      window.adfApi.getAgentAttestations(),
-      window.adfApi.getAgentConfig(),
-      window.adfApi.getEnvelopeStatus()
+      openApi().getDid(),
+      openApi().listIdentityEntries(),
+      openApi().checkPassword(),
+      openApi().getAgentAttestations(),
+      openApi().getAgentConfig(),
+      openApi().getEnvelopeStatus()
     ])
     setDid(didResult.did)
     setEntries(entriesResult.entries)
@@ -139,7 +140,7 @@ export function IdentityPanel() {
   }, [])
 
   const handleReissueAttestations = useCallback(async () => {
-    const result = await window.adfApi.reissueAgentAttestations()
+    const result = await openApi().reissueAgentAttestations()
     if (result.success && result.attestations) {
       setAttestations(result.attestations)
     }
@@ -168,7 +169,7 @@ export function IdentityPanel() {
       })
       return
     }
-    const result = await window.adfApi.revealIdentity(purpose)
+    const result = await openApi().revealIdentity(purpose)
     setRevealNote(result.value === null && result.reason ? result.reason : null)
     if (result.value !== null) {
       setRevealed((prev) => ({ ...prev, [purpose]: result.value! }))
@@ -178,7 +179,7 @@ export function IdentityPanel() {
   const handleDeleteEntry = useCallback(async (purpose: string) => {
     const ok = window.confirm(`Delete identity entry "${purpose}"?`)
     if (!ok) return
-    await window.adfApi.deleteIdentity(purpose)
+    await openApi().deleteIdentity(purpose)
     await refresh()
   }, [refresh])
 
@@ -189,21 +190,21 @@ export function IdentityPanel() {
       'This cannot be undone.'
     )
     if (!ok) return
-    await window.adfApi.wipeAllIdentity()
+    await openApi().wipeAllIdentity()
     await refresh()
   }, [refresh])
 
   const handleRemovePassword = useCallback(async () => {
     const ok = window.confirm('Remove password protection? All identity entries will be stored in plain text.')
     if (!ok) return
-    const result = await window.adfApi.removePassword()
+    const result = await openApi().removePassword()
     if (result.success) {
       await refresh()
     }
   }, [refresh])
 
   const handleToggleCodeAccess = useCallback(async (purpose: string, currentValue: boolean) => {
-    await window.adfApi.setIdentityCodeAccess(purpose, !currentValue)
+    await openApi().setIdentityCodeAccess(purpose, !currentValue)
     setEntries((prev) => prev.map((e) =>
       e.purpose === purpose ? { ...e, code_access: !currentValue } : e
     ))
@@ -214,7 +215,7 @@ export function IdentityPanel() {
   }, [did])
 
   const handleSetSharePassword = useCallback(async () => {
-    const result = await window.adfApi.setSharePassword(sharePassword)
+    const result = await openApi().setSharePassword(sharePassword)
     if (result.success) {
       setShareOpen(false)
       setSharePassword('')
@@ -227,12 +228,12 @@ export function IdentityPanel() {
 
   const handleRemoveSharePassword = useCallback(async () => {
     if (!window.confirm('Remove the share password? Anyone you gave it to can no longer unlock the credentials with it.')) return
-    await window.adfApi.removeSharePassword()
+    await openApi().removeSharePassword()
     await refresh()
   }, [refresh])
 
   const handleUnlockCredentials = useCallback(async () => {
-    const result = await window.adfApi.unlockEnvelopeWithPassword(unlockPassword, true)
+    const result = await openApi().unlockEnvelopeWithPassword(unlockPassword, true)
     if (result.success) {
       setUnlockPassword('')
       setUnlockError('')
@@ -243,7 +244,7 @@ export function IdentityPanel() {
   }, [unlockPassword, refresh])
 
   const handleGenerateKeys = useCallback(async () => {
-    const result = await window.adfApi.generateIdentityKeys()
+    const result = await openApi().generateIdentityKeys()
     if (result.success) {
       await refresh()
     }
@@ -263,7 +264,7 @@ export function IdentityPanel() {
       setAddKeyError('Value is required')
       return
     }
-    await window.adfApi.setIdentity(purpose, addKeyValue)
+    await openApi().setIdentity(purpose, addKeyValue)
     setAddKeyOpen(false)
     setAddKeyPurpose('')
     setAddKeyValue('')

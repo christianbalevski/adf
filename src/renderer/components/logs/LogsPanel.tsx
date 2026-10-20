@@ -6,6 +6,7 @@ import { usePollWhenVisible } from '../../hooks/usePollWhenVisible'
 import { FreshnessStamp } from '../common/FreshnessStamp'
 import type { AdfLogEntry, LogLevel } from '../../../shared/types/adf-v02.types'
 import { LOGS_MAX_IN_MEMORY, LOGS_PAGE, appendLogs, filterLogs, showingLabel } from './logs-model'
+import { openApi } from '../../utils/runtime-api'
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
   debug: 'text-neutral-500',
@@ -45,7 +46,7 @@ export function useLogsCount(): number {
 
   useEffect(() => {
     if (!filePath) { setCount(0); return }
-    window.adfApi?.getLogs(1).then(({ count: c }) => setCount(c))
+    openApi()?.getLogs(1).then(({ count: c }) => setCount(c))
   }, [filePath])
 
   return count
@@ -97,7 +98,7 @@ export function LogsPanel() {
 
     if (!filePath) return
 
-    window.adfApi?.getLogs(LOGS_PAGE).then(({ logs: fetched, count }) => {
+    openApi()?.getLogs(LOGS_PAGE).then(({ logs: fetched, count }) => {
       if (generation !== generationRef.current) return
       // getLogs returns newest-first, reverse for chronological
       const chronological = [...fetched].reverse()
@@ -115,7 +116,7 @@ export function LogsPanel() {
     if (!initialLoadedRef.current || fetchingRef.current) return
     const generation = generationRef.current
     fetchingRef.current = true
-    window.adfApi?.getLogsAfterId(highestIdRef.current).then(({ logs: newLogs }) => {
+    openApi()?.getLogsAfterId(highestIdRef.current).then(({ logs: newLogs }) => {
       if (generation !== generationRef.current) return
       setFetchedAt(Date.now())
       if (newLogs.length === 0) return
@@ -136,7 +137,7 @@ export function LogsPanel() {
     const generation = generationRef.current
     const want = logs.length + LOGS_PAGE
     setLoadingOlder(true)
-    window.adfApi?.getLogs(want).then(({ logs: fetched, count }) => {
+    openApi()?.getLogs(want).then(({ logs: fetched, count }) => {
       if (generation !== generationRef.current) return
       const chronological = [...fetched].reverse()
       loadedTargetRef.current = Math.max(loadedTargetRef.current, want)
@@ -155,7 +156,7 @@ export function LogsPanel() {
 
   const handleClear = useCallback(() => {
     if (!window.confirm('Clear all logs? This cannot be undone.')) return
-    window.adfApi?.clearLogs().then(() => {
+    openApi()?.clearLogs().then(() => {
       setLogs([])
       setTotal(0)
       highestIdRef.current = 0

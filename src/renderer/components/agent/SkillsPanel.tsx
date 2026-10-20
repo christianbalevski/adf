@@ -31,6 +31,7 @@ import { renderMarkdownToSafeHtml, useMarkdownHighlightVersion } from '../../uti
 import { elideMiddle, splitSkillDocument } from '../../../shared/utils/skill-preview'
 import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
+import { openApi, useOpenRuntime } from '../../utils/runtime-api'
 
 /**
  * Skills — the human half of file-backed skills (design doc §4).
@@ -125,10 +126,10 @@ export function SkillsPanel() {
     const seq = ++refreshSeq.current
     const owner = useDocumentStore.getState().filePath
     try {
-      const listed = await window.adfApi?.getInternalFiles()
+      const listed = await openApi()?.getInternalFiles()
       const [registryFile, stateFile] = await Promise.all([
-        window.adfApi?.readInternalFile(SKILLS_REGISTRY_PATH),
-        window.adfApi?.readInternalFile(SKILLS_STATE_PATH)
+        openApi()?.readInternalFile(SKILLS_REGISTRY_PATH),
+        openApi()?.readInternalFile(SKILLS_STATE_PATH)
       ])
       if (seq !== refreshSeq.current) return false
       if (useDocumentStore.getState().filePath !== owner) return false
@@ -169,9 +170,10 @@ export function SkillsPanel() {
    * the same push channel its siblings use instead of guessing at a settle
    * delay. Debounced: one install fires several of these in a row.
    */
+  const runtime = useOpenRuntime()
   useEffect(() => {
     let debounce: ReturnType<typeof setTimeout> | null = null
-    const unsubscribe = window.adfApi?.onAgentEvent?.((event: AgentExecutionEvent) => {
+    const unsubscribe = openApi()?.onAgentEvent?.((event: AgentExecutionEvent) => {
       if (event?.type !== 'file_updated') return
       const path = (event.payload as { path?: string } | undefined)?.path
       if (!path) return
@@ -186,7 +188,7 @@ export function SkillsPanel() {
       if (debounce) clearTimeout(debounce)
       unsubscribe?.()
     }
-  }, [refresh])
+  }, [refresh, runtime])
 
   /** Installed packages as the VFS sees them — the ground truth the indexer reads. */
   const installedNames = useMemo(() => {
@@ -322,7 +324,7 @@ export function SkillsPanel() {
     try {
       const directory = `skills/${entry.name}`
       const manifestPath = `${directory}/SKILL.md`
-      const pkg = await window.adfApi?.getSkillPackage(entry.raw_url)
+      const pkg = await openApi()?.getSkillPackage(entry.raw_url)
       if (!pkg?.ok) return { error: pkg?.error ?? 'Fetch failed', warnings: [] }
 
       // Resources ride the same capped, SSRF-guarded package IPC as the
@@ -331,7 +333,7 @@ export function SkillsPanel() {
       const warnings: string[] = []
       const resources: Array<{ path: string; content: string }> = []
       for (const file of entry.files ?? []) {
-        const fetched = await window.adfApi?.getSkillPackage(file.raw_url)
+        const fetched = await openApi()?.getSkillPackage(file.raw_url)
         if (!fetched?.ok) {
           warnings.push(`${file.path} — ${fetched?.error ?? 'Fetch failed'}`)
           continue
@@ -343,7 +345,7 @@ export function SkillsPanel() {
       if (blocked) return { error: blocked, warnings: [] }
 
       for (const resource of resources) {
-        const ok = await window.adfApi?.writeInternalFile(resource.path, resource.content)
+        const ok = await openApi()?.writeInternalFile(resource.path, resource.content)
         if (!ok?.success) {
           warnings.push(`${resource.path} — could not write`)
           continue
@@ -356,7 +358,7 @@ export function SkillsPanel() {
       // workspace switch during them must not publish a package here.
       const moved = agentChanged(owner)
       if (moved) return { error: moved, warnings }
-      const written = await window.adfApi?.writeInternalFile(manifestPath, pkg.content)
+      const written = await openApi()?.writeInternalFile(manifestPath, pkg.content)
       if (!written?.success) return { error: `Could not write ${manifestPath}.`, warnings }
       syncOpenTab(manifestPath, pkg.content)
       await refresh()
@@ -371,7 +373,7 @@ export function SkillsPanel() {
 
   /** Open any workspace file in the editor — the registry button and every row. */
   const openInEditor = useCallback(async (path: string) => {
-    const result = await window.adfApi?.readInternalFile(path)
+    const result = await openApi()?.readInternalFile(path)
     if (result?.content != null) {
       useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary, result.mimeType, result.revision)
     }
@@ -662,7 +664,7 @@ function CatalogDialog({
     // preference read resolves paints "These sources list no skills."
     setLoading(true)
     void (async () => {
-      const stored = (await window.adfApi?.getSettings?.()) as unknown as
+      const stored = (await openApi()?.getSettings?.()) as unknown as
         { skillCatalogSources?: unknown } | undefined
       if (!cancelled) setSources(normalizeCatalogSources(stored?.skillCatalogSources))
     })()
@@ -682,7 +684,7 @@ function CatalogDialog({
       const settled = await Promise.all(
         sources.map(async (url): Promise<CatalogSourceResult> => {
           try {
-            const result = await window.adfApi?.getSkillsCatalog(url)
+            const result = await openApi()?.getSkillsCatalog(url)
             if (!result?.ok) {
               return { url, ok: false, entries: [], error: result?.error ?? 'Unavailable' }
             }
@@ -742,7 +744,7 @@ function CatalogDialog({
     setPreviews((prev) => new Map(prev).set(url, { status: 'loading' }))
     let next: PreviewState
     try {
-      const pkg = await window.adfApi?.getSkillPackage(url)
+      const pkg = await openApi()?.getSkillPackage(url)
       next = pkg?.ok
         ? { status: 'ready', content: pkg.content }
         : { status: 'error', error: pkg?.error ?? 'Fetch failed' }

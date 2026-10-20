@@ -2,11 +2,14 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { sameAgentPath } from './message-queue.store'
 import { agentWindowsAvailable } from '../utils/window-kind'
+import { LOCAL_RUNTIME } from '../../shared/runtime-tag'
 
 /** An agent shown in its own window (docs/design/agent-windows.md). */
 export interface OpenAgentWindow {
   filePath: string
   agentId: string | null
+  /** The agent's runtime; omitted for This computer (docs/design/multi-runtime.md §4.5). */
+  runtimeId?: string
 }
 
 interface AgentWindowsBridge {
@@ -30,14 +33,23 @@ export const useOpenAgentWindowsStore = create<OpenAgentWindowsState>((set) => (
   setWindows: (windows) => set({ windows: Array.isArray(windows) ? windows : [] }),
 }))
 
-/** `filePath` (or `agentId`) is shown in an agent window. */
-export function isInAgentWindow(windows: readonly OpenAgentWindow[], filePath: string, agentId?: string | null): boolean {
-  return windows.some((w) => sameAgentPath(w.filePath, filePath) || (!!agentId && w.agentId === agentId))
+/**
+ * `filePath` (or `agentId`) of `runtimeId` (omitted: This computer) is shown
+ * in an agent window. Refs of two runtimes never match (§1.3); a path of
+ * another runtime is compared exactly.
+ */
+export function isInAgentWindow(windows: readonly OpenAgentWindow[], filePath: string, agentId?: string | null, runtimeId?: string | null): boolean {
+  const runtime = runtimeId || LOCAL_RUNTIME
+  return windows.some((w) => {
+    if ((w.runtimeId || LOCAL_RUNTIME) !== runtime) return false
+    const samePath = runtime === LOCAL_RUNTIME ? sameAgentPath(w.filePath, filePath) : w.filePath === filePath
+    return samePath || (!!agentId && w.agentId === agentId)
+  })
 }
 
 /** Row marker: this agent has its own window. */
-export function useInAgentWindow(filePath: string, agentId?: string | null): boolean {
-  return useOpenAgentWindowsStore((s) => s.windows.length > 0 && isInAgentWindow(s.windows, filePath, agentId))
+export function useInAgentWindow(filePath: string, agentId?: string | null, runtimeId?: string | null): boolean {
+  return useOpenAgentWindowsStore((s) => s.windows.length > 0 && isInAgentWindow(s.windows, filePath, agentId, runtimeId))
 }
 
 /**

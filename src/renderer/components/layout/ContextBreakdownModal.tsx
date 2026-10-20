@@ -8,6 +8,7 @@ import { breakdownTags, calibrationNote, resolveHostThreshold, resolveLoopThresh
 import type { ContextBreakdown, ContextBreakdownToolGroup } from '../../../shared/types/ipc.types'
 import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
+import { openApi } from '../../utils/runtime-api'
 
 /** Kept under this name for StatusBar; the one renderer token formatter lives in utils/token-estimate. */
 export const formatTokens = formatTokenCount
@@ -202,7 +203,7 @@ export function ContextBreakdownModal({
     }
     setLoading(true)
     try {
-      setBreakdown(await window.adfApi.getContextBreakdown(filePath, loop))
+      setBreakdown(await openApi().getContextBreakdown(filePath, loop))
     } catch {
       setBreakdown(null)
     } finally {

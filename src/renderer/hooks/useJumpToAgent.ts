@@ -13,9 +13,11 @@ import { useAdfFile } from './useAdfFile'
  * fleet map), and forgetting that is how "clicking the notification did
  * nothing" happens.
  */
-export function useJumpToAgent(): (filePath: string) => void {
+export function useJumpToAgent(): (filePath: string, runtimeId?: string) => void {
   const { openFile } = useAdfFile()
-  return useCallback((filePath: string) => {
+  // `runtimeId`: the request's runtime, omitted for This computer (multi-runtime.md §6.1).
+  return useCallback((filePath: string, runtimeId?: string) => {
+    const runtime = runtimeId || 'local'
     const app = useAppStore.getState()
     if (app.showSettings) app.setShowSettings(false)
     if (app.showMeshGraph) app.setShowMeshGraph(false)
@@ -26,7 +28,8 @@ export function useJumpToAgent(): (filePath: string) => void {
     // also run on the early-return path below — an already-open agent still
     // needs its (possibly collapsed / non-loop) chat brought to the front.
     app.expandRightPanelToTab('loop')
-    if (useDocumentStore.getState().filePath === filePath) return
-    void openFile(filePath)
+    const doc = useDocumentStore.getState()
+    if (doc.filePath === filePath && doc.runtimeId === runtime) return
+    void openFile(filePath, runtime)
   }, [openFile])
 }

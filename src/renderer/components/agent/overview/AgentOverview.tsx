@@ -94,6 +94,7 @@ import {
   type LevelBarParts,
   type PowerItem
 } from './agent-overview-model'
+import { openApi } from '../../../utils/runtime-api'
 
 const ORBITAL_SIZE = 64
 const PULSE_MS = 1200
@@ -111,7 +112,7 @@ const STAT_NAMES: Record<StatKey, string> = {
 // Data
 // =============================================================================
 
-const readVitals: OverviewReader<AgentVitals> = (filePath, force) => window.adfApi?.getAgentVitals?.(filePath, { force })
+const readVitals: OverviewReader<AgentVitals> = (filePath, force) => openApi()?.getAgentVitals?.(filePath, { force })
 
 /** What the agent is doing right now, for the state line and orbital motion. */
 function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: AgentState; label: string; toolRunning: boolean; waiting: boolean } {

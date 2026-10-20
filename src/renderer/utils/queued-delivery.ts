@@ -5,6 +5,21 @@ import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, heldForO
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import { attachmentMetadata } from '../../shared/utils/file-ref'
+import { parseAgentKey } from '../../shared/types/agent-ref'
+import { apiFor, openAgentKey, openApi } from './runtime-api'
+import { isAgentWindow } from './window-kind'
+
+/**
+ * Every function here takes an agent's key (agentKey): its path on This
+ * computer, as before; runtime and path on another runtime
+ * (docs/design/multi-runtime.md §5.2). An agent window's keys are paths.
+ * The send goes to the agent's runtime.
+ */
+function invokeOn(key: string, text: string, ...rest: [content?: ContentBlock[], loop?: string]) {
+  if (isAgentWindow) return window.adfApi?.invokeAgent(text, key, ...rest)
+  const { runtimeId, filePath } = parseAgentKey(key)
+  return apiFor(runtimeId)?.invokeAgent(text, filePath, ...rest)
+}
 
 /**
  * Send a loop's queued messages as one chat, now that its turn has ended.
@@ -52,7 +67,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
   const imagePreviewUrls = queue.flatMap((m) => m.imagePreviewUrls ?? [])
   let bubbleId: string | null = null
   let previousState: AgentState | null = null
-  if (sameAgentPath(useDocumentStore.getState().filePath, filePath)) {
+  if (sameAgentPath(openAgentKey(), filePath)) {
     const agentStore = useAgentStore.getState()
     previousState = selectLoopSlice(agentStore, loop).state
     bubbleId = nanoid()
@@ -68,7 +83,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
 
   const fail = (error: string): void => {
     useMessageQueueStore.getState().restore(filePath, loop, queue, error)
-    if (!bubbleId || !sameAgentPath(useDocumentStore.getState().filePath, filePath)) return
+    if (!bubbleId || !sameAgentPath(openAgentKey(), filePath)) return
     const agentStore = useAgentStore.getState()
     const slice = selectLoopSlice(agentStore, loop)
     if (slice.log.some((e) => e.id === bubbleId)) {
@@ -78,7 +93,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
     if (previousState && slice.state === 'active') agentStore.setState(previousState, loop)
   }
 
-  const pending = invokeOrThrown(() => window.adfApi?.invokeAgent(combined, filePath, content, loop))
+  const pending = invokeOrThrown(() => invokeOn(filePath, combined, content, loop))
   if (!pending) {
     fail(NOT_CONNECTED)
     return
@@ -86,7 +101,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
   void Promise.resolve(pending).then(
     (result) => {
       if (!result || result.success !== false) return
-      const exitedUnseen = result.code === 'daemon_exited' && !sameAgentPath(useDocumentStore.getState().filePath, filePath)
+      const exitedUnseen = result.code === 'daemon_exited' && !sameAgentPath(openAgentKey(), filePath)
       if (result.accepted && !exitedUnseen) {
         console.warn(`[queue] Queued message to ${filePath} (${loop}) was delivered; its turn's end was not seen: ${result.error ?? 'unknown'}`)
         return
@@ -136,7 +151,7 @@ export function sendProblem(result: InvokeAnswer): { reason: string; notSent: bo
  * went wrong is said through `notify`, in both backends.
  */
 export function sendFleetOrders(filePath: string, who: string, text: string, notify: (notice: string) => void): void {
-  const pending = window.adfApi?.invokeAgent(text, filePath)
+  const pending = invokeOn(filePath, text)
   if (!pending) {
     notify(`Orders not sent to ${who}: Studio is not connected to the agent runtime`)
     return
@@ -163,10 +178,11 @@ export function sendFleetOrders(filePath: string, who: string, text: string, not
  * own business.
  */
 export function sendOwnerMessage(filePath: string | null, loop: string, text: string, content: ContentBlock[], imagePreviewUrls: string[] = []): void {
-  const pending = invokeOrThrown(() => window.adfApi?.invokeAgent(text, filePath ?? undefined, content, loop))
+  // No key: the open agent, on its runtime.
+  const pending = invokeOrThrown(() => (filePath ? invokeOn(filePath, text, content, loop) : openApi()?.invokeAgent(text, undefined, content, loop)))
   const refused = (error: string, showInChat: boolean): void => {
     console.warn(`[chat] Message to ${filePath ?? 'the open agent'} (${loop}) was not sent: ${error}`)
-    if (filePath && !sameAgentPath(useDocumentStore.getState().filePath, filePath)) {
+    if (filePath && !sameAgentPath(openAgentKey(), filePath)) {
       const message: QueuedMessage = { id: nanoid(), text, content, ...(imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}) }
       useMessageQueueStore.getState().restore(filePath, loop, [message], error)
       return

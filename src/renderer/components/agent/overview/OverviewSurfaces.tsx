@@ -10,6 +10,7 @@ import { useAgentStore } from '../../../stores/agent.store'
 import { useDocumentStore } from '../../../stores/document.store'
 import { useEditorTabsStore } from '../../../stores/editor-tabs.store'
 import { Tooltip } from '../../common/Tooltip'
+import { openApi } from '../../../utils/runtime-api'
 
 /** Every card-face chip (Public, Verified owner, Website, Computer) is this box, so they share one height. */
 export const CHIP = 'inline-flex h-5 items-center gap-1 rounded border border-[var(--rule)] px-1.5 text-[11px] leading-none'
@@ -37,7 +38,7 @@ export function useAgentSurfaces(): AgentSurfaces {
   const [mesh, setMesh] = useState<{ running: boolean; port: number; host: string } | null>(null)
   useEffect(() => {
     if (!isServing) return
-    window.adfApi?.getMeshServerStatus().then((s) => setMesh(s ?? null)).catch(() => setMesh(null))
+    openApi()?.getMeshServerStatus().then((s) => setMesh(s ?? null)).catch(() => setMesh(null))
   }, [isServing, agentState])
 
   const servingUrl = useMemo(() => {
@@ -60,7 +61,7 @@ export function useAgentSurfaces(): AgentSurfaces {
     if (!agentOn || opening || !config || !filePath) return
     setOpening(true)
     try {
-      const info = await window.adfApi?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
+      const info = await openApi()?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
       // The tab opens in every phase: a container that is provisioning,
       // stopped, or failed shows that instead of a blank viewer.
       if (info) {

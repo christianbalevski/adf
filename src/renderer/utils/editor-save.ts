@@ -1,6 +1,7 @@
 import { useEditorTabsStore, isAgentSwitching } from '../stores/editor-tabs.store'
 import { useDocumentStore } from '../stores/document.store'
 import { saveTabContent, type SaveAnswer, type SaveBase, type SaveOutcome } from './edit-conflict'
+import { openApi } from './runtime-api'
 
 /**
  * W3-F: the one way an editor tab's text reaches the file, for the editor's
@@ -38,7 +39,7 @@ export function resetEditorSaves(): void {
  * shows the notice. Resolves to the save's outcome, or null when dropped.
  */
 export function saveEditorTab(path: string, content: string, owner: string | null, base: SaveBase = captureSaveBase(path)): Promise<SaveOutcome | null> {
-  const api = window.adfApi
+  const api = openApi()
   const current = () => owner === useDocumentStore.getState().filePath && !isAgentSwitching()
   if (!api || !current()) return Promise.resolve(null)
   if (useEditorTabsStore.getState().tabs.find((t) => t.path === path)?.conflict) return Promise.resolve(null)

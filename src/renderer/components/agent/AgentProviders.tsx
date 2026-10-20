@@ -4,6 +4,7 @@ import type { AgentProviderKeySource, ProviderConfig } from '../../../shared/typ
 import { invalidateProviderModels, useProviderModels } from '../../hooks/useProviderModels'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
+import { openApi } from '../../utils/runtime-api'
 
 interface ProviderChoice { id: string; label: string }
 
@@ -166,7 +167,7 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
   const refreshSources = useCallback(() => {
     if (!filePath) return
     const providers = (JSON.parse(entriesKey) as [string, string, string][]).map(([id, type, baseUrl]) => ({ id, type, baseUrl }))
-    window.adfApi?.getAgentProviderKeySources({ filePath, providers })
+    openApi()?.getAgentProviderKeySources({ filePath, providers })
       .then((r) => setSources(r?.sources ?? {}))
       .catch(() => setSources({}))
   }, [filePath, entriesKey])
@@ -197,7 +198,7 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
     setBusy(true)
     setError(null)
     try {
-      const r = await window.adfApi?.setProviderCredential({ filePath, providerId, value })
+      const r = await openApi()?.setProviderCredential({ filePath, providerId, value })
       if (r && !r.success) throw new Error(r.error ?? 'Failed to save key')
       invalidateProviderModels()
       setKeyEditing(null)
@@ -216,7 +217,7 @@ export function AgentProvidersList({ filePath, config, appProviders, save }: {
     setError(null)
     try {
       if (filePath) {
-        const r = await window.adfApi?.detachProvider({ filePath, providerId: p.id })
+        const r = await openApi()?.detachProvider({ filePath, providerId: p.id })
         if (r && !r.success) throw new Error(r.error ?? 'Failed to remove provider')
       }
       const rest = carried.filter((c) => c.id !== p.id)

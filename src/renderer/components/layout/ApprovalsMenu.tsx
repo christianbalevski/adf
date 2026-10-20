@@ -5,6 +5,9 @@ import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store
 import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useJumpToAgent } from '../../hooks/useJumpToAgent'
+import { runtimeLabel, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
+import { apiFor } from '../../utils/runtime-api'
+import { noticeKey } from '../../../shared/runtime-tag'
 import { loopColor } from '../../utils/loop-color'
 import { ApprovalControls, OverrideBadge } from '../agent/ApprovalControls'
 import { ToolCallModal } from '../agent/ToolCallModal'
@@ -84,23 +87,25 @@ export function ApprovalRow({
 }: {
   approval: PendingNotification
   now: number
-  onJump: (filePath: string) => void
-  /** Open the full request (approvals only). */
-  onInspect: (id: string) => void
+  onJump: (filePath: string, runtimeId?: string) => void
+  /** Open the full request (approvals only), by its key across runtimes. */
+  onInspect: (key: string) => void
 }) {
+  // Its runtime's name while there is more than one runtime (multi-runtime.md §6.1).
+  const runtimeLabel = useRuntimeLabel(approval.runtimeId)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const colors = loopColor(approval.loop)
   const isAsk = approval.kind === 'ask'
   const isProtection = approval.reason === 'protection'
   // An ask is answered in the agent's chat; an approval opens in full here.
-  const open = () => (isAsk ? onJump(approval.filePath) : onInspect(approval.id))
+  const open = () => (isAsk ? onJump(approval.filePath, approval.runtimeId) : onInspect(noticeKey(approval.runtimeId, approval.id)))
 
   const respond = useCallback(async (approved: boolean) => {
     setBusy(true)
     setError(null)
     try {
-      const result = await approvalsBridge()?.resolvePendingApproval?.(approval.filePath, approval.id, approved)
+      const result = await approvalsBridge(approval.runtimeId)?.resolvePendingApproval?.(approval.filePath, approval.id, approved)
       // The row normally vanishes on the next snapshot; a refusal (already
       // resolved, timed out, agent stopped) must say so instead of hanging.
       if (result && result.success === false) {
@@ -111,7 +116,7 @@ export function ApprovalRow({
       setError('Could not reach the agent runtime')
       setBusy(false)
     }
-  }, [approval.filePath, approval.id])
+  }, [approval.filePath, approval.id, approval.runtimeId])
 
   return (
     <div className="px-3 py-2 border-b border-hairline last:border-b-0 hover:bg-neutral-50 dark:hover:bg-neutral-800/60">
@@ -131,7 +136,7 @@ export function ApprovalRow({
             {isAsk ? <AskIcon /> : <ShieldIcon />}
           </span>
           <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
-            {approval.agentName}
+            {runtimeLabel ? `${runtimeLabel} · ` : ''}{approval.agentName}
           </span>
           {approval.loop !== 'main' && (
             <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>
@@ -170,7 +175,7 @@ export function ApprovalRow({
           // An answer is prose — there is nothing sane to type into a 14px
           // dropdown row, so this hands off to the agent's own composer.
           <button
-            onClick={() => onJump(approval.filePath)}
+            onClick={() => onJump(approval.filePath, approval.runtimeId)}
             className="h-6 px-2 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]"
           >
             Respond
@@ -219,6 +224,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
   const colors = loopColor(entry.loop)
   const isAsk = entry.kind === 'ask'
   const outcome = OUTCOME_APPEARANCE[entry.outcome] ?? OUTCOME_APPEARANCE.expired
+  const runtimeLabel = useRuntimeLabel(entry.runtimeId)
 
   return (
     <div className="px-3 py-1.5 border-b border-hairline last:border-b-0 opacity-55">
@@ -227,7 +233,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
           {isAsk ? <AskIcon /> : <ShieldIcon />}
         </span>
         <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300 truncate">
-          {entry.agentName}
+          {runtimeLabel ? `${runtimeLabel} · ` : ''}{entry.agentName}
         </span>
         {entry.loop !== 'main' && (
           <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>
@@ -260,9 +266,9 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   const jumpToAgent = useJumpToAgent()
   const containerRef = useRef<HTMLDivElement>(null)
   const [now, setNow] = useState(() => Date.now())
-  // The approval whose full request is open in the modal, by hub id.
+  // The approval whose full request is open in the modal, by its key across runtimes (noticeKey).
   const [inspectingId, setInspectingId] = useState<string | null>(null)
-  const inspecting = inspectingId ? approvals.find((a) => a.id === inspectingId) ?? null : null
+  const inspecting = inspectingId ? approvals.find((a) => noticeKey(a.runtimeId, a.id) === inspectingId) ?? null : null
   const inspectingRef = useRef(false)
   inspectingRef.current = inspecting !== null
 
@@ -298,10 +304,10 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   const count = approvals.length
   const askCount = approvals.reduce((total, a) => total + (a.kind === 'ask' ? 1 : 0), 0)
 
-  const handleJump = (filePath: string) => {
+  const handleJump = (filePath: string, runtimeId?: string) => {
     setInspectingId(null)
     setPanelOpen(false)
-    jumpToAgent(filePath)
+    jumpToAgent(filePath, runtimeId)
   }
 
   // The bell is permanent — it is the app's notification centre, not a HIL
@@ -352,7 +358,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
                     Waiting on you
                   </div>
                   {approvals.map((approval) => (
-                    <ApprovalRow key={approval.id} approval={approval} now={now} onJump={handleJump} onInspect={setInspectingId} />
+                    <ApprovalRow key={noticeKey(approval.runtimeId, approval.id)} approval={approval} now={now} onJump={handleJump} onInspect={setInspectingId} />
                   ))}
                 </>
               )}
@@ -365,7 +371,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
                     // Resolved ids repeat across a session (a re-registered
                     // request, an agent restarted at ask_1), so the row needs a
                     // key that includes WHEN it ended.
-                    <ResolvedRow key={`${entry.id}@${entry.resolvedAt}`} entry={entry} now={now} />
+                    <ResolvedRow key={`${noticeKey(entry.runtimeId, entry.id)}@${entry.resolvedAt}`} entry={entry} now={now} />
                   ))}
                 </>
               )}
@@ -396,29 +402,31 @@ function ApprovalDetailModal({
   onClose
 }: {
   approval: PendingNotification
-  onJump: (filePath: string) => void
+  onJump: (filePath: string, runtimeId?: string) => void
   onClose: () => void
 }) {
+  const runtimeLabel = useRuntimeLabel(approval.runtimeId)
   const [input, setInput] = useState<unknown>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const foregroundFilePath = useDocumentStore((s) => s.filePath)
+  const foregroundRuntime = useDocumentStore((s) => s.runtimeId)
   const toolName = approval.toolName ?? 'tool'
   const colors = loopColor(approval.loop)
 
   useEffect(() => {
     let cancelled = false
-    void approvalsBridge()?.getApprovalInput?.(approval.filePath, approval.id)
+    void approvalsBridge(approval.runtimeId)?.getApprovalInput?.(approval.filePath, approval.id)
       .then((value) => { if (!cancelled && value != null) setInput(value) })
       .catch(() => { /* input unavailable: the modal shows what the snapshot has */ })
     return () => { cancelled = true }
-  }, [approval.filePath, approval.id])
+  }, [approval.filePath, approval.id, approval.runtimeId])
 
   const respond = async (approved: boolean, feedback?: string) => {
     setBusy(true)
     setError(null)
     try {
-      const result = await approvalsBridge()?.resolvePendingApproval?.(approval.filePath, approval.id, approved, feedback)
+      const result = await approvalsBridge(approval.runtimeId)?.resolvePendingApproval?.(approval.filePath, approval.id, approved, feedback)
       if (result && result.success === false) {
         setError(result.error ?? 'Could not resolve this approval')
         setBusy(false)
@@ -437,11 +445,13 @@ function ApprovalDetailModal({
   const alwaysApprove = async () => {
     setBusy(true)
     setError(null)
-    const foreground = foregroundFilePath === approval.filePath
+    // The open agent is this request's agent only on its own runtime (§1.3).
+    const foreground = foregroundFilePath === approval.filePath && foregroundRuntime === (approval.runtimeId ?? 'local')
+    const api = apiFor(approval.runtimeId)
     try {
       const result = foreground
-        ? await window.adfApi?.alwaysApproveTool(approval.requestId, toolName)
-        : await window.adfApi?.alwaysApproveBackgroundAgentTool(approval.filePath, approval.requestId, toolName)
+        ? await api?.alwaysApproveTool(approval.requestId, toolName)
+        : await api?.alwaysApproveBackgroundAgentTool(approval.filePath, approval.requestId, toolName)
       if (result && !result.success) {
         setError(`Always approve refused: ${result.error ?? 'unknown reason'}`)
         setBusy(false)
@@ -474,7 +484,7 @@ function ApprovalDetailModal({
       headerLead={
         <span className="flex items-center gap-1.5 min-w-0 shrink-0">
           <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100 truncate max-w-40">
-            {approval.agentName}
+            {runtimeLabel ? `${runtimeLabel} · ` : ''}{approval.agentName}
           </span>
           {approval.loop !== 'main' && (
             <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>{approval.loop}</span>
@@ -485,7 +495,7 @@ function ApprovalDetailModal({
       headerActions={
         <button
           type="button"
-          onClick={() => onJump(approval.filePath)}
+          onClick={() => onJump(approval.filePath, approval.runtimeId)}
           className="h-7 px-2.5 text-[11px] font-medium rounded-full border border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0 whitespace-nowrap"
           title="Open this agent; the request stays pending"
         >
@@ -528,6 +538,7 @@ export function ApprovalToasts() {
   const dismissToast = useApprovalsStore((s) => s.dismissToast)
   const setPanelOpen = useApprovalsStore((s) => s.setPanelOpen)
   const jumpToAgent = useJumpToAgent()
+  const runtimes = useRuntimesStore((s) => s.runtimes)
 
   // Both the toasts and the bell panel anchor top-left; an open panel already
   // lists every pending request, and a toast on top of it would cover its
@@ -551,7 +562,7 @@ export function ApprovalToasts() {
             </span>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
-                {toast.agentName} {toast.kind === 'ask' ? 'has a question' : 'needs approval'}
+                {runtimeLabel(toast.runtimeId, runtimes) ? `${runtimeLabel(toast.runtimeId, runtimes)} · ` : ''}{toast.agentName} {toast.kind === 'ask' ? 'has a question' : 'needs approval'}
               </div>
               <div className={`text-[11px] text-neutral-500 dark:text-neutral-400 truncate ${toast.kind === 'ask' ? '' : 'font-mono'}`}>
                 {toast.detail}{toast.loop !== 'main' ? ` · ${toast.loop}` : ''}
@@ -564,7 +575,7 @@ export function ApprovalToasts() {
                   Review
                 </button>
                 <button
-                  onClick={() => { dismissToast(toast.id); jumpToAgent(toast.filePath) }}
+                  onClick={() => { dismissToast(toast.id); jumpToAgent(toast.filePath, toast.runtimeId) }}
                   className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:underline"
                 >
                   Open agent

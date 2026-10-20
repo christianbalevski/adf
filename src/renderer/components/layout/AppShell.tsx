@@ -21,6 +21,7 @@ import { FailureNotices } from '../common/FailureNotices'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
+import { openApi, useOpenRuntime } from '../../utils/runtime-api'
 import type { Inbox } from '../../../shared/types/adf.types'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useDragResize } from '../../hooks/useDragResize'
@@ -124,17 +125,20 @@ export function AppShell() {
     }
   }, [setInboxData, clearInboxMessages])
 
+  // The open agent's runtime: its inbox and data pushes come from there (multi-runtime.md §4.1).
+  const openRuntime = useOpenRuntime()
+
   // Subscribe to push-based inbox updates from main process
   useEffect(() => {
     if (!filePath) return
-    const unsubscribe = window.adfApi?.onInboxUpdated?.((data) => {
+    const unsubscribe = openApi()?.onInboxUpdated?.((data) => {
       applyInboxData(data.inbox)
     })
     return () => unsubscribe?.()
-  }, [filePath, applyInboxData])
+  }, [filePath, openRuntime, applyInboxData])
 
   const fetchOutbox = useCallback(() => {
-    window.adfApi?.getOutbox?.().then((result) => {
+    openApi()?.getOutbox?.().then((result) => {
       if (result?.outbox?.messages) {
         setOutboxMessages(result.outbox.messages)
       }
@@ -147,20 +151,20 @@ export function AppShell() {
       clearInboxMessages()
       return
     }
-    window.adfApi?.getInbox().then((result) => {
+    openApi()?.getInbox().then((result) => {
       applyInboxData(result?.inbox)
     })
     fetchOutbox()
-  }, [filePath, clearInboxMessages, applyInboxData, fetchOutbox])
+  }, [filePath, openRuntime, clearInboxMessages, applyInboxData, fetchOutbox])
 
   // Workspace data-change push: any inbox/outbox mutation of the open file
   // (agent tools, mesh delivery, adapters, lambdas) triggers a refetch, so the
   // panels stay live without switching agents.
   useEffect(() => {
     if (!filePath) return
-    const unsubscribe = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+    const unsubscribe = openApi()?.onWorkspaceDataChanged?.(({ scope }) => {
       if (scope === 'inbox') {
-        window.adfApi?.getInbox().then((result) => {
+        openApi()?.getInbox().then((result) => {
           applyInboxData(result?.inbox)
         })
       } else if (scope === 'outbox') {
@@ -168,7 +172,7 @@ export function AppShell() {
       }
     })
     return () => unsubscribe?.()
-  }, [filePath, applyInboxData, fetchOutbox])
+  }, [filePath, openRuntime, applyInboxData, fetchOutbox])
 
   const meshEnabled = useMeshStore((s) => s.enabled)
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)

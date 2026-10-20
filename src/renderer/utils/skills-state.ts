@@ -16,6 +16,7 @@
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore, isAgentSwitching } from '../stores/editor-tabs.store'
 import { mergeDisabledList, SKILLS_STATE_PATH } from '../../shared/utils/skills-panel'
+import { openApi } from './runtime-api'
 
 /**
  * Guard for the async gap around a write. Returns the reason to abandon, or
@@ -74,12 +75,12 @@ export function setSkillMuted(name: string, enabled: boolean, owner: string | nu
     // between (the agent, another window) refuses it, and the merge runs
     // again on their version, so neither change is lost.
     for (let attempt = 0; attempt < 3; attempt++) {
-      const stateFile = await window.adfApi?.readInternalFile(SKILLS_STATE_PATH)
+      const stateFile = await openApi()?.readInternalFile(SKILLS_STATE_PATH)
       const blockedAfterRead = agentChanged(owner)
       if (blockedAfterRead) return blockedAfterRead
       const next = mergeDisabledList(stateFile?.content, name, enabled)
       const base = stateFile?.revision
-      const written = await window.adfApi?.writeInternalFile(SKILLS_STATE_PATH, next, base !== undefined ? { baseRevision: base } : undefined)
+      const written = await openApi()?.writeInternalFile(SKILLS_STATE_PATH, next, base !== undefined ? { baseRevision: base } : undefined)
       if (written?.conflict) continue
       if (!written?.success) return `Could not write ${SKILLS_STATE_PATH}.`
       syncOpenTab(SKILLS_STATE_PATH, next, written.revision)

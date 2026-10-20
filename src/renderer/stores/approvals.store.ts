@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { NotificationsSnapshot, PendingNotification, ResolvedNotification } from '../../shared/types/ipc.types'
+import { noticeKey } from '../../shared/runtime-tag'
 
 /**
  * The notifications slice of the preload bridge.
@@ -23,14 +24,24 @@ interface NotificationsBridge {
   setBadgeCount?: (count: number) => Promise<void>
 }
 
-export function approvalsBridge(): NotificationsBridge | undefined {
-  return (globalThis as { adfApi?: NotificationsBridge }).adfApi
+/**
+ * `runtimeId`: the surface of a request's runtime (docs/design/multi-runtime.md
+ * §6.1), so its answer goes there; omitted, This computer's. With This
+ * computer only, that is window.adfApi itself.
+ */
+export function approvalsBridge(runtimeId?: string): NotificationsBridge | undefined {
+  const api = (globalThis as { adfApi?: NotificationsBridge & { runtimeId?: string; runtime?: (id: string) => NotificationsBridge } }).adfApi
+  const target = runtimeId || 'local'
+  if (!api?.runtime || (api.runtimeId ?? 'local') === target) return api
+  return api.runtime(target)
 }
 
 /** A transient "agent X needs you" notice, shown when that agent is not open. */
 export interface ApprovalToast {
-  /** Same id as the notification it announces — answering it kills the toast. */
+  /** The key of the notification it announces (noticeKey: its id, with its runtime for one other than This computer) — answering it kills the toast. */
   id: string
+  /** The request's runtime; omitted for This computer. */
+  runtimeId?: string
   kind: PendingNotification['kind']
   agentName: string
   loop: string
@@ -76,7 +87,7 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
       history,
       // A toast for a request that no longer exists is a lie — drop it the
       // moment the snapshot says it was answered (from any surface).
-      toasts: state.toasts.filter((t) => pending.some((a) => a.id === t.id))
+      toasts: state.toasts.filter((t) => pending.some((a) => noticeKey(a.runtimeId, a.id) === t.id))
       // The panel is NOT closed when the last pending row goes: answering the
       // final approval while looking at the list would yank the list out from
       // under the click, and the row you just answered is precisely what you

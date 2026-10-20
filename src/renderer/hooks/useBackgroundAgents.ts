@@ -6,6 +6,7 @@ import { foldAgentStatuses } from '../utils/background-agent-statuses'
 import { deliverSettledBackgroundQueues } from '../utils/queued-delivery'
 import { sameAgentPath } from '../stores/message-queue.store'
 import { openingFilePaths } from './useAdfFile'
+import { openAgentKey } from '../utils/runtime-api'
 import type { RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
@@ -80,7 +81,7 @@ export function useBackgroundAgentEvents() {
             // re-attach and blank the indicator for the whole rebuild window.
             // The event can land before openFile sets filePath (it fetches the
             // agent first), so a file mid-open counts as open here.
-            if (filePath !== useDocumentStore.getState().filePath && !openingFilePaths.has(filePath)) dropStarting(filePath)
+            if (filePath !== openAgentKey() && !openingFilePaths.has(filePath)) dropStarting(filePath)
             dropStopping(filePath)
             break
           }
