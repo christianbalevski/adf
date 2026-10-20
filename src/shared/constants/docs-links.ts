@@ -89,7 +89,7 @@ export const DOCS = {
   settingsCompute: guideUrl('compute', 'environments'),
   settingsGuard: guideUrl('settings', 'security-guard--locked-fields'),
 
-  // Settings → Connection (docs/guides/studio-backend.md)
+  // Settings → Connections (docs/guides/studio-backend.md)
   backendConnection: guideUrl('studio-backend', 'connection'),
   backendAddConnection: guideUrl('studio-backend', 'add-connection'),
   backendSwitch: guideUrl('studio-backend', 'switch-the-backend'),

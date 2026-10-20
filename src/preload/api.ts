@@ -723,7 +723,7 @@ export interface AdfApi {
   /** `stoppedAgents`: how many agents the stop ended (the Kill button reports it). */
   emergencyStop: () => Promise<{ success: boolean; error?: string; stoppedAgents?: number }>
 
-  // Settings → Connection (studio-backend.json; applies at next launch)
+  // Settings → Connections (studio-backend.json; applies at next launch)
   /** The view never contains the remote token, only whether one is saved. */
   getBackendSettings: () => Promise<BackendSettingsView>
   setBackendSettings: (patch: BackendSettingsPatch) => Promise<BackendSettingsSaveResult>
@@ -749,7 +749,7 @@ export interface AdfApi {
   /** `tailscale serve` for the daemon port, confirmed first with the exact command. */
   setRemoteTailscaleServe: (enabled: boolean) => Promise<RemoteAccessResult & { output?: string }>
   onRemoteAccessChanged: (callback: (change: RemoteAccessChange) => void) => () => void
-  // Settings → Connection (settings-scopes.md §5). No token reaches the renderer.
+  // Settings → Connections (settings-scopes.md §5). No token reaches the renderer.
   /** The runtimes this window can use, and the one it uses. */
   listConnections: () => Promise<ConnectionsView>
   /** Connect: the switch dialog, then Studio restarts on that connection. */

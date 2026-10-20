@@ -6,7 +6,7 @@ import { UNSAFE_DISPLAY_CHARS } from '../../daemon/remote-access/config'
 import { TailscaleClient, tailnetUrlAllowed, type TailnetView } from '../../daemon/remote-access/tailscale'
 
 /**
- * Pair from Settings → Connection (docs/design/remote-access.md §5.4,
+ * Pair from Settings → Connections (docs/design/remote-access.md §5.4,
  * §9.1; settings-scopes.md §5.3): hello, the 6-digit code, the wait for the
  * host's Allow, then the connection is saved where `adf pair` saves it
  * (`cli-remotes.json` and the OS keychain, connections.ts). One flow at a

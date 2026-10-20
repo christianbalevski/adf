@@ -40,6 +40,22 @@ export function useCurrentConnection(): ConnectionCurrent | null {
   return useConnectionStore((s) => s.view?.current ?? null)
 }
 
+/**
+ * At least one runtime on another computer is saved (or in use). Until then
+ * Studio reads as plain ADF Studio: no runtime names in the sidebar or the
+ * status bar, and Connections is one line with Add (settings-scopes.md §4).
+ */
+export function remoteConnectionsSaved(view: Pick<ConnectionsView, 'current' | 'rows'> | null): boolean {
+  if (!view) return false
+  return view.current.kind === 'remote' || view.rows.some((r) => r.kind === 'saved')
+}
+
+/** remoteConnectionsSaved for this window's list. */
+export function useRemoteConnectionsSaved(): boolean {
+  useEffect(() => { startConnectionFeed() }, [])
+  return useConnectionStore((s) => remoteConnectionsSaved(s.view))
+}
+
 /** The runtime is not reachable now (connecting, retrying, failed). */
 export function runtimeDown(current: ConnectionCurrent | null): boolean {
   return !!current && current.state !== 'connected'
@@ -56,12 +72,15 @@ export function runtimeGroupLabel(current: ConnectionCurrent | null): string {
  * The status bar's runtime indicator (settings-scopes.md §4.1): nothing for
  * This computer or Inside Studio while connected; a remote's name, with the
  * state while it is not connected; This computer only while it is not.
+ * With no remote saved (`showName` false) a problem shows without the name.
  */
-export function runtimeIndicator(current: ConnectionCurrent | null): { text: string; remote: boolean; tooltip: string | null; problem: boolean } | null {
+export function runtimeIndicator(current: ConnectionCurrent | null, showName = true): { text: string; remote: boolean; tooltip: string | null; problem: boolean } | null {
   if (!current) return null
   const remote = current.kind === 'remote'
   const down = runtimeDown(current)
   if (!remote && !down) return null
+  // No remote saved: only a problem shows, in the status line's words, with no runtime name.
+  if (!showName && !remote) return { text: CONNECTION_STATE_LABELS[current.state], remote: false, tooltip: null, problem: true }
   return {
     text: down ? `${current.name} · ${CONNECTION_STATE_LABELS[current.state]}` : current.name,
     remote,

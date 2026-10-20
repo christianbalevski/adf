@@ -37,4 +37,13 @@ describe('the runtime indicator (settings-scopes.md §4.1)', () => {
     expect(runtimeIndicator(current({ state: 'connecting' }))).toEqual({ text: 'This computer · Connecting', remote: false, tooltip: null, problem: true })
     expect(renderToStaticMarkup(<RuntimeIndicator current={current({ state: 'not-connected' })} onOpen={() => {}} />)).not.toContain('<svg')
   })
+
+  it('no remote saved: no runtime name, ever; a problem shows in the status line\'s words alone', () => {
+    expect(runtimeIndicator(current(), false)).toBeNull()
+    expect(runtimeIndicator(current({ state: 'retrying' }), false)).toEqual({ text: 'Not connected, retrying', remote: false, tooltip: null, problem: true })
+    const html = renderToStaticMarkup(<RuntimeIndicator current={current({ state: 'connecting' })} showName={false} onOpen={() => {}} />)
+    expect(html).toContain('>Connecting<')
+    expect(html).not.toContain('This computer')
+    expect(html).not.toContain('Runtime:')
+  })
 })

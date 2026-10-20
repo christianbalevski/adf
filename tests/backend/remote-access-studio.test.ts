@@ -322,7 +322,7 @@ function pairSetup(opts: { tailnet?: { running: boolean; suffix: string | null; 
   return { daemon, flow, states, saved, logs, switches, replaces, last: () => states.at(-1)! }
 }
 
-describe('pairing from Settings → Connection', () => {
+describe('pairing from Settings → Connections', () => {
   it('hello, the code, the host\'s Allow, then the token is saved for the encrypted address; never returned or logged', async () => {
     const p = pairSetup()
     const started = await p.flow.start({ url: LAN, allowInsecureHttp: true })

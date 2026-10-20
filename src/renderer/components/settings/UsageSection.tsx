@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import type { TokenUsageData } from '../../../shared/types/ipc.types'
 import { Button, SegmentedControl } from '../ui'
+import { useConfirm } from '../common/ConfirmDialog'
 import { UsageChart, SERIES_COLORS, MAX_NAMED_SERIES, type ChartSeries, type UsageMetric } from './UsageChart'
 import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
@@ -105,6 +106,7 @@ export function TokenUsageSection() {
   const [windowDays, setWindowDays] = useState<WindowDays>('30')
   const [metric, setMetric] = useState<UsageMetric>('tokens')
   const [showBreakdown, setShowBreakdown] = useState(false)
+  const [confirmDialog, confirm] = useConfirm()
 
   useEffect(() => {
     window.adfApi?.getTokenUsage().then((data) => {
@@ -113,7 +115,7 @@ export function TokenUsageSection() {
   }, [])
 
   const handleClear = async () => {
-    if (!window.confirm('Are you sure you want to clear all token usage data? This cannot be undone.')) {
+    if (!await confirm({ title: 'Clear usage', body: 'Every token count is deleted. This cannot be undone; Download JSON keeps a copy.', confirmLabel: 'Clear usage', danger: true })) {
       return
     }
     await window.adfApi?.clearTokenUsage()
@@ -213,6 +215,7 @@ export function TokenUsageSection() {
 
   return (
     <div>
+      {confirmDialog}
       <div className="mb-1 flex items-center justify-between gap-2">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
           Token Usage

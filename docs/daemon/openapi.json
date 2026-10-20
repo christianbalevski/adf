@@ -8692,7 +8692,7 @@
             "name": "persist",
             "in": "query",
             "required": false,
-            "description": "`0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its \"Start with the runtime\" checkbox writes meshEnabled). Default `1`.",
+            "description": "`0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its Autostart switch writes meshEnabled). Default `1`.",
             "schema": {
               "type": "string",
               "enum": [
@@ -8746,7 +8746,7 @@
             "name": "persist",
             "in": "query",
             "required": false,
-            "description": "`0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its \"Start with the runtime\" checkbox writes meshEnabled). Default `1`.",
+            "description": "`0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its Autostart switch writes meshEnabled). Default `1`.",
             "schema": {
               "type": "string",
               "enum": [

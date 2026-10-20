@@ -11,8 +11,19 @@ ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl +
 
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
-- **Studio**, the app on this computer: Connection, Appearance, Notifications, Updates, Privacy, About. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
-- **Runtime · *name***, the runtime this window uses ("This computer", or a saved connection such as `rawl-hub`): Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings; with a remote connection they are that computer's. Controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*."
+- **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
+- The runtime this window uses: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. The group has no heading until a runtime on another computer is saved in Connections; then it is headed **Runtime · *name*** ("This computer", or a saved connection such as `rawl-hub`), and with a remote connection the settings are that computer's. Controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*."
+
+## Saving
+
+Settings save as you change them. There is no Save button, except in a dialog that creates something (a provider, an MCP server, a connection) and in the prompt editors (see [System Prompt](#system-prompt)).
+
+- A text or number field saves when you press Enter or leave it. Escape puts the saved value back.
+- A field that refuses a value says why under it, and nothing is written. Numbers are never clamped or replaced with 0.
+- After a write lands, **Saved** shows briefly in the page header.
+- When the runtime refuses a write (for example, the daemon's secret store is locked), the control goes back to the saved value and a notice reads "Not saved: *reason*". It stays until you dismiss it. The provider, MCP server and channel lists keep your edit, and the row it concerns says why; the next change retries it.
+- Removing a list entry that can be put back (a package, a catalog source, a manual peer, an execution target) shows **Undo** for 10 seconds instead of asking first.
+- A risky action asks first, in one dialog whose button names the action: **Replace owner** (Import identity), **Allow host access** (Compute), **Revoke** (an approved host server), **Stop** (a container others use), **Replace prompts** (Auto-update), **Clear usage**, and a template's **Reset**, **Delete** and file **Remove**.
 
 ![The Settings window on its General page: a section rail on the left (General, Identity, Providers, Packages, MCP servers, Channels, Networking, Compute, About) with theme selection, token usage, and the editable global system prompt on the right.](../assets/screenshots/settings-general.png)
 
@@ -31,12 +42,12 @@ The first-party skill catalog is a default entry in **Settings → Skills**, fet
 
 The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#the-three-identities) for the full model.
 
-### Owner Identity
+### Owner identity
 
 Your user identity as a `did:key` DID, derived from a 12-word seed phrase generated on first launch:
 
 - **Back up seed phrase** — reveals the 12 words (numbered for order, with a copy button) and asks you to confirm you've written them down. Until confirmed, a "Seed not backed up" badge shows.
-- **Import identity** — enter a seed phrase from another computer to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated.
+- **Import identity** — enter a seed phrase from another computer to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated. Because the owner changes, Studio asks first; the button reads **Replace owner**.
 - Previously used (migrated) owner DIDs are listed so you can see what older files were stamped with.
 - If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted.
 
@@ -49,13 +60,15 @@ This computer's runtime DID. It identifies this computer to other computers; two
 - A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
 - The **agent directory URL** (`http://<host>:<port>/agents`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
 
-### Agent Identities
+### Agent identities
 
 Per-agent DIDs and keystores are managed separately in the **Agent panel → Identity** tab; attestation publishing is toggled per agent in **Config → Security**.
 
 ## Providers
 
 Providers are the LLM services that power your agents. You need at least one configured provider before agents can think. The `providers` config section is on [`sys_update_config`](tools.md#sys_update_config)'s immutable deny list — agents can never write it, not even via approval; provider setup is always the owner's (agents can still set their own `model.provider` and `model.model_id`).
+
+An agent uses its own provider, else its template's, else the runtime default. The runtime default is the provider marked **Default** on this page (**Make default for new agents** in its dialog), or the first one. In an agent's Config, the Provider list groups the providers stored on the agent (**On this agent**) and the ones set up here but not stored on it (**Runtime**; they do not go with the file).
 
 ### Adding a Provider
 
@@ -350,7 +363,7 @@ The **Web** tab shows the status of the mesh HTTP server and all agents currentl
 
 ![Settings → Networking showing the Mesh startup card with a Disable button, the mesh server running on loopback with its port, the Allow LAN access checkbox, per-interface LAN addresses with copy links, and the Discovered runtimes list with a recheck button and the Discover peers over Tailscale option.](../assets/screenshots/settings-networking.png)
 
-The tab has, in this order: the network status line, **Mesh** (the controls below) and **Remote access**.
+The tab has, in this order: the network status line, **Mesh**, **Server** (status, **Port**, **LAN**, addresses, agent visibility), **Discovery** (runtimes found, **Tailscale**, manual **Peers**), **Agent endpoints** and **Remote access**.
 
 ### Network status
 
@@ -362,14 +375,17 @@ One line at the top of the tab: the networks, the LAN address, Tailscale, and th
 - **Host and port** — The addresses it listens on (e.g., `127.0.0.1, 192.168.1.20, port 7295`), or `127.0.0.1 only (no private network)` in LAN mode on a network not allowed
 - **Server URL** — Clickable link to the server root
 - **Agent visibility** — "N agents visible on LAN · N public · N private": agents by `messaging.visibility` (`lan`; `public`; the rest)
+- **Port** — the mesh port (`meshPort`, default 7295). Leaving the field changes nothing; **Apply** saves it and restarts a running server on it. A value outside 1–65535 is refused under the field.
+
+**Discovery** lists the runtimes found on the LAN (mDNS), on the tailnet (**Tailscale**, `tailnetDiscovery`) and from **Peers** (`meshManualPeers`). A peer is `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port; an address with `http://`, a path or a port outside 1–65535 is refused under the field.
 
 ### Mesh
 
-The **Mesh** switch turns the mesh and its server on or off now. Turning it off stops agent-to-agent messaging, agent websites and `serving.api` routes, and peer runtimes' delivery until it is on again. **Start with the runtime** decides whether the mesh starts when the runtime starts (`meshEnabled`); the switch does not change it. **Kill** in the status bar also turns the mesh off. The switch, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
+The **Mesh** switch turns the mesh and its server on or off now. Turning it off stops agent-to-agent messaging, agent websites and `serving.api` routes, and peer runtimes' delivery until it is on again. **Autostart** decides whether the mesh starts when the runtime starts (`meshEnabled`); the Mesh switch does not change it. **Kill** in the status bar also turns the mesh off. The switch, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
 
 ### LAN Access
 
-Toggle **Allow LAN access** to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It listens only on networks you allowed (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
+Turn on **LAN** (Networking → Server) to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It listens only on networks you allowed (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
 
 A server restart is required after changing this setting. The `MESH_HOST` environment variable overrides this setting.
 
@@ -401,13 +417,13 @@ The system prompt is assembled dynamically from two parts: a **base prompt** and
 
 ### Base Prompt (Global System Prompt)
 
-The base prompt applies to all agents by default, prepended before each agent's individual instructions. It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. Use the base prompt for:
+Every agent gets the base prompt and the tool instructions before its own instructions, unless its System prompt setting is No base prompt or Bare (see the table below). It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. Use the base prompt for:
 
 - Explaining the ADF paradigm to models that may not be familiar with it
 - Setting global behavioral rules
 - Providing context that all agents should have
 
-Edit the prompt text directly — changes are auto-saved with a short debounce delay. Existing customized prompts are not overwritten when the default evolves. There's a **Reset to Default** button to restore the current standard base prompt.
+Each prompt editor holds a draft: typing changes nothing until **Save**, and **Revert** puts the saved text back. Agents read the saved prompts when they start. **Reset** shows while the saved prompt differs from the default; it saves the default at once and offers **Undo**. **Reset all** does the same for every prompt on the page. **Auto-update** replaces every prompt with the new defaults whenever an update ships them; off, customized prompts are not overwritten when the default evolves.
 
 **Per-agent composition.** Each agent's Instructions section has a *System Prompt* select with three settings. Each option shows its approximate token count (measured with `{{path}}` placeholders resolved, the same figures as the status-bar context breakdown), and the label shows the size of the system prompt as currently sent:
 
@@ -423,7 +439,7 @@ A section whose text you blank in Settings is skipped entirely rather than emitt
 
 ### Tool Instructions
 
-Below the base prompt, the **Tool Instructions** section lists conditional prompt blocks that are injected based on the agent's enabled tools and features. Each section has an expandable textarea and a per-section **Reset to Default** button. A "modified" badge appears when the user has customized a section.
+Below the base prompt, the **Tool Instructions** section lists conditional prompt blocks that are injected based on the agent's enabled tools and features. Each section has an expandable editor with the same Save, Revert and Reset as the base prompt. **Modified** marks a saved section that differs from the default; **Unsaved** marks a draft.
 
 | Section | Injected When |
 |---------|---------------|
@@ -443,7 +459,7 @@ Most individual tools (fs_read, fs_list, db_query, etc.) are self-explanatory fr
 
 ## Auto-Save
 
-All settings changes are automatically saved with a debounced delay. There is no manual Save/Cancel workflow — changes take effect shortly after you stop editing. A close button dismisses the settings panel.
+See [Saving](#saving). **Back to app** closes Settings.
 
 ## Theme
 
@@ -530,7 +546,9 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Connection
 
-**Studio → Connection** lists the runtimes this window can use: This computer, each saved connection (shared with `adf`), and the computers found on this network or the tailnet that are not paired. Each row has a state (Connected, Paired, Not paired) and one action: **Connect**, or **Pair**. **Add connection** takes an address, then the code or a token. **Connect** shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend › Connection](studio-backend.md#connection).
+**Studio → Connections** is last in the Studio group. Until a runtime on another computer is saved, it is one line, **Runtimes on other computers**, with **Add**, which starts the Add connection flow below. **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
+
+Once a connection is saved, the page lists the runtimes this window can use: This computer, each saved connection (shared with `adf`), and the computers found on this network or the tailnet that are not paired. Each row has a state (Connected, Paired, Not paired) and one action: **Connect**, or **Pair**. **Add connection** takes an address, then the code or a token. **Connect** shows the switch dialog, which lists what moves, and restarts Studio. See [Studio backend › Connection](studio-backend.md#connection).
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
@@ -540,19 +558,19 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies after a restart. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as a switch to This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
-While This computer is in use, the page also shows **This computer**: the daemon (state, pid, who started it; URL and version under **Details**) and **Keep running after quit** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. With a remote connection neither shows.
+While This computer is in use, the page also shows **This computer**: the daemon (state, pid, who started it; URL and version under **Details**) and **Background** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. With a remote connection neither shows.
 
 - An address must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` address needs the confirmation that the token is sent unencrypted.
 - Tokens are in the OS keychain (shared with `adf`), sent only to their connection's address, and never shown again.
-- The status bar shows a remote connection's name, and a connection that is not connected, left of the version.
+- Once a connection is saved, the status bar shows a remote connection's name, and a connection that is not connected, right of the version; Kill's tooltip adds "on *name*". With none saved, only a problem shows, in the state's words.
 
 ### Go back to running agents inside Studio
 
-Choose **Settings → Connection → Inside Studio (legacy)**. This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+Choose **Settings → Connections → Inside Studio (legacy)** (under **Details** while no remote is saved, else in This computer's More menu). This is the persistent way back: Studio restarts, moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 
-If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connection shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connection as above.
+If Studio does not start in This computer or Remote computer mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connections shows "Agents run inside Studio because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connections as above.
 
 ```powershell
 # Windows (PowerShell)

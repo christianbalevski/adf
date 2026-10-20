@@ -114,7 +114,7 @@ function describeAnswer(url: string, res: Response, step: 'health' | 'version', 
   if (res.status >= 300 && res.status < 400) {
     void res.body?.cancel().catch(() => {})
     const location = res.headers.get('location')
-    return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Connection.`)
+    return new RemoteConnectError('redirect', `${url} answered a redirect (HTTP ${res.status}${location ? ` to ${location}` : ''}). Studio does not follow redirects, so the token stays with that address: enter the daemon's final URL in Settings → Connections.`)
   }
   if (res.status === 403 && body?.code === 'host_not_allowed') {
     const host = (() => { try { return new URL(url).hostname } catch { return url } })()
@@ -211,14 +211,14 @@ export async function remoteHandshake(url: string, token: string, opts: Handshak
 /** Why `config` cannot be used to connect, before any request; null when it can. */
 export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCodec): { error: RemoteConnectError } | { url: string; token: string } {
   const url = config.remote.url
-  if (!url) return { error: new RemoteConnectError('not_configured', 'Remote mode has no daemon URL. Enter it in Settings → Connection.') }
+  if (!url) return { error: new RemoteConnectError('not_configured', 'Remote mode has no daemon URL. Enter it in Settings → Connections.') }
   const refusal = remoteTransportRefusal(config)
   if (refusal) return { error: new RemoteConnectError('transport', refusal) }
   // Defence in depth: the file could have been edited after the boot read.
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return { error: new RemoteConnectError('transport', `The remote daemon URL is not valid: ${check.reason ?? url}`) }
   const token = readRemoteToken(config, codec)
-  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connection → Add connection (adf daemon token on the server prints it).`) }
+  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connections → Add connection (adf daemon token on the server prints it).`) }
   return { url: check.url, token }
 }
 

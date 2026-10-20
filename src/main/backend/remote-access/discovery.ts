@@ -7,7 +7,7 @@ import type { NetworkPeer } from '../../../shared/types/remote-access.types'
 import type { RemoteDiscoveryEntry, RemoteDiscoveryUpdate } from '../../../shared/types/remote-access-ipc.types'
 
 /**
- * Settings → Connection, the Not paired rows
+ * Settings → Connections, the Not paired rows
  * (docs/design/remote-access.md §5.1, §9.1; settings-scopes.md §5.1): the ADF computers with remote
  * access on, read from the one discovery feed of this computer, the same
  * feed the mesh peer list reads:

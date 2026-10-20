@@ -163,7 +163,7 @@ const LAN_CHECK_MS = 10_000
 
 /**
  * - `loopback`: 127.0.0.1 only.
- * - `lan` ("Allow LAN access", or an agent with lan visibility): 127.0.0.1
+ * - `lan` (the LAN switch, or an agent with lan visibility): 127.0.0.1
  *   plus each private and Tailscale address on a network the user allowed
  *   (lan-reach.ts), never without that consent. `getHost()` reports '0.0.0.0' as the LAN-mode marker.
  * - `all`: 0.0.0.0, for an agent with public visibility (the owner chose the internet).

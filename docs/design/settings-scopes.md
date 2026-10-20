@@ -105,13 +105,13 @@ Columns **Local** and **Remote** give editability with the local runtime and wit
 ```
 Studio
   Appearance       theme, avatars, chat width, font, scale
-  Connection       where this window's agents run
   Notifications    system notifications, menu bar icon
   Updates          check for updates, version, Check now
   Privacy          no telemetry; spell-check dictionaries (Linux)
   About
+  Connections      runtimes on other computers
   (Settings opens on Appearance.)
-Runtime · rawl-hub
+Runtime · rawl-hub         (no heading until a remote is saved)
   Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels
   Files            agents folder
   Identity         owner, runtime, agent identities
@@ -121,7 +121,8 @@ Runtime · rawl-hub
 ```
 
 - Group label: "Studio"; "Runtime · <name>". <name> is "This computer" for the local daemon, "Inside Studio" for the legacy mode, the saved remote's name for a remote (the `adf remotes` name, e.g. `rawl-hub`), else the URL's host.
-- While the runtime is not connected, the label adds the state: "Runtime · rawl-hub · Not connected". Runtime pages show one line, "Not connected to rawl-hub.", and their controls are disabled.
+- Remote runtimes are an opt-in. Until one is saved (a `saved` row, or a remote in use; `remoteConnectionsSaved`), the runtime group has no heading and no runtime name shows anywhere in Settings or the status bar.
+- While the runtime is not connected, the label adds the state: "Runtime · rawl-hub · Not connected". Runtime pages show one line, "Not connected to rawl-hub.", and their controls are disabled. With no remote saved the line is the state alone, e.g. "Not connected, retrying."
 - Search covers both groups. Results show the group label.
 - Page ids: `connection` (old `backend` still opens it), `appearance` (old `general` opens it), `notifications`, `updates`, `privacy`, `files`, `usage` (old `general#usage` opens it). The other ids stay.
 - Each page keeps at most one short sentence under its title. Longer text goes to `docs/guides/settings.md`.
@@ -133,19 +134,23 @@ The status bar (`StatusBar.tsx`) groups the runtime with its mesh and Kill, righ
 | Runtime | Connection | Shows |
 |---|---|---|
 | This computer, Inside Studio | Connected | Nothing |
-| This computer | Connecting / Not connected, retrying / Not connected | "This computer · Not connected, retrying" |
+| This computer, no remote saved | Connecting / Not connected, retrying / Not connected | "Not connected, retrying" |
+| This computer, a remote saved | Connecting / Not connected, retrying / Not connected | "This computer · Not connected, retrying" |
 | Remote | Connected | Remote icon, "rawl-hub" |
 | Remote | Connecting / Not connected, retrying / Not connected | Remote icon, "rawl-hub · Not connected, retrying" |
 
 - Local shows nothing while connected: it is the default, and the status bar stays as it is for most users. A problem always shows.
+- Kill's tooltip is "Stops all agents and mesh", and adds "on <name>" only once a remote is saved.
 - State words are those of the connection state (`CONNECTION_LABELS`, `BackendSettings.tsx`), so the indicator, the Help menu status line and the Connection page agree.
 - Tooltip: the address, e.g. `https://rawl-hub.tail1234.ts.net:7385`. Nothing else.
-- Click: opens Settings → Connection.
+- Click: opens Settings → Connections.
 - Source: `CONNECTION_LIST`'s `current` and push `CONNECTION_CHANGED` (§5.4), answered for the sender window.
 
-## 5. Connection page (c)
+## 5. Connections page (c)
 
-Title "Connection". Help: "The runtime this window uses."
+Title "Connections". Help: "Runtimes on other computers." Last in the Studio group.
+
+With no remote saved and This computer in use, the page is one row, **Runtimes on other computers**, with **Add** (the Add connection flow, §5.3), and **Details** (a disclosure, closed) holding the daemon line, **Background**, and **Inside Studio (legacy)** with Connect. The network search does not run. Notices (§5.1) still show above it. Everything below applies once a remote is saved.
 
 ### 5.1 Rows
 
@@ -163,7 +168,7 @@ Title "Connection". Help: "The runtime this window uses."
 - Rows that share a fingerprint and do not merge (§8) stay separate Not paired rows, one per address, with no warning. If that fingerprint is saved, only the saved row is shown.
 - Remove is in the row's More menu (⋯), for every saved remote. On the one in use (or saved as the next one) it switches to This computer first. Inside Studio (legacy) is also in This computer's More menu while it is not shown as a row.
 - Below the list: one button, **Add connection**.
-- When This computer is in use, two rows follow the list: the daemon line (pid, started by) with Details, as `daemonLine` today; and **Keep running after quit**, "Agents on this computer keep running after you quit Studio." Neither is shown when a remote is in use.
+- When This computer is in use, two rows follow the list: the daemon line (pid, started by) with Details, as `daemonLine` today; and **Background**, "Agents on this computer keep running after you quit Studio." Neither is shown when a remote is in use.
 - Notices (switch waiting, Default changed, `ADF_STUDIO_BACKEND`, session-only launch) stay as one status band at the top.
 - Removed: the Mode control and its two descriptions (the duplicated mode text), Daemon URL, Token, Test connection, Save, Use this daemon, Switch to This Daemon, and the Remote access summary (it is on Networking).
 

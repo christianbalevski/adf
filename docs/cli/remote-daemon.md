@@ -228,7 +228,7 @@ http needs the confirmation; use `serve` instead.
 
 ## ADF Studio
 
-Settings → Connection → Add connection takes the same URL and token (or
+Settings → Connections → Add connection takes the same URL and token (or
 pairs with a code). Studio checks the address, the token and the client API
 version before it saves the connection; **Connect** shows what moves (client
 settings only) and restarts Studio connected to it. A computer paired with

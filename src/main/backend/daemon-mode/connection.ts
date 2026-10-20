@@ -17,7 +17,7 @@ export interface DaemonEndpoint {
   description: string
   /** Local mode: the daemon's GET /version at attach (pid, version, who started it, local proof). */
   daemon?: DaemonVersionInfo
-  /** Local mode: how Studio got it (Settings → Connection shows it). */
+  /** Local mode: how Studio got it (Settings → Connections shows it). */
   how?: 'attached' | 'spawned'
 }
 

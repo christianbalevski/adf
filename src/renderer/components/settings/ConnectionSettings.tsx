@@ -1,6 +1,7 @@
 /**
- * Settings → Studio → Connection (docs/design/settings-scopes.md §5): the
- * runtimes this window can use. One list: This computer, Inside Studio
+ * Settings → Studio → Connections (docs/design/settings-scopes.md §5): the
+ * runtimes this window can use. With no runtime on another computer saved it
+ * is one line, "Runtimes on other computers", with Add (SimpleConnections). One list: This computer, Inside Studio
  * (legacy) while it runs or is saved, the saved connections (shared with
  * `adf`: cli-remotes.json and the OS keychain), and the computers found on
  * the network that are not paired. Each row has a state and at most one
@@ -13,7 +14,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Button, IconButton, SettingsGroup, SettingsRow, TextInput } from '../ui'
+import { Button, IconButton, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
+import { useSettingsSave } from './settings-save'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -22,7 +24,7 @@ import { CONNECTION_STATE_LABELS, type ConnectionResult, type ConnectionRow, typ
 import type { BackendDaemonStatus, BackendSettingsPatch, BackendSettingsView, StudioBackendMode } from '../../../shared/types/backend.types'
 import type { RemotePairErrorCode, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { PairDialog, pairMessage, type PairTarget } from './RemoteAccessSettings'
-import { startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
+import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
 
 /** The modes as users see them in the switch rows. Inside Studio is the legacy backend, kept for this release only. */
 const MODE_LABELS: Record<StudioBackendMode, string> = {
@@ -186,7 +188,7 @@ export function ConnectionRows({ rows, busy, onConnect, onPair, onRemove }: {
                   </span>
                 )}
                 {(row.kind === 'saved' || row.kind === 'found') && !row.encrypted && (
-                  <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text)]">Not encrypted</span>
+                  <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-text)]">Not encrypted</span>
                 )}
               </div>
               {detail && <div className="break-all text-[var(--adf-ui-text-muted)]">{detail}</div>}
@@ -342,6 +344,36 @@ export function AddConnectionDialog({ onClose, onConnect }: { onClose: () => voi
   )
 }
 
+/**
+ * Connections with no runtime on another computer saved: one line and Add
+ * (the existing pairing flow). This computer's daemon, Background and Inside
+ * Studio (legacy) stay one click away under Details.
+ */
+export function SimpleConnections({ busy, message, onAdd, onLegacy, details, extra }: {
+  busy: boolean
+  message: { kind: 'ok' | 'error'; text: string } | null
+  onAdd: () => void
+  onLegacy: () => void
+  details: React.ReactNode
+  extra?: React.ReactNode
+}) {
+  return (
+    <SettingsGroup>
+      <SettingsRow label="Runtimes on other computers" error={message?.kind === 'error' ? message.text : undefined} help={message?.kind === 'ok' ? message.text : undefined}>
+        <Button disabled={busy} onClick={onAdd}>Add</Button>
+      </SettingsRow>
+      {extra}
+      <details className="border-t border-[var(--adf-ui-separator)]">
+        <summary className="cursor-pointer select-none px-4 py-2.5 text-[12px] text-[var(--adf-ui-text-muted)]">Details</summary>
+        {details}
+        <SettingsRow separator label="Inside Studio (legacy)" description="Agents run inside Studio; removed in the next release.">
+          <Button size="compact" disabled={busy} onClick={onLegacy}>Connect</Button>
+        </SettingsRow>
+      </details>
+    </SettingsGroup>
+  )
+}
+
 export function ConnectionSettings() {
   const view = useConnectionStore((s) => s.view)
   const [backend, setBackend] = useState<BackendSettingsView | null>(null)
@@ -350,6 +382,7 @@ export function ConnectionSettings() {
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [pairWith, setPairWith] = useState<PairTarget | null>(null)
   const [adding, setAdding] = useState(false)
+  const { track } = useSettingsSave()
 
   useEffect(() => {
     startConnectionFeed()
@@ -357,10 +390,18 @@ export function ConnectionSettings() {
     window.adfApi?.getBackendSettings()
       .then((next) => { if (!cancelled) setBackend(next) })
       .catch(() => { if (!cancelled) setLoadError('Could not read the connection settings.') })
-    // The Not paired rows: this computer's network search, while the page is open.
-    void window.adfApi?.startRemoteDiscovery?.().catch(() => {})
-    return () => { cancelled = true; void window.adfApi?.stopRemoteDiscovery?.().catch(() => {}) }
+    return () => { cancelled = true }
   }, [])
+
+  // No remote saved: the page is one line with Add, and nothing searches the network.
+  const simple = !!view && view.current.kind === 'local' && !remoteConnectionsSaved(view)
+  // The Not paired rows: this computer's network search, while the full list is open.
+  const listing = !!view && !simple
+  useEffect(() => {
+    if (!listing) return
+    void window.adfApi?.startRemoteDiscovery?.().catch(() => {})
+    return () => { void window.adfApi?.stopRemoteDiscovery?.().catch(() => {}) }
+  }, [listing])
 
   // While the daemon connects or a switch waits for turns in flight, follow it.
   const daemonState = backend?.daemon?.connection
@@ -410,6 +451,19 @@ export function ConnectionSettings() {
     }
   }
 
+  /** The one setting on this page: written at once, "Saved" in the header, put back on a refusal. */
+  const saveKeepRunning = (next: boolean) => {
+    if (!backend) return
+    const prev = backend
+    setBackend({ ...backend, configured: { ...backend.configured, keepDaemonRunning: next } })
+    void track(window.adfApi.setBackendSettings({ keepDaemonRunning: next }).then((result) => {
+      if (!result.ok) return { ok: false as const, error: result.error }
+      setBackend(result.view)
+      if (result.notices.length > 0) setMessage({ kind: 'ok', text: result.notices.join(' ') })
+      return { ok: true as const }
+    }), () => setBackend(prev))
+  }
+
   if (!view || !backend) {
     return (
       <SettingsGroup title="Connections">
@@ -422,22 +476,102 @@ export function ConnectionSettings() {
   const override = overrideLine(backend)
   const restartLine = pendingRestartLine(backend, view.next)
 
+  /** A switch waiting for turns in flight, and the launch that moved off Inside Studio. */
+  const switchRows = <>
+    {backend.pendingSwitch && (
+      <SettingsRow
+        separator
+        label={`Switching to ${MODE_LABELS[backend.pendingSwitch.target]}`}
+        description={<>
+          {backend.pendingSwitch.gaveUp
+            ? `Still waiting after 30 minutes for ${backend.pendingSwitch.waitingFor.join(', ') || 'a turn'}; Finish switch now stops the turns.`
+            : `Studio restarts once the turns in flight finish (${backend.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
+          <LearnMore href={DOCS.backendTurns} />
+        </>}
+      >
+        <div className="flex items-center gap-2">
+          <Button variant="primary" disabled={busy} onClick={() => void saveBackend({ switchAction: 'finish-now' }, '')}>Finish switch now</Button>
+          <Button disabled={busy} onClick={() => void saveBackend({ switchAction: 'cancel' }, '')}>Cancel switch</Button>
+        </div>
+      </SettingsRow>
+    )}
+    {backend.defaultSwitch && (
+      <SettingsRow
+        separator
+        label="Default changed"
+        description={<>{defaultSwitchLine(backend.defaultSwitch)}<LearnMore href={DOCS.backendUpgrade} /></>}
+        help={<>
+          {defaultSwitchDetails(backend.defaultSwitch).notDone}
+          <Details lines={[defaultSwitchDetails(backend.defaultSwitch).moved]} />
+        </>}
+      />
+    )}
+  </>
+
+  /** This computer's daemon and Background: only while it is the runtime in use (settings-scopes.md §7). */
+  const thisComputerRows = <>
+    {backend.daemon && (
+      <SettingsRow
+        label="Daemon"
+        description={<>{daemonLine(backend.daemon)}<LearnMore href={DOCS.backendStatus} /></>}
+        help={backend.daemon.message || daemonDetails(backend.daemon).length > 0 ? <>
+          {backend.daemon.message}
+          <Details lines={daemonDetails(backend.daemon)} />
+        </> : undefined}
+        error={[
+          backend.daemon.localProof && !backend.daemon.localProof.available
+            ? 'Reveal and identity import are refused. Fix the permissions of the daemon\'s data folder, then restart the daemon.'
+            : null,
+          backend.daemon.keychainProblem,
+        ].filter(Boolean).join(' ') || undefined}
+      />
+    )}
+    <SettingsRow
+      separator={!!backend.daemon}
+      label="Background"
+      description={<>Agents on this computer keep running after you quit Studio.<LearnMore href={DOCS.backendQuit} /></>}
+    >
+      <Switch label="Background" checked={backend.configured.keepDaemonRunning} disabled={busy} onChange={saveKeepRunning} />
+    </SettingsRow>
+  </>
+
+  const notices = <>
+    {(backend.active.notices.length > 0 || override) && (
+      <div role="status" className="mb-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+        {override && <p>{override}</p>}
+        {backend.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
+      </div>
+    )}
+    {restartLine && (
+      <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+        <span>{restartLine}</span>
+        <Button variant="primary" size="compact" onClick={() => void window.adfApi.restartStudio()}>Restart now</Button>
+      </div>
+    )}
+  </>
+
+  if (simple) {
+    return (
+      <>
+        {notices}
+        <SimpleConnections
+          busy={busy}
+          message={message}
+          onAdd={() => setAdding(true)}
+          onLegacy={() => connect('embedded')}
+          details={thisComputerRows}
+          extra={switchRows}
+        />
+        {adding && <AddConnectionDialog onClose={() => setAdding(false)} onConnect={connect} />}
+      </>
+    )
+  }
+
   return (
     <>
-      {(backend.active.notices.length > 0 || override) && (
-        <div role="status" className="mb-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-          {override && <p>{override}</p>}
-          {backend.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
-        </div>
-      )}
-      {restartLine && (
-        <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-          <span>{restartLine}</span>
-          <Button variant="primary" size="compact" onClick={() => void window.adfApi.restartStudio()}>Restart now</Button>
-        </div>
-      )}
+      {notices}
 
-      <SettingsGroup title="Connections" docs={DOCS.backendConnection}>
+      <SettingsGroup title="Runtimes" docs={DOCS.backendConnection}>
         <ConnectionRows rows={view.rows} busy={busy} onConnect={connect} onPair={(row) => row.url && row.fingerprint && setPairWith({ name: row.name, url: row.url, address: row.address ?? row.url, fingerprint: row.fingerprint, encrypted: row.encrypted })} onRemove={remove} />
         {view.discovery?.problem && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{view.discovery.problem}</p>}
         {emptyDiscoveryLine(view) && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{emptyDiscoveryLine(view)}</p>}
@@ -445,74 +579,10 @@ export function ConnectionSettings() {
           <MessageLine message={message} />
           <Button disabled={busy} onClick={() => setAdding(true)}>Add connection</Button>
         </div>
-        {backend.pendingSwitch && (
-          <SettingsRow
-            separator
-            label={`Switching to ${MODE_LABELS[backend.pendingSwitch.target]}`}
-            description={<>
-              {backend.pendingSwitch.gaveUp
-                ? `Still waiting after 30 minutes for ${backend.pendingSwitch.waitingFor.join(', ') || 'a turn'}; Finish Switch Now stops the turns.`
-                : `Studio restarts once the turns in flight finish (${backend.pendingSwitch.waitingFor.join(', ') || 'none left'}).`}
-              <LearnMore href={DOCS.backendTurns} />
-            </>}
-          >
-            <div className="flex items-center gap-2">
-              <Button variant="primary" disabled={busy} onClick={() => void saveBackend({ switchAction: 'finish-now' }, '')}>Finish Switch Now</Button>
-              <Button disabled={busy} onClick={() => void saveBackend({ switchAction: 'cancel' }, '')}>Cancel Switch</Button>
-            </div>
-          </SettingsRow>
-        )}
-        {backend.defaultSwitch && (
-          <SettingsRow
-            separator
-            label="Default changed"
-            description={<>{defaultSwitchLine(backend.defaultSwitch)}<LearnMore href={DOCS.backendUpgrade} /></>}
-            help={<>
-              {defaultSwitchDetails(backend.defaultSwitch).notDone}
-              <Details lines={[defaultSwitchDetails(backend.defaultSwitch).moved]} />
-            </>}
-          />
-        )}
+        {switchRows}
       </SettingsGroup>
 
-      {/* This computer's daemon: only while it is the runtime in use (settings-scopes.md §7). */}
-      {local && (
-        <SettingsGroup title="This computer">
-          {backend.daemon && (
-            <SettingsRow
-              label="ADF daemon"
-              description={<>{daemonLine(backend.daemon)}<LearnMore href={DOCS.backendStatus} /></>}
-              help={backend.daemon.message || daemonDetails(backend.daemon).length > 0 ? <>
-                {backend.daemon.message}
-                <Details lines={daemonDetails(backend.daemon)} />
-              </> : undefined}
-              error={[
-                backend.daemon.localProof && !backend.daemon.localProof.available
-                  ? 'Reveal and identity import are refused. Fix the permissions of the daemon\'s data folder, then restart the daemon.'
-                  : null,
-                backend.daemon.keychainProblem,
-              ].filter(Boolean).join(' ') || undefined}
-            />
-          )}
-          <SettingsRow
-            separator={!!backend.daemon}
-            label="Keep running after quit"
-            description={<>Agents on this computer keep running after you quit Studio.<LearnMore href={DOCS.backendQuit} /></>}
-          >
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={backend.configured.keepDaemonRunning}
-                disabled={busy}
-                onChange={(event) => void saveBackend({ keepDaemonRunning: event.target.checked }, 'Saved.')}
-                className="rounded text-blue-500"
-                aria-label="Keep running after quit"
-              />
-              <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{backend.configured.keepDaemonRunning ? 'On' : 'Off'}</span>
-            </label>
-          </SettingsRow>
-        </SettingsGroup>
-      )}
+      {local && <SettingsGroup title="This computer">{thisComputerRows}</SettingsGroup>}
 
       {pairWith && <PairDialog entry={pairWith} onClose={() => setPairWith(null)} onConnect={(id) => { setPairWith(null); connect(id) }} />}
       {adding && <AddConnectionDialog onClose={() => setAdding(false)} onConnect={connect} />}

@@ -25,7 +25,7 @@ export const safeStorageCodec: SecretCodec = {
 }
 
 /**
- * Settings → Connection channels. `local` class (design D2): registered in every
+ * Settings → Connections channels. `local` class (design D2): registered in every
  * mode, outside `registerAllIpcHandlers`, so both backends share them.
  * The patch may carry a new token; it is never logged and never returned.
  */
@@ -51,15 +51,15 @@ export function registerBackendSettingsHandlers(boot: BootBackend, hooks: {
   ipcMain.handle(IPC.BACKEND_RESTART_STUDIO, (_event, kind?: unknown) => {
     if (kind === 'reconnect') relaunchStudio('Reconnect after a failed connection to the ADF daemon (unsaved editor text kept as recovery copies)')
     else if (kind === 'embedded-session' && boot.mode === 'local') relaunchEmbeddedForSession('no usable ADF daemon (unsaved editor text kept as recovery copies)')
-    else relaunchStudio('Restart Studio in Settings → Connection, so the saved backend applies')
+    else relaunchStudio('Restart Studio in Settings → Connections, so the saved backend applies')
   })
   // The daemon-side picker exists in daemon mode only (daemon-mode/remote/,
   // registered with the other daemon-mode channels). Embedded Studio never
   // asks for a pick; a stray call gets an answer, not "no handler".
   if (boot.mode === 'embedded') {
     ipcMain.handle(IPC.REMOTE_PICKER_RESPOND, () => false)
-    ipcMain.handle(IPC.REMOTE_FS_BROWSE, () => ({ error: 'Browsing a daemon\'s folders needs Studio in daemon mode (Settings → Connection).', code: 'not_daemon_mode' }))
-    ipcMain.handle(IPC.REMOTE_FS_MKDIR, () => ({ error: 'Creating a folder on a daemon\'s host needs Studio in daemon mode (Settings → Connection).', code: 'not_daemon_mode' }))
+    ipcMain.handle(IPC.REMOTE_FS_BROWSE, () => ({ error: 'Browsing a daemon\'s folders needs Studio in daemon mode (Settings → Connections).', code: 'not_daemon_mode' }))
+    ipcMain.handle(IPC.REMOTE_FS_MKDIR, () => ({ error: 'Creating a folder on a daemon\'s host needs Studio in daemon mode (Settings → Connections).', code: 'not_daemon_mode' }))
   }
   return store
 }

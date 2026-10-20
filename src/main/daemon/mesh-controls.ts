@@ -8,8 +8,8 @@
 // Mesh enable/disable persist meshEnabled and server start/stop persist
 // meshServerEnabled by default (the CLI's choice survives a restart);
 // `persist: false` is Studio's Mesh switch (MESH_ENABLE/DISABLE,
-// MESH_SERVER_START/STOP), which changes the live state only: Studio's "Start
-// with the runtime" checkbox writes meshEnabled itself.
+// MESH_SERVER_START/STOP), which changes the live state only: Studio's Autostart
+// switch writes meshEnabled itself.
 
 export interface MeshControlDeps {
   settings: { set(key: string, value: unknown): void }

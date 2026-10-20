@@ -5694,7 +5694,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   }
 
-  // The Mesh switch changes the live state only; "Start with the runtime"
+  // The Mesh switch changes the live state only; "Autostart"
   // (Settings → Networking) writes meshEnabled (daemon parity: persist=0).
   ipcMain.handle(IPC.MESH_ENABLE, async () => {
     return enableMeshInMain()

@@ -11,7 +11,10 @@ import { useAppStore } from '../../stores/app.store'
 import { AgentConfig } from '../agent/AgentConfig'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { Dialog } from '../common/Dialog'
+import { useConfirm } from '../common/ConfirmDialog'
+import { InfoHint } from '../common/DocsLink'
 import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
+import { useSettingsSave } from './settings-save'
 
 /**
  * Settings > Agent templates.
@@ -26,6 +29,9 @@ import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Text
 
 /** Shown first, in this order, whatever the folder listing says. */
 const SHIPPED_ORDER: ShippedTemplateId[] = ['standard', 'sandboxed', 'full-access']
+
+/** Which provider a new agent gets, in order. */
+export const PROVIDER_PRECEDENCE = 'An agent uses its own provider, else its template\'s, else the runtime default.'
 
 /** The rule instantiate follows, printed for the user verbatim. */
 const INSTANTIATE_RULE = 'New agents get everything in a template except its identity and history.'
@@ -73,7 +79,7 @@ function Tag({ tone = 'neutral', children }: { tone?: 'neutral' | 'accent' | 'wa
     warning: 'border-[var(--adf-ui-warning)]/40 bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]',
   } as const
   return (
-    <span className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[10px] font-medium ${tones[tone]}`}>
+    <span className={`inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[11px] font-medium ${tones[tone]}`}>
       {children}
     </span>
   )
@@ -99,12 +105,12 @@ function TemplateGlyph({ name, icon }: { name: string; icon?: string }) {
 
 interface AgentTemplatesTabProps {
   providers: ProviderConfig[]
-  /** settings.defaultProviderId — persisted by SettingsPage's auto-save. */
+  /** settings.defaultProviderId: the runtime default, set in Settings → Providers. */
   defaultProviderId: string | undefined
-  onDefaultProviderChange: (id: string | undefined) => void
+  onOpenProviders: () => void
 }
 
-export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProviderChange }: AgentTemplatesTabProps) {
+export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProviders }: AgentTemplatesTabProps) {
   const { templates, folder, defaultId, migrated, loaded } = useTemplates()
   const sorted = useMemo(() => sortTemplates(templates), [templates])
 
@@ -128,6 +134,12 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
 
   // settings.childTemplateId ('' = none) — written immediately, not debounced.
   const [childTemplateId, setChildTemplateId] = useState('')
+  const { commit, track } = useSettingsSave()
+  /** A template write's outcome, reported like every Settings write: "Saved" in the header, or a "Not saved" notice. */
+  const report = useCallback((error: string | null) => {
+    void track(Promise.resolve(error ? { ok: false as const, error } : { ok: true as const }))
+  }, [track])
+  const [confirmDialog, confirm] = useConfirm()
   useEffect(() => {
     let cancelled = false
     void window.adfApi.getSettings().then((settings) => {
@@ -136,8 +148,9 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
     return () => { cancelled = true }
   }, [])
   const pickChildTemplate = (id: string) => {
+    const prev = childTemplateId
     setChildTemplateId(id)
-    void window.adfApi.setSettings({ childTemplateId: id })
+    void commit({ childTemplateId: id }, () => setChildTemplateId(prev))
   }
 
   // --- debounced writes -----------------------------------------------------
@@ -203,11 +216,14 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
       const res = await op()
       if (!res?.success) {
         setWriteError(res?.error || 'The template could not be saved.')
+        report(res?.error || 'The template could not be saved.')
         return
       }
       setWriteError(null)
+      report(null)
     } catch (err) {
       setWriteError(err instanceof Error ? err.message : 'The template could not be saved.')
+      report(err instanceof Error ? err.message : 'The template could not be saved.')
       return
     } finally {
       inFlight.current--
@@ -219,7 +235,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
       dirty.current = false
       await refreshContents(id)
     }
-  }, [refreshContents, settle])
+  }, [refreshContents, settle, report])
 
   // --- selection ------------------------------------------------------------
   const select = useCallback((id: string | null) => {
@@ -290,9 +306,13 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
         inFlight.current++
         try {
           const res = await window.adfApi.setTemplateMeta({ id, description: next.description, warning: next.warning })
-          setMetaError(res?.success ? null : res?.error || 'The notes could not be saved.')
+          const error = res?.success ? null : res?.error || 'The notes could not be saved.'
+          setMetaError(error)
+          report(error)
         } catch (err) {
-          setMetaError(err instanceof Error ? err.message : 'The notes could not be saved.')
+          const error = err instanceof Error ? err.message : 'The notes could not be saved.'
+          setMetaError(error)
+          report(error)
         } finally {
           inFlight.current--
           settle()
@@ -325,7 +345,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
   }
 
   const removeFile = async (id: string, path: string) => {
-    if (!window.confirm(`Remove ${path} from this template?`)) return
+    if (!await confirm({ title: 'Remove file', body: `${path} is removed from this template. New agents no longer get it.`, confirmLabel: 'Remove', danger: true })) return
     await runWrite(id, () => window.adfApi.removeTemplateFile({ id, path }))
     await refreshContents(id)
   }
@@ -462,8 +482,8 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
         label: 'Reset to shipped',
         separatorBefore: true,
         onSelect: () => {
-          if (!window.confirm(`Reset "${t.name}" to the version Studio ships? Your changes to it are lost.`)) return
-          void act(() => window.adfApi.resetShippedTemplate(shipped))
+          void confirm({ title: 'Reset template', body: `"${t.name}" goes back to the version Studio ships. Your changes to it are lost.`, confirmLabel: 'Reset', danger: true })
+            .then((yes) => { if (yes) void act(() => window.adfApi.resetShippedTemplate(shipped)) })
         },
       })
     }
@@ -472,8 +492,8 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
       danger: true,
       separatorBefore: !t.shipped,
       onSelect: () => {
-        if (!window.confirm(`Delete "${t.name}"? The file goes to the trash.`)) return
-        void act(() => window.adfApi.deleteTemplate(t.id))
+        void confirm({ title: 'Delete template', body: `"${t.name}" goes to the trash.`, confirmLabel: 'Delete', danger: true })
+          .then((yes) => { if (yes) void act(() => window.adfApi.deleteTemplate(t.id)) })
       },
     })
     return items
@@ -506,6 +526,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
 
   const dialogs = (
     <>
+      {confirmDialog}
       <ContextMenu
         position={menu ? { x: menu.x, y: menu.y } : null}
         items={menu ? menuItems(menu.template) : []}
@@ -596,7 +617,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
               role={saveError ? 'alert' : 'status'}
               title={saveError ?? 'Edits save to the template file as you type.'}
             >
-              {saveError ? `Not saved: ${saveError}` : saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved' : 'Edits save as you type'}
+              {saveError ? `Not saved: ${saveError}` : saveState === 'saving' ? 'Saving…' : 'Edits save as you type'}
             </span>
             {!selected.reviewed && (
               <Button onClick={() => void reviewTemplate(selected)} size="compact" className="shrink-0">
@@ -843,22 +864,16 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onDefaultProvi
         </SettingsRow>
       </SettingsGroup>
 
-      <SettingsGroup title="Default provider" description="Used when the template leaves Provider unset. Its default model fills Model ID.">
-        <SettingsRow label="Default provider">
-          {providers.length === 0 ? (
-            <span className="text-[12px] text-[var(--adf-ui-text-subtle)]">No providers configured.</span>
-          ) : (
-            <Select
-              aria-label="Default provider"
-              className="w-64"
-              value={defaultProviderId ?? ''}
-              onChange={(e) => onDefaultProviderChange(e.target.value || undefined)}
-            >
-              {providers.map((p) => (
-                <option key={p.id} value={p.id}>{p.name || p.type}</option>
-              ))}
-            </Select>
-          )}
+      <SettingsGroup title="Provider" description={PROVIDER_PRECEDENCE}>
+        <SettingsRow
+          label={<>Runtime default<InfoHint tip="A template whose Provider is Runtime default gives new agents this provider, with its default model as Model ID. Set it with Make default in Settings → Providers." /></>}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-[var(--adf-ui-text-muted)]">
+              {providers.length === 0 ? 'None set up' : (providers.find((p) => p.id === defaultProviderId) ?? providers[0]).name || 'Unnamed'}
+            </span>
+            <Button onClick={onOpenProviders} size="compact">Providers</Button>
+          </div>
         </SettingsRow>
       </SettingsGroup>
 

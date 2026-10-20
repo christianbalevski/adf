@@ -11,7 +11,7 @@ import { remoteHandshake } from './daemon-mode/remote/connector'
 import { PairingClient } from './remote-access/client'
 
 /**
- * Settings → Connection in Studio main (docs/design/settings-scopes.md §5):
+ * Settings → Connections in Studio main (docs/design/settings-scopes.md §5):
  * the list, Connect, Add connection with a token, Remove. Pairing with a
  * code is REMOTE_PAIR_* (remote-access-ipc.ts). Every answer is for the
  * window that asked (#149: the connection becomes per window); today one
@@ -226,7 +226,7 @@ export function pushConnections(view: ConnectionsView): void {
   }
 }
 
-/** The `local`-class channels of Settings → Connection (channel-map.ts). */
+/** The `local`-class channels of Settings → Connections (channel-map.ts). */
 export function registerConnectionHandlers(connections: Connections): void {
   ipcMain.handle(IPC.CONNECTION_LIST, () => connections.view())
   ipcMain.handle(IPC.CONNECTION_USE, (_event, id: unknown) => connections.use(id))

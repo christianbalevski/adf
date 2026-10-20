@@ -9,7 +9,7 @@ import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
 import type { ConnectionCurrent } from '../../../shared/types/connection.types'
-import { runtimeIndicator, useCurrentConnection } from '../../stores/connection.store'
+import { runtimeIndicator, useCurrentConnection, useRemoteConnectionsSaved } from '../../stores/connection.store'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -25,9 +25,9 @@ export function killResultLabel(result: { success: boolean; stoppedAgents?: numb
   return `${agents} · Mesh off`
 }
 
-/** Kill's tooltip names the runtime it acts on: the name the runtime indicator shows. */
-export function killTooltip(current: ConnectionCurrent | null): string {
-  return `Stops all agents and mesh on ${current?.name ?? 'This computer'}`
+/** Kill's tooltip; it names the runtime it acts on only once a remote connection is saved. */
+export function killTooltip(current: ConnectionCurrent | null, remoteSaved: boolean): string {
+  return remoteSaved ? `Stops all agents and mesh on ${current?.name ?? 'This computer'}` : 'Stops all agents and mesh'
 }
 
 function MeshIcon() {
@@ -77,6 +77,8 @@ export function StatusBar() {
   const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
   // This window's connection (settings-scopes.md §4.1); main answers per window (#149).
   const connection = useCurrentConnection()
+  // No remote saved: plain ADF Studio, so the group shows no runtime name (Mesh and Kill stay).
+  const remoteSaved = useRemoteConnectionsSaved()
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)
   const toggleLogsPanel = useAppStore((s) => s.toggleLogsPanel)
   const bottomPanelTab = useAppStore((s) => s.bottomPanelTab)
@@ -203,7 +205,7 @@ export function StatusBar() {
       </span>
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
       <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
-      <RuntimeIndicator current={connection} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
+      <RuntimeIndicator current={connection} showName={remoteSaved} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
       <Tooltip tip={meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off'} className="flex">
       <button
@@ -225,11 +227,11 @@ export function StatusBar() {
           {killResult}
         </span>
       )}
-      <Tooltip tip={isAnythingRunning ? killTooltip(connection) : 'Nothing running'} className="flex">
+      <Tooltip tip={isAnythingRunning ? killTooltip(connection, remoteSaved) : 'Nothing running'} className="flex">
       <button
         onClick={isAnythingRunning ? handleEmergencyStop : undefined}
         disabled={!isAnythingRunning}
-        aria-label={isAnythingRunning ? killTooltip(connection) : 'Kill: nothing running'}
+        aria-label={isAnythingRunning ? killTooltip(connection, remoteSaved) : 'Kill: nothing running'}
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
@@ -262,16 +264,16 @@ function RemoteIcon() {
  * runtime group right of the version, before its mesh and Kill. Nothing for
  * This computer while it is connected; a remote's name with the remote icon;
  * the state while not connected. The tooltip is the address. A click opens
- * Settings → Connection.
+ * Settings → Connections.
  */
-export function RuntimeIndicator({ current, onOpen }: { current: ConnectionCurrent | null; onOpen: () => void }) {
-  const shown = runtimeIndicator(current)
+export function RuntimeIndicator({ current, showName = true, onOpen }: { current: ConnectionCurrent | null; showName?: boolean; onOpen: () => void }) {
+  const shown = runtimeIndicator(current, showName)
   if (!shown) return null
   return (
     <button
       onClick={onOpen}
       title={shown.tooltip ?? undefined}
-      aria-label={`Runtime: ${shown.text}`}
+      aria-label={showName ? `Runtime: ${shown.text}` : shown.text}
       className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${shown.problem ? 'text-[var(--adf-ui-danger)]' : ''}`}
     >
       {shown.remote && <RemoteIcon />}

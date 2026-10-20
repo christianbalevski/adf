@@ -11790,7 +11790,7 @@ Operation `enableMesh` · bearer token
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its "Start with the runtime" checkbox writes meshEnabled). Default `1`. |
+| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its Autostart switch writes meshEnabled). Default `1`. |
 
 **Responses**
 
@@ -11838,7 +11838,7 @@ Operation `disableMesh` · bearer token
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its "Start with the runtime" checkbox writes meshEnabled). Default `1`. |
+| `persist` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | `0` or `false`: change the live mesh only and leave meshEnabled as it is (Studio's Mesh switch; its Autostart switch writes meshEnabled). Default `1`. |
 
 **Responses**
 

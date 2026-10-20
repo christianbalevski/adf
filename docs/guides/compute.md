@@ -51,7 +51,7 @@ A user-owned, already-running container registered in Settings > Compute. ADF ma
 
 ### Host Machine
 
-Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Enable host access** in Settings > Compute (the Settings side is owner-only — not agent-writable; ask your principal).
+Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Host access** in Settings > Compute > Advanced (the Settings side is owner-only — not agent-writable; ask your principal).
 
 - **Scope:** Full host access with the user's OS privileges
 - **Workspace:** `~/.adf-studio/workspaces/{agentId}/` (default working directory for `compute_exec`)
@@ -132,20 +132,13 @@ If the selected or default target is unavailable, the tool fails closed. It neve
 
 ## MCP Server Execution Location
 
-Each MCP server can be individually assigned to run in a specific environment. In the agent config UI under **Compute > MCP Server Execution**, click the location badge to cycle through available options:
+Each MCP server can be individually assigned to run in a specific environment. In the agent config UI under **Compute > MCP servers run on**, each server shows where it runs. Click the location to change this agent's choice: Isolated (when the agent has an isolated container), Shared, Host, in turn. The click changes only the agent's config; it never changes the runtime's settings.
 
-| Config State | Available Locations |
-|---|---|
-| No isolation, no host access | Shared only |
-| Isolated enabled | Isolated (default), Shared |
-| Host access enabled | Shared (default), Host |
-| Both enabled | Isolated (default), Shared, Host |
+The location shown is the effective one: the agent's choice AND the runtime's approval. A server set to Host runs on the host only when **Host access** is on in Settings > Compute > Advanced, and the agent has `compute.host_access` or the server is in **Approved servers** for its package. Otherwise it shows (and runs in) its container, with **Allow** beside it. Allow names what is missing in its tooltip, asks first (**Allow host access**), then turns Host access on and, for an agent without `compute.host_access`, approves the server for its package.
 
 This is stored as `run_location` on the MCP server config (`'host'`, `'shared'`, or `undefined` for default) — dot-path form `mcp.servers.<name>.run_location`. Changes require an agent restart to take effect.
 
 `undefined` is what a freshly installed server carries, and it means *containerized*: the agent's isolated container when it has one, the shared container otherwise. `'shared'` is stronger than the default — it **pins** the server to the shared container even for an agent that has its own isolated one.
-
-**Host requires two levels of approval:** The agent must have `compute.host_access` enabled AND the runtime must have **Enable host access** checked in Settings > Compute. If either is off, the "Host" option won't appear in the location cycling UI.
 
 **Runtime fallback:** If host access is disabled in Settings after a server was configured to run on host, the server silently falls back to running in the container (shared or isolated) on the next agent restart. The `run_location: 'host'` preference is preserved in the config but the runtime routing ignores it when host access is off. No error is raised — the server simply runs in the container instead.
 

@@ -19,7 +19,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Button, SettingsGroup, SettingsRow, TextInput } from '../ui'
+import { Button, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { Tooltip } from '../common/Tooltip'
@@ -116,7 +116,7 @@ export function formatCode(code: string): string {
 
 function EncryptionBadge({ encrypted }: { encrypted: boolean }) {
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${encrypted ? 'bg-[var(--adf-ui-success-subtle,var(--adf-ui-surface-hover))] text-[var(--adf-ui-success,var(--adf-ui-text))]' : 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-text)]'}`}>
+    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${encrypted ? 'bg-[var(--adf-ui-success-subtle,var(--adf-ui-surface-hover))] text-[var(--adf-ui-success,var(--adf-ui-text))]' : 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-text)]'}`}>
       {encrypted ? 'Encrypted' : 'Not encrypted'}
     </span>
   )
@@ -191,7 +191,7 @@ export function NewTokenPanel({ label, token, onDone }: { label: string; token: 
         <Button size="compact" onClick={() => copy(token)}>Copy</Button>
         <Button size="compact" variant="primary" onClick={onDone}>Done</Button>
       </div>
-      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the device: Settings → Connection → Add connection.</div>
+      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the device: Settings → Connections → Add.</div>
     </div>
   )
 }
@@ -343,17 +343,7 @@ export function RemoteAccessGroup({ onKeepRunning }: { onKeepRunning: () => Prom
         help={view.available ? (status ? remoteStatusLine(status) : undefined) : view.unavailableReason ?? undefined}
         error={view.error ?? undefined}
       >
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={disabled || !status}
-            onChange={(event) => void act(() => window.adfApi.setRemoteAccess({ enabled: event.target.checked }))}
-            className="rounded text-blue-500"
-            aria-label="Remote access"
-          />
-          <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{enabled ? 'On' : 'Off'}</span>
-        </label>
+        <Switch label="Remote access" checked={enabled} disabled={disabled || !status} onChange={(next) => void act(() => window.adfApi.setRemoteAccess({ enabled: next }))} />
       </SettingsRow>
       {enabled && view.stopsWithStudio && (
         <SettingsRow separator label="On quit" description="Devices lose the connection when Studio quits.">
@@ -536,7 +526,7 @@ export function HostOnlyRemoteAccess({ name }: { name: string }) {
   )
 }
 
-// --- Settings → Connection ---------------------------------------------------------------
+// --- Settings → Connections ---------------------------------------------------------------
 
 /** The dialog's message line: what to do now, or why it stopped. */
 export function pairMessage(state: RemotePairState | null, hostName: string): { kind: 'ok' | 'error'; text: string } | null {

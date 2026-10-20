@@ -63,6 +63,8 @@ export type BuiltInComputeTarget = typeof BUILT_IN_COMPUTE_TARGETS[number]
 export interface ComputeAppSettings {
   hostAccessEnabled: boolean
   hostApproved: string[]
+  /** name → source identity recorded when the name was approved (the host-grant squat guard, container-routing.ts). */
+  hostApprovedSources?: Record<string, string>
   containerPackages: string[]
   machineCpus: number
   machineMemoryMb: number

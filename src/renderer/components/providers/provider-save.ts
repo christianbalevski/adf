@@ -44,14 +44,14 @@ export async function saveProviderList(
   write: () => Promise<unknown> | undefined,
   saved: ProviderListSnapshot,
   attempted: ProviderListSnapshot,
-): Promise<{ saved: boolean; failure: ProviderSaveFailure | null }> {
+): Promise<{ saved: boolean; failure: ProviderSaveFailure | null; error?: string }> {
   try {
     await write()
     return { saved: true, failure: null }
   } catch (err) {
     const message = saveErrorMessage(err)
     console.warn('[Providers] Settings save refused:', message)
-    return { saved: false, failure: providerSaveFailure(saved, attempted, message) }
+    return { saved: false, failure: providerSaveFailure(saved, attempted, message), error: message }
   }
 }
 

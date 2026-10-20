@@ -34,7 +34,7 @@ describe('a refused providers save', () => {
     const saved = { providers: [provider('p1')], defaultProviderId: 'p1' }
     const attempted = { providers: [provider('p1', { apiKey: 'sk-re-entered' })], defaultProviderId: 'p1' }
     const refused = await saveProviderList(() => Promise.reject(new Error(`Error invoking remote method 'settings:set': Error: ${LOCKED}`)), saved, attempted)
-    expect(refused).toEqual({ saved: false, failure: { rows: { p1: LOCKED }, panel: null } })
+    expect(refused).toEqual({ saved: false, failure: { rows: { p1: LOCKED }, panel: null }, error: LOCKED })
     expect(await saveProviderList(() => Promise.resolve({ success: true }), saved, attempted)).toEqual({ saved: true, failure: null })
     expect(saveErrorMessage('x')).toBe('x')
     warn.mockRestore()

@@ -298,7 +298,7 @@ export function deriveRegistrationTestPlan(
     // disabled, matching shouldContainerize's `!settings.hostAccessEnabled`.
     // When disabled, the test runs in the shared container instead.
     if (!opts?.hostAccessEnabled) {
-      const notes = ['Host access is disabled app-wide — this test ran in the shared container. Enable host access in Settings → Compute to test on the host.']
+      const notes = ['Host access is disabled app-wide — this test ran in the shared container. Turn on Host access in Settings → Compute to test on the host.']
       if (reg.auth) notes.push('Authorization for containerized servers happens per-agent when an agent attaches this server.')
       return { location: 'shared container', authMode: reg.auth ? 'skip' : 'none', materializeFiles: false, notes }
     }

@@ -224,7 +224,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     const pairedToken = readRemoteToken(fingerprint, clientEnv)!
     expect(pairedToken).toMatch(/^adfd_/)
     expect(remote.pairing.state).toMatchObject({ savedId: 'remote:agent-1-e2e' })
-    // Settings → Connection: This computer in use, the paired computer as Paired with Connect, never a Pair row for it.
+    // Settings → Connections: This computer in use, the paired computer as Paired with Connect, never a Pair row for it.
     const list = await invoke<ConnectionsView>(IPC.CONNECTION_LIST)
     expect(list.current).toMatchObject({ id: 'local', name: 'This computer', state: 'connected' })
     expect(list.rows.find((r) => r.id === 'remote:agent-1-e2e')).toMatchObject({ state: 'paired', action: 'connect', fingerprint })

@@ -1,5 +1,5 @@
 /**
- * Settings → Connection: which backend Studio's IPC handlers use (design D9,
+ * Settings → Connections: which backend Studio's IPC handlers use (design D9,
  * docs/design/daemon-backend.md). The choice lives in `studio-backend.json`
  * in Studio's userData and takes effect at the next launch.
  *
@@ -57,8 +57,8 @@ export interface BackendSettingsView {
   daemon?: BackendDaemonStatus | null
   /**
    * A switch saved but waiting for turns in flight to finish ("Wait for Them
-   * to Finish"); `gaveUp` once the wait limit passed. Settings → Connection
-   * offers Finish Switch Now and Cancel Switch.
+   * to Finish"); `gaveUp` once the wait limit passed. Settings → Connections
+   * offers Finish switch now and Cancel switch.
    */
   pendingSwitch?: { target: StudioBackendMode; waitingFor: string[]; gaveUp: boolean } | null
   /** The launch that switched this install from Embedded to the new default, Local daemon; null when none did. */
@@ -85,7 +85,7 @@ export interface BackendDefaultSwitch {
   notDone: string[]
 }
 
-/** Settings → Connection's daemon line (MODE-02): what Studio is connected to. */
+/** Settings → Connections's daemon line (MODE-02): what Studio is connected to. */
 export interface BackendDaemonStatus {
   connection: 'connecting' | 'connected' | 'disconnected' | 'failed'
   /** While connecting: "Waiting for the ADF daemon (pid N)…" and the like. */

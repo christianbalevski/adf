@@ -166,7 +166,7 @@ describe('Add device (host): one dialog, the code or a token (settings-scopes.md
     expect(html).toContain('shown once')
     expect(html).toContain('>Copy<')
     expect(html).toContain('>Done<')
-    expect(html).toContain('On the device: Settings → Connection → Add connection.')
+    expect(html).toContain('On the device: Settings → Connections → Add.')
   })
 })
 

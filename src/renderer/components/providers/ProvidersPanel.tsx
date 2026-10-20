@@ -41,8 +41,8 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
         <div>
           <label className="block text-[13px] font-medium text-[var(--adf-ui-text)]">Providers</label>
           <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            New agents start on the default provider; change that under{' '}
-            <button type="button" onClick={onOpenTemplate} className="rounded underline underline-offset-2 hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]">Agent templates</button>.
+            New agents use the Default provider unless their{' '}
+            <button type="button" onClick={onOpenTemplate} className="rounded underline underline-offset-2 hover:text-[var(--adf-ui-text)] focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]">template</button> names one.
           </p>
         </div>
         <Button variant="primary" size="compact" className="shrink-0" onClick={m.openPicker}>+ Add provider</Button>
@@ -92,18 +92,18 @@ export function ProvidersPanel({ loaded, providers, setProviders, defaultProvide
                       <span className="truncate text-[13px] font-medium text-[var(--adf-ui-text)]">{p.name || entry?.label}</span>
                       {isDefault && (
                         <Tooltip tip="New agents start on this provider.">
-                          <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-warning)]">Default</span>
+                          <span className="rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-warning)]">Default</span>
                         </Tooltip>
                       )}
                       {carriers > 0 && (
                         <Tooltip tip={`${carriers} agent${carriers === 1 ? '' : 's'} use their own key, model, params, or delay for this provider.`}>
-                          <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-accent)]">
+                          <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-accent)]">
                             {carriers} override{carriers === 1 ? '' : 's'}
                           </span>
                         </Tooltip>
                       )}
                     </div>
-                    <p className="truncate text-[10.5px] text-[var(--adf-ui-text-subtle)]">
+                    <p className="truncate text-[11px] text-[var(--adf-ui-text-subtle)]">
                       {detail}{p.defaultModel ? ` · ${p.defaultModel}` : ''}
                     </p>
                     {saveFailure?.rows[p.id] && (
