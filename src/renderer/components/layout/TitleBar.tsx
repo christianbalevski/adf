@@ -315,7 +315,7 @@ export function TitleBar() {
             </svg>
           </NavButton>
           <NavButton
-            title="Age of Agents"
+            title="Mesh"
             shortcut={formatKey(ACCELERATORS.fleetMap, IS_MAC)}
             active={showMeshGraph}
             onClick={() => { setShowSettings(false); setShowMeshGraph(true) }}

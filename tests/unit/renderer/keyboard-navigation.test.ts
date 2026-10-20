@@ -96,7 +96,7 @@ describe('shortcut key caps', () => {
   })
 
   it('keeps the fleet map\'s user-facing name', () => {
-    expect(SHORTCUT_SECTIONS.flatMap((s) => s.rows).some((r) => r.label === 'Age of Agents')).toBe(true)
+    expect(SHORTCUT_SECTIONS.flatMap((s) => s.rows).some((r) => r.label === 'Mesh')).toBe(true)
   })
 })
 

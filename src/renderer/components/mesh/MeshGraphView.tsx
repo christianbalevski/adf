@@ -412,7 +412,7 @@ function FleetTopBar({
               <polyline points="9 22 9 12 15 12 15 22" />
             </svg>
           </MapNavButton>
-          <MapNavButton title="Age of Agents" shortcut={formatKey(ACCELERATORS.fleetMap, IS_MAC)} active>
+          <MapNavButton title="Mesh" shortcut={formatKey(ACCELERATORS.fleetMap, IS_MAC)} active>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
             </svg>
@@ -437,7 +437,7 @@ function FleetTopBar({
         </nav>
         {agentCluster ?? (
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300 truncate">Age of Agents</span>
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300 truncate">Mesh</span>
             {agentCount != null && (
               <span className="text-xs text-neutral-400 dark:text-neutral-500 shrink-0">
                 {agentCount} agent{agentCount !== 1 ? 's' : ''}

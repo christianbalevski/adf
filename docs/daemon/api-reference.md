@@ -13689,7 +13689,7 @@ Example 200 (`application/json`):
 
 ## Fleet
 
-Fleet map: mesh debug view, fleet rows, token burn, the aggregate poll, owner messages, adapter states, peer reads.
+Mesh view: mesh debug view, fleet rows, token burn, the aggregate poll, owner messages, adapter states, peer reads.
 
 | Method | Path | Summary |
 |---|---|---|
@@ -13697,7 +13697,7 @@ Fleet map: mesh debug view, fleet rows, token burn, the aggregate poll, owner me
 | GET | [`/fleet/status`](#op-getfleetstatus) | Fleet status rows |
 | GET | [`/fleet/burn`](#op-getfleetburn) | Token burn per agent and fleet |
 | POST | [`/fleet/burn/hydrate`](#op-hydratefleetburn) | Restore lifetime burn totals |
-| GET | [`/fleet/map`](#op-getfleetmap) | Fleet map poll in one call |
+| GET | [`/fleet/map`](#op-getfleetmap) | Mesh view poll in one call |
 | GET | [`/fleet/recent-tools`](#op-getfleetrecenttools) | Recent tool calls per agent |
 | POST | [`/fleet/message`](#op-messagefleetagents) | Owner message to agents |
 | GET | [`/fleet/adapters`](#op-getfleetadapters) | Adapter states across loaded agents |
@@ -13705,7 +13705,7 @@ Fleet map: mesh debug view, fleet rows, token burn, the aggregate poll, owner me
 | GET | [`/fleet/vitals`](#op-getfleetagentvitals) | Agent vitals by file path |
 | GET | [`/fleet/activity`](#op-getfleetagentactivity) | Agent activity by file path |
 | POST | [`/fleet/state`](#op-setfleetagentstate) | Set the state of running agents |
-| POST | [`/fleet/found`](#op-foundfleetagent) | Found an agent from the fleet map |
+| POST | [`/fleet/found`](#op-foundfleetagent) | Found an agent from the Mesh view |
 
 <a id="op-getfleetmesh"></a>
 
@@ -13849,7 +13849,7 @@ Example 200 (`application/json`):
 
 ### GET `/fleet/map`
 
-**Fleet map poll in one call**
+**Mesh view poll in one call**
 
 Operation `getFleetMap` · bearer token
 
@@ -14393,7 +14393,7 @@ Example 200 (`application/json`):
 
 ### POST `/fleet/found`
 
-**Found an agent from the fleet map**
+**Found an agent from the Mesh view**
 
 Studio's MESH_FOUND_AGENT: `dir` must be inside a tracked folder, or with `newRoot: true` a sibling of a tracked root. The folder is created when missing, the file is `<slug of name>.adf`, made from the default template with its identity, marked reviewed, left closed, and its folder tracked. Failures answer 200 with `success: false` and `error`.
 
@@ -21763,7 +21763,7 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 
 ### FleetStatus
 
-Fleet map rows (AgentVitalsService.getFleetStatus)
+Mesh view rows (AgentVitalsService.getFleetStatus)
 
 | Field | Type | Required | Description |
 |---|---|---|---|

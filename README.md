@@ -64,7 +64,7 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 
 - **One file per agent.** Copy or move the file to copy or move the agent ([what's inside](ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 - **ADF Studio:** a desktop IDE for agents. Author them, follow their turns, configure their tools and approve restricted tool calls.
-- **Fleet map:** an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold and command whole groups with hotkeys.
+- **Mesh view:** an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold and command whole groups with hotkeys.
 - **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), a ChatGPT or Grok subscription via OAuth, or a Claude Pro/Max plan through your installed Claude Code.
 - **Built-in tools and services:** sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving and WebSockets.
 - **Code path:** lambdas run on a trigger, a timer or a message, and middleware sits on the inbox, outbox, routes and fetches. A model turn runs only when a trigger, timer or message starts one.
@@ -73,15 +73,15 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 - **Agent mesh:** agents discover and message each other across runtimes over the ALF protocol (LAN, tailnet or direct address), with DIDs, signatures and optional end-to-end encryption.
 - **Channels:** connect agents to Telegram, Discord, Slack, WhatsApp and email.
 - **Visible context:** everything injected into an agent's context is stored in the file and viewable in the UI.
-- **Human in the loop:** restricted tools pause for your approval, inline on the fleet map or in a full-context modal.
+- **Human in the loop:** restricted tools pause for your approval, inline in the Mesh view or in a full-context modal.
 
 ## Screenshots
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/assets/screenshots/fleet-map-needs-you.png" alt="The fleet map with agent districts on a hex map; one agent tile is amber with a pending approval, and the alert bar shows a Needs you queue with fleet token-burn rates.">
-      <p align="center"><i>Fleet map</i></p>
+      <img src="docs/assets/screenshots/fleet-map-needs-you.png" alt="The Mesh view with agent districts on a hex map; one agent tile is amber with a pending approval, and the alert bar shows a Needs you queue with fleet token-burn rates.">
+      <p align="center"><i>Mesh view</i></p>
     </td>
     <td width="50%">
       <img src="docs/assets/screenshots/hil-approval-modal.png" alt="The human-in-the-loop approval modal: an agent wants to call sys_update_config, with the full formatted arguments and Approve / Reject buttons.">
@@ -219,7 +219,7 @@ down.
 | [Getting Started](docs/getting-started.md) | [ADF spec v0.2](ADF_SPEC_v0.2.md): the file format |
 | [ADF Studio tour](docs/ADF_STUDIO_DOCS.md) | [ALF spec v0.1](ALF_SPEC_v0.1.md): the agent communication protocol |
 | [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](docs/design/ADF_IDENTITY_SPEC_v0.1.md): DIDs, envelopes, attestations |
-| [Fleet map guide](docs/guides/fleet-map.md) | [ADF CLI](docs/cli/index.md), [terminal app](docs/cli/terminal-app.md) and [HTTP API](docs/daemon/http-api.md) |
+| [Mesh view guide](docs/guides/fleet-map.md) | [ADF CLI](docs/cli/index.md), [terminal app](docs/cli/terminal-app.md) and [HTTP API](docs/daemon/http-api.md) |
 | [Creating agents](docs/guides/creating-agents.md) | [Tools catalog](docs/guides/tools.md) |
 | [Daemon quick start](docs/daemon/getting-started.md) | [Security architecture](docs/guides/security-architecture.md) |
 

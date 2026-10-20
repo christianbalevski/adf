@@ -63,11 +63,11 @@ When no agent is open, or after **Home** in the title bar, Studio shows a **Home
 
 ![The Home dashboard with an "All systems go" banner, status tiles for Providers, MCP Servers, Channels, Packages, Containers, Host Access, Agents, and Running counts, a Networking panel with Mesh, LAN Discovery, LAN Peers, and Tailnet tiles, and the tracked directories list.](assets/screenshots/home-dashboard.png)
 
-### The fleet map
+### The Mesh view
 
-The **Age of Agents** button in the toolbar opens the fleet map — an RTS-style command surface where every agent is a tile on a hex-territory map, grouped by directory. From there you can select one or many agents, command them with hotkeys, rearrange the map's geography, and handle pending approvals. See the [Fleet Map guide](guides/fleet-map.md).
+The **Mesh** button in the title bar (View → Mesh) opens the Mesh view — an RTS-style command surface where every agent is a tile on a hex-territory map, grouped by directory. From there you can select one or many agents, command them with hotkeys, rearrange the map's geography, and handle pending approvals. See the [Mesh view guide](guides/fleet-map.md).
 
-![The fleet map showing two agent districts named squad and ops on a dark hex-tile map, floating status chips over each district, an internet gateway station, a terrain legend in the top-right corner, and a minimap in the bottom-right corner.](assets/screenshots/fleet-map-overview.png)
+![The Mesh view showing two agent districts named squad and ops on a dark hex-tile map, floating status chips over each district, an internet gateway station, a terrain legend in the top-right corner, and a minimap in the bottom-right corner.](assets/screenshots/fleet-map-overview.png)
 
 ---
 

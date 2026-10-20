@@ -116,7 +116,7 @@
     },
     {
       "name": "Fleet",
-      "description": "Fleet map: mesh debug view, fleet rows, token burn, the aggregate poll, owner messages, adapter states, peer reads."
+      "description": "Mesh view: mesh debug view, fleet rows, token burn, the aggregate poll, owner messages, adapter states, peer reads."
     },
     {
       "name": "Dashboard",
@@ -11059,7 +11059,7 @@
         "tags": [
           "Fleet"
         ],
-        "summary": "Fleet map poll in one call",
+        "summary": "Mesh view poll in one call",
         "operationId": "getFleetMap",
         "parameters": [
           {
@@ -15487,7 +15487,7 @@
         "tags": [
           "Fleet"
         ],
-        "summary": "Found an agent from the fleet map",
+        "summary": "Found an agent from the Mesh view",
         "description": "Studio's MESH_FOUND_AGENT: `dir` must be inside a tracked folder, or with `newRoot: true` a sibling of a tracked root. The folder is created when missing, the file is `<slug of name>.adf`, made from the default template with its identity, marked reviewed, left closed, and its folder tracked. Failures answer 200 with `success: false` and `error`.",
         "operationId": "foundFleetAgent",
         "requestBody": {
@@ -27707,7 +27707,7 @@
             }
           }
         },
-        "description": "Fleet map rows (AgentVitalsService.getFleetStatus)"
+        "description": "Mesh view rows (AgentVitalsService.getFleetStatus)"
       },
       "FleetBurnEntry": {
         "type": "object",

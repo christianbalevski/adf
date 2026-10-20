@@ -644,7 +644,7 @@
           label: "Home"
         -
           accelerator: "CmdOrCtrl+Shift+M"
-          label: "Age of Agents"
+          label: "Mesh"
         -
           type: "separator"
         -
@@ -766,7 +766,7 @@
           label: "Home"
         -
           accelerator: "CmdOrCtrl+Shift+M"
-          label: "Age of Agents"
+          label: "Mesh"
         -
           type: "separator"
         -
@@ -890,7 +890,7 @@
           label: "Home"
         -
           accelerator: "CmdOrCtrl+Shift+M"
-          label: "Age of Agents"
+          label: "Mesh"
         -
           type: "separator"
         -

@@ -121,7 +121,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 
 - **Approve before it acts** — mark any tool as restricted and the agent must ask you before using it, with a plain-English reason. You set this per tool.
 - **Approve once or always** — approve a single call, reject with feedback the agent can act on, or permanently lift the gate for that tool on that agent.
-- **Approvals everywhere** — the same request shows in the chat, in a global bell menu, on the fleet map, and as an OS notification when Studio is not focused. Resolving it in one place clears it everywhere.
+- **Approvals everywhere** — the same request shows in the chat, in a global bell menu, in the Mesh view, and as an OS notification when Studio is not focused. Resolving it in one place clears it everywhere.
 - **Lock what the agent cannot change** — lock any config field, tool setting, timer, or trigger so the agent cannot modify it.
 - **Guard rails that cannot be overridden** — accepting unsigned messages and the middleware authorization and chain settings can only be changed by you, never by the agent, not even through an approval.
 - **Locked by default** — local-network fetch and stream binding start locked; the agent can ask, and you can grant a one-time override.
@@ -168,7 +168,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 - **WebSocket endpoints** — inbound WebSocket routes and outbound connections with reconnection and keepalive, either handled by a lambda or fed into the inbox as messages.
 - **Agent-to-agent WebSockets** — mutual identity authentication over the socket.
 - **Health and card endpoints** — every served agent exposes `/health` and its signed card.
-- **Visible on the fleet map** — agents serving a site get a badge; click to open it.
+- **Visible in the Mesh view** — agents serving a site get a badge; click to open it.
 
 ## Models and cost
 
@@ -193,7 +193,7 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 - **Inbox view** — merged inbox and outbox with status filters and full message detail.
 - **Tool call inspector** — every tool call with arguments, results, diffs, shell output, and timing.
 - **Bottom panel** — logs and tasks with filters, expandable payloads, and auto-refresh.
-- **Fleet map ("Age of Agents")** — an RTS-style hex map where every agent is a tile, folders are territories, and channels are stations. Watch messages flow, spot who needs you, box-select, assign control groups, and issue commands (start, stop, message, hibernate, restart) from the map.
+- **Mesh view** — an RTS-style hex map where every agent is a tile, folders are territories, and channels are stations. Watch messages flow, spot who needs you, box-select, assign control groups, and issue commands (start, stop, message, hibernate, restart) from the map.
 - **Map lenses** — switch the map between state, token burn, model, health, and lineage views.
 - **Inline approvals on the map** — answer an agent's question or approve a tool right on its tile.
 - **Peer platforms** — agents discovered on other machines appear as satellite stations with their verified identity and served files.
@@ -376,12 +376,12 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 
 ## Studio internals
 
-*Full reference: [Studio Documentation](ADF_STUDIO_DOCS.md) · [Fleet Map](guides/fleet-map.md)*
+*Full reference: [Studio Documentation](ADF_STUDIO_DOCS.md) · [Mesh view](guides/fleet-map.md)*
 
 - **Process isolation** — context isolation, sandboxed renderer, no Node integration, strict CSP, sanitized markdown, navigation blocked, external-open protocol allowlist.
 - **IPC** — 200+ typed channels with batched event delivery to the renderer.
 - **Foreground/background handoff** — a running agent moves between the visible window and the background manager without losing state.
-- **Fleet map performance** — frozen deterministic geography, canvas ambience capped at 30fps, calm-mode governor under load, delta-based polling.
+- **Mesh view performance** — frozen deterministic geography, canvas ambience capped at 30fps, calm-mode governor under load, delta-based polling.
 - **Approval hub** — a central registry of pending approvals across agents and loops with secret-safe previews and a capped resolution history.
 
 ## Release and quality
