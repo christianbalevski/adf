@@ -23,12 +23,15 @@ const EDGE = 4
  * Fixed-position menu anchored at the pointer and clamped to the viewport.
  * Rendered into a body portal so overflow containers never clip it. Closes on
  * outside pointerdown, Escape, window blur, any scroll, or after an item is
- * chosen. Arrow keys move focus between enabled items; Enter/Space select.
+ * chosen. Arrow keys move focus between enabled items; Enter/Space select;
+ * Escape and Tab give the focus back to what had it when the menu opened.
  */
 export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null)
+  // What had the focus when the menu opened: Escape and Tab give it back.
+  const returnFocusRef = useRef<HTMLElement | null>(null)
 
   const open = position !== null
 
@@ -37,10 +40,13 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
   useLayoutEffect(() => {
     if (!position) {
       setClamped(null)
+      returnFocusRef.current = null
       return
     }
     const el = menuRef.current
     if (!el) return
+    const before = document.activeElement
+    if (!returnFocusRef.current && before instanceof HTMLElement && !el.contains(before)) returnFocusRef.current = before
     const r = el.getBoundingClientRect()
     setClamped({
       x: Math.max(EDGE, Math.min(position.x, window.innerWidth - r.width - EDGE)),
@@ -59,7 +65,9 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
+        const back = returnFocusRef.current
         onClose()
+        if (back?.isConnected) back.focus()
       }
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -107,7 +115,9 @@ export function ContextMenu({ position, items, onClose }: ContextMenuProps) {
       moveFocus(0, -1)
     } else if (e.key === 'Tab') {
       e.preventDefault()
+      const back = returnFocusRef.current
       onClose()
+      if (back?.isConnected) back.focus()
     }
   }
 
