@@ -1,87 +1,58 @@
 # Getting Started
 
-This guide walks you through creating your first ADF agent and having a conversation with it.
+This guide takes you from a fresh ADF Studio install to an agent's first answer. To do the same in a terminal without Studio, see the [CLI getting started](cli/getting-started.md).
 
 ## Prerequisites
 
-Before you begin, make sure you have:
+1. ADF Studio installed on your machine.
+2. One of:
+   - a ChatGPT, Grok or Claude (Pro or Max, through [Claude Code](https://code.claude.com/docs/en/setup)) plan to sign in with;
+   - an API key for Anthropic, OpenAI, OpenRouter or any OpenAI-compatible API;
+   - a model server on this computer, such as Ollama or LM Studio.
 
-1. **ADF Studio** installed on your machine
-2. **An LLM provider API key** — ADF Studio supports Anthropic, OpenAI, and OpenAI-compatible providers
+Studio asks for it the first time you send a task. You do not set it up beforehand.
 
-## Setting Up a Provider
+## 1. Type a task
 
-Before creating an agent, you need to configure at least one LLM provider.
+Home is the screen Studio shows when no agent is open. Type what you want an agent to do in the message box and press Enter.
 
-1. Open **Settings** (gear icon in the sidebar, or `Cmd/Ctrl + ,`)
-2. Go to the **Providers** section
-3. Click **Add provider** — a catalog opens, grouped into **Subscriptions**, **APIs**, **Local**, and **Other**
-4. Click the tile for the service you use (Anthropic, OpenAI, or any other OpenAI-compatible endpoint). The provider is created with its base URL prefilled and its configure modal opens
-5. Enter your API key
-6. Optionally set a default model
-7. Save
+The chips under the box set up the agent before it exists: its name, the template it is built from, the provider and model it starts on, and the folder its file goes in. The defaults work for a first run. A suggestion above the box fills an empty box when clicked; with text already typed, it is added on a new line below it.
 
-![Settings → Providers listing the connected providers, each row with the service logo, name, and default model.](assets/screenshots/settings-add-provider.png)
+## 2. Connect a provider when asked
 
-## Creating Your First Agent
+With no provider ready, Home shows a **Model provider** card, and Enter opens the provider sheet instead of making an agent. A provider is ready when it has a key or a sign-in and a default model.
 
-1. Click the **New .adf** button in the sidebar
-2. Choose a name for your agent (e.g., "assistant")
-3. A new `.adf` file is created with default settings
+1. Click the tile for your service. Tiles are grouped into **Subscriptions**, **APIs**, **Local** and **Other**.
+2. Give it a credential:
+   - **Subscription:** click **Sign in with …** and finish in the browser. A failed sign-in shows its reason under the button.
+   - **API:** paste the key. Studio saves it, tests it and lists the provider's models. The key field then reads **Connected** or **Key rejected**.
+   - **Local:** Studio tests the server when the tile opens, and again when you change the base URL.
+3. Check the default model. Studio picks a recommended one from the list; choose another if you want.
+4. Click **Done**. It stays disabled until there is a key or a sign-in and a model, and says which one is missing.
 
-Your agent is now created and in the **idle** state by default.
+Escape or the close button cancels. The provider added in the sheet is removed, no agent is created, and your text stays in the box.
 
-## Anatomy of the Interface
+Keys and sign-ins are stored in app settings on this computer, not in the agent's file.
 
-The ADF Studio interface is organized into several areas:
+## 3. See the first turn
 
-- **Sidebar** (left) — Lists your open agents, shows their status, and provides quick actions
-- **Main Panel** (center) — Shows the active tab content
-- **Right Panel** (collapsible) — Additional context and configuration
+After **Done**, Studio creates the agent:
 
-### Tabs
+1. A new `.adf` file is created in your agents folder (`Documents/adf-agents` by default) under the name on the name chip, for example `steady-fern`.
+2. The agent opens with its loop in the center of the window.
+3. Your text is the agent's first message. The agent starts, and its answer, tool calls and reasoning appear in the loop as the turn runs.
 
-- **Loop** — The conversation history with your agent. This is where you chat, see tool usage, and observe the agent's reasoning
-- **Inbox** — Messages received from other agents
-- **Files** — The agent's virtual filesystem (document, mind, and uploaded files)
-- **Agent** — Configuration panel with sub-tabs for Timers, Identity, and raw Config
+Keep talking to the agent in the loop. Every message sent from Home creates a new agent; open an existing one from the sidebar.
 
-![The ADF Studio window: agents with live status toggles in the left sidebar, the agent's document open in the center editor, and the Loop panel on the right showing the conversation.](assets/screenshots/studio-agent-loop.png)
+If the agent does not start (you cancel a provider sheet, the agent needs review, or the provider refuses the start), the message is not lost. It is shown in the loop's queue as **Not sent**, with the reason, and goes first with your next message.
 
-## Talking to Your Agent
+## Managing providers
 
-1. Select your agent from the sidebar
-2. Make sure you're on the **Loop** tab
-3. Type a message in the input field at the bottom
-4. Press Enter to send
+Settings → Providers lists every provider, with its status and default model. Use it to add one ahead of time, change a key or a default model, or remove one. See [Models and providers](cli/models-and-providers.md) for the terminal equivalent.
 
-When you send a message, several things happen:
+## What's next
 
-1. The agent transitions from **idle** to **active**
-2. The agent's LLM processes your message along with its instructions, document, and available tools
-3. The agent responds (and may use tools along the way)
-4. The agent returns to **idle**
-
-You'll see the full conversation in the Loop panel, including any tool calls the agent makes.
-
-![The Loop tab mid-conversation: a user message, an expandable Thinking block, assistant text, and inline tool-call chips with their arguments.](assets/screenshots/agent-loop-conversation.png)
-
-## Configuring Your Agent
-
-Click the **Agent** tab to access configuration. Key settings include:
-
-- **Name and Description** — How your agent identifies itself
-- **Icon** — An emoji published on the agent's card (Studio shows the agent's orbital instead)
-- **Instructions** — The system prompt that defines your agent's behavior
-- **Model** — Which LLM provider and model to use
-- **Tools** — Which built-in tools the agent can access
-- **Triggers** — What events wake the agent
-
-See [Creating and Configuring Agents](guides/creating-agents.md) for full details.
-
-## What's Next?
-
-- Learn about [Core Concepts](core-concepts.md) to understand the ADF philosophy
-- Explore [Agent States](guides/agent-states.md) to understand idle, hibernate, and autonomous mode
-- Set up [Triggers](guides/triggers.md) to make your agent respond to events automatically
-- Enable [Messaging](guides/messaging.md) to let multiple agents collaborate
+- [Core Concepts](core-concepts.md): what an agent and its file are.
+- [Creating and Configuring Agents](guides/creating-agents.md): instructions, model, tools and triggers.
+- [Agent States](guides/agent-states.md): idle, hibernate and autonomous mode.
+- [Messaging](guides/messaging.md): agents talking to each other.
