@@ -93,14 +93,40 @@ export function attachmentsOf(blocks: readonly ContentBlock[]): DisplayAttachmen
   return out
 }
 
-/** `adf-file://` URLs of the image references whose file still exists. */
-export function attachmentImageUrls(attachments: readonly DisplayAttachment[]): string[] {
-  return attachments.filter(a => !a.deleted && a.kind === 'image').map(a => adfFileUrl(a.path))
+/** A chat entry's attachment metadata: the message's `file_ref` parts (shown as chips), plus inline image previews. */
+export function attachmentMetadata(content: readonly ContentBlock[], previews: string[] = []): Record<string, unknown> | undefined {
+  const attachments = attachmentsOf(content)
+  if (attachments.length === 0 && previews.length === 0) return undefined
+  return { ...(previews.length > 0 ? { imagePreviewUrls: previews } : {}), ...(attachments.length > 0 ? { attachments } : {}) }
 }
 
 /** An attachment as one line of text (the TUI and CLI chat views). */
 export function attachmentText(a: DisplayAttachment): string {
-  return a.deleted ? deletedFilePlaceholder(a) : `[${a.kind ?? 'file'}: ${a.path}]`
+  return a.deleted ? deletedFilePlaceholder(a) : `[${a.kind ?? 'file'}: ${a.name}]`
+}
+
+/**
+ * The line Studio used to write into the owner's text for each upload. Rows
+ * stored before attachments became parts still hold it; chat views show it as
+ * an attachment instead of text. Stored rows are never rewritten.
+ */
+const LEGACY_UPLOAD_LINE = /^\[Uploaded file: .+ \(([^,()]+), [^()]+\)\. Use fs_read with path "(.+)" to inspect it\.\]$/
+
+/** `text` without its legacy `[Uploaded file: …]` lines, and those lines as attachments. */
+export function splitLegacyUploads(text: string): { text: string; attachments: DisplayAttachment[] } {
+  if (!text.includes('[Uploaded file: ')) return { text, attachments: [] }
+  const attachments: DisplayAttachment[] = []
+  const kept: string[] = []
+  for (const line of text.split('\n')) {
+    const match = LEGACY_UPLOAD_LINE.exec(line.trim())
+    if (!match) {
+      kept.push(line)
+      continue
+    }
+    const kind = mediaKindOfMime(match[1])
+    attachments.push({ path: match[2], name: fileRefName({ path: match[2] }), mime_type: match[1], ...(kind ? { kind } : {}) })
+  }
+  return { text: kept.join('\n').trim(), attachments }
 }
 
 /** A reference as one line of text (TUI, CLI, compaction transcript). */

@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHeadlessAgent, type HeadlessAgent } from '../../../src/main/runtime/headless'
 import { mediaPlaceholder } from '../../../src/main/runtime/message-media-projection'
-import { REQUEST_MEDIA_MAX_ITEMS, overLimitPlaceholder, requestMediaFloor, resolveFileRefs } from '../../../src/main/runtime/file-ref-media'
+import { REQUEST_MEDIA_MAX_ITEMS, attachmentLabel, overLimitPlaceholder, requestMediaFloor, requestMediaLimit, resolveFileRefs } from '../../../src/main/runtime/file-ref-media'
+import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import { FileRefRegistry } from '../../../src/main/adf/file-ref-registry'
 import { MeshManager } from '../../../src/main/runtime/mesh-manager'
 import { parseLoopToDisplay } from '../../../src/shared/utils/loop-parser'
@@ -77,6 +78,13 @@ function setImage(agent: HeadlessAgent, image: boolean): void {
 /** Every file reference the agent's stored loop holds. */
 function storedRefs(agent: HeadlessAgent) {
   return agent.workspace.getLoop().flatMap(row => row.content_json).filter(block => block.type === 'file_ref').map(block => block.file_ref!)
+}
+
+/** The System notices the agent's loop recorded about media left out. */
+function systemNotices(agent: HeadlessAgent): string[] {
+  return agent.workspace.getLoop().flatMap(row => row.content_json)
+    .filter(b => b.type === 'text' && b.text?.startsWith('[Context: System] [System] Not sent to this model'))
+    .map(b => b.text!)
 }
 
 /** Every file reference the live session holds. */
@@ -202,20 +210,21 @@ describe('requests resolve references; history keeps them', () => {
     let reads = 0
     const read = () => { reads++; return PNG }
     const limits = { image: 1_000_000, audio: 1_000_000, video: 1_000_000 }
+    const all = { image: true, audio: true, video: true }
     const messages: LLMMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'a' }, { type: 'file_ref', file_ref: { path: 'a.png', mime_type: 'image/png', size: PNG.length } }] }]
-    const first = await resolveFileRefs(messages, registry, read, limits)
+    const first = await resolveFileRefs(messages, registry, read, limits, all)
     messages.push({ role: 'assistant', content: [{ type: 'text', text: 'b' }] })
-    const second = await resolveFileRefs(messages, registry, read, limits)
+    const second = await resolveFileRefs(messages, registry, read, limits, all)
     expect(second.messages).toBe(first.messages)
     expect(second.messages[0]).toBe(first.messages[0])
     expect(reads).toBe(1)
     // A copy of the array (a session repair) resolves from the byte cache: no read.
-    const third = await resolveFileRefs(messages.slice(), registry, read, limits)
+    const third = await resolveFileRefs(messages.slice(), registry, read, limits, all)
     expect(JSON.stringify(third.messages)).toBe(JSON.stringify(second.messages))
     expect(reads).toBe(1)
     // A change to the file is a new read.
     registry.invalidate('a.png')
-    await resolveFileRefs(messages.slice(), registry, read, limits)
+    await resolveFileRefs(messages.slice(), registry, read, limits, all)
     expect(reads).toBe(2)
   })
 })
@@ -276,13 +285,20 @@ describe('deleting, renaming and moving a referenced file', () => {
   })
 })
 
+const ALL = { image: true, audio: true, video: true }
+const BIG = { image: 1_000_000, audio: 1_000_000, video: 1_000_000 }
+const refMessage = (path: string, size = PNG.length): LLMMessage => ({ role: 'user', content: [{ type: 'file_ref', file_ref: { path, mime_type: 'image/png', size } }] })
+
 describe('size and request limits', () => {
   it('a reference over the per-file limit is a placeholder with the reason', async () => {
     const registry = new FileRefRegistry()
-    const messages: LLMMessage[] = [{ role: 'user', content: [{ type: 'file_ref', file_ref: { path: 'big.png', mime_type: 'image/png', size: 2_000 } }] }]
-    const out = await resolveFileRefs(messages, registry, () => Buffer.alloc(2_000), { image: 1_024, audio: 1, video: 1 })
-    expect(out.messages[0].content).toEqual([{ type: 'text', text: '[image not sent: big.png is 2.0 KB, over the 1.0 KB limit]' }])
-    expect(out.notSent).toEqual({ oversize: { image: 1 }, overLimit: {} })
+    const messages = [refMessage('big.png', 2_000)]
+    const out = await resolveFileRefs(messages, registry, () => Buffer.alloc(2_000), { image: 1_024, audio: 1, video: 1 }, ALL)
+    expect(out.messages[0].content).toEqual([
+      { type: 'text', text: attachmentLabel({ path: 'big.png', mime_type: 'image/png', size: 2_000 }) },
+      { type: 'text', text: '[image not sent: big.png is 2.0 KB, over the 1.0 KB limit]' },
+    ])
+    expect(out.notSent).toEqual({ unsupported: {}, oversize: { image: 1 }, overLimit: {} })
   })
 
   it('past the request media limit the oldest drop to half the limit, so the window moves rarely', async () => {
@@ -296,13 +312,101 @@ describe('size and request limits', () => {
     expect(requestMediaFloor([{ bytes: 10 }, { bytes: 100 * 1024 * 1024 }])).toBe(1)
 
     const registry = new FileRefRegistry()
-    const messages: LLMMessage[] = Array.from({ length: REQUEST_MEDIA_MAX_ITEMS + 1 }, (_, i) => ({
-      role: 'user' as const, content: [{ type: 'file_ref' as const, file_ref: { path: `p${i}.png`, mime_type: 'image/png', size: PNG.length } }],
-    }))
-    const out = await resolveFileRefs(messages, registry, () => PNG, { image: 1_000_000, audio: 1, video: 1 })
+    const messages = Array.from({ length: REQUEST_MEDIA_MAX_ITEMS + 1 }, (_, i) => refMessage(`p${i}.png`))
+    const out = await resolveFileRefs(messages, registry, () => PNG, BIG, ALL)
     const dropped = REQUEST_MEDIA_MAX_ITEMS / 2 + 1
-    expect(out.notSent).toEqual({ oversize: {}, overLimit: { image: dropped } })
-    expect(out.messages[0].content).toEqual([{ type: 'text', text: overLimitPlaceholder((messages[0].content as ContentBlock[])[0].file_ref!, 'image') }])
+    expect(out.notSent).toEqual({ unsupported: {}, oversize: {}, overLimit: { image: dropped } })
+    const ref = (messages[0].content as ContentBlock[])[0].file_ref!
+    expect(out.messages[0].content).toEqual([{ type: 'text', text: attachmentLabel(ref) }, { type: 'text', text: overLimitPlaceholder(ref, 'image') }])
     expect(JSON.stringify(out.messages[dropped].content)).toContain(PNG_URI)
+  })
+
+  it('every turn whose request leaves files out for the limit says so, with counts', async () => {
+    const provider = new ScriptedProvider()
+    const agent = makeAgent(provider, { tools: false })
+    const refs: ContentBlock[] = Array.from({ length: REQUEST_MEDIA_MAX_ITEMS + 1 }, (_, i) => {
+      const path = agent.workspace.writeFileBufferUnique(`loop-upload/p${i}.png`, Buffer.concat([PNG, Buffer.from([i])]), 'image/png')
+      return { type: 'file_ref', file_ref: { path, mime_type: 'image/png', size: PNG.length + 1 } }
+    })
+    await agent.executor.executeTurn(chat([{ type: 'text', text: 'all of these' }, ...refs]))
+    await agent.executor.executeTurn(chat([{ type: 'text', text: 'and now?' }]))
+    const notice = '[Context: System] [System] Not sent to this model: 11 images (older than the request media limit: 20 files, 20.0 MB). The originals stay in history.'
+    expect(systemNotices(agent)).toEqual([notice, notice])
+  })
+
+  it('the limit is the agent config: default when unset, an override applies, a very large one is accepted', async () => {
+    expect(requestMediaLimit(undefined)).toEqual({ files: 20, bytes: 20 * 1024 * 1024 })
+    expect(requestMediaLimit({ max_request_media_files: null, max_request_media_mb: null })).toEqual({ files: 20, bytes: 20 * 1024 * 1024 })
+    expect(requestMediaLimit({ max_request_media_files: 1_000_000, max_request_media_mb: 1_000_000 })).toEqual({ files: 1_000_000, bytes: 1_000_000 * 1024 * 1024 })
+
+    const provider = new ScriptedProvider()
+    const agent = makeAgent(provider, { tools: false })
+    const config = agent.executor.getConfig()
+    agent.executor.updateConfig({ ...config, context: { ...config.context, max_request_media_files: 2 } })
+    const refs: ContentBlock[] = [0, 1, 2].map(i => {
+      const path = agent.workspace.writeFileBufferUnique(`loop-upload/q${i}.png`, Buffer.concat([PNG, Buffer.from([i])]), 'image/png')
+      return { type: 'file_ref', file_ref: { path, mime_type: 'image/png', size: PNG.length + 1 } }
+    })
+    await agent.executor.executeTurn(chat([{ type: 'text', text: 'three' }, ...refs]))
+    // Over 2: the oldest drop until half (1) remains.
+    expect(systemNotices(agent)).toEqual(['[Context: System] [System] Not sent to this model: 2 images (older than the request media limit: 2 files, 20.0 MB). The originals stay in history.'])
+    expect(provider.last()).toContain('outside the request media limit (2 files, 20.0 MB)')
+
+    // A very large limit sends them all, with no clamping.
+    agent.executor.updateConfig({ ...config, context: { ...config.context, max_request_media_files: 1_000_000, max_request_media_mb: 1_000_000 } })
+    await agent.executor.executeTurn(chat([{ type: 'text', text: 'again' }]))
+    expect(provider.last()).not.toContain('outside the request media limit')
+    expect(systemNotices(agent)).toHaveLength(1)
+  })
+
+  it('the config schema takes any positive whole number and refuses zero and negatives', () => {
+    const context = AgentConfigSchema.shape.context
+    expect(context.safeParse({ max_request_media_files: 1_000_000_000, max_request_media_mb: 1_000_000_000 }).success).toBe(true)
+    expect(context.safeParse({}).success).toBe(true)
+    for (const bad of [0, -1, 1.5]) {
+      expect(context.safeParse({ max_request_media_files: bad }).success).toBe(false)
+      expect(context.safeParse({ max_request_media_mb: bad }).success).toBe(false)
+    }
+  })
+})
+
+describe('attachments are parts of the message', () => {
+  it('the typed text is stored as typed; each file is a part, labelled for the model only in the request', async () => {
+    const provider = new ScriptedProvider()
+    const agent = makeAgent(provider, { tools: false })
+    const path = agent.workspace.writeFileBufferUnique('loop-upload/report.pdf', Buffer.from('%PDF-1.4'), 'application/pdf')
+    const image = agent.workspace.writeFileBufferUnique('loop-upload/cat.png', PNG, 'image/png')
+    await agent.executor.executeTurn(chat([
+      { type: 'text', text: 'what do these say?' },
+      { type: 'file_ref', file_ref: { path, mime_type: '', size: 0 } },
+      { type: 'file_ref', file_ref: { path: image, mime_type: '', size: 0 } },
+    ]))
+    const row = agent.workspace.getLoop().find(r => r.role === 'user' && r.content_json.some(b => b.type === 'file_ref'))!
+    expect(row.content_json).toEqual([
+      { type: 'text', text: 'what do these say?' },
+      { type: 'file_ref', file_ref: { path, mime_type: 'application/pdf', size: 8 } },
+      { type: 'file_ref', file_ref: { path: image, mime_type: 'image/png', size: PNG.length } },
+    ])
+    // One user message, multi-part: text, label, (file), label, image.
+    const sent = provider.requests[0].find(m => m.role === 'user' && JSON.stringify(m.content).includes('what do these say?'))!
+    expect((sent.content as ContentBlock[]).map(b => b.type)).toEqual(['text', 'text', 'text', 'image_url'])
+    expect((sent.content as ContentBlock[])[0].text).toBe('what do these say?')
+    expect((sent.content as ContentBlock[])[1].text).toBe('[Attached file: loop-upload/report.pdf (application/pdf, 8 B). Read it with fs_read.]')
+    // The chat shows the text as typed and the files as chips.
+    const entry = parseLoopToDisplay(agent.workspace.getLoop()).find(e => e.type === 'user')!
+    expect(entry.content).toBe('what do these say?')
+    expect((entry.metadata?.attachments as Array<{ name: string }>).map(a => a.name)).toEqual(['report.pdf', 'cat.png'])
+    // The label is the same bytes on the next request.
+    await agent.executor.executeTurn(chat([{ type: 'text', text: 'and?' }]))
+    expect(JSON.stringify(provider.requests[1]).includes(JSON.stringify(sent))).toBe(true)
+  })
+
+  it('old rows with [Uploaded file: …] lines show those lines as chips; the stored text is unchanged', () => {
+    const text = 'look at this\n\n[Uploaded file: loop-upload/notes.pdf (application/pdf, 1.2 KB). Use fs_read with path "loop-upload/notes.pdf" to inspect it.]'
+    const rows = [{ seq: 1, role: 'user' as const, content_json: [{ type: 'text' as const, text }], created_at: 1 }]
+    const [entry] = parseLoopToDisplay(rows)
+    expect(entry.content).toBe('look at this')
+    expect(entry.metadata?.attachments).toEqual([{ path: 'loop-upload/notes.pdf', name: 'notes.pdf', mime_type: 'application/pdf' }])
+    expect(rows[0].content_json[0].text).toBe(text)
   })
 })

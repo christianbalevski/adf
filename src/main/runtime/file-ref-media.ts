@@ -15,8 +15,9 @@
  */
 
 import type { ContentBlock, FileRef, LLMMessage } from '../../shared/types/provider.types'
-import type { MediaKind } from '../../shared/types/media.types'
-import { deletedFilePlaceholder, fileRefKind, fileRefName, fileRefText, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
+import type { MediaKind, MediaSupport } from '../../shared/types/media.types'
+import { mediaPlaceholder } from './message-media-projection'
+import { deletedFilePlaceholder, fileRefKind, fileRefName, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
 import { formatSize, mimeToAudioFormat, mimeToExt } from '../tools/built-in/mime-utils'
 import type { FileRefRegistry, MediaPayload } from '../adf/file-ref-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
@@ -26,14 +27,32 @@ export const UPLOAD_DIR = 'loop-upload'
 
 /**
  * The request media limit: at most this many referenced files and bytes per
- * request. Provider limits are lower than any long history: Anthropic takes at
- * most 100 images and 32 MB, and caps image size once a request has more than
- * 20 images. Past the limit the oldest references are left out, down to half
- * the limit, so the window moves (and the cached prefix changes) once per ten
- * new attachments rather than on every one. History keeps them all.
+ * request (`context.max_request_media_files`, `context.max_request_media_mb`).
+ * Provider limits are lower than any long history: Anthropic takes at most
+ * 100 images and 32 MB, and caps image size once a request has more than 20
+ * images. Past the limit the oldest references are left out, down to half the
+ * limit, so the window moves (and the cached prefix changes) once per half a
+ * limit of new attachments rather than on every one. History keeps them all.
  */
 export const REQUEST_MEDIA_MAX_ITEMS = 20
 export const REQUEST_MEDIA_MAX_BYTES = 20 * 1024 * 1024
+
+export interface RequestMediaLimit {
+  files: number
+  bytes: number
+}
+
+export const DEFAULT_REQUEST_MEDIA_LIMIT: RequestMediaLimit = Object.freeze({ files: REQUEST_MEDIA_MAX_ITEMS, bytes: REQUEST_MEDIA_MAX_BYTES })
+
+/** The limit an agent's config sets; unset (or not a positive number) is the default. */
+export function requestMediaLimit(context: { max_request_media_files?: number | null; max_request_media_mb?: number | null } | undefined): RequestMediaLimit {
+  const files = context?.max_request_media_files
+  const mb = context?.max_request_media_mb
+  return {
+    files: typeof files === 'number' && files > 0 ? files : REQUEST_MEDIA_MAX_ITEMS,
+    bytes: typeof mb === 'number' && mb > 0 ? mb * 1024 * 1024 : REQUEST_MEDIA_MAX_BYTES,
+  }
+}
 
 /** Per-file size limits (`limits.max_image_size_bytes` and its siblings). */
 export type MediaSizeLimits = Readonly<Record<MediaKind, number>>
@@ -47,6 +66,8 @@ export const DEFAULT_MEDIA_SIZE_LIMITS: MediaSizeLimits = Object.freeze({
 export type MediaCounts = Partial<Record<MediaKind, number>>
 
 export interface FileRefsNotSent {
+  /** A kind this model does not take (connector or model settings). */
+  unsupported: MediaCounts
   /** Over the per-file size limit. */
   oversize: MediaCounts
   /** Older than the request media limit's window. */
@@ -62,12 +83,26 @@ export interface FileRefResolution {
 /** Reads a file's bytes; null when the file does not exist. */
 export type ReadFileBytes = (path: string) => Buffer | null
 
+/**
+ * The text a request carries next to each file a user message attaches, so
+ * the model can name the file in a tool call. Built from the reference alone,
+ * so it is the same on every request. Never stored, never shown in the chat.
+ */
+export function attachmentLabel(ref: FileRef): string {
+  return `[Attached file: ${ref.path} (${ref.mime_type || 'unknown type'}, ${formatSize(ref.size)}). Read it with fs_read.]`
+}
+
 export function oversizePlaceholder(ref: FileRef, kind: MediaKind, size: number, limit: number): string {
   return `[${kind} not sent: ${fileRefName(ref)} is ${formatSize(size)}, over the ${formatSize(limit)} limit]`
 }
 
-export function overLimitPlaceholder(ref: FileRef, kind: MediaKind): string {
-  return `[${kind} not sent: ${fileRefName(ref)}, outside the request media limit (${REQUEST_MEDIA_MAX_ITEMS} files, ${formatSize(REQUEST_MEDIA_MAX_BYTES)})]`
+/** The limit as the notice and placeholders name it: `20 files, 20.0 MB`. */
+export function requestMediaLimitText(limit: RequestMediaLimit): string {
+  return `${limit.files} file${limit.files === 1 ? '' : 's'}, ${formatSize(limit.bytes)}`
+}
+
+export function overLimitPlaceholder(ref: FileRef, kind: MediaKind, limit: RequestMediaLimit = DEFAULT_REQUEST_MEDIA_LIMIT): string {
+  return `[${kind} not sent: ${fileRefName(ref)}, outside the request media limit (${requestMediaLimitText(limit)})]`
 }
 
 /** The payload a request carries for this file, in the shape the provider layer takes. */
@@ -156,15 +191,15 @@ interface Candidate {
  * from the candidates alone: the same history gives the same window after a
  * restart. The newest candidate is always inside (its own size limit applies).
  */
-export function requestMediaFloor(candidates: readonly Pick<Candidate, 'bytes'>[]): number {
+export function requestMediaFloor(candidates: readonly Pick<Candidate, 'bytes'>[], limit: RequestMediaLimit = DEFAULT_REQUEST_MEDIA_LIMIT): number {
   let start = 0
   let count = 0
   let bytes = 0
   for (let i = 0; i < candidates.length; i++) {
     count++
     bytes += candidates[i].bytes
-    if (count <= REQUEST_MEDIA_MAX_ITEMS && bytes <= REQUEST_MEDIA_MAX_BYTES) continue
-    while (start < i && (count > REQUEST_MEDIA_MAX_ITEMS / 2 || bytes > REQUEST_MEDIA_MAX_BYTES / 2)) {
+    if (count <= limit.files && bytes <= limit.bytes) continue
+    while (start < i && (count > limit.files / 2 || bytes > limit.bytes / 2)) {
       bytes -= candidates[start].bytes
       count--
       start++
@@ -176,6 +211,7 @@ export function requestMediaFloor(candidates: readonly Pick<Candidate, 'bytes'>[
 interface Cached {
   length: number
   generation: number
+  /** Size limits and media support the cached messages were built for. */
   signature: string
   floor: number
   messages: LLMMessage[]
@@ -187,10 +223,11 @@ const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setImmediat
 
 /**
  * Replace every file reference in `messages` with the file's media, or with a
- * placeholder: `[deleted: name]` for a deleted or missing file, a reason for
- * one over its size limit or outside the request media limit, and the
- * reference as text for a file that is not model media. Never throws for a
- * missing file; never changes `messages`.
+ * placeholder: `[deleted: name]` for a deleted or missing file, and a reason
+ * for a kind this model does not take, a file over its size limit or one
+ * outside the request media limit. A reference in a user message (an
+ * attachment, not a tool result) is preceded by `attachmentLabel`. Never
+ * throws for a missing file; never changes `messages`.
  *
  * Reads happen only on a cache miss, one file at a time with a yield to the
  * event loop before each read.
@@ -200,6 +237,8 @@ export async function resolveFileRefs(
   registry: FileRefRegistry,
   readFile: ReadFileBytes,
   limits: MediaSizeLimits,
+  support: MediaSupport,
+  requestLimit: RequestMediaLimit = DEFAULT_REQUEST_MEDIA_LIMIT,
 ): Promise<FileRefResolution> {
   const prior = resolutions.get(messages)
   const priorLength = prior && prior.length <= messages.length ? prior.length : 0
@@ -208,6 +247,7 @@ export async function resolveFileRefs(
   // carry (the candidates, which decide the window) and which are over their
   // size limit.
   const candidates: Candidate[] = []
+  const unsupported: MediaCounts = {}
   const oversize: MediaCounts = {}
   let candidatesBeforePrior = 0
   let anyRef = false
@@ -220,19 +260,20 @@ export async function resolveFileRefs(
       anyRef = true
       const kind = fileRefKind(block.file_ref)
       if (block.file_ref.deleted || !kind) continue
-      if (block.file_ref.size > limits[kind]) oversize[kind] = (oversize[kind] ?? 0) + 1
+      if (!support[kind]) unsupported[kind] = (unsupported[kind] ?? 0) + 1
+      else if (block.file_ref.size > limits[kind]) oversize[kind] = (oversize[kind] ?? 0) + 1
       else candidates.push({ kind, bytes: block.file_ref.size })
     }
   }
   if (priorLength === messages.length) candidatesBeforePrior = candidates.length
   if (!anyRef) return { messages, notSent: null }
 
-  const floor = requestMediaFloor(candidates)
+  const floor = requestMediaFloor(candidates, requestLimit)
   const overLimit: MediaCounts = {}
   for (let i = 0; i < floor; i++) overLimit[candidates[i].kind] = (overLimit[candidates[i].kind] ?? 0) + 1
 
   const generation = registry.generation
-  const signature = `${limits.image}|${limits.audio}|${limits.video}`
+  const signature = `${limits.image}|${limits.audio}|${limits.video}|${+support.image}${+support.audio}${+support.video}|${requestLimit.files}|${requestLimit.bytes}`
   let cached = prior
   let candidateIndex = candidatesBeforePrior
   if (!cached || priorLength !== cached.length || cached.generation !== generation || cached.signature !== signature || cached.floor !== floor) {
@@ -249,6 +290,8 @@ export async function resolveFileRefs(
       continue
     }
     const content: ContentBlock[] = []
+    // Media after a tool result is what the tool read: the result names it.
+    const attached = !message.content.some(block => block.type === 'tool_result')
     for (const block of message.content) {
       if (!isFileRefBlock(block)) {
         content.push(block)
@@ -258,12 +301,17 @@ export async function resolveFileRefs(
       const kind = fileRefKind(ref)
       if (ref.deleted) {
         content.push({ type: 'text', text: deletedFilePlaceholder(ref) })
-      } else if (!kind) {
-        content.push({ type: 'text', text: fileRefText(ref) })
+        continue
+      }
+      if (attached) content.push({ type: 'text', text: attachmentLabel(ref) })
+      if (!kind) {
+        // Not model media: the label is the whole of it.
+      } else if (!support[kind]) {
+        content.push({ type: 'text', text: mediaPlaceholder(kind) })
       } else if (ref.size > limits[kind]) {
         content.push({ type: 'text', text: oversizePlaceholder(ref, kind, ref.size, limits[kind]) })
       } else if (candidateIndex++ < floor) {
-        content.push({ type: 'text', text: overLimitPlaceholder(ref, kind) })
+        content.push({ type: 'text', text: overLimitPlaceholder(ref, kind, requestLimit) })
       } else {
         const payload = await loadPayload(registry, readFile, ref, kind)
         if (!payload) content.push({ type: 'text', text: deletedFilePlaceholder(ref) })
@@ -275,8 +323,8 @@ export async function resolveFileRefs(
     cached.length = i + 1
   }
 
-  const any = Object.keys(oversize).length > 0 || Object.keys(overLimit).length > 0
-  return { messages: cached.messages, notSent: any ? { oversize, overLimit } : null }
+  const any = [unsupported, oversize, overLimit].some(counts => Object.keys(counts).length > 0)
+  return { messages: cached.messages, notSent: any ? { unsupported, oversize, overLimit } : null }
 }
 
 async function loadPayload(registry: FileRefRegistry, readFile: ReadFileBytes, ref: FileRef, kind: MediaKind): Promise<MediaPayload | null> {

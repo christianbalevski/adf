@@ -5,9 +5,12 @@ import { useMessageQueueStore, sameAgentPath, type QueuedMessage } from '../stor
 import { startForegroundAgent } from './start-agent'
 import { queueOwnerMessage, sendOwnerMessage } from './queued-delivery'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import { attachmentMetadata, attachmentsOf } from '../../shared/utils/file-ref'
 
-/** The text of a send that carries only attachments. */
-export const ATTACHMENT_ONLY_TEXT = 'Please review the attached media.'
+/** What a queued message is listed as: its text, else its files' names. */
+function queuedText(message: string, content: ContentBlock[]): string {
+  return message || attachmentsOf(content).map(a => a.name).join(', ')
+}
 
 /** The open loop's states when the owner pressed Send (AgentLoop's store selectors). */
 export interface ComposerTarget {
@@ -61,20 +64,20 @@ export async function sendComposerMessage(target: ComposerTarget, message: strin
     if (!started && filePath) markQueueNotSent(filePath, loop, startError ?? 'the agent did not start')
     return started
   }
-  if (queueOwnerMessage(filePath, loop, loopState, agentState, { text: message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls: previews }, startForQueue)) {
+  if (queueOwnerMessage(filePath, loop, loopState, agentState, { text: queuedText(message, content), content, imagePreviewUrls: previews }, startForQueue)) {
     return 'queued'
   }
 
   const agentStore = useAgentStore.getState()
-  const text = message || ATTACHMENT_ONLY_TEXT
-  // Show the user message immediately
+  const text = queuedText(message, content)
+  // Show the user message immediately: the text as typed, attachments as chips.
   const bubbleId = nanoid()
   agentStore.addLogEntry({
     id: bubbleId,
     type: 'user',
-    content: text,
+    content: message,
     timestamp: Date.now(),
-    metadata: previews.length > 0 ? { imagePreviewUrls: previews } : undefined
+    metadata: attachmentMetadata(content, previews)
   }, loop)
 
   // If the AGENT (not just this loop) is off, start it first then invoke.

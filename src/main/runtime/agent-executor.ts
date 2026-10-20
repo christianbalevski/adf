@@ -8,7 +8,7 @@ import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
 import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, mediaRefusals, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
 import type { LoopMedia } from '../../shared/types/media.types'
-import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, resolveFileRefs, REQUEST_MEDIA_MAX_ITEMS, REQUEST_MEDIA_MAX_BYTES, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
+import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
 import { attachmentsOf, fileRefKind, fileRefText, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
 import type { FileRefRegistry } from '../adf/file-ref-registry'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
@@ -2659,6 +2659,8 @@ export class AgentExecutor extends EventEmitter {
           this.fileRefRegistry(),
           path => this.session.getWorkspace().readFileBuffer(path),
           this.mediaSizeLimits(),
+          this.mediaSupport(),
+          requestMediaLimit(this.config.context),
         )
         if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
@@ -4681,8 +4683,9 @@ export class AgentExecutor extends EventEmitter {
     if (this.mediaNoticeDispatch === dispatch) return
     this.mediaNoticeDispatch = dispatch
     const counted = (count: number, kind: MediaKind) => `${count} ${kind}${count === 1 ? '' : 's'}`
-    const parts = MEDIA_KINDS.filter(kind => omitted[kind]).map(kind =>
-      `${counted(omitted[kind]!, kind)} (${mediaOmissionReason(kind, this.config.model, this.provider)})`)
+    const unsupported = (kind: MediaKind) => (omitted[kind] ?? 0) + (files?.unsupported[kind] ?? 0)
+    const parts = MEDIA_KINDS.filter(kind => unsupported(kind) > 0).map(kind =>
+      `${counted(unsupported(kind), kind)} (${mediaOmissionReason(kind, this.config.model, this.provider)})`)
     const limits = this.mediaSizeLimits()
     for (const kind of MEDIA_KINDS) {
       const over = files?.oversize[kind]
@@ -4690,7 +4693,7 @@ export class AgentExecutor extends EventEmitter {
     }
     for (const kind of MEDIA_KINDS) {
       const older = files?.overLimit[kind]
-      if (older) parts.push(`${counted(older, kind)} (older than the request media limit: ${REQUEST_MEDIA_MAX_ITEMS} files, ${formatSize(REQUEST_MEDIA_MAX_BYTES)})`)
+      if (older) parts.push(`${counted(older, kind)} (older than the request media limit: ${requestMediaLimitText(requestMediaLimit(this.config.context))})`)
     }
     const notice = `[System] Not sent to this model: ${parts.join(', ')}. The originals stay in history.`
     const seq = this.session.appendContextEntry('System', notice)

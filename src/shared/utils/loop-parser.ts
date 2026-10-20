@@ -8,7 +8,7 @@
 
 import type { ContentBlock } from '../types/provider.types'
 import type { LoopEntry, DisplayEntry, DisplayEntryType } from '../types/adf-v02.types'
-import { adfFileUrl, attachmentsOf, displayAttachment, fileRefKind, isFileRefBlock, type DisplayAttachment } from './file-ref'
+import { attachmentsOf, displayAttachment, isFileRefBlock, splitLegacyUploads, type DisplayAttachment } from './file-ref'
 
 /** Detect context injection entries by their `[Context: <category>]` prefix.
  *  Returns the category string if matched, else null. */
@@ -97,17 +97,13 @@ function extractImageUrl(content: string): string | null {
 }
 
 /**
- * Collect renderable image URLs from a user message's media: inline
- * `image_url` blocks (data: or remote) and references to image files that
- * still exist (`adf-file://`). Deleted references are in `collectAttachments`.
+ * Renderable image URLs of a user message's inline `image_url` blocks (data:
+ * or remote). File references are `attachments`, shown as chips.
  */
 function collectImageUrls(blocks: ContentBlock[]): string[] {
-  const urls: string[] = []
-  for (const b of blocks) {
-    if (b.type === 'image_url' && b.image_url?.url) urls.push(b.image_url.url)
-    else if (isFileRefBlock(b) && !b.file_ref.deleted && fileRefKind(b.file_ref) === 'image') urls.push(adfFileUrl(b.file_ref.path))
-  }
-  return urls
+  return blocks
+    .filter((b) => b.type === 'image_url' && b.image_url?.url)
+    .map((b) => b.image_url!.url)
 }
 
 /**
@@ -252,16 +248,19 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             continue
           }
           const triggerType = detectTriggerType(block.text)
+          // Rows from before attachments were parts: their upload lines are chips too.
+          const legacy = triggerType ? { text: block.text, attachments: [] } : splitLegacyUploads(block.text)
+          const shown = [...attachments, ...legacy.attachments]
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
-            content: block.text,
+            content: legacy.text,
             timestamp,
             metadata: {
               seq: entry.seq,
               ...(triggerType ? { triggerType } : {}),
               ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}),
-              ...(!triggerType && attachments.length > 0 ? { attachments } : {})
+              ...(!triggerType && shown.length > 0 ? { attachments: shown } : {})
             }
           })
         } else if (block.type === 'tool_result') {
@@ -501,16 +500,19 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             continue
           }
           const triggerType = detectTriggerType(block.text)
+          // Rows from before attachments were parts: their upload lines are chips too.
+          const legacy = triggerType ? { text: block.text, attachments: [] } : splitLegacyUploads(block.text)
+          const shown = [...attachments, ...legacy.attachments]
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
-            content: block.text,
+            content: legacy.text,
             timestamp,
             metadata: {
               seq: entry.seq,
               ...(triggerType ? { triggerType } : {}),
               ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}),
-              ...(!triggerType && attachments.length > 0 ? { attachments } : {})
+              ...(!triggerType && shown.length > 0 ? { attachments: shown } : {})
             }
           })
         } else if (block.type === 'tool_result' && block.tool_use_id) {

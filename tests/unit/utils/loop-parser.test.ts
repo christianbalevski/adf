@@ -12,10 +12,11 @@ function userEntry(blocks: LoopEntry['content_json'], seq = 1): LoopEntry {
 describe('loop-parser file references', () => {
   const ref = (path: string, deleted?: true) => ({ type: 'file_ref' as const, file_ref: { path, mime_type: 'image/png', size: 4, ...(deleted ? { deleted } : {}) } })
 
-  it('shows an image reference as a preview and a deleted one as an attachment marked deleted', () => {
+  it('shows references as attachments (chips), a deleted one marked deleted', () => {
     for (const parse of [parseLoopToDisplay, parseLoopWithToolPairs]) {
       const [entry] = parse([userEntry([{ type: 'text', text: 'two files' }, ref('pics/a b.png'), ref('pics/gone.png', true)])])
-      expect(entry.metadata?.imagePreviewUrls).toEqual(['adf-file://pics/a%20b.png'])
+      expect(entry.content).toBe('two files')
+      expect(entry.metadata?.imagePreviewUrls).toBeUndefined()
       expect(entry.metadata?.attachments).toEqual([
         { path: 'pics/a b.png', name: 'a b.png', mime_type: 'image/png', kind: 'image' },
         { path: 'pics/gone.png', name: 'gone.png', mime_type: 'image/png', kind: 'image', deleted: true },

@@ -1918,6 +1918,32 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </span>
             </div>
           </Field>
+          <Field label="Media" hint="Most files and MB one request carries (default 20 files, 20 MB). Past either, the oldest files are left out until half of both remain, and the chat says how many. History keeps them all.">
+            <div className="flex items-center gap-2">
+              <NumberInput
+                min={0}
+                step={1}
+                value={local.context?.max_request_media_files ?? 0}
+                placeholder="20"
+                onChange={(v) =>
+                  save({ ...local, context: { ...local.context, max_request_media_files: v > 0 ? v : undefined } })
+                }
+                className="field-input w-20"
+              />
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">files</span>
+              <NumberInput
+                min={0}
+                step={1}
+                value={local.context?.max_request_media_mb ?? 0}
+                placeholder="20"
+                onChange={(v) =>
+                  save({ ...local, context: { ...local.context, max_request_media_mb: v > 0 ? v : undefined } })
+                }
+                className="field-input w-20"
+              />
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">MB</span>
+            </div>
+          </Field>
           {(() => {
             const adfProviders: AdfProviderConfig[] = local.providers ?? []
             const compactionModel = local.context?.compaction_model ?? null

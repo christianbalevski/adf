@@ -578,6 +578,14 @@ export interface DynamicInstructionsConfig {
 export interface ContextConfig {
   compact_threshold?: number | null
   /**
+   * Request media limit: most referenced files one request carries. Absent
+   * or null: 20. No upper bound; a provider that refuses the request says so
+   * in the turn's error.
+   */
+  max_request_media_files?: number | null
+  /** Request media limit: most megabytes (MiB) of referenced files one request carries. Absent or null: 20. No upper bound. */
+  max_request_media_mb?: number | null
+  /**
    * Model that writes the compaction summary. Absent = the agent's own model.
    * `provider` may be any configured provider (credentials resolve by its id).
    * A model that cannot be built fails the compaction; it never falls back.

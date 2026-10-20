@@ -55,7 +55,7 @@ describe('transcript model', () => {
         { type: 'file_ref', file_ref: { path: 'loop-upload/old.png', mime_type: 'image/png', size: 10, deleted: true } },
       ], created_at: 1 },
     ] as LoopEntry[])
-    expect(items).toEqual([expect.objectContaining({ kind: 'user', text: 'look\n[image: loop-upload/cat.png]\n[deleted: old.png]' })])
+    expect(items).toEqual([expect.objectContaining({ kind: 'user', text: 'look\n[image: cat.png]\n[deleted: old.png]' })])
   })
 
   it('streams deltas into one assistant item and finalizes on turn.completed', () => {

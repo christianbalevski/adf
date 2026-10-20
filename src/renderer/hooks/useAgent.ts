@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { attachmentImageUrls, type DisplayAttachment } from '../../shared/utils/file-ref'
+import type { DisplayAttachment } from '../../shared/utils/file-ref'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentLogEntry } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
@@ -194,7 +194,6 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
           // command bar) — no optimistic echo happened, so render the
           // user's own words as a user bubble, not a trigger chip.
           const attachments = payload.attachments ?? []
-          const imagePreviewUrls = attachmentImageUrls(attachments)
           agentStore.addLogEntry({
             id: nanoid(),
             type: 'user',
@@ -202,8 +201,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
             timestamp: event.timestamp,
             metadata: {
               ...seqMeta(payload),
-              ...(attachments.length > 0 ? { attachments } : {}),
-              ...(imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {})
+              ...(attachments.length > 0 ? { attachments } : {})
             }
           }, loop)
         } else if (payload.triggerType !== 'manual_invoke') {

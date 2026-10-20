@@ -90,9 +90,9 @@ describe('Inspect › Settings against the mock daemon', () => {
     expect(frame).toContain('instructions in $EDITOR') // status bar hint
     await focusMain()
 
-    // Autostart (row 5): Space flips it; only autostart moves.
+    // Autostart (row 6): Space flips it; only autostart moves.
     const before = JSON.parse(JSON.stringify(config())) as Record<string, unknown>
-    for (let i = 0; i < 4; i++) await tui.press(KEY.down)
+    for (let i = 0; i < 5; i++) await tui.press(KEY.down)
     await tui.press(' ')
     await tui.waitFor(() => inspect.configPuts.length === 1)
     expect(changed(before, lastPut())).toEqual(['autostart'])

@@ -4,6 +4,7 @@ import { useDocumentStore } from '../stores/document.store'
 import { useMessageQueueStore, queuedLoops, selectQueue, sameAgentPath, heldForOwner, MAX_AUTOMATIC_SENDS, type QueuedMessage } from '../stores/message-queue.store'
 import type { BackgroundAgentStatus, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import { attachmentMetadata } from '../../shared/utils/file-ref'
 
 /**
  * Send a loop's queued messages as one chat, now that its turn has ended.
@@ -45,8 +46,9 @@ export function deliverQueuedMessages(filePath: string, loop: string, opts: { au
  * messages go back marked "Not sent" for the owner to see when they open it.
  */
 export function sendQueuedMessages(filePath: string, loop: string, queue: QueuedMessage[]): void {
-  const combined = queue.map((m) => m.text).join('\n\n')
   const content = queue.flatMap((m) => m.content ?? [{ type: 'text' as const, text: m.text }])
+  // The bubble shows what the owner typed; attachments are chips, not text.
+  const combined = content.filter((b) => b.type === 'text' && b.text).map((b) => b.text).join('\n\n')
   const imagePreviewUrls = queue.flatMap((m) => m.imagePreviewUrls ?? [])
   let bubbleId: string | null = null
   let previousState: AgentState | null = null
@@ -59,7 +61,7 @@ export function sendQueuedMessages(filePath: string, loop: string, queue: Queued
       type: 'user',
       content: combined,
       timestamp: Date.now(),
-      metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
+      metadata: attachmentMetadata(content, imagePreviewUrls)
     }, loop)
     agentStore.setState('active', loop)
   }

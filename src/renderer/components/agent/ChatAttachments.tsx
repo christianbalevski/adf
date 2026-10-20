@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { deletedFilePlaceholder, type DisplayAttachment } from '../../../shared/utils/file-ref'
+import { adfFileUrl, deletedFilePlaceholder, type DisplayAttachment } from '../../../shared/utils/file-ref'
 
 /** Placeholder for a file a message refers to that is gone. Same text the model receives. */
 function DeletedFile({ name }: { name: string }) {
@@ -27,22 +27,35 @@ export function AttachedImage({ url, name, alt, className }: { url: string; name
   return <img src={url} alt={alt ?? name ?? 'image'} className={className} onError={() => setFailed(true)} />
 }
 
+const CHIP = 'inline-flex max-w-[14rem] items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-2 py-1 text-[11px] text-[var(--ink)]'
+
+/** One attachment as a compact chip: a thumbnail for an image, then its name. */
+function AttachmentChip({ attachment }: { attachment: DisplayAttachment }) {
+  const [failed, setFailed] = useState(false)
+  if (attachment.deleted || failed) {
+    return <span className={CHIP} title={attachment.path}><DeletedFile name={attachment.name} /></span>
+  }
+  return (
+    <span className={CHIP} title={attachment.path}>
+      {attachment.kind === 'image' && (
+        <img src={adfFileUrl(attachment.path)} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" onError={() => setFailed(true)} />
+      )}
+      <span className="truncate">{attachment.name}</span>
+      <span className="shrink-0 font-mono text-[var(--ink-faint)]">{attachment.kind ?? 'file'}</span>
+    </span>
+  )
+}
+
 /**
- * The references an image preview does not show: deleted files and audio or
- * video. Images that still exist are rendered from `imagePreviewUrls`.
+ * A message's attachments as chips under its text. `deletedOnly`: a tool
+ * result already previews the file it read, so only a deleted one is shown.
  */
-export function AttachmentList({ attachments, align = 'end' }: { attachments: DisplayAttachment[]; align?: 'start' | 'end' }) {
-  const rows = attachments.filter(a => a.deleted || a.kind !== 'image')
+export function AttachmentList({ attachments, align = 'end', deletedOnly = false }: { attachments: DisplayAttachment[]; align?: 'start' | 'end'; deletedOnly?: boolean }) {
+  const rows = deletedOnly ? attachments.filter(a => a.deleted) : attachments
   if (rows.length === 0) return null
   return (
     <div className={`flex max-w-[85%] flex-wrap gap-1.5 ${align === 'end' ? 'justify-end' : 'justify-start'}`}>
-      {rows.map((a, index) => a.deleted
-        ? <DeletedFile key={`${a.path}-${index}`} name={a.name} />
-        : (
-          <span key={`${a.path}-${index}`} title={a.path} className="rounded border border-[var(--rule)] px-1.5 py-0.5 text-xs text-[var(--ink-muted)]">
-            {a.name}
-          </span>
-        ))}
+      {rows.map((a, index) => <AttachmentChip key={`${a.path}-${index}`} attachment={a} />)}
     </div>
   )
 }
