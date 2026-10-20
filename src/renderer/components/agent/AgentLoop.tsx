@@ -35,6 +35,7 @@ import {
 import { Button } from '../ui'
 import { Tooltip } from '../common/Tooltip'
 import { escStopsTurn } from '../../utils/keyboard'
+import { interruptOpenTurn } from '../../utils/turn-interrupt'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { SlashCommandPalette } from './SlashCommandPalette'
@@ -1654,13 +1655,8 @@ function LoopStream({ loop }: { loop: string }) {
     setInterrupting(true)
     let error: string | null = null
     try {
-      // On the open agent's runtime (multi-runtime.md §4.1); This computer's surface is window.adfApi.
-      const api = openApi()
-      const result = await (api && api !== window.adfApi ? api.interruptTurn(filePath, loop) : window.adfApi?.interruptTurn(filePath, loop))
-      if (!result) error = 'no agent runtime'
-      else if (!result.success) error = result.error ?? 'unknown error'
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err)
+      // On the open agent's runtime (multi-runtime.md §4.1).
+      error = await interruptOpenTurn(filePath, loop)
     } finally {
       interruptingRef.current = false
       setInterrupting(false)

@@ -5,7 +5,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { escStopsTurn } from '../../../src/renderer/utils/keyboard'
 import { BUILTIN_COMMANDS } from '../../../src/renderer/utils/slash-commands'
 import { SHORTCUT_SECTIONS } from '../../../src/shared/constants/keyboard-shortcuts'
@@ -78,9 +78,9 @@ describe('the composer\'s Stop', () => {
     expect(loop).toContain("state === 'active' ? 'Queue message'")
   })
 
-  it('calls the runtime interrupt for this file and loop, one click, and says a refusal', () => {
-    expect(loop).toContain('window.adfApi?.interruptTurn(filePath, loop)')
-    expect(loop).not.toMatch(/interruptTurn[\s\S]{0,200}confirm\(/)
+  it('is one click that says a refusal', () => {
+    expect(loop).toContain('error = await interruptOpenTurn(filePath, loop)')
+    expect(loop).not.toMatch(/interruptOpenTurn[\s\S]{0,200}confirm\(/)
     expect(loop).toContain('Turn not interrupted: ')
   })
 
@@ -98,6 +98,59 @@ describe('the composer\'s Stop', () => {
     expect(stop.description).toContain('The agent stays on')
     expect(off.description).toContain('Off in the title bar')
     expect(loop).toMatch(/case 'stop': \{\s*\/\/[^\n]*\n\s*await handleInterrupt\(\)/)
+  })
+})
+
+describe('interruptOpenTurn', () => {
+  const g = globalThis as { window?: unknown }
+  let before: unknown
+  beforeEach(() => { before = g.window; vi.resetModules() })
+  afterEach(() => { g.window = before })
+
+  /** A window whose This computer surface and each bound surface record their interrupts. */
+  function stubWindow(answers: Record<string, unknown>) {
+    const calls: Array<{ runtime: string; filePath: string; loop: string }> = []
+    const surface = (runtime: string) => ({
+      runtimeId: runtime === 'local' ? undefined : runtime,
+      interruptTurn: async (filePath: string, loop: string) => {
+        calls.push({ runtime, filePath, loop })
+        const answer = answers[runtime]
+        if (answer instanceof Error) throw answer
+        return answer
+      },
+    })
+    g.window = { location: { search: '' }, adfApi: { ...surface('local'), runtime: (id: string) => surface(id) } }
+    return calls
+  }
+
+  async function load(runtimeId: string) {
+    const { interruptOpenTurn } = await import('../../../src/renderer/utils/turn-interrupt')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    useDocumentStore.setState({ runtimeId })
+    return interruptOpenTurn
+  }
+
+  it('interrupts the loop of the open agent on This computer', async () => {
+    const calls = stubWindow({ local: { success: true } })
+    expect(await (await load('local'))('/agents/agent-1.adf', 'main')).toBeNull()
+    expect(calls).toEqual([{ runtime: 'local', filePath: '/agents/agent-1.adf', loop: 'main' }])
+  })
+
+  it('interrupts on the open agent\'s runtime when it is another computer', async () => {
+    const calls = stubWindow({ 'remote:host-1': { success: true } })
+    expect(await (await load('remote:host-1'))('/srv/agents/agent-1.adf', 'worker')).toBeNull()
+    expect(calls).toEqual([{ runtime: 'remote:host-1', filePath: '/srv/agents/agent-1.adf', loop: 'worker' }])
+  })
+
+  it('answers the refusal, a thrown error, or no runtime', async () => {
+    stubWindow({ local: { success: false, error: 'no turn is running' } })
+    expect(await (await load('local'))('/agents/agent-1.adf', 'main')).toBe('no turn is running')
+    vi.resetModules()
+    stubWindow({ local: new Error('Cannot reach daemon') })
+    expect(await (await load('local'))('/agents/agent-1.adf', 'main')).toBe('Cannot reach daemon')
+    vi.resetModules()
+    stubWindow({ local: undefined })
+    expect(await (await load('local'))('/agents/agent-1.adf', 'main')).toBe('no agent runtime')
   })
 })
 
