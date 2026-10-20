@@ -33,7 +33,7 @@
   <sub>Where an agent lives. At t = 0 its parts are spread across systems run by other people. At t = 2026 they are held in one file, ava.adf.</sub>
 </p>
 
-![The ADF Studio window with a fleet of agents in the sidebar, a markdown document open in the center editor, and the Loop panel on the right showing a conversation with tool calls, reasoning blocks, and token counts.](docs/assets/screenshots/studio-agent-loop.png)
+![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](docs/assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 This repository contains the spec, the runtime daemon, the CLI, and the desktop app ADF Studio. Together they are the reference implementation of ADF.
 
@@ -90,12 +90,12 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/assets/screenshots/home-dashboard.png" alt="The Home dashboard with status tiles for providers, containers, agents, and networking, all green.">
-      <p align="center"><i>Home dashboard</i></p>
+      <img src="docs/assets/screenshots/studio-home-v0.7.8.png" alt="The Home screen: a new agent's avatar, example requests, and the composer with chips for the agent's name, template, model and folder.">
+      <p align="center"><i>Home</i></p>
     </td>
     <td width="50%">
-      <img src="docs/assets/screenshots/agent-loop-conversation.png" alt="The Loop panel showing a conversation with context blocks, reasoning, and tool calls inline.">
-      <p align="center"><i>Loop panel with reasoning and tool calls</i></p>
+      <img src="docs/assets/screenshots/studio-files-mind-v0.7.8.png" alt="An agent's mind.md open in the editor, and the Files tab listing its files with protection badges.">
+      <p align="center"><i>Files and mind</i></p>
     </td>
   </tr>
 </table>

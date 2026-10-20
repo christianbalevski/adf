@@ -34,7 +34,7 @@ export function McpServerLogs({ logs, onClose, serverName }: McpServerLogsProps)
         className="max-h-48 overflow-y-auto bg-neutral-900 p-2"
       >
         {logs.length === 0 ? (
-          <p className="text-xs text-neutral-500 font-mono">No logs yet.</p>
+          <p className="text-xs text-neutral-400 font-mono">No logs yet.</p>
         ) : (
           logs.map((entry, i) => {
             const time = new Date(entry.timestamp).toLocaleTimeString()
@@ -44,7 +44,7 @@ export function McpServerLogs({ logs, onClose, serverName }: McpServerLogsProps)
               'text-neutral-300'
             return (
               <div key={i} className="flex gap-2 text-[11px] font-mono leading-relaxed">
-                <span className="text-neutral-500 shrink-0">{time}</span>
+                <span className="text-neutral-400 shrink-0">{time}</span>
                 <span className={color}>{entry.message}</span>
               </div>
             )

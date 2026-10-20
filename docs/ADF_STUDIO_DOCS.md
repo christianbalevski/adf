@@ -6,7 +6,7 @@ This document covers the **Studio application itself**: its interface, settings,
 
 > **Looking for a specific concept?** Start at [docs/index.md](index.md). This page is the app tour, not the full reference. It links into the guides rather than duplicating them.
 
-![The ADF Studio window with a fleet of agents in the sidebar, a markdown document open in the center editor, and the Loop panel on the right showing a conversation with tool calls, reasoning blocks, and token counts.](assets/screenshots/studio-agent-loop.png)
+![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 ---
 
@@ -34,7 +34,7 @@ An agent needs a provider before it can run. Home opens the provider sheet when 
    - **Other**: any endpoint that speaks the OpenAI API, with a base URL you enter.
 4. Click a tile. The provider is created and its configure modal opens: enter the key or complete the sign-in, optionally set a default model, and **Save**.
 
-![Settings → Providers listing the connected providers, each row with the service logo, name, and default model.](assets/screenshots/settings-add-provider.png)
+![The Add a provider catalog: a search field, a Subscriptions group (ChatGPT, Grok) and an APIs group (Anthropic, OpenAI, OpenRouter, Google Gemini, xAI, Mistral, DeepSeek, Groq, Cerebras, Together AI, Fireworks AI, Perplexity), each tile with the service logo and a one-line description.](assets/screenshots/studio-add-provider-v0.7.8.png)
 
 Provider keys are application-level and are **never** exposed to agent code execution; only server-side model invocation can use them. See [Settings](guides/settings.md#providers) for the full provider reference.
 
@@ -104,7 +104,7 @@ Home is what the center shows with no agent open, or after **Home**. It has:
 
 Every message sent from Home creates a new agent, which opens with its loop in the center. [Getting Started](getting-started.md) walks through it.
 
-![The Home dashboard with an "All systems go" banner, status tiles for Providers, MCP Servers, Channels, Packages, Containers, Host Access, Agents, and Running counts, a Networking panel with Mesh, LAN Discovery, LAN Peers, and Tailnet tiles, and the tracked directories list.](assets/screenshots/home-dashboard.png)
+![The Home screen: the new agent quick-orchid's avatar with "Hi, I'm quick-orchid.", rows of example requests, and the composer with a typed request and chips for the agent's name, the Standard template, the provider and model, and the my-agents folder.](assets/screenshots/studio-home-v0.7.8.png)
 
 ### Center: editor tabs
 
@@ -180,7 +180,7 @@ While a turn runs:
 
 The `+` in the composer, or a drop onto it, attaches files. Each attachment shows as a chip with its name and kind, and is saved in the agent's files when you send; the message keeps a reference to it (see [Multimodal](#multimodal)). A file the agent's model cannot take is refused with the reason.
 
-![The Loop tab showing a conversation: a collapsed Context Injected block, a user message bubble, an expandable amber Thinking block with a token count, assistant text, and inline msg_send and fs_write tool-call chips with their JSON arguments.](assets/screenshots/agent-loop-conversation.png)
+![The Loops tab: the user's request, a collapsed Dynamic Instructions block, assistant text with timestamps, an expanded step group with two fs_write tool calls and their JSON arguments, and a sys_update_config call awaiting approval with Approve and Reject buttons.](assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 See [Agent States and Lifecycle](guides/agent-states.md) for the full state model (active, idle, hibernate, suspended, off) and [Memory Management](guides/memory-management.md) for how the loop is compacted and archived over time.
 

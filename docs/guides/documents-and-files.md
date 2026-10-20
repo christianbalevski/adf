@@ -114,7 +114,7 @@ These paths aren't enforced but are strongly recommended:
 
 The **Files** tab shows all files in the agent's virtual filesystem, organized in a **collapsible folder tree**. Files are grouped by directory with expand/collapse toggles, folder icons, and file count badges. Each file row shows the filename, size, and protection badge.
 
-![The Files tab of an agent: a drop-zone for uploads, a reports folder expanded to show two markdown files, and file rows with size plus color-coded protection badges — amber no-delete on patrol-log.md, red read-only on charter.md, and no badge on an unprotected file. A TABLES section below lists the adf_audit table with its row count.](../assets/screenshots/agent-files-panel.png)
+![The Files tab of an agent: a search field with upload and new-file buttons, a mind folder holding log.md, and file rows with size plus color-coded protection badges, amber no-delete on mind.md, README.md and soul.md and red read-only on skills-registry.json, with no badge on decisions.md. A TABLES section below lists the adf_audit table with its row count. mind.md is open in the center editor.](../assets/screenshots/studio-files-mind-v0.7.8.png)
 
 From here you can:
 
@@ -141,7 +141,7 @@ Key features:
 
 The first time you open an ADF file, `README.md`, `mind.md` and `soul.md` open in editor tabs, with `README.md` in front; after that Studio reopens the tabs you left open. Clicking files in the Files panel opens them in new tabs.
 
-![The tabbed editor with README.md and charter.md tabs open, the markdown formatting toolbar (bold, italic, headings, lists, quote, code, table) above the rendered document, and a Raw toggle on the right.](../assets/screenshots/editor-tabs.png)
+![The editor with Loops, README.md, mind.md and soul.md tabs, mind.md in front, the markdown formatting toolbar (bold, italic, strikethrough, headings, lists, quote, code, table) above the rendered document, a Raw toggle on the right, and a token count in the corner.](../assets/screenshots/studio-files-mind-v0.7.8.png)
 
 ### Working with Files via Tools
 
