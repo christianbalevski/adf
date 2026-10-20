@@ -312,7 +312,8 @@ export class RuntimeManager {
    */
   async shutdown(opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> {
     this.disposed = true
-    const others = [...this.remotes.values()]
+    // Ones still retiring too: their sessions end within the same quit.
+    const others = [...new Set([...this.remotes.values(), ...this.retiring])]
     await Promise.all([
       this.opts.primary.shutdown(opts),
       ...others.map((rt) => rt.shutdown().catch((err) => this.opts.log.warn(`[Runtimes] Quit: ending the sessions of ${rt.id} failed:`, err))),

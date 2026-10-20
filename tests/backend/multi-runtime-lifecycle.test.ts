@@ -122,6 +122,18 @@ describe('a runtime that retires', () => {
     expect(await t.handle.runtimes.get('remote:host-1')!.ready).toBe(true)
   })
 
+  it('quit while it retires waits for its sessions too, within the session-end budget', async () => {
+    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const t = await boot({ hosts: [host1] })
+    await t.sync()
+    await t.handle.runtimes.get('remote:host-1')!.ready
+    let ended = false
+    host1.sessions[0].end = async () => { await tick(300); ended = true }
+    t.handle.runtimes.sync({})
+    await t.handle.shutdown()
+    expect(ended).toBe(true)
+  })
+
   it('forgotten, then saved again while it retires: it connects again', async () => {
     const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
     const t = await boot({ hosts: [host1] })
