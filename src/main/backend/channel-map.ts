@@ -556,6 +556,8 @@ export const CHANNEL_MAP = {
   [IPC.WINDOW_QUEUE_GET]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages main holds for the asking agent window, which a reloaded page takes back before it mirrors again.'),
   [IPC.QUEUE_HANDOVER_TAKE]: local('invoke', 'Registered in main/index.ts in daemon mode: the queued messages of closed agent windows, taken once by the main window.'),
   [IPC.QUEUE_HANDOVER_READY]: local('push', 'Studio main tells the main window that a closed agent window left queued messages.'),
+  [IPC.WINDOW_LIST_AGENTS]: local('invoke', 'Registered in main/index.ts in daemon mode: the agents open in agent windows ({filePath, agentId}), for the sidebar marker.'),
+  [IPC.WINDOW_AGENTS_CHANGED]: local('push', 'Studio main sends the main window the agents open in agent windows when a window opens, closes or fails to open its agent.'),
   [IPC.MENU_ACTION_TAKE_PENDING]: local('invoke', 'Registered in main/index.ts in daemon mode: the menu actions sent while the page loaded; the call marks the page as listening.'),
   [IPC.APPEARANCE_CHANGED]: local('push', 'Studio main sends the appearance keys a window saved to every other window.'),
   [IPC.NETWORK_FORGET]: local('invoke', 'Remove an allowed network: local mode DELETE /remote-access/networks/:id; with no daemon Studio main writes remote-access.json and re-syncs the mesh; remote mode refuses.'),

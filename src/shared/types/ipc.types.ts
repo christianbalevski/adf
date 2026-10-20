@@ -341,6 +341,8 @@ export interface TrackedDirEntry {
   icon?: string
   /** adf_meta 'adf_did': seeds the orbital avatar. */
   did?: string
+  /** The owner accepted this agent's review (config.id in reviewedAgents); unset when the file has no readable config. */
+  reviewed?: boolean
   isDirectory?: boolean
   children?: TrackedDirEntry[]
 }

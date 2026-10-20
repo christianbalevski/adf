@@ -22,6 +22,8 @@ import { Button } from '../ui'
 import { REVEAL_IN_FOLDER_LABEL } from '../../utils/platform'
 import { collectRunningAgents, collectRailAgents, type RunningAgentRow } from '../../utils/running-agents'
 import { useApprovalsStore } from '../../stores/approvals.store'
+import { reportFailure, agentNameOf, failureReason } from '../../stores/failure-notices.store'
+import { useInAgentWindow, useTrackAgentWindows } from '../../stores/open-agent-windows.store'
 import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../utils/stored-size'
 import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
@@ -67,16 +69,23 @@ async function startAgentsSequentially(
   )
   for (const file of toStart) app.addStartingFilePath(file.filePath)
   try {
+    // One failure is shown and the rest still start.
     for (const file of toStart) {
+      const name = file.agentName ?? agentNameOf(file.filePath)
       try {
         if (file.filePath === currentFilePath) {
           const result = await window.adfApi.startAgent()
           if (result.success) {
             useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
+          } else {
+            reportFailure(`${name} did not start`, result.error)
           }
         } else {
-          await window.adfApi.startBackgroundAgent(file.filePath)
+          const result = await window.adfApi.startBackgroundAgent(file.filePath)
+          if (!result.success) reportFailure(`${name} did not start`, result.error)
         }
+      } catch (err) {
+        reportFailure(`${name} did not start`, err)
       } finally {
         app.removeStartingFilePath(file.filePath)
       }
@@ -88,13 +97,17 @@ async function startAgentsSequentially(
 
 /**
  * Stop every running agent in `files`, one at a time, marking all of them as
- * stopping up front so each pending shutoff is visible immediately.
+ * stopping up front so each pending shutoff is visible immediately. A stop
+ * that fails is shown (unless `report` is off) and the rest still stop; the
+ * failures are returned.
  */
 async function stopAgentsSequentially(
   files: TrackedDirEntry[],
   currentFilePath: string | null,
-  backgroundAgentMap: Map<string, BackgroundAgentStatus>
-): Promise<void> {
+  backgroundAgentMap: Map<string, BackgroundAgentStatus>,
+  { report = true }: { report?: boolean } = {}
+): Promise<string[]> {
+  const failures: string[] = []
   const app = useAppStore.getState()
   const toStop = files.filter((f) =>
     f.filePath === currentFilePath || backgroundAgentMap.has(f.filePath)
@@ -109,6 +122,11 @@ async function stopAgentsSequentially(
         } else {
           await window.adfApi.stopBackgroundAgent(file.filePath)
         }
+      } catch (err) {
+        const what = `${file.agentName ?? agentNameOf(file.filePath)} did not stop`
+        failures.push(what)
+        if (report) reportFailure(what, err)
+        else console.warn(`[Sidebar] ${what}:`, err)
       } finally {
         app.removeStoppingFilePath(file.filePath)
       }
@@ -116,6 +134,7 @@ async function stopAgentsSequentially(
   } finally {
     for (const file of toStop) app.removeStoppingFilePath(file.filePath)
   }
+  return failures
 }
 
 /**
@@ -141,7 +160,7 @@ async function needsReviewBeforeStart(isActive: boolean): Promise<boolean> {
  * file uses the background manager. The starting/stopping path sets drive the
  * row spinner for the duration.
  */
-async function toggleAgent(filePath: string, isActive: boolean, isRunning: boolean): Promise<void> {
+async function toggleAgent(filePath: string, isActive: boolean, isRunning: boolean, name: string = agentNameOf(filePath)): Promise<void> {
   const app = useAppStore.getState()
   if (isRunning) app.addStoppingFilePath(filePath)
   else app.addStartingFilePath(filePath)
@@ -158,12 +177,18 @@ async function toggleAgent(filePath: string, isActive: boolean, isRunning: boole
     } else {
       let result = await window.adfApi.startBackgroundAgent(filePath)
       // Same provider-at-need as the foreground path: connect one, retry once.
+      let cancelled = false
       if (!result.success && (result.code === 'provider_missing' || result.code === 'provider_unconfigured')) {
         const connected = await app.requestProviderSetup(result.code, filePath)
         if (connected) result = await window.adfApi.startBackgroundAgent(filePath)
+        else cancelled = true
       }
-      if (!result.success && result.error) console.warn('[Sidebar] Background start failed:', result.error)
+      // A background agent has no chat on screen: the reason is shown here.
+      if (!result.success && !cancelled) reportFailure(`${name} did not start`, result.error)
     }
+  } catch (err) {
+    // The foreground start reports in its chat and does not throw; this is a stop, or the IPC itself.
+    reportFailure(`${name} did not ${isRunning ? 'stop' : 'start'}`, err)
   } finally {
     if (isRunning) app.removeStoppingFilePath(filePath)
     else app.removeStartingFilePath(filePath)
@@ -289,7 +314,11 @@ export function Sidebar() {
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
+  const showHome = useAppStore((s) => s.showHome)
+  const setShowHome = useAppStore((s) => s.setShowHome)
   const { openFile, createFile, closeFile } = useAdfFile()
+  // Which agents have their own window (daemon mode), for the row marker.
+  useTrackAgentWindows()
   const { loadDirectories, rescanDirectory, removeDirectory, addDirectory } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
@@ -355,6 +384,8 @@ export function Sidebar() {
   const handleOpenFile = useCallback((fp: string) => {
     if (showSettings) setShowSettings(false)
     if (showMeshGraph) setShowMeshGraph(false)
+    // The open agent, from Home: back to it, nothing is reopened.
+    if (showHome && fp === filePath) { setShowHome(false); return }
     const scrollTop = dirScrollRef.current?.scrollTop ?? 0
     openFile(fp).then(() => {
       requestAnimationFrame(() => {
@@ -363,7 +394,7 @@ export function Sidebar() {
         }
       })
     })
-  }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph])
+  }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph, showHome, filePath, setShowHome])
 
   const handleCreateFile = useCallback(async () => {
     const result = await createFile('Untitled')
@@ -385,7 +416,7 @@ export function Sidebar() {
   const closeFolderMenu = useCallback(() => setFolderMenu(null), [])
   const folderMenuItems = useMemo<ContextMenuItem[]>(() => [
     { label: 'Open agent…', onSelect: () => { void handleOpenFromPicker() } },
-    { label: 'Track folder…', onSelect: () => { addDirectory().catch((err) => console.error('[Sidebar] Track folder failed:', err)) } },
+    { label: 'Track folder…', onSelect: () => { addDirectory().catch((err) => reportFailure('Folder not tracked', err)) } },
   ], [addDirectory, handleOpenFromPicker])
 
   // Row context menu + the dialogs it opens. One instance of each lives here,
@@ -423,7 +454,9 @@ export function Sidebar() {
   const handleUntrack = useCallback(async () => {
     const root = untrackTarget
     if (!root) return
-    await stopAgentsSequentially(untrackFiles, filePath, backgroundAgentMap)
+    // A folder whose agent did not stop stays tracked: its row is the only Stop left.
+    const failed = await stopAgentsSequentially(untrackFiles, filePath, backgroundAgentMap, { report: false })
+    if (failed.length > 0) throw new Error(`${failed.join('; ')}. The folder is still tracked.`)
     // The open file is one of the rows about to vanish; close it so the
     // editor cannot start it again from a folder the sidebar no longer shows.
     if (filePath && (filePath === root || filePath.startsWith(`${root}/`))) await closeFile()
@@ -489,11 +522,7 @@ export function Sidebar() {
         disabled: busy,
         onSelect: async () => {
           if (!isRunning && await needsReviewBeforeStart(isActive)) return
-          try {
-            await toggleAgent(fp, isActive, isRunning)
-          } catch (err) {
-            console.error('[Sidebar] Context menu toggle failed:', err)
-          }
+          await toggleAgent(fp, isActive, isRunning, file.agentName ?? agentNameOf(fp))
         }
       },
       // Daemon mode: the agent in its own window (agent-windows.md).
@@ -574,16 +603,17 @@ export function Sidebar() {
   if (collapsed) {
     return (
       <div className="w-10 bg-surface-2 border-r border-hairline flex flex-col items-center py-2 gap-1 min-h-0">
-        <button
-          onClick={toggleSidebar}
-          title="Expand sidebar"
-          aria-label="Expand sidebar"
-          className="w-7 h-7 shrink-0 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
-        </button>
+        <Tooltip tip="Expand sidebar" className="flex shrink-0">
+          <button
+            onClick={toggleSidebar}
+            aria-label="Expand sidebar"
+            className="w-7 h-7 shrink-0 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </button>
+        </Tooltip>
         {/* Running agents, and the open one; only these scroll. */}
         <div className="scrollbar-none flex-1 min-h-0 w-full overflow-y-auto flex flex-col items-center gap-1 pt-1">
           {railAgents.map((a, i) => (
@@ -637,39 +667,42 @@ export function Sidebar() {
             className="w-full h-6 text-[11px] pl-6 pr-2 border border-[var(--adf-ui-border)] rounded bg-[var(--adf-ui-surface)] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] outline-none focus:border-[var(--adf-ui-accent)] min-w-0 disabled:opacity-50 disabled:bg-transparent"
           />
         </div>
-        <button
-          onClick={handleCreateFile}
-          title="New agent"
-          aria-label="New agent"
-          className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
-        <button
-          onClick={openFolderMenu}
-          title="Open agent or track folder"
-          aria-label="Open agent or track folder"
-          aria-haspopup="menu"
-          aria-expanded={folderMenu !== null}
-          className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-        </button>
-        <button
-          onClick={toggleSidebar}
-          title="Collapse sidebar"
-          aria-label="Collapse sidebar"
-          className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-        </button>
+        <Tooltip tip="New agent" className="flex">
+          <button
+            onClick={handleCreateFile}
+            aria-label="New agent"
+            className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
+        </Tooltip>
+        <Tooltip tip="Open agent or track folder" className="flex" disabled={folderMenu !== null}>
+          <button
+            onClick={openFolderMenu}
+            aria-label="Open agent or track folder"
+            aria-haspopup="menu"
+            aria-expanded={folderMenu !== null}
+            className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+        </Tooltip>
+        <Tooltip tip="Collapse sidebar" className="flex">
+          <button
+            onClick={toggleSidebar}
+            aria-label="Collapse sidebar"
+            className="w-7 h-7 flex items-center justify-center rounded-md text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6" />
+            </svg>
+          </button>
+        </Tooltip>
       </div>
 
       {!searching && runningRows.length > 0 && (
@@ -720,9 +753,13 @@ export function Sidebar() {
             )}
           </div>
         ) : (
-          <p className="px-3 py-4 text-[11px] leading-4 text-[var(--adf-ui-text-subtle)]">
-            Open an agent to get started.
-          </p>
+          <div className="px-3 py-4 text-[11px] leading-4 text-[var(--adf-ui-text-subtle)]">
+            <p className="font-medium text-[var(--adf-ui-text-muted)]">No agents</p>
+            <p>
+              Create one in the composer on{' '}
+              <button type="button" onClick={() => setShowHome(true)} className="text-[var(--adf-ui-accent)] hover:underline">Home</button>.
+            </p>
+          </div>
         )}
       </div>
 
@@ -995,7 +1032,7 @@ const DirectorySection = memo(function DirectorySection({
         await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
       }
     } catch (err) {
-      console.error('[Sidebar] Directory toggle failed:', err)
+      reportFailure(`${dirName}: ${allActive ? 'Stop all' : 'Start all'} failed`, err)
     } finally {
       setToggling(false)
     }
@@ -1058,7 +1095,7 @@ const DirectorySection = memo(function DirectorySection({
               className="py-[3px] pr-3 text-[11px] leading-4 italic text-[var(--adf-ui-text-subtle)]"
               style={{ paddingLeft: '28px' }}
             >
-              No .adf files
+              No agents
             </div>
           )}
           {files.map((entry) => (
@@ -1149,7 +1186,7 @@ const TreeNode = memo(function TreeNode({
         await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
       }
     } catch (err) {
-      console.error('[Sidebar] Subdirectory toggle failed:', err)
+      reportFailure(`${entry.fileName}: ${allActive ? 'Stop all' : 'Start all'} failed`, err)
     } finally {
       setToggling(false)
     }
@@ -1288,6 +1325,11 @@ const AgentFileRow = memo(function AgentFileRow({
   const isStarting = useAppStore((s) => s.startingFilePaths.has(file.filePath))
   const isStopping = useAppStore((s) => s.stoppingFilePaths.has(file.filePath))
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
+  // Same as the rail: the request the agent is blocked on, oldest first.
+  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath)?.kind ?? null)
+  const inWindow = useInAgentWindow(file.filePath, file.agentId)
+  // The open agent's review state is live; the others come from the folder scan.
+  const needsReview = useAppStore((s) => isActive ? s.agentNeedsReview : file.reviewed === false)
 
   const isRunning = isActive
     ? agentState !== 'off'
@@ -1332,14 +1374,12 @@ const AgentFileRow = memo(function AgentFileRow({
 
       setToggling(true)
       try {
-        await toggleAgent(file.filePath, isActive, isRunning)
-      } catch (err) {
-        console.error('[Sidebar] Toggle agent failed:', err)
+        await toggleAgent(file.filePath, isActive, isRunning, file.agentName ?? agentNameOf(file.filePath))
       } finally {
         setToggling(false)
       }
     },
-    [file.filePath, isActive, isRunning, toggling]
+    [file.filePath, file.agentName, isActive, isRunning, toggling]
   )
 
   // Direction reads as a hover detail, not a permanent column: a leading glyph
@@ -1381,6 +1421,7 @@ const AgentFileRow = memo(function AgentFileRow({
         state={dotState}
         starting={(toggling && !isRunning) || isStarting}
         stopping={(toggling && isRunning) || isStopping}
+        waiting={waiting}
       />
 
       {/* The full path is the hint; a native title never renders in this
@@ -1429,6 +1470,25 @@ const AgentFileRow = memo(function AgentFileRow({
       {/* Trailing markers sit tighter than the row's own gap so the name
           keeps as much width as the sidebar allows. */}
       <span className="flex items-center gap-1 shrink-0">
+        {needsReview && (
+          <Tooltip tip="Not reviewed" className="flex shrink-0 text-[var(--adf-ui-warning)]">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Not reviewed" role="img">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </Tooltip>
+        )}
+
+        {inWindow && (
+          <Tooltip tip="Open in its own window" className="flex shrink-0 text-[var(--adf-ui-text-subtle)]">
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="In its own window" role="img">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <line x1="3" y1="9" x2="21" y2="9" />
+            </svg>
+          </Tooltip>
+        )}
+
         {isAutonomous && (
           <Tooltip
             tip="Autonomous — keeps working until it sets itself idle"
@@ -1531,7 +1591,7 @@ const RailAvatar = memo(function RailAvatar({
   const tip = [
     name,
     isStarting ? 'Starting' : isStopping ? 'Stopping' : RAIL_STATE_LABEL[state] ?? state,
-    waiting === 'approval' ? 'Waiting for your approval' : waiting === 'ask' ? 'Has a question for you' : null,
+    waitingLabel(waiting),
     activeLoops > 0 ? `${activeLoops} inner ${activeLoops === 1 ? 'loop' : 'loops'} working` : null
   ].filter(Boolean).join(' · ')
 
@@ -1580,6 +1640,11 @@ const RailAvatar = memo(function RailAvatar({
   )
 })
 
+/** What an amber ring means, on the rail and on a row. */
+function waitingLabel(kind: 'approval' | 'ask' | null): string | null {
+  return kind === 'approval' ? 'Waiting for your approval' : kind === 'ask' ? 'Has a question for you' : null
+}
+
 const AgentAvatar = memo(function AgentAvatar({
   seed,
   icon,
@@ -1587,7 +1652,8 @@ const AgentAvatar = memo(function AgentAvatar({
   running,
   state,
   starting,
-  stopping
+  stopping,
+  waiting = null
 }: {
   seed: string | null
   icon?: string
@@ -1596,6 +1662,8 @@ const AgentAvatar = memo(function AgentAvatar({
   state: AgentState
   starting?: boolean
   stopping?: boolean
+  /** The agent waits on the user: the rail's amber ring, with its reason as the tip. */
+  waiting?: 'approval' | 'ask' | null
 }) {
   const busy = starting || stopping
   const showBadge = busy || state !== 'not_participating'
@@ -1603,8 +1671,12 @@ const AgentAvatar = memo(function AgentAvatar({
   const quiet = emoji
     ? `transition-[filter,opacity] ${running || busy ? '' : 'grayscale opacity-70'}`
     : `transition-opacity ${running || busy ? '' : 'opacity-70'}`
-  return (
+  const waitingTip = waitingLabel(waiting)
+  const avatar = (
     <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
+      {waitingTip && (
+        <span className="absolute -inset-0.5 rounded-full ring-2 ring-amber-400 dark:ring-amber-400 animate-pulse" aria-hidden />
+      )}
       <span className={`flex ${quiet}`}>
         <OrbitalAvatar seed={seed} icon={icon} iconSeed={iconSeed} size={16} emojiSize={12} animated={state === 'active'} />
       </span>
@@ -1612,10 +1684,17 @@ const AgentAvatar = memo(function AgentAvatar({
         // A ring in the row's own colour lifts the badge off the orbital beneath
         // it; the row sets --row-bg for rest, hover and selected.
         <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
-          <StatusDot state={state} starting={starting} stopping={stopping} />
+          {/* One tip at a time: while the ring is up the avatar's tip carries the state. */}
+          <StatusDot state={state} starting={starting} stopping={stopping} bare={!!waitingTip} />
         </span>
       )}
     </span>
+  )
+  if (!waitingTip) return avatar
+  return (
+    <Tooltip tip={waitingTip} delay={300} className="flex shrink-0">
+      <span role="img" aria-label={waitingTip} className="flex">{avatar}</span>
+    </Tooltip>
   )
 })
 
@@ -1693,7 +1772,7 @@ function UntrackFolderDialog({ dirPath, runningCount, onClose, onConfirm }: {
     try {
       await onConfirm()
     } catch (err) {
-      setError(String(err))
+      setError(failureReason(err) || String(err))
       setBusy(false)
     }
   }

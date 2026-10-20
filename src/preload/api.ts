@@ -807,6 +807,10 @@ export interface AdfApi {
   /** The main window: queued messages closed agent windows left (taken once). */
   takeQueueHandover: () => Promise<QueueHandoverEntry[]>
   onQueueHandover: (callback: () => void) => () => void
+  /** The main window: the agents open in agent windows now. */
+  listAgentWindows: () => Promise<{ windows: Array<{ filePath: string; agentId: string | null }> }>
+  /** The main window: that list, pushed when an agent window opens, closes or fails to open its agent. */
+  onAgentWindowsChanged: (callback: (payload: { windows: Array<{ filePath: string; agentId: string | null }> }) => void) => () => void
   /** Menu actions sent while this page loaded; marks the page as listening. */
   takePendingMenuActions: () => Promise<string[]>
   onAppearanceChanged: (callback: (changed: Partial<AppSettings>) => void) => () => void

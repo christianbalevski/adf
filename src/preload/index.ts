@@ -786,6 +786,12 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.QUEUE_HANDOVER_READY, handler)
     return () => ipcRenderer.removeListener(IPC.QUEUE_HANDOVER_READY, handler)
   },
+  listAgentWindows: () => ipcRenderer.invoke(IPC.WINDOW_LIST_AGENTS),
+  onAgentWindowsChanged: (callback: (payload: { windows: Array<{ filePath: string; agentId: string | null }> }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { windows: Array<{ filePath: string; agentId: string | null }> }) => callback(payload)
+    ipcRenderer.on(IPC.WINDOW_AGENTS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.WINDOW_AGENTS_CHANGED, handler)
+  },
   takePendingMenuActions: () => ipcRenderer.invoke(IPC.MENU_ACTION_TAKE_PENDING),
   onAppearanceChanged: (callback: (changed: Partial<AppSettings>) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, changed: Partial<AppSettings>) => callback(changed)

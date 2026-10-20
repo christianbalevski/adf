@@ -22,7 +22,7 @@ interface FakeWindow extends AgentWindowHandle {
   request: { filePath: string; agentId: string | null; name: string; bounds?: WindowBounds; restored: boolean }
 }
 
-function setup(opts: { runtime?: string | null; saved?: unknown; check?: (entry: SavedAgentWindow) => Promise<SavedAgentCheck> } = {}) {
+function setup(opts: { runtime?: string | null; saved?: unknown; check?: (entry: SavedAgentWindow) => Promise<SavedAgentCheck>; onChange?: () => void } = {}) {
   const state = { runtime: opts.runtime === undefined ? 'local' : opts.runtime }
   const store = new Map<string, unknown>(opts.saved === undefined ? [] : [[AGENT_WINDOWS_KEY, opts.saved]])
   const windows: FakeWindow[] = []
@@ -49,6 +49,7 @@ function setup(opts: { runtime?: string | null; saved?: unknown; check?: (entry:
     settings: { get: (key) => store.get(key), set: (key, value) => { store.set(key, value) } },
     runtime: () => state.runtime,
     check: opts.check ?? (async () => 'open'),
+    ...(opts.onChange ? { onChange: opts.onChange } : {}),
     log: { log: () => {}, warn: () => {} },
   })
   const saved = () => (store.get(AGENT_WINDOWS_KEY) as { runtime: string; windows: SavedAgentWindow[] } | undefined)
@@ -295,5 +296,30 @@ describe('restore checks and bounds', () => {
     expect(titleStripVisible({ x: 100, y: 1030, width: 900, height: 700 }, screen)).toBe(false)
     // A second display to the left.
     expect(titleStripVisible({ x: -1500, y: 100, width: 900, height: 700 }, [...screen, { x: -1920, y: 0, width: 1920, height: 1080 }])).toBe(true)
+  })
+})
+
+describe('the open agents, for the main window (sidebar marker)', () => {
+  it('agents() lists what the windows show; onChange fires on open, close and a failed open', () => {
+    let changes = 0
+    const { manager, windows, sessions } = setup({ onChange: () => { changes++ } })
+    manager.open({ filePath: FILE_1, agentId: AGENT_1 })
+    expect(changes).toBe(1)
+    expect(manager.agents()).toEqual([{ filePath: FILE_1, agentId: AGENT_1 }])
+    // Focusing an existing window changes nothing.
+    manager.open({ filePath: FILE_1, agentId: AGENT_1 })
+    expect(changes).toBe(1)
+    manager.open({ filePath: FILE_2, agentId: AGENT_2 })
+    expect(changes).toBe(2)
+    // A rename: the window's session has the new path.
+    sessions.set(10, { filePath: '/agents/renamed.adf', agentId: AGENT_1 })
+    expect(manager.agents()).toEqual([{ filePath: '/agents/renamed.adf', agentId: AGENT_1 }, { filePath: FILE_2, agentId: AGENT_2 }])
+    // A window whose open failed shows no agent.
+    manager.openFailed(11)
+    expect(changes).toBe(3)
+    expect(manager.agents()).toEqual([{ filePath: '/agents/renamed.adf', agentId: AGENT_1 }])
+    windows[0].close()
+    expect(changes).toBe(4)
+    expect(manager.agents()).toEqual([])
   })
 })

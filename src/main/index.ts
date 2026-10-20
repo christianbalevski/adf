@@ -767,6 +767,11 @@ app.whenReady().then(async () => {
       // The file is there and is still the same agent (GET /files/agent/config answers its config.id).
       check: async (entry) => checkSavedAgent(entry, async (filePath) =>
         (await handle.client()).request<{ agentId: string | null }>('GET', '/files/agent/config', { query: { path: filePath } })),
+      // The main window's sidebar marks the agents that have their own window.
+      onChange: () => {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+        try { mainWindow.webContents.send(IPC.WINDOW_AGENTS_CHANGED, { windows: agentWindows?.agents() ?? [] }) } catch { /* window going away */ }
+      },
     })
     // adf-file:// requests name their window, so an agent window's images come from its agent (agent-windows.md).
     session.defaultSession.webRequest.onBeforeSendHeaders(ADF_FILE_WINDOW.headerFilter, (details, callback) => {
@@ -809,6 +814,7 @@ app.whenReady().then(async () => {
     ipcMain.handle(IPC.WINDOW_QUEUE_SYNC, (event, entries: unknown) => { queueHandover.mirror(event.sender.id, entries) })
     ipcMain.handle(IPC.WINDOW_QUEUE_GET, (event) => queueHandover.mirrorOf(event.sender.id))
     ipcMain.handle(IPC.QUEUE_HANDOVER_TAKE, (event) => (event.sender === mainWindow?.webContents ? queueHandover.take() : []))
+    ipcMain.handle(IPC.WINDOW_LIST_AGENTS, () => ({ windows: agentWindows?.agents() ?? [] }))
     // Open in new window. Inside Studio registers no handler: its renderer never offers it.
     const windows = agentWindows
     ipcMain.handle(IPC.WINDOW_OPEN_AGENT, (_event, request?: { filePath?: unknown; agentId?: unknown; name?: unknown }) => {
