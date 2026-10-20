@@ -250,6 +250,25 @@ function hostOf(url: string | null): string | null {
   try { return new URL(url).hostname.replace(/^\[|\]$/g, '') } catch { return null }
 }
 
+/** The name of the remote slot of studio-backend.json: the paired computer's, else the address's host. */
+export function slotName(remote: Pick<StudioBackendConfig['remote'], 'url' | 'paired'>): string {
+  return remote.paired?.name ?? hostOf(remote.url) ?? 'Remote computer'
+}
+
+/**
+ * The remote slot of studio-backend.json as a runtime of the set
+ * (multi-runtime.md §3.1): while it holds a URL, unless it was paired with a
+ * computer that is also a saved connection (that connection is the runtime;
+ * the Connection page shows one row for both).
+ */
+export function runtimeSlot(config: Pick<StudioBackendConfig, 'remote'>, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>): { name: string; url: string } | null {
+  const url = config.remote.url
+  if (!url) return null
+  const fp = config.remote.paired?.fingerprint
+  if (fp && Object.values(saved).some((r) => r.fingerprint === fp)) return null
+  return { name: slotName(config.remote), url }
+}
+
 function encryptedUrl(url: string | null): boolean {
   if (!url) return false
   const kind = checkRemoteDaemonUrl(url).kind
@@ -271,6 +290,13 @@ export interface ConnectionsViewInput {
   daemon: BackendDaemonStatus | null
   saved: Record<string, SavedRemote>
   discovery: RemoteDiscoveryUpdate | null
+  /**
+   * Local mode: the state of each runtime of the set, by id (multi-runtime.md
+   * §6.5). A saved connection is then a runtime: its row shows its link state
+   * and offers no Connect. Absent (remote mode, Inside Studio): the rows of
+   * settings-scopes.md §5.1.
+   */
+  runtimeStates?: Record<string, ConnectionCurrent['state']>
 }
 
 /** The connection this launch uses (settings-scopes.md §4.1, §5.4). */
@@ -305,10 +331,12 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
   if (current.kind === 'embedded' || input.configured.mode === 'embedded') rows.push(plain('embedded', 'embedded', 'Inside Studio (legacy)'))
 
   const saved: ConnectionRow[] = []
+  const states = input.runtimeStates
   const savedRow = (id: string, name: string, url: string | null, fingerprint: string | null): ConnectionRow => ({
     id, kind: 'saved', name,
-    state: inUse(id) ? current.state : 'paired',
-    action: inUse(id) ? null : 'connect',
+    // Saving connects (§12 item 2): a saved connection not in the set yet is connecting.
+    state: states ? states[id] ?? 'connecting' : inUse(id) ? current.state : 'paired',
+    action: states || inUse(id) ? null : 'connect',
     url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
     // The one in use too (e.g. it no longer connects): Remove switches to This computer first.
     removable: true,

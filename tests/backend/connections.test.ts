@@ -197,7 +197,7 @@ describe('the rows of the Connection page', () => {
 })
 
 describe('Connect, Add connection and Remove (Studio main)', () => {
-  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown> } = {}) {
+  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void } = {}) {
     const dir = tempDir()
     const env = sharedEnv(dir)
     const path = join(dir, 'studio-backend.json')
@@ -221,12 +221,25 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
       push: (v) => pushes.push(v),
       fetch: daemon.fetch,
       log: quiet,
+      ...(opts.agentWindowsOn ? { agentWindowsOn: opts.agentWindowsOn } : {}),
+      ...(opts.slotChanged ? { slotChanged: opts.slotChanged } : {}),
     })
     return { env, path, store, connections, confirms, pushes, switches, daemon }
   }
+  /** A remote-mode install (until phase 4 moves it to local, multi-runtime.md §7.3): the switch flow still runs there. */
+  const remoteMode = { v: 1, mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'desk' } }
 
-  it('Connect to a saved connection reads its token first, then saves it as the connection and restarts (the switch dialog)', async () => {
+  it('local mode: a saved connection is connected while saved; Connect to it is refused (multi-runtime.md §4.5)', async () => {
     const s = setup()
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'A saved connection is connected while it is saved.' })
+    expect(await s.connections.use('remote')).toMatchObject({ ok: false, code: 'not_found' })
+    expect(s.switches).toEqual([])
+    expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('local')
+  })
+
+  it('remote mode: Connect to another saved connection reads its token first, then saves it as the connection and restarts (the switch dialog)', async () => {
+    const s = setup({ studioBackend: remoteMode })
     await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     const result = await s.connections.use('remote:rawl-hub')
     expect(result).toMatchObject({ ok: true, notices: ['Studio restarts now.'] })
@@ -236,18 +249,19 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(s.pushes.length).toBeGreaterThan(0)
   })
 
-  it('Connect with a token the keychain does not give: the sentence, nothing saved, no restart', async () => {
-    const s = setup()
+  it('remote mode: Connect with a token the keychain does not give: the sentence, nothing saved, no restart', async () => {
+    const s = setup({ studioBackend: remoteMode })
     saveRemotes({ v: 1, default: null, remotes: { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: '', label: '', pairedAt: '' } } }, s.env)
     expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'keychain', error: keychainSentence('rawl-hub') })
     expect(s.switches).toEqual([])
-    expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('local')
+    expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('remote')
   })
 
   it('Connect refuses a computer not paired and an unknown id; Connect to This computer while it runs is a plain save', async () => {
     const s = setup()
     expect(await s.connections.use(`found:NEWW-2345@${LAN}`)).toEqual({ ok: false, code: 'not_paired', error: 'Pair first.' })
-    expect(await s.connections.use('remote:nobody')).toMatchObject({ ok: false, code: 'not_configured' })
+    expect(await s.connections.use('remote:nobody')).toMatchObject({ ok: false, code: 'not_found' })
+    expect(await setup({ studioBackend: remoteMode }).connections.use('remote:nobody')).toMatchObject({ ok: false, code: 'not_configured' })
     expect(await s.connections.use(42)).toMatchObject({ ok: false, code: 'invalid' })
     expect(await s.connections.use('local')).toMatchObject({ ok: true })
     expect(s.switches).toEqual([])
@@ -341,10 +355,9 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(loadRemotes(s.env).remotes).toEqual({})
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBeNull()
 
-    const next = setup()
+    // A remote-mode install whose connection is in use (e.g. no longer connecting): Remove switches to This computer first, in the same question.
+    const next = setup({ studioBackend: { ...remoteMode, remote: { ...remoteMode.remote, name: 'rawl-hub' } } })
     await saveConnection(next.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-    await next.connections.use('remote:rawl-hub')
-    // Saved as the next one (or in use, e.g. no longer connecting): Remove switches to This computer first, in the same question.
     const switched = await next.connections.remove('remote:rawl-hub')
     expect(next.confirms.at(-1)).toEqual({ message: 'Remove rawl-hub', detail: 'Switches to This computer, then removes the address and token from Studio and adf.\nStill listed on rawl-hub; revoke it there.', ok: 'Remove' })
     expect(switched).toMatchObject({ ok: true, notices: expect.arrayContaining(['Removed rawl-hub.']) })
@@ -354,6 +367,49 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     await saveConnection(kept.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
     expect(await kept.connections.remove('remote:rawl-hub')).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
     expect(Object.keys(loadRemotes(kept.env).remotes)).toEqual(['rawl-hub'])
+  })
+
+  it('Remove names the agent windows it closes (multi-runtime.md §6.5)', async () => {
+    const s = setup({ agentWindowsOn: (id) => (id === 'remote:rawl-hub' ? 2 : 0) })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await s.connections.remove('remote:rawl-hub')
+    expect(s.confirms).toEqual([{ message: 'Remove rawl-hub', detail: 'Removes the address and token from Studio and adf.\nCloses 2 agent windows.\nStill listed on rawl-hub; revoke it there.', ok: 'Remove' }])
+    const one = setup({ agentWindowsOn: () => 1 })
+    await saveConnection(one.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await one.connections.remove('remote:rawl-hub')
+    expect(one.confirms[0].detail).toContain('\nCloses 1 agent window.\n')
+  })
+
+  it('the remote slot: Add without a fingerprint and its Remove tell main at once (saving connects, removing disconnects)', async () => {
+    let changes = 0
+    // No /remote/hello there: a connection without a fingerprint, in studio-backend.json.
+    const daemon = fakeDaemon({ fingerprint: null })
+    const s = setup({ daemon, slotChanged: () => { changes++ } })
+    const added = await s.connections.add({ url: HUB, token: TOKEN })
+    expect(added).toMatchObject({ ok: true, id: 'remote' })
+    expect(changes).toBe(1)
+    expect(s.store.config().remote.url).toBe(HUB)
+    expect(await s.connections.remove('remote')).toMatchObject({ ok: true })
+    expect(changes).toBe(2)
+    expect(s.store.config().remote.url).toBeNull()
+  })
+})
+
+describe('the runtime set on the Connection page (multi-runtime.md §6.5)', () => {
+  const saved = { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: 'd', label: 'l', pairedAt: '' } }
+  it('local mode: a saved connection shows its runtime state and no Connect; one not in the set yet is connecting', () => {
+    const config = defaultBackendConfig()
+    const view = buildConnectionsView({
+      active: { mode: 'local', remoteName: null, config }, configured: config, daemon: daemonStatus('connected'),
+      saved: { ...saved, desk: { url: 'https://desk.example.com', fingerprint: 'DESK-2345', deviceId: 'd', label: 'l', pairedAt: '' } },
+      discovery: null,
+      runtimeStates: { local: 'connected', 'remote:rawl-hub': 'retrying' },
+    })
+    expect(view.rows.map((r) => [r.id, r.state, r.action, r.removable])).toEqual([
+      ['local', 'connected', null, false],
+      ['remote:desk', 'connecting', null, true],
+      ['remote:rawl-hub', 'retrying', null, true],
+    ])
   })
 })
 

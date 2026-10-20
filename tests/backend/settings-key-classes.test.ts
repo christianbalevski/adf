@@ -202,7 +202,7 @@ describe('settings key classes', () => {
   it('keeps the client class to the keys of design §4.1', () => {
     expect([...CLIENT_SETTINGS_KEYS].sort()).toEqual([
       'agentAvatars', 'agentWindows', 'fleetGroups', 'fleetMapState', 'fleetStewards', 'menuBarEnabled',
-      'nativeNotificationsEnabled', 'onboardingSharedAt', 'recentFiles', 'remoteRecentFiles', 'runtimeFleet', 'spellcheckDownloadsEnabled',
+      'nativeNotificationsEnabled', 'onboardingSharedAt', 'recentFiles', 'remoteRecentFiles', 'runtimeFleet', 'runtimeRecentFiles', 'spellcheckDownloadsEnabled',
       'templatesMigrationSeen', 'theme', 'uiFont', 'uiFontCustom', 'uiFontSystemDefaultApplied', 'uiScale',
       'updateChecksEnabled',
     ])
