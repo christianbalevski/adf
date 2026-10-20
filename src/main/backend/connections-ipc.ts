@@ -128,7 +128,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (!hello && pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
     if (hello) {
       const pinned = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin && s.fingerprint !== hello!.fingerprint)
-      if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired; Studio sent nothing.`)
+      if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired; Studio sent nothing, and if it was set up again, remove ${pinned[0]} and pair again.`)
       // The computer is saved under another address: never move it without asking, as Pair does.
       const moved = Object.entries(all).find(([, s]) => s.fingerprint === hello!.fingerprint && remoteUrlOrigin(s.url) !== origin)
       if (moved) {
@@ -176,22 +176,34 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (typeof id !== 'string') return fail('invalid', 'No connection given.')
     await fresh()
     const current = view().current
-    if (id === current.id || id === configuredId()) return fail('in_use', 'In use.')
+    const inUse = id === current.id || id === configuredId()
+    if (inUse && (id === 'local' || id === 'embedded')) return fail('in_use', 'In use.')
+    // The connection in use (or saved as the next one), e.g. one that no longer connects:
+    // Studio switches to This computer first, in the same Remove question, then removes it.
+    const switchFirst = inUse ? 'Switches to This computer, then removes' : 'Removes'
     if (id === 'remote') {
       const slot = deps.backend.config().remote
       if (!slot.url) return fail('not_found', 'That connection is not saved.')
       const name = slot.paired?.name ?? hostOf(slot.url)
-      if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio.\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
-      const result = await deps.backend.set({ remoteUrl: null })
+      if (!await deps.confirm({ message: `Remove ${name}`, detail: `${switchFirst} the address and token from Studio.\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+      const result = await deps.backend.set(inUse ? { mode: 'local', remoteUrl: null } : { remoteUrl: null })
       if (!result.ok) return fail(result.code, result.error)
-      log.log(`[Connection] Removed ${name}`)
+      log.log(`[Connection] Removed ${name}${inUse ? ' (switched to This computer)' : ''}`)
       changed()
-      return { ok: true, view: view(), notices: [`Removed ${name}.`] }
+      return { ok: true, view: view(), notices: [`Removed ${name}.`, ...(inUse ? result.notices : [])] }
     }
     if (!id.startsWith('remote:')) return fail('not_found', 'That connection is not saved.')
     const name = id.slice('remote:'.length)
     if (!saved()[name]) return fail('not_found', 'That connection is not saved.')
-    if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio and adf.\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+    if (!await deps.confirm({ message: `Remove ${name}`, detail: `${switchFirst} the address and token from Studio and adf.\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+    // Switch first: a switch cancelled in its dialog removes nothing.
+    let switched: string[] = []
+    if (inUse) {
+      const result = await deps.backend.set({ mode: 'local' })
+      if (!result.ok) return fail(result.code, result.error)
+      switched = result.notices
+      log.log(`[Connection] Switched to This computer to remove ${name}`)
+    }
     try {
       await forgetConnection(deps.env, name)
       await fresh()
@@ -200,7 +212,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     }
     log.log(`[Connection] Removed ${name}`)
     changed()
-    return { ok: true, view: view(), notices: [`Removed ${name}.`] }
+    return { ok: true, view: view(), notices: [`Removed ${name}.`, ...switched] }
   }
 
   return { view, use, add, remove, changed }

@@ -205,7 +205,7 @@ describe('version handshake and its failures', () => {
     const port = await listen(createHttpServer(daemonHandler([])))
     const err = await connectError(remoteConfig(`http://127.0.0.1:${port}`, { token: 'tok_wrong_wrong_wrong_wrong_wrong_wrong' }))
     expect(err.problem).toBe('unauthorized')
-    expect(err.message).toMatch(/refused the token.*adf daemon token/)
+    expect(err.message).toMatch(/refused the token; choose Add device on 127.0.0.1 and pair again./)
   })
 
   it('an unreachable host (nothing listens on the port)', async () => {

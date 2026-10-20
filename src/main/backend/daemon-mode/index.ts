@@ -31,7 +31,7 @@ import { InstallProgressRelay } from './mcp/install-progress'
 import { McpOAuthAuthorizeOpener } from './mcp/oauth-authorize'
 import { ConnectionStatusUi, connectionProblem, openDaemonLog } from './status-ui'
 import { REMOTE_MODE_HANDLERS } from './remote/handlers'
-import { REMOTE_WAITING_PREFIX } from './remote/connector'
+import { REMOTE_WAITING_PREFIX, refusedTokenSentence } from './remote/connector'
 import { OAuthCallbackRelay } from './remote/oauth-relay'
 import { RemotePicker } from './remote/picker'
 import { uploadFile, type RemoteServices } from './remote/services'
@@ -339,7 +339,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     unauthorized = true
     const url = connection.baseUrl ?? 'the remote daemon'
     log.error(`[Backend] The ADF daemon at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
-    connection.markFailed(`The ADF daemon at ${url} refused the token. Run adf daemon token on the server and add it in Settings → Connection → Add connection.`)
+    connection.markFailed(refusedTokenSentence(url))
     failAllTurns('disconnected')
     void clientSession?.end().catch(() => {})
     for (const w of windowSessions.values()) void w.client?.end().catch(() => {})

@@ -64,8 +64,9 @@ their controls disabled.
 
 Each row shows its address and fingerprint. A computer found on the network
 whose fingerprint is saved is its saved row: a Paired row never offers
-**Pair**. **Remove** is in a saved row's **More** menu (⋯); **Inside Studio
-(legacy)** is in This computer's **More** menu while it is not a row.
+**Pair**. **Remove** is in a saved row's **More** menu (⋯); on the connection
+in use it switches to This computer first (the switch dialog follows). **Inside
+Studio (legacy)** is in This computer's **More** menu while it is not a row.
 
 **Connect** shows the switch dialog ([Switch the backend](#switch-the-backend)),
 then Studio restarts on that connection. For a saved connection Studio first
@@ -256,7 +257,7 @@ saved mode; the dialog says so and Settings → Connection shows "Agents run
 | "Studio already runs this mode; no restart is needed." | You chose the mode this launch already runs (after a session-only launch) |
 | "Restart to connect to *name*." with **Restart now** | The saved connection differs from the one this launch runs (another remote included) |
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
-| "In use." | Remove: connect to another row first |
+| "In use." | Remove on This computer or Inside Studio while in use |
 | "Pair first." | Connect on a computer that is not paired |
 | "Could not save *path*." / "Could not save the backend settings." / "Could not read the backend settings." | `studio-backend.json` could not be written or read; check the user data folder |
 | "studio-backend.json: …" / "studio-backend.json: ignored …" | The file has a problem or fields this Studio does not use; Studio says what it ignored |
@@ -629,7 +630,7 @@ choose another one there:
 |---|---|
 | "Cannot reach the ADF daemon at …" / "… did not answer within 15 s" | The server, tunnel or tailnet is down. Studio keeps trying |
 | "… answered HTTP 502/503/504: a proxy answers there, but the ADF daemon behind it does not." | Start the daemon on the server. Studio keeps trying |
-| "The ADF daemon at … refused the token." | Pair again, or run `adf daemon token` on the server and add it with **Add connection**, then **Reconnect** (Studio restarts and connects). A token refused after connecting ends the connection with the same sentence |
+| "The ADF daemon at … refused the token; choose Add device on *host* and pair again." | Choose **Add device** on the host and pair again, then **Reconnect** (Studio restarts and connects). The master token (`adf daemon token`) is refused from other computers. A token refused after connecting ends the connection with the same sentence |
 | "The ADF daemon at … does not accept the host name …" | Add the name to `ADF_DAEMON_ALLOWED_HOSTS` on the server and restart the daemon |
 | "The TLS connection to … failed" | Give the server a certificate this computer trusts, or use an SSH tunnel. Studio has no option to skip certificate checks |
 | "… answered a redirect" | Enter the daemon's final URL |
@@ -879,7 +880,7 @@ address** dialog ("*name* is now at *url*."). **Connect** connects to it.
 | "*host* is already asking about another device. …" | Wait, then try again |
 | "*url* has remote access off. …" | Turn remote access on, on the host |
 | "*host* runs an older ADF. Update ADF there, then pair again." | The host's ADF predates this feature |
-| "*address* now answers with fingerprint *X*, not *Y* as when *name* was paired; Studio sent nothing." | Another computer answers at the saved address. If that computer was set up again, remove *name* first |
+| "*address* now answers with fingerprint *X*, not *Y* as when *name* was paired; Studio sent nothing, and if it was set up again, remove *name* and pair again." | Another computer answers at the saved address. If that computer was set up again, remove *name* first |
 | "The approval came with fingerprint *X*, but *host* showed *Y*. …" | Nothing was saved; revoke the device on the host and pair again |
 | "Kept the saved address of *name*; nothing was sent." | You chose Cancel in Use new address |
 

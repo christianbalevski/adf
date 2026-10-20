@@ -758,6 +758,14 @@ export class RemoteAccessService {
   openPairing(): PairingWindowView {
     if (!this.enabled) throw new RemoteAccessError('Remote access is off on this computer. Turn it on first.', 409, 'remote_access_off')
     if (this.store.problem) throw new RemoteAccessError(this.store.problem, 503, 'devices_unreadable')
+    // On but listening nowhere (paused on a network not allowed, no address): no device could reach the window.
+    const addresses = this.addressViews()
+    if (!addresses.some(a => a.listening)) {
+      const paused = this.networks.filter(n => !n.allowed)
+      if (paused.length > 0) throw new RemoteAccessError(`Remote access is paused on ${paused.map(n => n.label).join(', ')}; allow this network first.`, 409, 'remote_access_paused')
+      const why = this.stateLine(addresses, this.networks).message.replace(/^Not listening: /, '').replace(/\.$/, '')
+      throw new RemoteAccessError(`Remote access is not listening: ${why.charAt(0).toLowerCase()}${why.slice(1)}.`, 409, 'remote_access_not_listening')
+    }
     return this.pairing.open()
   }
 

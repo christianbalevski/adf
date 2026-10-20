@@ -100,6 +100,15 @@ async function bodyOf(res: Response): Promise<Record<string, unknown> | null> {
   }
 }
 
+/**
+ * A token the remote daemon refuses (401). The master token is refused from
+ * other computers, so the next step is a new device token: pair again.
+ */
+export function refusedTokenSentence(url: string): string {
+  const host = (() => { try { return new URL(url).hostname.replace(/^\[|\]$/g, '') } catch { return url } })()
+  return `The ADF daemon at ${url} refused the token; choose Add device on ${host} and pair again.`
+}
+
 /** An answer that is not the daemon's success: one sentence per known case. */
 function describeAnswer(url: string, res: Response, step: 'health' | 'version', body: Record<string, unknown> | null): RemoteConnectError {
   if (res.status >= 300 && res.status < 400) {
@@ -112,7 +121,7 @@ function describeAnswer(url: string, res: Response, step: 'health' | 'version', 
     return new RemoteConnectError('host_not_allowed', `The ADF daemon at ${url} does not accept the host name ${host}. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon).`)
   }
   if (step === 'version' && res.status === 401) {
-    return new RemoteConnectError('unauthorized', `The ADF daemon at ${url} refused the token. Run adf daemon token on the server and add it in Settings → Connection → Add connection.`)
+    return new RemoteConnectError('unauthorized', refusedTokenSentence(url))
   }
   if (res.status === 502 || res.status === 503 || res.status === 504) {
     return new RemoteConnectError('proxy', `${url} answered HTTP ${res.status}: a proxy answers there, but the ADF daemon behind it does not. Start it on the server (adf daemon start) and check the proxy's target.`)

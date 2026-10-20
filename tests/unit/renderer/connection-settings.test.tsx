@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConnectionRows, connectionDetail, pendingRestartLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
+import { ConnectionRows, connectionDetail, emptyDiscoveryLine, pendingRestartLine, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, overrideLine } from '../../../src/renderer/components/settings/ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor } from '../../../src/renderer/components/settings/settings-nav'
 import { runtimeGroupLabel } from '../../../src/renderer/stores/connection.store'
 import { DOCS } from '../../../src/shared/constants/docs-links'
@@ -44,6 +44,15 @@ describe('the Connection page rows', () => {
     expect(html).toContain('>Not encrypted<')
     // The More menu is on This computer (Inside Studio (legacy)) and the removable saved row.
     expect(html.match(/aria-label="More"/g)).toHaveLength(2)
+  })
+
+  it('an empty network search says what to do on the other computer; nothing while a computer is listed or the search has a problem', () => {
+    const local = row({ state: 'connected', action: null })
+    const searching = { browsing: true, problem: null }
+    expect(emptyDiscoveryLine({ rows: [local], discovery: searching })).toBe('None found yet; turn on Remote access on the other computer.')
+    expect(emptyDiscoveryLine({ rows: [local], discovery: null })).toBeNull()
+    expect(emptyDiscoveryLine({ rows: [local], discovery: { browsing: false, problem: 'mDNS is blocked.' } })).toBeNull()
+    expect(emptyDiscoveryLine({ rows: [local, row({ id: 'found:F@u', kind: 'found', name: 'desk', action: 'pair' })], discovery: searching })).toBeNull()
   })
 
   it('a Paired row never shows Pair', () => {

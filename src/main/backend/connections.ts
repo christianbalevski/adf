@@ -310,7 +310,8 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     state: inUse(id) ? current.state : 'paired',
     action: inUse(id) ? null : 'connect',
     url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
-    removable: !inUse(id) && configuredId !== id,
+    // The one in use too (e.g. it no longer connects): Remove switches to This computer first.
+    removable: true,
   })
   for (const name of Object.keys(input.saved).sort((a, b) => a.localeCompare(b))) {
     const remote = input.saved[name]

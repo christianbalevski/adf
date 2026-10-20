@@ -50,7 +50,7 @@ export interface ConnectionRow {
   encrypted: boolean
   /** The host has a pairing window open. */
   pairingOpen: boolean
-  /** Remove in the row's More menu: a saved connection not in use and not saved as the next one. */
+  /** Remove in the row's More menu: every saved connection; the one in use (or saved as the next one) switches to This computer first. */
   removable: boolean
 }
 

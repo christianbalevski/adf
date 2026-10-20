@@ -151,6 +151,12 @@ function RowMenu({ items, disabled }: { items: RowMenuItem[]; disabled: boolean 
   )
 }
 
+/** Under the list while the network search runs and found nothing to pair or connect to. */
+export function emptyDiscoveryLine(view: Pick<ConnectionsView, 'rows' | 'discovery'>): string | null {
+  if (!view.discovery || view.discovery.problem) return null
+  return view.rows.some((r) => r.kind === 'found' || r.kind === 'saved') ? null : 'None found yet; turn on Remote access on the other computer.'
+}
+
 /** The list (static markup in tests): name, state, detail, one action, the More menu. */
 export function ConnectionRows({ rows, busy, onConnect, onPair, onRemove }: {
   rows: ConnectionRow[]
@@ -432,6 +438,7 @@ export function ConnectionSettings() {
       <SettingsGroup title="Connections" docs={DOCS.backendConnection}>
         <ConnectionRows rows={view.rows} busy={busy} onConnect={connect} onPair={(row) => row.url && row.fingerprint && setPairWith({ name: row.name, url: row.url, address: row.address ?? row.url, fingerprint: row.fingerprint, encrypted: row.encrypted })} onRemove={remove} />
         {view.discovery?.problem && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{view.discovery.problem}</p>}
+        {emptyDiscoveryLine(view) && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{emptyDiscoveryLine(view)}</p>}
         <div className="flex items-center justify-between gap-4 border-t border-[var(--adf-ui-separator)] px-4 py-3">
           <MessageLine message={message} />
           <Button disabled={busy} onClick={() => setAdding(true)}>Add connection</Button>
