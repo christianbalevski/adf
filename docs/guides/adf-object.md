@@ -49,7 +49,7 @@ Read a file from the virtual filesystem. Returns an object with the full file re
 
 - Text files: `content` is the raw text string
 - Binary files: `content` is a base64-encoded string
-- Media files (images, audio, video): `content` is base64-encoded. When the corresponding `model.multimodal` modality is enabled, the executor sends a native content block (`image_url`, `input_audio`, or `video_url`) to the LLM alongside the JSON row so the agent can perceive the media. Media blocks are ephemeral (not persisted to `adf_loop`). When disabled, or the file exceeds the size limit, the JSON row is returned with `content: null`. See [Multimodal](../ADF_STUDIO_DOCS.md#multimodal) for details.
+- Media files (images, audio, video): `content` is base64-encoded. When the model calls `fs_read` (not code), the tool result is followed by a `file_ref` reference to the file, and each request sends the file as a native content block (`image_url`, `input_audio`, or `video_url`) when the corresponding `model.multimodal` modality is enabled. See [Multimodal](../ADF_STUDIO_DOCS.md#multimodal) for details.
 - `README.md` / `mind.md`: synthesized record with `protection: 'no_delete'`
 
 From code execution, `fs_read` always returns full content with no truncation. When called from the LLM, the executor applies context-window guards (token limit, large file preview).

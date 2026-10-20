@@ -1,4 +1,5 @@
 import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import { AttachedImage } from './ChatAttachments'
 import { diffLines, diffWordsWithSpace, type Change } from 'diff'
 import {
   TOOL_FAMILY_STYLES,
@@ -672,8 +673,8 @@ export const ToolCallModal = memo(function ToolCallModal({
                           {formatToolOutput(result.content)}
                         </pre>
                         {result.imageUrl && (
-                          <img
-                            src={result.imageUrl}
+                          <AttachedImage
+                            url={result.imageUrl}
                             alt="tool result"
                             className="mt-2 max-w-full max-h-64 rounded-lg border border-neutral-200 dark:border-neutral-700"
                           />

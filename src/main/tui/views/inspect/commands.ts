@@ -5,7 +5,8 @@ import { MODEL_OVERLAY, applyModel, parseModelArg, providerChoices } from './mod
 import { TASK_FILTERS, type TaskFilter } from './tasks'
 import { COMPACTION_OVERLAY, INSTRUCTIONS_OVERLAY, TOOLS_OVERLAY } from './SettingsTab'
 import { applyThreshold } from './SettingDialogs'
-import { parseThreshold } from './settings-model'
+import { parseMediaLimit, parseThreshold, setRequestMediaLimit } from './settings-model'
+import { applyChange } from './settings-ops'
 
 const inspect: SlashCommand = {
   name: 'inspect',
@@ -107,6 +108,20 @@ const compaction: SlashCommand = {
   },
 }
 
+const media: SlashCommand = {
+  name: 'media',
+  args: '[<files> <MB>|default]',
+  description: 'Request media limit of the selected agent: most files and MB one request carries (default 20, 20). Past either, the oldest are left out until half remains',
+  available: scope => !!scope.agentId,
+  complete: partial => ['default'].filter(v => v.startsWith(partial.trim())),
+  run: async ctx => {
+    if (!ctx.agentId) { ctx.print('No agent selected', 'warn'); return }
+    const parsed = parseMediaLimit(ctx.args)
+    if (!parsed.ok) { ctx.print(`${parsed.error}. Usage: /media <files> <MB> | default`, 'warn'); return }
+    await applyChange(ctx.actions, ctx.agentId, cfg => setRequestMediaLimit(cfg, parsed.value), 'Media')
+  },
+}
+
 const TASK_FILTER_ARGS: readonly TaskFilter[] = TASK_FILTERS
 
 const tasks: SlashCommand = {
@@ -158,4 +173,4 @@ const actions: PaletteAction[] = [
   })),
 ]
 
-export const inspectCommands: CommandContribution = { commands: [inspect, model, config, tasks, instructions, tools, compaction], actions }
+export const inspectCommands: CommandContribution = { commands: [inspect, model, config, tasks, instructions, tools, compaction, media], actions }

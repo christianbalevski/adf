@@ -2,6 +2,8 @@
 // calls runCli (this module never runs itself).
 
 import { createInterface } from 'readline'
+import { readFileSync } from 'fs'
+import { basename } from 'path'
 import { runPair, runRemotes, type PairIo } from './pair'
 import { pinnedRemoteRefusal } from './remotes'
 import { stdinPrompt, type LinePrompt } from './prompt'
@@ -396,15 +398,62 @@ function takeLoop(args: string[]): { loop: string | undefined; rest: string[] } 
   return { loop: loop && loop !== 'main' ? loop : undefined, rest }
 }
 
+/** Pull every `--attach <file>` / `--attach=<file>` out of a command's arguments. */
+function takeAttachments(args: string[]): { files: string[]; rest: string[] } {
+  const rest: string[] = []
+  const files: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--attach') {
+      const file = args[++i]
+      if (!file) throw new Error('--attach requires a file path')
+      files.push(file)
+    } else if (arg.startsWith('--attach=')) {
+      files.push(arg.slice('--attach='.length))
+    } else {
+      rest.push(arg)
+    }
+  }
+  return { files, rest }
+}
+
+/** Uploads land where Studio's do: `loop-upload/<name>`, numbered when the name is taken. */
+function uploadName(file: string): string {
+  const name = basename(file).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+/, '') || 'attachment'
+  return `loop-upload/${name}`
+}
+
 async function sendChat(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
-  const { loop, rest } = takeLoop(args)
+  const attached = takeAttachments(args)
+  const { loop, rest } = takeLoop(attached.rest)
   const agent = rest[0]
   const text = rest.slice(1).join(' ')
-  if (!agent || !text) throw new Error('Usage: adf chat <agent> [--loop <name>] <message>')
+  if (!agent || (!text && attached.files.length === 0)) throw new Error('Usage: adf chat <agent> [--loop <name>] [--attach <file>]... <message>')
+  // Each file goes to the agent's Files first; the message carries a reference.
+  const refs: Array<{ type: 'file_ref'; file_ref: { path: string; mime_type: string; size: number } }> = []
+  for (const file of attached.files) {
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(file)
+    } catch (err) {
+      throw new Error(`Cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const saved = await requestJson(io, options, `/agents/${enc(agent)}/files/raw?path=${enc(uploadName(file))}&unique=true`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(bytes),
+    })
+    const path = isRecord(saved) && typeof saved.path === 'string' ? saved.path : uploadName(file)
+    // The runtime takes the type and size from the stored file.
+    refs.push({ type: 'file_ref', file_ref: { path, mime_type: '', size: bytes.length } })
+  }
+  const body = refs.length > 0
+    ? { content: [...(text ? [{ type: 'text', text }] : []), ...refs] }
+    : { text }
   const data = await requestJson(io, options, `/agents/${enc(agent)}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, ...(loop ? { loop } : {}) }),
+    body: JSON.stringify({ ...body, ...(loop ? { loop } : {}) }),
   })
   io.stdout(options.json ? `${JSON.stringify(data, null, 2)}\n` : formatChatAck(data))
   return 0
@@ -1500,9 +1549,11 @@ Commands:
   mcp [agent]                    Show daemon MCP registrations or agent MCP state
   adapters [agent]               Show daemon adapter registrations or agent adapter state
   events [agent]                 Follow daemon SSE events
-  chat <agent> [--loop <name>] <message>
+  chat <agent> [--loop <name>] [--attach <file>]... <message>
                                   Send chat (to main, or an inner loop) and
-                                  print the accepted turn id
+                                  print the accepted turn id. --attach uploads
+                                  a file to the agent's loop-upload/ folder
+                                  and attaches it
   identity                       Show the owner identity status
   identity new                   Create an owner identity; shows the 12-word
                                   seed phrase once — write it down

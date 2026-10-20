@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import type { DisplayAttachment } from '../../shared/utils/file-ref'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentLogEntry } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
@@ -171,7 +172,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       }
 
       case 'trigger_message': {
-        const payload = event.payload as { content: string; triggerType: string; seq?: number }
+        const payload = event.payload as { content: string; triggerType: string; seq?: number; attachments?: DisplayAttachment[] }
         // An inter-loop delivery (loop_send) rides in as a `chat` trigger —
         // the wake dispatch is a chat event — but it is NOT owner input.
         // Tag it here so the live path renders exactly what parseLoopToDisplay
@@ -192,12 +193,16 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
           // Owner chat that arrived from OUTSIDE the chat panel (fleet
           // command bar) — no optimistic echo happened, so render the
           // user's own words as a user bubble, not a trigger chip.
+          const attachments = payload.attachments ?? []
           agentStore.addLogEntry({
             id: nanoid(),
             type: 'user',
             content: payload.content,
             timestamp: event.timestamp,
-            metadata: seqMeta(payload)
+            metadata: {
+              ...seqMeta(payload),
+              ...(attachments.length > 0 ? { attachments } : {})
+            }
           }, loop)
         } else if (payload.triggerType !== 'manual_invoke') {
           agentStore.addLogEntry({

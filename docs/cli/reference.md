@@ -57,7 +57,7 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf mcp [agent]` | Show daemon MCP registrations or agent MCP state |
 | `adf adapters [agent]` | Show daemon adapter registrations or agent adapter state |
 | `adf events [agent]` | Follow daemon SSE events |
-| `adf chat <agent> [--loop <name>] <message>` | Send chat (to main, or an inner loop) and print the accepted turn id |
+| `adf chat <agent> [--loop <name>] [--attach <file>]... <message>` | Send chat (to main, or an inner loop) and print the accepted turn id. --attach uploads a file to the agent's loop-upload/ folder and attaches it |
 | `adf identity` | Show the owner identity status |
 | `adf identity new` | Create an owner identity; shows the 12-word seed phrase once — write it down |
 | `adf identity restore` | Restore the owner identity from its seed phrase (typed at a hidden prompt; the same phrase as ADF Studio = the same owner) |
@@ -282,6 +282,7 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 | `/instructions [edit]` |  | Edit the selected agent’s instructions (a dialog; edit opens $EDITOR) |
 | `/tools [filter]` |  | The selected agent’s tools: enable, show, require approval, lock (built-in and MCP) |
 | `/compaction [tokens\|default]` |  | Compaction threshold of the selected agent › loop (80000, 80k; default = main’s default / an inner loop inherits). No argument: every loop |
+| `/media [<files> <MB>\|default]` |  | Request media limit of the selected agent: most files and MB one request carries (default 20, 20). Past either, the oldest are left out until half remains |
 
 #### Fleet view
 

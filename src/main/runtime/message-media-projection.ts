@@ -47,7 +47,8 @@ export function projectMessageMedia(messages: LLMMessage[], support: MediaSuppor
     let changed = false
     const content = Array.isArray(message.content)
       ? message.content.map((block): ContentBlock => {
-        const kind = mediaKindOf(block)
+        // File references are resolveFileRefs' (it labels them too).
+        const kind = block.type === 'file_ref' ? undefined : mediaKindOf(block)
         if (!kind || support[kind]) return block
         changed = true
         omitted[kind] = (omitted[kind] ?? 0) + 1

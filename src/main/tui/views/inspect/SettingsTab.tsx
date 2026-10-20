@@ -47,6 +47,7 @@ export async function actOnSetting(actions: TuiActions, agentId: string, row: Se
     case 'instructions': actions.pushOverlay({ kind: INSTRUCTIONS_OVERLAY, props: { agentId } }); return
     case 'tools': actions.pushOverlay({ kind: TOOLS_OVERLAY, props: { agentId } }); return
     case 'compaction': actions.pushOverlay({ kind: COMPACTION_OVERLAY, props: { agentId } }); return
+    case 'media': actions.toast('Set with /media <files> <MB>, or /media default', 'info', 3000); return
     case 'visibility':
     case 'send': actions.pushOverlay({ kind: CHOICE_OVERLAY, props: { agentId, setting: row.id } }); return
     case 'autonomous': {

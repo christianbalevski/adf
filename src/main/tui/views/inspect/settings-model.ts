@@ -333,6 +333,40 @@ export function setMainThreshold(config: AgentConfig, value: number | null): Cha
   return { ok: true, config: next, message: value === null ? `main compacts at the default (${formatTokens(mainThreshold(next).value)})` : `main compacts at ${formatTokens(value)} tokens` }
 }
 
+/** The request media limit (`context.max_request_media_files` / `_mb`): 20 files, 20 MB when unset. */
+export function requestMediaLimitOf(config: AgentConfig): { files: number; mb: number; set: boolean } {
+  const files = config.context?.max_request_media_files
+  const mb = config.context?.max_request_media_mb
+  return {
+    files: typeof files === 'number' && files > 0 ? files : 20,
+    mb: typeof mb === 'number' && mb > 0 ? mb : 20,
+    set: (typeof files === 'number' && files > 0) || (typeof mb === 'number' && mb > 0),
+  }
+}
+
+export function setRequestMediaLimit(config: AgentConfig, value: { files: number; mb: number } | null): Change {
+  const next = clone(config)
+  const context = { ...(next.context ?? {}) } as NonNullable<AgentConfig['context']>
+  delete (context as { max_request_media_files?: number }).max_request_media_files
+  delete (context as { max_request_media_mb?: number }).max_request_media_mb
+  if (value) {
+    context.max_request_media_files = value.files
+    context.max_request_media_mb = value.mb
+  }
+  next.context = context
+  const now = requestMediaLimitOf(next)
+  return { ok: true, config: next, message: `Requests carry at most ${now.files} files, ${now.mb} MB${value ? '' : ' (default)'}` }
+}
+
+/** `/media 40 64` → 40 files, 64 MB; `/media default` → unset. Positive whole numbers, no upper bound. */
+export function parseMediaLimit(args: readonly string[]): { ok: true; value: { files: number; mb: number } | null } | { ok: false; error: string } {
+  if (args.length === 1 && args[0].toLowerCase() === 'default') return { ok: true, value: null }
+  if (args.length !== 2) return { ok: false, error: 'Give files and MB, or default' }
+  const [files, mb] = args.map(a => Number(a))
+  if (![files, mb].every(n => Number.isInteger(n) && n > 0)) return { ok: false, error: 'Files and MB must be positive whole numbers' }
+  return { ok: true, value: { files, mb } }
+}
+
 /**
  * `80000`, `80k`, `80,000`, `1.5m` → a positive whole number of tokens;
  * empty / `default` / `inherit` / `0` → null (unset). Schema: int, positive.
@@ -479,7 +513,7 @@ export function toggleSectionLock(config: AgentConfig, keys: readonly string[], 
 
 // --- the Settings tab rows ----------------------------------------------------
 
-export type SettingId = 'instructions' | 'tools' | 'compaction' | 'autonomous' | 'autostart' | 'receive' | 'inbox' | 'visibility' | 'send' | 'host' | 'mcp-approval'
+export type SettingId = 'instructions' | 'tools' | 'compaction' | 'media' | 'autonomous' | 'autostart' | 'receive' | 'inbox' | 'visibility' | 'send' | 'host' | 'mcp-approval'
 
 export interface SettingRow {
   id: SettingId
@@ -526,6 +560,13 @@ export function settingRows(config: AgentConfig, extras: SettingsExtras = {}): S
     id: 'compaction', label: 'Compaction', kind: 'dialog',
     value: `main at ${formatTokens(main.value)}${main.source === 'default' ? ' (default)' : ''}${typeof used === 'number' ? ` · in use ${formatTokens(used)} (${Math.round(used / main.value * 100)}%)` : ''}`,
     hint: (config.loops ?? []).length ? `inner loops: ${(config.loops ?? []).map(l => `${l.name} ${l.compact_threshold != null ? formatTokens(l.compact_threshold) : 'inherit'}`).join(', ')}` : 'History is summarized when the context reaches this size',
+    ...lock(['context']),
+  })
+  const media = requestMediaLimitOf(config)
+  rows.push({
+    id: 'media', label: 'Media', kind: 'dialog',
+    value: `${media.files} files, ${media.mb} MB per request${media.set ? '' : ' (default)'}`,
+    hint: 'Past either, the oldest files are left out until half remains · /media <files> <MB> | default',
     ...lock(['context']),
   })
   rows.push({

@@ -524,6 +524,12 @@ export const AgentConfigSchema = z.object({
   bare_prompt: z.boolean().optional(),
   context: z.object({
     compact_threshold: z.number().int().positive().nullable().optional(),
+    // Request media limit (ADF spec §13.1). Same bounds as compact_threshold:
+    // positive, no upper limit.
+    max_request_media_files: z.number().int().positive().nullable().optional()
+      .describe('Most referenced files one request carries. Absent or null: 20. Past it the oldest are left out, down to half.'),
+    max_request_media_mb: z.number().int().positive().nullable().optional()
+      .describe('Most MiB of referenced files one request carries. Absent or null: 20. Past it the oldest are left out, down to half.'),
     compaction_model: ModelConfigSchema.nullable().optional()
       .describe(
         "Model that writes the compaction summary. Absent = the agent's own model. `provider` may name any " +

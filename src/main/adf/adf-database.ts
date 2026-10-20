@@ -16,6 +16,7 @@ import { createHash } from 'crypto'
 import { brotliDecompressSync } from 'zlib'
 import { basename, dirname, join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import { fileRefRegistry, type FileRefRegistry } from './file-ref-registry'
 import type {
   AdfProviderConfig,
   AgentConfig,
@@ -3942,7 +3943,30 @@ export class AdfDatabase {
       loop
     )
     this.bumpLoopRevision(loop)
+    if (content.some(block => block.type === 'file_ref')) this.getFileRefRegistry().noteContent(content)
     return Number(result.lastInsertRowid)
+  }
+
+  /** File-reference state of this file, shared by every connection to it (see file-ref-registry.ts). */
+  getFileRefRegistry(): FileRefRegistry {
+    return fileRefRegistry(this, this.filePath === ':memory:' ? null : AdfDatabase.canonicalKey(this.filePath))
+  }
+
+  /**
+   * Rows of every loop that hold a `file_ref` block (a prefilter: the caller
+   * parses and checks). One scan of adf_loop; callers run it only when a
+   * referenced file is renamed or deleted.
+   */
+  getLoopRowsWithFileRefs(): Array<{ seq: number; loop: string; content_json: string }> {
+    return this.db.prepare(
+      `SELECT seq, loop, content_json FROM adf_loop WHERE instr(content_json, '"file_ref"') > 0`
+    ).all() as Array<{ seq: number; loop: string; content_json: string }>
+  }
+
+  /** Replace one row's content in place (file references rewritten on rename/delete). */
+  updateLoopContent(loop: string, seq: number, content: ContentBlock[]): void {
+    this.db.prepare('UPDATE adf_loop SET content_json = ? WHERE seq = ? AND loop = ?').run(JSON.stringify(content), seq, loop)
+    this.bumpLoopRevision(loop)
   }
 
   /** Wipe ONE stream. The whole-table wipe is clearAllLoops(). */
@@ -4932,6 +4956,8 @@ export class AdfDatabase {
     if (this.closed) return
     this.closed = true
     const remaining = AdfDatabase.decrementOpen(this.filePath)
+    // Loaded media of a file no connection holds any more is dead weight.
+    if (remaining === 0) this.getFileRefRegistry().media.clear()
     // Clean-shutdown marker: MUST be the last write before the connection
     // closes. Its presence lets the next open() skip the full O(file-size)
     // integrity_check (see open()). If this session crashes instead of

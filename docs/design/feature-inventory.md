@@ -939,7 +939,7 @@ Grouped by area, then category.
 - **`mcp_<server>_<tool>` naming convention** for every discovered tool.
 - **Tool reconcile on rediscovery** — new tools enabled/visible/HIL-gated; changed-schema tools disabled+restricted pending review; removed tools disabled+hidden.
 - **Visible browser automation** — `@playwright/mcp` attaches to ADF's own persistent Chromium CDP endpoint instead of launching a separate browser; puppeteer name is aliased to it.
-- **Multimodal content passthrough** — image/audio/video content blocks sent natively to the LLM when `model.multimodal` enables that modality, else saved to `adf_files` with a path reference.
+- **Multimodal content passthrough** — media is a file in `adf_files`; messages and tool results keep a `file_ref` reference, and each request sends the file natively when `model.multimodal` enables that modality, else a text placeholder. Renames rewrite references; deletes leave `[deleted: name]` tombstones.
 - **Media auto-save** — all MCP-returned media saved to `adf_files` at `mcp/{server}/{tool}_{timestamp}_{index}.{ext}`.
 - **Linked-image recovery** — resolves image files an MCP tool merely wrote to its cwd (host or container) and loads them when no inline block was returned (capped at 3 images / 4.5MB each).
 - **Structured JSON response in code/shell** — full base64 images/audio/resources exposed to code execution regardless of multimodal toggle.
@@ -1364,7 +1364,7 @@ Grouped by area, then category.
 
 ### Multimodal & Content Rendering
 
-- **Image/audio/video content blocks** — rendered inline in the loop when the agent's `multimodal.*` flags are enabled.
+- **Image/audio/video content blocks** — file references rendered inline in the loop (images as previews, audio and video by name); a deleted file shows `[deleted: name]`.
 - **Markdown-safe HTML rendering** — sanitized rendering for assistant messages and document previews.
 - **Code syntax highlighting** — language auto-detection by file extension in both the tabbed editor and tool-call output.
 - **Diff viewer** — line and word-level diffs for file-write tool calls in the Tool Call modal.

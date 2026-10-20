@@ -8,6 +8,9 @@ import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
 import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, mediaRefusals, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
 import type { LoopMedia } from '../../shared/types/media.types'
+import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
+import { attachmentsOf, fileRefKind, fileRefText, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
+import type { FileRefRegistry } from '../adf/file-ref-registry'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent, ApprovalEndedBy, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts, ToolCallResultTargets } from '../../shared/types/ipc.types'
 import { deriveToolTargetPaths } from '../../shared/utils/document-target'
@@ -48,7 +51,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { currentResourceWriter, documentRevision } from './resource-revisions'
 import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
-import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt, mimeToAudioFormat } from '../tools/built-in/mime-utils'
+import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
 import {
   callLlmWithMetadata,
@@ -157,6 +160,11 @@ const COMPACTION_REASONING_HEADROOM = 20_000
  * object" — the same thing each helper's own catch used to mean.
  */
 type ParsedToolResult = Record<string, unknown> | null
+
+/** A live reference to an image file. */
+function isImageRef(block: ContentBlock): boolean {
+  return isFileRefBlock(block) && !block.file_ref.deleted && fileRefKind(block.file_ref) === 'image'
+}
 
 function parseToolResultJson(result: ToolResult): ParsedToolResult {
   try {
@@ -2351,12 +2359,14 @@ export class AgentExecutor extends EventEmitter {
       if (this._skipNextTriggerEvent || skipTriggerMessage) {
         this._skipNextTriggerEvent = false
       } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
+        const attachments = Array.isArray(triggerContent) ? attachmentsOf(triggerContent) : []
         this.emitTriggerMessage(dispatch.turnId, {
           type: 'trigger_message',
           payload: {
             content: triggerMessage,
             triggerType: eventType ?? 'unknown',
-            ...(triggerRowSeq !== undefined ? { seq: triggerRowSeq } : {})
+            ...(triggerRowSeq !== undefined ? { seq: triggerRowSeq } : {}),
+            ...(attachments.length > 0 ? { attachments } : {})
           },
           timestamp: Date.now()
         })
@@ -2641,12 +2651,21 @@ export class AgentExecutor extends EventEmitter {
         // not describe what was sent.
         const callFingerprint = transformedRequest ? null : this.fixedPartsFingerprint()
         // Media the model cannot take becomes placeholder text in this request
-        // only; the session keeps the original for a model that can.
+        // only; the session keeps the original for a model that can. File
+        // references left after that load their bytes from Files.
         const media = projectMessageMedia(request.messages, this.mediaSupport())
-        if (media.omitted) this.noteMediaOmitted(media.omitted, dispatch)
+        const files = await resolveFileRefs(
+          media.messages,
+          this.fileRefRegistry(),
+          path => this.session.getWorkspace().readFileBuffer(path),
+          this.mediaSizeLimits(),
+          this.mediaSupport(),
+          requestMediaLimit(this.config.context),
+        )
+        if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
-          messages: media.messages,
+          messages: files.messages,
           promptCacheKey: this.promptCacheKey(),
           dynamicInstructions: request.options.dynamicInstructions,
           tools: request.tools,
@@ -3194,30 +3213,27 @@ export class AgentExecutor extends EventEmitter {
               if (sharedParse === undefined) sharedParse = parseToolResultJson(rawResult)
               return sharedParse
             }
+            // Media a tool read or produced is a reference to its file in
+            // adf_files, attached after the tool result. History keeps the
+            // reference; each request loads the bytes (resolveFileRefs) for a
+            // model that takes them, so a later model switch loses nothing.
             const mediaBlocks: ContentBlock[] = []
-            if (toolBlock.name === 'fs_read') {
-              const img = this.maybeExtractImageBlock(rawResult, parsedResult())
-              const aud = this.maybeExtractAudioBlock(rawResult, parsedResult())
-              const vid = this.maybeExtractVideoBlock(rawResult, parsedResult())
-              if (img) mediaBlocks.push(img)
-              if (aud) mediaBlocks.push(aud)
-              if (vid) mediaBlocks.push(vid)
-            } else if (isMcpTool) {
-              const img = this.maybeExtractMcpImageBlock(rawResult, parsedResult())
-              const aud = this.maybeExtractMcpAudioBlock(rawResult, parsedResult())
-              if (img) mediaBlocks.push(img)
-              if (aud) mediaBlocks.push(aud)
-            } else if (toolBlock.name === 'adf_shell') {
-              mediaBlocks.push(...this.extractShellMediaBlocks(rawResult))
-            }
-
             let filteredResult: ToolResult
             let savedFiles: Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }> | undefined
             if (toolBlock.name === 'fs_read') {
+              const ref = this.fsReadFileRef(rawResult, parsedResult())
+              if (ref) mediaBlocks.push(ref)
               filteredResult = this.filterFsReadResult(rawResult, parsedResult())
             } else if (isMcpTool) {
               savedFiles = this.persistMcpMedia(rawResult, toolBlock.name!, parsedResult())
+              for (const saved of savedFiles) {
+                const ref = saved.type === 'resource' ? null : makeFileRef(this.session.getWorkspace(), saved.path)
+                if (ref) mediaBlocks.push(ref)
+              }
               filteredResult = this.filterMcpMediaResult(rawResult, savedFiles, parsedResult())
+            } else if (toolBlock.name === 'adf_shell') {
+              mediaBlocks.push(...this.shellFileRefs(rawResult))
+              filteredResult = rawResult
             } else {
               filteredResult = rawResult
             }
@@ -3240,16 +3256,12 @@ export class AgentExecutor extends EventEmitter {
             if (isMcpTool) {
               const savedImage = savedFiles?.find(f => f.type === 'image')
               eventImageUrl = savedImage ? `adf-file://${savedImage.path}` : undefined
-            } else if ((toolBlock.name === 'fs_read' || toolBlock.name === 'adf_shell') && mediaBlocks.some(b => b.type === 'image_url')) {
+            } else if ((toolBlock.name === 'fs_read' || toolBlock.name === 'adf_shell') && mediaBlocks.some(b => b.type === 'file_ref' && b.file_ref && fileRefKind(b.file_ref) === 'image')) {
               // File already in adf_files — use its path (fs_read: row.path;
               // adf_shell: first entry of the media manifest)
               const row = parsedResult() as { path?: string; media?: Array<{ path?: string }> } | null
               const path = row?.path ?? row?.media?.[0]?.path
               if (path) eventImageUrl = `adf-file://${path}`
-            }
-            if (!eventImageUrl) {
-              const imageBlock = mediaBlocks.find(b => b.type === 'image_url')
-              if (imageBlock?.image_url) eventImageUrl = imageBlock.image_url.url
             }
 
             this.emitEvent({
@@ -3394,11 +3406,6 @@ export class AgentExecutor extends EventEmitter {
           // renderer that row's seq now (metadata only — nothing on screen
           // changes) so a live transcript can still name a pagination cursor.
           this.emitToolResultSeq(toolResultsMsg, toolResults)
-
-          // Drop base64 media from older messages to prevent heap growth.
-          // Media blocks are ephemeral (not persisted to DB) and only needed
-          // for the most recent LLM context window.
-          this.session.stripOldMedia()
 
           // After tool results are committed, reset in-memory session if loop was cleared
           if (needsLoopReset) {
@@ -4646,20 +4653,48 @@ export class AgentExecutor extends EventEmitter {
    * attachments.
    */
   mediaInputError(content: readonly ContentBlock[] | undefined): string | null {
-    return unsupportedMediaInput(content, this.config.model, this.provider)
+    // A reference's kind is its stored file's type, not what the sender said.
+    const workspace = this.session.getWorkspace()
+    const checked = content?.map((block): ContentBlock => {
+      if (!isFileRefBlock(block)) return block
+      const mime = workspace.getFileMeta(block.file_ref.path)?.mime_type
+      return mime ? { ...block, file_ref: { ...block.file_ref, mime_type: mime } } : block
+    })
+    return unsupportedMediaInput(checked, this.config.model, this.provider)
+  }
+
+  /**
+   * Why new input's file references cannot be sent, or null: a reference must
+   * name a file in this agent's Files. Chat boundaries refuse it (HTTP 400
+   * `file_not_found`) rather than store a reference to nothing.
+   */
+  fileRefInputError(content: readonly ContentBlock[] | undefined): string | null {
+    if (!content?.length) return null
+    const workspace = this.session.getWorkspace()
+    const missing = content.filter(isFileRefBlock).map(block => block.file_ref.path).filter(path => !workspace.fileExists(path))
+    return missing.length > 0 ? `Not in this agent's files: ${missing.join(', ')}. Upload the file first.` : null
   }
 
   /** The dispatch whose turn already showed the media notice. */
   private mediaNoticeDispatch: unknown = undefined
 
   /** Say once per turn which attachments a request leaves out, and why. */
-  private noteMediaOmitted(omitted: MediaOmissions, dispatch: unknown): void {
+  private noteMediaOmitted(omitted: MediaOmissions, files: FileRefsNotSent | null, dispatch: unknown): void {
     if (this.mediaNoticeDispatch === dispatch) return
     this.mediaNoticeDispatch = dispatch
-    const parts = MEDIA_KINDS.filter(kind => omitted[kind]).map(kind => {
-      const count = omitted[kind]!
-      return `${count} ${kind}${count === 1 ? '' : 's'} (${mediaOmissionReason(kind, this.config.model, this.provider)})`
-    })
+    const counted = (count: number, kind: MediaKind) => `${count} ${kind}${count === 1 ? '' : 's'}`
+    const unsupported = (kind: MediaKind) => (omitted[kind] ?? 0) + (files?.unsupported[kind] ?? 0)
+    const parts = MEDIA_KINDS.filter(kind => unsupported(kind) > 0).map(kind =>
+      `${counted(unsupported(kind), kind)} (${mediaOmissionReason(kind, this.config.model, this.provider)})`)
+    const limits = this.mediaSizeLimits()
+    for (const kind of MEDIA_KINDS) {
+      const over = files?.oversize[kind]
+      if (over) parts.push(`${counted(over, kind)} (over the ${formatSize(limits[kind])} limit, limits.max_${kind}_size_bytes)`)
+    }
+    for (const kind of MEDIA_KINDS) {
+      const older = files?.overLimit[kind]
+      if (older) parts.push(`${counted(older, kind)} (older than the request media limit: ${requestMediaLimitText(requestMediaLimit(this.config.context))})`)
+    }
     const notice = `[System] Not sent to this model: ${parts.join(', ')}. The originals stay in history.`
     const seq = this.session.appendContextEntry('System', notice)
     this.emitEvent({
@@ -4683,16 +4718,31 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * If image modality is enabled and the fs_read result contains a supported image,
-   * return an image_url ContentBlock with the base64 data URI.
+   * The reference an fs_read of a media file leaves in history: any image,
+   * audio or video file a model could take, whatever this model takes now.
+   * Each request decides what is sent (projectMessageMedia, size limits). The
+   * bytes the tool just read prime the request cache when this model takes
+   * the kind, so the next request reads nothing.
    */
+  private fsReadFileRef(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
+    if (result.isError) return null
+    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
+    if (!row || typeof row.path !== 'string' || typeof row.mime_type !== 'string') return null
+    const kind = mediaKindOfMime(row.mime_type)
+    if (!kind) return null
+    const size = typeof row.size === 'number' ? row.size : 0
+    if (typeof row.content === 'string' && row.content && this.mediaSupport()[kind] && size <= this.mediaSizeLimits()[kind]) {
+      this.fileRefRegistry().media.set(row.path, mediaPayloadFromBase64(kind, row.mime_type, size, row.content))
+    }
+    return { type: 'file_ref', file_ref: { path: row.path, mime_type: row.mime_type, size } }
+  }
+
   /**
    * Media files read via the shell (`cat` on image/audio/video mimes) arrive
-   * as a media[] manifest in the adf_shell result — the shell never puts
-   * base64 in stdout. Rebuild fs_read-style rows from the VFS and reuse the
-   * per-modality extractors (same enablement checks and size gates).
+   * as a media[] manifest in the adf_shell result; the shell never puts
+   * base64 in stdout. Each becomes a reference, as for fs_read.
    */
-  private extractShellMediaBlocks(result: ToolResult): ContentBlock[] {
+  private shellFileRefs(result: ToolResult): ContentBlock[] {
     if (result.isError) return []
     let media: Array<{ path?: string; mime_type?: string }>
     try {
@@ -4702,153 +4752,30 @@ export class AgentExecutor extends EventEmitter {
     } catch {
       return []
     }
-
-    const blocks: ContentBlock[] = []
-    const workspace = this.session.getWorkspace()
+    const refs: ContentBlock[] = []
     const seen = new Set<string>()
+    const workspace = this.session.getWorkspace()
     for (const entry of media.slice(0, 8)) {
-      if (!entry?.path || !entry?.mime_type) continue
-      if (seen.has(entry.path)) continue // `cat a.png a.png` → one block
+      if (!entry?.path || seen.has(entry.path)) continue // `cat a.png a.png` → one reference
       seen.add(entry.path)
-      let buffer: Buffer | null
-      try {
-        buffer = workspace.readFileBuffer(entry.path)
-      } catch {
-        continue
-      }
-      if (!buffer) continue
-      const pseudo: ToolResult = {
-        content: JSON.stringify({
-          path: entry.path,
-          mime_type: entry.mime_type,
-          size: buffer.length,
-          content: buffer.toString('base64'),
-        }),
-        isError: false,
-      }
-      const img = this.maybeExtractImageBlock(pseudo)
-      const aud = this.maybeExtractAudioBlock(pseudo)
-      const vid = this.maybeExtractVideoBlock(pseudo)
-      if (img) blocks.push(img)
-      if (aud) blocks.push(aud)
-      if (vid) blocks.push(vid)
+      const ref = makeFileRef(workspace, entry.path)
+      if (ref) refs.push(ref)
     }
-    return blocks
+    return refs
   }
 
-  private maybeExtractImageBlock(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
-    if (!this.isMultimodalEnabled('image')) return null
-    if (result.isError) return null
-
-    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
-    if (!row) return null
-
-    if (!isVisionMime(row.mime_type as string | undefined)) return null
-
-    const maxSize = this.config.limits?.max_image_size_bytes ?? 5_242_880
-    if ((row.size as number) > maxSize) return null
-
-    const content = row.content as string | null
-    if (!content) return null
-
+  /** Per-file size limits for media a request carries (`limits.max_*_size_bytes`). */
+  private mediaSizeLimits(): MediaSizeLimits {
+    const limits = this.config.limits
     return {
-      type: 'image_url',
-      image_url: { url: `data:${row.mime_type};base64,${content}` }
+      image: limits?.max_image_size_bytes ?? DEFAULT_MEDIA_SIZE_LIMITS.image,
+      audio: limits?.max_audio_size_bytes ?? DEFAULT_MEDIA_SIZE_LIMITS.audio,
+      video: limits?.max_video_size_bytes ?? DEFAULT_MEDIA_SIZE_LIMITS.video,
     }
   }
 
-  /**
-   * If audio modality is enabled and the fs_read result contains a supported audio file,
-   * return an input_audio ContentBlock.
-   */
-  private maybeExtractAudioBlock(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
-    if (!this.isMultimodalEnabled('audio')) return null
-    if (result.isError) return null
-
-    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
-    if (!row) return null
-
-    if (!isAudioInputMime(row.mime_type as string | undefined)) return null
-
-    const maxSize = this.config.limits?.max_audio_size_bytes ?? 10_485_760
-    if ((row.size as number) > maxSize) return null
-
-    const content = row.content as string | null
-    if (!content) return null
-
-    return {
-      type: 'input_audio',
-      input_audio: { data: content, format: mimeToAudioFormat(row.mime_type as string) }
-    }
-  }
-
-  /**
-   * If video modality is enabled and the fs_read result contains a supported video file,
-   * return a video_url ContentBlock with the base64 data URI.
-   */
-  private maybeExtractVideoBlock(result: ToolResult, parsed?: ParsedToolResult): ContentBlock | null {
-    if (!this.isMultimodalEnabled('video')) return null
-    if (result.isError) return null
-
-    const row = parsed !== undefined ? parsed : parseToolResultJson(result)
-    if (!row) return null
-
-    if (!isVideoInputMime(row.mime_type as string | undefined)) return null
-
-    const maxSize = this.config.limits?.max_video_size_bytes ?? 20_971_520
-    if ((row.size as number) > maxSize) return null
-
-    const content = row.content as string | null
-    if (!content) return null
-
-    return {
-      type: 'video_url',
-      video_url: { url: `data:${row.mime_type};base64,${content}` }
-    }
-  }
-
-  /**
-   * If image modality is enabled and the MCP tool result contains images,
-   * return the first image as an image_url ContentBlock.
-   */
-  private maybeExtractMcpImageBlock(result: ToolResult, shared?: ParsedToolResult): ContentBlock | null {
-    if (!this.isMultimodalEnabled('image')) return null
-    if (result.isError) return null
-
-    const parsed = (shared !== undefined ? shared : parseToolResultJson(result)) as
-      { images?: Array<{ data: string; mimeType: string }> } | null
-    if (!parsed?.images?.length) return null
-
-    const img = parsed.images[0]
-    const maxSize = this.config.limits?.max_image_size_bytes ?? 5_242_880
-    if (img.data.length * 0.75 > maxSize) return null
-
-    return {
-      type: 'image_url',
-      image_url: { url: `data:${img.mimeType};base64,${img.data}` }
-    }
-  }
-
-  /**
-   * If audio modality is enabled and the MCP tool result contains audio,
-   * return the first audio item as an input_audio ContentBlock.
-   */
-  private maybeExtractMcpAudioBlock(result: ToolResult, shared?: ParsedToolResult): ContentBlock | null {
-    if (!this.isMultimodalEnabled('audio')) return null
-    if (result.isError) return null
-
-    const parsed = (shared !== undefined ? shared : parseToolResultJson(result)) as
-      { audio?: Array<{ data: string; mimeType: string }> } | null
-    if (!parsed?.audio?.length) return null
-
-    const aud = parsed.audio[0]
-    const maxSize = this.config.limits?.max_audio_size_bytes ?? 10_485_760
-    if (aud.data.length * 0.75 > maxSize) return null
-
-    return {
-      type: 'input_audio',
-      input_audio: { data: aud.data, format: mimeToAudioFormat(aud.mimeType) }
-    }
+  private fileRefRegistry(): FileRefRegistry {
+    return this.session.getWorkspace().getDatabase().getFileRefRegistry()
   }
 
   /**
@@ -5314,6 +5241,8 @@ export class AgentExecutor extends EventEmitter {
               transcriptLines.push(`[${role}] [Result: ${preview}]`)
             } else if (block.type === 'thinking' && block.thinking) {
               transcriptLines.push(`[${role}] [Thinking: ${sliceWellFormed(block.thinking, 0, 200)}...]`)
+            } else if (isFileRefBlock(block)) {
+              transcriptLines.push(`[${role}] ${fileRefText(block.file_ref)}`)
             }
           }
         }
@@ -6202,12 +6131,14 @@ export class AgentExecutor extends EventEmitter {
       this.session.addMessage(message, undefined, { skipLoop: isPreAppendedDispatch(chat), seq: preAppendedLoopSeq(chat) })
       this.session.flushToLoop()
       if (isEchoedChat(chat)) continue
+      const attachments = Array.isArray(content) ? attachmentsOf(content) : []
       this.emitTriggerMessage(chat.turnId, {
         type: 'trigger_message',
         payload: {
           content: this.contentBlocksToText(content),
           triggerType: 'chat',
-          ...(message.seq !== undefined ? { seq: message.seq } : {})
+          ...(message.seq !== undefined ? { seq: message.seq } : {}),
+          ...(attachments.length > 0 ? { attachments } : {})
         },
         timestamp: Date.now()
       })
@@ -6395,6 +6326,9 @@ export class AgentExecutor extends EventEmitter {
     if ('event' in dispatch && dispatch.event.type === 'chat') {
       const d = dispatch.event.data as ChatEventData
       if (Array.isArray(d.message.content_json) && d.message.content_json.length > 0) {
+        // Attachments live in Files; the message keeps references. Stored back
+        // on the event so a second read neither decodes nor writes again.
+        d.message.content_json = ingestMessageMedia(this.session.getWorkspace(), d.message.content_json)
         return d.message.content_json
       }
     }
@@ -6436,11 +6370,14 @@ export class AgentExecutor extends EventEmitter {
    * Used to decide whether stripping images is worth trying as an error recovery.
    */
   private tryStripImageBlocksAndRetry(_errorMsg: string): boolean {
+    // A reference only reaches the provider as an image when this model takes images.
+    const imagesSent = this.mediaSupport().image
     const messages = this.session.getMessages()
     for (const msg of messages) {
       if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
           if (block.type === 'image_url') return true
+          if (imagesSent && isImageRef(block)) return true
         }
       }
     }
@@ -6459,7 +6396,12 @@ export class AgentExecutor extends EventEmitter {
       // Preserve identity/metadata (seq, created_at) — dropping them here
       // would erase every [S<seq>] marker and timestamp for the rest of the
       // session and break the prompt-cache prefix.
-      const filtered = msg.content.filter((block) => block.type !== 'image_url')
+      // References become text in this session only: the loop rows keep them.
+      const filtered = msg.content
+        .filter((block) => block.type !== 'image_url')
+        .map((block): ContentBlock => isImageRef(block)
+          ? { type: 'text', text: `[image removed after a provider error: ${fileRefText(block.file_ref!)}]` }
+          : block)
       if (filtered.length === 0) {
         return { ...msg, content: '[Image content removed — provider does not support it]' }
       }

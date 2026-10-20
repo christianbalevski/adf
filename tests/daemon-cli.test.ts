@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -391,6 +391,31 @@ describe('daemon CLI', () => {
 
     expect(code).toBe(0)
     expect(io.output()).toBe('Accepted turn turn_123\n')
+  })
+
+  it('chat --attach uploads the file to loop-upload/ and sends a reference to it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-cli-attach-'))
+    const file = join(dir, 'cat photo.png')
+    writeFileSync(file, Buffer.from('89504e47', 'hex'))
+    const calls: Array<{ method: string; url: string; body: unknown }> = []
+    const io = fakeIo(async (url, init) => {
+      calls.push({ method: init?.method ?? 'GET', url, body: init?.body })
+      if (url.includes('/files/raw')) return jsonResponse({ agentId: 'agent-1', success: true, path: 'loop-upload/cat-photo-2.png', size: 4 })
+      return jsonResponse({ accepted: true, turnId: 'turn_9' }, 202)
+    })
+    try {
+      expect(await runCli(['chat', 'agent-1', '--attach', file, 'what', 'is', 'this'], io)).toBe(0)
+      expect(calls[0]).toMatchObject({ method: 'PUT', url: 'http://127.0.0.1:7385/agents/agent-1/files/raw?path=loop-upload%2Fcat-photo.png&unique=true' })
+      expect(Buffer.from(calls[0].body as Uint8Array).toString('hex')).toBe('89504e47')
+      expect(calls[1].method).toBe('POST')
+      expect(JSON.parse(String(calls[1].body))).toEqual({ content: [
+        { type: 'text', text: 'what is this' },
+        { type: 'file_ref', file_ref: { path: 'loop-upload/cat-photo-2.png', mime_type: '', size: 4 } },
+      ] })
+      expect(io.output()).toBe('Accepted turn turn_9\n')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('returns a non-zero exit code for daemon errors', async () => {

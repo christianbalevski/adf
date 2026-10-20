@@ -4,7 +4,7 @@ import type { AgentConfig } from '../../src/main/tui/api/types'
 import {
   buildToolRows, contextTokens, filterToolRows, hasHostAccess, mainThreshold, parseThreshold, setHostAccess, setInboxMode,
   setMainThreshold, setReceive, setSendMode, settingRows, toggleGroup, toggleSectionLock, toggleToolEnabled, toggleToolLock,
-  toggleToolRestricted, toggleToolVisible, type GroupRow, type ToolRow, INSTRUCTIONS_LOCK_KEYS,
+  toggleToolRestricted, toggleToolVisible, type GroupRow, type ToolRow, INSTRUCTIONS_LOCK_KEYS, parseMediaLimit, setRequestMediaLimit,
 } from '../../src/main/tui/views/inspect/settings-model'
 
 function config(patch: Partial<AgentConfig> = {}): AgentConfig {
@@ -171,11 +171,30 @@ describe('settings model: compaction, messaging, host, locks', () => {
 
   it('lists the Settings rows; messaging details only while receiving', () => {
     const ids = settingRows(config({ messaging: { receive: false, mode: 'respond_only' } } as never)).map(r => r.id)
-    expect(ids).toEqual(['instructions', 'tools', 'compaction', 'autonomous', 'autostart', 'receive', 'host'])
+    expect(ids).toEqual(['instructions', 'tools', 'compaction', 'media', 'autonomous', 'autostart', 'receive', 'host'])
     const rows = settingRows(config({ messaging: { receive: true, mode: 'proactive', visibility: 'lan' }, instructions: 'Be brief.\nCite files.' } as never), { context: { main: 25_000 } })
     expect(rows.map(r => r.id)).toContain('visibility')
     expect(rows.find(r => r.id === 'visibility')).toMatchObject({ value: 'lan', warn: true })
     expect(rows.find(r => r.id === 'instructions')).toMatchObject({ value: '2 lines, 21 chars', hint: '“Be brief.”' })
     expect(rows.find(r => r.id === 'compaction')?.value).toBe('main at 100k (default) · in use 25k (25%)')
+  })
+})
+
+describe('request media limit (Media row, /media)', () => {
+  it('shows the default when unset and the override when set; context fields are kept', () => {
+    const row = settingRows(config()).find(r => r.id === 'media')!
+    expect(row.value).toBe('20 files, 20 MB per request (default)')
+    const set = ok(setRequestMediaLimit(config(), { files: 1_000_000, mb: 4096 }))
+    expect(set.config.context).toMatchObject({ max_request_media_files: 1_000_000, max_request_media_mb: 4096 })
+    expect(settingRows(set.config).find(r => r.id === 'media')!.value).toBe('1000000 files, 4096 MB per request')
+    const cleared = ok(setRequestMediaLimit(set.config, null))
+    expect(cleared.config.context?.max_request_media_files).toBeUndefined()
+    expect(cleared.config.context?.compact_threshold).toEqual(set.config.context?.compact_threshold)
+  })
+
+  it('parses positive whole numbers or default, and refuses the rest', () => {
+    expect(parseMediaLimit(['40', '64'])).toEqual({ ok: true, value: { files: 40, mb: 64 } })
+    expect(parseMediaLimit(['default'])).toEqual({ ok: true, value: null })
+    for (const bad of [['0', '20'], ['20', '-1'], ['1.5', '2'], ['20']]) expect(parseMediaLimit(bad).ok).toBe(false)
   })
 })

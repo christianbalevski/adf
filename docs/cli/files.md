@@ -49,6 +49,11 @@ The external editor is `ADF_EDITOR`, then `VISUAL`, then `EDITOR`
 (default `notepad` on Windows, else `nano`, then `vi`). Binary files can be
 viewed but not edited. A folder cannot be deleted in one go: delete its files.
 
+Chat attachments are files too (`loop-upload/`, `imported/`). Renaming or
+moving a file updates every message that refers to it; deleting one leaves
+`[deleted: name]` in those messages. See
+[Attachments are files](models-and-providers.md#attachments-are-files).
+
 ## Inbox, Outbox, Meta
 
 Read-only tabs: messages the agent received and sent (`Enter` reads one,

@@ -47,6 +47,17 @@ describe('transcript model', () => {
     expect(items[3]).toEqual(expect.objectContaining({ kind: 'user', origin: 'loop', from: 'consolidator', text: 'mind.md updated' }))
   })
 
+  it('shows file references as lines, a deleted one as [deleted: name]', () => {
+    const items = historyToItems([
+      { seq: 1, role: 'user', content_json: [
+        { type: 'text', text: 'look' },
+        { type: 'file_ref', file_ref: { path: 'loop-upload/cat.png', mime_type: 'image/png', size: 10 } },
+        { type: 'file_ref', file_ref: { path: 'loop-upload/old.png', mime_type: 'image/png', size: 10, deleted: true } },
+      ], created_at: 1 },
+    ] as LoopEntry[])
+    expect(items).toEqual([expect.objectContaining({ kind: 'user', text: 'look\n[image: cat.png]\n[deleted: old.png]' })])
+  })
+
   it('streams deltas into one assistant item and finalizes on turn.completed', () => {
     let items: TranscriptItem[] = []
     for (const text of ['Hel', 'lo']) items = applyEventToItems(items, frame('turn.delta', { kind: 'text', text }).event)

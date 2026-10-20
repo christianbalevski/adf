@@ -8,6 +8,7 @@
 
 import type { ContentBlock } from '../types/provider.types'
 import type { LoopEntry, DisplayEntry, DisplayEntryType } from '../types/adf-v02.types'
+import { attachmentsOf, displayAttachment, isFileRefBlock, splitLegacyUploads, type DisplayAttachment } from './file-ref'
 
 /** Detect context injection entries by their `[Context: <category>]` prefix.
  *  Returns the category string if matched, else null. */
@@ -95,11 +96,36 @@ function extractImageUrl(content: string): string | null {
   return match ? `adf-file://${match[1]}` : null
 }
 
-/** Collect renderable image URLs (data: or remote) from a user message's media blocks. */
+/**
+ * Renderable image URLs of a user message's inline `image_url` blocks (data:
+ * or remote). File references are `attachments`, shown as chips.
+ */
 function collectImageUrls(blocks: ContentBlock[]): string[] {
   return blocks
     .filter((b) => b.type === 'image_url' && b.image_url?.url)
     .map((b) => b.image_url!.url)
+}
+
+/**
+ * The references that follow a tool result belong to it: they are the media
+ * the tool read. A deleted image drops the result's preview.
+ */
+function toolResultAttachments(blocks: ContentBlock[], index: number): DisplayAttachment[] {
+  const out: DisplayAttachment[] = []
+  for (let i = index + 1; i < blocks.length; i++) {
+    const b = blocks[i]
+    if (b.type === 'tool_result') break
+    if (isFileRefBlock(b)) out.push(displayAttachment(b.file_ref))
+  }
+  return out
+}
+
+/** Tool-result metadata for its attachments: the list, and no preview when the image is gone. */
+function withToolAttachments(meta: Record<string, unknown>, attachments: DisplayAttachment[]): Record<string, unknown> {
+  if (attachments.length === 0) return meta
+  const next: Record<string, unknown> = { ...meta, attachments }
+  if (attachments.some(a => a.deleted && a.kind === 'image')) delete next.imageUrl
+  return next
 }
 
 /** Detect system trigger messages by their known prefixes. */
@@ -151,6 +177,9 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
     if (entry.role === 'user') {
       // User messages
       const imagePreviewUrls = collectImageUrls(blocks)
+      const isToolRow = blocks.some(b => b.type === 'tool_result')
+      const attachments = isToolRow ? [] : attachmentsOf(blocks)
+      const firstEntryOfRow = displayEntries.length
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
         if (block.type === 'text' && block.text) {
@@ -219,15 +248,19 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             continue
           }
           const triggerType = detectTriggerType(block.text)
+          // Rows from before attachments were parts: their upload lines are chips too.
+          const legacy = triggerType ? { text: block.text, attachments: [] } : splitLegacyUploads(block.text)
+          const shown = [...attachments, ...legacy.attachments]
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
-            content: block.text,
+            content: legacy.text,
             timestamp,
             metadata: {
               seq: entry.seq,
               ...(triggerType ? { triggerType } : {}),
-              ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {})
+              ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}),
+              ...(!triggerType && shown.length > 0 ? { attachments: shown } : {})
             }
           })
         } else if (block.type === 'tool_result') {
@@ -239,16 +272,18 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             type: 'tool_result',
             content: block.content ?? '',
             timestamp,
-            metadata: {
+            metadata: withToolAttachments({
               seq: entry.seq,
               tool_use_id: block.tool_use_id,
               name: toolName,
               isError: block.is_error,
               ...(imageUrl ? { imageUrl } : {})
-            }
+            }, toolResultAttachments(blocks, bi))
           })
         }
       }
+      // A message of attachments alone still shows them.
+      pushAttachmentOnlyEntry(displayEntries, firstEntryOfRow, entry, attachments, imagePreviewUrls)
     } else if (entry.role === 'assistant') {
       // Assistant messages. `entry.tokens` is the whole call's usage, so it is
       // stamped on ONE display entry — the row's last displayed block — not on
@@ -308,6 +343,24 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
   }
 
   return displayEntries
+}
+
+/** A user row of attachments and no text: one user entry showing them. */
+function pushAttachmentOnlyEntry(
+  displayEntries: DisplayEntry[],
+  firstEntryOfRow: number,
+  entry: LoopEntry,
+  attachments: DisplayAttachment[],
+  imagePreviewUrls: string[],
+): void {
+  if (attachments.length === 0 || displayEntries.length > firstEntryOfRow) return
+  displayEntries.push({
+    id: `loop-${entry.seq}-attachments`,
+    type: 'user',
+    content: '',
+    timestamp: entry.created_at || 0,
+    metadata: { seq: entry.seq, attachments, ...(imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}) }
+  })
 }
 
 /**
@@ -376,6 +429,9 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
 
     if (entry.role === 'user') {
       const imagePreviewUrls = collectImageUrls(blocks)
+      const isToolRow = blocks.some(b => b.type === 'tool_result')
+      const attachments = isToolRow ? [] : attachmentsOf(blocks)
+      const firstEntryOfRow = displayEntries.length
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
         if (block.type === 'text' && block.text) {
@@ -444,28 +500,33 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             continue
           }
           const triggerType = detectTriggerType(block.text)
+          // Rows from before attachments were parts: their upload lines are chips too.
+          const legacy = triggerType ? { text: block.text, attachments: [] } : splitLegacyUploads(block.text)
+          const shown = [...attachments, ...legacy.attachments]
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
-            content: block.text,
+            content: legacy.text,
             timestamp,
             metadata: {
               seq: entry.seq,
               ...(triggerType ? { triggerType } : {}),
-              ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {})
+              ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {}),
+              ...(!triggerType && shown.length > 0 ? { attachments: shown } : {})
             }
           })
         } else if (block.type === 'tool_result' && block.tool_use_id) {
           // Find matching tool call and add result to its metadata
           const pending = pendingToolCalls.get(block.tool_use_id)
           const imageUrl = extractImageUrl(block.content ?? '')
+          const resultAttachments = toolResultAttachments(blocks, bi)
           if (pending) {
-            pending.entry.metadata = {
+            pending.entry.metadata = withToolAttachments({
               ...pending.entry.metadata,
               result: block.content,
               isError: block.is_error,
               ...(imageUrl ? { imageUrl } : {})
-            }
+            }, resultAttachments)
             pendingToolCalls.delete(block.tool_use_id)
           }
           // Also add as separate entry for explicit result display
@@ -474,15 +535,16 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             type: 'tool_result',
             content: block.content ?? '',
             timestamp,
-            metadata: {
+            metadata: withToolAttachments({
               seq: entry.seq,
               tool_use_id: block.tool_use_id,
               isError: block.is_error,
               ...(imageUrl ? { imageUrl } : {})
-            }
+            }, resultAttachments)
           })
         }
       }
+      pushAttachmentOnlyEntry(displayEntries, firstEntryOfRow, entry, attachments, imagePreviewUrls)
     } else if (entry.role === 'assistant') {
       // Same token placement as parseLoopToDisplay: whole-call usage on the
       // row's last block only, exact reasoning count on thinking blocks.

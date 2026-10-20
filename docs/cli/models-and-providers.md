@@ -90,17 +90,83 @@ sent without the attachment. Studio's composer refuses such a file before
 upload and shows the reason. `GET /agents/:id/status` answers each loop's
 effective set as `media`.
 
-Attachments already in history that the model cannot take are replaced by a
-stable text placeholder in the outgoing request only. The first request of a
-turn that leaves any out adds a System row to the loop that names them and
-why. The live session keeps the original attachment until normal media cleanup
-or context reset, so switching back to a model that takes it restores it
-without rewriting history.
+### Attachments are files
 
-Native media payloads are held in memory; normal session writes exclude them
-from persisted loop messages. Tool-result text may retain a saved file path,
-but reopening a loop does not automatically reload that file as a native
-attachment. Read it again when needed. Changing models requires a separate
+Every attachment is a file in the agent's Files. A message stores a reference
+to the file (a `file_ref` content block), never the bytes:
+
+- Studio uploads, and `adf chat <agent> --attach <file> <message>`, write the
+  file to `loop-upload/` first. A taken name gets a number (`cat-2.png`).
+  The text you type is stored as typed; each file is its own part of the
+  same message. Studio shows the files as chips under your text, the
+  terminal app as one line each (`[image: cat.png]`).
+- Images, audio and video sent inline to `POST /agents/:id/chat` (data URIs)
+  are saved to `loop-upload/` and replaced by a reference. A `file_ref` that
+  names no file in the agent's Files is refused with `400 file_not_found`.
+- Attachments from other agents and channels are saved under `imported/`.
+- When the agent reads an image, audio or video file (`fs_read`, `cat` in
+  `adf_shell`, MCP tool media), the tool result is followed by a reference.
+
+Each request loads the referenced files from Files. A model that takes the
+kind receives it, however old the message is. Before each attached file the
+request carries one line for the model with the file's path, type and size
+(`[Attached file: loop-upload/cat.png (image/png, 48.2 KB). Read it with
+fs_read.]`), so the agent can open it with a file tool. That line is built
+from the reference on each request and never appears in your text.
+
+Messages stored before this change hold `[Uploaded file: …]` lines in their
+text. They are not rewritten; Studio and the terminal app show those lines as
+chips too. For any other model the request
+carries a placeholder, and the first request of a turn that leaves any out adds
+a System row to the loop that names them and why. Switching models back and
+forth therefore never loses an attachment.
+
+A request leaves a reference out, with a placeholder that gives the reason,
+when:
+
+| Case | Placeholder |
+| --- | --- |
+| The file was deleted | `[deleted: photo.png]` |
+| The file is over its size limit (`limits.max_image_size_bytes`, `max_audio_size_bytes`, `max_video_size_bytes`) | `[image not sent: photo.png is 7.2 MB, over the 5.0 MB limit]` |
+| The request media limit is reached | `[image not sent: photo.png, outside the request media limit (20 files, 20.0 MB)]` |
+
+### Request media limit
+
+One request carries at most 20 referenced files and 20 MB of them, counting
+only the files it would send as media. Providers refuse larger requests:
+Anthropic takes at most 100 images and 32 MB per request.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `context.max_request_media_files` | `20` | Most files one request carries |
+| `context.max_request_media_mb` | `20` | Most MB (MiB) one request carries |
+
+Both are positive whole numbers with no upper bound. ADF does not lower them
+to fit a provider; a provider that refuses the request fails the turn with its
+own error, shown in the chat. In Studio: agent Config › Context › Media.
+
+Past either limit, the oldest files are left out until the rest are within
+half of both limits. The newest file is always sent. Every request that
+leaves files out for this reason starts its turn with a System row that
+counts them, for example `[System] Not sent to this model: 11 images (older
+than the request media limit: 20 files, 20.0 MB).` History keeps every
+reference.
+
+Dropping to half protects the prompt cache. A window that moved by one file
+on every new attachment would change an early part of every request and miss
+the cache each time. With the drop to half, the files sent stay the same for
+the next half a limit of attachments (10 with the defaults), so those
+requests repeat the same bytes and hit the cache. The window depends only on
+the history, so it is the same after a restart.
+
+Renaming or moving a file updates every reference to it. Deleting a file
+keeps the reference as a tombstone: the request and every chat view (Studio,
+the terminal app) show `[deleted: name]`, and turns run as before. A file
+overwritten in place is sent with its new contents.
+
+A reference resolves to the same bytes on every request, so older messages
+stay byte-identical and the cached prompt prefix holds. Deleting or changing a
+referenced file changes the prefix once. Changing models requires a separate
 cache warmup.
 
 ## Prompt caching

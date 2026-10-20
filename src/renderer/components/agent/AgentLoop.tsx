@@ -7,7 +7,7 @@ import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppStat
 import { toDisplayState } from '../../hooks/useAgent'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
-import { ATTACHMENT_ONLY_TEXT, sendComposerMessage, type SendRoute } from '../../utils/composer-send'
+import { sendComposerMessage, type SendRoute } from '../../utils/composer-send'
 import { composerMedia, gateAttachments, type RefusedAttachment } from '../../utils/attachment-gate'
 import type { LoopMedia } from '../../../shared/types/media.types'
 import { nanoid } from 'nanoid'
@@ -37,6 +37,8 @@ import { ApprovalControls, OverrideBadge } from './ApprovalControls'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
+import { AttachedImage, AttachmentList } from './ChatAttachments'
+import { adfFileUrl, type DisplayAttachment } from '../../../shared/utils/file-ref'
 import {
   TOOL_FAMILY_STYLES,
   ATTENTION_TOOL_STYLE,
@@ -72,20 +74,19 @@ interface PendingAttachment {
   mimeType: string
   size: number
   kind: UploadKind
-  native: boolean
-  referenceText?: string
-  contentBlock?: ContentBlock
+  /** The `file_ref` part this attachment is in the message. */
+  contentBlock: ContentBlock
 }
 
-/** The blocks one send carries: the text, then every attachment the model can take natively. */
+/**
+ * The parts one send carries: the text exactly as typed, then one `file_ref`
+ * part per attachment. The runtime adds each file's path and size for the
+ * model when it builds the request; the owner's text never holds them.
+ */
 function buildContentBlocks(message: string, items: PendingAttachment[]): ContentBlock[] {
-  const nativeAttachments = items.filter((item) => item.native && item.contentBlock)
   const blocks: ContentBlock[] = []
   if (message) blocks.push({ type: 'text', text: message })
-  else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: ATTACHMENT_ONLY_TEXT })
-  for (const item of nativeAttachments) {
-    if (item.contentBlock) blocks.push(item.contentBlock)
-  }
+  for (const item of items) blocks.push(item.contentBlock)
   return blocks
 }
 
@@ -155,33 +156,10 @@ function uploadKind(mimeType: string): UploadKind {
   return 'file'
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-  }
-  return btoa(binary)
-}
-
-function audioFormat(file: File, mimeType: string): string {
-  if (mimeType.includes('mpeg')) return 'mp3'
-  if (mimeType.includes('wav')) return 'wav'
-  return file.name.split('.').pop()?.toLowerCase() || 'wav'
-}
-
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function attachmentReference(path: string, mimeType: string, size: number): string {
-  return `[Uploaded file: ${path} (${mimeType}, ${formatBytes(size)}). Use fs_read with path "${path}" to inspect it.]`
-}
-
-function adfFileUrl(path: string): string {
-  return `adf-file://${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
 /** Compact fallback for older tool calls that do not provide `_reason`. */
@@ -538,6 +516,7 @@ const LogEntryRow = memo(({
   onSuspendRespond,
   toolResultIsError,
   toolResultImageUrl,
+  toolResultAttachments,
   askAnswer,
   compact = false,
   continuing = false,
@@ -563,6 +542,8 @@ const LogEntryRow = memo(({
   onSuspendRespond?: (resume: boolean) => void
   toolResultIsError?: boolean | null
   toolResultImageUrl?: string | null
+  /** References the tool result carries (a deleted one shows `[deleted: name]`). */
+  toolResultAttachments?: DisplayAttachment[] | null
   askAnswer?: string | null
   compact?: boolean
   /** The agent is still working from this step, even if its tool has returned. */
@@ -611,20 +592,25 @@ const LogEntryRow = memo(({
       {continuing && <span className="sr-only">Agent continuing</span>}
       {entry.type === 'user' && (
         <div className="flex flex-col items-end gap-0.5">
-          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-sunken)] px-3 py-2 text-[var(--ink)]">
-            {entry.content}
-          </div>
+          {entry.content && (
+            <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-[var(--paper-sunken)] px-3 py-2 text-[var(--ink)]">
+              {entry.content}
+            </div>
+          )}
           {Array.isArray(entry.metadata?.imagePreviewUrls) && entry.metadata.imagePreviewUrls.length > 0 && (
             <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
               {(entry.metadata.imagePreviewUrls as string[]).map((url, index) => (
-                <img
+                <AttachedImage
                   key={`${url}-${index}`}
-                  src={url}
+                  url={url}
                   alt="uploaded image"
                   className="max-h-64 max-w-full rounded-lg border border-[var(--rule)]"
                 />
               ))}
             </div>
+          )}
+          {Array.isArray(entry.metadata?.attachments) && (
+            <AttachmentList attachments={entry.metadata.attachments as DisplayAttachment[]} />
           )}
           {entry.timestamp > 0 && (
             <span className="mr-1 text-[10px] text-[var(--ink-faint)]">
@@ -838,11 +824,16 @@ const LogEntryRow = memo(({
           )}
           {entry.metadata?.name !== 'ask' && toolResultImageUrl && (
             <div className="mt-1">
-              <img
-                src={toolResultImageUrl}
+              <AttachedImage
+                url={toolResultImageUrl}
                 alt={(entry.metadata?.input as { path?: string })?.path ?? 'image'}
                 className="max-h-64 max-w-full rounded-lg border border-[var(--rule)]"
               />
+            </div>
+          )}
+          {entry.metadata?.name !== 'ask' && toolResultAttachments && (
+            <div className="mt-1">
+              <AttachmentList attachments={toolResultAttachments} align="start" deletedOnly />
             </div>
           )}
         </>
@@ -1648,22 +1639,9 @@ function LoopStream({ loop }: { loop: string }) {
       `loop-upload/${sanitizeUploadName(file.name)}`, Array.from(bytes), mimeType, { unique: true })
     if (!result?.success || !result.path) return null
     const uploadPath = result.path
-
-    const supportedNative = kind !== 'file' && mediaSupport[kind]
-    const withinLimit = kind !== 'file' && bytes.length <= mediaLimits[kind]
-    const native = supportedNative && withinLimit
-    let contentBlock: ContentBlock | undefined
-    if (native) {
-      const base64 = bytesToBase64(bytes)
-      if (kind === 'image') {
-        contentBlock = { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }
-      } else if (kind === 'audio') {
-        contentBlock = { type: 'input_audio', input_audio: { data: base64, format: audioFormat(file, mimeType) } }
-      } else if (kind === 'video') {
-        contentBlock = { type: 'video_url', video_url: { url: `data:${mimeType};base64,${base64}` } }
-      }
-    }
-
+    // The message refers to the uploaded file; the runtime loads its bytes for
+    // each request (within the agent's size limits), so the model sees it for
+    // as long as history holds it.
     return {
       id: nanoid(),
       name: file.name,
@@ -1671,11 +1649,9 @@ function LoopStream({ loop }: { loop: string }) {
       mimeType,
       size: bytes.length,
       kind,
-      native,
-      contentBlock,
-      referenceText: native ? undefined : attachmentReference(uploadPath, mimeType, bytes.length),
+      contentBlock: { type: 'file_ref', file_ref: { path: uploadPath, mime_type: mimeType, size: bytes.length } },
     }
-  }, [mediaLimits, mediaSupport])
+  }, [])
 
   const handleFilesSelected = useCallback(async (picked: File[]) => {
     if (picked.length === 0) return
@@ -1690,26 +1666,14 @@ function LoopStream({ loop }: { loop: string }) {
       if (uploaded.length === 0) return
 
       setAttachments((current) => [...current, ...uploaded])
-      const references = uploaded.map((item) => item.referenceText).filter(Boolean)
-      if (references.length > 0) {
-        const suffix = references.join('\n')
-        const currentInput = input.trimEnd()
-        setInput(currentInput ? `${currentInput}\n\n${suffix}` : suffix)
-      }
     } finally {
       setUploadingFiles(false)
     }
-  }, [buildAttachment, input, setInput, media])
+  }, [buildAttachment, media])
 
   const removeAttachment = useCallback((id: string) => {
-    setAttachments((current) => {
-      const attachment = current.find((item) => item.id === id)
-      if (attachment?.referenceText) {
-        setInput(input.replace(`\n\n${attachment.referenceText}`, '').replace(attachment.referenceText, '').trimEnd())
-      }
-      return current.filter((item) => item.id !== id)
-    })
-  }, [input, setInput])
+    setAttachments((current) => current.filter((item) => item.id !== id))
+  }, [])
 
   const handleInterruptSend = useCallback((id: string) => {
     if (!filePath) return
@@ -1727,12 +1691,8 @@ function LoopStream({ loop }: { loop: string }) {
     [attachments]
   )
 
-  const imagePreviewUrls = useMemo(
-    () => attachments
-      .filter((item) => item.kind === 'image')
-      .map((item) => adfFileUrl(item.path)),
-    [attachments]
-  )
+  // Attachments show as chips from the message's own parts; no separate previews.
+  const imagePreviewUrls: string[] = []
 
   /**
    * The one send path (composer-send.ts): everything the human sends goes
@@ -1784,7 +1744,7 @@ function LoopStream({ loop }: { loop: string }) {
     // the message goes out with them.
     void (async () => {
       const files = pending.files ?? []
-      let text = pending.text
+      const text = pending.text
       let items: PendingAttachment[] = []
       if (files.length > 0) {
         setUploadingFiles(true)
@@ -1793,12 +1753,9 @@ function LoopStream({ loop }: { loop: string }) {
         } finally {
           setUploadingFiles(false)
         }
-        const references = items.map((i) => i.referenceText).filter((r): r is string => !!r)
-        if (references.length > 0) text = text ? `${text}\n\n${references.join('\n')}` : references.join('\n')
       }
-      const previews = items.filter((i) => i.kind === 'image').map((i) => adfFileUrl(i.path))
-      // Unsent, it comes back as this composer would hold it: text with its file references, and the files.
-      await sendWithRecovery(filePath, loop, () => sendUserMessage(text, buildContentBlocks(text, items), previews), () => restoreFailedSend(text, items))
+      // Unsent, it comes back as this composer would hold it: the text, and the files.
+      await sendWithRecovery(filePath, loop, () => sendUserMessage(text, buildContentBlocks(text, items), []), () => restoreFailedSend(text, items))
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMainLoop, filePath, config, starting, pendingFirstMessage])
@@ -1885,8 +1842,7 @@ function LoopStream({ loop }: { loop: string }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const hasNativeAttachments = attachments.some((item) => item.native && item.contentBlock)
-    if ((!input.trim() && !hasNativeAttachments) || starting || uploadingFiles) return
+    if ((!input.trim() && attachments.length === 0) || starting || uploadingFiles) return
     const message = input.trim()
 
     // A `/` line is a command first and a message second. One that matches
@@ -2142,6 +2098,7 @@ function LoopStream({ loop }: { loop: string }) {
         onSuspendRespond={handleSuspendRespond}
         toolResultIsError={toolResultIsError}
         toolResultImageUrl={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.imageUrl as string | undefined) ?? null : null}
+        toolResultAttachments={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.attachments as DisplayAttachment[] | undefined) ?? null : null}
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
         continuing={activity.entryId === entry.id}
@@ -2391,7 +2348,7 @@ function LoopStream({ loop }: { loop: string }) {
 
         const canSubmit = activeAsk
           ? input.trim().length > 0
-          : (input.trim().length > 0 || attachments.some((item) => item.native && item.contentBlock)) && !starting && !uploadingFiles
+          : (input.trim().length > 0 || attachments.length > 0) && !starting && !uploadingFiles
 
         return (
           // No divider above the composer: it reads as a floating card
@@ -2522,7 +2479,7 @@ function LoopStream({ loop }: { loop: string }) {
                       title={attachment.path}
                     >
                       <span className="truncate max-w-[10rem]">{attachment.name}</span>
-                      <span className="shrink-0 font-mono text-[var(--ink-faint)]">{attachment.native ? attachment.kind : 'ref'}</span>
+                      <span className="shrink-0 font-mono text-[var(--ink-faint)]">{attachment.kind}</span>
                       <button
                         type="button"
                         onClick={() => removeAttachment(attachment.id)}
