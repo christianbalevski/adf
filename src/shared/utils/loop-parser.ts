@@ -44,8 +44,29 @@ export function parseLoopSendStamp(text: string): { fromLoop: string; body: stri
  */
 export const TURN_ERROR_MARKER = '[Turn error] '
 
+/**
+ * Separates a turn error's message from its details (status, body) in the
+ * same row. The loop has no metadata column, so the details ride in the text
+ * after the message and come back as the error entry's `details`.
+ */
+export const TURN_ERROR_DETAILS_MARKER = '\n\n[Error details] '
+
+/** The loop text of a failed turn: the marker, the message, then any details. */
+export function formatTurnErrorRow(message: string, details?: string): string {
+  return `${TURN_ERROR_MARKER}${message}${details ? `${TURN_ERROR_DETAILS_MARKER}${details}` : ''}`
+}
+
+/** A persisted turn error's message and details; null for any other text. */
+export function parseTurnErrorRow(text: string): { message: string; details?: string } | null {
+  if (!text.startsWith(TURN_ERROR_MARKER)) return null
+  const body = text.slice(TURN_ERROR_MARKER.length)
+  const at = body.lastIndexOf(TURN_ERROR_DETAILS_MARKER)
+  if (at < 0) return { message: body }
+  return { message: body.slice(0, at), details: body.slice(at + TURN_ERROR_DETAILS_MARKER.length) }
+}
+
 export function parseTurnErrorMarker(text: string): string | null {
-  return text.startsWith(TURN_ERROR_MARKER) ? text.slice(TURN_ERROR_MARKER.length) : null
+  return parseTurnErrorRow(text)?.message ?? null
 }
 
 /** Extract the first image VFS path from tool result text and return an adf-file:// URL. */
@@ -130,14 +151,14 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             })
             continue
           }
-          const turnError = parseTurnErrorMarker(block.text)
+          const turnError = parseTurnErrorRow(block.text)
           if (turnError !== null) {
             displayEntries.push({
               id: `loop-${entry.seq}-${bi}`,
               type: 'error',
-              content: turnError,
+              content: turnError.message,
               timestamp,
-              metadata: { seq: entry.seq }
+              metadata: turnError.details ? { seq: entry.seq, details: turnError.details } : { seq: entry.seq }
             })
             continue
           }
@@ -347,14 +368,14 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             })
             continue
           }
-          const turnError = parseTurnErrorMarker(block.text)
+          const turnError = parseTurnErrorRow(block.text)
           if (turnError !== null) {
             displayEntries.push({
               id: `loop-${entry.seq}-${bi}`,
               type: 'error',
-              content: turnError,
+              content: turnError.message,
               timestamp,
-              metadata: { seq: entry.seq }
+              metadata: turnError.details ? { seq: entry.seq, details: turnError.details } : { seq: entry.seq }
             })
             continue
           }

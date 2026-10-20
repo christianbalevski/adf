@@ -12,7 +12,9 @@ import { nanoid } from 'nanoid'
 import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { loopColor } from '../../utils/loop-color'
-import { getLoopActivity, isTurnCompleteMarker } from '../../utils/loop-activity'
+import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../utils/loop-activity'
+import { LOOP_ERROR_ACTION_LABELS, actionableErrorId, errorAction, isMissingProvider, type LoopErrorAction } from '../../utils/loop-error'
+import { directSendOutcome, restoreDraft, sendIsQueued } from '../../utils/send-recovery'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
 import {
   buildSlashCommands,
@@ -47,6 +49,8 @@ import {
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 10
+/** What an error row's Retry now sends: a message of the owner's, shown like any other. */
+const RETRY_MESSAGE = 'Try again.'
 // Model-facing text for attachment-only messages; also shown in the UI so the
 // optimistic entry matches what the loop table persists and restores.
 const DEFAULT_MEDIA_LIMITS = {
@@ -394,6 +398,9 @@ function isCollapsibleActivity(entry: AgentLogEntry, toolPairs: ToolPairIndex): 
   // A delivered inter-loop message is content, not workflow noise — folding it
   // into an activity group under a tool-call label would hide it entirely.
   if (isLoopMessageEntry(entry)) return false
+  // A runtime notice (compacting, a provider that gave up) is status the
+  // owner must see without opening a group.
+  if (isSystemNotice(entry)) return false
   if (entry.type === 'thinking' || entry.type === 'context' || entry.type === 'trigger') return true
   if (entry.type !== 'tool_call') return false
   const name = entry.metadata?.name as string | undefined
@@ -518,7 +525,9 @@ const LogEntryRow = memo(({
   toolResultImageUrl,
   askAnswer,
   compact = false,
-  continuing = false
+  continuing = false,
+  errorAction: rowErrorAction = null,
+  onErrorAction
 }: {
   entry: AgentLogEntry
   expandedThinking: Set<string>
@@ -541,6 +550,9 @@ const LogEntryRow = memo(({
   compact?: boolean
   /** The agent is still working from this step, even if its tool has returned. */
   continuing?: boolean
+  /** The error row's one action, when it is the latest unresolved error. */
+  errorAction?: LoopErrorAction | null
+  onErrorAction?: (action: LoopErrorAction, entry: AgentLogEntry) => void
 }) => {
   const toolName = (entry.metadata?.name as string | undefined) ?? 'tool'
   const toolInput = entry.metadata?.input
@@ -697,6 +709,14 @@ const LogEntryRow = memo(({
                     : 'bg-[var(--paper-sunken)] hover:bg-[color-mix(in_srgb,var(--rule)_55%,var(--paper-sunken))]'
             }`}
             onClick={() => onToolClick(entry)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              // Only the card itself: keys inside its approval controls are theirs.
+              if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+              e.preventDefault()
+              onToolClick(entry)
+            }}
           >
             <div className="flex min-w-0 items-center gap-2 px-1.5 py-1">
               <span
@@ -796,12 +816,24 @@ const LogEntryRow = memo(({
       )}
       {/* tool_result entries are merged into their tool_call block above */}
       {entry.type === 'error' && (
-        <div
-          className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2 text-red-700 dark:text-red-400 text-xs cursor-pointer transition-colors hover:bg-red-100 dark:hover:bg-red-900/30"
-          onClick={() => onToolClick(entry)}
-          title="Click for full error details"
-        >
-          {entry.content}
+        <div className="flex items-start gap-2 rounded-lg bg-red-50 p-2 text-xs text-red-700 transition-colors hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30">
+          <button
+            type="button"
+            onClick={() => onToolClick(entry)}
+            title="Show full error"
+            className="min-w-0 flex-1 whitespace-pre-wrap break-words text-left"
+          >
+            {entry.content}
+          </button>
+          {rowErrorAction && onErrorAction && (
+            <button
+              type="button"
+              onClick={() => onErrorAction(rowErrorAction, entry)}
+              className="shrink-0 rounded-[var(--radius-sm)] border border-red-300 px-2 py-0.5 font-medium transition-colors hover:bg-red-200/60 dark:border-red-800 dark:hover:bg-red-900/40"
+            >
+              {LOOP_ERROR_ACTION_LABELS[rowErrorAction]}
+            </button>
+          )}
         </div>
       )}
       {entry.type === 'trigger' && (() => {
@@ -857,7 +889,20 @@ const LogEntryRow = memo(({
         </div>
         )
       })()}
-      {entry.type === 'context' && !isLoopMessageEntry(entry) && (() => {
+      {isSystemNotice(entry) && (
+        // A runtime notice is status, not context: shown as it is, never folded.
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--rule)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
+          <span className="max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words">
+            {entry.content.replace(/^[System] /, '')}
+          </span>
+          {entry.timestamp > 0 && (
+            <span className="shrink-0 text-[10px] text-[var(--ink-faint)]">
+              {formatLoopTime(entry.timestamp)}
+            </span>
+          )}
+        </div>
+      )}
+      {entry.type === 'context' && !isLoopMessageEntry(entry) && !isSystemNotice(entry) && (() => {
         const category = (entry.metadata?.category as string) ?? 'unknown'
         const label = CONTEXT_LABELS[category] ?? 'Context Injected'
         const isExpanded = expandedContexts.has(entry.id)
@@ -1472,6 +1517,12 @@ function LoopStream({ loop }: { loop: string }) {
     addLogEntry({ id: nanoid(), type: 'system', content: text, timestamp: Date.now() })
   }, [addLogEntry])
 
+  /** The `/compact` command, also behind an error row's Compact. */
+  const runCompact = useCallback(async () => {
+    const result = await window.adfApi?.compactLoop()
+    if (!result?.success) say(`/compact — ${result?.error ?? 'no agent is running.'}`)
+  }, [say])
+
   const buildAttachment = useCallback(async (file: File): Promise<PendingAttachment | null> => {
     const mimeType = inferMimeType(file)
     const kind = uploadKind(mimeType)
@@ -1573,6 +1624,46 @@ function LoopStream({ loop }: { loop: string }) {
     await sendComposerMessage({ filePath, loop, loopState: state, agentState }, message, content, previews)
   }
 
+  // A failed send puts what the owner wrote back in the composer (this tab's
+  // draft, by its key, so it lands even after a tab switch), ahead of anything
+  // typed since. The chat still shows why it was not sent.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+  const restoreFailedSend = (text: string, items: PendingAttachment[]) => {
+    if (draftKey) {
+      const docs = useDocumentStore.getState()
+      docs.setDraftInput(draftKey, restoreDraft(docs.draftInputs[draftKey] ?? '', text))
+    }
+    if (mountedRef.current && items.length > 0) setAttachments((current) => [...items, ...current])
+  }
+
+  /**
+   * Watch a send that went straight to the agent until the chat decides it.
+   * sendComposerMessage reports nothing back: a start that did not happen
+   * leaves the agent off, and a refused send ends in its "Not sent" row.
+   * A queued send needs none of this; the queue keeps it.
+   */
+  const watchDirectSend = (before: ReadonlySet<string>, text: string, items: PendingAttachment[], startedFromOff: boolean) => {
+    const path = filePath
+    const stillHere = () => useDocumentStore.getState().filePath === path
+    if (startedFromOff && stillHere() && useAgentStore.getState().state === 'off') {
+      restoreFailedSend(text, items)
+      return
+    }
+    const settle = (): boolean => {
+      if (!stillHere()) return true
+      const outcome = directSendOutcome(selectLoopSlice(useAgentStore.getState(), loop).log, before)
+      if (outcome === 'pending') return false
+      if (outcome === 'failed') restoreFailedSend(text, items)
+      return true
+    }
+    if (settle()) return
+    const unsubscribe = useAgentStore.subscribe(() => { if (settle()) unsubscribe() })
+  }
+
   // A message typed into the home composer arrives here once the agent it
   // created is the open one and its config has loaded. It goes through
   // sendUserMessage like anything typed into this box: review gate, provider
@@ -1638,8 +1729,7 @@ function LoopStream({ loop }: { loop: string }) {
 
     switch (command.key) {
       case 'compact': {
-        const result = await window.adfApi?.compactLoop()
-        if (!result?.success) say(`/compact — ${result?.error ?? 'no agent is running.'}`)
+        await runCompact()
         return
       }
       case 'clear': {
@@ -1704,10 +1794,44 @@ function LoopStream({ loop }: { loop: string }) {
 
     const content = buildSubmitContent(message)
     const previews = imagePreviewUrls
+    const sentAttachments = attachments
+    const queued = sendIsQueued(filePath, state, messageQueue.length)
+    const before = new Set(log.map((entry) => entry.id))
     setInput('')
     setAttachments([])
-    await sendUserMessage(message, content, previews)
+    try {
+      await sendUserMessage(message, content, previews)
+    } catch (error) {
+      console.warn('[AgentLoop] Send failed:', error)
+      restoreFailedSend(message, sentAttachments)
+      return
+    }
+    if (!queued) watchDirectSend(before, message, sentAttachments, agentState === 'off')
   }
+
+  // An error row's action. Each is the owner's click, and each is visible:
+  // the provider screen opens, /compact runs, or a retry goes out as a
+  // message of theirs. Held in a ref so the memo'd rows get a stable handler.
+  const errorActionRef = useRef<(action: LoopErrorAction, entry: AgentLogEntry) => void>(() => {})
+  errorActionRef.current = (action, entry) => {
+    if (action === 'provider') {
+      if (isMissingProvider(entry.content)) void useAppStore.getState().requestProviderSetup('provider_missing', filePath)
+      else useAppStore.getState().openSettingsAt('providers')
+    } else if (action === 'compact') {
+      void runCompact()
+    } else {
+      void sendUserMessage(RETRY_MESSAGE, buildContentBlocks(RETRY_MESSAGE, []), [])
+    }
+  }
+  const handleErrorAction = useCallback((action: LoopErrorAction, entry: AgentLogEntry) => {
+    errorActionRef.current(action, entry)
+  }, [])
+  // Only the latest error the agent has not moved past offers an action, and
+  // not while a turn is running.
+  const errorActionId = useMemo(
+    () => (isActive || starting ? null : actionableErrorId(displayLog)),
+    [displayLog, isActive, starting]
+  )
 
   /** Put a row's command words in the composer and wait for its arguments. */
   const completeSlashCommand = (command: SlashCommand) => {
@@ -1922,6 +2046,8 @@ function LoopStream({ loop }: { loop: string }) {
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
         continuing={activity.entryId === entry.id}
+        errorAction={entry.type === 'error' && entry.id === errorActionId ? errorAction(entry.content) : null}
+        onErrorAction={handleErrorAction}
       />
     )
   }

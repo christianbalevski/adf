@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getLiveStep, getLoopActivity } from '../../../src/renderer/utils/loop-activity'
+import { getLiveStep, getLoopActivity, isSystemNotice } from '../../../src/renderer/utils/loop-activity'
 import type { AgentLogEntry } from '../../../src/renderer/stores/agent.store'
 
 const active = { active: true, starting: false, waiting: false }
@@ -111,5 +111,45 @@ describe('live step', () => {
     expect(getLiveStep([reasoned, done])).toBeNull()
     expect(getLiveStep([reasoned, user])).toBeNull()
     expect(getLiveStep([reasoned, entry('trigger', 'trigger')])).toBeNull()
+  })
+})
+
+describe('compaction phase', () => {
+  const notice = (id: string, content: string): AgentLogEntry => ({
+    id, type: 'context', content, timestamp: 1, metadata: { category: 'System' },
+  })
+  const compacting = { entryId: null, phase: 'Compacting…' }
+  const trigger = entry('trigger', 'trigger')
+
+  it('reads a System context entry as a notice, and only that', () => {
+    expect(isSystemNotice(notice('n', 'Auto-compacting conversation history...'))).toBe(true)
+    expect(isSystemNotice(entry('context', 'context', { category: 'system_prompt' }))).toBe(false)
+  })
+
+  it('shows Compacting… instead of Thinking… while a compaction runs', () => {
+    expect(getLoopActivity([trigger, notice('n', 'Auto-compacting conversation history...')], active)).toEqual(compacting)
+    expect(getLoopActivity([user, call, result, notice('n', 'Compacting conversation history (context limit reached)…')], active)).toEqual(compacting)
+  })
+
+  it('ends the phase once compaction failed or the compacted log arrived', () => {
+    const started = notice('n', 'Compacting conversation history (manual)...')
+    const failed = notice('f', 'Compaction failed — history preserved, will retry. (timeout)')
+    expect(getLoopActivity([trigger, started, failed], active)).toEqual(thinking)
+    expect(getLoopActivity([entry('summary', 'compaction'), started], active)).toEqual(compacting)
+    expect(getLoopActivity([started, entry('summary', 'compaction')], active)).toEqual(thinking)
+  })
+
+  it('does not read the memory-flush grace notice as compacting', () => {
+    const grace = notice('g', 'Compaction threshold reached — memory-flush grace turn before compacting.')
+    expect(getLoopActivity([trigger, grace], active)).toEqual(thinking)
+  })
+
+  it('shows a manual /compact between turns while its notice is the last row', () => {
+    const idle = { ...active, active: false }
+    const started = notice('n', 'Compacting conversation history (manual)...')
+    const failed = notice('f', 'Compaction failed — history preserved, will retry. (x)')
+    expect(getLoopActivity([user, started], idle)).toEqual(compacting)
+    expect(getLoopActivity([user, started, failed], idle)).toEqual(none)
+    expect(getLoopActivity([user, started], { ...idle, waiting: true })).toEqual(none)
   })
 })

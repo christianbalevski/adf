@@ -5,9 +5,23 @@ export function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
 }
 
+/**
+ * A runtime notice to the owner (`context_injected`, category `System`):
+ * compaction, a provider that gave up, the silent-turn nudge. Status, not
+ * workflow noise, so it is never folded into an activity group.
+ */
+export function isSystemNotice(entry: AgentLogEntry): boolean {
+  return entry.type === 'context' && entry.metadata?.category === 'System'
+}
+
+/** The notice the executor emits when a compaction begins. */
+export function isCompactingNotice(entry: AgentLogEntry): boolean {
+  return isSystemNotice(entry) && /^(auto-)?compacting\b/i.test(entry.content.trim())
+}
+
 export interface LoopActivity {
   entryId: string | null
-  phase: 'Thinking…' | 'Starting agent…' | null
+  phase: 'Thinking…' | 'Compacting…' | 'Starting agent…' | null
 }
 
 /** The glimmer describes the agent continuing, not an unfinished tool call. */
@@ -16,10 +30,14 @@ export function getLoopActivity(
   { active, starting, waiting, autonomous = false }: { active: boolean; starting: boolean; waiting: boolean; autonomous?: boolean },
 ): LoopActivity {
   const none: LoopActivity = { entryId: null, phase: null }
+  const compacting: LoopActivity = { entryId: null, phase: 'Compacting…' }
   if (waiting) return none
   if (starting) return { entryId: null, phase: 'Starting agent…' }
-  if (!active) return none
+  // A manual /compact runs between turns. Its notice is the last row until
+  // the compacted log replaces the window, or a failure notice follows it.
+  if (!active) return log.length > 0 && isCompactingNotice(log[log.length - 1]) ? compacting : none
 
+  let sawNotice = false
   for (let index = log.length - 1; index >= 0; index--) {
     const entry = log[index]
     if (isTurnCompleteMarker(entry) || entry.type === 'error') return none
@@ -30,7 +48,7 @@ export function getLoopActivity(
       const closed = entry.metadata?.quietTurn === true || !lacksSeq(entry)
       return autonomous && closed ? { entryId: null, phase: 'Thinking…' } : none
     }
-    if (entry.type === 'user' || entry.type === 'trigger') break
+    if (entry.type === 'user' || entry.type === 'trigger' || entry.type === 'compaction') break
     if (entry.type === 'thinking') return { entryId: entry.id, phase: null }
     if (entry.type === 'tool_call') {
       // `say` never ends the turn, so the model is already composing its next
@@ -38,6 +56,11 @@ export function getLoopActivity(
       // but show the trailing phase so a long next call isn't a silent gap.
       if (entry.metadata?.name === 'say') return { entryId: null, phase: 'Thinking…' }
       return { entryId: entry.id, phase: null }
+    }
+    // The latest notice decides: one after "Compacting" (it failed) ends it.
+    if (isSystemNotice(entry)) {
+      if (!sawNotice && isCompactingNotice(entry)) return compacting
+      sawNotice = true
     }
     // Results and context updates don't end activity. Leave the glimmer on
     // the latest step while the model processes the result and decides next.
