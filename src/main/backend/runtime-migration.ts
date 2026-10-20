@@ -13,15 +13,19 @@ import { runtimeOrder, savedRuntimeId, SLOT_RUNTIME } from './daemon-mode/runtim
  * an older Studio left in `mode: remote` becomes `mode: local`, with the
  * connection it used in the runtime set.
  *
- * - `studio-backend.json`: `mode` becomes `local`, `remote.name` goes, and
- *   `runtimeOrder` is written with that connection first. Written once,
- *   atomically, at the first launch of this version, before any connector.
- * - `studio-client-settings.json`: `remoteRecentFiles` moves to
+ * - `studio-client-settings.json` first: `remoteRecentFiles` moves to
  *   `runtimeRecentFiles[<id>]`; the plain `fleetGroups`, `fleetStewards` and
  *   `fleetMapState` (remote mode wrote that computer's there) move to
  *   `runtimeFleet[<id>]`; an `agentWindows` list saved for
  *   `remote:<name or URL>` is saved for `local`, each entry with its
- *   `runtimeId` and fingerprint.
+ *   `runtimeId` and fingerprint. The file is marked `remoteModeMigrated`
+ *   while studio-backend.json still says remote, so a launch that migrates
+ *   again moves nothing This computer wrote meanwhile.
+ * - then `studio-backend.json`: `mode` becomes `local`, `remote.name` goes,
+ *   and `runtimeOrder` is written with that connection first. Not written
+ *   while the client keys could not be: the next launch migrates both.
+ *
+ * Each file is written atomically, before any connector.
  *
  * A file in `mode: local` or `mode: embedded` is never read here, and no file
  * of a local-only install is written (M11). Electron-free.
@@ -78,7 +82,7 @@ export function migrationNotice(runtime: RemoteModeRuntime | null): string | nul
  * file that cannot be written is said in Settings → Connections and retried
  * at the next launch. Null when the file is not in remote mode.
  */
-export async function migrateRemoteMode(boot: BootBackend, saved: Record<string, SavedRemote>, log: Log = console): Promise<RemoteModeMigration | null> {
+export async function migrateRemoteMode(boot: BootBackend, saved: Record<string, SavedRemote>, log: Log = console, opts: { clientKeysFailed?: string } = {}): Promise<RemoteModeMigration | null> {
   if (boot.config.mode !== 'remote') return null
   const runtime = remoteModeRuntime(boot.config, saved)
   const { name: _old, ...remote } = boot.config.remote
@@ -91,6 +95,11 @@ export async function migrateRemoteMode(boot: BootBackend, saved: Record<string,
   if (boot.writeBlocked) {
     log.warn(`[Backend] ${boot.configPath} is in remote mode (an older Studio) and cannot be rewritten: ${boot.writeBlocked} This launch runs This computer with ${what}; the next launch migrates it again`)
     boot.notices = [...(boot.notices ?? []), `studio-backend.json still says remote and could not be rewritten: ${boot.writeBlocked}`]
+    return { runtime, written: false, notice: migrationNotice(runtime) }
+  }
+  if (opts.clientKeysFailed) {
+    log.warn(`[Backend] Not rewriting ${boot.configPath} from remote mode: the client keys could not be migrated (${opts.clientKeysFailed}). This launch runs This computer with ${what}; the next launch migrates both again`)
+    boot.notices = [...(boot.notices ?? []), `studio-backend.json still says remote: ${opts.clientKeysFailed}.`]
     return { runtime, written: false, notice: migrationNotice(runtime) }
   }
   try {
@@ -106,6 +115,9 @@ export async function migrateRemoteMode(boot: BootBackend, saved: Record<string,
 }
 
 const FLEET_KEYS = ['fleetGroups', 'fleetStewards', 'fleetMapState'] as const
+
+/** In studio-client-settings.json while studio-backend.json still says remote: its client keys were migrated. */
+export const REMOTE_MODE_MIGRATED_KEY = 'remoteModeMigrated'
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -126,10 +138,15 @@ function windowsRuntime(listRuntime: string, config: Pick<StudioBackendConfig, '
 
 /**
  * The client keys of §7.4 and §7.5 for the runtime of an older remote mode,
- * on the parsed client file. Pure; returns the keys it changed.
+ * on the parsed client file. Pure; returns the keys it changed. A file
+ * marked `remoteModeMigrated` is not migrated again: its plain fleet keys
+ * are This computer's now. Unmarked, the plain fleet keys move only while
+ * the runtime has no `runtimeFleet` entry, and only a key copied there is
+ * deleted.
  */
 export function migrateRemoteModeClientKeys(data: Record<string, unknown>, config: Pick<StudioBackendConfig, 'remote'>, runtime: RemoteModeRuntime | null, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>): string[] {
   const changed: string[] = []
+  if (data[REMOTE_MODE_MIGRATED_KEY] === true) return changed
   const id = runtime?.id ?? null
   if (id && Array.isArray(data.remoteRecentFiles)) {
     const recents = isObject(data.runtimeRecentFiles) ? { ...data.runtimeRecentFiles } : {}
@@ -139,12 +156,12 @@ export function migrateRemoteModeClientKeys(data: Record<string, unknown>, confi
     delete data.remoteRecentFiles
     changed.push('remoteRecentFiles → runtimeRecentFiles')
   }
-  if (id && FLEET_KEYS.some((key) => key in data)) {
-    const fleet = isObject(data.runtimeFleet) ? { ...data.runtimeFleet } : {}
-    const entry: Record<string, unknown> = isObject(fleet[id]) ? { ...(fleet[id] as Record<string, unknown>) } : {}
+  const fleet = isObject(data.runtimeFleet) ? { ...data.runtimeFleet } : {}
+  if (id && !(id in fleet) && FLEET_KEYS.some((key) => key in data)) {
+    const entry: Record<string, unknown> = {}
     for (const key of FLEET_KEYS) {
-      if (!(key in data)) continue
-      if (!(key in entry)) entry[key] = data[key]
+      if (!(key in data) || key in entry) continue
+      entry[key] = data[key]
       delete data[key]
     }
     fleet[id] = entry
@@ -172,12 +189,13 @@ export function migrateRemoteModeClientKeys(data: Record<string, unknown>, confi
 }
 
 /**
- * §7.4, §7.5 on `studio-client-settings.json`, after migrateRemoteMode and
- * before the client settings are loaded. Written atomically, and only when a
- * key changed. A file that cannot be read or parsed is left to the client
- * settings store (it quarantines a corrupt one); never throws.
+ * §7.4, §7.5 on `studio-client-settings.json`, before studio-backend.json
+ * and before the client settings are loaded. Written atomically, and only
+ * when a key changed (with `mark`, marked `remoteModeMigrated`). A file that cannot
+ * be read or parsed is left to the client settings store (it quarantines a
+ * corrupt one). Null: the file could not be written. Never throws.
  */
-export async function migrateRemoteModeClientFile(userDataDir: string, config: Pick<StudioBackendConfig, 'remote'>, runtime: RemoteModeRuntime | null, saved: Record<string, SavedRemote>, log: Log = console): Promise<string[]> {
+export async function migrateRemoteModeClientFile(userDataDir: string, config: Pick<StudioBackendConfig, 'remote'>, runtime: RemoteModeRuntime | null, saved: Record<string, SavedRemote>, log: Log = console, opts: { mark?: boolean } = {}): Promise<string[] | null> {
   const path = clientSettingsPath(userDataDir)
   let data: unknown
   try {
@@ -190,13 +208,58 @@ export async function migrateRemoteModeClientFile(userDataDir: string, config: P
   const changed = migrateRemoteModeClientKeys(data, config, runtime, saved)
   if (changed.length === 0) return []
   try {
-    await writeJsonAtomicAsync(path, data)
+    await writeJsonAtomicAsync(path, opts.mark ? { ...data, [REMOTE_MODE_MIGRATED_KEY]: true } : data)
     log.log(`[Backend] Migrated the client keys of remote mode in ${path}: ${changed.join('; ')}`)
   } catch (err) {
-    log.warn(`[Backend] Could not write the migrated client keys to ${path} (${err instanceof Error ? err.message : String(err)}); they stay as they were`)
-    return []
+    log.warn(`[Backend] Could not write the migrated client keys to ${path} (${errorText(err)}); they stay as they were`)
+    return null
   }
   return changed
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Mark or unmark the client file (`remoteModeMigrated`): marked while
+ * studio-backend.json still says remote after the client keys were migrated
+ * (or held none), unmarked once it says local. A missing file is created
+ * only to mark it. Logged on failure; never throws.
+ */
+async function markClientFile(userDataDir: string, mark: boolean, log: Log): Promise<void> {
+  const path = clientSettingsPath(userDataDir)
+  let data: unknown = {}
+  try {
+    data = JSON.parse((await fsp.readFile(path, 'utf-8')).replace(/^\uFEFF/, ''))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT' || !mark) return
+  }
+  if (!isObject(data) || (data[REMOTE_MODE_MIGRATED_KEY] === true) === mark) return
+  if (mark) data[REMOTE_MODE_MIGRATED_KEY] = true
+  else delete data[REMOTE_MODE_MIGRATED_KEY]
+  try {
+    await writeJsonAtomicAsync(path, data)
+  } catch (err) {
+    log.warn(`[Backend] Could not ${mark ? 'mark' : 'unmark'} ${path} (${REMOTE_MODE_MIGRATED_KEY}): ${errorText(err)}`)
+  }
+}
+
+/**
+ * The whole migration of §7.3 to §7.5, in a crash-safe order: the client
+ * keys first, then studio-backend.json. A client file that cannot be
+ * written leaves studio-backend.json in remote mode, so the next launch
+ * migrates both. Null when the file is not in remote mode, or the launch
+ * runs Inside Studio (it leaves the file for the next launch).
+ */
+export async function migrateRemoteModeInstall(boot: BootBackend, userDataDir: string, saved: Record<string, SavedRemote>, log: Log = console): Promise<RemoteModeMigration | null> {
+  if (boot.mode !== 'local' || boot.config.mode !== 'remote') return null
+  const legacy = boot.config
+  const clientWrite = await migrateRemoteModeClientFile(userDataDir, legacy, remoteModeRuntime(legacy, saved), saved, log, { mark: true })
+  const migration = await migrateRemoteMode(boot, saved, log, clientWrite === null ? { clientKeysFailed: `${clientSettingsPath(userDataDir)} could not be written` } : {})
+  // Written: the migration never runs again. Not written: a later run must not move what This computer writes meanwhile.
+  if (clientWrite !== null && migration) await markClientFile(userDataDir, !migration.written, log)
+  return migration
 }
 
 /**

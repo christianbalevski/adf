@@ -39,7 +39,7 @@ import {
   syncRuntimeEntryAfterImport,
 } from './backend/boot-handover'
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
-import { migrateRemoteMode, migrateRemoteModeClientFile, relinkSavedAgentWindows, type RemoteModeMigration } from './backend/runtime-migration'
+import { migrateRemoteModeInstall, relinkSavedAgentWindows, type RemoteModeMigration } from './backend/runtime-migration'
 import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
@@ -752,13 +752,9 @@ app.whenReady().then(async () => {
   savedCache.watch()
   app.once('before-quit', () => savedCache.dispose())
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
-  // before any connector or client settings store exists. A launch Inside Studio leaves the file for the next one.
-  let migration: RemoteModeMigration | null = null
-  if (backend.mode === 'local' && backend.config.mode === 'remote') {
-    const legacy = backend.config
-    migration = await migrateRemoteMode(backend, savedCache.get())
-    await migrateRemoteModeClientFile(getUserDataPath(), legacy, migration?.runtime ?? null, savedCache.get())
-  }
+  // before any connector or client settings store exists: the client keys first, then studio-backend.json.
+  // A launch Inside Studio leaves the files for the next one.
+  const migration: RemoteModeMigration | null = await migrateRemoteModeInstall(backend, getUserDataPath(), savedCache.get())
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')

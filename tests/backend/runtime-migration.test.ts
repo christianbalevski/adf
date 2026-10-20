@@ -5,7 +5,7 @@
  * client keys and saved agent windows move to its runtime id; a file of a
  * local-only install, or of Inside Studio, is never touched.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,7 +16,7 @@ import { resolveBootBackend } from '../../src/main/backend/backend-config'
 import { AGENT_WINDOWS_KEY, AgentWindows, parseSavedAgentWindows, type AgentWindowHandle, type SavedAgentWindow } from '../../src/main/backend/agent-windows'
 import { CLIENT_SETTINGS_FILE } from '../../src/main/backend/daemon-mode/settings'
 import {
-  migrateRemoteMode, migrateRemoteModeClientFile, migrateRemoteModeClientKeys, migrationNotice, relinkSavedAgentWindows, remoteModeRuntime,
+  migrateRemoteMode, migrateRemoteModeClientFile, migrateRemoteModeClientKeys, migrateRemoteModeInstall, migrationNotice, relinkSavedAgentWindows, remoteModeRuntime,
 } from '../../src/main/backend/runtime-migration'
 import type { SavedRemote } from '../../src/main/cli/remotes'
 
@@ -190,3 +190,96 @@ describe('agent windows of a renamed connection (§7.5)', () => {
     expect(relinkSavedAgentWindows(undefined, {}, false)).toBeNull()
   })
 })
+
+describe('a migration that runs again (studio-backend.json still says remote)', () => {
+  const legacy = { remote: { url: null, token: null, allowInsecureHttp: false, name: 'host-1' } }
+  const runtime = { id: 'remote:host-1', name: 'host-1', fingerprint: 'ABCD-EFGH', inSet: true }
+  const saved = { 'host-1': HOST_1 }
+
+  it('leaves the fleet keys This computer wrote since the first run where they are', () => {
+    const data: Record<string, unknown> = { fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] }, remoteRecentFiles: ['/srv/agents/agent-2.adf'] }
+    migrateRemoteModeClientKeys(data, legacy, runtime, saved)
+    const fleet = structuredClone(data.runtimeFleet)
+    // That launch ran This computer: its fleet map wrote its own groups and stewards.
+    data.fleetGroups = { 'C:/agents': ['C:/agents/agent-1.adf'] }
+    data.fleetStewards = { 'C:/agents': 'did:key:z6Mk-local' }
+    migrateRemoteModeClientKeys(data, legacy, runtime, saved)
+    expect(data.fleetGroups).toEqual({ 'C:/agents': ['C:/agents/agent-1.adf'] })
+    expect(data.fleetStewards).toEqual({ 'C:/agents': 'did:key:z6Mk-local' })
+    expect(data.runtimeFleet).toEqual(fleet)
+  })
+
+  it('a runtimeFleet entry already there: the plain keys stay This computer\'s', () => {
+    const entry = { fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] } }
+    const data: Record<string, unknown> = { fleetStewards: { 'C:/agents': 'did:key:z6Mk-local' }, runtimeFleet: { 'remote:host-1': entry } }
+    migrateRemoteModeClientKeys(data, legacy, runtime, saved)
+    expect(data.fleetStewards).toEqual({ 'C:/agents': 'did:key:z6Mk-local' })
+    expect(data.runtimeFleet).toEqual({ 'remote:host-1': entry })
+  })
+
+  it('a client file migrated before (marked): nothing moves', () => {
+    const data: Record<string, unknown> = { remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, remoteRecentFiles: ['/srv/x.adf'] }
+    expect(migrateRemoteModeClientKeys(data, legacy, runtime, saved)).toEqual([])
+    expect(data).toEqual({ remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, remoteRecentFiles: ['/srv/x.adf'] })
+  })
+})
+
+describe('write order: the client keys first, then studio-backend.json', () => {
+  const REMOTE = { v: 1, mode: 'remote', keepDaemonRunning: false, remote: { url: null, token: null, allowInsecureHttp: false, name: 'host-1' } }
+  const CLIENT = {
+    theme: 'dark',
+    remoteRecentFiles: ['/srv/agents/agent-2.adf'],
+    fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] },
+    [AGENT_WINDOWS_KEY]: { runtime: 'remote:host-1', windows: [{ agentId: AGENT_2, filePath: '/srv/agents/agent-2.adf' }] },
+  }
+  const MIGRATED_CLIENT = {
+    theme: 'dark',
+    runtimeRecentFiles: { 'remote:host-1': ['/srv/agents/agent-2.adf'] },
+    runtimeFleet: { 'remote:host-1': { fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] } } },
+    [AGENT_WINDOWS_KEY]: { runtime: 'local', windows: [{ agentId: AGENT_2, filePath: '/srv/agents/agent-2.adf', runtimeId: 'remote:host-1', fingerprint: 'ABCD-EFGH' }] },
+  }
+
+  it('the client keys cannot be written: studio-backend.json still says remote, Connections says so, the next launch migrates both', async () => {
+    const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: CLIENT })
+    const clientPath = join(dir, CLIENT_SETTINGS_FILE)
+    chmodSync(clientPath, 0o444)
+    const boot = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
+    const migration = await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)
+    chmodSync(clientPath, 0o644)
+    expect(migration).toMatchObject({ written: false, notice: 'host-1 is in Settings → Connections.' })
+    expect(boot.config.mode).toBe('local')
+    expect(boot.notices?.join(' ')).toMatch(/still says remote/)
+    expect(read(dir, 'studio-backend.json')).toEqual(REMOTE)
+    expect(read(dir, CLIENT_SETTINGS_FILE)).toEqual(CLIENT)
+
+    const next = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
+    expect(await migrateRemoteModeInstall(next, dir, { 'host-1': HOST_1 }, quiet)).toMatchObject({ written: true })
+    expect(read(dir, 'studio-backend.json')).toMatchObject({ mode: 'local', runtimeOrder: ['remote:host-1'] })
+    expect(read(dir, CLIENT_SETTINGS_FILE)).toEqual(MIGRATED_CLIENT)
+  })
+
+  it('studio-backend.json cannot be written after the client keys were: the next launch moves nothing of This computer\'s', async () => {
+    const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: { theme: 'dark' } })
+    const boot = { ...resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet), writeBlocked: 'studio-backend.json could not be read (EACCES).' }
+    expect(await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)).toMatchObject({ written: false })
+    // That launch ran This computer, whose fleet map wrote its own groups.
+    const client = read(dir, CLIENT_SETTINGS_FILE)
+    writeFileSync(join(dir, CLIENT_SETTINGS_FILE), JSON.stringify({ ...client, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] } }))
+
+    const next = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
+    expect(await migrateRemoteModeInstall(next, dir, { 'host-1': HOST_1 }, quiet)).toMatchObject({ written: true })
+    expect(read(dir, 'studio-backend.json')).toMatchObject({ mode: 'local' })
+    // The mark goes once studio-backend.json says local.
+    expect(read(dir, CLIENT_SETTINGS_FILE)).toEqual({ theme: 'dark', fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] } })
+  })
+
+  it('a launch Inside Studio (ADF_STUDIO_BACKEND=embedded) leaves both files for the next launch', async () => {
+    const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: CLIENT })
+    const before = [readFileSync(join(dir, 'studio-backend.json'), 'utf-8'), readFileSync(join(dir, CLIENT_SETTINGS_FILE), 'utf-8')]
+    const boot = resolveBootBackend(join(dir, 'studio-backend.json'), { ADF_STUDIO_BACKEND: 'embedded' }, quiet)
+    expect(boot.mode).toBe('embedded')
+    expect(await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)).toBeNull()
+    expect([readFileSync(join(dir, 'studio-backend.json'), 'utf-8'), readFileSync(join(dir, CLIENT_SETTINGS_FILE), 'utf-8')]).toEqual(before)
+  })
+})
+
